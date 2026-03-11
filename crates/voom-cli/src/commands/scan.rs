@@ -5,7 +5,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
-use voom_domain::storage::StorageTrait;
+use voom_domain::events::Event;
 
 use crate::app;
 use crate::cli::ScanArgs;
@@ -16,13 +16,12 @@ const PROGRESS_FIXED_WIDTH: usize = 77;
 
 /// Run the scan command.
 ///
-/// This function calls the discovery and introspector plugins directly rather than
-/// routing through the event bus. This direct-call pattern is intentional for CLI
-/// commands: it enables deterministic progress reporting (indicatif progress bars),
-/// sequential error handling, and avoids the async overhead of the pub/sub bus for
-/// what is fundamentally a synchronous, user-facing workflow.
+/// Discovery and introspection are driven directly for deterministic progress
+/// reporting, but all events are also published through the kernel's event bus
+/// so that subscribers (sqlite-store, SSE, WASM plugins) receive them.
 pub async fn run(args: ScanArgs) -> Result<()> {
     let config = app::load_config()?;
+    let kernel = app::bootstrap_kernel(&config)?;
 
     let path = args
         .path
@@ -118,9 +117,15 @@ pub async fn run(args: ScanArgs) -> Result<()> {
         return Ok(());
     }
 
+    // Publish discovery events through the event bus
+    for event in &events {
+        kernel
+            .dispatch(Event::FileDiscovered(event.clone()))
+            .await;
+    }
+
     // Introspect each discovered file
     let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
-    let store = app::open_store(&config)?;
 
     let pb = ProgressBar::new(events.len() as u64);
     pb.set_style(
@@ -162,12 +167,11 @@ pub async fn run(args: ScanArgs) -> Result<()> {
 
         match introspector.introspect(&event.path, event.size, &event.content_hash) {
             Ok(intro_event) => {
-                if let Err(e) = store.upsert_file(&intro_event.file) {
-                    tracing::warn!(path = %event.path.display(), error = %e, "failed to store file");
-                    errors += 1;
-                } else {
-                    introspected += 1;
-                }
+                // Publish through the event bus — sqlite-store handles persistence
+                kernel
+                    .dispatch(Event::FileIntrospected(intro_event))
+                    .await;
+                introspected += 1;
             }
             Err(e) => {
                 tracing::warn!(path = %event.path.display(), error = %e, "introspection failed");
@@ -202,4 +206,126 @@ pub async fn run(args: ScanArgs) -> Result<()> {
     output::format_scan_results(&results, crate::cli::OutputFormat::Table);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use voom_domain::capabilities::Capability;
+    use voom_domain::events::{EventResult, FileDiscoveredEvent, FileIntrospectedEvent};
+    use voom_domain::media::MediaFile;
+
+    /// A test plugin that counts received events.
+    struct RecordingPlugin {
+        discovered_count: AtomicUsize,
+        introspected_count: AtomicUsize,
+    }
+
+    impl RecordingPlugin {
+        fn new() -> Self {
+            Self {
+                discovered_count: AtomicUsize::new(0),
+                introspected_count: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl voom_kernel::Plugin for RecordingPlugin {
+        fn name(&self) -> &str {
+            "test-recorder"
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+        fn capabilities(&self) -> &[Capability] {
+            &[]
+        }
+        fn handles(&self, event_type: &str) -> bool {
+            matches!(event_type, "file.discovered" | "file.introspected")
+        }
+        fn on_event(
+            &self,
+            event: &Event,
+        ) -> voom_domain::errors::Result<Option<EventResult>> {
+            match event {
+                Event::FileDiscovered(_) => {
+                    self.discovered_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::FileIntrospected(_) => {
+                    self.introspected_count.fetch_add(1, Ordering::SeqCst);
+                }
+                _ => {}
+            }
+            Ok(None)
+        }
+    }
+
+    fn test_media_file(name: &str) -> MediaFile {
+        let mut f = MediaFile::new(PathBuf::from(name));
+        f.size = 1024;
+        f.content_hash = "abc123".into();
+        f
+    }
+
+    #[tokio::test]
+    async fn test_events_dispatched_through_kernel() {
+        let mut kernel = voom_kernel::Kernel::new();
+        let recorder = Arc::new(RecordingPlugin::new());
+        kernel.register_plugin(recorder.clone(), 50);
+
+        // Simulate discovery event
+        let discovered = FileDiscoveredEvent {
+            path: PathBuf::from("/tmp/test.mkv"),
+            size: 1024,
+            content_hash: "abc123".into(),
+        };
+        kernel
+            .dispatch(Event::FileDiscovered(discovered))
+            .await;
+
+        assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 1);
+
+        // Simulate introspection event
+        let file = test_media_file("/tmp/test.mkv");
+        kernel
+            .dispatch(Event::FileIntrospected(FileIntrospectedEvent { file }))
+            .await;
+
+        assert_eq!(recorder.introspected_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_discovery_events_dispatched() {
+        let mut kernel = voom_kernel::Kernel::new();
+        let recorder = Arc::new(RecordingPlugin::new());
+        kernel.register_plugin(recorder.clone(), 50);
+
+        let events = vec![
+            FileDiscoveredEvent {
+                path: PathBuf::from("/tmp/a.mkv"),
+                size: 100,
+                content_hash: "aaa".into(),
+            },
+            FileDiscoveredEvent {
+                path: PathBuf::from("/tmp/b.mp4"),
+                size: 200,
+                content_hash: "bbb".into(),
+            },
+            FileDiscoveredEvent {
+                path: PathBuf::from("/tmp/c.avi"),
+                size: 300,
+                content_hash: "ccc".into(),
+            },
+        ];
+
+        for event in &events {
+            kernel
+                .dispatch(Event::FileDiscovered(event.clone()))
+                .await;
+        }
+
+        assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 3);
+    }
 }
