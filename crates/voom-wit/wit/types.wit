@@ -1,0 +1,95 @@
+interface types {
+    record media-file {
+        path: string,
+        size: u64,
+        content-hash: string,
+        container: string,
+        duration: float64,
+        bitrate: option<u32>,
+        tracks: list<track>,
+        tags: list<key-value>,
+        plugin-metadata: list<plugin-metadata-entry>,
+    }
+
+    record track {
+        index: u32,
+        track-type: track-type,
+        codec: string,
+        language: string,
+        title: string,
+        is-default: bool,
+        is-forced: bool,
+        channels: option<u32>,
+        width: option<u32>,
+        height: option<u32>,
+        frame-rate: option<float64>,
+        is-vfr: bool,
+        is-hdr: bool,
+    }
+
+    enum track-type {
+        video,
+        audio-main,
+        audio-alternate,
+        audio-commentary,
+        audio-music,
+        audio-sfx,
+        audio-non-speech,
+        subtitle-main,
+        subtitle-forced,
+        subtitle-commentary,
+        attachment,
+    }
+
+    record key-value {
+        key: string,
+        value: string,
+    }
+
+    record plugin-metadata-entry {
+        plugin-name: string,
+        data: list<u8>,
+    }
+
+    record event-data {
+        event-type: string,
+        payload: list<u8>,
+    }
+
+    record event-result {
+        plugin-name: string,
+        produced-events: list<event-data>,
+        data: option<list<u8>>,
+    }
+
+    enum log-level {
+        trace,
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    record header {
+        name: string,
+        value: string,
+    }
+
+    record http-response {
+        status: u16,
+        headers: list<header>,
+        body: list<u8>,
+    }
+
+    record tool-output {
+        exit-code: s32,
+        stdout: list<u8>,
+        stderr: list<u8>,
+    }
+
+    record file-filters {
+        extensions: list<string>,
+        min-size: option<u64>,
+        max-size: option<u64>,
+    }
+}

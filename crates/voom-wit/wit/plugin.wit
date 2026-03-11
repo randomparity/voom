@@ -1,0 +1,45 @@
+interface plugin {
+    use types.{event-data, event-result};
+
+    record plugin-info {
+        name: string,
+        version: string,
+        capabilities: list<capability>,
+    }
+
+    variant capability {
+        discover(discover-cap),
+        introspect(introspect-cap),
+        evaluate,
+        execute(execute-cap),
+        enrich-metadata(enrich-cap),
+        transcribe,
+        synthesize,
+    }
+
+    record discover-cap {
+        schemes: list<string>,
+    }
+
+    record introspect-cap {
+        formats: list<string>,
+    }
+
+    record execute-cap {
+        operations: list<string>,
+        formats: list<string>,
+    }
+
+    record enrich-cap {
+        source: string,
+    }
+
+    /// Return plugin identity and capabilities.
+    get-info: func() -> plugin-info;
+
+    /// Check if this plugin handles the given event type.
+    handles: func(event-type: string) -> bool;
+
+    /// Process an event and optionally return a result.
+    on-event: func(event: event-data) -> option<event-result>;
+}

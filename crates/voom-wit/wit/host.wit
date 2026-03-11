@@ -1,0 +1,27 @@
+interface host {
+    use types.{media-file, file-filters, tool-output, header, http-response, log-level};
+
+    /// Read metadata for a file (sandboxed to media library paths).
+    read-file-metadata: func(path: string) -> result<media-file, string>;
+
+    /// List files matching filters.
+    list-files: func(filters: file-filters) -> result<list<media-file>, string>;
+
+    /// Run an external tool (plugins request, host executes).
+    run-tool: func(tool: string, args: list<string>, timeout-ms: u64) -> result<tool-output, string>;
+
+    /// Get plugin-specific persisted data.
+    get-plugin-data: func(key: string) -> option<list<u8>>;
+
+    /// Set plugin-specific persisted data.
+    set-plugin-data: func(key: string, value: list<u8>) -> result<_, string>;
+
+    /// HTTP GET request.
+    http-get: func(url: string, headers: list<header>) -> result<http-response, string>;
+
+    /// HTTP POST request.
+    http-post: func(url: string, headers: list<header>, body: list<u8>) -> result<http-response, string>;
+
+    /// Log a message at the given level.
+    log: func(level: log-level, message: string);
+}
