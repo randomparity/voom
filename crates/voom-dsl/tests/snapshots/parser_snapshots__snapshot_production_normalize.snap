@@ -93,7 +93,7 @@ phases:
     skip_when:
       FieldCompare:
         - - video
-          - "codec "
+          - codec
         - In
         - List:
             - Ident: hevc

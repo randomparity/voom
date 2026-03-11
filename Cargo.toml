@@ -8,6 +8,8 @@ members = [
     "plugins/discovery",
     "plugins/ffprobe-introspector",
     "plugins/tool-detector",
+    "plugins/policy-evaluator",
+    "plugins/phase-orchestrator",
 ]
 
 [workspace.package]
@@ -19,6 +21,7 @@ rust-version = "1.75"
 voom-domain = { path = "crates/voom-domain" }
 voom-dsl = { path = "crates/voom-dsl" }
 voom-kernel = { path = "crates/voom-kernel" }
+voom-policy-evaluator = { path = "plugins/policy-evaluator" }
 
 # Async
 tokio = { version = "1", features = ["full"] }

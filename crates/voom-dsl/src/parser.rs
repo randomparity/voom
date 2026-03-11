@@ -664,7 +664,10 @@ fn build_track_ref(pair: Pair<'_, Rule>) -> Result<TrackRefNode> {
 }
 
 fn build_field_access(pair: &Pair<'_, Rule>) -> Vec<String> {
-    pair.as_str().split('.').map(|s| s.to_string()).collect()
+    pair.as_str()
+        .split('.')
+        .map(|s| s.trim().to_string())
+        .collect()
 }
 
 fn build_compare_op(pair: Pair<'_, Rule>) -> CompareOp {
