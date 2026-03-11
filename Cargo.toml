@@ -13,6 +13,7 @@ members = [
     "plugins/mkvtoolnix-executor",
     "plugins/backup-manager",
     "plugins/ffmpeg-executor",
+    "plugins/job-manager",
     "crates/voom-cli",
 ]
 

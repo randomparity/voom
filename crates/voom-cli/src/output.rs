@@ -123,6 +123,7 @@ fn track_details(track: &Track) -> String {
 }
 
 /// Format plan output for dry-run display.
+#[allow(dead_code)]
 pub fn format_plans(plans: &[Plan]) {
     for plan in plans {
         println!("\n{} {}", "Phase:".bold(), plan.phase_name.bold().cyan());

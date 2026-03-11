@@ -3,7 +3,7 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::errors::Result;
-use crate::job::{Job, JobUpdate};
+use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::MediaFile;
 use crate::plan::Plan;
 use crate::stats::ProcessingStats;
@@ -36,6 +36,8 @@ pub trait StorageTrait: Send + Sync {
     fn get_job(&self, id: &Uuid) -> Result<Option<Job>>;
     fn update_job(&self, id: &Uuid, update: &JobUpdate) -> Result<()>;
     fn claim_next_job(&self, worker_id: &str) -> Result<Option<Job>>;
+    fn list_jobs(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>>;
+    fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>>;
 
     // Plans
     fn save_plan(&self, plan: &Plan) -> Result<Uuid>;

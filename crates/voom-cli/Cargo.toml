@@ -23,6 +23,7 @@ voom-phase-orchestrator = { path = "../../plugins/phase-orchestrator" }
 voom-mkvtoolnix-executor = { path = "../../plugins/mkvtoolnix-executor" }
 voom-ffmpeg-executor = { path = "../../plugins/ffmpeg-executor" }
 voom-backup-manager = { path = "../../plugins/backup-manager" }
+voom-job-manager = { path = "../../plugins/job-manager" }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

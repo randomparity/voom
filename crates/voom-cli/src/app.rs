@@ -116,6 +116,12 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
         30,
     );
 
+    // Job manager
+    kernel.register_plugin(
+        Arc::new(voom_job_manager::JobManagerPlugin::new()),
+        20,
+    );
+
     Ok(kernel)
 }
 

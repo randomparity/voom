@@ -2066,6 +2066,7 @@ dependencies = [
  "voom-dsl",
  "voom-ffmpeg-executor",
  "voom-ffprobe-introspector",
+ "voom-job-manager",
  "voom-kernel",
  "voom-mkvtoolnix-executor",
  "voom-phase-orchestrator",
@@ -2137,6 +2138,22 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tracing",
+ "uuid",
+ "voom-domain",
+ "voom-kernel",
+]
+
+[[package]]
+name = "voom-job-manager"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "uuid",
  "voom-domain",

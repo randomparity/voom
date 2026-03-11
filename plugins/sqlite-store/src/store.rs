@@ -540,6 +540,64 @@ impl StorageTrait for SqliteStore {
         .map_err(|e| VoomError::Storage(format!("failed to get claimed job: {e}")))
     }
 
+    fn list_jobs(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>> {
+        let conn = self.conn()?;
+        let mut sql = String::from("SELECT * FROM jobs");
+        let mut param_values: Vec<String> = Vec::new();
+
+        if let Some(status) = status {
+            param_values.push(status.as_str().to_string());
+            sql.push_str(&format!(" WHERE status = ?{}", param_values.len()));
+        }
+
+        sql.push_str(" ORDER BY priority ASC, created_at DESC");
+
+        if let Some(limit) = limit {
+            sql.push_str(&format!(" LIMIT {limit}"));
+        }
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| VoomError::Storage(format!("failed to prepare list jobs query: {e}")))?;
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
+            .iter()
+            .map(|v| v as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        let jobs = stmt
+            .query_map(param_refs.as_slice(), row_to_job)
+            .map_err(|e| VoomError::Storage(format!("failed to list jobs: {e}")))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| VoomError::Storage(format!("failed to collect jobs: {e}")))?;
+
+        Ok(jobs)
+    }
+
+    fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT status, COUNT(*) FROM jobs GROUP BY status")
+            .map_err(|e| VoomError::Storage(format!("failed to prepare count query: {e}")))?;
+
+        let counts = stmt
+            .query_map([], |row| {
+                let status_str: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((status_str, count as u64))
+            })
+            .map_err(|e| VoomError::Storage(format!("failed to count jobs: {e}")))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| VoomError::Storage(format!("failed to collect counts: {e}")))?;
+
+        let result = counts
+            .into_iter()
+            .filter_map(|(s, c)| JobStatus::parse(&s).map(|status| (status, c)))
+            .collect();
+
+        Ok(result)
+    }
+
     fn save_plan(&self, plan: &Plan) -> Result<Uuid> {
         let conn = self.conn()?;
         let id = Uuid::new_v4();
@@ -998,6 +1056,49 @@ mod tests {
         assert_eq!(claimed.job_type, "task2"); // lower priority number = claimed first
         assert_eq!(claimed.status, JobStatus::Running);
         assert_eq!(claimed.worker_id.as_deref(), Some("worker-1"));
+    }
+
+    #[test]
+    fn test_list_jobs() {
+        let store = test_store();
+        let mut job1 = Job::new("task1".into());
+        job1.priority = 100;
+        store.create_job(&job1).unwrap();
+
+        let mut job2 = Job::new("task2".into());
+        job2.priority = 50;
+        store.create_job(&job2).unwrap();
+
+        // Claim one to make it running
+        store.claim_next_job("w-1").unwrap();
+
+        let all = store.list_jobs(None, None).unwrap();
+        assert_eq!(all.len(), 2);
+
+        let pending = store.list_jobs(Some(JobStatus::Pending), None).unwrap();
+        assert_eq!(pending.len(), 1);
+
+        let running = store.list_jobs(Some(JobStatus::Running), None).unwrap();
+        assert_eq!(running.len(), 1);
+
+        let limited = store.list_jobs(None, Some(1)).unwrap();
+        assert_eq!(limited.len(), 1);
+    }
+
+    #[test]
+    fn test_count_jobs_by_status() {
+        let store = test_store();
+        for i in 0..3 {
+            let job = Job::new(format!("task{i}"));
+            store.create_job(&job).unwrap();
+        }
+        store.claim_next_job("w-1").unwrap();
+
+        let counts = store.count_jobs_by_status().unwrap();
+        let pending = counts.iter().find(|(s, _)| *s == JobStatus::Pending).map(|(_, c)| *c).unwrap_or(0);
+        let running = counts.iter().find(|(s, _)| *s == JobStatus::Running).map(|(_, c)| *c).unwrap_or(0);
+        assert_eq!(pending, 2);
+        assert_eq!(running, 1);
     }
 
     #[test]
