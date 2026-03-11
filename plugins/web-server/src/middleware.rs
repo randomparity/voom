@@ -47,7 +47,7 @@ where
             headers.insert(
                 "Content-Security-Policy",
                 HeaderValue::from_static(
-                    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
+                    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
                 ),
             );
             headers.insert(
