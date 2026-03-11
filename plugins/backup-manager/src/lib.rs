@@ -200,9 +200,7 @@ impl BackupManagerPlugin {
 
     /// Check if sufficient disk space is available for backing up the given file.
     pub fn validate_disk_space(&self, path: &Path) -> Result<()> {
-        let file_size = fs::metadata(path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let file_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
         let backup_path = self.backup_path_for(path);
         let check_path = backup_path
@@ -313,8 +311,8 @@ impl BackupManagerPlugin {
 
         // Use libc::statvfs directly to avoid depending on df output format
         use std::ffi::CString;
-        let c_path = CString::new(check.to_string_lossy().as_bytes())
-            .map_err(|e| VoomError::Plugin {
+        let c_path =
+            CString::new(check.to_string_lossy().as_bytes()).map_err(|e| VoomError::Plugin {
                 plugin: "backup-manager".into(),
                 message: format!("invalid path for statvfs: {e}"),
             })?;
@@ -445,9 +443,7 @@ mod tests {
         let path = Path::new("/media/movies/Movie.mkv");
         let backup = plugin.backup_path_for(path);
 
-        assert!(backup
-            .to_string_lossy()
-            .starts_with("/tmp/voom-backups/"));
+        assert!(backup.to_string_lossy().starts_with("/tmp/voom-backups/"));
         assert!(backup.to_string_lossy().ends_with("_Movie.mkv"));
     }
 

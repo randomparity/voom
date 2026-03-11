@@ -1,0 +1,57 @@
+[package]
+name = "voom-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "CLI interface for VOOM — Video Orchestration Operations Manager"
+
+[[bin]]
+name = "voom"
+path = "src/main.rs"
+
+[dependencies]
+voom-domain = { path = "../voom-domain" }
+voom-dsl = { path = "../voom-dsl" }
+voom-kernel = { path = "../voom-kernel" }
+voom-sqlite-store = { path = "../../plugins/sqlite-store" }
+voom-discovery = { path = "../../plugins/discovery" }
+voom-ffprobe-introspector = { path = "../../plugins/ffprobe-introspector" }
+voom-tool-detector = { path = "../../plugins/tool-detector" }
+voom-policy-evaluator = { path = "../../plugins/policy-evaluator" }
+voom-phase-orchestrator = { path = "../../plugins/phase-orchestrator" }
+voom-mkvtoolnix-executor = { path = "../../plugins/mkvtoolnix-executor" }
+voom-ffmpeg-executor = { path = "../../plugins/ffmpeg-executor" }
+voom-backup-manager = { path = "../../plugins/backup-manager" }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+
+# Output formatting
+comfy-table = "7"
+indicatif = "0.17"
+owo-colors = "4"
+
+# Async
+tokio.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Errors & logging
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Other
+uuid.workspace = true
+chrono.workspace = true
+dirs = "5"
+toml = "0.8"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile.workspace = true

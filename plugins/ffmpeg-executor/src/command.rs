@@ -206,8 +206,7 @@ pub fn build_ffmpeg_command(
                     cmd = cmd.crf(crf_val as u32);
                 }
 
-                if let Some(preset_val) = action.parameters.get("preset").and_then(|v| v.as_str())
-                {
+                if let Some(preset_val) = action.parameters.get("preset").and_then(|v| v.as_str()) {
                     cmd = cmd.preset(preset_val);
                 }
 
@@ -234,8 +233,7 @@ pub fn build_ffmpeg_command(
                     cmd = cmd.audio_bitrate(bitrate);
                 }
 
-                if let Some(channels) = action.parameters.get("channels").and_then(|v| v.as_u64())
-                {
+                if let Some(channels) = action.parameters.get("channels").and_then(|v| v.as_u64()) {
                     cmd = cmd.arg("-ac").arg(&channels.to_string());
                 }
             }
@@ -258,8 +256,7 @@ pub fn build_ffmpeg_command(
                     cmd = cmd.audio_bitrate(bitrate);
                 }
 
-                if let Some(channels) = action.parameters.get("channels").and_then(|v| v.as_u64())
-                {
+                if let Some(channels) = action.parameters.get("channels").and_then(|v| v.as_u64()) {
                     cmd = cmd.arg("-ac").arg(&channels.to_string());
                 }
             }
@@ -282,9 +279,7 @@ pub fn build_ffmpeg_command(
             }
             OperationType::SetLanguage => {
                 if let Some(stream) = action.track_index {
-                    if let Some(lang) =
-                        action.parameters.get("language").and_then(|v| v.as_str())
-                    {
+                    if let Some(lang) = action.parameters.get("language").and_then(|v| v.as_str()) {
                         cmd = cmd.metadata(Some(stream), "language", lang);
                     }
                 }

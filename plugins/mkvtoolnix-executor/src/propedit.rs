@@ -106,9 +106,7 @@ pub fn build_propedit_args(path: &Path, actions: &[&PlannedAction]) -> Vec<Strin
             }
             OperationType::SetTitle => {
                 if let Some(idx) = action.track_index {
-                    let title = action.parameters["title"]
-                        .as_str()
-                        .unwrap_or("");
+                    let title = action.parameters["title"].as_str().unwrap_or("");
                     args.push("--edit".into());
                     args.push(format!("track:{}", idx + 1));
                     args.push("--set".into());
@@ -117,9 +115,7 @@ pub fn build_propedit_args(path: &Path, actions: &[&PlannedAction]) -> Vec<Strin
             }
             OperationType::SetLanguage => {
                 if let Some(idx) = action.track_index {
-                    let language = action.parameters["language"]
-                        .as_str()
-                        .unwrap_or("und");
+                    let language = action.parameters["language"].as_str().unwrap_or("und");
                     args.push("--edit".into());
                     args.push(format!("track:{}", idx + 1));
                     args.push("--set".into());
@@ -127,12 +123,8 @@ pub fn build_propedit_args(path: &Path, actions: &[&PlannedAction]) -> Vec<Strin
                 }
             }
             OperationType::SetContainerTag => {
-                let tag = action.parameters["tag"]
-                    .as_str()
-                    .unwrap_or("title");
-                let value = action.parameters["value"]
-                    .as_str()
-                    .unwrap_or("");
+                let tag = action.parameters["tag"].as_str().unwrap_or("title");
+                let value = action.parameters["value"].as_str().unwrap_or("");
                 args.push("--edit".into());
                 args.push("info".into());
                 args.push("--set".into());
@@ -156,7 +148,11 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    fn make_action(op: OperationType, track_index: Option<u32>, params: serde_json::Value) -> PlannedAction {
+    fn make_action(
+        op: OperationType,
+        track_index: Option<u32>,
+        params: serde_json::Value,
+    ) -> PlannedAction {
         PlannedAction {
             operation: op,
             track_index,
@@ -170,11 +166,16 @@ mod tests {
         let action = make_action(OperationType::SetDefault, Some(2), serde_json::json!({}));
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions);
-        assert_eq!(args, vec![
-            "/media/movie.mkv",
-            "--edit", "track:3",
-            "--set", "flag-default=1",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "/media/movie.mkv",
+                "--edit",
+                "track:3",
+                "--set",
+                "flag-default=1",
+            ]
+        );
     }
 
     #[test]
@@ -182,11 +183,16 @@ mod tests {
         let action = make_action(OperationType::ClearDefault, Some(0), serde_json::json!({}));
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions);
-        assert_eq!(args, vec![
-            "/media/movie.mkv",
-            "--edit", "track:1",
-            "--set", "flag-default=0",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "/media/movie.mkv",
+                "--edit",
+                "track:1",
+                "--set",
+                "flag-default=0",
+            ]
+        );
     }
 
     #[test]
@@ -194,11 +200,16 @@ mod tests {
         let action = make_action(OperationType::SetForced, Some(3), serde_json::json!({}));
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions);
-        assert_eq!(args, vec![
-            "/media/movie.mkv",
-            "--edit", "track:4",
-            "--set", "flag-forced=1",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "/media/movie.mkv",
+                "--edit",
+                "track:4",
+                "--set",
+                "flag-forced=1",
+            ]
+        );
     }
 
     #[test]
@@ -206,11 +217,16 @@ mod tests {
         let action = make_action(OperationType::ClearForced, Some(1), serde_json::json!({}));
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions);
-        assert_eq!(args, vec![
-            "/media/movie.mkv",
-            "--edit", "track:2",
-            "--set", "flag-forced=0",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "/media/movie.mkv",
+                "--edit",
+                "track:2",
+                "--set",
+                "flag-forced=0",
+            ]
+        );
     }
 
     #[test]
@@ -222,11 +238,16 @@ mod tests {
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions);
-        assert_eq!(args, vec![
-            "/media/movie.mkv",
-            "--edit", "track:2",
-            "--set", "name=English Commentary",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "/media/movie.mkv",
+                "--edit",
+                "track:2",
+                "--set",
+                "name=English Commentary",
+            ]
+        );
     }
 
     #[test]
@@ -238,11 +259,16 @@ mod tests {
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions);
-        assert_eq!(args, vec![
-            "/media/movie.mkv",
-            "--edit", "track:3",
-            "--set", "language=jpn",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "/media/movie.mkv",
+                "--edit",
+                "track:3",
+                "--set",
+                "language=jpn",
+            ]
+        );
     }
 
     #[test]
@@ -254,11 +280,16 @@ mod tests {
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions);
-        assert_eq!(args, vec![
-            "/media/movie.mkv",
-            "--edit", "info",
-            "--set", "title=My Movie",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "/media/movie.mkv",
+                "--edit",
+                "info",
+                "--set",
+                "title=My Movie",
+            ]
+        );
     }
 
     #[test]
@@ -272,15 +303,24 @@ mod tests {
         );
         let actions: Vec<&PlannedAction> = vec![&a1, &a2, &a3];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions);
-        assert_eq!(args, vec![
-            "/media/movie.mkv",
-            "--edit", "track:2",
-            "--set", "flag-default=1",
-            "--edit", "track:3",
-            "--set", "flag-default=0",
-            "--edit", "track:4",
-            "--set", "language=eng",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "/media/movie.mkv",
+                "--edit",
+                "track:2",
+                "--set",
+                "flag-default=1",
+                "--edit",
+                "track:3",
+                "--set",
+                "flag-default=0",
+                "--edit",
+                "track:4",
+                "--set",
+                "language=eng",
+            ]
+        );
     }
 
     #[test]

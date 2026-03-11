@@ -13,10 +13,7 @@ use voom_domain::plan::{ActionResult, OperationType, PlannedAction};
 /// 2. Write to a temp file (`.tmp.mkv`) in the same directory
 /// 3. On success, rename temp over the original (or to new extension if container changed)
 /// 4. On failure, clean up the temp file
-pub fn execute_merge_actions(
-    path: &Path,
-    actions: &[&PlannedAction],
-) -> Result<Vec<ActionResult>> {
+pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<Vec<ActionResult>> {
     if actions.is_empty() {
         return Ok(Vec::new());
     }
@@ -38,13 +35,14 @@ pub fn execute_merge_actions(
     );
     tracing::debug!(args = ?args, "mkvmerge arguments");
 
-    let output = Command::new("mkvmerge")
-        .args(&args)
-        .output()
-        .map_err(|e| VoomError::ToolExecution {
-            tool: "mkvmerge".into(),
-            message: format!("failed to spawn mkvmerge: {e}"),
-        })?;
+    let output =
+        Command::new("mkvmerge")
+            .args(&args)
+            .output()
+            .map_err(|e| VoomError::ToolExecution {
+                tool: "mkvmerge".into(),
+                message: format!("failed to spawn mkvmerge: {e}"),
+            })?;
 
     // mkvmerge returns 0 for success, 1 for warnings (still successful), 2 for errors
     if output.status.code().unwrap_or(2) <= 1 {
@@ -90,10 +88,7 @@ pub fn execute_merge_actions(
         );
         Err(VoomError::ToolExecution {
             tool: "mkvmerge".into(),
-            message: format!(
-                "mkvmerge exited with status {}: {}",
-                output.status, stderr
-            ),
+            message: format!("mkvmerge exited with status {}: {}", output.status, stderr),
         })
     }
 }
@@ -123,10 +118,7 @@ pub fn build_merge_args(
     output_path: &Path,
     actions: &[&PlannedAction],
 ) -> Vec<String> {
-    let mut args = vec![
-        "-o".into(),
-        output_path.to_string_lossy().into_owned(),
-    ];
+    let mut args = vec!["-o".into(), output_path.to_string_lossy().into_owned()];
 
     // Collect track removal indices
     let remove_indices: Vec<u32> = actions
@@ -258,13 +250,16 @@ mod tests {
             Path::new("/media/movie.tmp.mkv"),
             &actions,
         );
-        assert_eq!(args, vec![
-            "-o",
-            "/media/movie.tmp.mkv",
-            "--subtitle-tracks",
-            "!3",
-            "/media/movie.mkv",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "-o",
+                "/media/movie.tmp.mkv",
+                "--subtitle-tracks",
+                "!3",
+                "/media/movie.mkv",
+            ]
+        );
     }
 
     #[test]
@@ -280,13 +275,16 @@ mod tests {
             Path::new("/media/movie.tmp.mkv"),
             &actions,
         );
-        assert_eq!(args, vec![
-            "-o",
-            "/media/movie.tmp.mkv",
-            "--track-order",
-            "0:0,0:2,0:1,0:3",
-            "/media/movie.mkv",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "-o",
+                "/media/movie.tmp.mkv",
+                "--track-order",
+                "0:0,0:2,0:1,0:3",
+                "/media/movie.mkv",
+            ]
+        );
     }
 
     #[test]
@@ -303,11 +301,10 @@ mod tests {
             &actions,
         );
         // ConvertContainer is just a remux — no special flags needed beyond -o
-        assert_eq!(args, vec![
-            "-o",
-            "/media/movie.tmp.mkv",
-            "/media/movie.mp4",
-        ]);
+        assert_eq!(
+            args,
+            vec!["-o", "/media/movie.tmp.mkv", "/media/movie.mp4",]
+        );
     }
 
     #[test]
@@ -328,15 +325,18 @@ mod tests {
             Path::new("/media/movie.tmp.mkv"),
             &actions,
         );
-        assert_eq!(args, vec![
-            "-o",
-            "/media/movie.tmp.mkv",
-            "--audio-tracks",
-            "!2",
-            "--subtitle-tracks",
-            "!4",
-            "/media/movie.mkv",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "-o",
+                "/media/movie.tmp.mkv",
+                "--audio-tracks",
+                "!2",
+                "--subtitle-tracks",
+                "!4",
+                "/media/movie.mkv",
+            ]
+        );
     }
 
     #[test]
@@ -357,14 +357,17 @@ mod tests {
             Path::new("/media/movie.tmp.mkv"),
             &actions,
         );
-        assert_eq!(args, vec![
-            "-o",
-            "/media/movie.tmp.mkv",
-            "--audio-tracks",
-            "!3",
-            "--track-order",
-            "0:0,0:1,0:2,0:4",
-            "/media/movie.mkv",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "-o",
+                "/media/movie.tmp.mkv",
+                "--audio-tracks",
+                "!3",
+                "--track-order",
+                "0:0,0:1,0:2,0:4",
+                "/media/movie.mkv",
+            ]
+        );
     }
 }

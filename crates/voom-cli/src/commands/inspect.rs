@@ -1,0 +1,43 @@
+use anyhow::{Context, Result};
+use owo_colors::OwoColorize;
+
+use crate::app;
+use crate::cli::{InspectArgs, OutputFormat};
+use crate::output;
+
+pub async fn run(args: InspectArgs) -> Result<()> {
+    let path = args
+        .file
+        .canonicalize()
+        .with_context(|| format!("File not found: {}", args.file.display()))?;
+
+    // First check if we have it in the database
+    let config = app::load_config()?;
+    let store = app::open_store(&config)?;
+
+    use voom_domain::storage::StorageTrait;
+    if let Ok(Some(file)) = store.get_file_by_path(&path) {
+        match args.format {
+            OutputFormat::Json => output::format_file_json(&file),
+            OutputFormat::Table => output::format_file_info(&file, args.tracks_only),
+        }
+        return Ok(());
+    }
+
+    // Not in DB — introspect live
+    println!("{}", "File not in database, introspecting...".dimmed());
+
+    let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
+    let size = std::fs::metadata(&path)?.len();
+
+    let event = introspector
+        .introspect(&path, size, "")
+        .map_err(|e| anyhow::anyhow!("Introspection failed: {e}"))?;
+
+    match args.format {
+        OutputFormat::Json => output::format_file_json(&event.file),
+        OutputFormat::Table => output::format_file_info(&event.file, args.tracks_only),
+    }
+
+    Ok(())
+}

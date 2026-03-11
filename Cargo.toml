@@ -13,6 +13,7 @@ members = [
     "plugins/mkvtoolnix-executor",
     "plugins/backup-manager",
     "plugins/ffmpeg-executor",
+    "crates/voom-cli",
 ]
 
 [workspace.package]

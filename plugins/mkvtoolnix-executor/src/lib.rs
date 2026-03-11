@@ -113,8 +113,7 @@ impl MkvtoolnixExecutorPlugin {
                 count = propedit_actions.len(),
                 "running propedit actions"
             );
-            let propedit_results =
-                propedit::execute_propedit_actions(path, &propedit_actions)?;
+            let propedit_results = propedit::execute_propedit_actions(path, &propedit_actions)?;
             results.extend(propedit_results);
         }
 
@@ -311,7 +310,11 @@ mod tests {
         let plugin = MkvtoolnixExecutorPlugin::new();
         let plan = make_mkv_plan(vec![
             make_action(OperationType::SetDefault, Some(1), serde_json::json!({})),
-            make_action(OperationType::RemoveTrack, Some(3), serde_json::json!({"track_type": "subtitle_main"})),
+            make_action(
+                OperationType::RemoveTrack,
+                Some(3),
+                serde_json::json!({"track_type": "subtitle_main"}),
+            ),
         ]);
         assert!(plugin.can_handle(&plan));
     }
