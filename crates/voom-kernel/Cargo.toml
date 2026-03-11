@@ -5,13 +5,16 @@ edition.workspace = true
 
 [dependencies]
 voom-domain = { workspace = true }
+voom-wit = { path = "../voom-wit" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+rmp-serde = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
-wasmtime = { workspace = true, optional = true }
+toml = "0.8"
+wasmtime = { version = "29", optional = true, features = ["component-model"] }
 
 [features]
 default = []
@@ -20,3 +23,4 @@ wasm = ["dep:wasmtime"]
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
+tempfile = { workspace = true }

@@ -1,5 +1,6 @@
 pub mod bus;
 pub mod capabilities;
+pub mod host;
 pub mod loader;
 pub mod manifest;
 pub mod registry;

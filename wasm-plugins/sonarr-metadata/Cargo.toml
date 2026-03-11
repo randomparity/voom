@@ -1,0 +1,17 @@
+[package]
+name = "sonarr-metadata"
+version = "0.1.0"
+edition = "2021"
+description = "VOOM WASM plugin for TV series metadata enrichment via Sonarr API"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+voom-plugin-sdk = { path = "../../crates/voom-plugin-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rmp-serde = "1"
+
+# wit-bindgen would be added here for actual WASM compilation:
+# wit-bindgen = "0.39"

@@ -1,0 +1,6 @@
+package voom:plugin@0.1.0;
+
+world voom-plugin {
+    import host;
+    export plugin;
+}

@@ -3084,13 +3084,17 @@ name = "voom-kernel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "rmp-serde",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "voom-domain",
+ "voom-wit",
  "wasmtime",
 ]
 
@@ -3119,6 +3123,18 @@ dependencies = [
  "voom-dsl",
  "voom-kernel",
  "voom-policy-evaluator",
+]
+
+[[package]]
+name = "voom-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "insta",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "voom-domain",
 ]
 
 [[package]]
@@ -3188,6 +3204,19 @@ dependencies = [
  "voom-domain",
  "voom-dsl",
  "voom-kernel",
+]
+
+[[package]]
+name = "voom-wit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "insta",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "voom-domain",
 ]
 
 [[package]]

@@ -4,6 +4,8 @@ members = [
     "crates/voom-domain",
     "crates/voom-dsl",
     "crates/voom-kernel",
+    "crates/voom-wit",
+    "crates/voom-plugin-sdk",
     "plugins/sqlite-store",
     "plugins/discovery",
     "plugins/ffprobe-introspector",
@@ -17,6 +19,14 @@ members = [
     "plugins/web-server",
     "crates/voom-cli",
 ]
+exclude = [
+    "wasm-plugins/example-metadata",
+    "wasm-plugins/radarr-metadata",
+    "wasm-plugins/sonarr-metadata",
+    "wasm-plugins/whisper-transcriber",
+    "wasm-plugins/audio-synthesizer",
+    "wasm-plugins/handbrake-executor",
+]
 
 [workspace.package]
 edition = "2021"
@@ -27,6 +37,8 @@ rust-version = "1.75"
 voom-domain = { path = "crates/voom-domain" }
 voom-dsl = { path = "crates/voom-dsl" }
 voom-kernel = { path = "crates/voom-kernel" }
+voom-wit = { path = "crates/voom-wit" }
+voom-plugin-sdk = { path = "crates/voom-plugin-sdk" }
 voom-policy-evaluator = { path = "plugins/policy-evaluator" }
 
 # Async
@@ -50,7 +62,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # WASM
-wasmtime = "29"
+wasmtime = { version = "29", features = ["component-model"] }
+
+# Config
+toml = "0.8"
 
 # Database
 rusqlite = { version = "0.31", features = ["bundled"] }
