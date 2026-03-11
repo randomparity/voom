@@ -1,6 +1,9 @@
 # Rust build artifacts
 **/target
 
+# WASM plugin Cargo.lock (excluded from workspace, built independently)
+wasm-plugins/*/Cargo.lock
+
 # Claude flow artifacts
 .claude-flow/
 .hive-mind/
