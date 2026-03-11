@@ -10,8 +10,7 @@ use voom_domain::events::{Event, EventResult};
 /// Serialize a domain Event into the WASM boundary format: (event_type, payload_bytes).
 pub fn event_to_wasm(event: &Event) -> Result<(String, Vec<u8>)> {
     let event_type = event.event_type().to_string();
-    let payload =
-        rmp_serde::to_vec(event).context("failed to serialize event to MessagePack")?;
+    let payload = rmp_serde::to_vec(event).context("failed to serialize event to MessagePack")?;
     Ok((event_type, payload))
 }
 
@@ -198,10 +197,7 @@ mod tests {
         let restored = event_result_from_wasm(name, produced, data).unwrap();
         assert_eq!(restored.plugin_name, "test-plugin");
         assert_eq!(restored.produced_events.len(), 1);
-        assert_eq!(
-            restored.data.unwrap()["status"].as_str().unwrap(),
-            "ok"
-        );
+        assert_eq!(restored.data.unwrap()["status"].as_str().unwrap(), "ok");
     }
 
     #[test]
@@ -254,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_event_to_wasm_all_event_types() {
-        use voom_domain::plan::{Plan, PlannedAction, OperationType};
+        use voom_domain::plan::{OperationType, Plan, PlannedAction};
 
         let events = vec![
             Event::FileDiscovered(FileDiscoveredEvent {

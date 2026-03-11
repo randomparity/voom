@@ -5,9 +5,9 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use voom_domain::job::{Job, JobStatus};
 use crate::error::WebError;
 use crate::state::AppState;
+use voom_domain::job::{Job, JobStatus};
 
 #[derive(Debug, Deserialize)]
 pub struct ListJobsParams {
@@ -49,9 +49,7 @@ pub async fn list_jobs(
 }
 
 /// GET /api/jobs/stats -- job counts by status
-pub async fn job_stats(
-    State(state): State<AppState>,
-) -> Result<Json<JobStatsResponse>, WebError> {
+pub async fn job_stats(State(state): State<AppState>) -> Result<Json<JobStatsResponse>, WebError> {
     let store = state.store.clone();
     let counts = tokio::task::spawn_blocking(move || store.count_jobs_by_status())
         .await

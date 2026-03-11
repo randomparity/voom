@@ -23,7 +23,11 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "output".into());
-    let temp_path = parent.join(format!("{}.tmp.mkv", stem));
+    let temp_path = parent.join(format!(
+        "{}.{}.tmp.mkv",
+        stem,
+        uuid::Uuid::new_v4().as_simple()
+    ));
 
     let args = build_merge_args(path, &temp_path, actions);
 

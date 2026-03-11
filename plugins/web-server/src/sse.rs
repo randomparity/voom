@@ -1,29 +1,64 @@
 //! Server-Sent Events (SSE) for live updates.
 
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::sse::{Event as SseAxumEvent, KeepAlive, Sse};
+use axum::response::IntoResponse;
 use futures_core::Stream;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
 use crate::state::AppState;
 
+/// Maximum number of concurrent SSE clients.
+const MAX_SSE_CLIENTS: u32 = 64;
+
+/// RAII guard that decrements the SSE client counter when dropped.
+struct SseClientGuard {
+    counter: Arc<AtomicU32>,
+}
+
+impl Drop for SseClientGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// SSE endpoint: streams live events to connected clients.
 pub async fn events_handler(
     State(state): State<AppState>,
-) -> Sse<impl Stream<Item = Result<SseAxumEvent, Infallible>>> {
+) -> Result<Sse<impl Stream<Item = Result<SseAxumEvent, Infallible>>>, impl IntoResponse> {
+    // Enforce maximum concurrent SSE client limit.
+    let current = state.sse_client_count.fetch_add(1, Ordering::Relaxed);
+    if current >= MAX_SSE_CLIENTS {
+        state.sse_client_count.fetch_sub(1, Ordering::Relaxed);
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({"error": "Too many SSE clients"})),
+        ));
+    }
+
+    let guard = SseClientGuard {
+        counter: state.sse_client_count.clone(),
+    };
+
     let rx = state.sse_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|result| match result {
-        Ok(event) => {
-            let json = serde_json::to_string(&event).ok()?;
-            Some(Ok(SseAxumEvent::default().data(json)))
+    let stream = BroadcastStream::new(rx).filter_map(move |result| {
+        let _guard = &guard; // keep guard alive for the lifetime of the stream
+        match result {
+            Ok(event) => {
+                let json = serde_json::to_string(&event).ok()?;
+                Some(Ok(SseAxumEvent::default().data(json)))
+            }
+            Err(_) => None, // Lagged — skip missed events
         }
-        Err(_) => None, // Lagged — skip missed events
     });
 
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 #[cfg(test)]

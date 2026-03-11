@@ -2,8 +2,10 @@
 
 use std::path::Path;
 
+use voom_domain::errors::Result;
 use voom_domain::media::{Container, MediaFile};
 use voom_domain::plan::{OperationType, PlannedAction};
+use voom_domain::utils::sanitize::validate_metadata_value;
 
 use crate::hwaccel::{self, HwAccelConfig};
 
@@ -161,7 +163,7 @@ pub fn build_ffmpeg_command(
     actions: &[&PlannedAction],
     output_path: &Path,
     hw_accel: Option<&HwAccelConfig>,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
     let mut cmd = FfmpegCommand::new();
 
     // Add HW accel input args if provided
@@ -273,6 +275,7 @@ pub fn build_ffmpeg_command(
             OperationType::SetTitle => {
                 if let Some(stream) = action.track_index {
                     if let Some(title) = action.parameters.get("title").and_then(|v| v.as_str()) {
+                        validate_metadata_value(title)?;
                         cmd = cmd.metadata(Some(stream), "title", title);
                     }
                 }
@@ -280,6 +283,7 @@ pub fn build_ffmpeg_command(
             OperationType::SetLanguage => {
                 if let Some(stream) = action.track_index {
                     if let Some(lang) = action.parameters.get("language").and_then(|v| v.as_str()) {
+                        validate_metadata_value(lang)?;
                         cmd = cmd.metadata(Some(stream), "language", lang);
                     }
                 }
@@ -295,7 +299,7 @@ pub fn build_ffmpeg_command(
     }
 
     cmd = cmd.output(output_path);
-    cmd.build()
+    Ok(cmd.build())
 }
 
 /// Determine the output container extension from the plan's actions.
@@ -371,7 +375,7 @@ mod tests {
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 
-        let args = build_ffmpeg_command(&file, &actions, output, None);
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
 
         assert!(args.contains(&"-y".to_string()));
         assert!(args.contains(&"-hide_banner".to_string()));
@@ -396,7 +400,7 @@ mod tests {
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 
-        let args = build_ffmpeg_command(&file, &actions, output, None);
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
 
         assert!(args.contains(&"-c:v:0".to_string()));
         assert!(args.contains(&"libx265".to_string()));
@@ -418,7 +422,7 @@ mod tests {
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 
-        let args = build_ffmpeg_command(&file, &actions, output, None);
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
 
         assert!(args.contains(&"-c:v:0".to_string()));
         assert!(args.contains(&"libx264".to_string()));
@@ -438,7 +442,7 @@ mod tests {
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 
-        let args = build_ffmpeg_command(&file, &actions, output, None);
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
 
         assert!(args.contains(&"-c:a:1".to_string()));
         assert!(args.contains(&"libopus".to_string()));
@@ -468,7 +472,7 @@ mod tests {
         let actions: Vec<&PlannedAction> = actions_owned.iter().collect();
         let output = Path::new("/tmp/output.mp4");
 
-        let args = build_ffmpeg_command(&file, &actions, output, None);
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
 
         assert!(args.contains(&"-metadata:s:1".to_string()));
         assert!(args.contains(&"title=English Stereo".to_string()));
@@ -495,7 +499,7 @@ mod tests {
         let actions: Vec<&PlannedAction> = actions_owned.iter().collect();
         let output = Path::new("/tmp/output.mp4");
 
-        let args = build_ffmpeg_command(&file, &actions, output, None);
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
 
         assert!(args.contains(&"-disposition:1".to_string()));
         assert!(args.contains(&"default".to_string()));
@@ -525,7 +529,7 @@ mod tests {
         let actions: Vec<&PlannedAction> = actions_owned.iter().collect();
         let output = Path::new("/tmp/output.mp4");
 
-        let args = build_ffmpeg_command(&file, &actions, output, None);
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
 
         // Should have both transcode and metadata args
         assert!(args.contains(&"-c:v:0".to_string()));
@@ -631,10 +635,42 @@ mod tests {
             backend: Some(crate::hwaccel::HwAccelBackend::Nvenc),
             enabled: true,
         };
-        let args = build_ffmpeg_command(&file, &actions, output, Some(&hw));
+        let args = build_ffmpeg_command(&file, &actions, output, Some(&hw)).unwrap();
 
         assert!(args.contains(&"-hwaccel".to_string()));
         assert!(args.contains(&"cuda".to_string()));
         assert!(args.contains(&"hevc_nvenc".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_rejects_control_chars_in_title() {
+        let file = sample_mp4_file();
+        let action = PlannedAction {
+            operation: OperationType::SetTitle,
+            track_index: Some(1),
+            parameters: serde_json::json!({"title": "Bad\x00Title"}),
+            description: "Set track title".into(),
+        };
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mp4");
+
+        let result = build_ffmpeg_command(&file, &actions, output, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_command_rejects_control_chars_in_language() {
+        let file = sample_mp4_file();
+        let action = PlannedAction {
+            operation: OperationType::SetLanguage,
+            track_index: Some(1),
+            parameters: serde_json::json!({"language": "en\x01g"}),
+            description: "Set track language".into(),
+        };
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mp4");
+
+        let result = build_ffmpeg_command(&file, &actions, output, None);
+        assert!(result.is_err());
     }
 }

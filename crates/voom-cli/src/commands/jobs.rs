@@ -20,9 +20,7 @@ async fn list(status_filter: Option<String>) -> Result<()> {
     use voom_domain::job::JobStatus;
     use voom_domain::storage::StorageTrait;
 
-    let filter_status = status_filter
-        .as_deref()
-        .and_then(JobStatus::parse);
+    let filter_status = status_filter.as_deref().and_then(JobStatus::parse);
 
     let jobs = store
         .list_jobs(filter_status, Some(50))
@@ -37,7 +35,9 @@ async fn list(status_filter: Option<String>) -> Result<()> {
     table
         .load_preset(UTF8_FULL_CONDENSED)
         .set_content_arrangement(ContentArrangement::Dynamic);
-    table.set_header(vec!["ID", "Type", "Status", "Progress", "Worker", "Created"]);
+    table.set_header(vec![
+        "ID", "Type", "Status", "Progress", "Worker", "Created",
+    ]);
 
     for job in &jobs {
         let status_cell = match job.status {

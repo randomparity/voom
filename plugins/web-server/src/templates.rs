@@ -48,9 +48,7 @@ pub async fn dashboard(State(state): State<AppState>) -> HtmlResult {
         &serde_json::to_value(
             job_counts
                 .iter()
-                .map(|(s, c)| {
-                    serde_json::json!({"status": format!("{:?}", s), "count": c})
-                })
+                .map(|(s, c)| serde_json::json!({"status": format!("{:?}", s), "count": c}))
                 .collect::<Vec<_>>(),
         )
         .unwrap_or_default(),
@@ -106,10 +104,7 @@ pub async fn library(
 }
 
 /// GET /files/:id -- File detail
-pub async fn file_detail(
-    State(state): State<AppState>,
-    Path(id): Path<uuid::Uuid>,
-) -> HtmlResult {
+pub async fn file_detail(State(state): State<AppState>, Path(id): Path<uuid::Uuid>) -> HtmlResult {
     let store = state.store.clone();
     let store2 = state.store.clone();
 
@@ -158,10 +153,7 @@ pub async fn policies(State(state): State<AppState>) -> HtmlResult {
 }
 
 /// GET /policies/:name/edit -- Policy editor
-pub async fn policy_editor(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> HtmlResult {
+pub async fn policy_editor(State(state): State<AppState>, Path(name): Path<String>) -> HtmlResult {
     let mut ctx = tera::Context::new();
     ctx.insert("policy_name", &name);
     render(&state.templates, "policy_editor.html", &ctx)

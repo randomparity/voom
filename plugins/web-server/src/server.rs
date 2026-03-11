@@ -15,12 +15,13 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub template_dir: Option<String>,
+    pub auth_token: Option<String>,
 }
 
 /// Start the web server.
 pub async fn start_server(config: ServerConfig, store: Arc<dyn StorageTrait>) -> Result<()> {
     let templates = load_templates(config.template_dir.as_deref())?;
-    let state = AppState::new(store, templates);
+    let state = AppState::new(store, templates, config.auth_token);
     let router = build_router(state);
 
     let addr: SocketAddr = format!("{}:{}", config.host, config.port)
@@ -80,11 +81,8 @@ fn embedded_templates() -> tera::Tera {
         include_str!("../templates/file_detail.html"),
     )
     .expect("Failed to add file_detail template");
-    tera.add_raw_template(
-        "policies.html",
-        include_str!("../templates/policies.html"),
-    )
-    .expect("Failed to add policies template");
+    tera.add_raw_template("policies.html", include_str!("../templates/policies.html"))
+        .expect("Failed to add policies template");
     tera.add_raw_template(
         "policy_editor.html",
         include_str!("../templates/policy_editor.html"),
@@ -94,11 +92,8 @@ fn embedded_templates() -> tera::Tera {
         .expect("Failed to add jobs template");
     tera.add_raw_template("plugins.html", include_str!("../templates/plugins.html"))
         .expect("Failed to add plugins template");
-    tera.add_raw_template(
-        "settings.html",
-        include_str!("../templates/settings.html"),
-    )
-    .expect("Failed to add settings template");
+    tera.add_raw_template("settings.html", include_str!("../templates/settings.html"))
+        .expect("Failed to add settings template");
 
     tera
 }

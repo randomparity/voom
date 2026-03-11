@@ -62,14 +62,18 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
     }
 
     let walker = if options.recursive {
-        WalkDir::new(&options.root)
+        WalkDir::new(&options.root).follow_links(false)
     } else {
-        WalkDir::new(&options.root).max_depth(1)
+        WalkDir::new(&options.root).max_depth(1).follow_links(false)
     };
 
     // Collect media file paths, reporting progress as we discover them
     let mut media_paths: Vec<_> = Vec::new();
     for entry in walker.into_iter().filter_map(|e| e.ok()) {
+        if entry.path_is_symlink() {
+            tracing::debug!(path = %entry.path().display(), "skipping symlink");
+            continue;
+        }
         if entry.file_type().is_file() && is_media_file(entry.path()) {
             let path = entry.into_path();
             if let Some(ref cb) = options.on_progress {
@@ -204,6 +208,32 @@ mod tests {
         assert_eq!(event.path, path);
         assert_eq!(event.size, 15);
         assert!(!event.content_hash.is_empty());
+    }
+
+    #[test]
+    fn test_walker_does_not_follow_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_dir = dir.path().join("real");
+        std::fs::create_dir(&real_dir).unwrap();
+        std::fs::write(real_dir.join("video.mkv"), b"data").unwrap();
+
+        // Create a symlink to the real directory
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&real_dir, dir.path().join("link")).unwrap();
+        }
+
+        let options = ScanOptions {
+            root: dir.path().to_path_buf(),
+            recursive: true,
+            hash_files: false,
+            workers: 0,
+            on_progress: None,
+        };
+        let events = scan_directory(&options).unwrap();
+        // Should only find the file under "real/", not under "link/"
+        assert_eq!(events.len(), 1);
+        assert!(events[0].path.starts_with(&real_dir));
     }
 
     #[test]

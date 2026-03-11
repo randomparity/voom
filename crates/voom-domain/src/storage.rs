@@ -42,6 +42,7 @@ pub trait StorageTrait: Send + Sync {
     // Plans
     fn save_plan(&self, plan: &Plan) -> Result<Uuid>;
     fn get_plans_for_file(&self, file_id: &Uuid) -> Result<Vec<StoredPlan>>;
+    fn update_plan_status(&self, path: &Path, phase: &str, status: &str) -> Result<()>;
 
     // Stats
     fn record_stats(&self, stats: &ProcessingStats) -> Result<()>;

@@ -7,8 +7,8 @@ use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use crate::queue::JobQueue;
 use crate::progress::ProgressReporter;
+use crate::queue::JobQueue;
 
 /// Configuration for the worker pool.
 #[derive(Debug, Clone)]
@@ -188,20 +188,15 @@ impl WorkerPool {
                 match processor(job).await {
                     Ok(output) => {
                         let q = queue.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            q.complete(&job_id, output)
-                        })
-                        .await;
+                        let _ =
+                            tokio::task::spawn_blocking(move || q.complete(&job_id, output)).await;
                         completed.fetch_add(1, Ordering::SeqCst);
                         reporter.on_job_complete(job_id, true, None);
                     }
                     Err(error) => {
                         let q = queue.clone();
                         let err = error.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            q.fail(&job_id, err)
-                        })
-                        .await;
+                        let _ = tokio::task::spawn_blocking(move || q.fail(&job_id, err)).await;
                         failed.fetch_add(1, Ordering::SeqCst);
                         reporter.on_job_complete(job_id, false, Some(&error));
 
@@ -211,11 +206,13 @@ impl WorkerPool {
                     }
                 }
 
-                let _ = result_tx.send(JobResult {
-                    job_id,
-                    success: true,
-                    error: None,
-                }).await;
+                let _ = result_tx
+                    .send(JobResult {
+                        job_id,
+                        success: true,
+                        error: None,
+                    })
+                    .await;
             });
 
             handles.push(handle);
@@ -281,9 +278,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
 
-        let items: Vec<_> = (0..5)
-            .map(|i| (format!("task-{i}"), 100, None))
-            .collect();
+        let items: Vec<_> = (0..5).map(|i| (format!("task-{i}"), 100, None)).collect();
 
         pool.process_batch(
             items,
@@ -351,7 +346,7 @@ mod tests {
         );
 
         let items = vec![
-            ("fail".into(), 50, None),  // will be claimed first (lower priority)
+            ("fail".into(), 50, None), // will be claimed first (lower priority)
             ("ok".into(), 100, None),
         ];
 

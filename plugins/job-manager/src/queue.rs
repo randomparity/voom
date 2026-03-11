@@ -56,11 +56,7 @@ impl JobQueue {
     }
 
     /// Mark a job as completed with optional output data.
-    pub fn complete(
-        &self,
-        job_id: &Uuid,
-        output: Option<serde_json::Value>,
-    ) -> Result<()> {
+    pub fn complete(&self, job_id: &Uuid, output: Option<serde_json::Value>) -> Result<()> {
         let update = JobUpdate {
             status: Some(JobStatus::Completed),
             progress: Some(1.0),

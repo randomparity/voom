@@ -36,9 +36,7 @@ impl SqliteStore {
 
     fn from_manager(manager: SqliteConnectionManager) -> Result<Self> {
         // Configure every connection from the pool with pragmas (WAL, busy_timeout, etc.)
-        let manager = manager.with_init(|conn| {
-            schema::configure_connection(conn)
-        });
+        let manager = manager.with_init(|conn| schema::configure_connection(conn));
 
         let pool = Pool::builder()
             .max_size(8)
@@ -374,10 +372,14 @@ impl StorageTrait for SqliteStore {
         sql.push_str(" ORDER BY path");
 
         if let Some(limit) = filters.limit {
-            sql.push_str(&format!(" LIMIT {limit}"));
+            let clamped = limit.min(10_000);
+            param_values.push(clamped.to_string());
+            sql.push_str(&format!(" LIMIT ?{}", param_values.len()));
         }
         if let Some(offset) = filters.offset {
-            sql.push_str(&format!(" OFFSET {offset}"));
+            let clamped = offset.min(1_000_000);
+            param_values.push(clamped.to_string());
+            sql.push_str(&format!(" OFFSET ?{}", param_values.len()));
         }
 
         let mut stmt = conn
@@ -575,7 +577,9 @@ impl StorageTrait for SqliteStore {
         sql.push_str(" ORDER BY priority ASC, created_at DESC");
 
         if let Some(limit) = limit {
-            sql.push_str(&format!(" LIMIT {limit}"));
+            let clamped = limit.min(10_000);
+            param_values.push(clamped.to_string());
+            sql.push_str(&format!(" LIMIT ?{}", param_values.len()));
         }
 
         let mut stmt = conn
@@ -651,6 +655,23 @@ impl StorageTrait for SqliteStore {
         .map_err(|e| VoomError::Storage(format!("failed to save plan: {e}")))?;
 
         Ok(id)
+    }
+
+    fn update_plan_status(&self, path: &Path, phase: &str, status: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE plans SET status = ?1, executed_at = ?2
+             WHERE phase_name = ?3
+               AND file_id = (SELECT id FROM files WHERE path = ?4)",
+            params![
+                status,
+                format_datetime(&Utc::now()),
+                phase,
+                path.to_string_lossy()
+            ],
+        )
+        .map_err(|e| VoomError::Storage(format!("failed to update plan status: {e}")))?;
+        Ok(())
     }
 
     fn get_plans_for_file(&self, file_id: &Uuid) -> Result<Vec<StoredPlan>> {
@@ -1117,8 +1138,16 @@ mod tests {
         store.claim_next_job("w-1").unwrap();
 
         let counts = store.count_jobs_by_status().unwrap();
-        let pending = counts.iter().find(|(s, _)| *s == JobStatus::Pending).map(|(_, c)| *c).unwrap_or(0);
-        let running = counts.iter().find(|(s, _)| *s == JobStatus::Running).map(|(_, c)| *c).unwrap_or(0);
+        let pending = counts
+            .iter()
+            .find(|(s, _)| *s == JobStatus::Pending)
+            .map(|(_, c)| *c)
+            .unwrap_or(0);
+        let running = counts
+            .iter()
+            .find(|(s, _)| *s == JobStatus::Running)
+            .map(|(_, c)| *c)
+            .unwrap_or(0);
         assert_eq!(pending, 2);
         assert_eq!(running, 1);
     }
@@ -1275,5 +1304,121 @@ mod tests {
 
         let files = store.list_files(&FileFilters::default()).unwrap();
         assert_eq!(files.len(), 4);
+    }
+
+    // --- LIMIT/OFFSET clamping ---
+
+    #[test]
+    fn test_list_files_limit_clamped() {
+        let store = test_store();
+        for i in 0..5 {
+            let mut file = MediaFile::new(PathBuf::from(format!("/media/clamp{i}.mkv")));
+            file.content_hash = format!("hash_clamp{i}");
+            store.upsert_file(&file).unwrap();
+        }
+
+        // Requesting limit > 10_000 should be clamped and still work
+        let filters = FileFilters {
+            limit: Some(20_000),
+            ..Default::default()
+        };
+        let files = store.list_files(&filters).unwrap();
+        assert_eq!(files.len(), 5); // all 5 returned (clamped to 10_000 which is > 5)
+    }
+
+    #[test]
+    fn test_list_files_parameterized_limit_offset() {
+        let store = test_store();
+        for i in 0..10 {
+            let mut file = MediaFile::new(PathBuf::from(format!("/media/param{i:02}.mkv")));
+            file.content_hash = format!("hash_param{i}");
+            store.upsert_file(&file).unwrap();
+        }
+
+        let filters = FileFilters {
+            limit: Some(3),
+            offset: Some(2),
+            ..Default::default()
+        };
+        let files = store.list_files(&filters).unwrap();
+        assert_eq!(files.len(), 3);
+        // Files are ordered by path, so offset=2 skips first two
+        assert_eq!(files[0].path, PathBuf::from("/media/param02.mkv"));
+    }
+
+    #[test]
+    fn test_list_jobs_limit_clamped() {
+        let store = test_store();
+        for i in 0..3 {
+            let job = Job::new(format!("clamp_task{i}"));
+            store.create_job(&job).unwrap();
+        }
+
+        // Requesting limit > 10_000 should be clamped and still work
+        let jobs = store.list_jobs(None, Some(20_000)).unwrap();
+        assert_eq!(jobs.len(), 3);
+    }
+
+    // --- update_plan_status ---
+
+    #[test]
+    fn test_update_plan_status_completed() {
+        let store = test_store();
+        let file = sample_file();
+        store.upsert_file(&file).unwrap();
+
+        let plan = Plan {
+            file: file.clone(),
+            policy_name: "default".into(),
+            phase_name: "normalize".into(),
+            actions: vec![PlannedAction {
+                operation: OperationType::SetDefault,
+                track_index: Some(1),
+                parameters: serde_json::json!({}),
+                description: "Set default audio".into(),
+            }],
+            warnings: vec![],
+            skip_reason: None,
+        };
+        store.save_plan(&plan).unwrap();
+
+        store
+            .update_plan_status(&file.path, "normalize", "completed")
+            .unwrap();
+
+        let plans = store.get_plans_for_file(&file.id).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].status, "completed");
+        assert!(plans[0].executed_at.is_some());
+    }
+
+    #[test]
+    fn test_update_plan_status_failed() {
+        let store = test_store();
+        let file = sample_file();
+        store.upsert_file(&file).unwrap();
+
+        let plan = Plan {
+            file: file.clone(),
+            policy_name: "default".into(),
+            phase_name: "transcode".into(),
+            actions: vec![PlannedAction {
+                operation: OperationType::TranscodeVideo,
+                track_index: Some(0),
+                parameters: serde_json::json!({"codec": "hevc"}),
+                description: "Transcode video".into(),
+            }],
+            warnings: vec![],
+            skip_reason: None,
+        };
+        store.save_plan(&plan).unwrap();
+
+        store
+            .update_plan_status(&file.path, "transcode", "failed")
+            .unwrap();
+
+        let plans = store.get_plans_for_file(&file.id).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].status, "failed");
     }
 }

@@ -27,6 +27,24 @@ pub struct FileListResponse {
     pub total: usize,
 }
 
+/// Maximum allowed limit for file listing queries.
+const MAX_LIMIT: u32 = 10_000;
+/// Maximum allowed offset for file listing queries.
+const MAX_OFFSET: u32 = 1_000_000;
+/// Maximum length for string filter parameters.
+const MAX_FILTER_STRING_LEN: usize = 256;
+
+/// Truncate a string filter to the maximum allowed length.
+fn truncate_filter(s: Option<String>) -> Option<String> {
+    s.map(|v| {
+        if v.len() > MAX_FILTER_STRING_LEN {
+            v[..MAX_FILTER_STRING_LEN].to_string()
+        } else {
+            v
+        }
+    })
+}
+
 /// GET /api/files -- list files with optional filters
 pub async fn list_files(
     State(state): State<AppState>,
@@ -34,12 +52,12 @@ pub async fn list_files(
 ) -> Result<Json<FileListResponse>, WebError> {
     let store = state.store.clone();
     let filters = FileFilters {
-        container: params.container,
-        has_codec: params.codec,
-        has_language: params.language,
-        path_prefix: params.path_prefix,
-        limit: params.limit,
-        offset: params.offset,
+        container: truncate_filter(params.container),
+        has_codec: truncate_filter(params.codec),
+        has_language: truncate_filter(params.language),
+        path_prefix: truncate_filter(params.path_prefix),
+        limit: Some(params.limit.unwrap_or(100).min(MAX_LIMIT)),
+        offset: Some(params.offset.unwrap_or(0).min(MAX_OFFSET)),
     };
 
     let files = tokio::task::spawn_blocking(move || store.list_files(&filters))

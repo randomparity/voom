@@ -9,9 +9,16 @@ use voom_kernel::{Plugin, PluginContext};
 #[derive(Debug, Clone)]
 pub enum ScanProgress {
     /// Discovery phase: found a file during directory walk.
-    Discovered { count: usize, path: std::path::PathBuf },
+    Discovered {
+        count: usize,
+        path: std::path::PathBuf,
+    },
     /// Processing phase: hashing/building event for a file.
-    Processing { current: usize, total: usize, path: std::path::PathBuf },
+    Processing {
+        current: usize,
+        total: usize,
+        path: std::path::PathBuf,
+    },
 }
 
 /// Configuration for a discovery scan.

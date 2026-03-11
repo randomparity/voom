@@ -116,7 +116,11 @@ impl StorageTrait for InMemoryStore {
             .filter(|j| status.map_or(true, |s| j.status == s))
             .cloned()
             .collect();
-        result.sort_by(|a, b| a.priority.cmp(&b.priority).then(b.created_at.cmp(&a.created_at)));
+        result.sort_by(|a, b| {
+            a.priority
+                .cmp(&b.priority)
+                .then(b.created_at.cmp(&a.created_at))
+        });
         if let Some(limit) = limit {
             result.truncate(limit as usize);
         }
@@ -137,6 +141,9 @@ impl StorageTrait for InMemoryStore {
     }
     fn get_plans_for_file(&self, _file_id: &Uuid) -> Result<Vec<StoredPlan>> {
         Ok(Vec::new())
+    }
+    fn update_plan_status(&self, _path: &Path, _phase: &str, _status: &str) -> Result<()> {
+        Ok(())
     }
     fn record_stats(&self, _stats: &ProcessingStats) -> Result<()> {
         Ok(())

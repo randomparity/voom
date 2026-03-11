@@ -135,7 +135,7 @@ impl FfmpegExecutorPlugin {
             None
         };
 
-        let _ffmpeg_args = build_ffmpeg_command(&plan.file, &actions, &output_path, hw_accel);
+        let _ffmpeg_args = build_ffmpeg_command(&plan.file, &actions, &output_path, hw_accel)?;
 
         tracing::info!(
             path = %plan.file.path.display(),

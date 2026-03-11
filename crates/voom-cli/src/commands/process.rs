@@ -9,6 +9,13 @@ use crate::cli::{ErrorHandling, ProcessArgs};
 use voom_job_manager::progress::ProgressReporter;
 use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 
+/// Run the process command.
+///
+/// This function calls the discovery, introspector, policy evaluator, and phase
+/// orchestrator plugins directly rather than routing through the event bus. This
+/// direct-call pattern is intentional for CLI commands: it enables deterministic
+/// progress reporting, worker-pool concurrency control, and structured error
+/// handling that would be difficult to achieve through the asynchronous pub/sub bus.
 pub async fn run(args: ProcessArgs) -> Result<()> {
     let config = app::load_config()?;
 
@@ -113,20 +120,14 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
                 let compiled = compiled.clone();
                 async move {
                     let payload = job.payload.as_ref().ok_or("missing payload")?;
-                    let file_path = payload["path"]
-                        .as_str()
-                        .ok_or("missing path in payload")?;
+                    let file_path = payload["path"].as_str().ok_or("missing path in payload")?;
                     let file_size = payload["size"].as_u64().unwrap_or(0);
-                    let content_hash = payload["content_hash"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string();
+                    let content_hash = payload["content_hash"].as_str().unwrap_or("").to_string();
 
                     let path = std::path::PathBuf::from(file_path);
 
                     // Introspect (blocking I/O)
-                    let introspector =
-                        voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
+                    let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
                     let intro_result = tokio::task::spawn_blocking(move || {
                         introspector.introspect(&path, file_size, &content_hash)
                     })
@@ -138,16 +139,13 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
                     let file_path_str = file.path.display().to_string();
 
                     // Orchestrate
-                    let orchestrator =
-                        voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
+                    let orchestrator = voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
                     let result = orchestrator
                         .orchestrate(&compiled, &file)
                         .map_err(|e| format!("orchestration failed: {e}"))?;
 
                     let needs_exec =
-                        voom_phase_orchestrator::PhaseOrchestratorPlugin::needs_execution(
-                            &result,
-                        );
+                        voom_phase_orchestrator::PhaseOrchestratorPlugin::needs_execution(&result);
 
                     if dry_run {
                         let plan_summaries: Vec<serde_json::Value> = result
@@ -220,13 +218,14 @@ impl CliProgressReporter {
         let multi = MultiProgress::new();
         let overall = multi.add(ProgressBar::new(total as u64));
         overall.set_style(
-            ProgressStyle::with_template(
-                "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}",
-            )
-            .unwrap()
-            .progress_chars("#>-"),
+            ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("#>-"),
         );
-        Self { _multi: multi, overall }
+        Self {
+            _multi: multi,
+            overall,
+        }
     }
 }
 

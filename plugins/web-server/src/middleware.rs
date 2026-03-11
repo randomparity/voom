@@ -1,10 +1,15 @@
 //! Tower middleware for the web server.
 
-use axum::http::{HeaderValue, Request, Response};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+
+use axum::extract::State;
+use axum::http::{HeaderValue, Request, Response, StatusCode};
+use axum::response::IntoResponse;
 use tower::{Layer, Service};
+
+use crate::state::AppState;
 
 /// Layer that adds security headers (CSP, X-Frame-Options, etc.) to all responses.
 #[derive(Clone)]
@@ -47,17 +52,14 @@ where
             headers.insert(
                 "Content-Security-Policy",
                 HeaderValue::from_static(
-                    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
+                    "default-src 'self'; script-src 'self' https://unpkg.com/htmx.org@ https://unpkg.com/alpinejs@; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
                 ),
             );
             headers.insert(
                 "X-Content-Type-Options",
                 HeaderValue::from_static("nosniff"),
             );
-            headers.insert(
-                "X-Frame-Options",
-                HeaderValue::from_static("DENY"),
-            );
+            headers.insert("X-Frame-Options", HeaderValue::from_static("DENY"));
             headers.insert(
                 "Referrer-Policy",
                 HeaderValue::from_static("strict-origin-when-cross-origin"),
@@ -86,6 +88,29 @@ impl AuthConfig {
             Some(expected) => provided == Some(expected.as_str()),
         }
     }
+}
+
+/// Axum middleware that enforces Bearer token authentication on API routes.
+/// If AppState has no auth_token configured, all requests pass through.
+pub async fn auth_middleware(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let auth_header = request
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok());
+
+    if !state.validate_auth(auth_header) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({"error": "Unauthorized"})),
+        )
+            .into_response();
+    }
+
+    next.run(request).await
 }
 
 #[cfg(test)]

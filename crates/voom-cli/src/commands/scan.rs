@@ -14,6 +14,13 @@ use crate::output::{self, max_filename_len, shrink_filename};
 /// Fixed-width overhead of the progress bar line (spinner + bar + counters + percent + padding).
 const PROGRESS_FIXED_WIDTH: usize = 77;
 
+/// Run the scan command.
+///
+/// This function calls the discovery and introspector plugins directly rather than
+/// routing through the event bus. This direct-call pattern is intentional for CLI
+/// commands: it enables deterministic progress reporting (indicatif progress bars),
+/// sequential error handling, and avoids the async overhead of the pub/sub bus for
+/// what is fundamentally a synchronous, user-facing workflow.
 pub async fn run(args: ScanArgs) -> Result<()> {
     let config = app::load_config()?;
 
@@ -53,15 +60,18 @@ pub async fn run(args: ScanArgs) -> Result<()> {
             match progress {
                 voom_discovery::ScanProgress::Discovered { count, path } => {
                     let max_name = max_filename_len(30); // "⠋ Discovering... N files found — "
-                    let name = path.file_name()
+                    let name = path
+                        .file_name()
                         .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
                         .unwrap_or_default();
-                    pb_clone.set_message(format!(
-                        "Discovering... {} files found — {}",
-                        count, name
-                    ));
+                    pb_clone
+                        .set_message(format!("Discovering... {} files found — {}", count, name));
                 }
-                voom_discovery::ScanProgress::Processing { current, total, path } => {
+                voom_discovery::ScanProgress::Processing {
+                    current,
+                    total,
+                    path,
+                } => {
                     // Switch to determinate progress on first processing event
                     if current == 1 {
                         pb_clone.set_length(total as u64);
@@ -77,12 +87,16 @@ pub async fn run(args: ScanArgs) -> Result<()> {
                     let rate = current as f64 / elapsed;
                     let remaining = (total - current) as f64 / rate;
                     let eta = if remaining.is_finite() && remaining > 0.0 {
-                        format!(", ETA {}", HumanDuration(std::time::Duration::from_secs(remaining as u64)))
+                        format!(
+                            ", ETA {}",
+                            HumanDuration(std::time::Duration::from_secs(remaining as u64))
+                        )
                     } else {
                         String::new()
                     };
                     let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len());
-                    let name = path.file_name()
+                    let name = path
+                        .file_name()
                         .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
                         .unwrap_or_default();
                     pb_clone.set_position(current as u64);
@@ -111,7 +125,7 @@ pub async fn run(args: ScanArgs) -> Result<()> {
     let pb = ProgressBar::new(events.len() as u64);
     pb.set_style(
         ProgressStyle::with_template(
-            "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}"
+            "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}",
         )
         .unwrap()
         .progress_chars("#>-"),
@@ -129,7 +143,10 @@ pub async fn run(args: ScanArgs) -> Result<()> {
         let rate = done / elapsed;
         let remaining = (total as f64 - done) / rate;
         let eta = if remaining.is_finite() && remaining > 0.0 && i > 0 {
-            format!(", ETA {}", HumanDuration(std::time::Duration::from_secs(remaining as u64)))
+            format!(
+                ", ETA {}",
+                HumanDuration(std::time::Duration::from_secs(remaining as u64))
+            )
         } else {
             String::new()
         };

@@ -14,6 +14,9 @@ pub struct AppConfig {
     pub data_dir: PathBuf,
     #[serde(default)]
     pub plugins: PluginsConfig,
+    /// Optional Bearer token for authenticating API and SSE requests.
+    #[serde(default)]
+    pub auth_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -27,6 +30,7 @@ impl Default for AppConfig {
         Self {
             data_dir: default_data_dir(),
             plugins: PluginsConfig::default(),
+            auth_token: None,
         }
     }
 }
@@ -59,6 +63,12 @@ pub fn load_config() -> Result<AppConfig> {
 }
 
 /// Bootstrap a kernel with all native plugins registered.
+///
+// Plugin priority scheme:
+// 100 = storage (must initialize first to be available for other plugins)
+// 50  = standard plugins (discovery, introspection, evaluation, etc.)
+// 10  = web server (last, depends on all other plugins being registered)
+// Tied-priority executors use can_handle() capability matching to avoid double-execution.
 pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
     let mut kernel = Kernel::new();
     let data_dir = &config.data_dir;
@@ -117,16 +127,10 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
     );
 
     // Job manager
-    kernel.register_plugin(
-        Arc::new(voom_job_manager::JobManagerPlugin::new()),
-        20,
-    );
+    kernel.register_plugin(Arc::new(voom_job_manager::JobManagerPlugin::new()), 20);
 
     // Web server
-    kernel.register_plugin(
-        Arc::new(voom_web_server::WebServerPlugin::new()),
-        10,
-    );
+    kernel.register_plugin(Arc::new(voom_web_server::WebServerPlugin::new()), 10);
 
     Ok(kernel)
 }

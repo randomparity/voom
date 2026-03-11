@@ -231,7 +231,7 @@ impl BackupManagerPlugin {
     pub fn backup_path_for(&self, path: &Path) -> PathBuf {
         let file_name = path
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
+            .map(|n| n.to_string_lossy().replace(['/', '\\', '\0'], "_"))
             .unwrap_or_else(|| "unknown".into());
 
         if self.config.use_global_dir {
@@ -321,7 +321,7 @@ impl BackupManagerPlugin {
             let mut stat: libc::statvfs = std::mem::zeroed();
             if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
                 // Available space for unprivileged users
-                Ok(stat.f_bavail * stat.f_frsize)
+                Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
             } else {
                 Err(VoomError::Io(std::io::Error::last_os_error()))
             }
@@ -355,7 +355,10 @@ impl Plugin for BackupManagerPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "plan.executing"
+        matches!(
+            event_type,
+            "plan.executing" | "plan.completed" | "plan.failed"
+        )
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
@@ -379,6 +382,50 @@ impl Plugin for BackupManagerPlugin {
                         "phase": evt.phase_name,
                     })),
                 }))
+            }
+            Event::PlanCompleted(evt) => {
+                if self.has_backup(&evt.path) {
+                    tracing::info!(
+                        path = %evt.path.display(),
+                        phase = %evt.phase_name,
+                        "Plan completed successfully, removing backup"
+                    );
+                    self.remove_backup(&evt.path)?;
+                    Ok(Some(EventResult {
+                        plugin_name: "backup-manager".into(),
+                        produced_events: vec![],
+                        data: Some(serde_json::json!({
+                            "backup_removed": true,
+                            "path": evt.path,
+                            "phase": evt.phase_name,
+                        })),
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+            Event::PlanFailed(evt) => {
+                if self.has_backup(&evt.path) {
+                    tracing::warn!(
+                        path = %evt.path.display(),
+                        phase = %evt.phase_name,
+                        error = %evt.error,
+                        "Plan failed, restoring file from backup"
+                    );
+                    self.restore_file(&evt.path)?;
+                    Ok(Some(EventResult {
+                        plugin_name: "backup-manager".into(),
+                        produced_events: vec![],
+                        data: Some(serde_json::json!({
+                            "restored": true,
+                            "path": evt.path,
+                            "phase": evt.phase_name,
+                            "error": evt.error,
+                        })),
+                    }))
+                } else {
+                    Ok(None)
+                }
             }
             _ => Ok(None),
         }
@@ -415,8 +462,9 @@ mod tests {
     fn test_handles_plan_executing() {
         let plugin = BackupManagerPlugin::new();
         assert!(plugin.handles("plan.executing"));
+        assert!(plugin.handles("plan.completed"));
+        assert!(plugin.handles("plan.failed"));
         assert!(!plugin.handles("file.discovered"));
-        assert!(!plugin.handles("plan.completed"));
         assert!(!plugin.handles("plan.created"));
     }
 
@@ -605,5 +653,129 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("no backup found"));
+    }
+
+    #[test]
+    fn test_on_event_plan_completed_removes_backup() {
+        use voom_domain::events::PlanCompletedEvent;
+
+        let dir = TempDir::new().unwrap();
+        let file_path = create_test_file(dir.path(), "movie.mkv", b"movie data");
+
+        let config = BackupConfig {
+            backup_dir: Some(dir.path().join("backups")),
+            use_global_dir: true,
+            min_free_space: 0,
+        };
+        let plugin = BackupManagerPlugin::with_config(config);
+
+        // Create a backup first
+        let record = plugin.backup_file(&file_path).unwrap();
+        assert!(record.backup_path.exists());
+        assert!(plugin.has_backup(&file_path));
+
+        // Simulate plan.completed event
+        let event = Event::PlanCompleted(PlanCompletedEvent {
+            path: file_path.clone(),
+            phase_name: "normalize".into(),
+            actions_applied: 3,
+        });
+
+        let result = plugin.on_event(&event).unwrap();
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.plugin_name, "backup-manager");
+        assert!(!plugin.has_backup(&file_path));
+        assert!(!record.backup_path.exists());
+    }
+
+    #[test]
+    fn test_on_event_plan_failed_restores_backup() {
+        use voom_domain::events::PlanFailedEvent;
+
+        let dir = TempDir::new().unwrap();
+        let original_content = b"original movie data";
+        let file_path = create_test_file(dir.path(), "movie.mkv", original_content);
+
+        let config = BackupConfig {
+            backup_dir: Some(dir.path().join("backups")),
+            use_global_dir: true,
+            min_free_space: 0,
+        };
+        let plugin = BackupManagerPlugin::with_config(config);
+
+        // Create a backup
+        plugin.backup_file(&file_path).unwrap();
+        assert!(plugin.has_backup(&file_path));
+
+        // Modify the original file (simulating a failed execution)
+        fs::write(&file_path, b"corrupted data").unwrap();
+
+        // Simulate plan.failed event
+        let event = Event::PlanFailed(PlanFailedEvent {
+            path: file_path.clone(),
+            phase_name: "normalize".into(),
+            error: "ffmpeg crashed".into(),
+        });
+
+        let result = plugin.on_event(&event).unwrap();
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.plugin_name, "backup-manager");
+
+        // File should be restored to original content
+        assert_eq!(fs::read(&file_path).unwrap(), original_content);
+        assert!(!plugin.has_backup(&file_path));
+    }
+
+    #[test]
+    fn test_handles_plan_completed_and_failed() {
+        let plugin = BackupManagerPlugin::new();
+        assert!(plugin.handles("plan.executing"));
+        assert!(plugin.handles("plan.completed"));
+        assert!(plugin.handles("plan.failed"));
+        assert!(!plugin.handles("file.discovered"));
+        assert!(!plugin.handles("plan.created"));
+    }
+
+    #[test]
+    fn test_backup_path_sanitizes_traversal() {
+        let config = BackupConfig {
+            backup_dir: Some(PathBuf::from("/tmp/voom-backups")),
+            use_global_dir: true,
+            min_free_space: 0,
+        };
+        let plugin = BackupManagerPlugin::with_config(config);
+
+        // Path traversal characters should be replaced with underscores
+        let path = Path::new("/media/movies/../../../etc/passwd");
+        let backup = plugin.backup_path_for(path);
+        let backup_str = backup.to_string_lossy();
+        assert!(backup_str.starts_with("/tmp/voom-backups/"));
+        assert!(backup_str.ends_with("_passwd"));
+        // The filename portion should not contain path separators
+        let filename = backup.file_name().unwrap().to_string_lossy();
+        assert!(!filename.contains('/'));
+        assert!(!filename.contains('\\'));
+    }
+
+    #[test]
+    fn test_backup_path_sanitizes_null_bytes() {
+        let plugin = BackupManagerPlugin::new();
+        // OsStr can't actually contain null bytes on most platforms,
+        // but the sanitization handles it if present in the lossy conversion
+        let path = Path::new("/media/movies/normal_file.mkv");
+        let backup = plugin.backup_path_for(path);
+        let filename = backup.file_name().unwrap().to_string_lossy();
+        assert!(!filename.contains('\0'));
+    }
+
+    #[test]
+    fn test_backup_path_normal_filename() {
+        let plugin = BackupManagerPlugin::new();
+        let path = Path::new("/media/movies/My Movie (2024).mkv");
+        let backup = plugin.backup_path_for(path);
+        let backup_str = backup.to_string_lossy();
+        assert!(backup_str.contains("My Movie (2024).mkv"));
     }
 }

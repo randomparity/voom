@@ -14,8 +14,22 @@ use crate::errors::{DslError, Result};
 #[grammar = "grammar.pest"]
 pub struct VoomParser;
 
+/// Maximum allowed policy source size (1 MiB).
+const MAX_POLICY_SIZE: usize = 1_024 * 1_024;
+
 /// Parse a `.voom` source string into a [`PolicyAst`].
 pub fn parse_policy(input: &str) -> Result<PolicyAst> {
+    if input.len() > MAX_POLICY_SIZE {
+        return Err(DslError::parse(
+            1,
+            1,
+            format!(
+                "policy too large: {} bytes (max {MAX_POLICY_SIZE})",
+                input.len()
+            ),
+        ));
+    }
+
     let pairs = VoomParser::parse(Rule::policy, input).map_err(|e| {
         let (line, col) = match e.line_col {
             pest::error::LineColLocation::Pos((l, c)) => (l, c),
@@ -831,6 +845,22 @@ mod tests {
                 assert_eq!(settings.len(), 2);
             }
             _ => panic!("expected Transcode"),
+        }
+    }
+
+    #[test]
+    fn test_parse_rejects_oversized_input() {
+        let input = "x".repeat(MAX_POLICY_SIZE + 1);
+        let err = parse_policy(&input).unwrap_err();
+        match err {
+            DslError::Parse {
+                line, col, message, ..
+            } => {
+                assert_eq!(line, 1);
+                assert_eq!(col, 1);
+                assert!(message.contains("policy too large"));
+            }
+            _ => panic!("expected Parse error for oversized input"),
         }
     }
 

@@ -75,10 +75,7 @@ impl Plugin for JobManagerPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        matches!(
-            event_type,
-            "job.started" | "job.progress" | "job.completed"
-        )
+        matches!(event_type, "job.started" | "job.progress" | "job.completed")
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {

@@ -1,10 +1,11 @@
 //! Axum router construction.
 
+use axum::middleware;
 use axum::routing::{get, post};
 use axum::Router;
 
 use crate::api;
-use crate::middleware::SecurityHeadersLayer;
+use crate::middleware::{auth_middleware, SecurityHeadersLayer};
 use crate::sse;
 use crate::state::AppState;
 use crate::templates;
@@ -35,10 +36,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/plugins", get(templates::plugins_page))
         .route("/settings", get(templates::settings));
 
-    Router::new()
+    // Auth middleware protects API routes and the SSE endpoint.
+    // Page routes (HTML) remain public.
+    let authenticated_routes = Router::new()
         .nest("/api", api_routes)
-        .merge(page_routes)
         .route("/events", get(sse::events_handler))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    Router::new()
+        .merge(authenticated_routes)
+        .merge(page_routes)
         .layer(SecurityHeadersLayer)
         .with_state(state)
 }

@@ -137,6 +137,9 @@ mod test_store {
         fn get_plans_for_file(&self, _file_id: &Uuid) -> Result<Vec<StoredPlan>> {
             Ok(Vec::new())
         }
+        fn update_plan_status(&self, _path: &Path, _phase: &str, _status: &str) -> Result<()> {
+            Ok(())
+        }
         fn record_stats(&self, _stats: &ProcessingStats) -> Result<()> {
             Ok(())
         }
@@ -167,9 +170,13 @@ fn make_test_file(name: &str) -> MediaFile {
 }
 
 fn make_server(store: InMemoryStore) -> TestServer {
+    make_server_with_auth(store, None)
+}
+
+fn make_server_with_auth(store: InMemoryStore, auth_token: Option<String>) -> TestServer {
     let store = Arc::new(store);
     let templates = voom_web_server::server::embedded_templates_for_test();
-    let state = voom_web_server::state::AppState::new(store, templates);
+    let state = voom_web_server::state::AppState::new(store, templates, auth_token);
     let router = voom_web_server::router::build_router(state);
     TestServer::new(router).unwrap()
 }
@@ -424,7 +431,130 @@ async fn test_security_headers() {
     let resp = server.get("/api/files").await;
     let headers = resp.headers();
     assert!(headers.get("content-security-policy").is_some());
+    let csp = headers
+        .get("content-security-policy")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(csp.contains("frame-ancestors 'none'"));
+    assert!(csp.contains("base-uri 'self'"));
+    assert!(!csp.contains("unsafe-eval"));
+    // unsafe-inline should only be in style-src, not in script-src
+    assert!(csp.contains("style-src 'self' 'unsafe-inline'"));
+    assert!(csp.contains("script-src 'self' https://unpkg.com/htmx.org@"));
     assert!(headers.get("x-content-type-options").is_some());
     assert!(headers.get("x-frame-options").is_some());
     assert!(headers.get("referrer-policy").is_some());
+}
+
+// === Auth Middleware Tests ===
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_auth_returns_401_with_wrong_token() {
+    let server = make_server_with_auth(InMemoryStore::new(), Some("secret-token".into()));
+    let resp = server
+        .get("/api/files")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer wrong-token"),
+        )
+        .await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_auth_returns_401_without_token() {
+    let server = make_server_with_auth(InMemoryStore::new(), Some("secret-token".into()));
+    let resp = server.get("/api/files").await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_auth_returns_200_with_correct_token() {
+    let server = make_server_with_auth(InMemoryStore::new(), Some("secret-token".into()));
+    let resp = server
+        .get("/api/files")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer secret-token"),
+        )
+        .await;
+    resp.assert_status_ok();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_auth_passthrough_when_no_token_configured() {
+    let server = make_server_with_auth(InMemoryStore::new(), None);
+    let resp = server.get("/api/files").await;
+    resp.assert_status_ok();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_page_routes_accessible_without_auth() {
+    let server = make_server_with_auth(InMemoryStore::new(), Some("secret-token".into()));
+    // Page routes should be public even when auth is configured
+    let resp = server.get("/").await;
+    resp.assert_status_ok();
+    let resp = server.get("/library").await;
+    resp.assert_status_ok();
+    let resp = server.get("/jobs").await;
+    resp.assert_status_ok();
+}
+
+// === File Filter Validation Tests ===
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_files_excessive_limit_is_clamped() {
+    let server = make_server(InMemoryStore::new());
+    let resp = server.get("/api/files?limit=999999").await;
+    resp.assert_status_ok();
+    // Should succeed — limit is clamped, not rejected
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_files_excessive_offset_is_clamped() {
+    let server = make_server(InMemoryStore::new());
+    let resp = server.get("/api/files?offset=99999999").await;
+    resp.assert_status_ok();
+}
+
+// === Policy Size Limit Tests ===
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_validate_oversized_policy_returns_error() {
+    let server = make_server(InMemoryStore::new());
+    let oversized = "x".repeat(1_024 * 1_024 + 1);
+    let resp = server
+        .post("/api/policy/validate")
+        .json(&json!({ "source": oversized }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_format_oversized_policy_returns_error() {
+    let server = make_server(InMemoryStore::new());
+    let oversized = "x".repeat(1_024 * 1_024 + 1);
+    let resp = server
+        .post("/api/policy/format")
+        .json(&json!({ "source": oversized }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::BAD_REQUEST);
+}
+
+// === SSE Client Limit Tests ===
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_sse_client_limit_enforced() {
+    use std::sync::atomic::Ordering;
+    let store = Arc::new(InMemoryStore::new());
+    let templates = voom_web_server::server::embedded_templates_for_test();
+    let state = voom_web_server::state::AppState::new(store, templates, None);
+    // Simulate 64 clients already connected
+    state.sse_client_count.store(64, Ordering::Relaxed);
+    let router = voom_web_server::router::build_router(state);
+    let server = TestServer::new(router).unwrap();
+
+    let resp = server.get("/events").await;
+    resp.assert_status(axum::http::StatusCode::SERVICE_UNAVAILABLE);
 }

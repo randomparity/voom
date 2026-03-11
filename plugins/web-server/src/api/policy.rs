@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::WebError;
 
+/// Maximum policy source size (1 MiB).
+const MAX_POLICY_SIZE: usize = 1_024 * 1_024;
+
 #[derive(Debug, Deserialize)]
 pub struct PolicyInput {
     pub source: String,
@@ -33,6 +36,13 @@ pub struct FormatResponse {
 pub async fn validate_policy(
     Json(input): Json<PolicyInput>,
 ) -> Result<Json<ValidateResponse>, WebError> {
+    if input.source.len() > MAX_POLICY_SIZE {
+        return Err(WebError::BadRequest(format!(
+            "Policy source exceeds maximum size of {} bytes",
+            MAX_POLICY_SIZE
+        )));
+    }
+
     match voom_dsl::parse_policy(&input.source) {
         Ok(ast) => {
             // Run semantic validation
@@ -73,6 +83,13 @@ pub async fn validate_policy(
 pub async fn format_policy(
     Json(input): Json<PolicyInput>,
 ) -> Result<Json<FormatResponse>, WebError> {
+    if input.source.len() > MAX_POLICY_SIZE {
+        return Err(WebError::BadRequest(format!(
+            "Policy source exceeds maximum size of {} bytes",
+            MAX_POLICY_SIZE
+        )));
+    }
+
     let ast = voom_dsl::parse_policy(&input.source)
         .map_err(|e| WebError::BadRequest(format!("Parse error: {e}")))?;
 

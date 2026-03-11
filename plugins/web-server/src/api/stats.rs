@@ -22,18 +22,14 @@ pub struct JobCount {
 }
 
 /// GET /api/stats -- dashboard statistics
-pub async fn get_stats(
-    State(state): State<AppState>,
-) -> Result<Json<DashboardStats>, WebError> {
+pub async fn get_stats(State(state): State<AppState>) -> Result<Json<DashboardStats>, WebError> {
     let store = state.store.clone();
     let store2 = state.store.clone();
 
-    let files = tokio::task::spawn_blocking(move || {
-        store.list_files(&FileFilters::default())
-    })
-    .await
-    .map_err(|e| WebError::Internal(e.to_string()))?
-    .map_err(|e| WebError::Storage(e.to_string()))?;
+    let files = tokio::task::spawn_blocking(move || store.list_files(&FileFilters::default()))
+        .await
+        .map_err(|e| WebError::Internal(e.to_string()))?
+        .map_err(|e| WebError::Storage(e.to_string()))?;
 
     let job_counts = tokio::task::spawn_blocking(move || store2.count_jobs_by_status())
         .await

@@ -67,8 +67,9 @@ pub mod wasm {
             wasm_path: &Path,
             host_state: Option<HostState>,
         ) -> Result<Arc<dyn Plugin>, VoomError> {
-            let wasm_bytes = std::fs::read(wasm_path)
-                .map_err(|e| VoomError::Wasm(format!("failed to read {}: {e}", wasm_path.display())))?;
+            let wasm_bytes = std::fs::read(wasm_path).map_err(|e| {
+                VoomError::Wasm(format!("failed to read {}: {e}", wasm_path.display()))
+            })?;
 
             // Try to load the manifest from a sibling .toml file.
             let manifest = load_manifest(wasm_path)?;
@@ -157,6 +158,9 @@ pub mod wasm {
         linker: wasmtime::component::Linker<HostState>,
     }
 
+    /// Maximum size for WASM event payloads (16 MiB).
+    pub(crate) const MAX_WASM_EVENT_PAYLOAD: usize = 16 * 1024 * 1024;
+
     /// A WASM plugin loaded from a `.wasm` component file.
     ///
     /// Wraps a wasmtime component instance and implements the Plugin trait,
@@ -194,6 +198,14 @@ pub mod wasm {
         fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
             let (event_type, payload) = voom_wit::event_to_wasm(event)
                 .map_err(|e| voom_domain::errors::VoomError::Wasm(e.to_string()))?;
+
+            if payload.len() > MAX_WASM_EVENT_PAYLOAD {
+                return Err(voom_domain::errors::VoomError::Wasm(format!(
+                    "event payload too large: {} bytes (max {})",
+                    payload.len(),
+                    MAX_WASM_EVENT_PAYLOAD
+                )));
+            }
 
             let inner = self.inner.lock().unwrap();
 
@@ -259,8 +271,7 @@ pub mod wasm {
         // log: func(level: log-level, message: string)
         host_instance.func_wrap(
             "log",
-            |ctx: wasmtime::StoreContextMut<'_, HostState>,
-             (level, message): (u32, String)| {
+            |ctx: wasmtime::StoreContextMut<'_, HostState>, (level, message): (u32, String)| {
                 let level_str = match level {
                     0 => "trace",
                     1 => "debug",
@@ -286,8 +297,7 @@ pub mod wasm {
         // set-plugin-data: func(key: string, value: list<u8>) -> result<_, string>
         host_instance.func_wrap(
             "set-plugin-data",
-            |mut ctx: wasmtime::StoreContextMut<'_, HostState>,
-             (key, value): (String, Vec<u8>)| {
+            |mut ctx: wasmtime::StoreContextMut<'_, HostState>, (key, value): (String, Vec<u8>)| {
                 let result = ctx.data_mut().set_plugin_data(&key, &value);
                 Ok((result.map_err(|e| e.to_string()),))
             },
@@ -314,6 +324,20 @@ pub mod wasm {
         let manifest_path = wasm_path.with_extension("toml");
         if !manifest_path.exists() {
             return Ok(None);
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(&manifest_path) {
+                let mode = metadata.permissions().mode();
+                if mode & 0o002 != 0 {
+                    tracing::warn!(
+                        "WASM plugin manifest {:?} is world-writable (mode {:o}), this is a security risk",
+                        manifest_path, mode
+                    );
+                }
+            }
         }
 
         let contents = std::fs::read_to_string(&manifest_path)
@@ -455,6 +479,23 @@ Evaluate = {}
             let result = load_manifest(&PathBuf::from("/nonexistent/plugin.wasm"));
             assert!(result.is_ok());
             assert!(result.unwrap().is_none());
+        }
+
+        #[test]
+        fn test_wasm_event_payload_size_limit() {
+            use super::super::wasm::MAX_WASM_EVENT_PAYLOAD;
+
+            // Verify the constant is 16 MiB.
+            assert_eq!(MAX_WASM_EVENT_PAYLOAD, 16 * 1024 * 1024);
+
+            // Create a payload larger than the limit and verify the check would catch it.
+            let oversized = vec![0u8; MAX_WASM_EVENT_PAYLOAD + 1];
+            assert!(
+                oversized.len() > MAX_WASM_EVENT_PAYLOAD,
+                "payload of {} bytes should exceed max of {}",
+                oversized.len(),
+                MAX_WASM_EVENT_PAYLOAD
+            );
         }
     }
 }

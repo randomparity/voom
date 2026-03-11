@@ -26,10 +26,7 @@ pub fn shrink_filename(name: &str, max_len: usize) -> String {
     }
 
     let path = Path::new(name);
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     // "..." + ext  (the dots replace the dot separator)
     let suffix_len = 3 + ext.len(); // e.g., "...mkv" = 6

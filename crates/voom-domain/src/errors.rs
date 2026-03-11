@@ -44,6 +44,9 @@ pub enum VoomError {
     #[error("tool execution error: {tool}: {message}")]
     ToolExecution { tool: String, message: String },
 
+    #[error("validation error: {0}")]
+    Validation(String),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 

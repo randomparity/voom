@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// State provided to WASM plugins via host function imports.
 ///
@@ -58,9 +59,7 @@ impl Default for InMemoryDataStore {
 impl PluginDataStore for InMemoryDataStore {
     fn get(&self, plugin_name: &str, key: &str) -> Option<Vec<u8>> {
         let data = self.data.lock().unwrap();
-        data.get(plugin_name)
-            .and_then(|m| m.get(key))
-            .cloned()
+        data.get(plugin_name).and_then(|m| m.get(key)).cloned()
     }
 
     fn set(&self, plugin_name: &str, key: &str, value: &[u8]) -> Result<(), String> {
@@ -140,8 +139,7 @@ impl HostState {
         if let Some(storage) = &self.storage {
             storage.set(&self.plugin_name, key, value)
         } else {
-            self.plugin_data
-                .insert(key.to_string(), value.to_vec());
+            self.plugin_data.insert(key.to_string(), value.to_vec());
             Ok(())
         }
     }
@@ -154,27 +152,41 @@ impl HostState {
         timeout_ms: u64,
     ) -> Result<ToolOutput, String> {
         // Security check: verify tool is allowed.
-        if !self.allowed_tools.is_empty()
-            && !self.allowed_tools.iter().any(|t| t == tool)
-        {
+        if !self.allowed_tools.is_empty() && !self.allowed_tools.iter().any(|t| t == tool) {
             return Err(format!(
                 "tool '{}' is not in the allowed list for plugin '{}'",
                 tool, self.plugin_name
             ));
         }
 
-        let output = Command::new(tool)
+        let mut child = Command::new(tool)
             .args(args)
-            .output()
-            .map_err(|e| format!("failed to execute tool '{}': {}", tool, e))?;
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("failed to spawn tool '{}': {}", tool, e))?;
 
-        let _ = timeout_ms; // TODO: implement timeout via thread::spawn + wait_timeout
-
-        Ok(ToolOutput {
-            exit_code: output.status.code().unwrap_or(-1),
-            stdout: output.stdout,
-            stderr: output.stderr,
-        })
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    let output = child
+                        .wait_with_output()
+                        .map_err(|e| format!("failed to read output: {}", e))?;
+                    return Ok(ToolOutput {
+                        exit_code: output.status.code().unwrap_or(-1),
+                        stdout: output.stdout,
+                        stderr: output.stderr,
+                    });
+                }
+                Ok(None) if Instant::now() >= deadline => {
+                    child.kill().ok();
+                    return Err(format!("tool '{}' timed out after {}ms", tool, timeout_ms));
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(e) => return Err(format!("error waiting for tool '{}': {}", tool, e)),
+            }
+        }
     }
 
     /// Perform an HTTP GET request.
@@ -254,13 +266,8 @@ mod tests {
 
         assert!(state.get_plugin_data("key1").is_none());
 
-        state
-            .set_plugin_data("key1", b"hello world")
-            .unwrap();
-        assert_eq!(
-            state.get_plugin_data("key1").unwrap(),
-            b"hello world"
-        );
+        state.set_plugin_data("key1", b"hello world").unwrap();
+        assert_eq!(state.get_plugin_data("key1").unwrap(), b"hello world");
 
         state.set_plugin_data("key1", b"updated").unwrap();
         assert_eq!(state.get_plugin_data("key1").unwrap(), b"updated");
@@ -280,8 +287,7 @@ mod tests {
 
     #[test]
     fn test_run_tool_blocked() {
-        let state =
-            HostState::new("test".into()).with_tools(vec!["ffprobe".into()]);
+        let state = HostState::new("test".into()).with_tools(vec!["ffprobe".into()]);
         let result = state.run_tool("rm", &["-rf".into()], 5000);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not in the allowed list"));
@@ -289,8 +295,7 @@ mod tests {
 
     #[test]
     fn test_run_tool_allowed() {
-        let state =
-            HostState::new("test".into()).with_tools(vec!["echo".into()]);
+        let state = HostState::new("test".into()).with_tools(vec!["echo".into()]);
         let result = state.run_tool("echo", &["hello".into()], 5000);
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -311,6 +316,30 @@ mod tests {
         let state = HostState::new("test".into());
         assert!(state.http_get("http://example.com", &[]).is_err());
         assert!(state.http_post("http://example.com", &[], b"").is_err());
+    }
+
+    #[test]
+    fn test_run_tool_successful_with_timeout() {
+        let state = HostState::new("test".into());
+        let result = state.run_tool("echo", &["hello".into()], 5000);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.exit_code, 0);
+        assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
+    }
+
+    #[test]
+    fn test_run_tool_timeout() {
+        let state = HostState::new("test".into());
+        let result = state.run_tool("sleep", &["10".into()], 100);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("timed out"),
+            "expected timeout error, got: {}",
+            err
+        );
+        assert!(err.contains("100ms"));
     }
 
     #[test]
