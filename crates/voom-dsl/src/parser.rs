@@ -1,6 +1,6 @@
 //! Parser for the VOOM DSL.
 //!
-//! Uses pest to parse `.vpo` source text into a CST, then converts
+//! Uses pest to parse `.voom` source text into a CST, then converts
 //! the CST into typed AST nodes defined in [`crate::ast`].
 
 use pest::iterators::Pair;
@@ -14,7 +14,7 @@ use crate::errors::{DslError, Result};
 #[grammar = "grammar.pest"]
 pub struct VoomParser;
 
-/// Parse a `.vpo` source string into a [`PolicyAst`].
+/// Parse a `.voom` source string into a [`PolicyAst`].
 pub fn parse_policy(input: &str) -> Result<PolicyAst> {
     let pairs = VoomParser::parse(Rule::policy, input).map_err(|e| {
         let (line, col) = match e.line_col {

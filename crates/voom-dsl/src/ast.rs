@@ -1,6 +1,6 @@
 //! AST types for the VOOM DSL.
 //!
-//! These types represent the parsed structure of a `.vpo` policy file.
+//! These types represent the parsed structure of a `.voom` policy file.
 //! The parser converts pest's CST (concrete syntax tree) into these typed AST nodes.
 
 use serde::Serialize;

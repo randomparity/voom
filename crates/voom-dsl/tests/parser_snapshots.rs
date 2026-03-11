@@ -174,7 +174,7 @@ fn snapshot_metadata_phase() {
 
 #[test]
 fn snapshot_production_normalize() {
-    let input = include_str!("fixtures/production-normalize.vpo");
+    let input = include_str!("fixtures/production-normalize.voom");
     let ast = parse_policy(input).unwrap();
     assert_yaml_snapshot!(ast);
 }

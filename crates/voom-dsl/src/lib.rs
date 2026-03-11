@@ -1,6 +1,6 @@
 //! VOOM DSL parser.
 //!
-//! Parses `.vpo` policy files into a typed AST using a PEG grammar (pest).
+//! Parses `.voom` policy files into a typed AST using a PEG grammar (pest).
 //!
 //! # Example
 //!
