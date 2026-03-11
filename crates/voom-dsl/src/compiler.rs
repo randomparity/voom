@@ -413,12 +413,10 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
                 settings: map,
             })
         }
-        OperationNode::Synthesize { name, settings } => {
-            Ok(CompiledOperation::Synthesize(compile_synthesize(name, settings)?))
-        }
-        OperationNode::When(when) => {
-            Ok(CompiledOperation::Conditional(compile_conditional(when)?))
-        }
+        OperationNode::Synthesize { name, settings } => Ok(CompiledOperation::Synthesize(
+            compile_synthesize(name, settings)?,
+        )),
+        OperationNode::When(when) => Ok(CompiledOperation::Conditional(compile_conditional(when)?)),
         OperationNode::Rules { mode, rules } => {
             let compiled_rules: Vec<CompiledRule> = rules
                 .iter()
@@ -486,9 +484,7 @@ fn compile_synthesize(
     Ok(synth)
 }
 
-fn compile_conditional(
-    when: &WhenNode,
-) -> std::result::Result<CompiledConditional, DslError> {
+fn compile_conditional(when: &WhenNode) -> std::result::Result<CompiledConditional, DslError> {
     let condition = compile_condition(&when.condition)?;
     let then_actions: Vec<CompiledAction> = when
         .then_actions
@@ -508,9 +504,7 @@ fn compile_conditional(
     })
 }
 
-fn compile_condition(
-    cond: &ConditionNode,
-) -> std::result::Result<CompiledCondition, DslError> {
+fn compile_condition(cond: &ConditionNode) -> std::result::Result<CompiledCondition, DslError> {
     match cond {
         ConditionNode::Exists(query) => Ok(CompiledCondition::Exists {
             target: parse_track_target(&query.target),
@@ -527,9 +521,9 @@ fn compile_condition(
             op: compile_compare_op(op),
             value: value_to_json(value),
         }),
-        ConditionNode::FieldExists(path) => Ok(CompiledCondition::FieldExists {
-            path: path.clone(),
-        }),
+        ConditionNode::FieldExists(path) => {
+            Ok(CompiledCondition::FieldExists { path: path.clone() })
+        }
         ConditionNode::AudioIsMultiLanguage => Ok(CompiledCondition::AudioIsMultiLanguage),
         ConditionNode::IsDubbed => Ok(CompiledCondition::IsDubbed),
         ConditionNode::IsOriginal => Ok(CompiledCondition::IsOriginal),
@@ -599,27 +593,15 @@ fn compile_action(action: &ActionNode) -> std::result::Result<CompiledAction, Ds
         ActionNode::Fail(msg) => Ok(CompiledAction::Fail(msg.clone())),
         ActionNode::SetDefault(track_ref) => Ok(CompiledAction::SetDefault {
             target: parse_track_target(&track_ref.target),
-            filter: track_ref
-                .filter
-                .as_ref()
-                .map(compile_filter)
-                .transpose()?,
+            filter: track_ref.filter.as_ref().map(compile_filter).transpose()?,
         }),
         ActionNode::SetForced(track_ref) => Ok(CompiledAction::SetForced {
             target: parse_track_target(&track_ref.target),
-            filter: track_ref
-                .filter
-                .as_ref()
-                .map(compile_filter)
-                .transpose()?,
+            filter: track_ref.filter.as_ref().map(compile_filter).transpose()?,
         }),
         ActionNode::SetLanguage(track_ref, val) => Ok(CompiledAction::SetLanguage {
             target: parse_track_target(&track_ref.target),
-            filter: track_ref
-                .filter
-                .as_ref()
-                .map(compile_filter)
-                .transpose()?,
+            filter: track_ref.filter.as_ref().map(compile_filter).transpose()?,
             value: compile_value_or_field(val),
         }),
         ActionNode::SetTag(tag, val) => Ok(CompiledAction::SetTag {
@@ -680,7 +662,9 @@ fn topological_sort(ast: &PolicyAst) -> std::result::Result<Vec<String>, DslErro
         adj.entry(phase.name.as_str()).or_default();
         in_degree.entry(phase.name.as_str()).or_insert(0);
         for dep in &phase.depends_on {
-            adj.entry(dep.as_str()).or_default().push(phase.name.as_str());
+            adj.entry(dep.as_str())
+                .or_default()
+                .push(phase.name.as_str());
             *in_degree.entry(phase.name.as_str()).or_insert(0) += 1;
         }
     }
@@ -709,7 +693,9 @@ fn topological_sort(ast: &PolicyAst) -> std::result::Result<Vec<String>, DslErro
     }
 
     if result.len() != ast.phases.len() {
-        return Err(DslError::compile("cannot determine phase order due to circular dependencies"));
+        return Err(DslError::compile(
+            "cannot determine phase order due to circular dependencies",
+        ));
     }
 
     Ok(result)
@@ -721,11 +707,13 @@ mod tests {
 
     #[test]
     fn test_compile_minimal() {
-        let policy = compile(r#"policy "test" {
+        let policy = compile(
+            r#"policy "test" {
             phase init {
                 container mkv
             }
-        }"#)
+        }"#,
+        )
         .unwrap();
 
         assert_eq!(policy.name, "test");
@@ -740,7 +728,8 @@ mod tests {
 
     #[test]
     fn test_compile_with_config() {
-        let policy = compile(r#"policy "test" {
+        let policy = compile(
+            r#"policy "test" {
             config {
                 languages audio: [eng, und]
                 languages subtitle: [eng]
@@ -748,7 +737,8 @@ mod tests {
                 commentary_patterns: ["commentary"]
             }
             phase init { container mkv }
-        }"#)
+        }"#,
+        )
         .unwrap();
 
         assert_eq!(policy.config.audio_languages, vec!["eng", "und"]);
@@ -759,7 +749,8 @@ mod tests {
 
     #[test]
     fn test_compile_phase_order() {
-        let policy = compile(r#"policy "test" {
+        let policy = compile(
+            r#"policy "test" {
             phase c {
                 depends_on: [a, b]
                 container mkv
@@ -771,7 +762,8 @@ mod tests {
                 depends_on: [a]
                 container mkv
             }
-        }"#)
+        }"#,
+        )
         .unwrap();
 
         // a has no deps, b depends on a, c depends on a and b
@@ -782,13 +774,15 @@ mod tests {
 
     #[test]
     fn test_compile_codec_normalization() {
-        let policy = compile(r#"policy "test" {
+        let policy = compile(
+            r#"policy "test" {
             phase tc {
                 transcode video to h265 {
                     crf: 20
                 }
             }
-        }"#)
+        }"#,
+        )
         .unwrap();
 
         match &policy.phases[0].operations[0] {
@@ -801,12 +795,14 @@ mod tests {
 
     #[test]
     fn test_compile_keep_remove() {
-        let policy = compile(r#"policy "test" {
+        let policy = compile(
+            r#"policy "test" {
             phase norm {
                 keep audio where lang in [eng, jpn]
                 remove attachments where not font
             }
-        }"#)
+        }"#,
+        )
         .unwrap();
 
         match &policy.phases[0].operations[0] {
@@ -827,13 +823,15 @@ mod tests {
 
     #[test]
     fn test_compile_conditional() {
-        let policy = compile(r#"policy "test" {
+        let policy = compile(
+            r#"policy "test" {
             phase validate {
                 when exists(audio where lang == jpn) {
                     warn "has japanese audio"
                 }
             }
-        }"#)
+        }"#,
+        )
         .unwrap();
 
         match &policy.phases[0].operations[0] {
@@ -850,7 +848,8 @@ mod tests {
 
     #[test]
     fn test_compile_run_if() {
-        let policy = compile(r#"policy "test" {
+        let policy = compile(
+            r#"policy "test" {
             phase tc {
                 container mkv
             }
@@ -861,7 +860,8 @@ mod tests {
                     warn "has english"
                 }
             }
-        }"#)
+        }"#,
+        )
         .unwrap();
 
         let run_if = policy.phases[1].run_if.as_ref().unwrap();
@@ -871,14 +871,16 @@ mod tests {
 
     #[test]
     fn test_compile_defaults() {
-        let policy = compile(r#"policy "test" {
+        let policy = compile(
+            r#"policy "test" {
             phase norm {
                 defaults {
                     audio: first_per_language
                     subtitle: none
                 }
             }
-        }"#)
+        }"#,
+        )
         .unwrap();
 
         match &policy.phases[0].operations[0] {
@@ -895,13 +897,15 @@ mod tests {
 
     #[test]
     fn test_compile_rejects_unknown_codec() {
-        let err = compile(r#"policy "test" {
+        let err = compile(
+            r#"policy "test" {
             phase tc {
                 transcode video to h256 {
                     crf: 20
                 }
             }
-        }"#)
+        }"#,
+        )
         .unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("unknown codec"));

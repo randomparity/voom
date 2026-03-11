@@ -312,8 +312,9 @@ fn broad_track_category(target: &str) -> &str {
     match target {
         "video" => "video",
         "audio" | "audio_main" | "audio_alternate" | "audio_commentary" => "audio",
-        "subtitle" | "subtitles" | "subtitle_main" | "subtitle_forced"
-        | "subtitle_commentary" => "subtitle",
+        "subtitle" | "subtitles" | "subtitle_main" | "subtitle_forced" | "subtitle_commentary" => {
+            "subtitle"
+        }
         "attachment" | "attachments" => "attachment",
         _ => target,
     }
@@ -337,11 +338,7 @@ fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut 
                 validate_filter(f, line, col, errors);
             }
         }
-        OperationNode::Transcode {
-            target,
-            codec,
-            ..
-        } => {
+        OperationNode::Transcode { target, codec, .. } => {
             validate_track_target(target, line, col, errors);
             validate_codec(codec, line, col, errors);
         }
@@ -424,7 +421,10 @@ fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut 
                     errors.push(DslError::validation(
                         line,
                         col,
-                        format!("invalid defaults value \"{value}\", expected one of: {}", valid_defaults.join(", ")),
+                        format!(
+                            "invalid defaults value \"{value}\", expected one of: {}",
+                            valid_defaults.join(", ")
+                        ),
                     ));
                 }
             }
@@ -504,12 +504,7 @@ fn validate_when(when: &WhenNode, line: usize, col: usize, errors: &mut Vec<DslE
     validate_condition(&when.condition, line, col, errors);
 }
 
-fn validate_condition(
-    cond: &ConditionNode,
-    line: usize,
-    col: usize,
-    errors: &mut Vec<DslError>,
-) {
+fn validate_condition(cond: &ConditionNode, line: usize, col: usize, errors: &mut Vec<DslError>) {
     match cond {
         ConditionNode::Exists(query) | ConditionNode::Count(query, _, _) => {
             validate_track_target(&query.target, line, col, errors);

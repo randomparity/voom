@@ -55,7 +55,12 @@ fn build_policy(pair: Pair<'_, Rule>) -> Result<PolicyAst> {
         }
     }
 
-    Ok(PolicyAst { name, config, phases, span })
+    Ok(PolicyAst {
+        name,
+        config,
+        phases,
+        span,
+    })
 }
 
 fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
@@ -144,7 +149,10 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
                 } else {
                     "completed".to_string()
                 };
-                run_if = Some(RunIfNode { phase: phase_name, trigger });
+                run_if = Some(RunIfNode {
+                    phase: phase_name,
+                    trigger,
+                });
             }
             Rule::on_error => {
                 let ident = child.into_inner().next().unwrap();
@@ -237,7 +245,12 @@ fn build_actions(pair: Pair<'_, Rule>) -> Result<OperationNode> {
 fn build_transcode(pair: Pair<'_, Rule>) -> Result<OperationNode> {
     let text = pair.as_str();
     // "transcode video to hevc { ... }" or "transcode audio to aac { ... }"
-    let target = if text.contains("video") { "video" } else { "audio" }.to_string();
+    let target = if text.contains("video") {
+        "video"
+    } else {
+        "audio"
+    }
+    .to_string();
 
     let mut inner = pair.into_inner();
     let codec = inner.next().unwrap().as_str().to_string();
@@ -254,7 +267,11 @@ fn build_transcode(pair: Pair<'_, Rule>) -> Result<OperationNode> {
         }
     }
 
-    Ok(OperationNode::Transcode { target, codec, settings })
+    Ok(OperationNode::Transcode {
+        target,
+        codec,
+        settings,
+    })
 }
 
 fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {
@@ -325,7 +342,11 @@ fn build_when(pair: Pair<'_, Rule>) -> Result<WhenNode> {
         }
     }
 
-    Ok(WhenNode { condition, then_actions, else_actions })
+    Ok(WhenNode {
+        condition,
+        then_actions,
+        else_actions,
+    })
 }
 
 fn build_rules(pair: Pair<'_, Rule>) -> Result<OperationNode> {
@@ -431,7 +452,11 @@ fn build_condition_atom(pair: Pair<'_, Rule>) -> Result<ConditionNode> {
     }
 
     let (line, col) = first.as_span().start_pos().line_col();
-    Err(DslError::build(line, col, format!("unexpected condition: {text}")))
+    Err(DslError::build(
+        line,
+        col,
+        format!("unexpected condition: {text}"),
+    ))
 }
 
 fn build_track_query(pair: Pair<'_, Rule>) -> Result<TrackQueryNode> {
@@ -566,7 +591,11 @@ fn build_filter_atom(pair: Pair<'_, Rule>) -> Result<FilterNode> {
     }
 
     let (line, col) = span.start_pos().line_col();
-    Err(DslError::build(line, col, format!("unexpected filter: {text}")))
+    Err(DslError::build(
+        line,
+        col,
+        format!("unexpected filter: {text}"),
+    ))
 }
 
 fn build_action(pair: Pair<'_, Rule>) -> Result<ActionNode> {
@@ -616,7 +645,11 @@ fn build_action(pair: Pair<'_, Rule>) -> Result<ActionNode> {
     }
 
     let (line, col) = span.start_pos().line_col();
-    Err(DslError::build(line, col, format!("unexpected action: {text}")))
+    Err(DslError::build(
+        line,
+        col,
+        format!("unexpected action: {text}"),
+    ))
 }
 
 fn build_track_ref(pair: Pair<'_, Rule>) -> Result<TrackRefNode> {
@@ -696,7 +729,10 @@ fn parse_string_value(pair: &Pair<'_, Rule>) -> String {
 /// Parse a number token, stripping any trailing unit suffix (e.g., "192k" → 192.0).
 fn parse_number_f64(pair: Pair<'_, Rule>) -> f64 {
     let s = pair.as_str();
-    let numeric: String = s.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let numeric: String = s
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
     numeric.parse().unwrap_or(0.0)
 }
 
@@ -782,7 +818,11 @@ mod tests {
         }"#;
         let ast = parse_policy(input).unwrap();
         match &ast.phases[0].operations[0] {
-            OperationNode::Transcode { target, codec, settings } => {
+            OperationNode::Transcode {
+                target,
+                codec,
+                settings,
+            } => {
                 assert_eq!(target, "video");
                 assert_eq!(codec, "hevc");
                 assert_eq!(settings.len(), 2);

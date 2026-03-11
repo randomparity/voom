@@ -1236,6 +1236,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
+name = "same-file"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
+dependencies = [
+ "winapi-util",
+]
+
+[[package]]
 name = "scheduled-thread-pool"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1676,6 +1685,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "voom-discovery"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "voom-domain",
+ "voom-kernel",
+ "walkdir",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "voom-domain"
 version = "0.1.0"
 dependencies = [
@@ -1699,6 +1723,21 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "voom-domain",
+]
+
+[[package]]
+name = "voom-ffprobe-introspector"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "insta",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "uuid",
+ "voom-domain",
+ "voom-kernel",
 ]
 
 [[package]]
@@ -1732,6 +1771,28 @@ dependencies = [
  "uuid",
  "voom-domain",
  "voom-kernel",
+]
+
+[[package]]
+name = "voom-tool-detector"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "voom-domain",
+ "voom-kernel",
+]
+
+[[package]]
+name = "walkdir"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
+dependencies = [
+ "same-file",
+ "winapi-util",
 ]
 
 [[package]]
@@ -2471,6 +2532,12 @@ dependencies = [
  "unicode-xid",
  "wasmparser 0.244.0",
 ]
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
 
 [[package]]
 name = "zerocopy"

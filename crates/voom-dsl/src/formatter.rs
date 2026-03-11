@@ -307,10 +307,8 @@ fn format_condition(cond: &ConditionNode, out: &mut String) {
         }
         ConditionNode::Not(inner) => {
             out.push_str("not ");
-            let needs_parens = matches!(
-                inner.as_ref(),
-                ConditionNode::And(_) | ConditionNode::Or(_)
-            );
+            let needs_parens =
+                matches!(inner.as_ref(), ConditionNode::And(_) | ConditionNode::Or(_));
             if needs_parens {
                 out.push('(');
             }
@@ -383,8 +381,7 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
         }
         FilterNode::Not(inner) => {
             out.push_str("not ");
-            let needs_parens =
-                matches!(inner.as_ref(), FilterNode::And(_) | FilterNode::Or(_));
+            let needs_parens = matches!(inner.as_ref(), FilterNode::And(_) | FilterNode::Or(_));
             if needs_parens {
                 out.push('(');
             }
@@ -494,11 +491,13 @@ mod tests {
 
     #[test]
     fn test_format_minimal() {
-        let ast = parse_policy(r#"policy "test" {
+        let ast = parse_policy(
+            r#"policy "test" {
             phase init {
                 container mkv
             }
-        }"#)
+        }"#,
+        )
         .unwrap();
 
         let formatted = format_policy(&ast);
@@ -556,7 +555,10 @@ mod tests {
         let ast1 = parse_policy(input).unwrap();
         let formatted = format_policy(&ast1);
         let ast2 = parse_policy(&formatted).unwrap();
-        assert_eq!(ast1.phases[0].operations.len(), ast2.phases[0].operations.len());
+        assert_eq!(
+            ast1.phases[0].operations.len(),
+            ast2.phases[0].operations.len()
+        );
     }
 
     #[test]

@@ -164,9 +164,7 @@ fn row_to_track(row: &Row<'_>) -> rusqlite::Result<Track> {
         is_forced: row.get::<_, i32>("is_forced")? != 0,
         channels: row.get::<_, Option<i32>>("channels")?.map(|v| v as u32),
         channel_layout: row.get("channel_layout")?,
-        sample_rate: row
-            .get::<_, Option<i32>>("sample_rate")?
-            .map(|v| v as u32),
+        sample_rate: row.get::<_, Option<i32>>("sample_rate")?.map(|v| v as u32),
         bit_depth: row.get::<_, Option<i32>>("bit_depth")?.map(|v| v as u32),
         width: row.get::<_, Option<i32>>("width")?.map(|v| v as u32),
         height: row.get::<_, Option<i32>>("height")?.map(|v| v as u32),
@@ -364,8 +362,10 @@ impl StorageTrait for SqliteStore {
             .prepare(&sql)
             .map_err(|e| VoomError::Storage(format!("failed to prepare list query: {e}")))?;
 
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
+            .iter()
+            .map(|v| v as &dyn rusqlite::types::ToSql)
+            .collect();
 
         let rows: Vec<FileRow> = stmt
             .query_map(param_refs.as_slice(), row_to_file)
@@ -545,14 +545,14 @@ impl StorageTrait for SqliteStore {
         let id = Uuid::new_v4();
         let actions_json = serde_json::to_string(&plan.actions)
             .map_err(|e| VoomError::Storage(format!("failed to serialize actions: {e}")))?;
-        let warnings_json = if plan.warnings.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::to_string(&plan.warnings)
-                    .map_err(|e| VoomError::Storage(format!("failed to serialize warnings: {e}")))?,
-            )
-        };
+        let warnings_json =
+            if plan.warnings.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&plan.warnings).map_err(|e| {
+                    VoomError::Storage(format!("failed to serialize warnings: {e}"))
+                })?)
+            };
 
         conn.execute(
             "INSERT INTO plans (id, file_id, policy_name, phase_name, status, actions, warnings, created_at)
@@ -684,11 +684,7 @@ impl StorageTrait for SqliteStore {
 
 // Private helper methods
 impl SqliteStore {
-    fn load_tracks(
-        &self,
-        conn: &rusqlite::Connection,
-        file_id: &Uuid,
-    ) -> Result<Vec<Track>> {
+    fn load_tracks(&self, conn: &rusqlite::Connection, file_id: &Uuid) -> Result<Vec<Track>> {
         let mut stmt = conn
             .prepare(
                 "SELECT stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format
@@ -819,7 +815,8 @@ mod tests {
         store.upsert_file(&file).unwrap();
 
         file.size = 2_000_000_000;
-        file.tracks.push(Track::new(3, TrackType::AudioCommentary, "aac".into()));
+        file.tracks
+            .push(Track::new(3, TrackType::AudioCommentary, "aac".into()));
         store.upsert_file(&file).unwrap();
 
         let loaded = store.get_file(&file.id).unwrap().unwrap();
