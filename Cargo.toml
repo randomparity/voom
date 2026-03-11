@@ -10,6 +10,9 @@ members = [
     "plugins/tool-detector",
     "plugins/policy-evaluator",
     "plugins/phase-orchestrator",
+    "plugins/mkvtoolnix-executor",
+    "plugins/backup-manager",
+    "plugins/ffmpeg-executor",
 ]
 
 [workspace.package]

@@ -1697,6 +1697,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "voom-backup-manager"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "uuid",
+ "voom-domain",
+ "voom-kernel",
+]
+
+[[package]]
 name = "voom-discovery"
 version = "0.1.0"
 dependencies = [
@@ -1738,6 +1754,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "voom-ffmpeg-executor"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "voom-domain",
+ "voom-kernel",
+]
+
+[[package]]
 name = "voom-ffprobe-introspector"
 version = "0.1.0"
 dependencies = [
@@ -1765,6 +1794,19 @@ dependencies = [
  "tracing-subscriber",
  "voom-domain",
  "wasmtime",
+]
+
+[[package]]
+name = "voom-mkvtoolnix-executor"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "voom-domain",
+ "voom-kernel",
 ]
 
 [[package]]
