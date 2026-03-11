@@ -4,6 +4,7 @@ members = [
     "crates/voom-domain",
     "crates/voom-dsl",
     "crates/voom-kernel",
+    "plugins/sqlite-store",
 ]
 
 [workspace.package]
@@ -39,5 +40,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # WASM
 wasmtime = "29"
 
+# Database
+rusqlite = { version = "0.31", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.24"
+
 # Testing
 insta = { version = "1", features = ["yaml"] }
+tempfile = "3"
