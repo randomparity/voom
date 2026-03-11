@@ -1498,6 +1498,7 @@ voom
 - `wasm-plugins/sonarr-metadata`: TV metadata enrichment
 - `wasm-plugins/whisper-transcriber`: Transcription (uses host tool runner)
 - `wasm-plugins/audio-synthesizer`: Audio synthesis (uses host tool runner)
+- `wasm-plugins/handbrake-executor`: Video transcoding (similar to ffmpeg)
 - `voom-plugin-sdk` crate:
   - Host function bindings
   - Proc macros for plugin boilerplate (`#[voom_plugin]`, `#[on_event(...)]`)
