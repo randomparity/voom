@@ -213,3 +213,64 @@ fn snapshot_when_else_block() {
     let ast = parse_policy(input).unwrap();
     assert_yaml_snapshot!(ast);
 }
+
+// === Example policy parsing tests ===
+// Verify all sample policies in docs/examples/ are syntactically valid.
+
+#[test]
+fn example_minimal_parses() {
+    let input = include_str!("../../../docs/examples/minimal.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "minimal");
+    assert_eq!(ast.phases.len(), 1);
+}
+
+#[test]
+fn example_movie_library_parses() {
+    let input = include_str!("../../../docs/examples/movie-library.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "movie-library");
+    assert_eq!(ast.phases.len(), 4);
+    assert!(ast.config.is_some());
+}
+
+#[test]
+fn example_anime_collection_parses() {
+    let input = include_str!("../../../docs/examples/anime-collection.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "anime-collection");
+    assert_eq!(ast.phases.len(), 5);
+}
+
+#[test]
+fn example_transcode_hevc_parses() {
+    let input = include_str!("../../../docs/examples/transcode-hevc.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "transcode-hevc");
+    assert_eq!(ast.phases.len(), 5);
+}
+
+#[test]
+fn example_metadata_enrichment_parses() {
+    let input = include_str!("../../../docs/examples/metadata-enrichment.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "metadata-enrichment");
+    assert_eq!(ast.phases.len(), 5);
+}
+
+#[test]
+fn example_strict_archive_parses() {
+    let input = include_str!("../../../docs/examples/strict-archive.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "strict-archive");
+    assert_eq!(ast.phases.len(), 5);
+}
+
+#[test]
+fn example_full_pipeline_parses() {
+    let input = include_str!("../../../docs/examples/full-pipeline.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "full-pipeline");
+    assert_eq!(ast.phases.len(), 10);
+    assert!(ast.config.is_some());
+}

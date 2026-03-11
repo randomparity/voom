@@ -1,0 +1,316 @@
+// Full processing pipeline — exercises every DSL feature.
+//
+// This policy demonstrates ALL DSL constructs and references all
+// plugin types. Not intended for production use — it's a comprehensive
+// reference showing every language feature in context.
+//
+// DSL features exercised:
+//   Config: languages audio/subtitle, on_error, commentary_patterns
+//   Phase control: depends_on, skip when, run_if (modified + completed), on_error
+//   Operations: container, keep, remove, order tracks, defaults, actions, transcode, synthesize
+//   Track targets: audio, subtitle, subtitles, video, attachments
+//   Filter atoms: lang in, lang ==, codec in, codec ==, channels op, commentary,
+//                 forced, default, font, title contains, title matches
+//   Filter logic: and, or, not, parenthesized groups
+//   Conditions: exists(), count(), audio_is_multi_language, is_dubbed, is_original,
+//               field compare (all operators), field exists
+//   Actions: skip, skip <phase>, warn, fail, set_default, set_forced, set_language, set_tag
+//   Blocks: when/else, rules first, rules all
+//   Values: strings, numbers (with suffixes), booleans, identifiers, lists
+//   Comments: line comments
+//
+// Plugins referenced:
+//   Native: discovery, ffprobe-introspector, tool-detector, sqlite-store,
+//           policy-evaluator, phase-orchestrator, mkvtoolnix-executor,
+//           ffmpeg-executor, backup-manager, job-manager, web-server
+//   WASM:   radarr-metadata, sonarr-metadata, whisper-transcriber,
+//           audio-synthesizer, handbrake-executor
+
+policy "full-pipeline" {
+  config {
+    languages audio: [eng, jpn, und]
+    languages subtitle: [eng, jpn, und]
+    commentary_patterns: ["commentary", "director", "cast", "crew", "technical"]
+    on_error: continue
+  }
+
+  // ── Phase 1: Container ─────────────────────────────────────────
+  // Exercises: container_op, on_error
+  // Plugins:   mkvtoolnix-executor (remux via mkvmerge)
+  phase containerize {
+    on_error: abort
+    container mkv
+  }
+
+  // ── Phase 2: Track cleanup ─────────────────────────────────────
+  // Exercises: depends_on, all track targets, where clauses with
+  //            lang in/==, codec in/==, channels op, commentary,
+  //            forced, default, font, title contains, title matches,
+  //            and/or/not/parenthesized filters
+  // Plugins:   mkvtoolnix-executor (mkvmerge for track removal)
+  phase cleanup {
+    depends_on: [containerize]
+
+    // Keep: lang in [...], and, not
+    keep audio where lang in [eng, jpn, und] and not commentary
+
+    // Keep: lang in [...], or, forced
+    keep subtitle where (lang in [eng, jpn] and not commentary) or forced
+
+    // Remove: not font
+    remove attachments where not font
+
+    // Remove: title matches (regex)
+    remove audio where title matches "sample|promo|preview"
+
+    // Remove: title contains (substring) and channels op
+    remove audio where title contains "commentary" and channels <= 1
+
+    // Remove: codec == (exact match)
+    remove subtitle where codec == vobsub
+
+    // Keep video — no filter (keep all)
+    keep video
+  }
+
+  // ── Phase 3: Metadata cleanup ──────────────────────────────────
+  // Exercises: actions_op for all three targets (video, audio, subtitle)
+  // Plugins:   mkvtoolnix-executor (mkvpropedit for in-place metadata)
+  phase metadata-cleanup {
+    depends_on: [cleanup]
+
+    video actions {
+      clear_all_titles: true
+    }
+
+    audio actions {
+      clear_all_default: true
+      clear_all_forced: true
+      clear_all_titles: true
+    }
+
+    subtitle actions {
+      clear_all_default: true
+      clear_all_forced: true
+    }
+  }
+
+  // ── Phase 4: Track ordering and defaults ───────────────────────
+  // Exercises: order_op, defaults_op
+  // Plugins:   mkvtoolnix-executor (mkvmerge for reorder)
+  phase organize {
+    depends_on: [metadata-cleanup]
+
+    order tracks [
+      video, audio_main, audio_alternate,
+      subtitle_forced, subtitle_main,
+      audio_commentary, subtitle_commentary, attachment
+    ]
+
+    defaults {
+      audio: first_per_language
+      subtitle: none
+    }
+  }
+
+  // ── Phase 5: Video transcode ───────────────────────────────────
+  // Exercises: skip when (field access + in), transcode video with full settings
+  // Plugins:   ffmpeg-executor (video encoding with HW accel),
+  //            backup-manager (pre-transcode backup)
+  phase transcode-video {
+    depends_on: [organize]
+    skip when video.codec in [hevc, h265, av1]
+    on_error: abort
+
+    transcode video to hevc {
+      crf: 20
+      preset: medium
+      max_resolution: 1080p
+      scale_algorithm: lanczos
+      hw: auto
+      hw_fallback: true
+      hdr_mode: preserve
+      tune: film
+      pixel_format: yuv420p10le
+    }
+  }
+
+  // ── Phase 6: Audio transcode ───────────────────────────────────
+  // Exercises: transcode audio with preserve list
+  // Plugins:   ffmpeg-executor (audio encoding)
+  phase transcode-audio {
+    depends_on: [organize]
+
+    transcode audio to aac {
+      preserve: [truehd, dts_hd, flac, pcm, eac3]
+      bitrate: 192k
+    }
+  }
+
+  // ── Phase 7: Audio synthesis ───────────────────────────────────
+  // Exercises: synthesize_op with ALL synth settings:
+  //   codec, channels, source (prefer), bitrate, skip_if_exists,
+  //   create_if, title, language (inherit), position
+  // Plugins:   ffmpeg-executor or audio-synthesizer WASM plugin
+  phase stereo-compat {
+    depends_on: [transcode-audio]
+    run_if transcode-audio.completed
+
+    synthesize "Stereo AAC" {
+      codec: aac
+      channels: stereo
+      source: prefer(codec in [truehd, dts_hd, flac] and channels >= 6)
+      bitrate: "192k"
+      skip_if_exists { codec in [aac] and channels == 2 and not commentary }
+      create_if exists(audio where channels >= 6)
+      title: "Stereo (AAC)"
+      language: inherit
+      position: after_source
+    }
+
+    synthesize "5.1 AC3 Compat" {
+      codec: ac3
+      channels: 6
+      source: prefer(codec in [truehd, dts_hd] and channels >= 6)
+      bitrate: "640k"
+      skip_if_exists { codec == ac3 and channels >= 6 }
+      create_if count(audio where codec in [truehd, dts_hd] and channels >= 6) >= 1
+      title: "Surround 5.1 (AC3)"
+      language: inherit
+      position: last
+    }
+  }
+
+  // ── Phase 8: Conditional logic ─────────────────────────────────
+  // Exercises: when/else, exists(), count(), all comparison operators,
+  //            audio_is_multi_language, is_dubbed, is_original,
+  //            field comparison, field exists
+  // Plugins:   policy-evaluator (condition evaluation)
+  phase conditional-checks {
+    depends_on: [stereo-compat, transcode-video]
+    run_if transcode-video.modified
+
+    // when/else block
+    when exists(audio where lang == jpn) {
+      set_default audio where lang == jpn
+      set_forced subtitle where lang == eng and forced
+    } else {
+      set_default audio where lang == eng
+    }
+
+    // Field comparison with various operators
+    when video.height > 1080 {
+      warn "Video exceeds 1080p in {filename}"
+    }
+
+    when video.frame_rate != 23.976 and video.frame_rate != 24.0 {
+      warn "Non-standard frame rate in {filename}"
+    }
+
+    // count with <=
+    when count(audio where lang == eng) <= 0 {
+      warn "No English audio in {filename}"
+    }
+
+    // count with >=
+    when count(subtitle) >= 5 {
+      warn "Many subtitle tracks in {filename}"
+    }
+
+    // Built-in predicates
+    when audio_is_multi_language {
+      warn "Multi-language audio in {filename}"
+    }
+
+    when is_dubbed {
+      set_tag "dubbed" "true"
+    }
+
+    when is_original {
+      set_tag "original_audio" "true"
+    }
+  }
+
+  // ── Phase 9: Rules blocks ──────────────────────────────────────
+  // Exercises: rules "first" (stop at first match),
+  //            rules "all" (evaluate all), named rules,
+  //            skip with phase name, fail action
+  // Plugins:   policy-evaluator
+  phase rule-checks {
+    depends_on: [conditional-checks]
+
+    // First-match rules: only the first matching rule fires
+    rules first {
+      rule "critical-missing-video" {
+        when count(video) == 0 {
+          fail "No video track in {filename}"
+        }
+      }
+
+      rule "critical-missing-audio" {
+        when count(audio) == 0 {
+          fail "No audio track in {filename}"
+        }
+      }
+
+      rule "all-clear" {
+        when count(video) > 0 and count(audio) > 0 {
+          set_tag "validated" "true"
+        }
+      }
+    }
+
+    // All-match rules: every rule is evaluated
+    rules all {
+      rule "dts-warning" {
+        when exists(audio where codec in [dts] and not codec in [dts_hd]) {
+          warn "Lossy DTS detected in {filename} — consider transcoding"
+        }
+      }
+
+      rule "pgs-subtitle-check" {
+        when exists(subtitle where codec in [hdmv_pgs, pgs]) {
+          warn "Image-based PGS subtitles in {filename} — not searchable"
+        }
+      }
+
+      rule "attachment-count" {
+        when count(attachments where font) > 50 {
+          warn "Excessive font attachments in {filename}"
+        }
+      }
+    }
+  }
+
+  // ── Phase 10: Plugin metadata enrichment ───────────────────────
+  // Exercises: field_access for plugin data, set_language with field,
+  //            set_tag with field and literal values
+  // Plugins:   radarr-metadata, sonarr-metadata (WASM)
+  phase enrich {
+    depends_on: [rule-checks]
+
+    // Radarr movie metadata
+    when plugin.radarr.title exists {
+      set_tag "title" plugin.radarr.title
+      set_tag "media_type" "movie"
+    }
+
+    when plugin.radarr.original_language exists {
+      set_language audio where default plugin.radarr.original_language
+    }
+
+    when plugin.radarr.year exists {
+      set_tag "year" plugin.radarr.year
+    }
+
+    // Sonarr series metadata (when Radarr not available)
+    when not plugin.radarr.title exists and plugin.sonarr.series_title exists {
+      set_tag "title" plugin.sonarr.series_title
+      set_tag "media_type" "series"
+    }
+
+    when plugin.sonarr.original_language exists {
+      set_language audio where default plugin.sonarr.original_language
+    }
+  }
+}

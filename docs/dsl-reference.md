@@ -1,0 +1,669 @@
+# VOOM DSL Language Reference
+
+VOOM policies are written in `.voom` files using a custom block-based DSL (Domain-Specific Language). The language is designed specifically for declaring video library processing rules.
+
+## Syntax Overview
+
+- **Block-based** — Curly braces `{ }` delimit blocks
+- **Comments** — Line comments with `//`
+- **Whitespace** — Whitespace and newlines are not significant (free-form)
+- **No semicolons** — Statements are delimited by structure, not punctuation
+- **Identifiers** — Start with a letter or `_`, may contain letters, digits, `_`, and `-`
+
+## Policy Structure
+
+Every `.voom` file defines exactly one policy:
+
+```
+policy "<name>" {
+  config { ... }           // optional — global settings
+  phase <name> { ... }     // one or more phases
+}
+```
+
+### Example
+
+```
+policy "my-normalize" {
+  config {
+    languages audio: [eng, und]
+    on_error: continue
+  }
+
+  phase containerize {
+    container mkv
+  }
+
+  phase normalize {
+    depends_on: [containerize]
+    keep audio where lang in [eng, jpn]
+    remove attachments where not font
+  }
+}
+```
+
+## Config Block
+
+The optional `config` block sets policy-wide defaults.
+
+```
+config {
+  languages audio: [eng, und]                          // allowed audio languages
+  languages subtitle: [eng, und]                       // allowed subtitle languages
+  commentary_patterns: ["commentary", "director"]      // patterns to detect commentary tracks
+  on_error: continue                                   // error handling: abort | continue | skip
+}
+```
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| `languages audio` | list | Allowed audio language codes (ISO 639-2/B) |
+| `languages subtitle` | list | Allowed subtitle language codes |
+| `commentary_patterns` | list of strings | Title patterns that classify a track as commentary |
+| `on_error` | identifier | Global error handling strategy |
+
+## Phases
+
+Phases are the primary organizational unit. They execute sequentially (respecting dependencies) and each contains a set of operations.
+
+```
+phase <name> {
+  // control directives (optional)
+  depends_on: [phase1, phase2]
+  skip when <condition>
+  run_if <phase>.<event>
+  on_error: <strategy>
+
+  // operations
+  ...
+}
+```
+
+### Phase Control Directives
+
+#### `depends_on`
+
+Declares that this phase must run after the listed phases. The kernel uses topological sort to determine execution order.
+
+```
+depends_on: [containerize, normalize]
+```
+
+#### `skip when`
+
+Skip this entire phase if the condition is true.
+
+```
+skip when video.codec in [hevc, h265]
+skip when exists(audio where codec == aac)
+```
+
+#### `run_if`
+
+Only run this phase if a prior phase had a specific outcome.
+
+```
+run_if transcode.modified       // run only if transcode changed the file
+run_if normalize.completed      // run only if normalize finished (even with no changes)
+```
+
+#### `on_error`
+
+Per-phase error handling strategy (overrides config-level `on_error`):
+
+```
+on_error: abort      // stop all processing (default)
+on_error: continue   // log and continue with next file
+on_error: skip       // skip remaining phases for this file
+```
+
+## Track Operations
+
+### `keep`
+
+Keep tracks matching the filter; remove all others of that type.
+
+```
+keep audio where lang in [eng, jpn, und]
+keep subtitles where lang in [eng] and not commentary
+keep video    // keep all video tracks
+```
+
+### `remove`
+
+Remove tracks matching the filter.
+
+```
+remove attachments where not font
+remove audio where commentary
+remove subtitles where lang in [chi, kor]
+```
+
+### Track Targets
+
+Both `keep` and `remove` operate on a track target:
+
+| Target | Description |
+|--------|-------------|
+| `audio` | Audio tracks |
+| `subtitle` / `subtitles` | Subtitle tracks (both spellings accepted) |
+| `video` | Video tracks |
+| `attachments` | Attachment tracks (fonts, images, etc.) |
+
+### `order tracks`
+
+Specify the track ordering within the output file.
+
+```
+order tracks [
+  video, audio_main, audio_alternate,
+  subtitle_main, subtitle_forced,
+  audio_commentary, subtitle_commentary, attachment
+]
+```
+
+Track type identifiers for ordering:
+
+| Identifier | Description |
+|------------|-------------|
+| `video` | Video tracks |
+| `audio_main` | Primary audio tracks |
+| `audio_alternate` | Alternate language audio |
+| `audio_commentary` | Commentary audio |
+| `subtitle_main` | Primary subtitles |
+| `subtitle_forced` | Forced subtitles |
+| `subtitle_commentary` | Commentary subtitles |
+| `attachment` | Attachments |
+
+### `defaults`
+
+Set default track selection behavior.
+
+```
+defaults {
+  audio: first_per_language      // first track of each language gets default flag
+  subtitle: none                 // no default subtitle
+}
+```
+
+Default strategies:
+
+| Strategy | Description |
+|----------|-------------|
+| `first_per_language` | First track of each language is marked default |
+| `none` | No tracks marked as default |
+| `first` | Only the first track is marked default |
+
+### Track Actions
+
+Bulk operations on track metadata flags.
+
+```
+audio actions {
+  clear_all_default: true
+  clear_all_forced: true
+  clear_all_titles: true
+}
+
+subtitle actions {
+  clear_all_default: true
+  clear_all_forced: true
+}
+
+video actions {
+  clear_all_titles: true
+}
+```
+
+## Container Operation
+
+Set the output container format.
+
+```
+container mkv
+container mp4
+```
+
+If the file is not already in the target format, it will be remuxed (no re-encoding).
+
+## Transcode Operations
+
+### Video Transcode
+
+```
+transcode video to hevc {
+  crf: 20                    // quality (lower = better, 0-51 for x265)
+  preset: medium             // encoding speed/quality tradeoff
+  max_resolution: 1080p      // downscale if above this resolution
+  scale_algorithm: lanczos   // scaling algorithm
+  hw: auto                   // hardware acceleration: auto | nvenc | qsv | vaapi | none
+  hw_fallback: true          // fall back to software if HW fails
+}
+```
+
+### Audio Transcode
+
+```
+transcode audio to aac {
+  preserve: [truehd, dts_hd, flac]   // don't transcode these codecs
+  bitrate: 192k                       // target bitrate
+}
+```
+
+## Synthesize Operation
+
+Create new audio tracks from existing ones.
+
+```
+synthesize "Stereo AAC" {
+  codec: aac                                                          // output codec
+  channels: stereo                                                    // channel layout
+  source: prefer(codec in [truehd, dts_hd, flac] and channels >= 6)  // source preference
+  bitrate: "192k"                                                     // target bitrate
+  skip_if_exists { codec in [aac] and channels == 2 and not commentary }  // skip condition
+  create_if <condition>                                                // creation condition
+  title: "Stereo (AAC)"                                               // track title
+  language: inherit                                                    // inherit from source
+  position: after_source                                               // track position
+}
+```
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| `codec` | identifier | Output audio codec |
+| `channels` | identifier or number | Channel layout (`stereo`, `5.1`, etc.) or count |
+| `source` | `prefer(filter)` | Filter expression selecting preferred source track |
+| `bitrate` | string | Target bitrate (e.g., `"192k"`, `"320k"`) |
+| `skip_if_exists` | `{ filter }` | Don't create if a matching track already exists |
+| `create_if` | condition | Only create when this condition is true |
+| `title` | string | Title for the new track |
+| `language` | identifier or `inherit` | Language code, or `inherit` from source |
+| `position` | identifier or number | Where to insert: `after_source`, `last`, or index |
+
+## Conditional Logic
+
+### `when` / `else`
+
+Execute actions conditionally.
+
+```
+when <condition> {
+  <actions>
+}
+
+when <condition> {
+  <actions>
+} else {
+  <actions>
+}
+```
+
+### `rules` Block
+
+Named rules with a match mode.
+
+```
+rules first {        // stop after first matching rule
+  rule "rule-name" {
+    when <condition> {
+      <actions>
+    }
+  }
+}
+
+rules all {          // evaluate all rules
+  rule "rule-name" {
+    when <condition> {
+      <actions>
+    }
+  }
+}
+```
+
+## Conditions
+
+Conditions are boolean expressions used in `when`, `skip when`, and `rules` blocks.
+
+### Logical Operators
+
+```
+<condition> and <condition>      // both must be true
+<condition> or <condition>       // either can be true
+not <condition>                  // negation
+(<condition>)                    // grouping
+```
+
+Precedence (highest to lowest): `not`, `and`, `or`. Use parentheses to override.
+
+### Track Existence
+
+```
+exists(audio where lang == jpn)
+exists(subtitle where forced)
+exists(audio where codec in [truehd, dts_hd])
+```
+
+Track queries use the same targets as track operations: `audio`, `subtitle`/`subtitles`, `video`, `attachments`.
+
+### Track Count
+
+```
+count(audio) > 1
+count(subtitle where lang == eng) == 0
+count(audio where channels >= 6) >= 1
+```
+
+### Built-in Predicates
+
+| Predicate | Description |
+|-----------|-------------|
+| `audio_is_multi_language` | File has audio tracks in multiple languages |
+| `is_dubbed` | File appears to be dubbed (heuristic) |
+| `is_original` | File appears to be the original language version |
+
+### Field Comparison
+
+Access nested fields using dot notation:
+
+```
+video.codec == hevc
+video.codec in [hevc, h265]
+audio.channels >= 6
+```
+
+### Field Existence
+
+Check if a field (especially plugin metadata) exists:
+
+```
+plugin.radarr.original_language exists
+plugin.sonarr.series_id exists
+```
+
+### Comparison Operators
+
+| Operator | Description |
+|----------|-------------|
+| `==` | Equal |
+| `!=` | Not equal |
+| `<` | Less than |
+| `>` | Greater than |
+| `<=` | Less than or equal |
+| `>=` | Greater than or equal |
+| `in` | Contained in list |
+
+## Filter Expressions
+
+Filters are used in `where` clauses to match tracks. They share the logical operators with conditions but have track-specific predicates.
+
+### Language Filter
+
+```
+lang in [eng, jpn, und]          // language is in list
+lang == eng                       // exact language match
+```
+
+### Codec Filter
+
+```
+codec in [aac, ac3, eac3]        // codec is in list
+codec == truehd                   // exact codec match
+```
+
+### Channel Filter
+
+```
+channels >= 6                     // 5.1 or higher
+channels == 2                     // stereo
+```
+
+### Flag Filters
+
+| Filter | Description |
+|--------|-------------|
+| `commentary` | Track is classified as commentary |
+| `forced` | Track has the forced flag |
+| `default` | Track has the default flag |
+| `font` | Attachment is a font file |
+
+### Title Filter
+
+```
+title contains "commentary"       // title includes substring
+title matches "Director.*"        // title matches pattern
+```
+
+### Combining Filters
+
+```
+lang in [eng] and not commentary
+codec in [truehd, dts_hd] and channels >= 6
+(lang == jpn or lang == und) and not forced
+```
+
+## Actions
+
+Actions are executed inside `when` and `rules` blocks.
+
+| Action | Syntax | Description |
+|--------|--------|-------------|
+| Skip | `skip` or `skip <phase>` | Skip current or named phase |
+| Warn | `warn "<message>"` | Log a warning |
+| Fail | `fail "<message>"` | Fail processing with an error |
+| Set Default | `set_default <track_ref>` | Set default flag on matching tracks |
+| Set Forced | `set_forced <track_ref>` | Set forced flag on matching tracks |
+| Set Language | `set_language <track_ref> <value>` | Set language on matching tracks |
+| Set Tag | `set_tag "<key>" <value>` | Set a container-level tag |
+
+### Track References
+
+Actions that target tracks use a track reference:
+
+```
+set_default audio where lang == eng
+set_forced subtitle where lang == eng
+set_language audio where default plugin.radarr.original_language
+```
+
+### String Interpolation
+
+Warning and failure messages support `{filename}` interpolation:
+
+```
+warn "No English subtitles in {filename}"
+fail "Unsupported container for {filename}"
+```
+
+## Primitives
+
+### Values
+
+| Type | Examples | Description |
+|------|----------|-------------|
+| String | `"hello"`, `"192k"` | Double-quoted string |
+| Number | `20`, `1080`, `5.1`, `192k` | Integer, float, or suffixed number |
+| Boolean | `true`, `false` | Boolean value (word-boundary aware, won't match `truehd`) |
+| Identifier | `hevc`, `eng`, `medium` | Unquoted name |
+| List | `[eng, jpn, und]` | Comma-separated values in brackets (trailing comma allowed) |
+
+### Language Codes
+
+Use ISO 639-2/B three-letter language codes:
+
+| Code | Language |
+|------|----------|
+| `eng` | English |
+| `jpn` | Japanese |
+| `und` | Undetermined |
+| `chi` | Chinese |
+| `kor` | Korean |
+| `fre` | French |
+| `ger` | German |
+| `spa` | Spanish |
+
+### Codec Names
+
+Codec names are normalized by the compiler (e.g., `h265` → `hevc`). Common codecs:
+
+| Video | Audio | Subtitle |
+|-------|-------|----------|
+| `hevc` / `h265` | `aac` | `srt` |
+| `h264` / `avc` | `ac3` | `ass` / `ssa` |
+| `av1` | `eac3` | `pgs` / `hdmv_pgs` |
+| `vp9` | `truehd` | `vobsub` / `dvd_subtitle` |
+| `mpeg2` | `dts` / `dts_hd` | `subrip` |
+| | `flac` | |
+| | `opus` | |
+| | `pcm` | |
+
+## Compilation Pipeline
+
+```
+Source (.voom)
+    │
+    ▼
+  pest parser ──── syntax errors with line/column
+    │
+    ▼
+  AST builder ──── structural errors
+    │
+    ▼
+  Validator ────── semantic errors:
+    │               • Unknown codec (with "did you mean?" suggestions)
+    │               • Circular phase dependencies
+    │               • Unreachable phases
+    │               • Conflicting actions
+    │               • Invalid language codes
+    ▼
+  Compiler ─────── CompiledPolicy (domain types, ready for evaluation)
+```
+
+### Programmatic API
+
+```rust
+use voom_dsl::{parse_policy, validate, compile, format_policy};
+
+// Parse source to AST
+let ast = parse_policy(source)?;
+
+// Validate semantics (returns Result<(), ValidationErrors>)
+validate(&ast)?;
+
+// Compile to domain types
+let compiled = compile(source)?;    // parse + validate + compile
+// or
+let compiled = compile_ast(&ast)?;  // compile from existing AST
+
+// Format/pretty-print
+let formatted = format_policy(source)?;
+```
+
+## Complete Example
+
+```
+policy "production-normalize" {
+  config {
+    languages audio: [eng, und]
+    languages subtitle: [eng, und]
+    commentary_patterns: ["commentary", "director", "cast"]
+    on_error: continue
+  }
+
+  // Phase 1: Ensure MKV container
+  phase containerize {
+    container mkv
+  }
+
+  // Phase 2: Normalize tracks
+  phase normalize {
+    depends_on: [containerize]
+
+    audio actions {
+      clear_all_default: true
+      clear_all_forced: true
+      clear_all_titles: true
+    }
+
+    subtitle actions {
+      clear_all_default: true
+      clear_all_forced: true
+    }
+
+    keep audio where lang in [eng, jpn, und]
+    keep subtitles where lang in [eng] and not commentary
+    remove attachments where not font
+
+    order tracks [
+      video, audio_main, audio_alternate,
+      subtitle_main, subtitle_forced,
+      audio_commentary, subtitle_commentary, attachment
+    ]
+
+    defaults {
+      audio: first_per_language
+      subtitle: none
+    }
+  }
+
+  // Phase 3: Transcode if needed
+  phase transcode {
+    skip when video.codec in [hevc, h265]
+
+    transcode video to hevc {
+      crf: 20
+      preset: medium
+      max_resolution: 1080p
+      scale_algorithm: lanczos
+      hw: auto
+      hw_fallback: true
+    }
+
+    transcode audio to aac {
+      preserve: [truehd, dts_hd, flac]
+      bitrate: 192k
+    }
+  }
+
+  // Phase 4: Create compatibility audio
+  phase audio_compat {
+    depends_on: [normalize]
+
+    synthesize "Stereo AAC" {
+      codec: aac
+      channels: stereo
+      source: prefer(codec in [truehd, dts_hd, flac] and channels >= 6)
+      bitrate: "192k"
+      skip_if_exists { codec in [aac] and channels == 2 and not commentary }
+      title: "Stereo (AAC)"
+      language: inherit
+      position: after_source
+    }
+  }
+
+  // Phase 5: Validation rules
+  phase validate {
+    depends_on: [transcode, audio_compat]
+    run_if transcode.modified
+
+    when exists(audio where lang == jpn) and not exists(subtitle where lang == eng) {
+      warn "Japanese audio but no English subtitles in {filename}"
+    }
+
+    rules first {
+      rule "multi-language" {
+        when audio_is_multi_language {
+          warn "Multiple audio languages in {filename}"
+        }
+      }
+    }
+  }
+
+  // Phase 6: Plugin metadata
+  phase metadata {
+    when plugin.radarr.original_language exists {
+      set_language audio where default plugin.radarr.original_language
+      set_tag "title" plugin.radarr.title
+    }
+  }
+}
+```
