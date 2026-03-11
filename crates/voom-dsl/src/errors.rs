@@ -1,4 +1,4 @@
-//! Error types for DSL parsing.
+//! Error types for DSL parsing, validation, and compilation.
 
 use thiserror::Error;
 
@@ -26,6 +26,17 @@ pub enum DslError {
         line: usize,
         col: usize,
     },
+
+    #[error("validation error at line {line}, col {col}: {message}")]
+    Validation {
+        line: usize,
+        col: usize,
+        message: String,
+        suggestion: Option<String>,
+    },
+
+    #[error("compilation error: {message}")]
+    Compile { message: String },
 }
 
 impl DslError {
@@ -67,6 +78,53 @@ impl DslError {
             col,
         }
     }
+
+    pub fn validation(line: usize, col: usize, message: impl Into<String>) -> Self {
+        Self::Validation {
+            line,
+            col,
+            message: message.into(),
+            suggestion: None,
+        }
+    }
+
+    pub fn validation_with_suggestion(
+        line: usize,
+        col: usize,
+        message: impl Into<String>,
+        suggestion: impl Into<String>,
+    ) -> Self {
+        Self::Validation {
+            line,
+            col,
+            message: message.into(),
+            suggestion: Some(suggestion.into()),
+        }
+    }
+
+    pub fn compile(message: impl Into<String>) -> Self {
+        Self::Compile {
+            message: message.into(),
+        }
+    }
 }
+
+/// A collection of validation errors.
+#[derive(Debug)]
+pub struct ValidationErrors {
+    pub errors: Vec<DslError>,
+}
+
+impl std::fmt::Display for ValidationErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{} validation error(s):", self.errors.len())?;
+        for err in &self.errors {
+            writeln!(f, "  - {err}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ValidationErrors {}
 
 pub type Result<T> = std::result::Result<T, DslError>;
