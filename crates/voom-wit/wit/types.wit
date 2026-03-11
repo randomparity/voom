@@ -20,11 +20,16 @@ interface types {
         is-default: bool,
         is-forced: bool,
         channels: option<u32>,
+        channel-layout: option<string>,
+        sample-rate: option<u32>,
+        bit-depth: option<u32>,
         width: option<u32>,
         height: option<u32>,
         frame-rate: option<float64>,
         is-vfr: bool,
         is-hdr: bool,
+        hdr-format: option<string>,
+        pixel-format: option<string>,
     }
 
     enum track-type {
@@ -41,6 +46,18 @@ interface types {
         attachment,
     }
 
+    enum container {
+        mkv,
+        mp4,
+        avi,
+        webm,
+        flv,
+        wmv,
+        mov,
+        ts,
+        other,
+    }
+
     record key-value {
         key: string,
         value: string,
@@ -50,6 +67,64 @@ interface types {
         plugin-name: string,
         data: list<u8>,
     }
+
+    // --- Plan types ---
+
+    record plan {
+        policy-name: string,
+        phase-name: string,
+        actions: list<planned-action>,
+        warnings: list<string>,
+        skip-reason: option<string>,
+    }
+
+    record planned-action {
+        operation: operation-type,
+        track-index: option<u32>,
+        parameters: list<u8>,
+        description: string,
+    }
+
+    enum operation-type {
+        set-default,
+        clear-default,
+        set-forced,
+        clear-forced,
+        set-title,
+        set-language,
+        remove-track,
+        reorder-tracks,
+        convert-container,
+        transcode-video,
+        transcode-audio,
+        synthesize-audio,
+        set-container-tag,
+    }
+
+    record phase-result {
+        phase-name: string,
+        outcome: phase-outcome,
+        actions: list<action-result>,
+        file-modified: bool,
+        skip-reason: option<string>,
+        duration-ms: u64,
+    }
+
+    enum phase-outcome {
+        pending,
+        completed,
+        skipped,
+        failed,
+    }
+
+    record action-result {
+        operation: operation-type,
+        success: bool,
+        description: string,
+        error-message: option<string>,
+    }
+
+    // --- Event types ---
 
     record event-data {
         event-type: string,

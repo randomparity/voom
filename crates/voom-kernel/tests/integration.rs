@@ -66,11 +66,9 @@ impl Plugin for MockIntrospector {
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
         if let Event::FileDiscovered(discovered) = event {
             // Produce a FileIntrospected event in response
-            let introspected = Event::FileIntrospected(FileIntrospectedEvent {
-                path: discovered.path.clone(),
-                container: "mkv".to_string(),
-                track_count: 3,
-            });
+            let mut file = voom_domain::media::MediaFile::new(discovered.path.clone());
+            file.container = voom_domain::media::Container::Mkv;
+            let introspected = Event::FileIntrospected(FileIntrospectedEvent { file });
             Ok(Some(EventResult {
                 plugin_name: "mock-introspector".to_string(),
                 produced_events: vec![introspected],
