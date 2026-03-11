@@ -38,7 +38,7 @@ Plugins communicate exclusively through an **event bus** (tokio channels). No pl
 - **plugins/** — Native plugins: discovery, ffprobe-introspector, tool-detector, sqlite-store, policy-evaluator, phase-orchestrator, mkvtoolnix-executor, ffmpeg-executor, backup-manager, job-manager, web-server
 
 ### Key data flow
-1. DSL policy file (`.vpo`) → pest parser → AST → CompiledPolicy
+1. DSL policy file (`.voom`) → pest parser → AST → CompiledPolicy
 2. Discovery plugin walks filesystem → `FileDiscovered` events
 3. Introspector plugin (ffprobe) → `FileIntrospected` events → Storage plugin (SQLite)
 4. Phase Orchestrator feeds files + policy to Policy Evaluator → `Plan` structs
@@ -58,7 +58,7 @@ Web frontend: htmx + Alpine.js with Tera templates.
 
 ## DSL
 
-Policy files use `.vpo` extension and a custom curly-brace block syntax (not YAML). See `docs/INITIAL_DESIGN.md` section 6 for the full PEG grammar and examples. Key constructs: `policy`, `phase` (with `depends_on`, `skip when`, `run_if`), track operations (`keep`, `remove`, `order`, `defaults`), `transcode`, `synthesize`, `when`/`else` conditionals, `rules` blocks.
+Policy files use `.voom` extension and a custom curly-brace block syntax (not YAML). See `docs/INITIAL_DESIGN.md` section 6 for the full PEG grammar and examples. Key constructs: `policy`, `phase` (with `depends_on`, `skip when`, `run_if`), track operations (`keep`, `remove`, `order`, `defaults`), `transcode`, `synthesize`, `when`/`else` conditionals, `rules` blocks.
 
 ## Configuration
 

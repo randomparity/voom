@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/voom-domain",
+    "crates/voom-dsl",
     "crates/voom-kernel",
 ]
 
@@ -12,6 +13,7 @@ rust-version = "1.75"
 
 [workspace.dependencies]
 voom-domain = { path = "crates/voom-domain" }
+voom-dsl = { path = "crates/voom-dsl" }
 voom-kernel = { path = "crates/voom-kernel" }
 
 # Async

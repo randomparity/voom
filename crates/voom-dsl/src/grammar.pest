@@ -1,0 +1,129 @@
+// VOOM DSL Grammar
+// See docs/INITIAL_DESIGN.md §6.1 for specification
+
+WHITESPACE = _{ " " | "\t" | NEWLINE }
+COMMENT    = _{ "//" ~ (!NEWLINE ~ ANY)* }
+
+policy = { SOI ~ "policy" ~ string ~ "{" ~ config? ~ phase+ ~ "}" ~ EOI }
+
+// Config block
+config = { "config" ~ "{" ~ config_item* ~ "}" }
+config_item = {
+    "languages" ~ ("audio" | "subtitle") ~ ":" ~ list
+  | "on_error" ~ ":" ~ ident
+  | "commentary_patterns" ~ ":" ~ list
+}
+
+// Phase block
+phase = { "phase" ~ ident ~ "{" ~ phase_item* ~ "}" }
+phase_item = {
+    skip_when | depends_on | run_if | on_error
+  | container_op | keep_op | remove_op | order_op
+  | defaults_op | actions_op | transcode_op | synthesize_op
+  | when_block | rules_block
+}
+
+// Phase control
+skip_when  = { "skip" ~ "when" ~ condition }
+depends_on = { "depends_on" ~ ":" ~ list }
+run_if     = { "run_if" ~ ident ~ "." ~ ("modified" | "completed") }
+on_error   = { "on_error" ~ ":" ~ ident }
+
+// Operations
+container_op = { "container" ~ ident }
+
+keep_op   = { "keep" ~ track_target ~ where_clause? }
+remove_op = { "remove" ~ track_target ~ where_clause? }
+track_target = { "audio" | "subtitles" | "subtitle" | "attachments" | "video" }
+where_clause = { "where" ~ filter_expr }
+
+order_op   = { "order" ~ "tracks" ~ list }
+defaults_op = { "defaults" ~ "{" ~ default_item* ~ "}" }
+default_item = { ("audio" | "subtitle") ~ ":" ~ ident }
+
+actions_op = { ("audio" | "subtitle" | "video") ~ "actions" ~ "{" ~ action_setting* ~ "}" }
+action_setting = { ident ~ ":" ~ value }
+
+transcode_op = { "transcode" ~ ("video" | "audio") ~ "to" ~ ident ~ block? }
+block = { "{" ~ kv_pair* ~ "}" }
+kv_pair = { ident ~ ":" ~ value }
+
+synthesize_op = { "synthesize" ~ string ~ "{" ~ synth_item* ~ "}" }
+synth_item = {
+    "codec" ~ ":" ~ ident
+  | "channels" ~ ":" ~ (ident | number)
+  | "source" ~ ":" ~ source_pref
+  | "bitrate" ~ ":" ~ string
+  | "skip_if_exists" ~ "{" ~ filter_expr ~ "}"
+  | "create_if" ~ condition
+  | "title" ~ ":" ~ string
+  | "language" ~ ":" ~ (ident | "inherit")
+  | "position" ~ ":" ~ (ident | number)
+}
+source_pref = { "prefer" ~ "(" ~ filter_expr ~ ")" }
+
+// Conditions (used in when blocks and skip_when)
+when_block = { "when" ~ condition ~ "{" ~ action* ~ "}" ~ else_block? }
+else_block = { "else" ~ "{" ~ action* ~ "}" }
+
+rules_block = { "rules" ~ match_mode ~ "{" ~ rule_item* ~ "}" }
+match_mode  = { "first" | "all" }
+rule_item   = { "rule" ~ string ~ "{" ~ when_block ~ "}" }
+
+condition      = { condition_or }
+condition_or   = { condition_and ~ ("or" ~ condition_and)* }
+condition_and  = { condition_not ~ ("and" ~ condition_not)* }
+condition_not  = { "not" ~ condition_atom | condition_atom }
+condition_atom = {
+    "exists" ~ "(" ~ track_query ~ ")"
+  | "count" ~ "(" ~ track_query ~ ")" ~ compare_op ~ number
+  | "audio_is_multi_language"
+  | "is_dubbed"
+  | "is_original"
+  | field_access ~ compare_op ~ value
+  | field_access ~ "exists"
+  | "(" ~ condition ~ ")"
+}
+
+field_access = { ident ~ ("." ~ ident)+ }
+track_query  = { (track_target | "track") ~ ("where" ~ filter_expr)? }
+
+// Filter expressions (used in where clauses)
+filter_expr = { filter_or }
+filter_or   = { filter_and ~ ("or" ~ filter_and)* }
+filter_and  = { filter_not ~ ("and" ~ filter_not)* }
+filter_not  = { "not" ~ filter_atom | filter_atom }
+filter_atom = {
+    "lang" ~ "in" ~ list
+  | "lang" ~ compare_op ~ value
+  | "codec" ~ "in" ~ list
+  | "codec" ~ compare_op ~ value
+  | "channels" ~ compare_op ~ number
+  | "commentary"
+  | "forced"
+  | "default"
+  | "font"
+  | "title" ~ ("contains" | "matches") ~ string
+  | "(" ~ filter_expr ~ ")"
+}
+
+// Actions
+action = {
+    "skip" ~ ident?
+  | "warn" ~ string
+  | "fail" ~ string
+  | "set_default" ~ track_ref
+  | "set_forced" ~ track_ref
+  | "set_language" ~ track_ref ~ (field_access | string)
+  | "set_tag" ~ string ~ (field_access | value)
+}
+track_ref = { track_target ~ ("where" ~ filter_expr)? }
+
+// Primitives
+compare_op = { "==" | "!=" | "<=" | ">=" | "<" | ">" | "in" }
+list       = { "[" ~ (value ~ ("," ~ value)*)? ~ ","? ~ "]" }
+value      = { string | number | boolean | ident | list }
+boolean    = @{ ("true" | "false") ~ !(ASCII_ALPHANUMERIC | "_") }
+string     = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+number     = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ ASCII_ALPHA* }
+ident      = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }

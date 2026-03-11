@@ -1,0 +1,35 @@
+---
+source: crates/voom-dsl/tests/parser_snapshots.rs
+assertion_line: 199
+expression: ast
+---
+name: filters
+config: ~
+phases:
+  - name: norm
+    skip_when: ~
+    depends_on: []
+    run_if: ~
+    on_error: ~
+    operations:
+      - Keep:
+          target: audio
+          filter:
+            And:
+              - LangIn:
+                  - eng
+              - Or:
+                  - CodecIn:
+                      - aac
+                  - CodecIn:
+                      - flac
+    span:
+      start: 27
+      end: 132
+      line: 2
+      col: 9
+span:
+  start: 0
+  end: 138
+  line: 1
+  col: 1

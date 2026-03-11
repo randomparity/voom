@@ -1,0 +1,45 @@
+---
+source: crates/voom-dsl/tests/parser_snapshots.rs
+assertion_line: 172
+expression: ast
+---
+name: metadata
+config: ~
+phases:
+  - name: metadata
+    skip_when: ~
+    depends_on: []
+    run_if: ~
+    on_error: ~
+    operations:
+      - When:
+          condition:
+            FieldExists:
+              - plugin
+              - radarr
+              - original_language
+          then_actions:
+            - SetLanguage:
+                - target: audio
+                  filter: Default
+                - Field:
+                    - plugin
+                    - radarr
+                    - original_language
+            - SetTag:
+                - title
+                - Field:
+                    - plugin
+                    - radarr
+                    - title
+          else_actions: []
+    span:
+      start: 28
+      end: 259
+      line: 2
+      col: 9
+span:
+  start: 0
+  end: 265
+  line: 1
+  col: 1

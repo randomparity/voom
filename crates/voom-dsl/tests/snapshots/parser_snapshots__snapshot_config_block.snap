@@ -1,0 +1,35 @@
+---
+source: crates/voom-dsl/tests/parser_snapshots.rs
+assertion_line: 29
+expression: ast
+---
+name: with-config
+config:
+  audio_languages:
+    - eng
+    - und
+  subtitle_languages:
+    - eng
+    - jpn
+  on_error: continue
+  commentary_patterns:
+    - commentary
+    - director
+phases:
+  - name: init
+    skip_when: ~
+    depends_on: []
+    run_if: ~
+    on_error: ~
+    operations:
+      - Container: mkv
+    span:
+      start: 232
+      end: 280
+      line: 8
+      col: 9
+span:
+  start: 0
+  end: 286
+  line: 1
+  col: 1

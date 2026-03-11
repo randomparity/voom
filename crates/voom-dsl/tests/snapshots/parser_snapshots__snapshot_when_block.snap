@@ -1,0 +1,41 @@
+---
+source: crates/voom-dsl/tests/parser_snapshots.rs
+assertion_line: 127
+expression: ast
+---
+name: when
+config: ~
+phases:
+  - name: validate
+    skip_when: ~
+    depends_on: []
+    run_if: ~
+    on_error: ~
+    operations:
+      - When:
+          condition:
+            And:
+              - Exists:
+                  target: audio
+                  filter:
+                    LangIn:
+                      - jpn
+              - Not:
+                  Exists:
+                    target: subtitle
+                    filter:
+                      LangIn:
+                        - eng
+          then_actions:
+            - Warn: Japanese audio but no English subtitles
+          else_actions: []
+    span:
+      start: 24
+      end: 221
+      line: 2
+      col: 9
+span:
+  start: 0
+  end: 227
+  line: 1
+  col: 1

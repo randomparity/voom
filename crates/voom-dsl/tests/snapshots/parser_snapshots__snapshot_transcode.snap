@@ -1,0 +1,49 @@
+---
+source: crates/voom-dsl/tests/parser_snapshots.rs
+assertion_line: 94
+expression: ast
+---
+name: transcode
+config: ~
+phases:
+  - name: tc
+    skip_when:
+      FieldCompare:
+        - - video
+          - "codec "
+        - In
+        - List:
+            - Ident: hevc
+            - Ident: h265
+    depends_on: []
+    run_if: ~
+    on_error: ~
+    operations:
+      - Transcode:
+          target: video
+          codec: hevc
+          settings:
+            - - crf
+              - Number:
+                  - 20
+                  - "20"
+            - - preset
+              - Ident: medium
+      - Transcode:
+          target: audio
+          codec: aac
+          settings:
+            - - bitrate
+              - Number:
+                  - 192
+                  - 192k
+    span:
+      start: 29
+      end: 287
+      line: 2
+      col: 9
+span:
+  start: 0
+  end: 293
+  line: 1
+  col: 1

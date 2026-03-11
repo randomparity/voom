@@ -1,0 +1,42 @@
+---
+source: crates/voom-dsl/tests/parser_snapshots.rs
+assertion_line: 42
+expression: ast
+---
+name: track-ops
+config: ~
+phases:
+  - name: normalize
+    skip_when: ~
+    depends_on: []
+    run_if: ~
+    on_error: ~
+    operations:
+      - Keep:
+          target: audio
+          filter:
+            LangIn:
+              - eng
+              - jpn
+              - und
+      - Keep:
+          target: subtitles
+          filter:
+            And:
+              - LangIn:
+                  - eng
+              - Not: Commentary
+      - Remove:
+          target: attachments
+          filter:
+            Not: Font
+    span:
+      start: 29
+      end: 221
+      line: 2
+      col: 9
+span:
+  start: 0
+  end: 227
+  line: 1
+  col: 1

@@ -1,0 +1,25 @@
+---
+source: crates/voom-dsl/tests/parser_snapshots.rs
+assertion_line: 12
+expression: ast
+---
+name: minimal
+config: ~
+phases:
+  - name: init
+    skip_when: ~
+    depends_on: []
+    run_if: ~
+    on_error: ~
+    operations:
+      - Container: mkv
+    span:
+      start: 27
+      end: 75
+      line: 2
+      col: 9
+span:
+  start: 0
+  end: 81
+  line: 1
+  col: 1

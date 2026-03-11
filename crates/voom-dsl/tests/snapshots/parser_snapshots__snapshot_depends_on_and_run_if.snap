@@ -1,0 +1,40 @@
+---
+source: crates/voom-dsl/tests/parser_snapshots.rs
+assertion_line: 158
+expression: ast
+---
+name: deps
+config: ~
+phases:
+  - name: first
+    skip_when: ~
+    depends_on: []
+    run_if: ~
+    on_error: ~
+    operations:
+      - Container: mkv
+    span:
+      start: 24
+      end: 53
+      line: 2
+      col: 9
+  - name: second
+    skip_when: ~
+    depends_on:
+      - first
+    run_if:
+      phase: first
+      trigger: modified
+    on_error: ~
+    operations:
+      - Container: mkv
+    span:
+      start: 62
+      end: 178
+      line: 3
+      col: 9
+span:
+  start: 0
+  end: 184
+  line: 1
+  col: 1

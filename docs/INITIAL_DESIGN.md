@@ -2,8 +2,6 @@
 
 ## 1. Context & Motivation
 
-Video Policy Orchestrator (VPO) is being re-implemented from scratch in Rust with two fundamental architectural changes:
-
 1. **Plugin-first architecture with WASM** — The core is a thin kernel. ALL functionality (scanning, introspection, transcoding, metadata enrichment, storage) is implemented as plugins. Core plugins are native Rust for performance; third-party plugins are WASM modules loaded via wasmtime, enabling language-agnostic plugin authorship (Rust, Go, C, Zig, etc.) with sandboxed execution.
 
 2. **Custom block-based DSL** — Replaces YAML policy configuration with a purpose-built language using curly-brace blocks and media-specific keywords.
@@ -108,7 +106,7 @@ Video Policy Orchestrator (VPO) is being re-implemented from scratch in Rust wit
 ### 2.4 Data flow
 
 ```
-DSL Policy File (.vpo)              Media Files on Disk
+DSL Policy File (.voom)              Media Files on Disk
       │                                     │
       ▼                                     ▼
   ┌────────┐                        ┌──────────────┐
@@ -955,7 +953,7 @@ pub struct Span {
 ### 6.4 Compilation pipeline
 
 ```
-Source text (.vpo file)
+Source text (.voom file)
     │
     ▼
 ┌──────────┐     pest::Error with span
@@ -1209,7 +1207,7 @@ voom
 │   ├── --format json|table
 │   └── --tracks-only
 ├── process <path>                 # Apply policy to files
-│   ├── --policy <file.vpo>
+│   ├── --policy <file.voom>
 │   ├── --dry-run
 │   ├── --on-error skip|continue|fail
 │   ├── --workers <n>
@@ -1217,9 +1215,9 @@ voom
 │   └── --no-backup
 ├── policy
 │   ├── list
-│   ├── validate <file.vpo>
-│   ├── show <file.vpo>
-│   └── format <file.vpo>         # Auto-format in place
+│   ├── validate <file.voom>
+│   ├── show <file.voom>
+│   └── format <file.voom>         # Auto-format in place
 ├── plugin
 │   ├── list
 │   ├── info <name>
@@ -1502,7 +1500,7 @@ voom
 - `wasm-plugins/audio-synthesizer`: Audio synthesis (uses host tool runner)
 - `voom-plugin-sdk` crate:
   - Host function bindings
-  - Proc macros for plugin boilerplate (`#[vpo_plugin]`, `#[on_event(...)]`)
+  - Proc macros for plugin boilerplate (`#[voom_plugin]`, `#[on_event(...)]`)
   - Example plugin template
 - Documentation:
   - DSL language reference
@@ -1556,7 +1554,7 @@ voom
 
 **End-to-end acceptance (after S9):**
 1. `voom scan /path` → files appear in `voom inspect`
-2. Write `.vpo` policy → `voom policy validate` passes
+2. Write `.voom` policy → `voom policy validate` passes
 3. `voom process --dry-run` shows expected Plan
 4. `voom process` modifies files correctly
 5. `voom report` shows statistics
@@ -1587,7 +1585,7 @@ voom
 | **WASM plugin** | Plugin compiled to WebAssembly, loaded at runtime via wasmtime. Sandboxed, language-agnostic. |
 | **WIT** | WebAssembly Interface Types — the contract between WASM plugins and the host kernel. |
 | **Capability** | Enum variant declaring what a plugin can do (e.g., `Execute { ops: [transcode] }`). |
-| **DSL** | Domain-Specific Language — the `.vpo` file format for policy definitions. |
+| **DSL** | Domain-Specific Language — the `.voom` file format for policy definitions. |
 | **AST** | Abstract Syntax Tree — typed representation produced by parsing DSL source. |
 | **CompiledPolicy** | Rust structs produced by compiling a validated AST. Ready for evaluation. |
 | **Plan** | Execution plan: list of actions to perform on a file. Produced by evaluator, consumed by executors. |
