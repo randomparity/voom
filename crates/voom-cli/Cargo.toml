@@ -24,6 +24,7 @@ voom-mkvtoolnix-executor = { path = "../../plugins/mkvtoolnix-executor" }
 voom-ffmpeg-executor = { path = "../../plugins/ffmpeg-executor" }
 voom-backup-manager = { path = "../../plugins/backup-manager" }
 voom-job-manager = { path = "../../plugins/job-manager" }
+voom-web-server = { path = "../../plugins/web-server" }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

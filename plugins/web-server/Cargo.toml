@@ -1,0 +1,43 @@
+[package]
+name = "voom-web-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Web server plugin for VOOM — REST API and web dashboard"
+
+[dependencies]
+voom-domain = { path = "../../crates/voom-domain" }
+voom-dsl = { path = "../../crates/voom-dsl" }
+voom-kernel = { path = "../../crates/voom-kernel" }
+
+# Web framework
+axum = { version = "0.7", features = ["tokio", "json"] }
+tower = { version = "0.5", features = ["util", "limit", "timeout"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "set-header", "trace"] }
+
+# Templates
+tera = "1"
+
+# Async
+tokio.workspace = true
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures-core = "0.3"
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# DateTime & IDs
+chrono.workspace = true
+uuid.workspace = true
+
+# Errors & logging
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+axum-test = "16"

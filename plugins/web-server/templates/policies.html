@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Policies — VOOM{% endblock %}
+
+{% block content %}
+<div class="page-header flex-between">
+    <div>
+        <h1>Policies</h1>
+        <p>Manage your VOOM policy files (.voom)</p>
+    </div>
+    <a href="/policies/new/edit" class="btn btn-primary">New Policy</a>
+</div>
+
+<div class="card">
+    {% if policies | default(value=[]) | length > 0 %}
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Phases</th>
+                <th>Modified</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for policy in policies %}
+            <tr>
+                <td>
+                    <a href="/policies/{{ policy.name }}/edit" style="font-weight: 500;">
+                        {{ policy.name | default(value="unnamed") }}
+                    </a>
+                </td>
+                <td>{{ policy.phase_count | default(value="--") }}</td>
+                <td>
+                    <time class="text-secondary">{{ policy.modified_at | default(value="--") }}</time>
+                </td>
+                <td>
+                    <a href="/policies/{{ policy.name }}/edit" class="btn btn-secondary btn-sm">Edit</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">
+        <p>No policy files found. Create a new policy to get started.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

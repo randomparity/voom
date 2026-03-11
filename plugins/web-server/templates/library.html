@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+
+{% block title %}Library — VOOM{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Library</h1>
+    <p>Browse and filter your media files</p>
+</div>
+
+<div class="card mb-1">
+    <form hx-get="/library" hx-target="#file-list" hx-push-url="true" hx-swap="innerHTML">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="filter-container">Container</label>
+                <select id="filter-container" name="container">
+                    <option value="">All</option>
+                    <option value="mkv" {% if filter_container | default(value="") == "mkv" %}selected{% endif %}>MKV</option>
+                    <option value="mp4" {% if filter_container | default(value="") == "mp4" %}selected{% endif %}>MP4</option>
+                    <option value="avi" {% if filter_container | default(value="") == "avi" %}selected{% endif %}>AVI</option>
+                    <option value="webm" {% if filter_container | default(value="") == "webm" %}selected{% endif %}>WebM</option>
+                    <option value="ts" {% if filter_container | default(value="") == "ts" %}selected{% endif %}>TS</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="filter-codec">Codec</label>
+                <input type="text" id="filter-codec" name="codec"
+                       placeholder="e.g. hevc, aac"
+                       value="{{ filter_codec | default(value='') }}">
+            </div>
+            <div class="form-group">
+                <label for="filter-language">Language</label>
+                <input type="text" id="filter-language" name="language"
+                       placeholder="e.g. eng, jpn"
+                       value="{{ filter_language | default(value='') }}">
+            </div>
+            <div class="form-group">
+                <label for="filter-path">Path Prefix</label>
+                <input type="text" id="filter-path" name="path_prefix"
+                       placeholder="/media/movies"
+                       value="{{ filter_path_prefix | default(value='') }}">
+            </div>
+        </div>
+        <div class="btn-group mt-1">
+            <button type="submit" class="btn btn-primary btn-sm">Filter</button>
+            <a href="/library" class="btn btn-secondary btn-sm">Clear</a>
+        </div>
+    </form>
+</div>
+
+<div class="card" id="file-list">
+    {% if files | default(value=[]) | length > 0 %}
+    <table>
+        <thead>
+            <tr>
+                <th>Path</th>
+                <th>Container</th>
+                <th>Duration</th>
+                <th>Tracks</th>
+                <th>Size</th>
+                <th>Introspected</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for file in files %}
+            <tr>
+                <td>
+                    <a href="/files/{{ file.id }}" title="{{ file.path | default(value='') }}">
+                        {{ file.filename | default(value="unknown") }}
+                    </a>
+                </td>
+                <td><span class="mono">{{ file.container | default(value="") }}</span></td>
+                <td class="mono">{{ file.duration_human | default(value="--") }}</td>
+                <td>{{ file.track_count | default(value=0) }}</td>
+                <td class="mono">{{ file.size_human | default(value="--") }}</td>
+                <td>
+                    <time class="text-secondary">{{ file.introspected_at | default(value="--") }}</time>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="pagination">
+        {% if page | default(value=1) > 1 %}
+        <a href="/library?page={{ page - 1 }}{% if filter_container | default(value='') %}&container={{ filter_container }}{% endif %}{% if filter_codec | default(value='') %}&codec={{ filter_codec }}{% endif %}{% if filter_language | default(value='') %}&language={{ filter_language }}{% endif %}{% if filter_path_prefix | default(value='') %}&path_prefix={{ filter_path_prefix }}{% endif %}"
+           class="btn btn-secondary btn-sm">Previous</a>
+        {% endif %}
+
+        <span class="text-secondary" style="font-size: 0.85rem;">
+            Page {{ page | default(value=1) }} of {{ total_pages | default(value=1) }}
+        </span>
+
+        {% if page | default(value=1) < total_pages | default(value=1) %}
+        <a href="/library?page={{ page + 1 }}{% if filter_container | default(value='') %}&container={{ filter_container }}{% endif %}{% if filter_codec | default(value='') %}&codec={{ filter_codec }}{% endif %}{% if filter_language | default(value='') %}&language={{ filter_language }}{% endif %}{% if filter_path_prefix | default(value='') %}&path_prefix={{ filter_path_prefix }}{% endif %}"
+           class="btn btn-secondary btn-sm">Next</a>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p>No files found matching your filters.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

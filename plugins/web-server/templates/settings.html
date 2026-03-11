@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}Settings — VOOM{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Settings</h1>
+    <p>Application configuration and tool status</p>
+</div>
+
+<div class="card mb-1">
+    <div class="card-header">
+        <h2>Configuration</h2>
+    </div>
+    <p class="text-secondary" style="font-size: 0.9rem;">
+        Configuration is managed via <code>~/.config/voom/config.toml</code>.
+        Use <code>voom config show</code> to view current settings or
+        <code>voom config edit</code> to open in your editor.
+    </p>
+    <table style="margin-top: 1rem;">
+        <tbody>
+            <tr>
+                <td style="width: 180px;"><strong>Config file</strong></td>
+                <td class="mono">~/.config/voom/config.toml</td>
+            </tr>
+            <tr>
+                <td><strong>Plugin data</strong></td>
+                <td class="mono">~/.config/voom/plugins/</td>
+            </tr>
+            <tr>
+                <td><strong>WASM plugins</strong></td>
+                <td class="mono">~/.config/voom/plugins/wasm/</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="card"
+     x-data="{ tools: [], loading: true }"
+     x-init="fetch('/api/tools').then(r => r.json()).then(d => { tools = d.tools || []; loading = false; }).catch(() => { loading = false; })">
+    <div class="card-header">
+        <h2>Tool Status</h2>
+    </div>
+
+    <template x-if="loading">
+        <p class="text-muted">Detecting tools...</p>
+    </template>
+
+    <template x-if="!loading && tools.length === 0">
+        <p class="text-muted">No tools detected. Run <code>voom doctor</code> to diagnose.</p>
+    </template>
+
+    <template x-if="!loading && tools.length > 0">
+        <table>
+            <thead>
+                <tr>
+                    <th>Tool</th>
+                    <th>Version</th>
+                    <th>Path</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="tool in tools" :key="tool.name">
+                    <tr>
+                        <td style="font-weight: 500;" x-text="tool.name"></td>
+                        <td class="mono" x-text="tool.version || '--'"></td>
+                        <td class="mono text-secondary" x-text="tool.path || '--'"></td>
+                        <td>
+                            <span class="badge"
+                                  :class="tool.available ? 'badge-completed' : 'badge-failed'"
+                                  x-text="tool.available ? 'Available' : 'Missing'"></span>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </template>
+</div>
+{% endblock %}

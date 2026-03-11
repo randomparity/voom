@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+
+{% block title %}{{ file.filename | default(value="File") }} — VOOM{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{{ file.filename | default(value="Unknown File") }}</h1>
+    <p class="mono">{{ file.path | default(value="") }}</p>
+</div>
+
+<div class="card mb-1">
+    <div class="card-header">
+        <h2>File Details</h2>
+        <a href="/library" class="btn btn-secondary btn-sm">Back to Library</a>
+    </div>
+    <table>
+        <tbody>
+            <tr>
+                <td style="width: 180px;"><strong>Path</strong></td>
+                <td class="mono">{{ file.path | default(value="--") }}</td>
+            </tr>
+            <tr>
+                <td><strong>Container</strong></td>
+                <td class="mono">{{ file.container | default(value="--") }}</td>
+            </tr>
+            <tr>
+                <td><strong>Size</strong></td>
+                <td class="mono">{{ file.size_human | default(value="--") }}</td>
+            </tr>
+            <tr>
+                <td><strong>Duration</strong></td>
+                <td class="mono">{{ file.duration_human | default(value="--") }}</td>
+            </tr>
+            <tr>
+                <td><strong>Bitrate</strong></td>
+                <td class="mono">{{ file.bitrate | default(value="--") }}</td>
+            </tr>
+            <tr>
+                <td><strong>Content Hash</strong></td>
+                <td class="mono">{{ file.content_hash | default(value="--") }}</td>
+            </tr>
+            <tr>
+                <td><strong>Introspected</strong></td>
+                <td><time>{{ file.introspected_at | default(value="--") }}</time></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+{% if file.tags %}
+<div class="card mb-1">
+    <div class="card-header">
+        <h2>Tags</h2>
+    </div>
+    <div>
+        {% for key, value in file.tags %}
+        <span class="tag">{{ key }}: {{ value }}</span>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<div class="card mb-1">
+    <div class="card-header">
+        <h2>Tracks ({{ tracks | default(value=[]) | length }})</h2>
+    </div>
+
+    {% if tracks | default(value=[]) | length > 0 %}
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Type</th>
+                <th>Codec</th>
+                <th>Language</th>
+                <th>Title</th>
+                <th>Default</th>
+                <th>Forced</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for track in tracks %}
+            <tr>
+                <td>{{ track.index | default(value=0) }}</td>
+                <td>
+                    {% if track.track_type | default(value="") == "Video" %}
+                    <span class="badge badge-video">Video</span>
+                    {% elif track.track_type | default(value="") == "Audio" %}
+                    <span class="badge badge-audio">Audio</span>
+                    {% elif track.track_type | default(value="") == "Subtitle" %}
+                    <span class="badge badge-subtitle">Sub</span>
+                    {% else %}
+                    <span class="badge badge-pending">{{ track.track_type | default(value="?") }}</span>
+                    {% endif %}
+                </td>
+                <td class="mono">{{ track.codec | default(value="--") }}</td>
+                <td>{{ track.language | default(value="und") }}</td>
+                <td>{{ track.title | default(value="") }}</td>
+                <td>
+                    {% if track.is_default | default(value=false) %}
+                    <span class="text-success">Yes</span>
+                    {% else %}
+                    <span class="text-muted">No</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if track.is_forced | default(value=false) %}
+                    <span class="text-warning">Yes</span>
+                    {% else %}
+                    <span class="text-muted">No</span>
+                    {% endif %}
+                </td>
+                <td class="mono text-secondary">
+                    {% if track.track_type | default(value="") == "Video" %}
+                        {{ track.width | default(value=0) }}x{{ track.height | default(value=0) }}
+                        {% if track.is_hdr | default(value=false) %}<span class="badge badge-video">HDR</span>{% endif %}
+                    {% elif track.track_type | default(value="") == "Audio" %}
+                        {{ track.channels | default(value="--") }}ch
+                        {% if track.channel_layout | default(value="") %}({{ track.channel_layout }}){% endif %}
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">
+        <p>No tracks found for this file.</p>
+    </div>
+    {% endif %}
+</div>
+
+{% if plans | default(value=[]) | length > 0 %}
+<div class="card">
+    <div class="card-header">
+        <h2>Plans</h2>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>Policy</th>
+                <th>Phase</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Executed</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for plan in plans %}
+            <tr>
+                <td>{{ plan.policy_name | default(value="--") }}</td>
+                <td>{{ plan.phase_name | default(value="--") }}</td>
+                <td>
+                    <span class="badge badge-{{ plan.status | default(value='pending') | lower }}">
+                        {{ plan.status | default(value="--") }}
+                    </span>
+                </td>
+                <td><time class="text-secondary">{{ plan.created_at | default(value="--") }}</time></td>
+                <td><time class="text-secondary">{{ plan.executed_at | default(value="--") }}</time></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

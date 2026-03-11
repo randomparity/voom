@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+
+{% block title %}{{ policy_name | default(value="New Policy") }} — VOOM{% endblock %}
+
+{% block content %}
+<div class="page-header flex-between">
+    <div>
+        <h1>{{ policy_name | default(value="New Policy") }}</h1>
+        <p>Edit policy DSL source</p>
+    </div>
+    <a href="/policies" class="btn btn-secondary btn-sm">Back to Policies</a>
+</div>
+
+<div x-data="policyEditor()" class="card">
+    <div class="btn-group mb-2">
+        <button class="btn btn-primary btn-sm" @click="validate()" :disabled="validating">
+            <span x-show="!validating">Validate</span>
+            <span x-show="validating">Validating...</span>
+        </button>
+        <button class="btn btn-secondary btn-sm" @click="format()" :disabled="formatting">
+            <span x-show="!formatting">Format</span>
+            <span x-show="formatting">Formatting...</span>
+        </button>
+        <button class="btn btn-primary btn-sm" @click="save()" :disabled="saving">
+            <span x-show="!saving">Save</span>
+            <span x-show="saving">Saving...</span>
+        </button>
+        <span x-show="saved" class="text-success" style="padding: 0.3rem 0.5rem; font-size: 0.85rem;"
+              x-transition>Saved</span>
+    </div>
+
+    <div class="form-group">
+        <label for="policy-source">Policy Source</label>
+        <textarea id="policy-source"
+                  x-model="source"
+                  @input.debounce.500ms="autoValidate()"
+                  rows="24"
+                  spellcheck="false"
+                  placeholder="policy &quot;my-policy&quot; { ... }">{{ source | default(value="") }}</textarea>
+    </div>
+
+    <div x-show="errors.length > 0" x-transition>
+        <h3 class="mb-1" style="font-size: 0.9rem; color: var(--danger);">
+            Validation Errors (<span x-text="errors.length"></span>)
+        </h3>
+        <ul class="error-list">
+            <template x-for="err in errors" :key="err.message">
+                <li>
+                    <span x-show="err.line" class="error-line" x-text="'Line ' + err.line + ':'"></span>
+                    <span x-text="err.message"></span>
+                </li>
+            </template>
+        </ul>
+    </div>
+
+    <div x-show="valid && errors.length === 0 && validated" x-transition>
+        <p class="text-success" style="font-size: 0.85rem;">Policy is valid.</p>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function policyEditor() {
+    return {
+        source: {{ source | default(value="") | json_encode() | safe }},
+        errors: [],
+        validating: false,
+        formatting: false,
+        saving: false,
+        saved: false,
+        valid: false,
+        validated: false,
+        _debounceTimer: null,
+
+        autoValidate() {
+            this.saved = false;
+            if (this._debounceTimer) clearTimeout(this._debounceTimer);
+            this._debounceTimer = setTimeout(() => {
+                if (this.source.trim().length > 0) {
+                    this.validate();
+                }
+            }, 500);
+        },
+
+        async validate() {
+            this.validating = true;
+            this.validated = false;
+            try {
+                const resp = await fetch('/api/policy/validate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ source: this.source })
+                });
+                const data = await resp.json();
+                this.errors = data.errors || [];
+                this.valid = data.valid || false;
+                this.validated = true;
+            } catch (e) {
+                this.errors = [{ message: 'Failed to reach validation endpoint: ' + e.message }];
+            } finally {
+                this.validating = false;
+            }
+        },
+
+        async format() {
+            this.formatting = true;
+            try {
+                const resp = await fetch('/api/policy/format', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ source: this.source })
+                });
+                const data = await resp.json();
+                if (data.formatted) {
+                    this.source = data.formatted;
+                    this.errors = [];
+                    this.valid = true;
+                    this.validated = true;
+                } else if (data.errors) {
+                    this.errors = data.errors;
+                }
+            } catch (e) {
+                this.errors = [{ message: 'Failed to reach format endpoint: ' + e.message }];
+            } finally {
+                this.formatting = false;
+            }
+        },
+
+        async save() {
+            this.saving = true;
+            this.saved = false;
+            try {
+                const resp = await fetch('/api/policy/{{ policy_name | default(value="new") }}', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ source: this.source })
+                });
+                if (resp.ok) {
+                    this.saved = true;
+                    setTimeout(() => this.saved = false, 3000);
+                } else {
+                    const data = await resp.json();
+                    this.errors = data.errors || [{ message: 'Save failed' }];
+                }
+            } catch (e) {
+                this.errors = [{ message: 'Failed to save: ' + e.message }];
+            } finally {
+                this.saving = false;
+            }
+        }
+    };
+}
+</script>
+{% endblock %}

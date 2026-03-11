@@ -14,6 +14,7 @@ members = [
     "plugins/backup-manager",
     "plugins/ffmpeg-executor",
     "plugins/job-manager",
+    "plugins/web-server",
     "crates/voom-cli",
 ]
 

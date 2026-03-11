@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block title %}Jobs — VOOM{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Jobs</h1>
+    <p>Monitor background processing tasks</p>
+</div>
+
+<div class="card-grid">
+    <div class="stat-card info">
+        <div class="stat-value">{{ jobs_pending | default(value=0) }}</div>
+        <div class="stat-label">Pending</div>
+    </div>
+    <div class="stat-card warning">
+        <div class="stat-value">{{ jobs_running | default(value=0) }}</div>
+        <div class="stat-label">Running</div>
+    </div>
+    <div class="stat-card success">
+        <div class="stat-value">{{ jobs_completed | default(value=0) }}</div>
+        <div class="stat-label">Completed</div>
+    </div>
+    <div class="stat-card danger">
+        <div class="stat-value">{{ jobs_failed | default(value=0) }}</div>
+        <div class="stat-label">Failed</div>
+    </div>
+</div>
+
+<div class="card" hx-get="/jobs" hx-trigger="every 5s" hx-select="#jobs-table" hx-target="#jobs-table" hx-swap="outerHTML">
+    <div id="jobs-table">
+        {% if jobs | default(value=[]) | length > 0 %}
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Progress</th>
+                    <th>Message</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in jobs %}
+                <tr>
+                    <td>
+                        <span class="mono truncate" title="{{ job.id | default(value='') }}">
+                            {{ job.id | default(value="--") | truncate(length=12, end="...") }}
+                        </span>
+                    </td>
+                    <td>{{ job.job_type | default(value="--") }}</td>
+                    <td>
+                        {% if job.status | default(value="") == "Pending" %}
+                        <span class="badge badge-pending">Pending</span>
+                        {% elif job.status | default(value="") == "Running" %}
+                        <span class="badge badge-running">Running</span>
+                        {% elif job.status | default(value="") == "Completed" %}
+                        <span class="badge badge-completed">Completed</span>
+                        {% elif job.status | default(value="") == "Failed" %}
+                        <span class="badge badge-failed">Failed</span>
+                        {% elif job.status | default(value="") == "Cancelled" %}
+                        <span class="badge badge-cancelled">Cancelled</span>
+                        {% else %}
+                        <span class="badge badge-pending">{{ job.status | default(value="?") }}</span>
+                        {% endif %}
+                    </td>
+                    <td style="min-width: 120px;">
+                        <div class="progress">
+                            <div class="progress-bar {% if job.status | default(value='') == 'Completed' %}complete{% elif job.status | default(value='') == 'Failed' %}failed{% endif %}"
+                                 style="width: {{ job.progress | default(value=0) }}%"></div>
+                        </div>
+                        <span class="text-muted" style="font-size: 0.75rem;">
+                            {{ job.progress | default(value=0) | round(precision=1) }}%
+                        </span>
+                    </td>
+                    <td class="text-secondary" style="font-size: 0.8rem;">
+                        {{ job.progress_message | default(value="") }}
+                    </td>
+                    <td>
+                        <time class="text-secondary">{{ job.created_at | default(value="--") }}</time>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-state">
+            <p>No jobs found.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

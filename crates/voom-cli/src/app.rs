@@ -122,6 +122,12 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
         20,
     );
 
+    // Web server
+    kernel.register_plugin(
+        Arc::new(voom_web_server::WebServerPlugin::new()),
+        10,
+    );
+
     Ok(kernel)
 }
 
