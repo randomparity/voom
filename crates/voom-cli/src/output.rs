@@ -1,5 +1,7 @@
 //! Output formatting utilities for the CLI.
 
+use std::path::Path;
+
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, ContentArrangement, Table};
 use owo_colors::OwoColorize;
@@ -8,6 +10,53 @@ use voom_domain::plan::Plan;
 use voom_domain::utils::datetime;
 
 use crate::cli::OutputFormat;
+
+/// Returns the current terminal width, defaulting to 80 if it cannot be determined.
+pub fn term_width() -> usize {
+    console::Term::stdout().size().1 as usize
+}
+
+/// Shrink a filename to fit within `max_len` characters.
+///
+/// Preserves the beginning of the stem and the file extension, joining them
+/// with "..." when truncation is needed.
+pub fn shrink_filename(name: &str, max_len: usize) -> String {
+    if name.len() <= max_len {
+        return name.to_string();
+    }
+
+    let path = Path::new(name);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+
+    // "..." + ext  (the dots replace the dot separator)
+    let suffix_len = 3 + ext.len(); // e.g., "...mkv" = 6
+
+    if max_len <= suffix_len + 1 {
+        // Not enough room for even 1 char + suffix; just hard-truncate
+        return name.chars().take(max_len).collect();
+    }
+
+    let prefix_len = max_len - suffix_len;
+    let prefix: String = name.chars().take(prefix_len).collect();
+
+    if ext.is_empty() {
+        format!("{prefix}...")
+    } else {
+        format!("{prefix}...{ext}")
+    }
+}
+
+/// Compute the max filename length that keeps a progress line on one terminal row.
+///
+/// `fixed_width` is the number of characters used by the non-filename parts of
+/// the progress line (spinner, bar, counters, ETA text, etc.).
+pub fn max_filename_len(fixed_width: usize) -> usize {
+    let width = term_width();
+    width.saturating_sub(fixed_width).max(12)
+}
 
 /// Format a list of discovered files as a table.
 pub fn format_scan_results(files: &[(std::path::PathBuf, u64, String)], format: OutputFormat) {
@@ -173,4 +222,51 @@ fn new_table() -> Table {
         .load_preset(UTF8_FULL_CONDENSED)
         .set_content_arrangement(ContentArrangement::Dynamic);
     table
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shrink_no_truncation_needed() {
+        assert_eq!(shrink_filename("short.mkv", 40), "short.mkv");
+    }
+
+    #[test]
+    fn shrink_exact_length() {
+        let name = "x".repeat(30) + ".mkv";
+        assert_eq!(shrink_filename(&name, 34), name);
+    }
+
+    #[test]
+    fn shrink_long_name_preserves_extension() {
+        let result = shrink_filename(
+            "A Very Long Movie Name (2025) - S01E01 - Episode Title [WEBDL-1080p]-GROUP.mkv",
+            40,
+        );
+        assert_eq!(result.len(), 40);
+        assert!(result.ends_with("...mkv"), "got: {result}");
+        assert!(result.starts_with("A Very Long Movie Name (2025) - S"));
+    }
+
+    #[test]
+    fn shrink_no_extension() {
+        let result = shrink_filename("a_very_long_filename_without_extension", 20);
+        assert_eq!(result.len(), 20);
+        assert!(result.ends_with("..."), "got: {result}");
+    }
+
+    #[test]
+    fn shrink_very_small_max() {
+        let result = shrink_filename("movie.mkv", 5);
+        assert_eq!(result.len(), 5);
+    }
+
+    #[test]
+    fn shrink_various_extensions() {
+        let result = shrink_filename("Some Long Name Here.m2ts", 20);
+        assert!(result.ends_with("...m2ts"), "got: {result}");
+        assert_eq!(result.len(), 20);
+    }
 }

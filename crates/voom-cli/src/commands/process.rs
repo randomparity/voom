@@ -46,6 +46,7 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
         recursive: true,
         hash_files: !args.no_backup,
         workers: args.workers,
+        on_progress: None,
     };
 
     let events = discovery

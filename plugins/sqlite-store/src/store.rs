@@ -35,6 +35,11 @@ impl SqliteStore {
     }
 
     fn from_manager(manager: SqliteConnectionManager) -> Result<Self> {
+        // Configure every connection from the pool with pragmas (WAL, busy_timeout, etc.)
+        let manager = manager.with_init(|conn| {
+            schema::configure_connection(conn)
+        });
+
         let pool = Pool::builder()
             .max_size(8)
             .build(manager)
@@ -44,8 +49,6 @@ impl SqliteStore {
         let conn = pool
             .get()
             .map_err(|e| VoomError::Storage(format!("failed to get connection: {e}")))?;
-        schema::configure_connection(&conn)
-            .map_err(|e| VoomError::Storage(format!("failed to configure connection: {e}")))?;
         schema::create_schema(&conn)
             .map_err(|e| VoomError::Storage(format!("failed to create schema: {e}")))?;
 
@@ -214,81 +217,100 @@ impl StorageTrait for SqliteStore {
             .file_name()
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_default();
+        let path_str = file.path.to_string_lossy().to_string();
 
-        conn.execute(
-            "INSERT INTO files (id, path, filename, size, content_hash, container, duration, bitrate, tags, plugin_metadata, introspected_at, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-             ON CONFLICT(id) DO UPDATE SET
-                path = excluded.path,
-                filename = excluded.filename,
-                size = excluded.size,
-                content_hash = excluded.content_hash,
-                container = excluded.container,
-                duration = excluded.duration,
-                bitrate = excluded.bitrate,
-                tags = excluded.tags,
-                plugin_metadata = excluded.plugin_metadata,
-                introspected_at = excluded.introspected_at,
-                updated_at = excluded.updated_at",
-            params![
-                file.id.to_string(),
-                file.path.to_string_lossy().to_string(),
-                filename,
-                file.size as i64,
-                file.content_hash,
-                file.container.as_str(),
-                file.duration,
-                file.bitrate.map(|b| b as i32),
-                tags_json,
-                meta_json,
-                format_datetime(&file.introspected_at),
-                &now,
-                &now,
-            ],
-        )
-        .map_err(|e| VoomError::Storage(format!("failed to upsert file: {e}")))?;
+        // Wrap the delete-insert sequence in a transaction for atomicity
+        conn.execute_batch("BEGIN")
+            .map_err(|e| VoomError::Storage(format!("failed to begin transaction: {e}")))?;
 
-        // Delete existing tracks and re-insert
-        conn.execute(
-            "DELETE FROM tracks WHERE file_id = ?1",
-            params![file.id.to_string()],
-        )
-        .map_err(|e| VoomError::Storage(format!("failed to delete tracks: {e}")))?;
-
-        let mut stmt = conn
-            .prepare(
-                "INSERT INTO tracks (id, file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+        let result = (|| -> Result<()> {
+            // Delete old tracks before upserting, since the file id may change on re-scan
+            conn.execute(
+                "DELETE FROM tracks WHERE file_id IN (SELECT id FROM files WHERE path = ?1)",
+                params![&path_str],
             )
-            .map_err(|e| VoomError::Storage(format!("failed to prepare track insert: {e}")))?;
+            .map_err(|e| VoomError::Storage(format!("failed to delete old tracks: {e}")))?;
 
-        for track in &file.tracks {
-            stmt.execute(params![
-                Uuid::new_v4().to_string(),
-                file.id.to_string(),
-                track.index as i32,
-                track_type_to_str(track.track_type),
-                track.codec,
-                track.language,
-                track.title,
-                track.is_default as i32,
-                track.is_forced as i32,
-                track.channels.map(|v| v as i32),
-                track.channel_layout,
-                track.sample_rate.map(|v| v as i32),
-                track.bit_depth.map(|v| v as i32),
-                track.width.map(|v| v as i32),
-                track.height.map(|v| v as i32),
-                track.frame_rate,
-                track.is_vfr as i32,
-                track.is_hdr as i32,
-                track.hdr_format,
-                track.pixel_format,
-            ])
-            .map_err(|e| VoomError::Storage(format!("failed to insert track: {e}")))?;
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, container, duration, bitrate, tags, plugin_metadata, introspected_at, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                 ON CONFLICT(path) DO UPDATE SET
+                    id = excluded.id,
+                    filename = excluded.filename,
+                    size = excluded.size,
+                    content_hash = excluded.content_hash,
+                    container = excluded.container,
+                    duration = excluded.duration,
+                    bitrate = excluded.bitrate,
+                    tags = excluded.tags,
+                    plugin_metadata = excluded.plugin_metadata,
+                    introspected_at = excluded.introspected_at,
+                    updated_at = excluded.updated_at",
+                params![
+                    file.id.to_string(),
+                    &path_str,
+                    filename,
+                    file.size as i64,
+                    file.content_hash,
+                    file.container.as_str(),
+                    file.duration,
+                    file.bitrate.map(|b| b as i32),
+                    tags_json,
+                    meta_json,
+                    format_datetime(&file.introspected_at),
+                    &now,
+                    &now,
+                ],
+            )
+            .map_err(|e| VoomError::Storage(format!("failed to upsert file: {e}")))?;
+
+            let mut stmt = conn
+                .prepare(
+                    "INSERT INTO tracks (id, file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                )
+                .map_err(|e| VoomError::Storage(format!("failed to prepare track insert: {e}")))?;
+
+            for track in &file.tracks {
+                stmt.execute(params![
+                    Uuid::new_v4().to_string(),
+                    file.id.to_string(),
+                    track.index as i32,
+                    track_type_to_str(track.track_type),
+                    track.codec,
+                    track.language,
+                    track.title,
+                    track.is_default as i32,
+                    track.is_forced as i32,
+                    track.channels.map(|v| v as i32),
+                    track.channel_layout,
+                    track.sample_rate.map(|v| v as i32),
+                    track.bit_depth.map(|v| v as i32),
+                    track.width.map(|v| v as i32),
+                    track.height.map(|v| v as i32),
+                    track.frame_rate,
+                    track.is_vfr as i32,
+                    track.is_hdr as i32,
+                    track.hdr_format,
+                    track.pixel_format,
+                ])
+                .map_err(|e| VoomError::Storage(format!("failed to insert track: {e}")))?;
+            }
+
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                conn.execute_batch("COMMIT")
+                    .map_err(|e| VoomError::Storage(format!("failed to commit: {e}")))?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
         }
-
-        Ok(())
     }
 
     fn get_file(&self, id: &Uuid) -> Result<Option<MediaFile>> {
@@ -1229,7 +1251,11 @@ mod tests {
 
     #[test]
     fn test_concurrent_pool_access() {
-        let store = std::sync::Arc::new(test_store());
+        // Use a temp file DB for realistic WAL-mode concurrency (in-memory shared
+        // cache doesn't support concurrent transactions well)
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("concurrent_test.db");
+        let store = std::sync::Arc::new(SqliteStore::open(&db_path).unwrap());
         let mut handles = vec![];
 
         for i in 0..4 {

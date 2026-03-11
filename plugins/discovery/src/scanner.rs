@@ -1,10 +1,12 @@
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use rayon::prelude::*;
 use walkdir::WalkDir;
-use xxhash_rust::xxh3::xxh3_64;
+use xxhash_rust::xxh3::Xxh3;
 
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::FileDiscoveredEvent;
@@ -31,13 +33,22 @@ fn is_media_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Compute xxHash64 of a file's contents.
+/// Compute xxHash64 of a file's contents using streaming reads.
+/// Uses a fixed 256KB buffer to avoid loading large files into memory.
 fn hash_file(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)?;
-    let mut all_bytes = Vec::new();
-    file.read_to_end(&mut all_bytes)?;
+    let mut hasher = Xxh3::new();
+    let mut buf = [0u8; 256 * 1024]; // 256KB chunks
 
-    let hash = xxh3_64(&all_bytes);
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    let hash = hasher.digest();
     Ok(format!("{hash:016x}"))
 }
 
@@ -56,14 +67,20 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
         WalkDir::new(&options.root).max_depth(1)
     };
 
-    // Collect media file paths
-    let media_paths: Vec<_> = walker
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().is_file())
-        .filter(|entry| is_media_file(entry.path()))
-        .map(|entry| entry.into_path())
-        .collect();
+    // Collect media file paths, reporting progress as we discover them
+    let mut media_paths: Vec<_> = Vec::new();
+    for entry in walker.into_iter().filter_map(|e| e.ok()) {
+        if entry.file_type().is_file() && is_media_file(entry.path()) {
+            let path = entry.into_path();
+            if let Some(ref cb) = options.on_progress {
+                cb(crate::ScanProgress::Discovered {
+                    count: media_paths.len() + 1,
+                    path: path.clone(),
+                });
+            }
+            media_paths.push(path);
+        }
+    }
 
     tracing::info!(
         root = %options.root.display(),
@@ -71,23 +88,31 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
         "discovered media files"
     );
 
+    let total = media_paths.len();
+    let processed = Arc::new(AtomicUsize::new(0));
+
     // Process files in parallel using rayon
+    let process_file = |path: &std::path::PathBuf| {
+        let result = build_event(path, options.hash_files);
+        let current = processed.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(ref cb) = options.on_progress {
+            cb(crate::ScanProgress::Processing {
+                current,
+                total,
+                path: path.clone(),
+            });
+        }
+        result
+    };
+
     let events: Vec<Result<FileDiscoveredEvent>> = if options.workers > 0 {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(options.workers)
             .build()
             .map_err(|e| VoomError::Other(Box::new(e)))?;
-        pool.install(|| {
-            media_paths
-                .par_iter()
-                .map(|path| build_event(path, options.hash_files))
-                .collect()
-        })
+        pool.install(|| media_paths.par_iter().map(process_file).collect())
     } else {
-        media_paths
-            .par_iter()
-            .map(|path| build_event(path, options.hash_files))
-            .collect()
+        media_paths.par_iter().map(process_file).collect()
     };
 
     // Collect results, logging errors but not failing the whole scan

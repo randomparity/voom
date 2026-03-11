@@ -2966,6 +2966,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "comfy-table",
+ "console",
  "dirs",
  "indicatif",
  "owo-colors",

@@ -5,8 +5,16 @@ use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult, FileDiscoveredEvent};
 use voom_kernel::{Plugin, PluginContext};
 
-/// Configuration for a discovery scan.
+/// Progress update during a scan.
 #[derive(Debug, Clone)]
+pub enum ScanProgress {
+    /// Discovery phase: found a file during directory walk.
+    Discovered { count: usize, path: std::path::PathBuf },
+    /// Processing phase: hashing/building event for a file.
+    Processing { current: usize, total: usize, path: std::path::PathBuf },
+}
+
+/// Configuration for a discovery scan.
 pub struct ScanOptions {
     /// Root directory to scan.
     pub root: std::path::PathBuf,
@@ -16,6 +24,8 @@ pub struct ScanOptions {
     pub hash_files: bool,
     /// Number of parallel workers for hashing (0 = auto).
     pub workers: usize,
+    /// Optional progress callback.
+    pub on_progress: Option<Box<dyn Fn(ScanProgress) + Send + Sync>>,
 }
 
 impl ScanOptions {
@@ -25,7 +35,20 @@ impl ScanOptions {
             recursive: true,
             hash_files: true,
             workers: 0,
+            on_progress: None,
         }
+    }
+}
+
+impl std::fmt::Debug for ScanOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScanOptions")
+            .field("root", &self.root)
+            .field("recursive", &self.recursive)
+            .field("hash_files", &self.hash_files)
+            .field("workers", &self.workers)
+            .field("on_progress", &self.on_progress.as_ref().map(|_| "..."))
+            .finish()
     }
 }
 
