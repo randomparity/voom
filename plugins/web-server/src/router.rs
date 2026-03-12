@@ -5,7 +5,7 @@ use axum::routing::{get, post};
 use axum::Router;
 
 use crate::api;
-use crate::middleware::{auth_middleware, SecurityHeadersLayer};
+use crate::middleware::{auth_middleware, RequestIdLayer, SecurityHeadersLayer};
 use crate::sse;
 use crate::state::AppState;
 use crate::templates;
@@ -49,6 +49,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .merge(authenticated_routes)
         .merge(page_routes)
+        .layer(RequestIdLayer)
         .layer(SecurityHeadersLayer)
         .with_state(state)
 }

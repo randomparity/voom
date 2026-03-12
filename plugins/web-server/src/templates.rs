@@ -16,7 +16,7 @@ fn render(templates: &tera::Tera, name: &str, ctx: &tera::Context) -> HtmlResult
         tracing::error!(template = name, error = %e, "Template render failed");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Template error: {e}"),
+            "Internal server error".to_string(),
         )
     })
 }

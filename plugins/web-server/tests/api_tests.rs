@@ -564,3 +564,52 @@ async fn test_sse_client_limit_enforced() {
     let resp = server.get("/events").await;
     resp.assert_status(axum::http::StatusCode::SERVICE_UNAVAILABLE);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_request_id_header_present() {
+    let store = Arc::new(InMemoryStore::new());
+    let templates = voom_web_server::server::embedded_templates_for_test();
+    let state = voom_web_server::state::AppState::new(store, templates, None);
+    let router = voom_web_server::router::build_router(state);
+    let server = TestServer::new(router).unwrap();
+
+    let resp = server.get("/api/stats").await;
+    resp.assert_status_ok();
+    let request_id = resp
+        .headers()
+        .get("x-request-id")
+        .expect("x-request-id header should be present");
+    let id_str = request_id.to_str().unwrap();
+    assert!(
+        Uuid::parse_str(id_str).is_ok(),
+        "x-request-id should be a valid UUID"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_request_id_unique_per_request() {
+    let store = Arc::new(InMemoryStore::new());
+    let templates = voom_web_server::server::embedded_templates_for_test();
+    let state = voom_web_server::state::AppState::new(store, templates, None);
+    let router = voom_web_server::router::build_router(state);
+    let server = TestServer::new(router).unwrap();
+
+    let resp1 = server.get("/api/stats").await;
+    let resp2 = server.get("/api/stats").await;
+
+    let id1 = resp1
+        .headers()
+        .get("x-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let id2 = resp2
+        .headers()
+        .get("x-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(id1, id2, "each request should get a unique request ID");
+}

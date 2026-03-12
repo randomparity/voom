@@ -20,13 +20,6 @@ pub enum DslError {
         message: String,
     },
 
-    #[error("unexpected rule {rule} at line {line}, col {col}")]
-    UnexpectedRule {
-        rule: String,
-        line: usize,
-        col: usize,
-    },
-
     #[error("validation error at line {line}, col {col}: {message}")]
     Validation {
         line: usize,
@@ -68,14 +61,6 @@ impl DslError {
             line,
             col,
             message: message.into(),
-        }
-    }
-
-    pub fn unexpected_rule(rule: impl Into<String>, line: usize, col: usize) -> Self {
-        Self::UnexpectedRule {
-            rule: rule.into(),
-            line,
-            col,
         }
     }
 

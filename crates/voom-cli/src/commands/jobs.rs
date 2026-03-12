@@ -24,7 +24,7 @@ async fn list(status_filter: Option<String>) -> Result<()> {
 
     let jobs = store
         .list_jobs(filter_status, Some(50))
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to list jobs: {e}"))?;
 
     if jobs.is_empty() {
         println!("{} No jobs found.", "INFO".dimmed());
@@ -63,7 +63,7 @@ async fn list(status_filter: Option<String>) -> Result<()> {
     // Show summary counts
     let counts = store
         .count_jobs_by_status()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to count jobs by status: {e}"))?;
     if !counts.is_empty() {
         let summary: Vec<String> = counts
             .iter()
@@ -125,7 +125,7 @@ async fn cancel(id: String) -> Result<()> {
 
     store
         .update_job(&uuid, &update)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to cancel job: {e}"))?;
 
     println!("{} Job {id} cancelled.", "OK".bold().green());
 

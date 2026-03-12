@@ -1,6 +1,8 @@
 pub mod ffprobe;
 pub mod parser;
 
+use std::time::Duration;
+
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult, FileIntrospectedEvent};
@@ -13,6 +15,7 @@ use voom_kernel::{Plugin, PluginContext};
 pub struct FfprobeIntrospectorPlugin {
     capabilities: Vec<Capability>,
     ffprobe_path: String,
+    timeout: Duration,
 }
 
 impl FfprobeIntrospectorPlugin {
@@ -31,6 +34,7 @@ impl FfprobeIntrospectorPlugin {
                 ],
             }],
             ffprobe_path: "ffprobe".into(),
+            timeout: Duration::from_secs(60),
         }
     }
 
@@ -52,7 +56,7 @@ impl FfprobeIntrospectorPlugin {
         size: u64,
         content_hash: &str,
     ) -> Result<FileIntrospectedEvent> {
-        let json = ffprobe::run_ffprobe(&self.ffprobe_path, path)?;
+        let json = ffprobe::run_ffprobe(&self.ffprobe_path, path, self.timeout)?;
         let file = parser::parse_ffprobe_output(&json, path, size, content_hash)?;
         Ok(FileIntrospectedEvent { file })
     }
@@ -83,31 +87,28 @@ impl Plugin for FfprobeIntrospectorPlugin {
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
         match event {
-            Event::FileDiscovered(e) => {
-                match self.introspect(&e.path, e.size, &e.content_hash) {
-                    Ok(introspected) => {
-                        tracing::info!(
-                            path = %e.path.display(),
-                            tracks = introspected.file.tracks.len(),
-                            "file introspected"
-                        );
-                        Ok(Some(EventResult {
-                            plugin_name: self.name().to_string(),
-                            produced_events: vec![Event::FileIntrospected(introspected)],
-                            data: None,
-                        }))
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            path = %e.path.display(),
-                            error = %err,
-                            "failed to introspect file"
-                        );
-                        // Don't fail the whole pipeline for one file
-                        Ok(None)
-                    }
+            Event::FileDiscovered(e) => match self.introspect(&e.path, e.size, &e.content_hash) {
+                Ok(introspected) => {
+                    tracing::info!(
+                        path = %e.path.display(),
+                        tracks = introspected.file.tracks.len(),
+                        "file introspected"
+                    );
+                    Ok(Some(EventResult {
+                        plugin_name: self.name().to_string(),
+                        produced_events: vec![Event::FileIntrospected(introspected)],
+                        data: None,
+                    }))
                 }
-            }
+                Err(err) => {
+                    tracing::warn!(
+                        path = %e.path.display(),
+                        error = %err,
+                        "failed to introspect file"
+                    );
+                    Err(err)
+                }
+            },
             _ => Ok(None),
         }
     }

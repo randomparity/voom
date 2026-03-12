@@ -69,7 +69,12 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
 
     // Collect media file paths, reporting progress as we discover them
     let mut media_paths: Vec<_> = Vec::new();
-    for entry in walker.into_iter().filter_map(|e| e.ok()) {
+    for entry in walker.into_iter().filter_map(|e| {
+        e.map_err(|err| {
+            tracing::debug!(error = %err, "skipping unreadable directory entry");
+        })
+        .ok()
+    }) {
         if entry.path_is_symlink() {
             tracing::debug!(path = %entry.path().display(), "skipping symlink");
             continue;

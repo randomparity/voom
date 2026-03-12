@@ -203,6 +203,8 @@ impl FfmpegExecutorPlugin {
                     path,
                     phase_name,
                     error: e.to_string(),
+                    error_code: None,
+                    plugin_name: Some("ffmpeg-executor".into()),
                 });
 
                 Ok(Some(EventResult {

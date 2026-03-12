@@ -19,7 +19,7 @@ async fn prune() -> Result<()> {
     use voom_domain::storage::StorageTrait;
     let count = store
         .prune_missing_files()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to prune missing files: {e}"))?;
 
     if count == 0 {
         println!("{}", "No stale entries found.".dimmed());
@@ -39,7 +39,9 @@ async fn vacuum() -> Result<()> {
     let store = app::open_store(&config)?;
 
     use voom_domain::storage::StorageTrait;
-    store.vacuum().map_err(|e| anyhow::anyhow!("{e}"))?;
+    store
+        .vacuum()
+        .map_err(|e| anyhow::anyhow!("failed to vacuum database: {e}"))?;
 
     println!("{} Database vacuumed.", "OK".bold().green());
 

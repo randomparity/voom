@@ -30,7 +30,8 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
     let policy_source = std::fs::read_to_string(&args.policy)
         .with_context(|| format!("Failed to read policy: {}", args.policy.display()))?;
 
-    let compiled = voom_dsl::compile(&policy_source).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let compiled = voom_dsl::compile(&policy_source)
+        .map_err(|e| anyhow::anyhow!("policy compilation failed: {e}"))?;
 
     println!(
         "{} policy {} to {}{}",
@@ -60,7 +61,7 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
 
     let events = discovery
         .scan(&options)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(|e| anyhow::anyhow!("filesystem scan failed: {e}"))?;
 
     if events.is_empty() {
         println!("{}", "No media files found.".yellow());

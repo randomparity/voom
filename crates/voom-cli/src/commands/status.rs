@@ -17,7 +17,7 @@ pub async fn run() -> Result<()> {
                     use voom_domain::storage::StorageTrait;
                     let files = store
                         .list_files(&voom_domain::FileFilters::default())
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        .map_err(|e| anyhow::anyhow!("failed to list files from database: {e}"))?;
 
                     let total_size: u64 = files.iter().map(|f| f.size).sum();
 

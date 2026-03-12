@@ -41,9 +41,14 @@ impl IntoResponse for WebError {
             WebError::Storage(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
 
+        let details = match &self {
+            WebError::Storage(_) => Some("database operation failed".to_string()),
+            _ => None,
+        };
+
         let body = axum::Json(ApiError {
             error: error_msg,
-            details: None,
+            details,
         });
 
         (status, body).into_response()
@@ -52,6 +57,43 @@ impl IntoResponse for WebError {
 
 impl From<voom_domain::errors::VoomError> for WebError {
     fn from(err: voom_domain::errors::VoomError) -> Self {
-        WebError::Storage(err.to_string())
+        match &err {
+            voom_domain::errors::VoomError::ToolNotFound { .. } => {
+                WebError::NotFound(err.to_string())
+            }
+            voom_domain::errors::VoomError::Validation(_) => WebError::BadRequest(err.to_string()),
+            voom_domain::errors::VoomError::Storage(_) => WebError::Storage(err.to_string()),
+            _ => WebError::Internal(err.to_string()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use voom_domain::errors::VoomError;
+
+    #[test]
+    fn test_voom_error_to_web_error_mapping() {
+        let err = VoomError::ToolNotFound {
+            tool: "ffprobe".into(),
+        };
+        let web_err: WebError = err.into();
+        assert!(matches!(web_err, WebError::NotFound(_)));
+
+        let err = VoomError::Validation("bad input".into());
+        let web_err: WebError = err.into();
+        assert!(matches!(web_err, WebError::BadRequest(_)));
+
+        let err = VoomError::Storage("db error".into());
+        let web_err: WebError = err.into();
+        assert!(matches!(web_err, WebError::Storage(_)));
+
+        let err = VoomError::Plugin {
+            plugin: "x".into(),
+            message: "y".into(),
+        };
+        let web_err: WebError = err.into();
+        assert!(matches!(web_err, WebError::Internal(_)));
     }
 }

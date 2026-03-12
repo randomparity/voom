@@ -1,6 +1,8 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Arc, RwLock};
-use voom_domain::events::{Event, EventResult};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
+use voom_domain::events::{Event, EventResult, PluginErrorEvent};
 
 use crate::Plugin;
 
@@ -37,7 +39,7 @@ impl EventBus {
     /// Subscribe a plugin to receive events it handles.
     /// Lower priority values run first.
     pub fn subscribe_plugin(&self, plugin: Arc<dyn Plugin>, priority: i32) {
-        let mut subs = self.subscribers.write().expect("lock poisoned");
+        let mut subs = self.subscribers.write();
         let name = plugin.name().to_string();
         subs.push(Subscriber {
             plugin_name: name,
@@ -51,6 +53,7 @@ impl EventBus {
     /// Publish an event to all subscribers that handle its type.
     /// Returns results from all handlers, in priority order.
     /// Produced events are automatically cascaded up to a depth limit.
+    #[tracing::instrument(skip(self, event), fields(event_type = %event.event_type()))]
     pub fn publish(&self, event: Event) -> Vec<EventResult> {
         self.publish_recursive(event, 0)
     }
@@ -62,7 +65,7 @@ impl EventBus {
 
         // Collect matching handlers under the read lock, then release it.
         let handlers: Vec<(String, Arc<dyn Plugin>)> = {
-            let subs = self.subscribers.read().expect("lock poisoned");
+            let subs = self.subscribers.read();
             subs.iter()
                 .filter(|s| s.handler.handles(&event_type))
                 .map(|s| (s.plugin_name.clone(), s.handler.clone()))
@@ -83,9 +86,27 @@ impl EventBus {
                 }
                 Ok(Err(e)) => {
                     tracing::error!(plugin = %name, event = %event_type, error = %e, "plugin error");
+                    results.push(EventResult {
+                        plugin_name: name.clone(),
+                        produced_events: vec![Event::PluginError(PluginErrorEvent {
+                            plugin_name: name.clone(),
+                            event_type: event_type.clone(),
+                            error: e.to_string(),
+                        })],
+                        data: None,
+                    });
                 }
                 Err(_) => {
                     tracing::error!(plugin = %name, event = %event_type, "plugin panicked during event dispatch");
+                    results.push(EventResult {
+                        plugin_name: name.clone(),
+                        produced_events: vec![Event::PluginError(PluginErrorEvent {
+                            plugin_name: name.clone(),
+                            event_type: event_type.clone(),
+                            error: "plugin panicked".into(),
+                        })],
+                        data: None,
+                    });
                 }
             }
         }
@@ -115,7 +136,7 @@ impl EventBus {
 
     /// Returns the number of subscribers.
     pub fn subscriber_count(&self) -> usize {
-        self.subscribers.read().expect("lock poisoned").len()
+        self.subscribers.read().len()
     }
 }
 
@@ -230,6 +251,61 @@ mod tests {
         assert!(results.is_empty());
     }
 
+    // --- Error-returning plugin tests ---
+
+    struct ErrorPlugin {
+        name: String,
+        handled_types: Vec<String>,
+    }
+
+    impl Plugin for ErrorPlugin {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+        fn capabilities(&self) -> &[Capability] {
+            &[]
+        }
+        fn handles(&self, event_type: &str) -> bool {
+            self.handled_types.iter().any(|t| t == event_type)
+        }
+        fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
+            Err(voom_domain::errors::VoomError::Plugin {
+                plugin: self.name.clone(),
+                message: "something broke".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn test_error_returning_plugin_produces_plugin_error_event() {
+        let bus = EventBus::new();
+
+        let error_plugin = Arc::new(ErrorPlugin {
+            name: "error-plugin".into(),
+            handled_types: vec!["file.discovered".into()],
+        });
+        let normal = Arc::new(TestPlugin::new("good-plugin", &["file.discovered"]));
+
+        bus.subscribe_plugin(error_plugin, 0);
+        bus.subscribe_plugin(normal, 10);
+
+        let event = Event::FileDiscovered(FileDiscoveredEvent {
+            path: "/test.mkv".into(),
+            size: 1024,
+            content_hash: "abc123".to_string(),
+        });
+
+        let results = bus.publish(event);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].plugin_name, "error-plugin");
+        assert_eq!(results[0].produced_events.len(), 1);
+        assert_eq!(results[0].produced_events[0].event_type(), "plugin.error");
+        assert_eq!(results[1].plugin_name, "good-plugin");
+    }
+
     // --- Panic handler tests ---
 
     struct PanickingPlugin {
@@ -282,9 +358,12 @@ mod tests {
         });
 
         let results = bus.publish(event);
-        // The panicking plugin should be skipped; the normal plugin should still produce a result.
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].plugin_name, "good-plugin");
+        // The panicking plugin produces a PluginError result; the normal plugin produces its result.
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].plugin_name, "bad-plugin");
+        assert_eq!(results[0].produced_events.len(), 1);
+        assert_eq!(results[0].produced_events[0].event_type(), "plugin.error");
+        assert_eq!(results[1].plugin_name, "good-plugin");
     }
 
     // --- Event cascading tests ---

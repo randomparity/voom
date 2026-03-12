@@ -108,7 +108,7 @@ pub async fn run(args: ScanArgs) -> Result<()> {
 
     let events = discovery
         .scan(&options)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(|e| anyhow::anyhow!("filesystem scan failed: {e}"))?;
 
     pb.finish_and_clear();
 

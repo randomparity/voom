@@ -249,7 +249,11 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
             }
             other => {
                 let (line, col) = child.as_span().start_pos().line_col();
-                return Err(DslError::unexpected_rule(format!("{other:?}"), line, col));
+                return Err(DslError::build(
+                    line,
+                    col,
+                    format!("unexpected rule {other:?}"),
+                ));
             }
         }
     }

@@ -247,6 +247,8 @@ impl Plugin for MkvtoolnixExecutorPlugin {
                             path: path.clone(),
                             phase_name: phase_name.clone(),
                             error: e.to_string(),
+                            error_code: None,
+                            plugin_name: Some("mkvtoolnix-executor".into()),
                         });
 
                         Ok(Some(EventResult {

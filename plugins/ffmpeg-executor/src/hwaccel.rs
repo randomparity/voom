@@ -103,10 +103,16 @@ impl HwAccelConfig {
 
     /// Check if HW accel is available by running `ffmpeg -hwaccels`.
     fn detect_backend() -> Option<HwAccelBackend> {
-        let output = Command::new("ffmpeg")
+        let output = match Command::new("ffmpeg")
             .args(["-hwaccels", "-hide_banner"])
             .output()
-            .ok()?;
+        {
+            Ok(output) => output,
+            Err(e) => {
+                tracing::debug!(error = %e, "failed to run ffmpeg for hwaccel detection");
+                return None;
+            }
+        };
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let text = stdout.to_ascii_lowercase();

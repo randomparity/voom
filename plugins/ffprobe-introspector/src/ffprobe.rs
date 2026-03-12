@@ -1,11 +1,20 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use voom_domain::errors::{Result, VoomError};
+use wait_timeout::ChildExt;
 
 /// Run ffprobe on a file and return the JSON output.
-pub fn run_ffprobe(ffprobe_path: &str, file_path: &Path) -> Result<serde_json::Value> {
-    let output = Command::new(ffprobe_path)
+///
+/// Uses a timeout to prevent ffprobe from hanging indefinitely on
+/// corrupted or problematic files.
+pub fn run_ffprobe(
+    ffprobe_path: &str,
+    file_path: &Path,
+    timeout: Duration,
+) -> Result<serde_json::Value> {
+    let mut child = Command::new(ffprobe_path)
         .args([
             "-v",
             "quiet",
@@ -17,7 +26,9 @@ pub fn run_ffprobe(ffprobe_path: &str, file_path: &Path) -> Result<serde_json::V
             "stream_side_data",
         ])
         .arg(file_path)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 VoomError::ToolNotFound {
@@ -30,6 +41,29 @@ pub fn run_ffprobe(ffprobe_path: &str, file_path: &Path) -> Result<serde_json::V
                 }
             }
         })?;
+
+    let output = match child.wait_timeout(timeout) {
+        Ok(Some(_status)) => child
+            .wait_with_output()
+            .map_err(|e| VoomError::ToolExecution {
+                tool: "ffprobe".into(),
+                message: format!("failed to read output: {e}"),
+            })?,
+        Ok(None) => {
+            child.kill().ok();
+            child.wait().ok();
+            return Err(VoomError::ToolExecution {
+                tool: "ffprobe".into(),
+                message: format!("ffprobe timed out after {}s", timeout.as_secs()),
+            });
+        }
+        Err(e) => {
+            return Err(VoomError::ToolExecution {
+                tool: "ffprobe".into(),
+                message: format!("error waiting for ffprobe: {e}"),
+            });
+        }
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -101,7 +135,11 @@ mod tests {
 
     #[test]
     fn test_run_ffprobe_not_found() {
-        let result = run_ffprobe("/nonexistent/ffprobe", Path::new("/dummy.mkv"));
+        let result = run_ffprobe(
+            "/nonexistent/ffprobe",
+            Path::new("/dummy.mkv"),
+            Duration::from_secs(60),
+        );
         assert!(result.is_err());
         match result.unwrap_err() {
             VoomError::ToolNotFound { tool } => {

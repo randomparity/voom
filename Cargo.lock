@@ -3065,6 +3065,7 @@ dependencies = [
  "uuid",
  "voom-domain",
  "voom-kernel",
+ "wait-timeout",
 ]
 
 [[package]]
@@ -3088,6 +3089,7 @@ name = "voom-kernel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "parking_lot",
  "rmp-serde",
  "serde",
  "serde_json",

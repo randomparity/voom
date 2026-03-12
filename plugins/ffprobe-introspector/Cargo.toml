@@ -11,6 +11,7 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
+wait-timeout = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

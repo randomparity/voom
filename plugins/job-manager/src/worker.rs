@@ -105,6 +105,7 @@ impl WorkerPool {
     /// `reporter` is notified of progress updates.
     ///
     /// Returns a list of job results.
+    #[tracing::instrument(skip(self, processor, reporter))]
     pub async fn process_batch<F, Fut>(
         &self,
         items: Vec<(String, i32, Option<serde_json::Value>)>,
@@ -186,9 +187,12 @@ impl WorkerPool {
                 if cancelled.load(Ordering::SeqCst) {
                     let q = queue.clone();
                     let jid = job.id;
-                    let _ =
+                    if let Err(e) =
                         tokio::task::spawn_blocking(move || q.fail(&jid, "cancelled".to_string()))
-                            .await;
+                            .await
+                    {
+                        tracing::error!(error = %e, "failed to mark job as cancelled");
+                    }
                     return;
                 }
 
@@ -198,15 +202,22 @@ impl WorkerPool {
                 match processor(job).await {
                     Ok(output) => {
                         let q = queue.clone();
-                        let _ =
-                            tokio::task::spawn_blocking(move || q.complete(&job_id, output)).await;
+                        if let Err(e) =
+                            tokio::task::spawn_blocking(move || q.complete(&job_id, output)).await
+                        {
+                            tracing::error!(job_id = %job_id, error = %e, "failed to mark job as complete");
+                        }
                         completed.fetch_add(1, Ordering::SeqCst);
                         reporter.on_job_complete(job_id, true, None);
                     }
                     Err(error) => {
                         let q = queue.clone();
                         let err = error.clone();
-                        let _ = tokio::task::spawn_blocking(move || q.fail(&job_id, err)).await;
+                        if let Err(e) =
+                            tokio::task::spawn_blocking(move || q.fail(&job_id, err)).await
+                        {
+                            tracing::error!(job_id = %job_id, error = %e, "failed to mark job as failed");
+                        }
                         failed.fetch_add(1, Ordering::SeqCst);
                         reporter.on_job_complete(job_id, false, Some(&error));
 
@@ -216,13 +227,16 @@ impl WorkerPool {
                     }
                 }
 
-                let _ = result_tx
+                if let Err(e) = result_tx
                     .send(JobResult {
                         job_id,
                         success: true,
                         error: None,
                     })
-                    .await;
+                    .await
+                {
+                    tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
+                }
             });
 
             handles.push(handle);
@@ -239,7 +253,9 @@ impl WorkerPool {
 
         // Wait for all tasks
         for handle in handles {
-            let _ = handle.await;
+            if let Err(e) = handle.await {
+                tracing::error!(error = %e, "worker task join error");
+            }
         }
 
         reporter.on_batch_complete(

@@ -356,7 +356,9 @@ impl StorageTrait for SqliteStore {
                 Ok(())
             }
             Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                if let Err(rollback_err) = conn.execute_batch("ROLLBACK") {
+                    tracing::error!(error = %rollback_err, "ROLLBACK failed");
+                }
                 Err(e)
             }
         }

@@ -184,7 +184,9 @@ impl BackupManagerPlugin {
 
         // Try to clean up the backup directory if empty
         if let Some(parent) = record.backup_path.parent() {
-            let _ = fs::remove_dir(parent); // Ignore error if not empty
+            if let Err(e) = fs::remove_dir(parent) {
+                tracing::debug!(path = %parent.display(), error = %e, "could not remove backup parent directory");
+            }
         }
 
         let mut records = self.records.lock().unwrap();
@@ -284,7 +286,9 @@ impl BackupManagerPlugin {
             }
             // Try to clean up parent directory if empty
             if let Some(parent) = record.backup_path.parent() {
-                let _ = fs::remove_dir(parent);
+                if let Err(e) = fs::remove_dir(parent) {
+                    tracing::debug!(path = %parent.display(), error = %e, "could not remove backup parent directory");
+                }
             }
             removed += 1;
         }
@@ -718,6 +722,8 @@ mod tests {
             path: file_path.clone(),
             phase_name: "normalize".into(),
             error: "ffmpeg crashed".into(),
+            error_code: None,
+            plugin_name: None,
         });
 
         let result = plugin.on_event(&event).unwrap();

@@ -26,6 +26,7 @@ pub enum Event {
     /// Intended for future use by a dashboard or health-check system to display
     /// available tool versions.
     ToolDetected(ToolDetectedEvent),
+    PluginError(PluginErrorEvent),
 }
 
 impl Event {
@@ -44,6 +45,7 @@ impl Event {
             Event::JobProgress(_) => "job.progress",
             Event::JobCompleted(_) => "job.completed",
             Event::ToolDetected(_) => "tool.detected",
+            Event::PluginError(_) => "plugin.error",
         }
     }
 }
@@ -109,6 +111,10 @@ pub struct PlanFailedEvent {
     pub path: PathBuf,
     pub phase_name: String,
     pub error: String,
+    #[serde(default)]
+    pub error_code: Option<String>,
+    #[serde(default)]
+    pub plugin_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +144,13 @@ pub struct ToolDetectedEvent {
     pub tool_name: String,
     pub version: String,
     pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginErrorEvent {
+    pub plugin_name: String,
+    pub event_type: String,
+    pub error: String,
 }
 
 #[cfg(test)]
@@ -192,6 +205,30 @@ mod tests {
         let event: JobProgressEvent = serde_json::from_str(json).unwrap();
         assert_eq!(event.job_id, "j1");
         assert!(event.message.is_none());
+    }
+
+    #[test]
+    fn test_plugin_error_event_serde_roundtrip() {
+        let event = Event::PluginError(PluginErrorEvent {
+            plugin_name: "bad-plugin".into(),
+            event_type: "file.discovered".into(),
+            error: "something went wrong".into(),
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.event_type(), "plugin.error");
+
+        let bytes = rmp_serde::to_vec(&event).unwrap();
+        let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(deserialized.event_type(), "plugin.error");
+    }
+
+    #[test]
+    fn test_plan_failed_missing_optional_fields() {
+        let json = r#"{"plan_id":"00000000-0000-0000-0000-000000000000","path":"/test.mkv","phase_name":"normalize","error":"failed"}"#;
+        let event: PlanFailedEvent = serde_json::from_str(json).unwrap();
+        assert!(event.error_code.is_none());
+        assert!(event.plugin_name.is_none());
     }
 
     #[test]

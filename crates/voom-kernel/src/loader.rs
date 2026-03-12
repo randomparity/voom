@@ -159,7 +159,11 @@ pub mod wasm {
             };
 
             entries
-                .filter_map(|entry| entry.ok())
+                .filter_map(|entry| {
+                    entry.map_err(|e| {
+                        tracing::warn!(error = %e, "failed to read directory entry in WASM plugins dir");
+                    }).ok()
+                })
                 .filter(|entry| {
                     entry
                         .path()

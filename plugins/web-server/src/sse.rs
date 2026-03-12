@@ -51,10 +51,13 @@ pub async fn events_handler(
     let stream = BroadcastStream::new(rx).filter_map(move |result| {
         let _guard = &guard; // keep guard alive for the lifetime of the stream
         match result {
-            Ok(event) => {
-                let json = serde_json::to_string(&event).ok()?;
-                Some(Ok(SseAxumEvent::default().data(json)))
-            }
+            Ok(event) => match serde_json::to_string(&event) {
+                Ok(json) => Some(Ok(SseAxumEvent::default().data(json))),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to serialize SSE event");
+                    None
+                }
+            },
             Err(BroadcastStreamRecvError::Lagged(count)) => {
                 let json = serde_json::json!({"type": "lagged", "missed": count}).to_string();
                 Some(Ok(SseAxumEvent::default().event("lagged").data(json)))

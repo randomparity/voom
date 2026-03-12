@@ -46,6 +46,7 @@ fn truncate_filter(s: Option<String>) -> Option<String> {
 }
 
 /// GET /api/files -- list files with optional filters
+#[tracing::instrument(skip(state))]
 pub async fn list_files(
     State(state): State<AppState>,
     Query(params): Query<ListFilesParams>,
@@ -70,6 +71,7 @@ pub async fn list_files(
 }
 
 /// GET /api/files/:id -- get a single file by ID
+#[tracing::instrument(skip(state))]
 pub async fn get_file(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -85,6 +87,7 @@ pub async fn get_file(
 }
 
 /// DELETE /api/files/:id -- delete a file record
+#[tracing::instrument(skip(state))]
 pub async fn delete_file(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,

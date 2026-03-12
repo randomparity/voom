@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use crate::Plugin;
 
@@ -18,24 +20,17 @@ impl PluginRegistry {
     /// Register a plugin by name.
     pub fn register(&self, plugin: Arc<dyn Plugin>) {
         let name = plugin.name().to_string();
-        self.plugins
-            .write()
-            .expect("lock poisoned")
-            .insert(name, plugin);
+        self.plugins.write().insert(name, plugin);
     }
 
     /// Look up a plugin by name.
     pub fn get(&self, name: &str) -> Option<Arc<dyn Plugin>> {
-        self.plugins
-            .read()
-            .expect("lock poisoned")
-            .get(name)
-            .cloned()
+        self.plugins.read().get(name).cloned()
     }
 
     /// Find all plugins that have a capability of the given kind.
     pub fn find_by_capability_kind(&self, kind: &str) -> Vec<Arc<dyn Plugin>> {
-        let plugins = self.plugins.read().expect("lock poisoned");
+        let plugins = self.plugins.read();
         plugins
             .values()
             .filter(|p| p.capabilities().iter().any(|c| c.kind() == kind))
@@ -46,7 +41,7 @@ impl PluginRegistry {
     /// Find the best plugin for an operation on a given format.
     /// Returns the first matching plugin (arbitrary if multiple match).
     pub fn find_for_operation(&self, operation: &str, format: &str) -> Option<Arc<dyn Plugin>> {
-        let plugins = self.plugins.read().expect("lock poisoned");
+        let plugins = self.plugins.read();
         plugins
             .values()
             .find(|p| {
@@ -59,17 +54,12 @@ impl PluginRegistry {
 
     /// Returns the names of all registered plugins.
     pub fn plugin_names(&self) -> Vec<String> {
-        self.plugins
-            .read()
-            .expect("lock poisoned")
-            .keys()
-            .cloned()
-            .collect()
+        self.plugins.read().keys().cloned().collect()
     }
 
     /// Returns the total number of registered plugins.
     pub fn len(&self) -> usize {
-        self.plugins.read().expect("lock poisoned").len()
+        self.plugins.read().len()
     }
 
     pub fn is_empty(&self) -> bool {

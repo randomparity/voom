@@ -32,6 +32,7 @@ pub struct JobStatusCount {
 }
 
 /// GET /api/jobs -- list jobs
+#[tracing::instrument(skip(state))]
 pub async fn list_jobs(
     State(state): State<AppState>,
     Query(params): Query<ListJobsParams>,
@@ -49,6 +50,7 @@ pub async fn list_jobs(
 }
 
 /// GET /api/jobs/stats -- job counts by status
+#[tracing::instrument(skip(state))]
 pub async fn job_stats(State(state): State<AppState>) -> Result<Json<JobStatsResponse>, WebError> {
     let store = state.store.clone();
     let counts = tokio::task::spawn_blocking(move || store.count_jobs_by_status())
@@ -65,6 +67,7 @@ pub async fn job_stats(State(state): State<AppState>) -> Result<Json<JobStatsRes
 }
 
 /// GET /api/jobs/:id -- get a single job
+#[tracing::instrument(skip(state))]
 pub async fn get_job(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,

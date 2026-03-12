@@ -11,7 +11,9 @@ pub async fn run() -> Result<()> {
     let config_path = app::config_path();
 
     // 1. Create config directory
-    let config_dir = config_path.parent().unwrap();
+    let config_dir = config_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("config path has no parent directory"))?;
     if !config_dir.exists() {
         std::fs::create_dir_all(config_dir)?;
         println!(
