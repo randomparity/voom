@@ -86,12 +86,24 @@ pub async fn run() -> Result<()> {
     let mut detector = voom_tool_detector::ToolDetectorPlugin::new();
     detector.detect_all();
 
-    for tool in ["ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit"] {
+    let required_tools = ["ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit"];
+    let optional_tools = ["mkvextract", "mediainfo", "HandBrakeCLI"];
+
+    for tool in required_tools {
         print!("  {tool} ... ");
         if let Some(t) = detector.get_tool(tool) {
             println!("{} ({})", "found".green(), t.version.dimmed());
         } else {
             println!("{}", "not found".red());
+        }
+    }
+
+    for tool in optional_tools {
+        print!("  {tool} ... ");
+        if let Some(t) = detector.get_tool(tool) {
+            println!("{} ({})", "found".green(), t.version.dimmed());
+        } else {
+            println!("{} (optional)", "not found".yellow());
         }
     }
 

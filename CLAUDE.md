@@ -60,6 +60,24 @@ Web frontend: htmx + Alpine.js with Tera templates.
 
 Policy files use `.voom` extension and a custom curly-brace block syntax (not YAML). See `docs/INITIAL_DESIGN.md` section 6 for the full PEG grammar and examples. Key constructs: `policy`, `phase` (with `depends_on`, `skip when`, `run_if`), track operations (`keep`, `remove`, `order`, `defaults`), `transcode`, `synthesize`, `when`/`else` conditionals, `rules` blocks.
 
+## Code Conventions
+
+### Progress bar filename truncation
+
+Any progress line that includes a filename **must** use `shrink_filename()` and `max_filename_len()` from `crate::output` to prevent terminal line wrapping. Compute the fixed-width overhead by measuring the actual non-filename content of the line, not by guessing a constant. The pattern is:
+
+```rust
+use crate::output::{max_filename_len, shrink_filename};
+
+// Build the prefix/surrounding text first, then measure it
+let prefix = format!("Discovering... {count} files found — ");
+let max_name = max_filename_len(2 + prefix.len()); // 2 = spinner + space
+let name = shrink_filename(&raw_filename, max_name);
+pb.set_message(format!("{prefix}{name}"));
+```
+
+For indicatif templates with bars/counters (where the overhead is rendered by indicatif, not your format string), estimate the template overhead and pass it to `max_filename_len()`.
+
 ## Configuration
 
 - App config: TOML at `~/.config/voom/config.toml`

@@ -62,7 +62,7 @@ pub async fn run() -> Result<()> {
     detector.detect_all();
 
     let required_tools = ["ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit"];
-    let optional_tools = ["mkvextract", "mediainfo"];
+    let optional_tools = ["mkvextract", "mediainfo", "HandBrakeCLI"];
 
     for tool in required_tools {
         print!("  {tool} ... ");

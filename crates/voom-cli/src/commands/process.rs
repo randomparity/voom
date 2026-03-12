@@ -6,6 +6,7 @@ use owo_colors::OwoColorize;
 
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
+use crate::output::{max_filename_len, shrink_filename};
 use voom_domain::events::{Event, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent};
 use voom_job_manager::progress::ProgressReporter;
 use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
@@ -306,9 +307,11 @@ impl ProgressReporter for CliProgressReporter {
     fn on_job_start(&self, job: &voom_domain::job::Job) {
         if let Some(ref payload) = job.payload {
             if let Some(path) = payload["path"].as_str() {
+                // 57 ≈ spinner + space + [bar:40] + space + pos/len + space
+                let max_name = max_filename_len(57);
                 let filename = std::path::Path::new(path)
                     .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
+                    .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
                     .unwrap_or_default();
                 self.overall.set_message(filename);
             }

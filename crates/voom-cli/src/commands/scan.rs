@@ -78,13 +78,15 @@ pub async fn run(args: ScanArgs) -> Result<()> {
         on_progress: Some(Box::new(move |progress| {
             match progress {
                 voom_discovery::ScanProgress::Discovered { count, path } => {
-                    let max_name = max_filename_len(30);
+                    // 2 = spinner + space; the rest is the message prefix
+                    let prefix = format!("Discovering... {count} files found — ");
+                    let max_name = max_filename_len(2 + prefix.len());
                     let name = path
                         .file_name()
                         .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
                         .unwrap_or_default();
                     pb_clone
-                        .set_message(format!("Discovering... {} files found — {}", count, name));
+                        .set_message(format!("{prefix}{name}"));
                 }
                 voom_discovery::ScanProgress::Processing {
                     current,

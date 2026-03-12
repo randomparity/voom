@@ -23,6 +23,7 @@ const KNOWN_TOOLS: &[(&str, &[&str])] = &[
     ("mkvpropedit", &["--version"]),
     ("mkvextract", &["--version"]),
     ("mediainfo", &["--version"]),
+    ("HandBrakeCLI", &["--version"]),
 ];
 
 /// Tool detector plugin: finds external tools (ffprobe, ffmpeg, mkvtoolnix) on PATH.
@@ -176,6 +177,14 @@ fn parse_version(tool_name: &str, output: &str) -> String {
                 .trim()
                 .to_string()
         }
+        "HandBrakeCLI" => {
+            // "HandBrake 1.8.2" or "HandBrake 20240621000000-e9ff2bd-unknown"
+            first_line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("unknown")
+                .to_string()
+        }
         _ => first_line.to_string(),
     }
 }
@@ -250,6 +259,22 @@ mod tests {
     fn test_parse_version_mkvmerge() {
         let output = "mkvmerge v82.0 ('I'm The President') 64-bit";
         assert_eq!(parse_version("mkvmerge", output), "82.0");
+    }
+
+    #[test]
+    fn test_parse_version_handbrake() {
+        assert_eq!(
+            parse_version("HandBrakeCLI", "HandBrake 1.8.2"),
+            "1.8.2"
+        );
+    }
+
+    #[test]
+    fn test_parse_version_handbrake_dev() {
+        assert_eq!(
+            parse_version("HandBrakeCLI", "HandBrake 20240621000000-e9ff2bd-unknown"),
+            "20240621000000-e9ff2bd-unknown"
+        );
     }
 
     #[test]
