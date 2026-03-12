@@ -121,6 +121,7 @@ pub struct JobStartedEvent {
 pub struct JobProgressEvent {
     pub job_id: String,
     pub progress: f64,
+    #[serde(default)]
     pub message: Option<String>,
 }
 
@@ -128,6 +129,7 @@ pub struct JobProgressEvent {
 pub struct JobCompletedEvent {
     pub job_id: String,
     pub success: bool,
+    #[serde(default)]
     pub message: Option<String>,
 }
 
@@ -181,5 +183,23 @@ mod tests {
         let bytes = rmp_serde::to_vec(&event).unwrap();
         let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(deserialized.event_type(), "job.progress");
+    }
+
+    #[test]
+    fn test_job_progress_missing_optional_fields() {
+        // Simulate deserializing from a payload that omits the optional `message` field.
+        let json = r#"{"job_id":"j1","progress":0.5}"#;
+        let event: JobProgressEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.job_id, "j1");
+        assert!(event.message.is_none());
+    }
+
+    #[test]
+    fn test_job_completed_missing_optional_fields() {
+        let json = r#"{"job_id":"j2","success":true}"#;
+        let event: JobCompletedEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.job_id, "j2");
+        assert!(event.success);
+        assert!(event.message.is_none());
     }
 }

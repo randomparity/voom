@@ -3,8 +3,8 @@
 //! Provides the host-side implementations of functions that WASM plugins
 //! can call: logging, plugin data storage, tool execution, and HTTP requests.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -14,6 +14,27 @@ use wait_timeout::ChildExt;
 ///
 /// Each WASM plugin instance gets its own HostState, which holds
 /// plugin-specific data and shared references to host services.
+/// Maximum size for plugin data values (1 MiB).
+pub const MAX_PLUGIN_DATA_VALUE_SIZE: usize = 1024 * 1024;
+
+/// Resource limits for WASM plugin execution.
+#[derive(Debug, Clone)]
+pub struct WasmResourceLimits {
+    /// Maximum memory in bytes a WASM module can allocate (default: 256 MiB).
+    pub max_memory_bytes: usize,
+    /// Epoch deadline ticks before interruption (default: 200).
+    pub epoch_deadline_ticks: u64,
+}
+
+impl Default for WasmResourceLimits {
+    fn default() -> Self {
+        Self {
+            max_memory_bytes: 256 * 1024 * 1024,
+            epoch_deadline_ticks: 200,
+        }
+    }
+}
+
 pub struct HostState {
     /// Name of the plugin this state belongs to.
     pub plugin_name: String,
@@ -24,10 +45,17 @@ pub struct HostState {
     pub allowed_paths: Vec<PathBuf>,
     /// Shared storage backend for persistent plugin data.
     pub storage: Option<Arc<dyn PluginDataStore>>,
-    /// Allowed tool names (empty = allow all).
+    /// Allowed tool names (empty = deny all).
     pub allowed_tools: Vec<String>,
     /// HTTP client configuration.
     pub http_allowed: bool,
+    /// Capabilities declared by this plugin (used for runtime enforcement).
+    pub allowed_capabilities: HashSet<String>,
+    /// WASM resource limits.
+    pub wasm_limits: WasmResourceLimits,
+    /// Store limits for wasmtime (only used when feature = "wasm").
+    #[cfg(feature = "wasm")]
+    pub store_limits: wasmtime::StoreLimits,
 }
 
 /// Trait for persistent plugin data storage.
@@ -59,12 +87,12 @@ impl Default for InMemoryDataStore {
 
 impl PluginDataStore for InMemoryDataStore {
     fn get(&self, plugin_name: &str, key: &str) -> Option<Vec<u8>> {
-        let data = self.data.lock().unwrap();
+        let data = self.data.lock().unwrap_or_else(|e| e.into_inner());
         data.get(plugin_name).and_then(|m| m.get(key)).cloned()
     }
 
     fn set(&self, plugin_name: &str, key: &str, value: &[u8]) -> Result<(), String> {
-        let mut data = self.data.lock().unwrap();
+        let mut data = self.data.lock().unwrap_or_else(|e| e.into_inner());
         data.entry(plugin_name.to_string())
             .or_default()
             .insert(key.to_string(), value.to_vec());
@@ -72,7 +100,7 @@ impl PluginDataStore for InMemoryDataStore {
     }
 
     fn delete(&self, plugin_name: &str, key: &str) -> Result<(), String> {
-        let mut data = self.data.lock().unwrap();
+        let mut data = self.data.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(m) = data.get_mut(plugin_name) {
             m.remove(key);
         }
@@ -90,6 +118,10 @@ impl HostState {
             storage: None,
             allowed_tools: Vec::new(),
             http_allowed: false,
+            allowed_capabilities: HashSet::new(),
+            wasm_limits: WasmResourceLimits::default(),
+            #[cfg(feature = "wasm")]
+            store_limits: wasmtime::StoreLimits::default(),
         }
     }
 
@@ -102,6 +134,18 @@ impl HostState {
     /// Set allowed tools for this plugin.
     pub fn with_tools(mut self, tools: Vec<String>) -> Self {
         self.allowed_tools = tools;
+        self
+    }
+
+    /// Set allowed filesystem paths for tool execution.
+    pub fn with_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.allowed_paths = paths;
+        self
+    }
+
+    /// Set allowed capabilities for this plugin.
+    pub fn with_capabilities(mut self, capabilities: HashSet<String>) -> Self {
+        self.allowed_capabilities = capabilities;
         self
     }
 
@@ -137,6 +181,13 @@ impl HostState {
 
     /// Set plugin-specific persisted data.
     pub fn set_plugin_data(&mut self, key: &str, value: &[u8]) -> Result<(), String> {
+        if value.len() > MAX_PLUGIN_DATA_VALUE_SIZE {
+            return Err(format!(
+                "plugin data value exceeds maximum size ({} bytes, max {})",
+                value.len(),
+                MAX_PLUGIN_DATA_VALUE_SIZE
+            ));
+        }
         if let Some(storage) = &self.storage {
             storage.set(&self.plugin_name, key, value)
         } else {
@@ -152,11 +203,43 @@ impl HostState {
         args: &[String],
         timeout_ms: u64,
     ) -> Result<ToolOutput, String> {
-        // Security check: verify tool is allowed.
-        if !self.allowed_tools.is_empty() && !self.allowed_tools.iter().any(|t| t == tool) {
+        // Security check: verify tool is allowed (empty allowlist = deny all).
+        if self.allowed_tools.is_empty() || !self.allowed_tools.iter().any(|t| t == tool) {
             return Err(format!(
                 "tool '{}' is not in the allowed list for plugin '{}'",
                 tool, self.plugin_name
+            ));
+        }
+
+        // Security check: verify path arguments are within allowed directories.
+        if !self.allowed_paths.is_empty() {
+            for arg in args {
+                let path = Path::new(arg);
+                if path.is_absolute() || arg.starts_with("./") || arg.starts_with("../") {
+                    let allowed = self
+                        .allowed_paths
+                        .iter()
+                        .any(|allowed_dir| path.starts_with(allowed_dir));
+                    if !allowed {
+                        return Err(format!(
+                            "path '{}' is not within allowed directories for plugin '{}'",
+                            arg, self.plugin_name
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Security check: verify plugin has execute capability.
+        if !self.allowed_capabilities.is_empty()
+            && !self
+                .allowed_capabilities
+                .iter()
+                .any(|c| c.starts_with("execute"))
+        {
+            return Err(format!(
+                "plugin '{}' lacks 'execute' capability required for tool execution",
+                self.plugin_name
             ));
         }
 
@@ -310,11 +393,12 @@ mod tests {
     }
 
     #[test]
-    fn test_run_tool_all_allowed() {
-        // Empty allowed_tools means all tools are permitted.
+    fn test_run_tool_empty_allowlist_denies_all() {
+        // Empty allowed_tools means no tools are permitted (deny all).
         let state = HostState::new("test".into());
         let result = state.run_tool("echo", &["test".into()], 5000);
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not in the allowed list"));
     }
 
     #[test]
@@ -326,7 +410,7 @@ mod tests {
 
     #[test]
     fn test_run_tool_successful_with_timeout() {
-        let state = HostState::new("test".into());
+        let state = HostState::new("test".into()).with_tools(vec!["echo".into()]);
         let result = state.run_tool("echo", &["hello".into()], 5000);
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -336,7 +420,7 @@ mod tests {
 
     #[test]
     fn test_run_tool_timeout() {
-        let state = HostState::new("test".into());
+        let state = HostState::new("test".into()).with_tools(vec!["sleep".into()]);
         let result = state.run_tool("sleep", &["10".into()], 100);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -362,5 +446,52 @@ mod tests {
 
         // Deleting non-existent key is fine.
         store.delete("plugin1", "nonexistent").unwrap();
+    }
+
+    #[test]
+    fn test_plugin_data_size_limit() {
+        let mut state = HostState::new("test".into());
+        // Just under the limit should work.
+        let ok_data = vec![0u8; MAX_PLUGIN_DATA_VALUE_SIZE];
+        assert!(state.set_plugin_data("key", &ok_data).is_ok());
+
+        // Over the limit should fail.
+        let big_data = vec![0u8; MAX_PLUGIN_DATA_VALUE_SIZE + 1];
+        let result = state.set_plugin_data("key2", &big_data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds maximum size"));
+    }
+
+    #[test]
+    fn test_run_tool_path_allowed() {
+        let state = HostState::new("test".into())
+            .with_tools(vec!["echo".into()])
+            .with_paths(vec![PathBuf::from("/tmp")]);
+        let result = state.run_tool("echo", &["/tmp/file.txt".into()], 5000);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_run_tool_path_blocked() {
+        let state = HostState::new("test".into())
+            .with_tools(vec!["echo".into()])
+            .with_paths(vec![PathBuf::from("/tmp")]);
+        let result = state.run_tool("echo", &["/etc/passwd".into()], 5000);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("not within allowed directories"));
+    }
+
+    #[test]
+    fn test_run_tool_capability_enforcement() {
+        let mut caps = std::collections::HashSet::new();
+        caps.insert("evaluate".to_string());
+        let state = HostState::new("test".into())
+            .with_tools(vec!["echo".into()])
+            .with_capabilities(caps);
+        let result = state.run_tool("echo", &["hello".into()], 5000);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("lacks 'execute' capability"));
     }
 }

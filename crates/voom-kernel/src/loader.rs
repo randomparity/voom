@@ -48,6 +48,8 @@ pub mod wasm {
         pub fn new() -> Result<Self, VoomError> {
             let mut config = wasmtime::Config::new();
             config.wasm_component_model(true);
+            config.max_wasm_stack(1024 * 1024); // 1 MiB stack limit
+            config.epoch_interruption(true);
             let engine = wasmtime::Engine::new(&config)
                 .map_err(|e| VoomError::Wasm(format!("failed to create engine: {e}")))?;
             Ok(Self { engine })
@@ -95,9 +97,29 @@ pub mod wasm {
                         .to_string()
                 });
 
-            // Create the store with host state.
-            let state = host_state.unwrap_or_else(|| HostState::new(plugin_name.clone()));
-            let store = wasmtime::Store::new(&self.engine, state);
+            // Create the store with host state and resource limits.
+            let mut state = host_state.unwrap_or_else(|| HostState::new(plugin_name.clone()));
+
+            // Populate allowed capabilities from manifest.
+            if let Some(ref manifest) = manifest {
+                state.allowed_capabilities = manifest
+                    .capabilities
+                    .iter()
+                    .map(|c| c.kind().to_string())
+                    .collect();
+            }
+
+            let limits = wasmtime::StoreLimitsBuilder::new()
+                .memory_size(state.wasm_limits.max_memory_bytes)
+                .table_elements(10_000)
+                .instances(10)
+                .memories(1)
+                .build();
+            state.store_limits = limits;
+
+            let mut store = wasmtime::Store::new(&self.engine, state);
+            store.limiter(|s| &mut s.store_limits);
+            store.set_epoch_deadline(store.data().wasm_limits.epoch_deadline_ticks);
 
             // Extract info from manifest or use defaults.
             let version = manifest
@@ -207,7 +229,7 @@ pub mod wasm {
                 )));
             }
 
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
             // Try to find and call the on-event export.
             // The component may not be instantiated yet (lazy instantiation).
@@ -309,10 +331,61 @@ pub mod wasm {
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (tool, args, timeout_ms): (String, Vec<String>, u64)| {
                 let result = ctx.data().run_tool(&tool, &args, timeout_ms);
-                match result {
-                    Ok(output) => Ok(((output.exit_code, output.stdout, output.stderr),)),
-                    Err(e) => Err(wasmtime::Error::msg(e)),
-                }
+                let wit_result: Result<(i32, Vec<u8>, Vec<u8>), String> = match result {
+                    Ok(output) => Ok((output.exit_code, output.stdout, output.stderr)),
+                    Err(e) => Err(e),
+                };
+                Ok((wit_result,))
+            },
+        )?;
+
+        // http-get: func(url: string, headers: list<tuple<string, string>>) -> result<http-response, string>
+        host_instance.func_wrap(
+            "http-get",
+            |ctx: wasmtime::StoreContextMut<'_, HostState>,
+             (url, headers): (String, Vec<(String, String)>)| {
+                let result = ctx.data().http_get(&url, &headers);
+                let wit_result: Result<(u16, Vec<(String, String)>, Vec<u8>), String> = match result
+                {
+                    Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
+                    Err(e) => Err(e),
+                };
+                Ok((wit_result,))
+            },
+        )?;
+
+        // http-post: func(url: string, headers: list<tuple<string, string>>, body: list<u8>) -> result<http-response, string>
+        host_instance.func_wrap(
+            "http-post",
+            |ctx: wasmtime::StoreContextMut<'_, HostState>,
+             (url, headers, body): (String, Vec<(String, String)>, Vec<u8>)| {
+                let result = ctx.data().http_post(&url, &headers, &body);
+                let wit_result: Result<(u16, Vec<(String, String)>, Vec<u8>), String> = match result
+                {
+                    Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
+                    Err(e) => Err(e),
+                };
+                Ok((wit_result,))
+            },
+        )?;
+
+        // read-file-metadata: stub (not yet implemented)
+        host_instance.func_wrap(
+            "read-file-metadata",
+            |_ctx: wasmtime::StoreContextMut<'_, HostState>,
+             (_path,): (String,)|
+             -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
+                Ok((Err("read-file-metadata not yet implemented".to_string()),))
+            },
+        )?;
+
+        // list-files: stub (not yet implemented)
+        host_instance.func_wrap(
+            "list-files",
+            |_ctx: wasmtime::StoreContextMut<'_, HostState>,
+             (_dir, _pattern): (String, String)|
+             -> Result<(Result<Vec<String>, String>,), wasmtime::Error> {
+                Ok((Err("list-files not yet implemented".to_string()),))
             },
         )?;
 
@@ -332,10 +405,10 @@ pub mod wasm {
             if let Ok(metadata) = std::fs::metadata(&manifest_path) {
                 let mode = metadata.permissions().mode();
                 if mode & 0o002 != 0 {
-                    tracing::warn!(
-                        "WASM plugin manifest {:?} is world-writable (mode {:o}), this is a security risk",
+                    return Err(VoomError::Wasm(format!(
+                        "WASM plugin manifest {:?} is world-writable (mode {:o}), refusing to load",
                         manifest_path, mode
-                    );
+                    )));
                 }
             }
         }
@@ -479,6 +552,42 @@ Evaluate = {}
             let result = load_manifest(&PathBuf::from("/nonexistent/plugin.wasm"));
             assert!(result.is_ok());
             assert!(result.unwrap().is_none());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn test_manifest_world_writable_rejected() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = tempfile::tempdir().unwrap();
+            let manifest_path = dir.path().join("test-plugin.toml");
+            std::fs::write(
+                &manifest_path,
+                r#"
+name = "test-plugin"
+version = "1.0.0"
+description = "A test plugin"
+handles_events = ["file.discovered"]
+
+[[capabilities]]
+Evaluate = {}
+"#,
+            )
+            .unwrap();
+
+            // Make world-writable.
+            std::fs::set_permissions(&manifest_path, std::fs::Permissions::from_mode(0o666))
+                .unwrap();
+
+            let wasm_path = dir.path().join("test-plugin.wasm");
+            let result = load_manifest(&wasm_path);
+            assert!(result.is_err());
+            let err = format!("{}", result.unwrap_err());
+            assert!(
+                err.contains("world-writable"),
+                "expected world-writable error, got: {}",
+                err
+            );
         }
 
         #[test]
