@@ -559,14 +559,18 @@ fn compile_condition(cond: &ConditionNode) -> std::result::Result<CompiledCondit
 fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, DslError> {
     match filter {
         FilterNode::LangIn(langs) => Ok(CompiledFilter::LangIn(langs.clone())),
-        FilterNode::LangCompare(op, lang) => {
-            Ok(CompiledFilter::LangCompare(compile_compare_op(op), lang.clone()))
-        }
+        FilterNode::LangCompare(op, lang) => Ok(CompiledFilter::LangCompare(
+            compile_compare_op(op),
+            lang.clone(),
+        )),
         FilterNode::CodecCompare(op, codec) => {
             let normalized = codecs::normalize_codec(codec)
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| codec.clone());
-            Ok(CompiledFilter::CodecCompare(compile_compare_op(op), normalized))
+            Ok(CompiledFilter::CodecCompare(
+                compile_compare_op(op),
+                normalized,
+            ))
         }
         FilterNode::CodecIn(codec_list) => {
             let normalized: Vec<String> = codec_list

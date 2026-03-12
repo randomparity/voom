@@ -178,44 +178,74 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
             Rule::container_op => {
                 let op_span = span_from_pair(&child);
                 let ident = child.into_inner().next().unwrap();
-                operations.push(SpannedOperation { span: op_span, node: OperationNode::Container(ident.as_str().to_string()) });
+                operations.push(SpannedOperation {
+                    span: op_span,
+                    node: OperationNode::Container(ident.as_str().to_string()),
+                });
             }
             Rule::keep_op => {
                 let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation { span: op_span, node: build_keep_remove(child, true)? });
+                operations.push(SpannedOperation {
+                    span: op_span,
+                    node: build_keep_remove(child, true)?,
+                });
             }
             Rule::remove_op => {
                 let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation { span: op_span, node: build_keep_remove(child, false)? });
+                operations.push(SpannedOperation {
+                    span: op_span,
+                    node: build_keep_remove(child, false)?,
+                });
             }
             Rule::order_op => {
                 let op_span = span_from_pair(&child);
                 let list = child.into_inner().next().unwrap();
-                operations.push(SpannedOperation { span: op_span, node: OperationNode::Order(build_list(&list)) });
+                operations.push(SpannedOperation {
+                    span: op_span,
+                    node: OperationNode::Order(build_list(&list)),
+                });
             }
             Rule::defaults_op => {
                 let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation { span: op_span, node: build_defaults(child)? });
+                operations.push(SpannedOperation {
+                    span: op_span,
+                    node: build_defaults(child)?,
+                });
             }
             Rule::actions_op => {
                 let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation { span: op_span, node: build_actions(child)? });
+                operations.push(SpannedOperation {
+                    span: op_span,
+                    node: build_actions(child)?,
+                });
             }
             Rule::transcode_op => {
                 let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation { span: op_span, node: build_transcode(child)? });
+                operations.push(SpannedOperation {
+                    span: op_span,
+                    node: build_transcode(child)?,
+                });
             }
             Rule::synthesize_op => {
                 let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation { span: op_span, node: build_synthesize(child)? });
+                operations.push(SpannedOperation {
+                    span: op_span,
+                    node: build_synthesize(child)?,
+                });
             }
             Rule::when_block => {
                 let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation { span: op_span, node: OperationNode::When(build_when(child)?) });
+                operations.push(SpannedOperation {
+                    span: op_span,
+                    node: OperationNode::When(build_when(child)?),
+                });
             }
             Rule::rules_block => {
                 let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation { span: op_span, node: build_rules(child)? });
+                operations.push(SpannedOperation {
+                    span: op_span,
+                    node: build_rules(child)?,
+                });
             }
             other => {
                 let (line, col) = child.as_span().start_pos().line_col();
@@ -289,7 +319,11 @@ fn build_transcode(pair: Pair<'_, Rule>) -> Result<OperationNode> {
     let text = pair.as_str();
     // "transcode video to hevc { ... }" or "transcode audio to aac { ... }"
     // Use the second word to determine target (grammar guarantees "video" or "audio")
-    let target = text.split_whitespace().nth(1).unwrap_or("audio").to_string();
+    let target = text
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("audio")
+        .to_string();
 
     let mut inner = pair.into_inner();
     let codec = inner.next().unwrap().as_str().to_string();
@@ -445,7 +479,9 @@ fn build_condition_not(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionNo
     let text = pair.as_str().trim();
     let inner = pair.into_inner().next().unwrap();
     if text.starts_with("not") {
-        Ok(ConditionNode::Not(Box::new(build_condition_atom(inner, depth)?)))
+        Ok(ConditionNode::Not(Box::new(build_condition_atom(
+            inner, depth,
+        )?)))
     } else {
         build_condition_atom(inner, depth)
     }
@@ -479,7 +515,11 @@ fn build_condition_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionN
     if text.starts_with('(') {
         let new_depth = depth + 1;
         if new_depth > MAX_NESTING_DEPTH {
-            return Err(DslError::parse(pair_line, pair_col, format!("condition nesting depth exceeds maximum of {MAX_NESTING_DEPTH}")));
+            return Err(DslError::parse(
+                pair_line,
+                pair_col,
+                format!("condition nesting depth exceeds maximum of {MAX_NESTING_DEPTH}"),
+            ));
         }
         let cond = inner.next().unwrap();
         return build_condition_depth(cond, new_depth);
@@ -606,7 +646,10 @@ fn build_filter_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
                 Err(DslError::build(
                     line,
                     col,
-                    format!("operator {:?} is not valid for lang comparisons; use == or !=", op),
+                    format!(
+                        "operator {:?} is not valid for lang comparisons; use == or !=",
+                        op
+                    ),
                 ))
             }
         };
@@ -633,7 +676,10 @@ fn build_filter_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
                 Err(DslError::build(
                     line,
                     col,
-                    format!("operator {:?} is not valid for codec comparisons; use == or !=", op),
+                    format!(
+                        "operator {:?} is not valid for codec comparisons; use == or !=",
+                        op
+                    ),
                 ))
             }
         };
@@ -669,7 +715,11 @@ fn build_filter_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
         let new_depth = depth + 1;
         if new_depth > MAX_NESTING_DEPTH {
             let (line, col) = span.start_pos().line_col();
-            return Err(DslError::parse(line, col, format!("filter nesting depth exceeds maximum of {MAX_NESTING_DEPTH}")));
+            return Err(DslError::parse(
+                line,
+                col,
+                format!("filter nesting depth exceeds maximum of {MAX_NESTING_DEPTH}"),
+            ));
         }
         let filter = inner.next().unwrap();
         return build_filter_depth(filter, new_depth);
@@ -984,12 +1034,10 @@ mod tests {
         }"#;
         let ast = parse_policy(input).unwrap();
         match &ast.phases[0].operations[0].node {
-            OperationNode::Keep { filter, .. } => {
-                match filter.as_ref().unwrap() {
-                    FilterNode::LangCompare(CompareOp::Ne, lang) => assert_eq!(lang, "jpn"),
-                    other => panic!("expected LangCompare(Ne, jpn), got {other:?}"),
-                }
-            }
+            OperationNode::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                FilterNode::LangCompare(CompareOp::Ne, lang) => assert_eq!(lang, "jpn"),
+                other => panic!("expected LangCompare(Ne, jpn), got {other:?}"),
+            },
             _ => panic!("expected Keep operation"),
         }
     }
@@ -1003,12 +1051,10 @@ mod tests {
         }"#;
         let ast = parse_policy(input).unwrap();
         match &ast.phases[0].operations[0].node {
-            OperationNode::Keep { filter, .. } => {
-                match filter.as_ref().unwrap() {
-                    FilterNode::LangIn(langs) => assert_eq!(langs, &["jpn"]),
-                    other => panic!("expected LangIn([jpn]), got {other:?}"),
-                }
-            }
+            OperationNode::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                FilterNode::LangIn(langs) => assert_eq!(langs, &["jpn"]),
+                other => panic!("expected LangIn([jpn]), got {other:?}"),
+            },
             _ => panic!("expected Keep operation"),
         }
     }
@@ -1034,12 +1080,10 @@ mod tests {
         }"#;
         let ast = parse_policy(input).unwrap();
         match &ast.phases[0].operations[0].node {
-            OperationNode::Keep { filter, .. } => {
-                match filter.as_ref().unwrap() {
-                    FilterNode::CodecCompare(CompareOp::Ne, codec) => assert_eq!(codec, "aac"),
-                    other => panic!("expected CodecCompare(Ne, aac), got {other:?}"),
-                }
-            }
+            OperationNode::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                FilterNode::CodecCompare(CompareOp::Ne, codec) => assert_eq!(codec, "aac"),
+                other => panic!("expected CodecCompare(Ne, aac), got {other:?}"),
+            },
             _ => panic!("expected Keep operation"),
         }
     }
@@ -1115,12 +1159,10 @@ mod tests {
         }"#;
         let ast = parse_policy(input).unwrap();
         match &ast.phases[0].operations[0].node {
-            OperationNode::When(when) => {
-                match &when.then_actions[0] {
-                    ActionNode::Warn(msg) => assert_eq!(msg, r#"contains "quoted" text"#),
-                    _ => panic!("expected Warn"),
-                }
-            }
+            OperationNode::When(when) => match &when.then_actions[0] {
+                ActionNode::Warn(msg) => assert_eq!(msg, r#"contains "quoted" text"#),
+                _ => panic!("expected Warn"),
+            },
             _ => panic!("expected When"),
         }
     }

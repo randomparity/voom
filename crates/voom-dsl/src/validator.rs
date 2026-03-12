@@ -277,7 +277,12 @@ fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>) {
     let mut removed_targets: HashSet<&str> = HashSet::new();
 
     for spanned_op in &phase.operations {
-        validate_operation(&spanned_op.node, spanned_op.span.line, spanned_op.span.col, errors);
+        validate_operation(
+            &spanned_op.node,
+            spanned_op.span.line,
+            spanned_op.span.col,
+            errors,
+        );
 
         match &spanned_op.node {
             OperationNode::Keep { target, .. } => {
@@ -338,7 +343,11 @@ fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut 
                 validate_filter(f, line, col, errors);
             }
         }
-        OperationNode::Transcode { target, codec, settings } => {
+        OperationNode::Transcode {
+            target,
+            codec,
+            settings,
+        } => {
             validate_track_target(target, line, col, errors);
             validate_codec(codec, line, col, errors);
             for (_, val) in settings {
@@ -523,7 +532,10 @@ fn validate_value(val: &Value, line: usize, col: usize, errors: &mut Vec<DslErro
 }
 
 fn validate_number_suffix(raw: &str, line: usize, col: usize, errors: &mut Vec<DslError>) {
-    let suffix: String = raw.chars().skip_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let suffix: String = raw
+        .chars()
+        .skip_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
     if suffix.is_empty() {
         return;
     }
@@ -532,7 +544,10 @@ fn validate_number_suffix(raw: &str, line: usize, col: usize, errors: &mut Vec<D
         errors.push(DslError::validation(
             line,
             col,
-            format!("unknown number suffix \"{suffix}\" in \"{raw}\", expected one of: {}", valid_suffixes.join(", ")),
+            format!(
+                "unknown number suffix \"{suffix}\" in \"{raw}\", expected one of: {}",
+                valid_suffixes.join(", ")
+            ),
         ));
     }
 }
@@ -710,8 +725,11 @@ mod tests {
         let ast = parse_policy(input).unwrap();
         let err = validate(&ast).unwrap_err();
         assert!(
-            err.errors.iter().any(|e| format!("{e}").contains("conflicting keep and remove")),
-            "expected conflict error, got: {:?}", err.errors
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("conflicting keep and remove")),
+            "expected conflict error, got: {:?}",
+            err.errors
         );
     }
 
@@ -726,7 +744,11 @@ mod tests {
         }"#;
         let ast = parse_policy(input).unwrap();
         let result = validate(&ast);
-        assert!(result.is_ok(), "validation errors: {:?}", result.unwrap_err().errors);
+        assert!(
+            result.is_ok(),
+            "validation errors: {:?}",
+            result.unwrap_err().errors
+        );
     }
 
     #[test]
@@ -754,8 +776,11 @@ mod tests {
         let ast = parse_policy(input).unwrap();
         let err = validate(&ast).unwrap_err();
         assert!(
-            err.errors.iter().any(|e| format!("{e}").contains("unknown number suffix")),
-            "expected suffix error, got: {:?}", err.errors
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("unknown number suffix")),
+            "expected suffix error, got: {:?}",
+            err.errors
         );
     }
 
@@ -772,7 +797,10 @@ mod tests {
         match &err.errors[0] {
             DslError::Validation { line, .. } => {
                 // "container zzz" is on line 3, not the phase start (line 2)
-                assert_eq!(*line, 3, "error should report operation line, not phase line");
+                assert_eq!(
+                    *line, 3,
+                    "error should report operation line, not phase line"
+                );
             }
             _ => panic!("expected validation error"),
         }

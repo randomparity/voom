@@ -366,8 +366,12 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
         FilterNode::Forced => out.push_str("forced"),
         FilterNode::Default => out.push_str("default"),
         FilterNode::Font => out.push_str("font"),
-        FilterNode::TitleContains(s) => out.push_str(&format!("title contains \"{}\"", escape_string(s))),
-        FilterNode::TitleMatches(s) => out.push_str(&format!("title matches \"{}\"", escape_string(s))),
+        FilterNode::TitleContains(s) => {
+            out.push_str(&format!("title contains \"{}\"", escape_string(s)))
+        }
+        FilterNode::TitleMatches(s) => {
+            out.push_str(&format!("title matches \"{}\"", escape_string(s)))
+        }
         FilterNode::And(items) => {
             for (i, item) in items.iter().enumerate() {
                 if i > 0 {
@@ -592,7 +596,10 @@ mod tests {
         let formatted = format_policy(&ast1);
         let ast2 = parse_policy(&formatted).unwrap();
 
-        match (&ast1.phases[0].operations[0].node, &ast2.phases[0].operations[0].node) {
+        match (
+            &ast1.phases[0].operations[0].node,
+            &ast2.phases[0].operations[0].node,
+        ) {
             (
                 OperationNode::Transcode {
                     codec: c1,
@@ -625,7 +632,10 @@ mod tests {
         let formatted = format_policy(&ast1);
         let ast2 = parse_policy(&formatted).unwrap();
 
-        match (&ast1.phases[0].operations[0].node, &ast2.phases[0].operations[0].node) {
+        match (
+            &ast1.phases[0].operations[0].node,
+            &ast2.phases[0].operations[0].node,
+        ) {
             (OperationNode::When(w1), OperationNode::When(w2)) => {
                 assert_eq!(w1.then_actions.len(), w2.then_actions.len());
             }
@@ -664,7 +674,10 @@ mod tests {
         assert!(!formatted.contains("set_language audio where "));
         assert!(formatted.contains("set_language audio \"eng\""));
         let ast2 = parse_policy(&formatted).unwrap();
-        assert_eq!(ast1.phases[0].operations.len(), ast2.phases[0].operations.len());
+        assert_eq!(
+            ast1.phases[0].operations.len(),
+            ast2.phases[0].operations.len()
+        );
     }
 
     #[test]
@@ -680,7 +693,10 @@ mod tests {
         let formatted = format_policy(&ast1);
         assert!(formatted.contains(r#"\"quoted\""#));
         let ast2 = parse_policy(&formatted).unwrap();
-        match (&ast1.phases[0].operations[0].node, &ast2.phases[0].operations[0].node) {
+        match (
+            &ast1.phases[0].operations[0].node,
+            &ast2.phases[0].operations[0].node,
+        ) {
             (OperationNode::When(w1), OperationNode::When(w2)) => {
                 match (&w1.then_actions[0], &w2.then_actions[0]) {
                     (ActionNode::Warn(m1), ActionNode::Warn(m2)) => assert_eq!(m1, m2),
@@ -702,6 +718,9 @@ mod tests {
         let formatted = format_policy(&ast1);
         assert!(formatted.contains("lang != jpn"));
         let ast2 = parse_policy(&formatted).unwrap();
-        assert_eq!(ast1.phases[0].operations.len(), ast2.phases[0].operations.len());
+        assert_eq!(
+            ast1.phases[0].operations.len(),
+            ast2.phases[0].operations.len()
+        );
     }
 }
