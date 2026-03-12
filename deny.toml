@@ -5,8 +5,14 @@ ignore = [
     { id = "RUSTSEC-2025-0119", reason = "transitive dep of indicatif, no fix available" },
     # wasmtime 29 vulnerabilities — we sandbox WASM plugins and don't expose wasi:http
     # to untrusted code; upgrade to wasmtime 36+ tracked separately
+    { id = "RUSTSEC-2025-0046", reason = "wasmtime 29 pinned, WASM plugins are sandboxed, upgrade tracked separately" },
+    { id = "RUSTSEC-2025-0118", reason = "wasmtime 29 pinned, WASM plugins are sandboxed, upgrade tracked separately" },
+    { id = "RUSTSEC-2026-0006", reason = "wasmtime 29 pinned, WASM plugins are sandboxed, upgrade tracked separately" },
     { id = "RUSTSEC-2026-0020", reason = "wasmtime 29 pinned, WASM plugins are sandboxed, upgrade tracked separately" },
     { id = "RUSTSEC-2026-0021", reason = "wasmtime 29 pinned, WASM plugins are sandboxed, upgrade tracked separately" },
+    # unmaintained transitive deps with no available replacement
+    { id = "RUSTSEC-2024-0436", reason = "paste is a transitive dep of wasmtime, no fix until wasmtime upgrade" },
+    { id = "RUSTSEC-2025-0057", reason = "fxhash is a transitive dep of wasmtime, no fix until wasmtime upgrade" },
 ]
 
 [licenses]
