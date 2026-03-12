@@ -101,7 +101,7 @@ fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
                 .into_inner()
                 .find(|p| p.as_rule() == Rule::list)
                 .unwrap();
-            let values = build_list(&list_pair);
+            let values = build_list(list_pair);
             if is_audio {
                 audio_languages = values;
             } else {
@@ -118,7 +118,7 @@ fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
                 .into_inner()
                 .find(|p| p.as_rule() == Rule::list)
                 .unwrap();
-            commentary_patterns = build_list(&list_pair);
+            commentary_patterns = build_list(list_pair);
         }
     }
 
@@ -154,7 +154,7 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
             }
             Rule::depends_on => {
                 let list = child.into_inner().next().unwrap();
-                depends_on = build_list(&list);
+                depends_on = build_list(list);
             }
             Rule::run_if => {
                 // Grammar: "run_if" ~ ident ~ "." ~ ("modified" | "completed")
@@ -202,7 +202,7 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
                 let list = child.into_inner().next().unwrap();
                 operations.push(SpannedOperation {
                     span: op_span,
-                    node: OperationNode::Order(build_list(&list)),
+                    node: OperationNode::Order(build_list(list)),
                 });
             }
             Rule::defaults_op => {
@@ -623,69 +623,58 @@ fn build_filter_not(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
     }
 }
 
+/// Result of parsing a `lang`/`codec` filter atom: either an `in` list or a comparison.
+enum ListOrCompare {
+    InList(Vec<String>),
+    Compare(CompareOp, String),
+}
+
+/// Shared logic for `lang` and `codec` filter atoms, which have identical grammar structure:
+/// `keyword (list | compare_op value)`.
+fn build_list_or_compare_filter(
+    inner: &mut pest::iterators::Pairs<'_, Rule>,
+    span: pest::Span<'_>,
+    kind: &str,
+) -> Result<ListOrCompare> {
+    let next = inner.next().unwrap();
+    if next.as_rule() == Rule::list {
+        return Ok(ListOrCompare::InList(build_list(next)));
+    }
+    let op = build_compare_op(next);
+    let val = inner.next().unwrap();
+    let val_str = match val.as_rule() {
+        Rule::value => val.into_inner().next().unwrap().as_str().to_string(),
+        _ => val.as_str().to_string(),
+    };
+    match op {
+        CompareOp::Eq | CompareOp::In => Ok(ListOrCompare::InList(vec![val_str])),
+        CompareOp::Ne => Ok(ListOrCompare::Compare(CompareOp::Ne, val_str)),
+        _ => {
+            let (line, col) = span.start_pos().line_col();
+            Err(DslError::build(
+                line,
+                col,
+                format!("operator {op:?} is not valid for {kind} comparisons; use == or !="),
+            ))
+        }
+    }
+}
+
 fn build_filter_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
     let text = pair.as_str().trim();
     let span = pair.as_span();
     let mut inner = pair.into_inner();
 
     if text.starts_with("lang") {
-        let next = inner.next().unwrap();
-        if next.as_rule() == Rule::list {
-            return Ok(FilterNode::LangIn(build_list(&next)));
-        }
-        let op = build_compare_op(next);
-        let val = inner.next().unwrap();
-        let val_str = match val.as_rule() {
-            Rule::value => {
-                let v = val.into_inner().next().unwrap();
-                v.as_str().to_string()
-            }
-            _ => val.as_str().to_string(),
-        };
-        return match op {
-            CompareOp::Eq | CompareOp::In => Ok(FilterNode::LangIn(vec![val_str])),
-            CompareOp::Ne => Ok(FilterNode::LangCompare(CompareOp::Ne, val_str)),
-            _ => {
-                let (line, col) = span.start_pos().line_col();
-                Err(DslError::build(
-                    line,
-                    col,
-                    format!(
-                        "operator {:?} is not valid for lang comparisons; use == or !=",
-                        op
-                    ),
-                ))
-            }
+        return match build_list_or_compare_filter(&mut inner, span, "lang")? {
+            ListOrCompare::InList(v) => Ok(FilterNode::LangIn(v)),
+            ListOrCompare::Compare(op, v) => Ok(FilterNode::LangCompare(op, v)),
         };
     }
     if text.starts_with("codec") {
-        let next = inner.next().unwrap();
-        if next.as_rule() == Rule::list {
-            return Ok(FilterNode::CodecIn(build_list(&next)));
-        }
-        let op = build_compare_op(next);
-        let val = inner.next().unwrap();
-        let val_str = match val.as_rule() {
-            Rule::value => {
-                let v = val.into_inner().next().unwrap();
-                v.as_str().to_string()
-            }
-            _ => val.as_str().to_string(),
-        };
-        return match op {
-            CompareOp::Eq | CompareOp::In => Ok(FilterNode::CodecIn(vec![val_str])),
-            CompareOp::Ne => Ok(FilterNode::CodecCompare(CompareOp::Ne, val_str)),
-            _ => {
-                let (line, col) = span.start_pos().line_col();
-                Err(DslError::build(
-                    line,
-                    col,
-                    format!(
-                        "operator {:?} is not valid for codec comparisons; use == or !=",
-                        op
-                    ),
-                ))
-            }
+        return match build_list_or_compare_filter(&mut inner, span, "codec")? {
+            ListOrCompare::InList(v) => Ok(FilterNode::CodecIn(v)),
+            ListOrCompare::Compare(op, v) => Ok(FilterNode::CodecCompare(op, v)),
         };
     }
     if text.starts_with("channels") {
@@ -836,14 +825,13 @@ fn build_value(pair: Pair<'_, Rule>) -> Value {
         }
         Rule::boolean => Value::Bool(pair.as_str() == "true"),
         Rule::ident => Value::Ident(pair.as_str().to_string()),
-        Rule::list => Value::List(build_list_values(&pair)),
+        Rule::list => Value::List(build_list_values(pair)),
         _ => Value::Ident(pair.as_str().to_string()),
     }
 }
 
-fn build_list(pair: &Pair<'_, Rule>) -> Vec<String> {
-    pair.clone()
-        .into_inner()
+fn build_list(pair: Pair<'_, Rule>) -> Vec<String> {
+    pair.into_inner()
         .map(|v| {
             let inner = v.into_inner().next().unwrap();
             match inner.as_rule() {
@@ -854,8 +842,8 @@ fn build_list(pair: &Pair<'_, Rule>) -> Vec<String> {
         .collect()
 }
 
-fn build_list_values(pair: &Pair<'_, Rule>) -> Vec<Value> {
-    pair.clone().into_inner().map(build_value).collect()
+fn build_list_values(pair: Pair<'_, Rule>) -> Vec<Value> {
+    pair.into_inner().map(build_value).collect()
 }
 
 /// Strip surrounding quotes from a string literal and process escape sequences.

@@ -315,7 +315,11 @@ fn compile_config(config: Option<&ConfigNode>) -> CompiledConfig {
         Some(c) => CompiledConfig {
             audio_languages: c.audio_languages.clone(),
             subtitle_languages: c.subtitle_languages.clone(),
-            on_error: parse_error_strategy(c.on_error.as_deref()),
+            on_error: c
+                .on_error
+                .as_deref()
+                .and_then(parse_error_strategy)
+                .unwrap_or(ErrorStrategy::Abort),
             commentary_patterns: c.commentary_patterns.clone(),
         },
         None => CompiledConfig {
@@ -327,11 +331,26 @@ fn compile_config(config: Option<&ConfigNode>) -> CompiledConfig {
     }
 }
 
-fn parse_error_strategy(value: Option<&str>) -> ErrorStrategy {
+/// Parse an error strategy string. Returns `None` for unrecognized values.
+/// Used by both the compiler (to convert) and validator (to check validity).
+pub(crate) fn parse_error_strategy(value: &str) -> Option<ErrorStrategy> {
     match value {
-        Some("continue") => ErrorStrategy::Continue,
-        Some("skip") => ErrorStrategy::Skip,
-        _ => ErrorStrategy::Abort,
+        "continue" => Some(ErrorStrategy::Continue),
+        "skip" => Some(ErrorStrategy::Skip),
+        "abort" => Some(ErrorStrategy::Abort),
+        _ => None,
+    }
+}
+
+/// Parse a default strategy string. Returns `None` for unrecognized values.
+/// Used by both the compiler (to convert) and validator (to check validity).
+pub(crate) fn parse_default_strategy(value: &str) -> Option<DefaultStrategy> {
+    match value {
+        "first_per_language" => Some(DefaultStrategy::FirstPerLanguage),
+        "none" => Some(DefaultStrategy::None),
+        "first" => Some(DefaultStrategy::First),
+        "all" => Some(DefaultStrategy::All),
+        _ => None,
     }
 }
 
@@ -361,7 +380,11 @@ fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslErr
         depends_on: phase.depends_on.clone(),
         skip_when,
         run_if,
-        on_error: parse_error_strategy(phase.on_error.as_deref()),
+        on_error: phase
+            .on_error
+            .as_deref()
+            .and_then(parse_error_strategy)
+            .unwrap_or(ErrorStrategy::Abort),
         operations,
     })
 }
@@ -383,13 +406,8 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
                 .iter()
                 .map(|(kind, value)| CompiledDefault {
                     target: parse_track_target(kind),
-                    strategy: match value.as_str() {
-                        "first_per_language" => DefaultStrategy::FirstPerLanguage,
-                        "none" => DefaultStrategy::None,
-                        "first" => DefaultStrategy::First,
-                        "all" => DefaultStrategy::All,
-                        _ => DefaultStrategy::None,
-                    },
+                    strategy: parse_default_strategy(value)
+                        .unwrap_or(DefaultStrategy::None),
                 })
                 .collect();
             Ok(CompiledOperation::SetDefaults(defaults))

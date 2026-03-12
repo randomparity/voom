@@ -67,17 +67,14 @@ fn validate_config(ast: &PolicyAst, errors: &mut Vec<DslError>) {
 }
 
 fn validate_on_error(value: &str, line: usize, col: usize, errors: &mut Vec<DslError>) {
-    match value {
-        "continue" | "abort" | "skip" => {}
-        _ => {
-            errors.push(DslError::validation(
-                line,
-                col,
-                format!(
-                    "invalid on_error value \"{value}\", expected \"continue\", \"abort\", or \"skip\""
-                ),
-            ));
-        }
+    if crate::compiler::parse_error_strategy(value).is_none() {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!(
+                "invalid on_error value \"{value}\", expected \"continue\", \"abort\", or \"skip\""
+            ),
+        ));
     }
 }
 
@@ -428,14 +425,12 @@ fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut 
                         ));
                     }
                 }
-                let valid_defaults = ["first_per_language", "none", "first", "all"];
-                if !valid_defaults.contains(&value.as_str()) {
+                if crate::compiler::parse_default_strategy(value).is_none() {
                     errors.push(DslError::validation(
                         line,
                         col,
                         format!(
-                            "invalid defaults value \"{value}\", expected one of: {}",
-                            valid_defaults.join(", ")
+                            "invalid defaults value \"{value}\", expected one of: first_per_language, none, first, all"
                         ),
                     ));
                 }
