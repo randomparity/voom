@@ -16,6 +16,18 @@ use voom_domain::storage::{FileFilters, StorageTrait, StoredPlan};
 
 use crate::schema;
 
+/// Configuration for the SQLite store.
+pub struct SqliteStoreConfig {
+    /// Maximum number of connections in the pool. Default: 8.
+    pub pool_size: u32,
+}
+
+impl Default for SqliteStoreConfig {
+    fn default() -> Self {
+        Self { pool_size: 8 }
+    }
+}
+
 /// SQLite-backed storage implementation using r2d2 connection pooling.
 pub struct SqliteStore {
     pool: Pool<SqliteConnectionManager>,
@@ -24,22 +36,27 @@ pub struct SqliteStore {
 impl SqliteStore {
     /// Open (or create) a SQLite database at the given path.
     pub fn open(db_path: &Path) -> Result<Self> {
+        Self::open_with_config(db_path, SqliteStoreConfig::default())
+    }
+
+    /// Open with custom configuration.
+    pub fn open_with_config(db_path: &Path, config: SqliteStoreConfig) -> Result<Self> {
         let manager = SqliteConnectionManager::file(db_path);
-        Self::from_manager(manager)
+        Self::from_manager(manager, config.pool_size)
     }
 
     /// Create an in-memory SQLite store (useful for testing).
     pub fn in_memory() -> Result<Self> {
         let manager = SqliteConnectionManager::memory();
-        Self::from_manager(manager)
+        Self::from_manager(manager, SqliteStoreConfig::default().pool_size)
     }
 
-    fn from_manager(manager: SqliteConnectionManager) -> Result<Self> {
+    fn from_manager(manager: SqliteConnectionManager, pool_size: u32) -> Result<Self> {
         // Configure every connection from the pool with pragmas (WAL, busy_timeout, etc.)
         let manager = manager.with_init(|conn| schema::configure_connection(conn));
 
         let pool = Pool::builder()
-            .max_size(8)
+            .max_size(pool_size)
             .build(manager)
             .map_err(|e| VoomError::Storage(format!("failed to create connection pool: {e}")))?;
 
@@ -431,10 +448,15 @@ impl StorageTrait for SqliteStore {
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| VoomError::Storage(format!("failed to collect files: {e}")))?;
 
+        let file_ids: Vec<Uuid> = rows
+            .iter()
+            .map(|fr| parse_uuid(&fr.id))
+            .collect::<Result<Vec<_>>>()?;
+        let tracks_map = self.load_tracks_batch(&conn, &file_ids)?;
+
         let mut files = Vec::with_capacity(rows.len());
-        for fr in &rows {
-            let id = parse_uuid(&fr.id)?;
-            let tracks = self.load_tracks(&conn, &id)?;
+        for (fr, id) in rows.iter().zip(file_ids.iter()) {
+            let tracks = tracks_map.get(id).cloned().unwrap_or_default();
             files.push(fr.to_media_file(tracks)?);
         }
 
@@ -800,24 +822,46 @@ impl StorageTrait for SqliteStore {
     }
 
     fn prune_missing_files(&self) -> Result<u64> {
+        // Phase 1: Query all file paths (release connection after)
+        let files: Vec<(String, String)> = {
+            let conn = self.conn()?;
+            let mut stmt = conn
+                .prepare("SELECT id, path FROM files")
+                .map_err(|e| VoomError::Storage(format!("failed to prepare prune query: {e}")))?;
+
+            let result = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(|e| VoomError::Storage(format!("failed to query files: {e}")))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| VoomError::Storage(format!("failed to collect files: {e}")))?;
+            result
+        };
+
+        // Phase 2: Check filesystem (no connection held)
+        let missing_ids: Vec<&str> = files
+            .iter()
+            .filter(|(_, path)| !Path::new(path).exists())
+            .map(|(id, _)| id.as_str())
+            .collect();
+
+        if missing_ids.is_empty() {
+            return Ok(0);
+        }
+
+        // Phase 3: Batch delete in chunks of 500
         let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare("SELECT id, path FROM files")
-            .map_err(|e| VoomError::Storage(format!("failed to prepare prune query: {e}")))?;
-
-        let files: Vec<(String, String)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .map_err(|e| VoomError::Storage(format!("failed to query files: {e}")))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| VoomError::Storage(format!("failed to collect files: {e}")))?;
-
         let mut pruned = 0u64;
-        for (id, path) in &files {
-            if !Path::new(path).exists() {
-                conn.execute("DELETE FROM files WHERE id = ?1", params![id])
-                    .map_err(|e| VoomError::Storage(format!("failed to delete file: {e}")))?;
-                pruned += 1;
-            }
+        for chunk in missing_ids.chunks(500) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+            let sql = format!("DELETE FROM files WHERE id IN ({})", placeholders.join(","));
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> = chunk
+                .iter()
+                .map(|id| id as &dyn rusqlite::types::ToSql)
+                .collect();
+            let deleted = conn
+                .execute(&sql, param_refs.as_slice())
+                .map_err(|e| VoomError::Storage(format!("failed to delete files: {e}")))?;
+            pruned += deleted as u64;
         }
 
         Ok(pruned)
@@ -856,6 +900,52 @@ impl StorageTrait for SqliteStore {
 
 // Private helper methods
 impl SqliteStore {
+    fn load_tracks_batch(
+        &self,
+        conn: &rusqlite::Connection,
+        file_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<Track>>> {
+        let mut result: HashMap<Uuid, Vec<Track>> = HashMap::new();
+        if file_ids.is_empty() {
+            return Ok(result);
+        }
+
+        for chunk in file_ids.chunks(500) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+            let sql = format!(
+                "SELECT file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format \
+                 FROM tracks WHERE file_id IN ({}) ORDER BY file_id, stream_index",
+                placeholders.join(",")
+            );
+            let param_values: Vec<String> = chunk.iter().map(|id| id.to_string()).collect();
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
+                .iter()
+                .map(|v| v as &dyn rusqlite::types::ToSql)
+                .collect();
+
+            let mut stmt = conn.prepare(&sql).map_err(|e| {
+                VoomError::Storage(format!("failed to prepare batch track query: {e}"))
+            })?;
+
+            let rows = stmt
+                .query_map(param_refs.as_slice(), |row| {
+                    let file_id_str: String = row.get("file_id")?;
+                    let track = row_to_track(row)?;
+                    Ok((file_id_str, track))
+                })
+                .map_err(|e| VoomError::Storage(format!("failed to batch query tracks: {e}")))?;
+
+            for row_result in rows {
+                let (file_id_str, track) = row_result
+                    .map_err(|e| VoomError::Storage(format!("failed to read track row: {e}")))?;
+                let file_id = parse_uuid(&file_id_str)?;
+                result.entry(file_id).or_default().push(track);
+            }
+        }
+
+        Ok(result)
+    }
+
     fn load_tracks(&self, conn: &rusqlite::Connection, file_id: &Uuid) -> Result<Vec<Track>> {
         let mut stmt = conn
             .prepare(

@@ -119,12 +119,10 @@ pub async fn run(args: ScanArgs) -> Result<()> {
 
     // Publish discovery events through the event bus
     for event in &events {
-        kernel.dispatch(Event::FileDiscovered(event.clone())).await;
+        kernel.dispatch(Event::FileDiscovered(event.clone()));
     }
 
     // Introspect each discovered file
-    let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
-
     let pb = ProgressBar::new(events.len() as u64);
     pb.set_style(
         ProgressStyle::with_template(
@@ -163,14 +161,25 @@ pub async fn run(args: ScanArgs) -> Result<()> {
 
         pb.set_message(format!("{}{}", name, eta));
 
-        match introspector.introspect(&event.path, event.size, &event.content_hash) {
-            Ok(intro_event) => {
-                // Publish through the event bus — sqlite-store handles persistence
-                kernel.dispatch(Event::FileIntrospected(intro_event)).await;
+        let path = event.path.clone();
+        let size = event.size;
+        let hash = event.content_hash.clone();
+        let intro_result = tokio::task::spawn_blocking(move || {
+            let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
+            introspector.introspect(&path, size, &hash)
+        })
+        .await;
+        match intro_result {
+            Ok(Ok(intro_event)) => {
+                kernel.dispatch(Event::FileIntrospected(intro_event));
                 introspected += 1;
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!(path = %event.path.display(), error = %e, "introspection failed");
+                errors += 1;
+            }
+            Err(e) => {
+                tracing::warn!(path = %event.path.display(), error = %e, "introspection task panicked");
                 errors += 1;
             }
         }
@@ -274,15 +283,13 @@ mod tests {
             size: 1024,
             content_hash: "abc123".into(),
         };
-        kernel.dispatch(Event::FileDiscovered(discovered)).await;
+        kernel.dispatch(Event::FileDiscovered(discovered));
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 1);
 
         // Simulate introspection event
         let file = test_media_file("/tmp/test.mkv");
-        kernel
-            .dispatch(Event::FileIntrospected(FileIntrospectedEvent { file }))
-            .await;
+        kernel.dispatch(Event::FileIntrospected(FileIntrospectedEvent { file }));
 
         assert_eq!(recorder.introspected_count.load(Ordering::SeqCst), 1);
     }
@@ -312,7 +319,7 @@ mod tests {
         ];
 
         for event in &events {
-            kernel.dispatch(Event::FileDiscovered(event.clone())).await;
+            kernel.dispatch(Event::FileDiscovered(event.clone()));
         }
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 3);

@@ -69,7 +69,7 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
 
     // Publish discovery events through the event bus
     for event in &events {
-        kernel.dispatch(Event::FileDiscovered(event.clone())).await;
+        kernel.dispatch(Event::FileDiscovered(event.clone()));
     }
 
     let file_count = events.len();
@@ -146,13 +146,11 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
                     let file = intro_result.file.clone();
 
                     // Publish introspection event
-                    kernel
-                        .dispatch(Event::FileIntrospected(
-                            voom_domain::events::FileIntrospectedEvent {
-                                file: intro_result.file,
-                            },
-                        ))
-                        .await;
+                    kernel.dispatch(Event::FileIntrospected(
+                        voom_domain::events::FileIntrospectedEvent {
+                            file: intro_result.file,
+                        },
+                    ));
 
                     let file_path_str = file.path.display().to_string();
 
@@ -168,11 +166,9 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
                     // Publish PlanCreated for each non-skipped plan
                     for plan in &result.plans {
                         if !plan.is_skipped() {
-                            kernel
-                                .dispatch(Event::PlanCreated(PlanCreatedEvent {
-                                    plan: plan.clone(),
-                                }))
-                                .await;
+                            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent {
+                                plan: plan.clone(),
+                            }));
                         }
                     }
 
@@ -225,24 +221,20 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
                                 continue;
                             }
 
-                            kernel
-                                .dispatch(Event::PlanExecuting(PlanExecutingEvent {
-                                    path: file.path.clone(),
-                                    phase_name: plan.phase_name.clone(),
-                                    action_count: plan.actions.len(),
-                                }))
-                                .await;
+                            kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
+                                path: file.path.clone(),
+                                phase_name: plan.phase_name.clone(),
+                                action_count: plan.actions.len(),
+                            }));
 
                             // In a full implementation, we'd execute the plan here
 
-                            kernel
-                                .dispatch(Event::PlanCompleted(PlanCompletedEvent {
-                                    plan_id: plan.id,
-                                    path: file.path.clone(),
-                                    phase_name: plan.phase_name.clone(),
-                                    actions_applied: plan.actions.len(),
-                                }))
-                                .await;
+                            kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
+                                plan_id: plan.id,
+                                path: file.path.clone(),
+                                phase_name: plan.phase_name.clone(),
+                                actions_applied: plan.actions.len(),
+                            }));
                         }
 
                         Ok(Some(serde_json::json!({
@@ -445,24 +437,18 @@ mod tests {
 
         // Simulate: PlanCreated + PlanExecuting + PlanCompleted for non-skipped plan
         let plan = test_plan("normalize", false);
-        kernel
-            .dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }))
-            .await;
-        kernel
-            .dispatch(Event::PlanExecuting(PlanExecutingEvent {
-                path: file.path.clone(),
-                phase_name: plan.phase_name.clone(),
-                action_count: plan.actions.len(),
-            }))
-            .await;
-        kernel
-            .dispatch(Event::PlanCompleted(PlanCompletedEvent {
-                plan_id: plan.id,
-                path: file.path.clone(),
-                phase_name: plan.phase_name.clone(),
-                actions_applied: plan.actions.len(),
-            }))
-            .await;
+        kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
+        kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
+            path: file.path.clone(),
+            phase_name: plan.phase_name.clone(),
+            action_count: plan.actions.len(),
+        }));
+        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
+            plan_id: plan.id,
+            path: file.path.clone(),
+            phase_name: plan.phase_name.clone(),
+            actions_applied: plan.actions.len(),
+        }));
 
         assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 1);
@@ -481,9 +467,7 @@ mod tests {
 
         // Simulate the process.rs logic: skip if plan.is_skipped()
         if !plan.is_skipped() {
-            kernel
-                .dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }))
-                .await;
+            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
         }
 
         assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
@@ -503,26 +487,20 @@ mod tests {
 
         // Simulate the process.rs logic: PlanCreated always, but
         // PlanExecuting/PlanCompleted only when NOT dry_run
-        kernel
-            .dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }))
-            .await;
+        kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
 
         if !dry_run {
-            kernel
-                .dispatch(Event::PlanExecuting(PlanExecutingEvent {
-                    path: file.path.clone(),
-                    phase_name: plan.phase_name.clone(),
-                    action_count: plan.actions.len(),
-                }))
-                .await;
-            kernel
-                .dispatch(Event::PlanCompleted(PlanCompletedEvent {
-                    plan_id: plan.id,
-                    path: file.path.clone(),
-                    phase_name: plan.phase_name.clone(),
-                    actions_applied: plan.actions.len(),
-                }))
-                .await;
+            kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
+                path: file.path.clone(),
+                phase_name: plan.phase_name.clone(),
+                action_count: plan.actions.len(),
+            }));
+            kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
+                plan_id: plan.id,
+                path: file.path.clone(),
+                phase_name: plan.phase_name.clone(),
+                actions_applied: plan.actions.len(),
+            }));
         }
 
         // PlanCreated fires regardless, but no execution events in dry_run
@@ -543,13 +521,11 @@ mod tests {
             size: 1024,
             content_hash: "abc".into(),
         };
-        kernel.dispatch(Event::FileDiscovered(discovered)).await;
+        kernel.dispatch(Event::FileDiscovered(discovered));
 
         // Simulate introspection event
         let file = MediaFile::new(PathBuf::from("/tmp/a.mkv"));
-        kernel
-            .dispatch(Event::FileIntrospected(FileIntrospectedEvent { file }))
-            .await;
+        kernel.dispatch(Event::FileIntrospected(FileIntrospectedEvent { file }));
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.introspected_count.load(Ordering::SeqCst), 1);

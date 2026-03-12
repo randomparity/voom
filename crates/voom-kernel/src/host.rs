@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use wait_timeout::ChildExt;
 
 /// State provided to WASM plugins via host function imports.
 ///
@@ -166,26 +167,31 @@ impl HostState {
             .spawn()
             .map_err(|e| format!("failed to spawn tool '{}': {}", tool, e))?;
 
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_status)) => {
-                    let output = child
-                        .wait_with_output()
-                        .map_err(|e| format!("failed to read output: {}", e))?;
-                    return Ok(ToolOutput {
-                        exit_code: output.status.code().unwrap_or(-1),
-                        stdout: output.stdout,
-                        stderr: output.stderr,
-                    });
+        let timeout = Duration::from_millis(timeout_ms);
+        match child.wait_timeout(timeout) {
+            Ok(Some(status)) => {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                if let Some(mut out) = child.stdout.take() {
+                    std::io::Read::read_to_end(&mut out, &mut stdout)
+                        .map_err(|e| format!("failed to read stdout: {}", e))?;
                 }
-                Ok(None) if Instant::now() >= deadline => {
-                    child.kill().ok();
-                    return Err(format!("tool '{}' timed out after {}ms", tool, timeout_ms));
+                if let Some(mut err) = child.stderr.take() {
+                    std::io::Read::read_to_end(&mut err, &mut stderr)
+                        .map_err(|e| format!("failed to read stderr: {}", e))?;
                 }
-                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-                Err(e) => return Err(format!("error waiting for tool '{}': {}", tool, e)),
+                Ok(ToolOutput {
+                    exit_code: status.code().unwrap_or(-1),
+                    stdout,
+                    stderr,
+                })
             }
+            Ok(None) => {
+                child.kill().ok();
+                child.wait().ok();
+                Err(format!("tool '{}' timed out after {}ms", tool, timeout_ms))
+            }
+            Err(e) => Err(format!("error waiting for tool '{}': {}", tool, e)),
         }
     }
 

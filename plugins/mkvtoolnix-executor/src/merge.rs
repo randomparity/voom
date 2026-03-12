@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::time::Duration;
 
+use scopeguard::ScopeGuard;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::plan::{ActionResult, OperationType, PlannedAction};
 
@@ -31,6 +32,11 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
 
     let args = build_merge_args(path, &temp_path, actions);
 
+    // Guard ensures temp file is cleaned up even on panic
+    let _guard = scopeguard::guard(temp_path.clone(), |p| {
+        let _ = fs::remove_file(&p);
+    });
+
     tracing::info!(
         input = %path.display(),
         output = %temp_path.display(),
@@ -39,14 +45,7 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
     );
     tracing::debug!(args = ?args, "mkvmerge arguments");
 
-    let output =
-        Command::new("mkvmerge")
-            .args(&args)
-            .output()
-            .map_err(|e| VoomError::ToolExecution {
-                tool: "mkvmerge".into(),
-                message: format!("failed to spawn mkvmerge: {e}"),
-            })?;
+    let output = crate::run_with_timeout("mkvmerge", &args, Duration::from_secs(1800))?;
 
     // mkvmerge returns 0 for success, 1 for warnings (still successful), 2 for errors
     if output.status.code().unwrap_or(2) <= 1 {
@@ -66,6 +65,9 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
             ),
         })?;
 
+        // Defuse the guard — temp file was successfully renamed
+        ScopeGuard::into_inner(_guard);
+
         // If we converted container and the original had a different extension, remove it
         if final_path != path && path.exists() {
             let _ = fs::remove_file(path);
@@ -81,8 +83,7 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
             })
             .collect())
     } else {
-        // Clean up temp file on failure
-        let _ = fs::remove_file(&temp_path);
+        // Guard will clean up temp file when it drops
 
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         tracing::error!(

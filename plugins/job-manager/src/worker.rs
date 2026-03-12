@@ -182,6 +182,16 @@ impl WorkerPool {
                     }
                 };
 
+                // Re-check cancellation after claiming (closes race with ErrorStrategy::Fail)
+                if cancelled.load(Ordering::SeqCst) {
+                    let q = queue.clone();
+                    let jid = job.id;
+                    let _ =
+                        tokio::task::spawn_blocking(move || q.fail(&jid, "cancelled".to_string()))
+                            .await;
+                    return;
+                }
+
                 let job_id = job.id;
                 reporter.on_job_start(&job);
 

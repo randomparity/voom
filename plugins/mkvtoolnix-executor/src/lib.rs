@@ -1,3 +1,7 @@
+use std::ffi::OsStr;
+use std::process::{Command, Output, Stdio};
+use std::time::Duration;
+
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{
@@ -6,9 +10,44 @@ use voom_domain::events::{
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionResult, OperationType, Plan, PlannedAction};
 use voom_kernel::Plugin;
+use wait_timeout::ChildExt;
 
 mod merge;
 mod propedit;
+
+/// Run a subprocess with a timeout, killing it if it exceeds the deadline.
+fn run_with_timeout(tool: &str, args: &[impl AsRef<OsStr>], timeout: Duration) -> Result<Output> {
+    let mut child = Command::new(tool)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| VoomError::ToolExecution {
+            tool: tool.into(),
+            message: format!("failed to spawn {tool}: {e}"),
+        })?;
+
+    match child.wait_timeout(timeout) {
+        Ok(Some(_status)) => child
+            .wait_with_output()
+            .map_err(|e| VoomError::ToolExecution {
+                tool: tool.into(),
+                message: format!("failed to read output: {e}"),
+            }),
+        Ok(None) => {
+            child.kill().ok();
+            child.wait().ok();
+            Err(VoomError::ToolExecution {
+                tool: tool.into(),
+                message: format!("{tool} timed out after {}s", timeout.as_secs()),
+            })
+        }
+        Err(e) => Err(VoomError::ToolExecution {
+            tool: tool.into(),
+            message: format!("error waiting for {tool}: {e}"),
+        }),
+    }
+}
 
 /// Operations that can be handled via mkvpropedit (in-place metadata edits).
 const PROPEDIT_OPS: &[OperationType] = &[

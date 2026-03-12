@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::process::Command;
+use std::time::Duration;
 
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::plan::{ActionResult, OperationType, PlannedAction};
@@ -26,13 +26,7 @@ pub fn execute_propedit_actions(
     );
     tracing::debug!(args = ?args, "mkvpropedit arguments");
 
-    let output = Command::new("mkvpropedit")
-        .args(&args)
-        .output()
-        .map_err(|e| VoomError::ToolExecution {
-            tool: "mkvpropedit".into(),
-            message: format!("failed to spawn mkvpropedit: {e}"),
-        })?;
+    let output = crate::run_with_timeout("mkvpropedit", &args, Duration::from_secs(300))?;
 
     if output.status.success() {
         Ok(actions

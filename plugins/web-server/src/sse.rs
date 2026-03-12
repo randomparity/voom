@@ -9,6 +9,7 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event as SseAxumEvent, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use futures_core::Stream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
@@ -54,7 +55,10 @@ pub async fn events_handler(
                 let json = serde_json::to_string(&event).ok()?;
                 Some(Ok(SseAxumEvent::default().data(json)))
             }
-            Err(_) => None, // Lagged — skip missed events
+            Err(BroadcastStreamRecvError::Lagged(count)) => {
+                let json = serde_json::json!({"type": "lagged", "missed": count}).to_string();
+                Some(Ok(SseAxumEvent::default().event("lagged").data(json)))
+            }
         }
     });
 

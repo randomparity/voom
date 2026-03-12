@@ -59,8 +59,8 @@ impl Kernel {
     }
 
     /// Dispatch an event through the bus to all matching subscribers.
-    pub async fn dispatch(&self, event: Event) -> Vec<EventResult> {
-        self.bus.publish(event).await
+    pub fn dispatch(&self, event: Event) -> Vec<EventResult> {
+        self.bus.publish(event)
     }
 }
 

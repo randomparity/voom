@@ -51,7 +51,7 @@ impl EventBus {
     /// Publish an event to all subscribers that handle its type.
     /// Returns results from all handlers, in priority order.
     /// Produced events are automatically cascaded up to a depth limit.
-    pub async fn publish(&self, event: Event) -> Vec<EventResult> {
+    pub fn publish(&self, event: Event) -> Vec<EventResult> {
         self.publish_recursive(event, 0)
     }
 
@@ -168,8 +168,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_publish_dispatches_to_matching_handlers() {
+    #[test]
+    fn test_publish_dispatches_to_matching_handlers() {
         let bus = EventBus::new();
 
         let p1 = Arc::new(TestPlugin::new("discovery", &["file.discovered"]));
@@ -186,14 +186,14 @@ mod tests {
             content_hash: "abc123".to_string(),
         });
 
-        let results = bus.publish(event).await;
+        let results = bus.publish(event);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].plugin_name, "discovery");
         assert_eq!(results[1].plugin_name, "introspector");
     }
 
-    #[tokio::test]
-    async fn test_publish_respects_priority_order() {
+    #[test]
+    fn test_publish_respects_priority_order() {
         let bus = EventBus::new();
 
         let p1 = Arc::new(TestPlugin::new("low-priority", &["tool.detected"]));
@@ -208,14 +208,14 @@ mod tests {
             path: "/usr/bin/ffprobe".into(),
         });
 
-        let results = bus.publish(event).await;
+        let results = bus.publish(event);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].plugin_name, "high-priority");
         assert_eq!(results[1].plugin_name, "low-priority");
     }
 
-    #[tokio::test]
-    async fn test_no_matching_handlers() {
+    #[test]
+    fn test_no_matching_handlers() {
         let bus = EventBus::new();
         let p = Arc::new(TestPlugin::new("discovery", &["file.discovered"]));
         bus.subscribe_plugin(p, 0);
@@ -226,7 +226,7 @@ mod tests {
             path: "/usr/bin/ffprobe".into(),
         });
 
-        let results = bus.publish(event).await;
+        let results = bus.publish(event);
         assert!(results.is_empty());
     }
 
@@ -264,8 +264,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_panicking_plugin_does_not_crash_bus() {
+    #[test]
+    fn test_panicking_plugin_does_not_crash_bus() {
         let bus = EventBus::new();
 
         // Register a panicking plugin before a normal one.
@@ -281,7 +281,7 @@ mod tests {
             content_hash: "abc123".to_string(),
         });
 
-        let results = bus.publish(event).await;
+        let results = bus.publish(event);
         // The panicking plugin should be skipped; the normal plugin should still produce a result.
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].plugin_name, "good-plugin");
@@ -328,8 +328,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_event_cascading() {
+    #[test]
+    fn test_event_cascading() {
         let bus = EventBus::new();
 
         // Plugin A handles "file.discovered" and produces "file.introspected".
@@ -354,15 +354,15 @@ mod tests {
             content_hash: "abc123".to_string(),
         });
 
-        let results = bus.publish(event).await;
+        let results = bus.publish(event);
         // Should have 2 results: introspector (from original) + store (from cascaded).
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].plugin_name, "introspector");
         assert_eq!(results[1].plugin_name, "store");
     }
 
-    #[tokio::test]
-    async fn test_cascade_depth_limit_prevents_infinite_loop() {
+    #[test]
+    fn test_cascade_depth_limit_prevents_infinite_loop() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         /// Plugin that produces the same event type it handles, creating an infinite loop.
@@ -410,7 +410,7 @@ mod tests {
             path: "/usr/bin/ffprobe".into(),
         });
 
-        let results = bus.publish(event).await;
+        let results = bus.publish(event);
 
         // Should have been called exactly MAX_CASCADE_DEPTH + 1 times (depth 0 through 8).
         let count = plugin_ref.call_count.load(Ordering::SeqCst);

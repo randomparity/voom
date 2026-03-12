@@ -78,6 +78,10 @@ rayon = "1"
 ignore = "0.4"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
+# Subprocess & cleanup
+wait-timeout = "0.2"
+scopeguard = "1"
+
 # Testing
 insta = { version = "1", features = ["yaml"] }
 tempfile = "3"

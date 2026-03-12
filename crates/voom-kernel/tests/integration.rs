@@ -111,8 +111,8 @@ impl Plugin for MockExecutor {
     }
 }
 
-#[tokio::test]
-async fn test_kernel_register_and_dispatch() {
+#[test]
+fn test_kernel_register_and_dispatch() {
     let mut kernel = Kernel::new();
 
     // Register native plugins.
@@ -134,7 +134,7 @@ async fn test_kernel_register_and_dispatch() {
         content_hash: "xxh64:abc123def456".to_string(),
     });
 
-    let results = kernel.dispatch(event).await;
+    let results = kernel.dispatch(event);
 
     // Both plugins handle file.discovered.
     assert_eq!(results.len(), 2);
@@ -153,8 +153,8 @@ async fn test_kernel_register_and_dispatch() {
     );
 }
 
-#[tokio::test]
-async fn test_kernel_capability_queries() {
+#[test]
+fn test_kernel_capability_queries() {
     let mut kernel = Kernel::new();
 
     let executor = Arc::new(MockExecutor {
@@ -189,8 +189,8 @@ async fn test_kernel_capability_queries() {
         .is_none());
 }
 
-#[tokio::test]
-async fn test_event_cascading() {
+#[test]
+fn test_event_cascading() {
     let mut kernel = Kernel::new();
 
     let introspector = Arc::new(MockIntrospector);
@@ -203,7 +203,7 @@ async fn test_event_cascading() {
         content_hash: "xxh64:000".to_string(),
     });
 
-    let results = kernel.dispatch(event).await;
+    let results = kernel.dispatch(event);
     assert_eq!(results.len(), 1);
 
     // The introspector produced a new event — cascade it.
@@ -211,6 +211,6 @@ async fn test_event_cascading() {
     assert_eq!(produced.len(), 1);
 
     // Dispatch the produced event (nothing handles file.introspected yet).
-    let cascade_results = kernel.dispatch(produced[0].clone()).await;
+    let cascade_results = kernel.dispatch(produced[0].clone());
     assert!(cascade_results.is_empty());
 }
