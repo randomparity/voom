@@ -71,44 +71,52 @@ pub fn event_result_to_wasm(result: &EventResult) -> Result<WasmEventResult> {
 /// Convert a WIT capability string (e.g., "discover:file,smb") to a domain Capability.
 pub fn capability_from_wit(cap_str: &str) -> Option<Capability> {
     let (kind, params) = cap_str.split_once(':').unwrap_or((cap_str, ""));
-    let params_list: Vec<String> = if params.is_empty() {
-        vec![]
-    } else {
-        params.split(',').map(|s| s.trim().to_string()).collect()
-    };
 
     match kind {
         "discover" => Some(Capability::Discover {
-            schemes: params_list,
+            schemes: split_comma_list(params),
         }),
         "introspect" => Some(Capability::Introspect {
-            formats: params_list,
+            formats: split_comma_list(params),
         }),
         "evaluate" => Some(Capability::Evaluate),
         "execute" => {
             // Format: "execute:op1+op2:fmt1,fmt2"
-            let parts: Vec<&str> = params.splitn(2, ':').collect();
-            let operations = if parts.is_empty() || parts[0].is_empty() {
+            let mut parts = params.splitn(2, ':');
+            let ops_part = parts.next().unwrap_or("");
+            let fmts_part = parts.next().unwrap_or("");
+            let operations = if ops_part.is_empty() {
                 vec![]
             } else {
-                parts[0].split('+').map(|s| s.trim().to_string()).collect()
-            };
-            let formats = if parts.len() > 1 {
-                parts[1].split(',').map(|s| s.trim().to_string()).collect()
-            } else {
-                vec![]
+                ops_part.split('+').map(|s| s.trim().to_string()).collect()
             };
             Some(Capability::Execute {
                 operations,
-                formats,
+                formats: split_comma_list(fmts_part),
             })
         }
+        "store" => Some(Capability::Store {
+            backend: params.to_string(),
+        }),
+        "detect_tools" => Some(Capability::DetectTools),
+        "manage_jobs" => Some(Capability::ManageJobs),
+        "serve_http" => Some(Capability::ServeHttp),
+        "orchestrate" => Some(Capability::Orchestrate),
+        "backup" => Some(Capability::Backup),
         "enrich_metadata" | "enrich-metadata" => Some(Capability::EnrichMetadata {
             source: params.to_string(),
         }),
         "transcribe" => Some(Capability::Transcribe),
         "synthesize" => Some(Capability::Synthesize),
         _ => None,
+    }
+}
+
+fn split_comma_list(s: &str) -> Vec<String> {
+    if s.is_empty() {
+        vec![]
+    } else {
+        s.split(',').map(|p| p.trim().to_string()).collect()
     }
 }
 
@@ -243,6 +251,36 @@ mod tests {
         assert_eq!(s, "enrich_metadata:radarr");
         let restored = capability_from_wit(&s).unwrap();
         assert_eq!(restored, cap);
+    }
+
+    #[test]
+    fn test_capability_roundtrip_store() {
+        let cap = Capability::Store {
+            backend: "sqlite".into(),
+        };
+        let s = capability_to_wit(&cap);
+        assert_eq!(s, "store:sqlite");
+        let restored = capability_from_wit(&s).unwrap();
+        assert_eq!(restored, cap);
+    }
+
+    #[test]
+    fn test_capability_roundtrip_paramless_variants() {
+        for (cap, expected_str) in [
+            (Capability::DetectTools, "detect_tools"),
+            (Capability::ManageJobs, "manage_jobs"),
+            (Capability::ServeHttp, "serve_http"),
+            (Capability::Orchestrate, "orchestrate"),
+            (Capability::Backup, "backup"),
+            (Capability::Transcribe, "transcribe"),
+            (Capability::Synthesize, "synthesize"),
+            (Capability::Evaluate, "evaluate"),
+        ] {
+            let s = capability_to_wit(&cap);
+            assert_eq!(s, expected_str);
+            let restored = capability_from_wit(&s).unwrap();
+            assert_eq!(restored, cap);
+        }
     }
 
     #[test]
