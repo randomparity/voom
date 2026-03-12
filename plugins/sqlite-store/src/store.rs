@@ -79,10 +79,6 @@ impl SqliteStore {
 
 // --- Conversion helpers ---
 
-fn track_type_to_str(tt: TrackType) -> &'static str {
-    tt.as_str()
-}
-
 fn str_to_track_type(s: &str) -> TrackType {
     match s {
         "video" => TrackType::Video,
@@ -110,7 +106,7 @@ fn parse_datetime(s: &str) -> Result<DateTime<Utc>> {
 }
 
 fn format_datetime(dt: &DateTime<Utc>) -> String {
-    dt.to_rfc3339()
+    voom_domain::utils::datetime::format_iso(dt)
 }
 
 fn row_to_file(row: &Row<'_>) -> rusqlite::Result<FileRow> {
@@ -325,7 +321,7 @@ impl StorageTrait for SqliteStore {
                     Uuid::new_v4().to_string(),
                     &effective_id,
                     track.index as i32,
-                    track_type_to_str(track.track_type),
+                    track.track_type.as_str(),
                     track.codec,
                     track.language,
                     track.title,

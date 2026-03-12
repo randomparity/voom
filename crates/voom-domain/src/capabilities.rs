@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+/// Returns true if the list is empty (wildcard) or contains the given value.
+fn list_contains(list: &[String], value: &str) -> bool {
+    list.is_empty() || list.iter().any(|item| item == value)
+}
+
 /// Describes what a plugin can do. The kernel uses these for capability-based routing.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Capability {
@@ -52,9 +57,7 @@ impl Capability {
     /// Check if this capability can handle the given operation.
     pub fn supports_operation(&self, operation: &str) -> bool {
         match self {
-            Capability::Execute { operations, .. } => {
-                operations.is_empty() || operations.iter().any(|o| o == operation)
-            }
+            Capability::Execute { operations, .. } => list_contains(operations, operation),
             _ => false,
         }
     }
@@ -63,11 +66,9 @@ impl Capability {
     pub fn supports_format(&self, format: &str) -> bool {
         match self {
             Capability::Introspect { formats } | Capability::Execute { formats, .. } => {
-                formats.is_empty() || formats.iter().any(|f| f == format)
+                list_contains(formats, format)
             }
-            Capability::Discover { schemes } => {
-                schemes.is_empty() || schemes.iter().any(|s| s == format)
-            }
+            Capability::Discover { schemes } => list_contains(schemes, format),
             _ => true,
         }
     }
