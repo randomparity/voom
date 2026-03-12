@@ -34,36 +34,11 @@ pub fn evaluate_condition(cond: &CompiledCondition, file: &MediaFile) -> bool {
             evaluate_field_compare(file, path, op, value)
         }
         CompiledCondition::FieldExists { path } => resolve_field(file, path).is_some(),
-        CompiledCondition::AudioIsMultiLanguage => {
-            let audio_langs: HashSet<&str> = file
-                .audio_tracks()
-                .iter()
-                .map(|t| t.language.as_str())
-                .filter(|l| *l != "und")
-                .collect();
-            audio_langs.len() > 1
-        }
+        CompiledCondition::AudioIsMultiLanguage => audio_lang_count(file) > 1,
         CompiledCondition::IsDubbed => {
-            // A file is "dubbed" if it has audio in more than one language
-            // and subtitle tracks exist (suggesting non-original audio)
-            let audio_langs: HashSet<&str> = file
-                .audio_tracks()
-                .iter()
-                .map(|t| t.language.as_str())
-                .filter(|l| *l != "und")
-                .collect();
-            audio_langs.len() > 1 && !file.subtitle_tracks().is_empty()
+            audio_lang_count(file) > 1 && !file.subtitle_tracks().is_empty()
         }
-        CompiledCondition::IsOriginal => {
-            // A file is "original" if it has exactly one audio language
-            let audio_langs: HashSet<&str> = file
-                .audio_tracks()
-                .iter()
-                .map(|t| t.language.as_str())
-                .filter(|l| *l != "und")
-                .collect();
-            audio_langs.len() <= 1
-        }
+        CompiledCondition::IsOriginal => audio_lang_count(file) <= 1,
         CompiledCondition::And(conditions) => {
             conditions.iter().all(|c| evaluate_condition(c, file))
         }
@@ -129,11 +104,22 @@ fn resolve_plugin_field(file: &MediaFile, path: &[String]) -> Option<serde_json:
         return None;
     }
     let plugin_data = file.plugin_metadata.get(&path[0])?;
-    let mut current = plugin_data.clone();
+    let mut current: &serde_json::Value = plugin_data;
     for key in &path[1..] {
-        current = current.get(key)?.clone();
+        current = current.get(key)?;
     }
-    Some(current)
+    Some(current.clone())
+}
+
+/// Count distinct audio languages (excluding "und").
+fn audio_lang_count(file: &MediaFile) -> usize {
+    let langs: HashSet<&str> = file
+        .audio_tracks()
+        .iter()
+        .map(|t| t.language.as_str())
+        .filter(|l| *l != "und")
+        .collect();
+    langs.len()
 }
 
 fn resolve_file_field(file: &MediaFile, path: &[String]) -> Option<serde_json::Value> {

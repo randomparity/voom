@@ -27,13 +27,13 @@ pub fn parse_ffprobe_output(
     let bitrate = parse_bitrate(format);
     let tags = parse_format_tags(format);
 
+    let empty_streams = Vec::new();
     let streams = json
         .get("streams")
         .and_then(|s| s.as_array())
-        .cloned()
-        .unwrap_or_default();
+        .unwrap_or(&empty_streams);
 
-    let tracks = parse_streams(&streams);
+    let tracks = parse_streams(streams);
 
     Ok(MediaFile {
         id: Uuid::new_v4(),
@@ -117,34 +117,21 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
         .unwrap_or("")
         .to_string();
 
-    let disposition = stream
-        .get("disposition")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-    let is_default = disposition
-        .get("default")
-        .and_then(|d| d.as_i64())
-        .map(|d| d == 1)
-        .unwrap_or(false);
-    let is_forced = disposition
-        .get("forced")
-        .and_then(|f| f.as_i64())
-        .map(|f| f == 1)
-        .unwrap_or(false);
-    let is_commentary = disposition
-        .get("comment")
-        .and_then(|c| c.as_i64())
-        .map(|c| c == 1)
-        .unwrap_or(false);
+    let disposition = stream.get("disposition").unwrap_or(&serde_json::Value::Null);
+    let disp_flag = |key| {
+        disposition
+            .get(key)
+            .and_then(|v| v.as_i64())
+            .is_some_and(|v| v == 1)
+    };
+    let is_default = disp_flag("default");
+    let is_forced = disp_flag("forced");
+    let is_commentary = disp_flag("comment");
 
     match codec_type {
         "video" => {
             // Skip attached pictures (album art)
-            if disposition
-                .get("attached_pic")
-                .and_then(|a| a.as_i64())
-                .map(|a| a == 1)
-                .unwrap_or(false)
+            if disp_flag("attached_pic")
             {
                 return Some(Track {
                     index,
@@ -347,31 +334,29 @@ fn detect_hdr(stream: &serde_json::Value) -> (bool, Option<String>) {
         "smpte2084" | "arib-std-b67" | "smpte428" | "bt2020-10" | "bt2020-12"
     );
 
-    // Check side data for HDR metadata
+    // Check side data for HDR metadata (single pass)
+    let empty_side_data = Vec::new();
     let side_data = stream
         .get("side_data_list")
         .and_then(|s| s.as_array())
-        .cloned()
-        .unwrap_or_default();
+        .unwrap_or(&empty_side_data);
 
-    let has_hdr_side_data = side_data.iter().any(|sd| {
+    let mut has_hdr_side_data = false;
+    let mut has_dovi = false;
+    for sd in side_data {
         let side_type = sd
             .get("side_data_type")
             .and_then(|t| t.as_str())
             .unwrap_or("");
-        side_type.contains("Mastering display")
+        if side_type.contains("DOVI") || side_type.contains("Dolby Vision") {
+            has_dovi = true;
+            has_hdr_side_data = true;
+        } else if side_type.contains("Mastering display")
             || side_type.contains("Content light level")
-            || side_type.contains("DOVI")
-            || side_type.contains("Dolby Vision")
-    });
-
-    let has_dovi = side_data.iter().any(|sd| {
-        let side_type = sd
-            .get("side_data_type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("");
-        side_type.contains("DOVI") || side_type.contains("Dolby Vision")
-    });
+        {
+            has_hdr_side_data = true;
+        }
+    }
 
     let is_hdr = is_hdr_transfer || has_hdr_side_data;
 

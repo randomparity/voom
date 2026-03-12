@@ -48,33 +48,25 @@ impl HwAccelConfig {
             return software_encoder(codec).to_string();
         }
 
-        match self.backend {
-            Some(HwAccelBackend::Nvenc) => match codec {
-                "hevc" | "h265" => "hevc_nvenc".to_string(),
-                "h264" | "avc" => "h264_nvenc".to_string(),
-                "av1" => "av1_nvenc".to_string(),
-                _ => software_encoder(codec).to_string(),
-            },
-            Some(HwAccelBackend::Qsv) => match codec {
-                "hevc" | "h265" => "hevc_qsv".to_string(),
-                "h264" | "avc" => "h264_qsv".to_string(),
-                "av1" => "av1_qsv".to_string(),
-                "vp9" => "vp9_qsv".to_string(),
-                _ => software_encoder(codec).to_string(),
-            },
-            Some(HwAccelBackend::Vaapi) => match codec {
-                "hevc" | "h265" => "hevc_vaapi".to_string(),
-                "h264" | "avc" => "h264_vaapi".to_string(),
-                "av1" => "av1_vaapi".to_string(),
-                "vp9" => "vp9_vaapi".to_string(),
-                _ => software_encoder(codec).to_string(),
-            },
-            Some(HwAccelBackend::Videotoolbox) => match codec {
-                "hevc" | "h265" => "hevc_videotoolbox".to_string(),
-                "h264" | "avc" => "h264_videotoolbox".to_string(),
-                _ => software_encoder(codec).to_string(),
-            },
-            None => software_encoder(codec).to_string(),
+        let (suffix, supported_codecs): (&str, &[&str]) = match self.backend {
+            Some(HwAccelBackend::Nvenc) => ("_nvenc", &["hevc", "h264", "av1"]),
+            Some(HwAccelBackend::Qsv) => ("_qsv", &["hevc", "h264", "av1", "vp9"]),
+            Some(HwAccelBackend::Vaapi) => ("_vaapi", &["hevc", "h264", "av1", "vp9"]),
+            Some(HwAccelBackend::Videotoolbox) => ("_videotoolbox", &["hevc", "h264"]),
+            None => return software_encoder(codec).to_string(),
+        };
+
+        // Normalize codec aliases to canonical names
+        let canonical = match codec {
+            "h265" => "hevc",
+            "avc" => "h264",
+            other => other,
+        };
+
+        if supported_codecs.contains(&canonical) {
+            format!("{canonical}{suffix}")
+        } else {
+            software_encoder(codec).to_string()
         }
     }
 
@@ -84,21 +76,15 @@ impl HwAccelConfig {
             return Vec::new();
         }
 
-        match self.backend {
-            Some(HwAccelBackend::Nvenc) => {
-                vec!["-hwaccel".to_string(), "cuda".to_string()]
-            }
-            Some(HwAccelBackend::Qsv) => {
-                vec!["-hwaccel".to_string(), "qsv".to_string()]
-            }
-            Some(HwAccelBackend::Vaapi) => {
-                vec!["-hwaccel".to_string(), "vaapi".to_string()]
-            }
-            Some(HwAccelBackend::Videotoolbox) => {
-                vec!["-hwaccel".to_string(), "videotoolbox".to_string()]
-            }
-            None => Vec::new(),
-        }
+        let hwaccel_name = match self.backend {
+            Some(HwAccelBackend::Nvenc) => "cuda",
+            Some(HwAccelBackend::Qsv) => "qsv",
+            Some(HwAccelBackend::Vaapi) => "vaapi",
+            Some(HwAccelBackend::Videotoolbox) => "videotoolbox",
+            None => return Vec::new(),
+        };
+
+        vec!["-hwaccel".to_string(), hwaccel_name.to_string()]
     }
 
     /// Check if HW accel is available by running `ffmpeg -hwaccels`.

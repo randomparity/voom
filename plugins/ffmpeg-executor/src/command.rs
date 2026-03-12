@@ -216,30 +216,7 @@ pub fn build_ffmpeg_command(
                     cmd = cmd.arg("-b:v").arg(bitrate);
                 }
             }
-            OperationType::TranscodeAudio => {
-                let codec = action
-                    .parameters
-                    .get("codec")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("aac");
-
-                let encoder = hwaccel::software_encoder(codec).to_string();
-
-                if let Some(stream) = action.track_index {
-                    cmd = cmd.audio_codec_for_track(stream, &encoder);
-                } else {
-                    cmd = cmd.audio_codec(&encoder);
-                }
-
-                if let Some(bitrate) = action.parameters.get("bitrate").and_then(|v| v.as_str()) {
-                    cmd = cmd.audio_bitrate(bitrate);
-                }
-
-                if let Some(channels) = action.parameters.get("channels").and_then(|v| v.as_u64()) {
-                    cmd = cmd.arg("-ac").arg(&channels.to_string());
-                }
-            }
-            OperationType::SynthesizeAudio => {
+            OperationType::TranscodeAudio | OperationType::SynthesizeAudio => {
                 let codec = action
                     .parameters
                     .get("codec")
@@ -317,20 +294,13 @@ pub fn output_extension(file: &MediaFile, actions: &[&PlannedAction]) -> String 
 
     // Preserve the input extension
     match file.container {
-        Container::Mkv => "mkv".to_string(),
-        Container::Mp4 => "mp4".to_string(),
-        Container::Avi => "avi".to_string(),
-        Container::Webm => "webm".to_string(),
-        Container::Flv => "flv".to_string(),
-        Container::Wmv => "wmv".to_string(),
-        Container::Mov => "mov".to_string(),
-        Container::Ts => "ts".to_string(),
         Container::Other => file
             .path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("mkv")
             .to_string(),
+        _ => file.container.as_str().to_string(),
     }
 }
 

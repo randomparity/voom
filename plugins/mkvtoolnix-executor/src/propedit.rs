@@ -55,6 +55,16 @@ pub fn execute_propedit_actions(
     }
 }
 
+/// Push `--edit track:N --set flag=value` args for a track flag operation.
+fn push_track_flag(args: &mut Vec<String>, action: &PlannedAction, flag_value: &str) {
+    if let Some(idx) = action.track_index {
+        args.push("--edit".into());
+        args.push(format!("track:{}", idx + 1));
+        args.push("--set".into());
+        args.push(flag_value.into());
+    }
+}
+
 /// Build mkvpropedit arguments for a set of metadata actions.
 ///
 /// Returns the full argument list (not including the binary name).
@@ -67,38 +77,10 @@ pub fn build_propedit_args(path: &Path, actions: &[&PlannedAction]) -> Result<Ve
 
     for action in actions {
         match action.operation {
-            OperationType::SetDefault => {
-                if let Some(idx) = action.track_index {
-                    args.push("--edit".into());
-                    args.push(format!("track:{}", idx + 1));
-                    args.push("--set".into());
-                    args.push("flag-default=1".into());
-                }
-            }
-            OperationType::ClearDefault => {
-                if let Some(idx) = action.track_index {
-                    args.push("--edit".into());
-                    args.push(format!("track:{}", idx + 1));
-                    args.push("--set".into());
-                    args.push("flag-default=0".into());
-                }
-            }
-            OperationType::SetForced => {
-                if let Some(idx) = action.track_index {
-                    args.push("--edit".into());
-                    args.push(format!("track:{}", idx + 1));
-                    args.push("--set".into());
-                    args.push("flag-forced=1".into());
-                }
-            }
-            OperationType::ClearForced => {
-                if let Some(idx) = action.track_index {
-                    args.push("--edit".into());
-                    args.push(format!("track:{}", idx + 1));
-                    args.push("--set".into());
-                    args.push("flag-forced=0".into());
-                }
-            }
+            OperationType::SetDefault => push_track_flag(&mut args, action, "flag-default=1"),
+            OperationType::ClearDefault => push_track_flag(&mut args, action, "flag-default=0"),
+            OperationType::SetForced => push_track_flag(&mut args, action, "flag-forced=1"),
+            OperationType::ClearForced => push_track_flag(&mut args, action, "flag-forced=0"),
             OperationType::SetTitle => {
                 if let Some(idx) = action.track_index {
                     let title = action.parameters["title"].as_str().unwrap_or("");

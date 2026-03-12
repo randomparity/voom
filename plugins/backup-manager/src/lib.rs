@@ -128,12 +128,8 @@ impl BackupManagerPlugin {
 
     /// Restore a file from its backup.
     pub fn restore_file(&self, path: &Path) -> Result<()> {
-        let record = {
-            let records = self.records.lock().unwrap();
-            records.get(path).cloned()
-        };
-
-        let record = record.ok_or_else(|| VoomError::Plugin {
+        let mut records = self.records.lock().unwrap();
+        let record = records.get(path).ok_or_else(|| VoomError::Plugin {
             plugin: "backup-manager".into(),
             message: format!("no backup found for {}", path.display()),
         })?;
@@ -148,26 +144,20 @@ impl BackupManagerPlugin {
             ),
         })?;
 
-        let mut records = self.records.lock().unwrap();
-        records.remove(path);
-
         tracing::info!(
             path = %path.display(),
             backup = %record.backup_path.display(),
             "File restored from backup"
         );
 
+        records.remove(path);
         Ok(())
     }
 
     /// Remove the backup for a file (after successful execution).
     pub fn remove_backup(&self, path: &Path) -> Result<()> {
-        let record = {
-            let records = self.records.lock().unwrap();
-            records.get(path).cloned()
-        };
-
-        let record = record.ok_or_else(|| VoomError::Plugin {
+        let mut records = self.records.lock().unwrap();
+        let record = records.get(path).ok_or_else(|| VoomError::Plugin {
             plugin: "backup-manager".into(),
             message: format!("no backup found for {}", path.display()),
         })?;
@@ -189,14 +179,12 @@ impl BackupManagerPlugin {
             }
         }
 
-        let mut records = self.records.lock().unwrap();
-        records.remove(path);
-
         tracing::info!(
             path = %path.display(),
             "Backup removed"
         );
 
+        records.remove(path);
         Ok(())
     }
 
