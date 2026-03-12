@@ -250,19 +250,32 @@ impl HostState {
             .spawn()
             .map_err(|e| format!("failed to spawn tool '{}': {}", tool, e))?;
 
+        // Read stdout/stderr on separate threads BEFORE waiting, to avoid
+        // deadlock when pipe buffers fill up.
+        let stdout_handle = child.stdout.take().map(|mut out| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                std::io::Read::read_to_end(&mut out, &mut buf).map(|_| buf)
+            })
+        });
+        let stderr_handle = child.stderr.take().map(|mut err| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                std::io::Read::read_to_end(&mut err, &mut buf).map(|_| buf)
+            })
+        });
+
         let timeout = Duration::from_millis(timeout_ms);
         match child.wait_timeout(timeout) {
             Ok(Some(status)) => {
-                let mut stdout = Vec::new();
-                let mut stderr = Vec::new();
-                if let Some(mut out) = child.stdout.take() {
-                    std::io::Read::read_to_end(&mut out, &mut stdout)
-                        .map_err(|e| format!("failed to read stdout: {}", e))?;
-                }
-                if let Some(mut err) = child.stderr.take() {
-                    std::io::Read::read_to_end(&mut err, &mut stderr)
-                        .map_err(|e| format!("failed to read stderr: {}", e))?;
-                }
+                let stdout = stdout_handle
+                    .map(|h| h.join().unwrap_or(Ok(Vec::new())))
+                    .unwrap_or(Ok(Vec::new()))
+                    .map_err(|e| format!("failed to read stdout: {}", e))?;
+                let stderr = stderr_handle
+                    .map(|h| h.join().unwrap_or(Ok(Vec::new())))
+                    .unwrap_or(Ok(Vec::new()))
+                    .map_err(|e| format!("failed to read stderr: {}", e))?;
                 Ok(ToolOutput {
                     exit_code: status.code().unwrap_or(-1),
                     stdout,

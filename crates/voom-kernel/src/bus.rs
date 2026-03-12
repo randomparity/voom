@@ -15,6 +15,20 @@ struct Subscriber {
     handler: Arc<dyn Plugin>,
 }
 
+/// Create an error EventResult for a plugin failure (error or panic).
+fn make_error_result(plugin_name: String, event_type: &str, error: String) -> EventResult {
+    EventResult {
+        plugin_name: plugin_name.clone(),
+        produced_events: vec![Event::PluginError(PluginErrorEvent {
+            plugin_name,
+            event_type: event_type.to_string(),
+            error,
+        })],
+        data: None,
+        claimed: false,
+    }
+}
+
 /// Event bus that dispatches events to subscribed plugins, ordered by priority.
 ///
 /// Dispatch is sequential: handlers run one at a time in priority order (lower
@@ -41,13 +55,17 @@ impl EventBus {
     pub fn subscribe_plugin(&self, plugin: Arc<dyn Plugin>, priority: i32) {
         let mut subs = self.subscribers.write();
         let name = plugin.name().to_string();
-        subs.push(Subscriber {
-            plugin_name: name,
-            priority,
-            handler: plugin,
-        });
-        // Keep sorted by priority (lower first).
-        subs.sort_by_key(|s| s.priority);
+        let pos = subs
+            .binary_search_by_key(&priority, |s| s.priority)
+            .unwrap_or_else(|i| i);
+        subs.insert(
+            pos,
+            Subscriber {
+                plugin_name: name,
+                priority,
+                handler: plugin,
+            },
+        );
     }
 
     /// Publish an event to all subscribers that handle its type.
@@ -91,29 +109,11 @@ impl EventBus {
                 }
                 Ok(Err(e)) => {
                     tracing::error!(plugin = %name, event = %event_type, error = %e, "plugin error");
-                    results.push(EventResult {
-                        plugin_name: name.clone(),
-                        produced_events: vec![Event::PluginError(PluginErrorEvent {
-                            plugin_name: name.clone(),
-                            event_type: event_type.clone(),
-                            error: e.to_string(),
-                        })],
-                        data: None,
-                        claimed: false,
-                    });
+                    results.push(make_error_result(name, &event_type, e.to_string()));
                 }
                 Err(_) => {
                     tracing::error!(plugin = %name, event = %event_type, "plugin panicked during event dispatch");
-                    results.push(EventResult {
-                        plugin_name: name.clone(),
-                        produced_events: vec![Event::PluginError(PluginErrorEvent {
-                            plugin_name: name.clone(),
-                            event_type: event_type.clone(),
-                            error: "plugin panicked".into(),
-                        })],
-                        data: None,
-                        claimed: false,
-                    });
+                    results.push(make_error_result(name, &event_type, "plugin panicked".into()));
                 }
             }
         }
