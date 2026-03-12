@@ -3143,7 +3143,6 @@ name = "voom-plugin-sdk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "insta",
  "rmp-serde",
  "serde",
  "serde_json",

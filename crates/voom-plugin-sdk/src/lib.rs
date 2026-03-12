@@ -25,15 +25,9 @@
 //!
 //! impl Guest for MyPlugin {
 //!     fn get_info() -> PluginInfo {
-//!         PluginInfo {
-//!             name: "my-plugin".to_string(),
-//!             version: "0.1.0".to_string(),
-//!             capabilities: vec![Capability::Evaluate],
-//!         }
-//!     }
-//!
-//!     fn handles(event_type: String) -> bool {
-//!         event_type == "plan.created"
+//!         PluginInfo::new("my-plugin", "0.1.0")
+//!             .capability("enrich_metadata:my-plugin")
+//!             .handles("file.introspected")
 //!     }
 //!
 //!     fn on_event(event: EventData) -> Option<EventResult> {
