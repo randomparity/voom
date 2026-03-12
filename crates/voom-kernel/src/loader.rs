@@ -2,6 +2,10 @@ use std::sync::Arc;
 
 use crate::Plugin;
 
+/// WIT result type for HTTP responses crossing the WASM boundary.
+#[cfg(feature = "wasm")]
+type WitHttpResult = Result<(u16, Vec<(String, String)>, Vec<u8>), String>;
+
 /// Loads native plugins (compiled Rust trait objects).
 pub struct NativePluginLoader;
 
@@ -491,7 +495,7 @@ pub mod wasm {
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (url, headers): (String, Vec<(String, String)>)| {
                 let result = ctx.data().http_get(&url, &headers);
-                let wit_result: Result<(u16, Vec<(String, String)>, Vec<u8>), String> = match result
+                let wit_result: WitHttpResult = match result
                 {
                     Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
                     Err(e) => Err(e),
@@ -506,7 +510,7 @@ pub mod wasm {
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (url, headers, body): (String, Vec<(String, String)>, Vec<u8>)| {
                 let result = ctx.data().http_post(&url, &headers, &body);
-                let wit_result: Result<(u16, Vec<(String, String)>, Vec<u8>), String> = match result
+                let wit_result: WitHttpResult = match result
                 {
                     Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
                     Err(e) => Err(e),
