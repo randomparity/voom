@@ -27,7 +27,8 @@ pub async fn run() -> Result<()> {
     // 2. Database
     print!("  Database ... ");
     let config = app::load_config().unwrap_or_default();
-    match app::bootstrap_kernel(&config) {
+    let kernel_result = app::bootstrap_kernel(&config);
+    match &kernel_result {
         Ok(_kernel) => match app::open_store(&config) {
             Ok(store) => {
                 use voom_domain::storage::StorageTrait;
@@ -85,7 +86,7 @@ pub async fn run() -> Result<()> {
     // 4. Plugins
     println!();
     println!("{}", "Plugins:".bold());
-    if let Ok(kernel) = app::bootstrap_kernel(&config) {
+    if let Ok(kernel) = &kernel_result {
         let names = kernel.registry.plugin_names();
         println!("  {} plugins registered", names.len().to_string().green());
         for name in &names {

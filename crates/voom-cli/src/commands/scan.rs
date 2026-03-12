@@ -14,6 +14,25 @@ use crate::output::{self, max_filename_len, shrink_filename};
 /// Fixed-width overhead of the progress bar line (spinner + bar + counters + percent + padding).
 const PROGRESS_FIXED_WIDTH: usize = 77;
 
+/// Format an ETA string from elapsed time and progress counts.
+/// Returns an empty string when ETA cannot be meaningfully computed.
+fn format_eta(start: &Instant, current: usize, total: usize) -> String {
+    if current == 0 {
+        return String::new();
+    }
+    let elapsed = start.elapsed().as_secs_f64();
+    let rate = current as f64 / elapsed;
+    let remaining = (total - current) as f64 / rate;
+    if remaining.is_finite() && remaining > 0.0 {
+        format!(
+            ", ETA {}",
+            HumanDuration(std::time::Duration::from_secs(remaining as u64))
+        )
+    } else {
+        String::new()
+    }
+}
+
 /// Run the scan command.
 ///
 /// Discovery and introspection are driven directly for deterministic progress
@@ -82,17 +101,7 @@ pub async fn run(args: ScanArgs) -> Result<()> {
                             .progress_chars("#>-"),
                         );
                     }
-                    let elapsed = start.elapsed().as_secs_f64();
-                    let rate = current as f64 / elapsed;
-                    let remaining = (total - current) as f64 / rate;
-                    let eta = if remaining.is_finite() && remaining > 0.0 {
-                        format!(
-                            ", ETA {}",
-                            HumanDuration(std::time::Duration::from_secs(remaining as u64))
-                        )
-                    } else {
-                        String::new()
-                    };
+                    let eta = format_eta(&start, current, total);
                     let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len());
                     let name = path
                         .file_name()
@@ -139,19 +148,7 @@ pub async fn run(args: ScanArgs) -> Result<()> {
     let total = events.len() as u64;
 
     for (i, event) in events.iter().enumerate() {
-        let elapsed = intro_start.elapsed().as_secs_f64();
-        let done = (i + 1) as f64;
-        let rate = done / elapsed;
-        let remaining = (total as f64 - done) / rate;
-        let eta = if remaining.is_finite() && remaining > 0.0 && i > 0 {
-            format!(
-                ", ETA {}",
-                HumanDuration(std::time::Duration::from_secs(remaining as u64))
-            )
-        } else {
-            String::new()
-        };
-
+        let eta = format_eta(&intro_start, i + 1, total as usize);
         let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len());
         let name = event
             .path

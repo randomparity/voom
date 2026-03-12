@@ -1,9 +1,9 @@
 use anyhow::Result;
-use comfy_table::presets::UTF8_FULL_CONDENSED;
-use comfy_table::{Cell, ContentArrangement, Table};
+use comfy_table::Cell;
 use owo_colors::OwoColorize;
 
 use crate::cli::JobsCommands;
+use crate::output;
 
 pub async fn run(cmd: JobsCommands) -> Result<()> {
     match cmd {
@@ -31,10 +31,7 @@ async fn list(status_filter: Option<String>) -> Result<()> {
         return Ok(());
     }
 
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL_CONDENSED)
-        .set_content_arrangement(ContentArrangement::Dynamic);
+    let mut table = output::new_table();
     table.set_header(vec![
         "ID", "Type", "Status", "Progress", "Worker", "Created",
     ]);

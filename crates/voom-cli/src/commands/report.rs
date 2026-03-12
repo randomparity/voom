@@ -1,10 +1,10 @@
 use anyhow::Result;
-use comfy_table::presets::UTF8_FULL_CONDENSED;
-use comfy_table::{Cell, ContentArrangement, Table};
+use comfy_table::Cell;
 use owo_colors::OwoColorize;
 
 use crate::app;
 use crate::cli::{OutputFormat, ReportArgs};
+use crate::output;
 
 pub async fn run(args: ReportArgs) -> Result<()> {
     let config = app::load_config()?;
@@ -28,7 +28,7 @@ pub async fn run(args: ReportArgs) -> Result<()> {
             let report = serde_json::json!({
                 "total_files": files.len(),
                 "total_size": files.iter().map(|f| f.size).sum::<u64>(),
-                "containers": container_counts(&files),
+                "containers": output::container_counts(&files),
                 "codecs": codec_counts(&files),
             });
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
@@ -50,11 +50,8 @@ pub async fn run(args: ReportArgs) -> Result<()> {
 
             // Container breakdown
             println!("{}", "Containers:".bold());
-            let containers = container_counts(&files);
-            let mut table = Table::new();
-            table
-                .load_preset(UTF8_FULL_CONDENSED)
-                .set_content_arrangement(ContentArrangement::Dynamic);
+            let containers = output::container_counts(&files);
+            let mut table = output::new_table();
             table.set_header(vec!["Container", "Count"]);
             for (container, count) in &containers {
                 table.add_row(vec![Cell::new(container), Cell::new(count)]);
@@ -65,10 +62,7 @@ pub async fn run(args: ReportArgs) -> Result<()> {
             // Codec breakdown
             println!("{}", "Codecs:".bold());
             let codecs = codec_counts(&files);
-            let mut table = Table::new();
-            table
-                .load_preset(UTF8_FULL_CONDENSED)
-                .set_content_arrangement(ContentArrangement::Dynamic);
+            let mut table = output::new_table();
             table.set_header(vec!["Codec", "Count"]);
             for (codec, count) in &codecs {
                 table.add_row(vec![Cell::new(codec), Cell::new(count)]);
@@ -78,18 +72,6 @@ pub async fn run(args: ReportArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn container_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
-    let mut counts = std::collections::HashMap::new();
-    for file in files {
-        *counts
-            .entry(file.container.as_str().to_string())
-            .or_insert(0) += 1;
-    }
-    let mut sorted: Vec<_> = counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
-    sorted
 }
 
 fn codec_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {

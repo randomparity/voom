@@ -2,6 +2,7 @@ use anyhow::Result;
 use owo_colors::OwoColorize;
 
 use crate::app;
+use crate::output;
 
 pub async fn run() -> Result<()> {
     let config = app::load_config()?;
@@ -29,14 +30,7 @@ pub async fn run() -> Result<()> {
                     );
 
                     // Container breakdown (top 5)
-                    let mut containers = std::collections::HashMap::new();
-                    for file in &files {
-                        *containers
-                            .entry(file.container.as_str().to_string())
-                            .or_insert(0u32) += 1;
-                    }
-                    let mut sorted: Vec<_> = containers.into_iter().collect();
-                    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+                    let sorted = output::container_counts(&files);
                     if !sorted.is_empty() {
                         let summary: Vec<String> = sorted
                             .iter()

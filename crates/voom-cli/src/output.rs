@@ -213,12 +213,25 @@ pub fn format_plugin_list(plugins: &[(String, String, Vec<String>)]) {
 }
 
 /// Create a table with the standard VOOM style.
-fn new_table() -> Table {
+pub fn new_table() -> Table {
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL_CONDENSED)
         .set_content_arrangement(ContentArrangement::Dynamic);
     table
+}
+
+/// Count occurrences of each container format, sorted by frequency (descending).
+pub fn container_counts(files: &[MediaFile]) -> Vec<(String, usize)> {
+    let mut counts = std::collections::HashMap::new();
+    for file in files {
+        *counts
+            .entry(file.container.as_str().to_string())
+            .or_insert(0usize) += 1;
+    }
+    let mut sorted: Vec<_> = counts.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted
 }
 
 #[cfg(test)]

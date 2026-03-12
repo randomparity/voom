@@ -35,30 +35,30 @@ impl Default for AppConfig {
     }
 }
 
-fn default_data_dir() -> PathBuf {
+/// Base VOOM configuration directory (e.g. `~/.config/voom`).
+pub fn voom_config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("voom")
 }
 
+fn default_data_dir() -> PathBuf {
+    voom_config_dir()
+}
+
 /// Path to the config file.
 pub fn config_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("voom")
-        .join("config.toml")
+    voom_config_dir().join("config.toml")
 }
 
 /// Load config from the default path, or return defaults if not found.
 pub fn load_config() -> Result<AppConfig> {
     let path = config_path();
-    if path.exists() {
-        let contents = std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read config from {}", path.display()))?;
-        toml::from_str(&contents)
-            .with_context(|| format!("Failed to parse config from {}", path.display()))
-    } else {
-        Ok(AppConfig::default())
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => toml::from_str(&contents)
+            .with_context(|| format!("Failed to parse config from {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AppConfig::default()),
+        Err(e) => Err(anyhow::anyhow!("Failed to read config from {}: {e}", path.display())),
     }
 }
 
@@ -66,15 +66,15 @@ pub fn load_config() -> Result<AppConfig> {
 ///
 /// All plugins go through `init_and_register` for consistent lifecycle management.
 ///
-// Plugin priority scheme:
+// Plugin priority scheme (lower number = runs first during event dispatch):
 // 100 = storage (must initialize first to be available for other plugins)
 // 90  = tool detector
 // 80  = discovery
 // 70  = introspector (ffprobe)
 // 60  = policy evaluator
 // 50  = phase orchestrator
-// 39  = mkvtoolnix executor (first shot at MKV plans, claims on handle)
 // 40  = ffmpeg executor (fallback for all plans, claims on handle)
+// 39  = mkvtoolnix executor (runs before ffmpeg — first shot at MKV plans)
 // 30  = backup manager
 // 20  = job manager
 // 10  = web server (last, depends on all other plugins being registered)
