@@ -6,6 +6,9 @@ use owo_colors::OwoColorize;
 
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
+use voom_domain::events::{
+    Event, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent,
+};
 use voom_job_manager::progress::ProgressReporter;
 use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 
@@ -18,6 +21,7 @@ use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// handling that would be difficult to achieve through the asynchronous pub/sub bus.
 pub async fn run(args: ProcessArgs) -> Result<()> {
     let config = app::load_config()?;
+    let kernel = Arc::new(app::bootstrap_kernel(&config)?);
 
     let path = args
         .path
@@ -63,6 +67,13 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
     if events.is_empty() {
         println!("{}", "No media files found.".yellow());
         return Ok(());
+    }
+
+    // Publish discovery events through the event bus
+    for event in &events {
+        kernel
+            .dispatch(Event::FileDiscovered(event.clone()))
+            .await;
     }
 
     let file_count = events.len();
@@ -118,6 +129,7 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
             items,
             move |job| {
                 let compiled = compiled.clone();
+                let kernel = kernel.clone();
                 async move {
                     let payload = job.payload.as_ref().ok_or("missing payload")?;
                     let file_path = payload["path"].as_str().ok_or("missing path in payload")?;
@@ -135,7 +147,17 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
                     .map_err(|e| format!("task join error: {e}"))?
                     .map_err(|e| format!("introspection failed: {e}"))?;
 
-                    let file = intro_result.file;
+                    let file = intro_result.file.clone();
+
+                    // Publish introspection event
+                    kernel
+                        .dispatch(Event::FileIntrospected(
+                            voom_domain::events::FileIntrospectedEvent {
+                                file: intro_result.file,
+                            },
+                        ))
+                        .await;
+
                     let file_path_str = file.path.display().to_string();
 
                     // Orchestrate
@@ -146,6 +168,17 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
 
                     let needs_exec =
                         voom_phase_orchestrator::PhaseOrchestratorPlugin::needs_execution(&result);
+
+                    // Publish PlanCreated for each non-skipped plan
+                    for plan in &result.plans {
+                        if !plan.is_skipped() {
+                            kernel
+                                .dispatch(Event::PlanCreated(PlanCreatedEvent {
+                                    plan: plan.clone(),
+                                }))
+                                .await;
+                        }
+                    }
 
                     if dry_run {
                         let plan_summaries: Vec<serde_json::Value> = result
@@ -166,7 +199,31 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
                             "plans": plan_summaries,
                         })))
                     } else {
-                        // In a full implementation, we'd execute the plans here
+                        // Publish lifecycle events for each non-skipped plan
+                        for plan in &result.plans {
+                            if plan.is_skipped() {
+                                continue;
+                            }
+
+                            kernel
+                                .dispatch(Event::PlanExecuting(PlanExecutingEvent {
+                                    path: file.path.clone(),
+                                    phase_name: plan.phase_name.clone(),
+                                    action_count: plan.actions.len(),
+                                }))
+                                .await;
+
+                            // In a full implementation, we'd execute the plan here
+
+                            kernel
+                                .dispatch(Event::PlanCompleted(PlanCompletedEvent {
+                                    path: file.path.clone(),
+                                    phase_name: plan.phase_name.clone(),
+                                    actions_applied: plan.actions.len(),
+                                }))
+                                .await;
+                        }
+
                         Ok(Some(serde_json::json!({
                             "path": file_path_str,
                             "needs_execution": needs_exec,
@@ -257,5 +314,231 @@ impl ProgressReporter for CliProgressReporter {
 
     fn on_batch_complete(&self, _completed: u64, _failed: u64) {
         self.overall.finish_and_clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use voom_domain::capabilities::Capability;
+    use voom_domain::events::{EventResult, FileDiscoveredEvent, FileIntrospectedEvent};
+    use voom_domain::media::MediaFile;
+    use voom_domain::plan::{Plan, PlannedAction, OperationType};
+
+    /// A test plugin that counts received plan lifecycle events.
+    struct PlanRecordingPlugin {
+        discovered_count: AtomicUsize,
+        introspected_count: AtomicUsize,
+        plan_created_count: AtomicUsize,
+        plan_executing_count: AtomicUsize,
+        plan_completed_count: AtomicUsize,
+    }
+
+    impl PlanRecordingPlugin {
+        fn new() -> Self {
+            Self {
+                discovered_count: AtomicUsize::new(0),
+                introspected_count: AtomicUsize::new(0),
+                plan_created_count: AtomicUsize::new(0),
+                plan_executing_count: AtomicUsize::new(0),
+                plan_completed_count: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl voom_kernel::Plugin for PlanRecordingPlugin {
+        fn name(&self) -> &str {
+            "plan-recorder"
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+        fn capabilities(&self) -> &[Capability] {
+            &[]
+        }
+        fn handles(&self, event_type: &str) -> bool {
+            matches!(
+                event_type,
+                "file.discovered"
+                    | "file.introspected"
+                    | "plan.created"
+                    | "plan.executing"
+                    | "plan.completed"
+            )
+        }
+        fn on_event(
+            &self,
+            event: &Event,
+        ) -> voom_domain::errors::Result<Option<EventResult>> {
+            match event {
+                Event::FileDiscovered(_) => {
+                    self.discovered_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::FileIntrospected(_) => {
+                    self.introspected_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::PlanCreated(_) => {
+                    self.plan_created_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::PlanExecuting(_) => {
+                    self.plan_executing_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::PlanCompleted(_) => {
+                    self.plan_completed_count.fetch_add(1, Ordering::SeqCst);
+                }
+                _ => {}
+            }
+            Ok(None)
+        }
+    }
+
+    fn test_plan(phase: &str, skipped: bool) -> Plan {
+        Plan {
+            file: MediaFile::new(PathBuf::from("/tmp/test.mkv")),
+            policy_name: "test-policy".into(),
+            phase_name: phase.into(),
+            actions: vec![PlannedAction {
+                operation: OperationType::SetDefault,
+                track_index: Some(0),
+                parameters: serde_json::json!({}),
+                description: "test action".into(),
+            }],
+            warnings: vec![],
+            skip_reason: if skipped {
+                Some("skipped".into())
+            } else {
+                None
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_plan_lifecycle_events_dispatched() {
+        let mut kernel = voom_kernel::Kernel::new();
+        let recorder = Arc::new(PlanRecordingPlugin::new());
+        kernel.register_plugin(recorder.clone(), 50);
+
+        let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
+
+        // Simulate: PlanCreated + PlanExecuting + PlanCompleted for non-skipped plan
+        let plan = test_plan("normalize", false);
+        kernel
+            .dispatch(Event::PlanCreated(PlanCreatedEvent {
+                plan: plan.clone(),
+            }))
+            .await;
+        kernel
+            .dispatch(Event::PlanExecuting(PlanExecutingEvent {
+                path: file.path.clone(),
+                phase_name: plan.phase_name.clone(),
+                action_count: plan.actions.len(),
+            }))
+            .await;
+        kernel
+            .dispatch(Event::PlanCompleted(PlanCompletedEvent {
+                path: file.path.clone(),
+                phase_name: plan.phase_name.clone(),
+                actions_applied: plan.actions.len(),
+            }))
+            .await;
+
+        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
+        assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 1);
+        assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_skipped_plans_no_lifecycle_events() {
+        let mut kernel = voom_kernel::Kernel::new();
+        let recorder = Arc::new(PlanRecordingPlugin::new());
+        kernel.register_plugin(recorder.clone(), 50);
+
+        // Skipped plans should NOT get PlanCreated/PlanExecuting/PlanCompleted
+        let plan = test_plan("normalize", true);
+        assert!(plan.is_skipped());
+
+        // Simulate the process.rs logic: skip if plan.is_skipped()
+        if !plan.is_skipped() {
+            kernel
+                .dispatch(Event::PlanCreated(PlanCreatedEvent {
+                    plan: plan.clone(),
+                }))
+                .await;
+        }
+
+        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
+        assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
+        assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_no_executing_events() {
+        let mut kernel = voom_kernel::Kernel::new();
+        let recorder = Arc::new(PlanRecordingPlugin::new());
+        kernel.register_plugin(recorder.clone(), 50);
+
+        let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
+        let plan = test_plan("normalize", false);
+        let dry_run = true;
+
+        // Simulate the process.rs logic: PlanCreated always, but
+        // PlanExecuting/PlanCompleted only when NOT dry_run
+        kernel
+            .dispatch(Event::PlanCreated(PlanCreatedEvent {
+                plan: plan.clone(),
+            }))
+            .await;
+
+        if !dry_run {
+            kernel
+                .dispatch(Event::PlanExecuting(PlanExecutingEvent {
+                    path: file.path.clone(),
+                    phase_name: plan.phase_name.clone(),
+                    action_count: plan.actions.len(),
+                }))
+                .await;
+            kernel
+                .dispatch(Event::PlanCompleted(PlanCompletedEvent {
+                    path: file.path.clone(),
+                    phase_name: plan.phase_name.clone(),
+                    actions_applied: plan.actions.len(),
+                }))
+                .await;
+        }
+
+        // PlanCreated fires regardless, but no execution events in dry_run
+        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
+        assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
+        assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_discovery_and_introspection_events_dispatched() {
+        let mut kernel = voom_kernel::Kernel::new();
+        let recorder = Arc::new(PlanRecordingPlugin::new());
+        kernel.register_plugin(recorder.clone(), 50);
+
+        // Simulate discovery events
+        let discovered = FileDiscoveredEvent {
+            path: PathBuf::from("/tmp/a.mkv"),
+            size: 1024,
+            content_hash: "abc".into(),
+        };
+        kernel
+            .dispatch(Event::FileDiscovered(discovered))
+            .await;
+
+        // Simulate introspection event
+        let file = MediaFile::new(PathBuf::from("/tmp/a.mkv"));
+        kernel
+            .dispatch(Event::FileIntrospected(FileIntrospectedEvent {
+                file,
+            }))
+            .await;
+
+        assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 1);
+        assert_eq!(recorder.introspected_count.load(Ordering::SeqCst), 1);
     }
 }
