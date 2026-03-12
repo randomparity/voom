@@ -4,6 +4,7 @@
 //! can call: logging, plugin data storage, tool execution, and HTTP requests.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -294,8 +295,8 @@ impl HostState {
     /// Perform an HTTP GET request.
     pub fn http_get(
         &self,
-        _url: &str,
-        _headers: &[(String, String)],
+        url: &str,
+        headers: &[(String, String)],
     ) -> Result<HttpResponse, String> {
         if !self.http_allowed {
             return Err(format!(
@@ -303,17 +304,46 @@ impl HostState {
                 self.plugin_name
             ));
         }
-        // HTTP implementation would use ureq or reqwest here.
-        // For now, return an error indicating it's not yet implemented.
-        Err("HTTP GET not yet implemented in host".to_string())
+
+        let mut request = ureq::get(url);
+        for (name, value) in headers {
+            request = request.set(name, value);
+        }
+
+        let response = request
+            .call()
+            .map_err(|e| format!("HTTP GET failed: {e}"))?;
+
+        let status = response.status();
+        let header_names = response.headers_names();
+        let resp_headers: Vec<(String, String)> = header_names
+            .iter()
+            .filter_map(|name| {
+                response
+                    .header(name)
+                    .map(|val| (name.clone(), val.to_string()))
+            })
+            .collect();
+        let mut body = Vec::new();
+        response
+            .into_reader()
+            .take(10 * 1024 * 1024) // 10 MiB limit
+            .read_to_end(&mut body)
+            .map_err(|e| format!("failed to read response body: {e}"))?;
+
+        Ok(HttpResponse {
+            status,
+            headers: resp_headers,
+            body,
+        })
     }
 
     /// Perform an HTTP POST request.
     pub fn http_post(
         &self,
-        _url: &str,
-        _headers: &[(String, String)],
-        _body: &[u8],
+        url: &str,
+        headers: &[(String, String)],
+        body: &[u8],
     ) -> Result<HttpResponse, String> {
         if !self.http_allowed {
             return Err(format!(
@@ -321,7 +351,38 @@ impl HostState {
                 self.plugin_name
             ));
         }
-        Err("HTTP POST not yet implemented in host".to_string())
+
+        let mut request = ureq::post(url);
+        for (name, value) in headers {
+            request = request.set(name, value);
+        }
+
+        let response = request
+            .send_bytes(body)
+            .map_err(|e| format!("HTTP POST failed: {e}"))?;
+
+        let status = response.status();
+        let header_names = response.headers_names();
+        let resp_headers: Vec<(String, String)> = header_names
+            .iter()
+            .filter_map(|name| {
+                response
+                    .header(name)
+                    .map(|val| (name.clone(), val.to_string()))
+            })
+            .collect();
+        let mut resp_body = Vec::new();
+        response
+            .into_reader()
+            .take(10 * 1024 * 1024) // 10 MiB limit
+            .read_to_end(&mut resp_body)
+            .map_err(|e| format!("failed to read response body: {e}"))?;
+
+        Ok(HttpResponse {
+            status,
+            headers: resp_headers,
+            body: resp_body,
+        })
     }
 }
 
@@ -417,8 +478,46 @@ mod tests {
     #[test]
     fn test_http_blocked_by_default() {
         let state = HostState::new("test".into());
-        assert!(state.http_get("http://example.com", &[]).is_err());
-        assert!(state.http_post("http://example.com", &[], b"").is_err());
+        let get_err = state.http_get("http://example.com", &[]).unwrap_err();
+        assert!(
+            get_err.contains("HTTP access not enabled"),
+            "expected permission error, got: {}",
+            get_err
+        );
+        let post_err = state.http_post("http://example.com", &[], b"").unwrap_err();
+        assert!(
+            post_err.contains("HTTP access not enabled"),
+            "expected permission error, got: {}",
+            post_err
+        );
+    }
+
+    #[test]
+    fn test_http_get_connection_error() {
+        // With HTTP enabled, a request to a non-routable address should return
+        // a connection error (not "not yet implemented").
+        let state = HostState::new("test".into()).with_http();
+        let result = state.http_get("http://192.0.2.1:1", &[]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("HTTP GET failed"),
+            "expected connection error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_http_post_connection_error() {
+        let state = HostState::new("test".into()).with_http();
+        let result = state.http_post("http://192.0.2.1:1", &[], b"body");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("HTTP POST failed"),
+            "expected connection error, got: {}",
+            err
+        );
     }
 
     #[test]

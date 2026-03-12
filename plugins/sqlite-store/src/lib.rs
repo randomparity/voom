@@ -55,7 +55,12 @@ impl Plugin for SqliteStorePlugin {
     fn handles(&self, event_type: &str) -> bool {
         matches!(
             event_type,
-            "file.introspected" | "plan.created" | "plan.completed" | "plan.failed"
+            "file.introspected"
+                | "plan.created"
+                | "plan.completed"
+                | "plan.failed"
+                | "metadata.enriched"
+                | "tool.detected"
         )
     }
 
@@ -81,6 +86,37 @@ impl Plugin for SqliteStorePlugin {
             Event::PlanFailed(e) => {
                 tracing::info!(path = %e.path.display(), phase = %e.phase_name, error = %e.error, "plan failed");
                 store.update_plan_status(&e.plan_id, "failed")?;
+            }
+            Event::MetadataEnriched(e) => {
+                let key = format!("metadata:{}", e.path.display());
+                let value = serde_json::to_vec(&e.metadata).map_err(|err| {
+                    voom_domain::VoomError::Storage(format!(
+                        "failed to serialize enriched metadata: {err}"
+                    ))
+                })?;
+                store.set_plugin_data(&e.source, &key, &value)?;
+                tracing::info!(
+                    path = %e.path.display(),
+                    source = %e.source,
+                    "stored enriched metadata"
+                );
+            }
+            Event::ToolDetected(e) => {
+                let key = format!("tool:{}", e.tool_name);
+                let value = serde_json::json!({
+                    "tool_name": e.tool_name,
+                    "version": e.version,
+                    "path": e.path,
+                });
+                let bytes = serde_json::to_vec(&value).map_err(|err| {
+                    voom_domain::VoomError::Storage(format!("failed to serialize tool info: {err}"))
+                })?;
+                store.set_plugin_data("tool-detector", &key, &bytes)?;
+                tracing::info!(
+                    tool = %e.tool_name,
+                    version = %e.version,
+                    "stored detected tool"
+                );
             }
             _ => {}
         }

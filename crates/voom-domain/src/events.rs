@@ -10,9 +10,8 @@ use crate::plan::Plan;
 pub enum Event {
     FileDiscovered(FileDiscoveredEvent),
     FileIntrospected(FileIntrospectedEvent),
-    /// NOTE: Orphan event — currently emitted by WASM metadata plugins but has no
-    /// subscribers in the native plugin pipeline. Will be consumed once the storage
-    /// plugin subscribes to merge enriched metadata into stored files.
+    /// Emitted by WASM metadata plugins. Consumed by the sqlite-store plugin
+    /// to persist enriched metadata as plugin data keyed by file path.
     MetadataEnriched(MetadataEnrichedEvent),
     PolicyEvaluate(PolicyEvaluateEvent),
     PlanCreated(PlanCreatedEvent),
@@ -22,9 +21,8 @@ pub enum Event {
     JobStarted(JobStartedEvent),
     JobProgress(JobProgressEvent),
     JobCompleted(JobCompletedEvent),
-    /// NOTE: Orphan event — emitted by the tool-detector plugin but has no subscribers.
-    /// Intended for future use by a dashboard or health-check system to display
-    /// available tool versions.
+    /// Emitted by the tool-detector plugin. Consumed by the sqlite-store plugin
+    /// to persist tool info, exposed via the web server's GET /api/tools endpoint.
     ToolDetected(ToolDetectedEvent),
     PluginError(PluginErrorEvent),
 }

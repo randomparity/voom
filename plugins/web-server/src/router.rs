@@ -24,7 +24,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/plugins", get(api::plugins::list_plugins))
         .route("/stats", get(api::stats::get_stats))
         .route("/policy/validate", post(api::policy::validate_policy))
-        .route("/policy/format", post(api::policy::format_policy));
+        .route("/policy/format", post(api::policy::format_policy))
+        .route("/tools", get(api::tools::list_tools));
 
     let page_routes = Router::new()
         .route("/", get(templates::dashboard))

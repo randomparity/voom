@@ -5,3 +5,4 @@ pub mod jobs;
 pub mod plugins;
 pub mod policy;
 pub mod stats;
+pub mod tools;

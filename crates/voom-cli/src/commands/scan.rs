@@ -85,8 +85,7 @@ pub async fn run(args: ScanArgs) -> Result<()> {
                         .file_name()
                         .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
                         .unwrap_or_default();
-                    pb_clone
-                        .set_message(format!("{prefix}{name}"));
+                    pb_clone.set_message(format!("{prefix}{name}"));
                 }
                 voom_discovery::ScanProgress::Processing {
                     current,
@@ -106,7 +105,8 @@ pub async fn run(args: ScanArgs) -> Result<()> {
                     }
                     let eta = format_eta(&start, current, total);
                     let prefix = if hash_files { "Hashing" } else { "Processing" };
-                    let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len() + prefix.len() + 3);
+                    let max_name =
+                        max_filename_len(PROGRESS_FIXED_WIDTH + eta.len() + prefix.len() + 3);
                     let name = path
                         .file_name()
                         .map(|n| shrink_filename(&n.to_string_lossy(), max_name))

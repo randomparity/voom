@@ -23,6 +23,8 @@ pub struct AppConfig {
 pub struct PluginsConfig {
     #[serde(default)]
     pub wasm_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub disabled_plugins: Vec<String>,
 }
 
 impl Default for AppConfig {
@@ -58,8 +60,39 @@ pub fn load_config() -> Result<AppConfig> {
         Ok(contents) => toml::from_str(&contents)
             .with_context(|| format!("Failed to parse config from {}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AppConfig::default()),
-        Err(e) => Err(anyhow::anyhow!("Failed to read config from {}: {e}", path.display())),
+        Err(e) => Err(anyhow::anyhow!(
+            "Failed to read config from {}: {e}",
+            path.display()
+        )),
     }
+}
+
+/// All known native plugin names (used for validation in enable/disable commands).
+pub const KNOWN_PLUGIN_NAMES: &[&str] = &[
+    "sqlite-store",
+    "tool-detector",
+    "discovery",
+    "ffprobe-introspector",
+    "policy-evaluator",
+    "phase-orchestrator",
+    "mkvtoolnix-executor",
+    "ffmpeg-executor",
+    "backup-manager",
+    "job-manager",
+    "web-server",
+];
+
+/// Save config back to the TOML file, creating the directory if needed.
+pub fn save_config(config: &AppConfig) -> Result<()> {
+    let path = config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
+    }
+    let toml_str = toml::to_string_pretty(config).context("Failed to serialize config to TOML")?;
+    std::fs::write(&path, toml_str)
+        .with_context(|| format!("Failed to write config to {}", path.display()))?;
+    Ok(())
 }
 
 /// Bootstrap a kernel with all native plugins registered.
@@ -87,79 +120,105 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
         data_dir: data_dir.clone(),
     };
 
+    let disabled = &config.plugins.disabled_plugins;
+
+    // Helper macro to conditionally register a plugin (skips if disabled)
+    macro_rules! register_if_enabled {
+        ($name:expr, $plugin:expr, $priority:expr, $label:expr) => {
+            if !disabled.iter().any(|d| d == $name) {
+                kernel
+                    .init_and_register(Box::new($plugin), $priority, &ctx)
+                    .map_err(|e| anyhow::anyhow!("Failed to initialize {}: {e}", $label))?;
+            }
+        };
+    }
+
     // Storage plugin (highest priority — stores everything)
-    kernel
-        .init_and_register(Box::new(voom_sqlite_store::SqliteStorePlugin::new()), 100, &ctx)
-        .map_err(|e| anyhow::anyhow!("Failed to initialize storage: {e}"))?;
+    register_if_enabled!(
+        "sqlite-store",
+        voom_sqlite_store::SqliteStorePlugin::new(),
+        100,
+        "storage"
+    );
 
     // Tool detector
-    kernel
-        .init_and_register(Box::new(voom_tool_detector::ToolDetectorPlugin::new()), 90, &ctx)
-        .map_err(|e| anyhow::anyhow!("Failed to initialize tool detector: {e}"))?;
+    register_if_enabled!(
+        "tool-detector",
+        voom_tool_detector::ToolDetectorPlugin::new(),
+        90,
+        "tool detector"
+    );
 
     // Discovery
-    kernel
-        .init_and_register(Box::new(voom_discovery::DiscoveryPlugin::new()), 80, &ctx)
-        .map_err(|e| anyhow::anyhow!("Failed to initialize discovery: {e}"))?;
+    register_if_enabled!(
+        "discovery",
+        voom_discovery::DiscoveryPlugin::new(),
+        80,
+        "discovery"
+    );
 
     // Introspector (reads ffprobe_path from ctx.config during init)
-    kernel
-        .init_and_register(
-            Box::new(voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new()),
-            70,
-            &ctx,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to initialize introspector: {e}"))?;
+    register_if_enabled!(
+        "ffprobe-introspector",
+        voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new(),
+        70,
+        "introspector"
+    );
 
     // Policy evaluator
-    kernel
-        .init_and_register(
-            Box::new(voom_policy_evaluator::PolicyEvaluatorPlugin::new()),
-            60,
-            &ctx,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to initialize policy evaluator: {e}"))?;
+    register_if_enabled!(
+        "policy-evaluator",
+        voom_policy_evaluator::PolicyEvaluatorPlugin::new(),
+        60,
+        "policy evaluator"
+    );
 
     // Phase orchestrator
-    kernel
-        .init_and_register(
-            Box::new(voom_phase_orchestrator::PhaseOrchestratorPlugin::new()),
-            50,
-            &ctx,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to initialize phase orchestrator: {e}"))?;
+    register_if_enabled!(
+        "phase-orchestrator",
+        voom_phase_orchestrator::PhaseOrchestratorPlugin::new(),
+        50,
+        "phase orchestrator"
+    );
 
     // Executors — mkvtoolnix at 39 gets first shot at MKV plans
-    kernel
-        .init_and_register(
-            Box::new(voom_mkvtoolnix_executor::MkvtoolnixExecutorPlugin::new()),
-            39,
-            &ctx,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to initialize mkvtoolnix executor: {e}"))?;
+    register_if_enabled!(
+        "mkvtoolnix-executor",
+        voom_mkvtoolnix_executor::MkvtoolnixExecutorPlugin::new(),
+        39,
+        "mkvtoolnix executor"
+    );
 
-    kernel
-        .init_and_register(
-            Box::new(voom_ffmpeg_executor::FfmpegExecutorPlugin::new()),
-            40,
-            &ctx,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to initialize ffmpeg executor: {e}"))?;
+    register_if_enabled!(
+        "ffmpeg-executor",
+        voom_ffmpeg_executor::FfmpegExecutorPlugin::new(),
+        40,
+        "ffmpeg executor"
+    );
 
     // Backup manager
-    kernel
-        .init_and_register(Box::new(voom_backup_manager::BackupManagerPlugin::new()), 30, &ctx)
-        .map_err(|e| anyhow::anyhow!("Failed to initialize backup manager: {e}"))?;
+    register_if_enabled!(
+        "backup-manager",
+        voom_backup_manager::BackupManagerPlugin::new(),
+        30,
+        "backup manager"
+    );
 
     // Job manager
-    kernel
-        .init_and_register(Box::new(voom_job_manager::JobManagerPlugin::new()), 20, &ctx)
-        .map_err(|e| anyhow::anyhow!("Failed to initialize job manager: {e}"))?;
+    register_if_enabled!(
+        "job-manager",
+        voom_job_manager::JobManagerPlugin::new(),
+        20,
+        "job manager"
+    );
 
     // Web server
-    kernel
-        .init_and_register(Box::new(voom_web_server::WebServerPlugin::new()), 10, &ctx)
-        .map_err(|e| anyhow::anyhow!("Failed to initialize web server: {e}"))?;
+    register_if_enabled!(
+        "web-server",
+        voom_web_server::WebServerPlugin::new(),
+        10,
+        "web server"
+    );
 
     Ok(kernel)
 }

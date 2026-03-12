@@ -238,11 +238,7 @@ impl Plugin for MockMkvExecutor {
     }
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
         if let Event::PlanCreated(plan_event) = event {
-            let is_mkv = plan_event
-                .plan
-                .file
-                .container
-                == voom_domain::media::Container::Mkv;
+            let is_mkv = plan_event.plan.file.container == voom_domain::media::Container::Mkv;
 
             let has_transcode = plan_event.plan.actions.iter().any(|a| {
                 matches!(

@@ -117,7 +117,9 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
         .unwrap_or("")
         .to_string();
 
-    let disposition = stream.get("disposition").unwrap_or(&serde_json::Value::Null);
+    let disposition = stream
+        .get("disposition")
+        .unwrap_or(&serde_json::Value::Null);
     let disp_flag = |key| {
         disposition
             .get(key)
@@ -131,8 +133,7 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
     match codec_type {
         "video" => {
             // Skip attached pictures (album art)
-            if disp_flag("attached_pic")
-            {
+            if disp_flag("attached_pic") {
                 return Some(Track {
                     index,
                     track_type: TrackType::Attachment,
