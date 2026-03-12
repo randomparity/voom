@@ -30,7 +30,9 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use voom_plugin_sdk::{deserialize_event, serialize_event, Event};
+use voom_plugin_sdk::{
+    deserialize_event, load_plugin_config, serialize_event, Event, OnEventResult, PluginInfoData,
+};
 
 /// Plugin identity and capabilities.
 pub fn get_info() -> PluginInfoData {
@@ -145,8 +147,7 @@ pub struct RadarrMovie {
 // --- Internal helpers ---
 
 fn load_config(host: &dyn HostFunctions) -> Option<RadarrConfig> {
-    let data = host.get_plugin_data("config")?;
-    serde_json::from_slice(&data).ok()
+    load_plugin_config(|key| host.get_plugin_data(key))
 }
 
 fn lookup_movie(
@@ -168,20 +169,6 @@ fn lookup_movie(
     // Match by file path — Radarr stores the movie's root path, and the file
     // should be under that directory.
     movies.into_iter().find(|m| file_path.starts_with(&m.path))
-}
-
-// --- Common types ---
-
-pub struct PluginInfoData {
-    pub name: String,
-    pub version: String,
-    pub capabilities: Vec<String>,
-}
-
-pub struct OnEventResult {
-    pub plugin_name: String,
-    pub produced_events: Vec<(String, Vec<u8>)>,
-    pub data: Option<Vec<u8>>,
 }
 
 #[cfg(test)]

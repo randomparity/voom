@@ -15,3 +15,7 @@ rmp-serde = "1"
 
 # wit-bindgen would be added here for actual WASM compilation:
 # wit-bindgen = "0.39"
+
+[dev-dependencies]
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"

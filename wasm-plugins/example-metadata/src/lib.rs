@@ -42,7 +42,7 @@
 //! In a real plugin, you might call an external API (via host HTTP functions)
 //! to look up movie/TV metadata from services like Radarr, Sonarr, or TMDb.
 
-use voom_plugin_sdk::{deserialize_event, serialize_event, Event};
+use voom_plugin_sdk::{deserialize_event, serialize_event, Event, OnEventResult, PluginInfoData};
 
 /// Plugin information for the host to query.
 pub fn get_info() -> PluginInfoData {
@@ -70,14 +70,15 @@ pub fn on_event(event_type: &str, payload: &[u8]) -> Option<OnEventResult> {
         Event::FileIntrospected(introspected) => {
             let file = &introspected.file;
 
-            // Count tracks by type.
-            let video_count = file.tracks.iter().filter(|t| t.track_type.is_video()).count();
-            let audio_count = file.tracks.iter().filter(|t| t.track_type.is_audio()).count();
-            let sub_count = file
-                .tracks
-                .iter()
-                .filter(|t| t.track_type.is_subtitle())
-                .count();
+            // Count tracks by type in a single pass.
+            let (mut video_count, mut audio_count, mut sub_count, mut has_hdr) =
+                (0usize, 0usize, 0usize, false);
+            for t in &file.tracks {
+                if t.track_type.is_video() { video_count += 1; }
+                if t.track_type.is_audio() { audio_count += 1; }
+                if t.track_type.is_subtitle() { sub_count += 1; }
+                has_hdr |= t.is_hdr;
+            }
 
             // Create enrichment metadata.
             let metadata = serde_json::json!({
@@ -89,7 +90,7 @@ pub fn on_event(event_type: &str, payload: &[u8]) -> Option<OnEventResult> {
                     "total_tracks": file.tracks.len(),
                 },
                 "container": format!("{:?}", file.container),
-                "has_hdr": file.tracks.iter().any(|t| t.is_hdr),
+                "has_hdr": has_hdr,
             });
 
             // Produce a MetadataEnriched event.
@@ -111,20 +112,6 @@ pub fn on_event(event_type: &str, payload: &[u8]) -> Option<OnEventResult> {
         }
         _ => None,
     }
-}
-
-/// Plugin info data (mirrors WIT plugin-info record).
-pub struct PluginInfoData {
-    pub name: String,
-    pub version: String,
-    pub capabilities: Vec<String>,
-}
-
-/// Event processing result (mirrors WIT event-result record).
-pub struct OnEventResult {
-    pub plugin_name: String,
-    pub produced_events: Vec<(String, Vec<u8>)>,
-    pub data: Option<Vec<u8>>,
 }
 
 // NOTE: In a real WASM plugin, you would use wit_bindgen::generate! to

@@ -29,7 +29,10 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use voom_plugin_sdk::{deserialize_event, serialize_event, Event, OperationType};
+use voom_plugin_sdk::{
+    deserialize_event, load_plugin_config, serialize_event, Event, OnEventResult, OperationType,
+    PluginInfoData,
+};
 
 pub fn get_info() -> PluginInfoData {
     PluginInfoData {
@@ -124,6 +127,7 @@ pub fn on_event(
 
             let completed_event = Event::PlanCompleted(
                 voom_plugin_sdk::voom_domain::events::PlanCompletedEvent {
+                    plan_id: plan.id,
                     path: plan.file.path.clone(),
                     phase_name: plan.phase_name.clone(),
                     actions_applied: transcode_actions.len(),
@@ -249,22 +253,7 @@ pub struct HandbrakeConfig {
 }
 
 fn load_config(host: &dyn HostFunctions) -> Option<HandbrakeConfig> {
-    let data = host.get_plugin_data("config")?;
-    serde_json::from_slice(&data).ok()
-}
-
-// --- Common types ---
-
-pub struct PluginInfoData {
-    pub name: String,
-    pub version: String,
-    pub capabilities: Vec<String>,
-}
-
-pub struct OnEventResult {
-    pub plugin_name: String,
-    pub produced_events: Vec<(String, Vec<u8>)>,
-    pub data: Option<Vec<u8>>,
+    load_plugin_config(|key| host.get_plugin_data(key))
 }
 
 #[cfg(test)]
@@ -360,6 +349,9 @@ mod tests {
             ],
             warnings: vec![],
             skip_reason: None,
+            id: uuid::Uuid::new_v4(),
+            policy_hash: None,
+            evaluated_at: chrono::Utc::now(),
         }
     }
 
@@ -427,6 +419,9 @@ mod tests {
             }],
             warnings: vec![],
             skip_reason: None,
+            id: uuid::Uuid::new_v4(),
+            policy_hash: None,
+            evaluated_at: chrono::Utc::now(),
         };
         let event = Event::PlanCreated(
             voom_plugin_sdk::voom_domain::events::PlanCreatedEvent { plan },

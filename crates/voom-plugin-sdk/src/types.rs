@@ -41,6 +41,25 @@ impl PluginInfo {
     }
 }
 
+/// Lightweight plugin info data for the WIT boundary.
+///
+/// Unlike [`PluginInfo`], this mirrors the WIT `plugin-info` record exactly
+/// (name, version, capabilities) without the builder pattern extras.
+#[derive(Debug, Clone)]
+pub struct PluginInfoData {
+    pub name: String,
+    pub version: String,
+    pub capabilities: Vec<String>,
+}
+
+/// Result from processing an event, mirroring the WIT `event-result` record.
+#[derive(Debug, Clone)]
+pub struct OnEventResult {
+    pub plugin_name: String,
+    pub produced_events: Vec<(String, Vec<u8>)>,
+    pub data: Option<Vec<u8>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

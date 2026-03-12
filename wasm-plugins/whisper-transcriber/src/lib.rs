@@ -29,7 +29,9 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use voom_plugin_sdk::{deserialize_event, serialize_event, Event};
+use voom_plugin_sdk::{
+    deserialize_event, load_plugin_config, serialize_event, Event, OnEventResult, PluginInfoData,
+};
 
 pub fn get_info() -> PluginInfoData {
     PluginInfoData {
@@ -96,24 +98,27 @@ pub fn on_event(
         300_000, // 5 minute timeout for extraction
     );
 
-    if let Err(e) = &extract_result {
-        host.log("error", &format!("ffmpeg audio extraction failed: {e}"));
-        return None;
-    }
-    let extract_output = extract_result.unwrap();
-    if extract_output.exit_code != 0 {
-        host.log("error", &format!(
-            "ffmpeg exited with code {}: {}",
-            extract_output.exit_code,
-            String::from_utf8_lossy(&extract_output.stderr)
-        ));
-        return None;
-    }
+    let extract_output = match extract_result {
+        Err(e) => {
+            host.log("error", &format!("ffmpeg audio extraction failed: {e}"));
+            return None;
+        }
+        Ok(o) if o.exit_code != 0 => {
+            host.log("error", &format!(
+                "ffmpeg exited with code {}: {}",
+                o.exit_code,
+                String::from_utf8_lossy(&o.stderr)
+            ));
+            return None;
+        }
+        Ok(o) => o,
+    };
 
     // Step 2: Run whisper on the extracted audio.
-    let whisper_bin = config.as_ref().map(|c| c.whisper_binary.as_str()).unwrap_or("whisper-cli");
-    let model = config.as_ref().map(|c| c.model.as_str()).unwrap_or("base");
-    let language = config.as_ref().and_then(|c| c.language.as_deref());
+    let cfg = config.as_ref();
+    let whisper_bin = cfg.map(|c| c.whisper_binary.as_str()).unwrap_or("whisper-cli");
+    let model = cfg.map(|c| c.model.as_str()).unwrap_or("base");
+    let language = cfg.and_then(|c| c.language.as_deref());
 
     let mut whisper_args = vec![
         audio_path.clone(),
@@ -132,19 +137,21 @@ pub fn on_event(
     // Clean up temp audio file.
     let _ = host.run_tool("rm", &[audio_path], 5_000);
 
-    if let Err(e) = &whisper_result {
-        host.log("error", &format!("whisper failed: {e}"));
-        return None;
-    }
-    let whisper_output = whisper_result.unwrap();
-    if whisper_output.exit_code != 0 {
-        host.log("error", &format!(
-            "whisper exited with code {}: {}",
-            whisper_output.exit_code,
-            String::from_utf8_lossy(&whisper_output.stderr)
-        ));
-        return None;
-    }
+    let whisper_output = match whisper_result {
+        Err(e) => {
+            host.log("error", &format!("whisper failed: {e}"));
+            return None;
+        }
+        Ok(o) if o.exit_code != 0 => {
+            host.log("error", &format!(
+                "whisper exited with code {}: {}",
+                o.exit_code,
+                String::from_utf8_lossy(&o.stderr)
+            ));
+            return None;
+        }
+        Ok(o) => o,
+    };
 
     // Cache the result.
     let _ = host.set_plugin_data(&cache_key, &whisper_output.stdout);
@@ -208,22 +215,7 @@ pub struct WhisperConfig {
 }
 
 fn load_config(host: &dyn HostFunctions) -> Option<WhisperConfig> {
-    let data = host.get_plugin_data("config")?;
-    serde_json::from_slice(&data).ok()
-}
-
-// --- Common types ---
-
-pub struct PluginInfoData {
-    pub name: String,
-    pub version: String,
-    pub capabilities: Vec<String>,
-}
-
-pub struct OnEventResult {
-    pub plugin_name: String,
-    pub produced_events: Vec<(String, Vec<u8>)>,
-    pub data: Option<Vec<u8>>,
+    load_plugin_config(|key| host.get_plugin_data(key))
 }
 
 #[cfg(test)]

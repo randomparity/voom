@@ -55,4 +55,7 @@ pub use voom_domain::plan::{
 pub use voom_domain;
 
 // Re-export helpers.
-pub use event::{deserialize_event, deserialize_json, serialize_event, serialize_json};
+pub use event::{
+    deserialize_event, deserialize_json, load_plugin_config, serialize_event, serialize_json,
+};
+pub use types::{OnEventResult, PluginInfoData};

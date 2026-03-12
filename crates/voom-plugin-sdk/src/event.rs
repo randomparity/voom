@@ -25,6 +25,21 @@ pub fn serialize_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     serde_json::to_vec(value).context("failed to serialize to JSON bytes")
 }
 
+/// Load a plugin config from a `get_plugin_data("config")` provider.
+///
+/// This is a convenience for the common pattern of loading JSON config
+/// from the host's plugin data store:
+///
+/// ```rust,ignore
+/// let config: Option<MyConfig> = load_plugin_config(|key| host.get_plugin_data(key));
+/// ```
+pub fn load_plugin_config<T: DeserializeOwned>(
+    get_data: impl FnOnce(&str) -> Option<Vec<u8>>,
+) -> Option<T> {
+    let data = get_data("config")?;
+    serde_json::from_slice(&data).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

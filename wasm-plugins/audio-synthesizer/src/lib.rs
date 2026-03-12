@@ -29,7 +29,10 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use voom_plugin_sdk::{deserialize_event, serialize_event, Event, OperationType};
+use voom_plugin_sdk::{
+    deserialize_event, load_plugin_config, serialize_event, Event, OnEventResult, OperationType,
+    PluginInfoData,
+};
 
 pub fn get_info() -> PluginInfoData {
     PluginInfoData {
@@ -72,14 +75,9 @@ pub fn on_event(
     }
 
     let config = load_config(host);
-    let tts_engine = config
-        .as_ref()
-        .map(|c| c.tts_engine.as_str())
-        .unwrap_or("piper");
-    let tts_model = config
-        .as_ref()
-        .map(|c| c.tts_model.as_str())
-        .unwrap_or("en_US-lessac-medium");
+    let cfg = config.as_ref();
+    let tts_engine = cfg.map(|c| c.tts_engine.as_str()).unwrap_or("piper");
+    let tts_model = cfg.map(|c| c.tts_model.as_str()).unwrap_or("en_US-lessac-medium");
 
     host.log("info", &format!(
         "synthesizing {} audio track(s) for {}",
@@ -129,17 +127,18 @@ pub fn on_event(
             ),
         };
 
-        if let Err(e) = &tts_result {
-            host.log("error", &format!("TTS failed: {e}"));
-            continue;
-        }
-        if tts_result.as_ref().unwrap().exit_code != 0 {
-            host.log("error", &format!(
-                "TTS exited with code {}",
-                tts_result.unwrap().exit_code
-            ));
-            continue;
-        }
+        let tts_output = match tts_result {
+            Err(e) => {
+                host.log("error", &format!("TTS failed: {e}"));
+                continue;
+            }
+            Ok(o) if o.exit_code != 0 => {
+                host.log("error", &format!("TTS exited with code {}", o.exit_code));
+                continue;
+            }
+            Ok(o) => o,
+        };
+        let _ = tts_output; // consumed; we only need success confirmation
 
         // Step 2: Encode to target codec via ffmpeg.
         let encode_result = host.run_tool(
@@ -158,12 +157,13 @@ pub fn on_event(
         // Clean up raw WAV.
         let _ = host.run_tool("rm", &[raw_path], 5_000);
 
-        if let Err(e) = &encode_result {
-            host.log("error", &format!("ffmpeg encoding failed: {e}"));
-            continue;
-        }
-        if encode_result.as_ref().unwrap().exit_code != 0 {
-            continue;
+        match &encode_result {
+            Err(e) => {
+                host.log("error", &format!("ffmpeg encoding failed: {e}"));
+                continue;
+            }
+            Ok(o) if o.exit_code != 0 => continue,
+            Ok(_) => {}
         }
 
         results.push(serde_json::json!({
@@ -225,22 +225,7 @@ pub struct SynthConfig {
 }
 
 fn load_config(host: &dyn HostFunctions) -> Option<SynthConfig> {
-    let data = host.get_plugin_data("config")?;
-    serde_json::from_slice(&data).ok()
-}
-
-// --- Common types ---
-
-pub struct PluginInfoData {
-    pub name: String,
-    pub version: String,
-    pub capabilities: Vec<String>,
-}
-
-pub struct OnEventResult {
-    pub plugin_name: String,
-    pub produced_events: Vec<(String, Vec<u8>)>,
-    pub data: Option<Vec<u8>>,
+    load_plugin_config(|key| host.get_plugin_data(key))
 }
 
 #[cfg(test)]
@@ -300,6 +285,9 @@ mod tests {
             }],
             warnings: vec![],
             skip_reason: None,
+            id: uuid::Uuid::new_v4(),
+            policy_hash: None,
+            evaluated_at: chrono::Utc::now(),
         }
     }
 
@@ -352,6 +340,9 @@ mod tests {
             }],
             warnings: vec![],
             skip_reason: None,
+            id: uuid::Uuid::new_v4(),
+            policy_hash: None,
+            evaluated_at: chrono::Utc::now(),
         };
         let event = Event::PlanCreated(
             voom_plugin_sdk::voom_domain::events::PlanCreatedEvent { plan },
@@ -377,6 +368,9 @@ mod tests {
             }],
             warnings: vec![],
             skip_reason: None,
+            id: uuid::Uuid::new_v4(),
+            policy_hash: None,
+            evaluated_at: chrono::Utc::now(),
         };
         let event = Event::PlanCreated(
             voom_plugin_sdk::voom_domain::events::PlanCreatedEvent { plan },
