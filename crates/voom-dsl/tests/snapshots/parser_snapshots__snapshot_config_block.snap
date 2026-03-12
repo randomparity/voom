@@ -1,6 +1,5 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 29
 expression: ast
 ---
 name: with-config
@@ -22,7 +21,13 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - Container: mkv
+      - node:
+          Container: mkv
+        span:
+          start: 257
+          end: 270
+          line: 9
+          col: 13
     span:
       start: 232
       end: 280

@@ -1,6 +1,5 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 12
 expression: ast
 ---
 name: minimal
@@ -12,7 +11,13 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - Container: mkv
+      - node:
+          Container: mkv
+        span:
+          start: 52
+          end: 65
+          line: 3
+          col: 13
     span:
       start: 27
       end: 75

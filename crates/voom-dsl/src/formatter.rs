@@ -8,7 +8,7 @@ use crate::ast::*;
 /// Format a [`PolicyAst`] into a pretty-printed source string.
 pub fn format_policy(ast: &PolicyAst) -> String {
     let mut out = String::new();
-    out.push_str(&format!("policy \"{}\" {{\n", ast.name));
+    out.push_str(&format!("policy \"{}\" {{\n", escape_string(&ast.name)));
 
     if let Some(config) = &ast.config {
         format_config(config, &mut out, 1);
@@ -54,7 +54,7 @@ fn format_config(config: &ConfigNode, out: &mut String, level: usize) {
         let patterns: Vec<String> = config
             .commentary_patterns
             .iter()
-            .map(|p| format!("\"{p}\""))
+            .map(|p| format!("\"{}\"", escape_string(p)))
             .collect();
         out.push_str(&format!("commentary_patterns: [{}]\n", patterns.join(", ")));
     }
@@ -93,8 +93,8 @@ fn format_phase(phase: &PhaseNode, out: &mut String, level: usize) {
         out.push_str(&format!("on_error: {on_error}\n"));
     }
 
-    for op in &phase.operations {
-        format_operation(op, out, level + 1);
+    for spanned_op in &phase.operations {
+        format_operation(&spanned_op.node, out, level + 1);
     }
 
     indent(out, level);
@@ -173,7 +173,7 @@ fn format_operation(op: &OperationNode, out: &mut String, level: usize) {
         }
         OperationNode::Synthesize { name, settings } => {
             indent(out, level);
-            out.push_str(&format!("synthesize \"{name}\" {{\n"));
+            out.push_str(&format!("synthesize \"{}\" {{\n", escape_string(name)));
             for setting in settings {
                 format_synth_setting(setting, out, level + 1);
             }
@@ -188,7 +188,7 @@ fn format_operation(op: &OperationNode, out: &mut String, level: usize) {
             out.push_str(&format!("rules {mode} {{\n"));
             for rule in rules {
                 indent(out, level + 1);
-                out.push_str(&format!("rule \"{}\" {{\n", rule.name));
+                out.push_str(&format!("rule \"{}\" {{\n", escape_string(&rule.name)));
                 format_when(&rule.when, out, level + 2);
                 indent(out, level + 1);
                 out.push_str("}\n");
@@ -213,7 +213,7 @@ fn format_synth_setting(setting: &SynthSetting, out: &mut String, level: usize) 
             format_filter(f, out);
             out.push_str(")\n");
         }
-        SynthSetting::Bitrate(b) => out.push_str(&format!("bitrate: \"{b}\"\n")),
+        SynthSetting::Bitrate(b) => out.push_str(&format!("bitrate: \"{}\"\n", escape_string(b))),
         SynthSetting::SkipIfExists(f) => {
             out.push_str("skip_if_exists { ");
             format_filter(f, out);
@@ -224,7 +224,7 @@ fn format_synth_setting(setting: &SynthSetting, out: &mut String, level: usize) 
             format_condition(c, out);
             out.push('\n');
         }
-        SynthSetting::Title(t) => out.push_str(&format!("title: \"{t}\"\n")),
+        SynthSetting::Title(t) => out.push_str(&format!("title: \"{}\"\n", escape_string(t))),
         SynthSetting::Language(l) => out.push_str(&format!("language: {l}\n")),
         SynthSetting::Position(v) => {
             out.push_str("position: ");
@@ -337,12 +337,24 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
                 out.push_str(&format!("lang in [{}]", langs.join(", ")));
             }
         }
+        FilterNode::LangCompare(op, lang) => {
+            out.push_str("lang ");
+            format_compare_op(op, out);
+            out.push(' ');
+            out.push_str(lang);
+        }
         FilterNode::CodecIn(codecs) => {
             if codecs.len() == 1 {
                 out.push_str(&format!("codec == {}", codecs[0]));
             } else {
                 out.push_str(&format!("codec in [{}]", codecs.join(", ")));
             }
+        }
+        FilterNode::CodecCompare(op, codec) => {
+            out.push_str("codec ");
+            format_compare_op(op, out);
+            out.push(' ');
+            out.push_str(codec);
         }
         FilterNode::Channels(op, val) => {
             out.push_str("channels ");
@@ -354,8 +366,8 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
         FilterNode::Forced => out.push_str("forced"),
         FilterNode::Default => out.push_str("default"),
         FilterNode::Font => out.push_str("font"),
-        FilterNode::TitleContains(s) => out.push_str(&format!("title contains \"{s}\"")),
-        FilterNode::TitleMatches(s) => out.push_str(&format!("title matches \"{s}\"")),
+        FilterNode::TitleContains(s) => out.push_str(&format!("title contains \"{}\"", escape_string(s))),
+        FilterNode::TitleMatches(s) => out.push_str(&format!("title matches \"{}\"", escape_string(s))),
         FilterNode::And(items) => {
             for (i, item) in items.iter().enumerate() {
                 if i > 0 {
@@ -403,8 +415,8 @@ fn format_action(action: &ActionNode, out: &mut String, level: usize) {
             }
             out.push('\n');
         }
-        ActionNode::Warn(msg) => out.push_str(&format!("warn \"{msg}\"\n")),
-        ActionNode::Fail(msg) => out.push_str(&format!("fail \"{msg}\"\n")),
+        ActionNode::Warn(msg) => out.push_str(&format!("warn \"{}\"\n", escape_string(msg))),
+        ActionNode::Fail(msg) => out.push_str(&format!("fail \"{}\"\n", escape_string(msg))),
         ActionNode::SetDefault(track_ref) => {
             out.push_str(&format!("set_default {}", track_ref.target));
             if let Some(f) = &track_ref.filter {
@@ -422,25 +434,30 @@ fn format_action(action: &ActionNode, out: &mut String, level: usize) {
             out.push('\n');
         }
         ActionNode::SetLanguage(track_ref, val) => {
-            out.push_str(&format!("set_language {} where ", track_ref.target));
+            out.push_str(&format!("set_language {}", track_ref.target));
             if let Some(f) = &track_ref.filter {
+                out.push_str(" where ");
                 format_filter(f, out);
-                out.push(' ');
             }
+            out.push(' ');
             format_value_or_field(val, out);
             out.push('\n');
         }
         ActionNode::SetTag(tag, val) => {
-            out.push_str(&format!("set_tag \"{tag}\" "));
+            out.push_str(&format!("set_tag \"{}\" ", escape_string(tag)));
             format_value_or_field(val, out);
             out.push('\n');
         }
     }
 }
 
+fn escape_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn format_value(val: &Value, out: &mut String) {
     match val {
-        Value::String(s) => out.push_str(&format!("\"{s}\"")),
+        Value::String(s) => out.push_str(&format!("\"{}\"", escape_string(s))),
         Value::Number(_, raw) => out.push_str(raw),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Ident(s) => out.push_str(s),
@@ -575,7 +592,7 @@ mod tests {
         let formatted = format_policy(&ast1);
         let ast2 = parse_policy(&formatted).unwrap();
 
-        match (&ast1.phases[0].operations[0], &ast2.phases[0].operations[0]) {
+        match (&ast1.phases[0].operations[0].node, &ast2.phases[0].operations[0].node) {
             (
                 OperationNode::Transcode {
                     codec: c1,
@@ -608,7 +625,7 @@ mod tests {
         let formatted = format_policy(&ast1);
         let ast2 = parse_policy(&formatted).unwrap();
 
-        match (&ast1.phases[0].operations[0], &ast2.phases[0].operations[0]) {
+        match (&ast1.phases[0].operations[0].node, &ast2.phases[0].operations[0].node) {
             (OperationNode::When(w1), OperationNode::When(w2)) => {
                 assert_eq!(w1.then_actions.len(), w2.then_actions.len());
             }
@@ -630,5 +647,61 @@ mod tests {
             assert_eq!(p1.depends_on, p2.depends_on);
             assert_eq!(p1.operations.len(), p2.operations.len());
         }
+    }
+
+    #[test]
+    fn test_roundtrip_set_language_no_filter() {
+        // set_language without a filter should round-trip without "where"
+        let input = r#"policy "test" {
+            phase metadata {
+                when is_dubbed {
+                    set_language audio "eng"
+                }
+            }
+        }"#;
+        let ast1 = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast1);
+        assert!(!formatted.contains("set_language audio where "));
+        assert!(formatted.contains("set_language audio \"eng\""));
+        let ast2 = parse_policy(&formatted).unwrap();
+        assert_eq!(ast1.phases[0].operations.len(), ast2.phases[0].operations.len());
+    }
+
+    #[test]
+    fn test_roundtrip_string_escape() {
+        let input = r#"policy "test" {
+            phase validate {
+                when is_dubbed {
+                    warn "contains \"quoted\" text"
+                }
+            }
+        }"#;
+        let ast1 = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast1);
+        assert!(formatted.contains(r#"\"quoted\""#));
+        let ast2 = parse_policy(&formatted).unwrap();
+        match (&ast1.phases[0].operations[0].node, &ast2.phases[0].operations[0].node) {
+            (OperationNode::When(w1), OperationNode::When(w2)) => {
+                match (&w1.then_actions[0], &w2.then_actions[0]) {
+                    (ActionNode::Warn(m1), ActionNode::Warn(m2)) => assert_eq!(m1, m2),
+                    _ => panic!("expected Warn"),
+                }
+            }
+            _ => panic!("expected When"),
+        }
+    }
+
+    #[test]
+    fn test_format_lang_ne_filter() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang != jpn
+            }
+        }"#;
+        let ast1 = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast1);
+        assert!(formatted.contains("lang != jpn"));
+        let ast2 = parse_policy(&formatted).unwrap();
+        assert_eq!(ast1.phases[0].operations.len(), ast2.phases[0].operations.len());
     }
 }

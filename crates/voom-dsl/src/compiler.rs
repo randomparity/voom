@@ -105,6 +105,7 @@ pub enum TrackTarget {
     Audio,
     Subtitle,
     Attachment,
+    Any,
 }
 
 /// Defaults strategy for a track type.
@@ -212,7 +213,9 @@ pub enum CompiledCompareOp {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CompiledFilter {
     LangIn(Vec<String>),
+    LangCompare(CompiledCompareOp, String),
     CodecIn(Vec<String>),
+    CodecCompare(CompiledCompareOp, String),
     Channels(CompiledCompareOp, f64),
     Commentary,
     Forced,
@@ -350,7 +353,7 @@ fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslErr
     let operations: Vec<CompiledOperation> = phase
         .operations
         .iter()
-        .map(compile_operation)
+        .map(|spanned| compile_operation(&spanned.node))
         .collect::<std::result::Result<_, _>>()?;
 
     Ok(CompiledPhase {
@@ -556,6 +559,15 @@ fn compile_condition(cond: &ConditionNode) -> std::result::Result<CompiledCondit
 fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, DslError> {
     match filter {
         FilterNode::LangIn(langs) => Ok(CompiledFilter::LangIn(langs.clone())),
+        FilterNode::LangCompare(op, lang) => {
+            Ok(CompiledFilter::LangCompare(compile_compare_op(op), lang.clone()))
+        }
+        FilterNode::CodecCompare(op, codec) => {
+            let normalized = codecs::normalize_codec(codec)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| codec.clone());
+            Ok(CompiledFilter::CodecCompare(compile_compare_op(op), normalized))
+        }
         FilterNode::CodecIn(codec_list) => {
             let normalized: Vec<String> = codec_list
                 .iter()
@@ -642,7 +654,8 @@ fn parse_track_target(target: &str) -> TrackTarget {
         "audio" => TrackTarget::Audio,
         "subtitle" | "subtitles" => TrackTarget::Subtitle,
         "attachment" | "attachments" => TrackTarget::Attachment,
-        _ => TrackTarget::Audio, // fallback (validator catches invalid targets)
+        "track" => TrackTarget::Any,
+        _ => unreachable!("validator rejects unknown track targets"),
     }
 }
 

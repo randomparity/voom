@@ -17,6 +17,9 @@ pub struct VoomParser;
 /// Maximum allowed policy source size (1 MiB).
 const MAX_POLICY_SIZE: usize = 1_024 * 1_024;
 
+/// Maximum nesting depth for conditions and filters to prevent stack overflow.
+const MAX_NESTING_DEPTH: usize = 100;
+
 /// Parse a `.voom` source string into a [`PolicyAst`].
 pub fn parse_policy(input: &str) -> Result<PolicyAst> {
     if input.len() > MAX_POLICY_SIZE {
@@ -173,21 +176,47 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
                 on_error = Some(ident.as_str().to_string());
             }
             Rule::container_op => {
+                let op_span = span_from_pair(&child);
                 let ident = child.into_inner().next().unwrap();
-                operations.push(OperationNode::Container(ident.as_str().to_string()));
+                operations.push(SpannedOperation { span: op_span, node: OperationNode::Container(ident.as_str().to_string()) });
             }
-            Rule::keep_op => operations.push(build_keep_remove(child, true)?),
-            Rule::remove_op => operations.push(build_keep_remove(child, false)?),
+            Rule::keep_op => {
+                let op_span = span_from_pair(&child);
+                operations.push(SpannedOperation { span: op_span, node: build_keep_remove(child, true)? });
+            }
+            Rule::remove_op => {
+                let op_span = span_from_pair(&child);
+                operations.push(SpannedOperation { span: op_span, node: build_keep_remove(child, false)? });
+            }
             Rule::order_op => {
+                let op_span = span_from_pair(&child);
                 let list = child.into_inner().next().unwrap();
-                operations.push(OperationNode::Order(build_list(&list)));
+                operations.push(SpannedOperation { span: op_span, node: OperationNode::Order(build_list(&list)) });
             }
-            Rule::defaults_op => operations.push(build_defaults(child)?),
-            Rule::actions_op => operations.push(build_actions(child)?),
-            Rule::transcode_op => operations.push(build_transcode(child)?),
-            Rule::synthesize_op => operations.push(build_synthesize(child)?),
-            Rule::when_block => operations.push(OperationNode::When(build_when(child)?)),
-            Rule::rules_block => operations.push(build_rules(child)?),
+            Rule::defaults_op => {
+                let op_span = span_from_pair(&child);
+                operations.push(SpannedOperation { span: op_span, node: build_defaults(child)? });
+            }
+            Rule::actions_op => {
+                let op_span = span_from_pair(&child);
+                operations.push(SpannedOperation { span: op_span, node: build_actions(child)? });
+            }
+            Rule::transcode_op => {
+                let op_span = span_from_pair(&child);
+                operations.push(SpannedOperation { span: op_span, node: build_transcode(child)? });
+            }
+            Rule::synthesize_op => {
+                let op_span = span_from_pair(&child);
+                operations.push(SpannedOperation { span: op_span, node: build_synthesize(child)? });
+            }
+            Rule::when_block => {
+                let op_span = span_from_pair(&child);
+                operations.push(SpannedOperation { span: op_span, node: OperationNode::When(build_when(child)?) });
+            }
+            Rule::rules_block => {
+                let op_span = span_from_pair(&child);
+                operations.push(SpannedOperation { span: op_span, node: build_rules(child)? });
+            }
             other => {
                 let (line, col) = child.as_span().start_pos().line_col();
                 return Err(DslError::unexpected_rule(format!("{other:?}"), line, col));
@@ -259,12 +288,8 @@ fn build_actions(pair: Pair<'_, Rule>) -> Result<OperationNode> {
 fn build_transcode(pair: Pair<'_, Rule>) -> Result<OperationNode> {
     let text = pair.as_str();
     // "transcode video to hevc { ... }" or "transcode audio to aac { ... }"
-    let target = if text.contains("video") {
-        "video"
-    } else {
-        "audio"
-    }
-    .to_string();
+    // Use the second word to determine target (grammar guarantees "video" or "audio")
+    let target = text.split_whitespace().nth(1).unwrap_or("audio").to_string();
 
     let mut inner = pair.into_inner();
     let codec = inner.next().unwrap().as_str().to_string();
@@ -384,46 +409,52 @@ fn build_rules(pair: Pair<'_, Rule>) -> Result<OperationNode> {
 }
 
 fn build_condition(pair: Pair<'_, Rule>) -> Result<ConditionNode> {
-    let inner = pair.into_inner().next().unwrap();
-    build_condition_or(inner)
+    build_condition_depth(pair, 0)
 }
 
-fn build_condition_or(pair: Pair<'_, Rule>) -> Result<ConditionNode> {
+fn build_condition_depth(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionNode> {
+    let inner = pair.into_inner().next().unwrap();
+    build_condition_or(inner, depth)
+}
+
+fn build_condition_or(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionNode> {
     let parts: Vec<_> = pair.into_inner().collect();
     if parts.len() == 1 {
-        return build_condition_and(parts.into_iter().next().unwrap());
+        return build_condition_and(parts.into_iter().next().unwrap(), depth);
     }
     let mut nodes = Vec::new();
     for p in parts {
-        nodes.push(build_condition_and(p)?);
+        nodes.push(build_condition_and(p, depth)?);
     }
     Ok(ConditionNode::Or(nodes))
 }
 
-fn build_condition_and(pair: Pair<'_, Rule>) -> Result<ConditionNode> {
+fn build_condition_and(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionNode> {
     let parts: Vec<_> = pair.into_inner().collect();
     if parts.len() == 1 {
-        return build_condition_not(parts.into_iter().next().unwrap());
+        return build_condition_not(parts.into_iter().next().unwrap(), depth);
     }
     let mut nodes = Vec::new();
     for p in parts {
-        nodes.push(build_condition_not(p)?);
+        nodes.push(build_condition_not(p, depth)?);
     }
     Ok(ConditionNode::And(nodes))
 }
 
-fn build_condition_not(pair: Pair<'_, Rule>) -> Result<ConditionNode> {
+fn build_condition_not(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionNode> {
     let text = pair.as_str().trim();
     let inner = pair.into_inner().next().unwrap();
     if text.starts_with("not") {
-        Ok(ConditionNode::Not(Box::new(build_condition_atom(inner)?)))
+        Ok(ConditionNode::Not(Box::new(build_condition_atom(inner, depth)?)))
     } else {
-        build_condition_atom(inner)
+        build_condition_atom(inner, depth)
     }
 }
 
-fn build_condition_atom(pair: Pair<'_, Rule>) -> Result<ConditionNode> {
+fn build_condition_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionNode> {
     let text = pair.as_str().trim();
+    let pair_span = pair.as_span();
+    let (pair_line, pair_col) = pair_span.start_pos().line_col();
     let mut inner = pair.into_inner();
 
     if text.starts_with("audio_is_multi_language") {
@@ -446,8 +477,12 @@ fn build_condition_atom(pair: Pair<'_, Rule>) -> Result<ConditionNode> {
         return Ok(ConditionNode::Count(build_track_query(query)?, op, num));
     }
     if text.starts_with('(') {
+        let new_depth = depth + 1;
+        if new_depth > MAX_NESTING_DEPTH {
+            return Err(DslError::parse(pair_line, pair_col, format!("condition nesting depth exceeds maximum of {MAX_NESTING_DEPTH}")));
+        }
         let cond = inner.next().unwrap();
-        return build_condition(cond);
+        return build_condition_depth(cond, new_depth);
     }
 
     // field_access compare_op value  OR  field_access exists
@@ -474,12 +509,26 @@ fn build_condition_atom(pair: Pair<'_, Rule>) -> Result<ConditionNode> {
 }
 
 fn build_track_query(pair: Pair<'_, Rule>) -> Result<TrackQueryNode> {
+    let text = pair.as_str().trim();
     let mut inner = pair.into_inner();
-    let target_pair = inner.next().unwrap();
-    let target = target_pair.as_str().to_string();
 
-    let filter = if let Some(filter_pair) = inner.next() {
-        Some(build_filter(filter_pair)?)
+    // The grammar rule is: (track_target | "track") ~ ("where" ~ filter_expr)?
+    // "track" is a string literal, so pest silently consumes it (no named child).
+    // We detect this from the text and handle it specially.
+    let (target, first_child) = if text.starts_with("track ") || text == "track" {
+        // "track" was the literal — no named child for the target
+        ("track".to_string(), inner.next())
+    } else {
+        let target_pair = inner.next().unwrap();
+        (target_pair.as_str().to_string(), inner.next())
+    };
+
+    let filter = if let Some(pair) = first_child {
+        if pair.as_rule() == Rule::filter_expr {
+            Some(build_filter(pair)?)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -488,45 +537,49 @@ fn build_track_query(pair: Pair<'_, Rule>) -> Result<TrackQueryNode> {
 }
 
 fn build_filter(pair: Pair<'_, Rule>) -> Result<FilterNode> {
-    let inner = pair.into_inner().next().unwrap();
-    build_filter_or(inner)
+    build_filter_depth(pair, 0)
 }
 
-fn build_filter_or(pair: Pair<'_, Rule>) -> Result<FilterNode> {
+fn build_filter_depth(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
+    let inner = pair.into_inner().next().unwrap();
+    build_filter_or(inner, depth)
+}
+
+fn build_filter_or(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
     let parts: Vec<_> = pair.into_inner().collect();
     if parts.len() == 1 {
-        return build_filter_and(parts.into_iter().next().unwrap());
+        return build_filter_and(parts.into_iter().next().unwrap(), depth);
     }
     let mut nodes = Vec::new();
     for p in parts {
-        nodes.push(build_filter_and(p)?);
+        nodes.push(build_filter_and(p, depth)?);
     }
     Ok(FilterNode::Or(nodes))
 }
 
-fn build_filter_and(pair: Pair<'_, Rule>) -> Result<FilterNode> {
+fn build_filter_and(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
     let parts: Vec<_> = pair.into_inner().collect();
     if parts.len() == 1 {
-        return build_filter_not(parts.into_iter().next().unwrap());
+        return build_filter_not(parts.into_iter().next().unwrap(), depth);
     }
     let mut nodes = Vec::new();
     for p in parts {
-        nodes.push(build_filter_not(p)?);
+        nodes.push(build_filter_not(p, depth)?);
     }
     Ok(FilterNode::And(nodes))
 }
 
-fn build_filter_not(pair: Pair<'_, Rule>) -> Result<FilterNode> {
+fn build_filter_not(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
     let text = pair.as_str().trim();
     let inner = pair.into_inner().next().unwrap();
     if text.starts_with("not") {
-        Ok(FilterNode::Not(Box::new(build_filter_atom(inner)?)))
+        Ok(FilterNode::Not(Box::new(build_filter_atom(inner, depth)?)))
     } else {
-        build_filter_atom(inner)
+        build_filter_atom(inner, depth)
     }
 }
 
-fn build_filter_atom(pair: Pair<'_, Rule>) -> Result<FilterNode> {
+fn build_filter_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
     let text = pair.as_str().trim();
     let span = pair.as_span();
     let mut inner = pair.into_inner();
@@ -536,7 +589,6 @@ fn build_filter_atom(pair: Pair<'_, Rule>) -> Result<FilterNode> {
         if next.as_rule() == Rule::list {
             return Ok(FilterNode::LangIn(build_list(&next)));
         }
-        // lang compare_op value — treat as lang == X  →  LangIn([X])
         let op = build_compare_op(next);
         let val = inner.next().unwrap();
         let val_str = match val.as_rule() {
@@ -547,9 +599,16 @@ fn build_filter_atom(pair: Pair<'_, Rule>) -> Result<FilterNode> {
             _ => val.as_str().to_string(),
         };
         return match op {
-            CompareOp::Eq => Ok(FilterNode::LangIn(vec![val_str])),
-            CompareOp::In => Ok(FilterNode::LangIn(vec![val_str])),
-            _ => Ok(FilterNode::LangIn(vec![val_str])),
+            CompareOp::Eq | CompareOp::In => Ok(FilterNode::LangIn(vec![val_str])),
+            CompareOp::Ne => Ok(FilterNode::LangCompare(CompareOp::Ne, val_str)),
+            _ => {
+                let (line, col) = span.start_pos().line_col();
+                Err(DslError::build(
+                    line,
+                    col,
+                    format!("operator {:?} is not valid for lang comparisons; use == or !=", op),
+                ))
+            }
         };
     }
     if text.starts_with("codec") {
@@ -567,9 +626,16 @@ fn build_filter_atom(pair: Pair<'_, Rule>) -> Result<FilterNode> {
             _ => val.as_str().to_string(),
         };
         return match op {
-            CompareOp::Eq => Ok(FilterNode::CodecIn(vec![val_str])),
-            CompareOp::In => Ok(FilterNode::CodecIn(vec![val_str])),
-            _ => Ok(FilterNode::CodecIn(vec![val_str])),
+            CompareOp::Eq | CompareOp::In => Ok(FilterNode::CodecIn(vec![val_str])),
+            CompareOp::Ne => Ok(FilterNode::CodecCompare(CompareOp::Ne, val_str)),
+            _ => {
+                let (line, col) = span.start_pos().line_col();
+                Err(DslError::build(
+                    line,
+                    col,
+                    format!("operator {:?} is not valid for codec comparisons; use == or !=", op),
+                ))
+            }
         };
     }
     if text.starts_with("channels") {
@@ -600,8 +666,13 @@ fn build_filter_atom(pair: Pair<'_, Rule>) -> Result<FilterNode> {
         };
     }
     if text.starts_with('(') {
+        let new_depth = depth + 1;
+        if new_depth > MAX_NESTING_DEPTH {
+            let (line, col) = span.start_pos().line_col();
+            return Err(DslError::parse(line, col, format!("filter nesting depth exceeds maximum of {MAX_NESTING_DEPTH}")));
+        }
         let filter = inner.next().unwrap();
-        return build_filter(filter);
+        return build_filter_depth(filter, new_depth);
     }
 
     let (line, col) = span.start_pos().line_col();
@@ -693,7 +764,7 @@ fn build_compare_op(pair: Pair<'_, Rule>) -> CompareOp {
         ">" => CompareOp::Gt,
         ">=" => CompareOp::Ge,
         "in" => CompareOp::In,
-        _ => CompareOp::Eq,
+        _ => unreachable!("grammar only permits valid compare_op tokens"),
     }
 }
 
@@ -733,11 +804,29 @@ fn build_list_values(pair: &Pair<'_, Rule>) -> Vec<Value> {
     pair.clone().into_inner().map(build_value).collect()
 }
 
-/// Strip surrounding quotes from a string literal.
+/// Strip surrounding quotes from a string literal and process escape sequences.
 fn parse_string_value(pair: &Pair<'_, Rule>) -> String {
     let s = pair.as_str();
     if s.starts_with('"') && s.ends_with('"') {
-        s[1..s.len() - 1].to_string()
+        let inner = &s[1..s.len() - 1];
+        let mut result = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                match chars.next() {
+                    Some('"') => result.push('"'),
+                    Some('\\') => result.push('\\'),
+                    Some(other) => {
+                        result.push('\\');
+                        result.push(other);
+                    }
+                    None => result.push('\\'),
+                }
+            } else {
+                result.push(c);
+            }
+        }
+        result
     } else {
         s.to_string()
     }
@@ -810,7 +899,7 @@ mod tests {
             }
         }"#;
         let ast = parse_policy(input).unwrap();
-        match &ast.phases[0].operations[0] {
+        match &ast.phases[0].operations[0].node {
             OperationNode::Keep { target, filter } => {
                 assert_eq!(target, "audio");
                 assert!(filter.is_some());
@@ -834,7 +923,7 @@ mod tests {
             }
         }"#;
         let ast = parse_policy(input).unwrap();
-        match &ast.phases[0].operations[0] {
+        match &ast.phases[0].operations[0].node {
             OperationNode::Transcode {
                 target,
                 codec,
@@ -874,7 +963,7 @@ mod tests {
             }
         }"#;
         let ast = parse_policy(input).unwrap();
-        match &ast.phases[0].operations[0] {
+        match &ast.phases[0].operations[0].node {
             OperationNode::When(when) => {
                 assert_eq!(when.then_actions.len(), 1);
                 match &when.then_actions[0] {
@@ -883,6 +972,173 @@ mod tests {
                 }
             }
             _ => panic!("expected When"),
+        }
+    }
+
+    #[test]
+    fn test_lang_ne_parses_to_lang_compare() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang != jpn
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::Keep { filter, .. } => {
+                match filter.as_ref().unwrap() {
+                    FilterNode::LangCompare(CompareOp::Ne, lang) => assert_eq!(lang, "jpn"),
+                    other => panic!("expected LangCompare(Ne, jpn), got {other:?}"),
+                }
+            }
+            _ => panic!("expected Keep operation"),
+        }
+    }
+
+    #[test]
+    fn test_lang_eq_parses_to_lang_in() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == jpn
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::Keep { filter, .. } => {
+                match filter.as_ref().unwrap() {
+                    FilterNode::LangIn(langs) => assert_eq!(langs, &["jpn"]),
+                    other => panic!("expected LangIn([jpn]), got {other:?}"),
+                }
+            }
+            _ => panic!("expected Keep operation"),
+        }
+    }
+
+    #[test]
+    fn test_lang_gt_returns_error() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang > jpn
+            }
+        }"#;
+        let err = parse_policy(input).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("not valid for lang comparisons"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_codec_ne_parses_to_codec_compare() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where codec != aac
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::Keep { filter, .. } => {
+                match filter.as_ref().unwrap() {
+                    FilterNode::CodecCompare(CompareOp::Ne, codec) => assert_eq!(codec, "aac"),
+                    other => panic!("expected CodecCompare(Ne, aac), got {other:?}"),
+                }
+            }
+            _ => panic!("expected Keep operation"),
+        }
+    }
+
+    #[test]
+    fn test_transcode_video_codec_with_video_in_name() {
+        // Ensure a codec name containing "video" doesn't confuse target detection
+        let input = r#"policy "test" {
+            phase tc {
+                transcode audio to libvideo_codec {
+                    bitrate: 192k
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::Transcode { target, codec, .. } => {
+                assert_eq!(target, "audio");
+                assert_eq!(codec, "libvideo_codec");
+            }
+            _ => panic!("expected Transcode"),
+        }
+    }
+
+    #[test]
+    fn test_deeply_nested_condition_rejected() {
+        // Build deeply nested conditions using parenthesized sub-expressions.
+        // Pest's recursive descent grammar may also have limits, so any error is acceptable.
+        let mut cond = "is_dubbed".to_string();
+        for _ in 0..=MAX_NESTING_DEPTH {
+            cond = format!("({cond})");
+        }
+        let input = format!(
+            r#"policy "test" {{
+                phase validate {{
+                    when {cond} {{
+                        warn "deep"
+                    }}
+                }}
+            }}"#
+        );
+        // Should fail either from our depth limit or pest's internal limits
+        assert!(parse_policy(&input).is_err());
+    }
+
+    #[test]
+    fn test_moderate_nesting_succeeds() {
+        // A few levels of parenthesized nesting should work fine
+        let mut cond = "is_dubbed".to_string();
+        for _ in 0..5 {
+            cond = format!("({cond})");
+        }
+        let input = format!(
+            r#"policy "test" {{
+                phase validate {{
+                    when {cond} {{
+                        warn "ok"
+                    }}
+                }}
+            }}"#
+        );
+        assert!(parse_policy(&input).is_ok(), "failed to parse: {}", input);
+    }
+
+    #[test]
+    fn test_string_escape_sequences() {
+        let input = r#"policy "test" {
+            phase validate {
+                when is_dubbed {
+                    warn "contains \"quoted\" text"
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::When(when) => {
+                match &when.then_actions[0] {
+                    ActionNode::Warn(msg) => assert_eq!(msg, r#"contains "quoted" text"#),
+                    _ => panic!("expected Warn"),
+                }
+            }
+            _ => panic!("expected When"),
+        }
+    }
+
+    #[test]
+    fn test_spanned_operation_has_correct_span() {
+        let input = r#"policy "test" {
+            phase init {
+                container mkv
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let spanned = &ast.phases[0].operations[0];
+        assert!(spanned.span.line > 0);
+        assert!(spanned.span.col > 0);
+        match &spanned.node {
+            OperationNode::Container(name) => assert_eq!(name, "mkv"),
+            _ => panic!("expected Container"),
         }
     }
 }

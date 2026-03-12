@@ -1,6 +1,5 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 57
 expression: ast
 ---
 name: ordering
@@ -12,16 +11,28 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - Order:
-          - video
-          - audio_main
-          - subtitle_main
-          - attachment
-      - Defaults:
-          - - audio
-            - first_per_language
-          - - subtitle
-            - none
+      - node:
+          Order:
+            - video
+            - audio_main
+            - subtitle_main
+            - attachment
+        span:
+          start: 58
+          end: 117
+          line: 3
+          col: 13
+      - node:
+          Defaults:
+            - - audio
+              - first_per_language
+            - - subtitle
+              - none
+        span:
+          start: 130
+          end: 227
+          line: 4
+          col: 13
     span:
       start: 28
       end: 237

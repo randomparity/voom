@@ -1,6 +1,5 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 179
 expression: ast
 ---
 name: production-normalize
@@ -23,7 +22,13 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - Container: mkv
+      - node:
+          Container: mkv
+        span:
+          start: 260
+          end: 273
+          line: 11
+          col: 5
     span:
       start: 235
       end: 277
@@ -36,54 +41,96 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - Actions:
-          target: audio
-          settings:
-            - - clear_all_default
-              - Bool: true
-            - - clear_all_forced
-              - Bool: true
-            - - clear_all_titles
-              - Bool: true
-      - Actions:
-          target: subtitle
-          settings:
-            - - clear_all_default
-              - Bool: true
-            - - clear_all_forced
-              - Bool: true
-      - Keep:
-          target: audio
-          filter:
-            LangIn:
-              - eng
-              - jpn
-              - und
-      - Keep:
-          target: subtitles
-          filter:
-            And:
-              - LangIn:
-                  - eng
-              - Not: Commentary
-      - Remove:
-          target: attachments
-          filter:
-            Not: Font
-      - Order:
-          - video
-          - audio_main
-          - audio_alternate
-          - subtitle_main
-          - subtitle_forced
-          - audio_commentary
-          - subtitle_commentary
-          - attachment
-      - Defaults:
-          - - audio
-            - first_per_language
-          - - subtitle
-            - none
+      - node:
+          Actions:
+            target: audio
+            settings:
+              - - clear_all_default
+                - Bool: true
+              - - clear_all_forced
+                - Bool: true
+              - - clear_all_titles
+                - Bool: true
+        span:
+          start: 366
+          end: 475
+          line: 18
+          col: 5
+      - node:
+          Actions:
+            target: subtitle
+            settings:
+              - - clear_all_default
+                - Bool: true
+              - - clear_all_forced
+                - Bool: true
+        span:
+          start: 481
+          end: 564
+          line: 24
+          col: 5
+      - node:
+          Keep:
+            target: audio
+            filter:
+              LangIn:
+                - eng
+                - jpn
+                - und
+        span:
+          start: 570
+          end: 615
+          line: 29
+          col: 5
+      - node:
+          Keep:
+            target: subtitles
+            filter:
+              And:
+                - LangIn:
+                    - eng
+                - Not: Commentary
+        span:
+          start: 615
+          end: 673
+          line: 30
+          col: 5
+      - node:
+          Remove:
+            target: attachments
+            filter:
+              Not: Font
+        span:
+          start: 673
+          end: 712
+          line: 31
+          col: 5
+      - node:
+          Order:
+            - video
+            - audio_main
+            - audio_alternate
+            - subtitle_main
+            - subtitle_forced
+            - audio_commentary
+            - subtitle_commentary
+            - attachment
+        span:
+          start: 712
+          end: 868
+          line: 33
+          col: 5
+      - node:
+          Defaults:
+            - - audio
+              - first_per_language
+            - - subtitle
+              - none
+        span:
+          start: 874
+          end: 943
+          line: 39
+          col: 5
     span:
       start: 312
       end: 947
@@ -102,39 +149,51 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - Transcode:
-          target: video
-          codec: hevc
-          settings:
-            - - crf
-              - Number:
-                  - 20
-                  - "20"
-            - - preset
-              - Ident: medium
-            - - max_resolution
-              - Number:
-                  - 1080
-                  - 1080p
-            - - scale_algorithm
-              - Ident: lanczos
-            - - hw
-              - Ident: auto
-            - - hw_fallback
-              - Bool: true
-      - Transcode:
-          target: audio
-          codec: aac
-          settings:
-            - - preserve
-              - List:
-                  - Ident: truehd
-                  - Ident: dts_hd
-                  - Ident: flac
-            - - bitrate
-              - Number:
-                  - 192
-                  - 192k
+      - node:
+          Transcode:
+            target: video
+            codec: hevc
+            settings:
+              - - crf
+                - Number:
+                    - 20
+                    - "20"
+              - - preset
+                - Ident: medium
+              - - max_resolution
+                - Number:
+                    - 1080
+                    - 1080p
+              - - scale_algorithm
+                - Ident: lanczos
+              - - hw
+                - Ident: auto
+              - - hw_fallback
+                - Bool: true
+        span:
+          start: 1050
+          end: 1214
+          line: 49
+          col: 5
+      - node:
+          Transcode:
+            target: audio
+            codec: aac
+            settings:
+              - - preserve
+                - List:
+                    - Ident: truehd
+                    - Ident: dts_hd
+                    - Ident: flac
+              - - bitrate
+                - Number:
+                    - 192
+                    - 192k
+        span:
+          start: 1220
+          end: 1309
+          line: 58
+          col: 5
     span:
       start: 985
       end: 1313
@@ -147,34 +206,40 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - Synthesize:
-          name: Stereo AAC
-          settings:
-            - Codec: aac
-            - Channels:
-                Ident: stereo
-            - Source:
-                And:
-                  - CodecIn:
-                      - truehd
-                      - dts_hd
-                      - flac
-                  - Channels:
-                      - Ge
-                      - 6
-            - Bitrate: 192k
-            - SkipIfExists:
-                And:
-                  - CodecIn:
-                      - aac
-                  - Channels:
-                      - Eq
-                      - 2
-                  - Not: Commentary
-            - Title: Stereo (AAC)
-            - Language: inherit
-            - Position:
-                Ident: after_source
+      - node:
+          Synthesize:
+            name: Stereo AAC
+            settings:
+              - Codec: aac
+              - Channels:
+                  Ident: stereo
+              - Source:
+                  And:
+                    - CodecIn:
+                        - truehd
+                        - dts_hd
+                        - flac
+                    - Channels:
+                        - Ge
+                        - 6
+              - Bitrate: 192k
+              - SkipIfExists:
+                  And:
+                    - CodecIn:
+                        - aac
+                    - Channels:
+                        - Eq
+                        - 2
+                    - Not: Commentary
+              - Title: Stereo (AAC)
+              - Language: inherit
+              - Position:
+                  Ident: after_source
+        span:
+          start: 1412
+          end: 1735
+          line: 68
+          col: 5
     span:
       start: 1358
       end: 1739
@@ -190,32 +255,44 @@ phases:
       trigger: modified
     on_error: ~
     operations:
-      - When:
-          condition:
-            And:
-              - Exists:
-                  target: audio
-                  filter:
-                    LangIn:
-                      - jpn
-              - Not:
-                  Exists:
-                    target: subtitle
+      - node:
+          When:
+            condition:
+              And:
+                - Exists:
+                    target: audio
                     filter:
                       LangIn:
-                        - eng
-          then_actions:
-            - Warn: "Japanese audio but no English subtitles in {filename}"
-          else_actions: []
-      - Rules:
-          mode: first
-          rules:
-            - name: multi-language
-              when:
-                condition: AudioIsMultiLanguage
-                then_actions:
-                  - Warn: "Multiple audio languages in {filename}"
-                else_actions: []
+                        - jpn
+                - Not:
+                    Exists:
+                      target: subtitle
+                      filter:
+                        LangIn:
+                          - eng
+            then_actions:
+              - Warn: "Japanese audio but no English subtitles in {filename}"
+            else_actions: []
+        span:
+          start: 1868
+          end: 2028
+          line: 85
+          col: 5
+      - node:
+          Rules:
+            mode: first
+            rules:
+              - name: multi-language
+                when:
+                  condition: AudioIsMultiLanguage
+                  then_actions:
+                    - Warn: "Multiple audio languages in {filename}"
+                  else_actions: []
+        span:
+          start: 2028
+          end: 2190
+          line: 89
+          col: 5
     span:
       start: 1774
       end: 2194
@@ -227,27 +304,33 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - When:
-          condition:
-            FieldExists:
-              - plugin
-              - radarr
-              - original_language
-          then_actions:
-            - SetLanguage:
-                - target: audio
-                  filter: Default
-                - Field:
-                    - plugin
-                    - radarr
-                    - original_language
-            - SetTag:
-                - title
-                - Field:
-                    - plugin
-                    - radarr
-                    - title
-          else_actions: []
+      - node:
+          When:
+            condition:
+              FieldExists:
+                - plugin
+                - radarr
+                - original_language
+            then_actions:
+              - SetLanguage:
+                  - target: audio
+                    filter: Default
+                  - Field:
+                      - plugin
+                      - radarr
+                      - original_language
+              - SetTag:
+                  - title
+                  - Field:
+                      - plugin
+                      - radarr
+                      - title
+            else_actions: []
+        span:
+          start: 2249
+          end: 2416
+          line: 100
+          col: 5
     span:
       start: 2228
       end: 2417

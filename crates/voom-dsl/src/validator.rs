@@ -276,10 +276,10 @@ fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>) {
     let mut kept_targets: HashSet<&str> = HashSet::new();
     let mut removed_targets: HashSet<&str> = HashSet::new();
 
-    for op in &phase.operations {
-        validate_operation(op, phase.span.line, phase.span.col, errors);
+    for spanned_op in &phase.operations {
+        validate_operation(&spanned_op.node, spanned_op.span.line, spanned_op.span.col, errors);
 
-        match op {
+        match &spanned_op.node {
             OperationNode::Keep { target, .. } => {
                 kept_targets.insert(target.as_str());
             }
@@ -294,13 +294,13 @@ fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>) {
     for target in &kept_targets {
         let broad_category = broad_track_category(target);
         for removed in &removed_targets {
-            if broad_track_category(removed) == broad_category && target == removed {
+            if broad_track_category(removed) == broad_category {
                 errors.push(DslError::validation(
                     phase.span.line,
                     phase.span.col,
                     format!(
                         "conflicting keep and remove on \"{}\" in phase \"{}\"",
-                        target, phase.name
+                        broad_category, phase.name
                     ),
                 ));
             }
@@ -338,9 +338,12 @@ fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut 
                 validate_filter(f, line, col, errors);
             }
         }
-        OperationNode::Transcode { target, codec, .. } => {
+        OperationNode::Transcode { target, codec, settings } => {
             validate_track_target(target, line, col, errors);
             validate_codec(codec, line, col, errors);
+            for (_, val) in settings {
+                validate_value(val, line, col, errors);
+            }
         }
         OperationNode::Synthesize { settings, .. } => {
             for setting in settings {
@@ -443,6 +446,7 @@ fn validate_track_target(target: &str, line: usize, col: usize, errors: &mut Vec
         "subtitles",
         "attachment",
         "attachments",
+        "track",
     ];
     if !valid.contains(&target) {
         errors.push(DslError::validation(
@@ -485,10 +489,22 @@ fn validate_filter(filter: &FilterNode, line: usize, col: usize, errors: &mut Ve
                 }
             }
         }
+        FilterNode::LangCompare(_, lang) => {
+            if !language::is_valid_language(lang) {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    format!("unknown language code \"{lang}\" in filter"),
+                ));
+            }
+        }
         FilterNode::CodecIn(codecs_list) => {
             for codec in codecs_list {
                 validate_codec(codec, line, col, errors);
             }
+        }
+        FilterNode::CodecCompare(_, codec) => {
+            validate_codec(codec, line, col, errors);
         }
         FilterNode::And(items) | FilterNode::Or(items) => {
             for item in items {
@@ -497,6 +513,27 @@ fn validate_filter(filter: &FilterNode, line: usize, col: usize, errors: &mut Ve
         }
         FilterNode::Not(inner) => validate_filter(inner, line, col, errors),
         _ => {}
+    }
+}
+
+fn validate_value(val: &Value, line: usize, col: usize, errors: &mut Vec<DslError>) {
+    if let Value::Number(_, raw) = val {
+        validate_number_suffix(raw, line, col, errors);
+    }
+}
+
+fn validate_number_suffix(raw: &str, line: usize, col: usize, errors: &mut Vec<DslError>) {
+    let suffix: String = raw.chars().skip_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    if suffix.is_empty() {
+        return;
+    }
+    let valid_suffixes = ["k", "K", "p", "m", "M", "g", "G"];
+    if !valid_suffixes.contains(&suffix.as_str()) {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!("unknown number suffix \"{suffix}\" in \"{raw}\", expected one of: {}", valid_suffixes.join(", ")),
+        ));
     }
 }
 
@@ -659,5 +696,85 @@ mod tests {
         let ast = parse_policy(input).unwrap();
         // This policy uses valid codecs, languages, phases, etc.
         assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_conflicting_keep_remove_synonyms() {
+        // "keep subtitles" + "remove subtitle" should conflict
+        let input = r#"policy "test" {
+            phase norm {
+                keep subtitles where lang in [eng]
+                remove subtitle where commentary
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors.iter().any(|e| format!("{e}").contains("conflicting keep and remove")),
+            "expected conflict error, got: {:?}", err.errors
+        );
+    }
+
+    #[test]
+    fn test_exists_track_target_valid() {
+        let input = r#"policy "test" {
+            phase validate {
+                when exists(track where codec == hevc) {
+                    warn "has hevc track"
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let result = validate(&ast);
+        assert!(result.is_ok(), "validation errors: {:?}", result.unwrap_err().errors);
+    }
+
+    #[test]
+    fn test_number_suffix_valid() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    bitrate: 192k
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_number_suffix_invalid() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    bitrate: 192x
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors.iter().any(|e| format!("{e}").contains("unknown number suffix")),
+            "expected suffix error, got: {:?}", err.errors
+        );
+    }
+
+    #[test]
+    fn test_operation_level_line_numbers() {
+        // Errors from operations should report the operation's line, not the phase's
+        let input = r#"policy "test" {
+            phase norm {
+                container zzz
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        match &err.errors[0] {
+            DslError::Validation { line, .. } => {
+                // "container zzz" is on line 3, not the phase start (line 2)
+                assert_eq!(*line, 3, "error should report operation line, not phase line");
+            }
+            _ => panic!("expected validation error"),
+        }
     }
 }

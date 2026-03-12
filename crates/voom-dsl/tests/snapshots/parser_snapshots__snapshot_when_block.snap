@@ -1,6 +1,5 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 127
 expression: ast
 ---
 name: when
@@ -12,23 +11,29 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - When:
-          condition:
-            And:
-              - Exists:
-                  target: audio
-                  filter:
-                    LangIn:
-                      - jpn
-              - Not:
-                  Exists:
-                    target: subtitle
+      - node:
+          When:
+            condition:
+              And:
+                - Exists:
+                    target: audio
                     filter:
                       LangIn:
-                        - eng
-          then_actions:
-            - Warn: Japanese audio but no English subtitles
-          else_actions: []
+                        - jpn
+                - Not:
+                    Exists:
+                      target: subtitle
+                      filter:
+                        LangIn:
+                          - eng
+            then_actions:
+              - Warn: Japanese audio but no English subtitles
+            else_actions: []
+        span:
+          start: 53
+          end: 220
+          line: 3
+          col: 13
     span:
       start: 24
       end: 221

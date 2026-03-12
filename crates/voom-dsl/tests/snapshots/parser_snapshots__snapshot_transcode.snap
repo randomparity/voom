@@ -1,6 +1,5 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 94
 expression: ast
 ---
 name: transcode
@@ -19,24 +18,36 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - Transcode:
-          target: video
-          codec: hevc
-          settings:
-            - - crf
-              - Number:
-                  - 20
-                  - "20"
-            - - preset
-              - Ident: medium
-      - Transcode:
-          target: audio
-          codec: aac
-          settings:
-            - - bitrate
-              - Number:
-                  - 192
-                  - 192k
+      - node:
+          Transcode:
+            target: video
+            codec: hevc
+            settings:
+              - - crf
+                - Number:
+                    - 20
+                    - "20"
+              - - preset
+                - Ident: medium
+        span:
+          start: 102
+          end: 196
+          line: 4
+          col: 13
+      - node:
+          Transcode:
+            target: audio
+            codec: aac
+            settings:
+              - - bitrate
+                - Number:
+                    - 192
+                    - 192k
+        span:
+          start: 209
+          end: 277
+          line: 8
+          col: 13
     span:
       start: 29
       end: 287

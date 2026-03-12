@@ -1,6 +1,5 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 114
 expression: ast
 ---
 name: synth
@@ -12,34 +11,40 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - Synthesize:
-          name: Stereo AAC
-          settings:
-            - Codec: aac
-            - Channels:
-                Ident: stereo
-            - Source:
-                And:
-                  - CodecIn:
-                      - truehd
-                      - dts_hd
-                      - flac
-                  - Channels:
-                      - Ge
-                      - 6
-            - Bitrate: 192k
-            - SkipIfExists:
-                And:
-                  - CodecIn:
-                      - aac
-                  - Channels:
-                      - Eq
-                      - 2
-                  - Not: Commentary
-            - Title: Stereo (AAC)
-            - Language: inherit
-            - Position:
-                Ident: after_source
+      - node:
+          Synthesize:
+            name: Stereo AAC
+            settings:
+              - Codec: aac
+              - Channels:
+                  Ident: stereo
+              - Source:
+                  And:
+                    - CodecIn:
+                        - truehd
+                        - dts_hd
+                        - flac
+                    - Channels:
+                        - Ge
+                        - 6
+              - Bitrate: 192k
+              - SkipIfExists:
+                  And:
+                    - CodecIn:
+                        - aac
+                    - Channels:
+                        - Eq
+                        - 2
+                    - Not: Commentary
+              - Title: Stereo (AAC)
+              - Language: inherit
+              - Position:
+                  Ident: after_source
+        span:
+          start: 58
+          end: 469
+          line: 3
+          col: 13
     span:
       start: 25
       end: 479

@@ -1,6 +1,5 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 76
 expression: ast
 ---
 name: actions
@@ -12,22 +11,34 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - Actions:
-          target: audio
-          settings:
-            - - clear_all_default
-              - Bool: true
-            - - clear_all_forced
-              - Bool: true
-            - - clear_all_titles
-              - Bool: true
-      - Actions:
-          target: subtitle
-          settings:
-            - - clear_all_default
-              - Bool: true
-            - - clear_all_forced
-              - Bool: true
+      - node:
+          Actions:
+            target: audio
+            settings:
+              - - clear_all_default
+                - Bool: true
+              - - clear_all_forced
+                - Bool: true
+              - - clear_all_titles
+                - Bool: true
+        span:
+          start: 57
+          end: 204
+          line: 3
+          col: 13
+      - node:
+          Actions:
+            target: subtitle
+            settings:
+              - - clear_all_default
+                - Bool: true
+              - - clear_all_forced
+                - Bool: true
+        span:
+          start: 217
+          end: 328
+          line: 8
+          col: 13
     span:
       start: 27
       end: 338

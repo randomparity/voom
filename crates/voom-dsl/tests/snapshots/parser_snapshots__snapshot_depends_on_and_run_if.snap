@@ -1,6 +1,5 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 158
 expression: ast
 ---
 name: deps
@@ -12,7 +11,13 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - Container: mkv
+      - node:
+          Container: mkv
+        span:
+          start: 38
+          end: 51
+          line: 2
+          col: 23
     span:
       start: 24
       end: 53
@@ -27,7 +32,13 @@ phases:
       trigger: modified
     on_error: ~
     operations:
-      - Container: mkv
+      - node:
+          Container: mkv
+        span:
+          start: 155
+          end: 168
+          line: 6
+          col: 13
     span:
       start: 62
       end: 178

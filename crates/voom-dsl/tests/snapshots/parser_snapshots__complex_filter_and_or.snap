@@ -1,6 +1,5 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 199
 expression: ast
 ---
 name: filters
@@ -12,17 +11,23 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - Keep:
-          target: audio
-          filter:
-            And:
-              - LangIn:
-                  - eng
-              - Or:
-                  - CodecIn:
-                      - aac
-                  - CodecIn:
-                      - flac
+      - node:
+          Keep:
+            target: audio
+            filter:
+              And:
+                - LangIn:
+                    - eng
+                - Or:
+                    - CodecIn:
+                        - aac
+                    - CodecIn:
+                        - flac
+        span:
+          start: 52
+          end: 131
+          line: 3
+          col: 13
     span:
       start: 27
       end: 132

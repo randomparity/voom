@@ -8,7 +8,9 @@ use voom_dsl::compiler::CompiledFilter;
 pub fn track_matches(track: &Track, filter: &CompiledFilter) -> bool {
     match filter {
         CompiledFilter::LangIn(langs) => langs.iter().any(|l| l == &track.language),
+        CompiledFilter::LangCompare(op, lang) => compare_string(&track.language, op, lang),
         CompiledFilter::CodecIn(codecs) => codecs.iter().any(|c| c == &track.codec),
+        CompiledFilter::CodecCompare(op, codec) => compare_string(&track.codec, op, codec),
         CompiledFilter::Channels(op, value) => {
             if let Some(ch) = track.channels {
                 compare_f64(ch as f64, op, *value)
@@ -63,6 +65,15 @@ pub fn is_commentary_by_pattern(track: &Track, patterns: &[String]) -> bool {
         .iter()
         .any(|p| title_lower.contains(&p.to_lowercase()))
         || is_commentary_track(track)
+}
+
+/// Compare two strings using the given operator (supports Eq and Ne).
+fn compare_string(left: &str, op: &CompiledCompareOp, right: &str) -> bool {
+    match op {
+        CompiledCompareOp::Eq => left == right,
+        CompiledCompareOp::Ne => left != right,
+        _ => false, // only == and != are valid for string comparisons (parser rejects others)
+    }
 }
 
 /// Compare two f64 values using the given operator.
@@ -210,5 +221,36 @@ mod tests {
 
         track.title = "Main Audio".into();
         assert!(!is_commentary_by_pattern(&track, &patterns));
+    }
+
+    #[test]
+    fn test_lang_compare_ne() {
+        let jpn_track = audio_track("jpn", "aac", 2);
+        let eng_track = audio_track("eng", "aac", 2);
+
+        let filter = CompiledFilter::LangCompare(CompiledCompareOp::Ne, "jpn".into());
+        // "lang != jpn" should NOT match a jpn track
+        assert!(!track_matches(&jpn_track, &filter));
+        // "lang != jpn" SHOULD match an eng track
+        assert!(track_matches(&eng_track, &filter));
+    }
+
+    #[test]
+    fn test_codec_compare_ne() {
+        let aac_track = audio_track("eng", "aac", 2);
+        let flac_track = audio_track("eng", "flac", 2);
+
+        let filter = CompiledFilter::CodecCompare(CompiledCompareOp::Ne, "aac".into());
+        assert!(!track_matches(&aac_track, &filter));
+        assert!(track_matches(&flac_track, &filter));
+    }
+
+    #[test]
+    fn test_lang_compare_eq() {
+        let track = audio_track("jpn", "aac", 2);
+        let filter = CompiledFilter::LangCompare(CompiledCompareOp::Eq, "jpn".into());
+        assert!(track_matches(&track, &filter));
+        let filter_other = CompiledFilter::LangCompare(CompiledCompareOp::Eq, "eng".into());
+        assert!(!track_matches(&track, &filter_other));
     }
 }

@@ -249,6 +249,7 @@ fn tracks_for_target<'a>(
         TrackTarget::Audio => file.audio_tracks(),
         TrackTarget::Subtitle => file.subtitle_tracks(),
         TrackTarget::Attachment => file.tracks_of_type(voom_domain::media::TrackType::Attachment),
+        TrackTarget::Any => file.tracks.iter().collect(),
     }
 }
 

@@ -51,7 +51,7 @@ pub struct PhaseNode {
     pub depends_on: Vec<String>,
     pub run_if: Option<RunIfNode>,
     pub on_error: Option<String>,
-    pub operations: Vec<OperationNode>,
+    pub operations: Vec<SpannedOperation>,
     pub span: Span,
 }
 
@@ -60,6 +60,13 @@ pub struct PhaseNode {
 pub struct RunIfNode {
     pub phase: String,
     pub trigger: String, // "modified" or "completed"
+}
+
+/// An operation wrapped with its source span for precise error reporting.
+#[derive(Debug, Clone, Serialize)]
+pub struct SpannedOperation {
+    pub node: OperationNode,
+    pub span: Span,
 }
 
 /// An operation within a phase.
@@ -151,7 +158,9 @@ pub struct TrackQueryNode {
 #[derive(Debug, Clone, Serialize)]
 pub enum FilterNode {
     LangIn(Vec<String>),
+    LangCompare(CompareOp, String),
     CodecIn(Vec<String>),
+    CodecCompare(CompareOp, String),
     Channels(CompareOp, f64),
     Commentary,
     Forced,

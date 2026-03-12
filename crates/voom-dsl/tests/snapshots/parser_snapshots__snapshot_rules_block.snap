@@ -1,6 +1,5 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 144
 expression: ast
 ---
 name: rules
@@ -12,15 +11,21 @@ phases:
     run_if: ~
     on_error: ~
     operations:
-      - Rules:
-          mode: first
-          rules:
-            - name: multi-language
-              when:
-                condition: AudioIsMultiLanguage
-                then_actions:
-                  - Warn: Multiple audio languages
-                else_actions: []
+      - node:
+          Rules:
+            mode: first
+            rules:
+              - name: multi-language
+                when:
+                  condition: AudioIsMultiLanguage
+                  then_actions:
+                    - Warn: Multiple audio languages
+                  else_actions: []
+        span:
+          start: 54
+          end: 268
+          line: 3
+          col: 13
     span:
       start: 25
       end: 278

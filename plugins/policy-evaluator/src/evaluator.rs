@@ -723,6 +723,7 @@ fn tracks_for_target<'a>(file: &'a MediaFile, target: &TrackTarget) -> Vec<&'a T
         TrackTarget::Audio => file.audio_tracks(),
         TrackTarget::Subtitle => file.subtitle_tracks(),
         TrackTarget::Attachment => file.tracks_of_type(TrackType::Attachment),
+        TrackTarget::Any => file.tracks.iter().collect(),
     }
 }
 
@@ -732,6 +733,7 @@ fn target_str(target: &TrackTarget) -> &'static str {
         TrackTarget::Audio => "audio",
         TrackTarget::Subtitle => "subtitle",
         TrackTarget::Attachment => "attachment",
+        TrackTarget::Any => "track",
     }
 }
 

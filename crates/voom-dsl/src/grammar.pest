@@ -124,6 +124,7 @@ compare_op = { "==" | "!=" | "<=" | ">=" | "<" | ">" | "in" }
 list       = { "[" ~ (value ~ ("," ~ value)*)? ~ ","? ~ "]" }
 value      = { string | number | boolean | ident | list }
 boolean    = @{ ("true" | "false") ~ !(ASCII_ALPHANUMERIC | "_") }
-string     = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+string     = @{ "\"" ~ (escape_seq | (!("\"" | "\\") ~ ANY))* ~ "\"" }
+escape_seq = @{ "\\" ~ ("\"" | "\\") }
 number     = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ ASCII_ALPHA* }
 ident      = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
