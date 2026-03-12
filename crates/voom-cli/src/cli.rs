@@ -82,6 +82,10 @@ pub struct ScanArgs {
     /// Skip content hashing
     #[arg(long)]
     pub no_hash: bool,
+
+    /// Show full file table after scan
+    #[arg(long)]
+    pub table: bool,
 }
 
 // === Inspect ===

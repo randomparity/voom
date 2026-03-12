@@ -57,6 +57,7 @@ impl SqliteStore {
 
         let pool = Pool::builder()
             .max_size(pool_size)
+            .min_idle(Some(0))
             .build(manager)
             .map_err(|e| VoomError::Storage(format!("failed to create connection pool: {e}")))?;
 

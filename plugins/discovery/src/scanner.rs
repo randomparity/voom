@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -33,12 +33,57 @@ fn is_media_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Compute xxHash64 of a file's contents using streaming reads.
-/// Uses a fixed 256KB buffer to avoid loading large files into memory.
+/// Size threshold above which we switch to partial hashing.
+/// Files at or below this size are hashed in full.
+const PARTIAL_HASH_THRESHOLD: u64 = 2 * 1024 * 1024; // 2 MB
+
+/// Size of each chunk sampled for partial hashing.
+const HASH_CHUNK_SIZE: usize = 1024 * 1024; // 1 MB
+
+/// Compute xxHash64 of a file's contents.
+///
+/// Small files (≤ 2 MB) are hashed in full. Larger files use a partial
+/// hash strategy that samples the first, middle, and last 1 MB of the file
+/// combined with the file size. This keeps hashing fast for multi-GB video
+/// files while still reliably detecting duplicates and content changes.
 pub fn hash_file(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)?;
+    let file_size = file.metadata()?.len();
+
+    if file_size <= PARTIAL_HASH_THRESHOLD {
+        return hash_file_full(&mut file);
+    }
+
     let mut hasher = Xxh3::new();
-    let mut buf = [0u8; 256 * 1024]; // 256KB chunks
+    let mut buf = vec![0u8; HASH_CHUNK_SIZE];
+
+    // Include file size in the hash so files with identical heads/tails
+    // but different sizes produce different hashes.
+    hasher.update(&file_size.to_le_bytes());
+
+    // First chunk
+    let n = file.read(&mut buf)?;
+    hasher.update(&buf[..n]);
+
+    // Middle chunk
+    let mid = file_size / 2;
+    file.seek(SeekFrom::Start(mid))?;
+    let n = file.read(&mut buf)?;
+    hasher.update(&buf[..n]);
+
+    // Last chunk
+    let tail_offset = file_size.saturating_sub(HASH_CHUNK_SIZE as u64);
+    file.seek(SeekFrom::Start(tail_offset))?;
+    let n = file.read(&mut buf)?;
+    hasher.update(&buf[..n]);
+
+    Ok(format!("{:016x}", hasher.digest()))
+}
+
+/// Hash a small file by reading it in full.
+fn hash_file_full(file: &mut fs::File) -> Result<String> {
+    let mut hasher = Xxh3::new();
+    let mut buf = [0u8; 256 * 1024];
 
     loop {
         let n = file.read(&mut buf)?;
@@ -48,8 +93,7 @@ pub fn hash_file(path: &Path) -> Result<String> {
         hasher.update(&buf[..n]);
     }
 
-    let hash = hasher.digest();
-    Ok(format!("{hash:016x}"))
+    Ok(format!("{:016x}", hasher.digest()))
 }
 
 /// Scan a directory for media files.

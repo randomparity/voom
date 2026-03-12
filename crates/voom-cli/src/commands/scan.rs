@@ -68,16 +68,17 @@ pub async fn run(args: ScanArgs) -> Result<()> {
     let file_count = Arc::new(AtomicU64::new(0));
     let file_count_clone = file_count.clone();
     let start = Instant::now();
+    let hash_files = !args.no_hash;
 
     let options = voom_discovery::ScanOptions {
         root: path,
         recursive: args.recursive,
-        hash_files: !args.no_hash,
+        hash_files,
         workers: args.workers,
         on_progress: Some(Box::new(move |progress| {
             match progress {
                 voom_discovery::ScanProgress::Discovered { count, path } => {
-                    let max_name = max_filename_len(30); // "⠋ Discovering... N files found — "
+                    let max_name = max_filename_len(30);
                     let name = path
                         .file_name()
                         .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
@@ -102,13 +103,14 @@ pub async fn run(args: ScanArgs) -> Result<()> {
                         );
                     }
                     let eta = format_eta(&start, current, total);
-                    let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len());
+                    let prefix = if hash_files { "Hashing" } else { "Processing" };
+                    let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len() + prefix.len() + 3);
                     let name = path
                         .file_name()
                         .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
                         .unwrap_or_default();
                     pb_clone.set_position(current as u64);
-                    pb_clone.set_message(format!("{}{}", name, eta));
+                    pb_clone.set_message(format!("{} {}{}", prefix, name, eta));
                     file_count_clone.store(total as u64, Ordering::Relaxed);
                 }
             }
@@ -126,12 +128,34 @@ pub async fn run(args: ScanArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Publish discovery events through the event bus
-    for event in &events {
-        kernel.dispatch(Event::FileDiscovered(event.clone()));
+    // Show discovery/hashing summary
+    let discovery_elapsed = start.elapsed();
+    if hash_files {
+        let elapsed_ms = discovery_elapsed.as_millis();
+        let elapsed_str = if elapsed_ms < 1000 {
+            format!("{elapsed_ms}ms")
+        } else {
+            format!("{}", HumanDuration(discovery_elapsed))
+        };
+        println!(
+            "  {} {} files, hashed in {}",
+            "Discovered".dimmed(),
+            events.len(),
+            elapsed_str,
+        );
+    } else {
+        println!(
+            "  {} {} files (hashing skipped)",
+            "Discovered".dimmed(),
+            events.len(),
+        );
     }
 
     // Introspect each discovered file
+    // Note: FileDiscovered events are NOT dispatched through the kernel because
+    // the scan command drives introspection directly (for progress reporting).
+    // The ffprobe-introspector plugin also handles "file.discovered" events,
+    // which would cause every file to be introspected twice.
     let pb = ProgressBar::new(events.len() as u64);
     pb.set_style(
         ProgressStyle::with_template(
@@ -140,7 +164,7 @@ pub async fn run(args: ScanArgs) -> Result<()> {
         .unwrap()
         .progress_chars("#>-"),
     );
-    pb.set_message("Introspecting...");
+    pb.set_message("Probing...");
 
     let intro_start = Instant::now();
     let mut introspected = 0u64;
@@ -149,14 +173,14 @@ pub async fn run(args: ScanArgs) -> Result<()> {
 
     for (i, event) in events.iter().enumerate() {
         let eta = format_eta(&intro_start, i + 1, total as usize);
-        let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len());
+        let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len() + 9); // "Probing "
         let name = event
             .path
             .file_name()
             .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
             .unwrap_or_default();
 
-        pb.set_message(format!("{}{}", name, eta));
+        pb.set_message(format!("Probing {}{}", name, eta));
 
         let path = event.path.clone();
         let size = event.size;
@@ -200,12 +224,13 @@ pub async fn run(args: ScanArgs) -> Result<()> {
         HumanDuration(total_elapsed),
     );
 
-    // Show summary table
-    let results: Vec<_> = events
-        .iter()
-        .map(|e| (e.path.clone(), e.size, e.content_hash.clone()))
-        .collect();
-    output::format_scan_results(&results, crate::cli::OutputFormat::Table);
+    if args.table {
+        let results: Vec<_> = events
+            .iter()
+            .map(|e| (e.path.clone(), e.size, e.content_hash.clone()))
+            .collect();
+        output::format_scan_results(&results, crate::cli::OutputFormat::Table);
+    }
 
     Ok(())
 }

@@ -42,20 +42,21 @@ pub fn run_ffprobe(
             }
         })?;
 
-    let output = match child.wait_timeout(timeout) {
-        Ok(Some(_status)) => child
-            .wait_with_output()
-            .map_err(|e| VoomError::ToolExecution {
-                tool: "ffprobe".into(),
-                message: format!("failed to read output: {e}"),
-            })?,
+    // Drain stdout and stderr in background threads to prevent pipe buffer
+    // deadlock. Without this, ffprobe blocks writing to a full pipe while
+    // we block waiting for it to exit.
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
+    let stdout_handle = std::thread::spawn(move || std::io::read_to_string(stdout));
+    let stderr_handle = std::thread::spawn(move || std::io::read_to_string(stderr));
+
+    let timed_out = match child.wait_timeout(timeout) {
+        Ok(Some(_)) => false,
         Ok(None) => {
             child.kill().ok();
             child.wait().ok();
-            return Err(VoomError::ToolExecution {
-                tool: "ffprobe".into(),
-                message: format!("ffprobe timed out after {}s", timeout.as_secs()),
-            });
+            true
         }
         Err(e) => {
             return Err(VoomError::ToolExecution {
@@ -65,20 +66,53 @@ pub fn run_ffprobe(
         }
     };
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout_data = stdout_handle
+        .join()
+        .map_err(|_| VoomError::ToolExecution {
+            tool: "ffprobe".into(),
+            message: "stdout reader thread panicked".into(),
+        })?
+        .map_err(|e| VoomError::ToolExecution {
+            tool: "ffprobe".into(),
+            message: format!("failed to read stdout: {e}"),
+        })?;
+
+    let stderr_data = stderr_handle
+        .join()
+        .map_err(|_| VoomError::ToolExecution {
+            tool: "ffprobe".into(),
+            message: "stderr reader thread panicked".into(),
+        })?
+        .map_err(|e| VoomError::ToolExecution {
+            tool: "ffprobe".into(),
+            message: format!("failed to read stderr: {e}"),
+        })?;
+
+    if timed_out {
+        return Err(VoomError::ToolExecution {
+            tool: "ffprobe".into(),
+            message: format!("ffprobe timed out after {}s", timeout.as_secs()),
+        });
+    }
+
+    let status = child.wait().map_err(|e| VoomError::ToolExecution {
+        tool: "ffprobe".into(),
+        message: format!("failed to get exit status: {e}"),
+    })?;
+
+    if !status.success() {
         return Err(VoomError::ToolExecution {
             tool: "ffprobe".into(),
             message: format!(
                 "ffprobe exited with status {}: {}",
-                output.status,
-                stderr.trim()
+                status,
+                stderr_data.trim()
             ),
         });
     }
 
     let json: serde_json::Value =
-        serde_json::from_slice(&output.stdout).map_err(|e| VoomError::ToolExecution {
+        serde_json::from_str(&stdout_data).map_err(|e| VoomError::ToolExecution {
             tool: "ffprobe".into(),
             message: format!("failed to parse ffprobe JSON output: {e}"),
         })?;
