@@ -43,6 +43,7 @@ pub fn event_result_from_wasm(
         plugin_name,
         produced_events: events,
         data: json_data,
+        claimed: false,
     })
 }
 
@@ -187,6 +188,7 @@ mod tests {
                 path: PathBuf::from("/usr/bin/ffprobe"),
             })],
             data: Some(serde_json::json!({"status": "ok"})),
+            claimed: false,
         };
 
         let (name, produced, data) = event_result_to_wasm(&result).unwrap();

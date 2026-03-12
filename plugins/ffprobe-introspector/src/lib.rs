@@ -98,6 +98,7 @@ impl Plugin for FfprobeIntrospectorPlugin {
                         plugin_name: self.name().to_string(),
                         produced_events: vec![Event::FileIntrospected(introspected)],
                         data: None,
+                        claimed: false,
                     }))
                 }
                 Err(err) => {

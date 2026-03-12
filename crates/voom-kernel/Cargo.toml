@@ -26,3 +26,5 @@ wasm = ["dep:wasmtime"]
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 tempfile = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

@@ -6,6 +6,7 @@ pub mod manifest;
 pub mod registry;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
@@ -40,6 +41,7 @@ pub struct PluginContext {
 pub struct Kernel {
     pub registry: registry::PluginRegistry,
     pub bus: bus::EventBus,
+    shutdown_called: AtomicBool,
 }
 
 impl Kernel {
@@ -47,6 +49,7 @@ impl Kernel {
         Self {
             registry: registry::PluginRegistry::new(),
             bus: bus::EventBus::new(),
+            shutdown_called: AtomicBool::new(false),
         }
     }
 
@@ -58,14 +61,174 @@ impl Kernel {
         tracing::info!(plugin = %name, "plugin registered");
     }
 
+    /// Initialize a plugin via `init()`, then register it with the given priority.
+    ///
+    /// This is the safe-by-default path that ensures every plugin is initialized
+    /// before being registered. Prefer this over manually calling `init` + `register_plugin`.
+    pub fn init_and_register(
+        &mut self,
+        mut plugin: Box<dyn Plugin>,
+        priority: i32,
+        ctx: &PluginContext,
+    ) -> Result<()> {
+        let name = plugin.name().to_string();
+        plugin
+            .init(ctx)
+            .map_err(|e| voom_domain::errors::VoomError::Plugin {
+                plugin: name.clone(),
+                message: format!("init failed: {e}"),
+            })?;
+        let arc: Arc<dyn Plugin> = Arc::from(plugin);
+        self.registry.register(arc.clone());
+        self.bus.subscribe_plugin(arc, priority);
+        tracing::info!(plugin = %name, "plugin initialized and registered");
+        Ok(())
+    }
+
     /// Dispatch an event through the bus to all matching subscribers.
     pub fn dispatch(&self, event: Event) -> Vec<EventResult> {
         self.bus.publish(event)
+    }
+
+    /// Gracefully shut down all plugins in reverse priority order.
+    ///
+    /// Safe to call multiple times — only the first call runs shutdown logic.
+    pub fn shutdown(&self) {
+        if self
+            .shutdown_called
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+
+        let subscribers = self.bus.subscribers_ordered();
+        for (name, plugin) in subscribers.iter().rev() {
+            if let Err(e) = plugin.shutdown() {
+                tracing::error!(plugin = %name, error = %e, "plugin shutdown failed");
+            } else {
+                tracing::debug!(plugin = %name, "plugin shut down");
+            }
+        }
+        tracing::info!("kernel shutdown complete");
+    }
+}
+
+impl Drop for Kernel {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
 impl Default for Kernel {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    struct LifecyclePlugin {
+        init_called: Arc<AtomicBool>,
+        shutdown_called: Arc<AtomicBool>,
+    }
+
+    impl Plugin for LifecyclePlugin {
+        fn name(&self) -> &str {
+            "lifecycle-test"
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+        fn capabilities(&self) -> &[Capability] {
+            &[]
+        }
+        fn handles(&self, _: &str) -> bool {
+            false
+        }
+        fn on_event(&self, _: &Event) -> Result<Option<EventResult>> {
+            Ok(None)
+        }
+        fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
+            self.init_called.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        fn shutdown(&self) -> Result<()> {
+            self.shutdown_called.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_init_and_register_calls_init() {
+        let init_called = Arc::new(AtomicBool::new(false));
+        let shutdown_called = Arc::new(AtomicBool::new(false));
+
+        let plugin = Box::new(LifecyclePlugin {
+            init_called: init_called.clone(),
+            shutdown_called: shutdown_called.clone(),
+        });
+
+        let ctx = PluginContext {
+            config: serde_json::json!({}),
+            data_dir: PathBuf::from("/tmp"),
+        };
+
+        let mut kernel = Kernel::new();
+        kernel.init_and_register(plugin, 50, &ctx).unwrap();
+
+        assert!(init_called.load(Ordering::SeqCst));
+        assert_eq!(kernel.registry.len(), 1);
+        assert_eq!(kernel.bus.subscriber_count(), 1);
+    }
+
+    #[test]
+    fn test_drop_calls_shutdown() {
+        let shutdown_called = Arc::new(AtomicBool::new(false));
+
+        {
+            let plugin = Box::new(LifecyclePlugin {
+                init_called: Arc::new(AtomicBool::new(false)),
+                shutdown_called: shutdown_called.clone(),
+            });
+
+            let ctx = PluginContext {
+                config: serde_json::json!({}),
+                data_dir: PathBuf::from("/tmp"),
+            };
+
+            let mut kernel = Kernel::new();
+            kernel.init_and_register(plugin, 50, &ctx).unwrap();
+            // kernel dropped here
+        }
+
+        assert!(shutdown_called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_double_shutdown_is_safe() {
+        let shutdown_called = Arc::new(AtomicBool::new(false));
+
+        let plugin = Box::new(LifecyclePlugin {
+            init_called: Arc::new(AtomicBool::new(false)),
+            shutdown_called: shutdown_called.clone(),
+        });
+
+        let ctx = PluginContext {
+            config: serde_json::json!({}),
+            data_dir: PathBuf::from("/tmp"),
+        };
+
+        let mut kernel = Kernel::new();
+        kernel.init_and_register(plugin, 50, &ctx).unwrap();
+
+        kernel.shutdown();
+        assert!(shutdown_called.load(Ordering::SeqCst));
+
+        // Second call should be a no-op (no panic).
+        kernel.shutdown();
     }
 }

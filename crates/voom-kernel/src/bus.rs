@@ -79,7 +79,12 @@ impl EventBus {
             match handler_result {
                 Ok(Ok(Some(result))) => {
                     tracing::debug!(plugin = %name, event = %event_type, "event handled");
+                    let is_claimed = result.claimed;
                     results.push(result);
+                    if is_claimed {
+                        tracing::debug!(event = %event_type, plugin = %name, "event claimed");
+                        break;
+                    }
                 }
                 Ok(Ok(None)) => {
                     tracing::debug!(plugin = %name, event = %event_type, "event acknowledged (no result)");
@@ -94,6 +99,7 @@ impl EventBus {
                             error: e.to_string(),
                         })],
                         data: None,
+                        claimed: false,
                     });
                 }
                 Err(_) => {
@@ -106,6 +112,7 @@ impl EventBus {
                             error: "plugin panicked".into(),
                         })],
                         data: None,
+                        claimed: false,
                     });
                 }
             }
@@ -137,6 +144,14 @@ impl EventBus {
     /// Returns the number of subscribers.
     pub fn subscriber_count(&self) -> usize {
         self.subscribers.read().len()
+    }
+
+    /// Returns all subscribers in priority order (lower priority values first).
+    pub fn subscribers_ordered(&self) -> Vec<(String, Arc<dyn Plugin>)> {
+        let subs = self.subscribers.read();
+        subs.iter()
+            .map(|s| (s.plugin_name.clone(), s.handler.clone()))
+            .collect()
     }
 }
 
@@ -185,6 +200,7 @@ mod tests {
                 plugin_name: self.name.clone(),
                 produced_events: vec![],
                 data: None,
+                claimed: false,
             }))
         }
     }
@@ -403,6 +419,7 @@ mod tests {
                 plugin_name: self.name.clone(),
                 produced_events: self.produced_event.iter().cloned().collect(),
                 data: None,
+                claimed: false,
             }))
         }
     }
@@ -472,6 +489,7 @@ mod tests {
                         path: "/usr/bin/ffprobe".into(),
                     })],
                     data: None,
+                    claimed: false,
                 }))
             }
         }
@@ -495,5 +513,131 @@ mod tests {
         let count = plugin_ref.call_count.load(Ordering::SeqCst);
         assert_eq!(count, (super::MAX_CASCADE_DEPTH as usize) + 1);
         assert_eq!(results.len(), (super::MAX_CASCADE_DEPTH as usize) + 1);
+    }
+
+    // --- Claimed event tests ---
+
+    /// Plugin that claims the event (sets `claimed: true`).
+    struct ClaimingPlugin {
+        name: String,
+        handled_types: Vec<String>,
+    }
+
+    impl Plugin for ClaimingPlugin {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+        fn capabilities(&self) -> &[Capability] {
+            &[]
+        }
+        fn handles(&self, event_type: &str) -> bool {
+            self.handled_types.iter().any(|t| t == event_type)
+        }
+        fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
+            Ok(Some(EventResult {
+                plugin_name: self.name.clone(),
+                produced_events: vec![],
+                data: None,
+                claimed: true,
+            }))
+        }
+    }
+
+    #[test]
+    fn test_claimed_event_stops_dispatch() {
+        let bus = EventBus::new();
+
+        let claimer = Arc::new(ClaimingPlugin {
+            name: "claimer".into(),
+            handled_types: vec!["file.discovered".into()],
+        });
+        let second = Arc::new(TestPlugin::new("second", &["file.discovered"]));
+
+        bus.subscribe_plugin(claimer, 0);
+        bus.subscribe_plugin(second, 10);
+
+        let event = Event::FileDiscovered(FileDiscoveredEvent {
+            path: "/test.mkv".into(),
+            size: 1024,
+            content_hash: "abc".into(),
+        });
+
+        let results = bus.publish(event);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].plugin_name, "claimer");
+        assert!(results[0].claimed);
+    }
+
+    #[test]
+    fn test_unclaimed_event_continues_dispatch() {
+        let bus = EventBus::new();
+
+        let first = Arc::new(TestPlugin::new("first", &["file.discovered"]));
+        let second = Arc::new(TestPlugin::new("second", &["file.discovered"]));
+
+        bus.subscribe_plugin(first, 0);
+        bus.subscribe_plugin(second, 10);
+
+        let event = Event::FileDiscovered(FileDiscoveredEvent {
+            path: "/test.mkv".into(),
+            size: 1024,
+            content_hash: "abc".into(),
+        });
+
+        let results = bus.publish(event);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].plugin_name, "first");
+        assert_eq!(results[1].plugin_name, "second");
+    }
+
+    #[test]
+    fn test_claimed_none_continues() {
+        /// Plugin that declines the event (returns None).
+        struct DecliningPlugin;
+
+        impl Plugin for DecliningPlugin {
+            fn name(&self) -> &str {
+                "decliner"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[]
+            }
+            fn handles(&self, event_type: &str) -> bool {
+                event_type == "file.discovered"
+            }
+            fn on_event(
+                &self,
+                _event: &Event,
+            ) -> voom_domain::errors::Result<Option<EventResult>> {
+                Ok(None)
+            }
+        }
+
+        let bus = EventBus::new();
+
+        let decliner = Arc::new(DecliningPlugin);
+        let claimer = Arc::new(ClaimingPlugin {
+            name: "claimer".into(),
+            handled_types: vec!["file.discovered".into()],
+        });
+
+        bus.subscribe_plugin(decliner, 0);
+        bus.subscribe_plugin(claimer, 10);
+
+        let event = Event::FileDiscovered(FileDiscoveredEvent {
+            path: "/test.mkv".into(),
+            size: 1024,
+            content_hash: "abc".into(),
+        });
+
+        let results = bus.publish(event);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].plugin_name, "claimer");
     }
 }

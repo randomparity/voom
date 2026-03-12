@@ -195,6 +195,7 @@ impl FfmpegExecutorPlugin {
                     plugin_name: "ffmpeg-executor".into(),
                     produced_events: vec![executing_event, completed_event],
                     data: Some(serde_json::to_value(&results).unwrap_or_default()),
+                    claimed: true,
                 }))
             }
             Err(e) => {
@@ -211,6 +212,7 @@ impl FfmpegExecutorPlugin {
                     plugin_name: "ffmpeg-executor".into(),
                     produced_events: vec![executing_event, failed_event],
                     data: None,
+                    claimed: true,
                 }))
             }
         }
@@ -243,7 +245,7 @@ impl Plugin for FfmpegExecutorPlugin {
     }
 
     fn version(&self) -> &str {
-        "0.1.0"
+        env!("CARGO_PKG_VERSION")
     }
 
     fn capabilities(&self) -> &[Capability] {
@@ -309,7 +311,7 @@ mod tests {
     fn test_plugin_metadata() {
         let plugin = FfmpegExecutorPlugin::new();
         assert_eq!(plugin.name(), "ffmpeg-executor");
-        assert_eq!(plugin.version(), "0.1.0");
+        assert_eq!(plugin.version(), env!("CARGO_PKG_VERSION"));
 
         let caps = plugin.capabilities();
         assert_eq!(caps.len(), 1);

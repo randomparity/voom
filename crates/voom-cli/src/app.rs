@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use voom_kernel::{Kernel, Plugin};
+use voom_kernel::Kernel;
 
 /// Application configuration loaded from TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,73 +64,102 @@ pub fn load_config() -> Result<AppConfig> {
 
 /// Bootstrap a kernel with all native plugins registered.
 ///
+/// All plugins go through `init_and_register` for consistent lifecycle management.
+///
 // Plugin priority scheme:
 // 100 = storage (must initialize first to be available for other plugins)
-// 50  = standard plugins (discovery, introspection, evaluation, etc.)
+// 90  = tool detector
+// 80  = discovery
+// 70  = introspector (ffprobe)
+// 60  = policy evaluator
+// 50  = phase orchestrator
+// 39  = mkvtoolnix executor (first shot at MKV plans, claims on handle)
+// 40  = ffmpeg executor (fallback for all plans, claims on handle)
+// 30  = backup manager
+// 20  = job manager
 // 10  = web server (last, depends on all other plugins being registered)
-// Tied-priority executors use can_handle() capability matching to avoid double-execution.
 pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
     let mut kernel = Kernel::new();
     let data_dir = &config.data_dir;
 
-    // Storage plugin (highest priority — stores everything)
-    let mut store = voom_sqlite_store::SqliteStorePlugin::new();
-    let store_ctx = voom_kernel::PluginContext {
+    let ctx = voom_kernel::PluginContext {
         config: serde_json::json!({}),
         data_dir: data_dir.clone(),
     };
-    store
-        .init(&store_ctx)
+
+    // Storage plugin (highest priority — stores everything)
+    kernel
+        .init_and_register(Box::new(voom_sqlite_store::SqliteStorePlugin::new()), 100, &ctx)
         .map_err(|e| anyhow::anyhow!("Failed to initialize storage: {e}"))?;
-    kernel.register_plugin(Arc::new(store), 100);
 
     // Tool detector
-    let mut detector = voom_tool_detector::ToolDetectorPlugin::new();
-    detector.detect_all();
-    kernel.register_plugin(Arc::new(detector), 90);
+    kernel
+        .init_and_register(Box::new(voom_tool_detector::ToolDetectorPlugin::new()), 90, &ctx)
+        .map_err(|e| anyhow::anyhow!("Failed to initialize tool detector: {e}"))?;
 
     // Discovery
-    kernel.register_plugin(Arc::new(voom_discovery::DiscoveryPlugin::new()), 80);
+    kernel
+        .init_and_register(Box::new(voom_discovery::DiscoveryPlugin::new()), 80, &ctx)
+        .map_err(|e| anyhow::anyhow!("Failed to initialize discovery: {e}"))?;
 
-    // Introspector
-    kernel.register_plugin(
-        Arc::new(voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new()),
-        70,
-    );
+    // Introspector (reads ffprobe_path from ctx.config during init)
+    kernel
+        .init_and_register(
+            Box::new(voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new()),
+            70,
+            &ctx,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to initialize introspector: {e}"))?;
 
     // Policy evaluator
-    kernel.register_plugin(
-        Arc::new(voom_policy_evaluator::PolicyEvaluatorPlugin::new()),
-        60,
-    );
+    kernel
+        .init_and_register(
+            Box::new(voom_policy_evaluator::PolicyEvaluatorPlugin::new()),
+            60,
+            &ctx,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to initialize policy evaluator: {e}"))?;
 
     // Phase orchestrator
-    kernel.register_plugin(
-        Arc::new(voom_phase_orchestrator::PhaseOrchestratorPlugin::new()),
-        50,
-    );
+    kernel
+        .init_and_register(
+            Box::new(voom_phase_orchestrator::PhaseOrchestratorPlugin::new()),
+            50,
+            &ctx,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to initialize phase orchestrator: {e}"))?;
 
-    // Executors
-    kernel.register_plugin(
-        Arc::new(voom_mkvtoolnix_executor::MkvtoolnixExecutorPlugin::new()),
-        40,
-    );
-    kernel.register_plugin(
-        Arc::new(voom_ffmpeg_executor::FfmpegExecutorPlugin::new()),
-        40,
-    );
+    // Executors — mkvtoolnix at 39 gets first shot at MKV plans
+    kernel
+        .init_and_register(
+            Box::new(voom_mkvtoolnix_executor::MkvtoolnixExecutorPlugin::new()),
+            39,
+            &ctx,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to initialize mkvtoolnix executor: {e}"))?;
+
+    kernel
+        .init_and_register(
+            Box::new(voom_ffmpeg_executor::FfmpegExecutorPlugin::new()),
+            40,
+            &ctx,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to initialize ffmpeg executor: {e}"))?;
 
     // Backup manager
-    kernel.register_plugin(
-        Arc::new(voom_backup_manager::BackupManagerPlugin::new()),
-        30,
-    );
+    kernel
+        .init_and_register(Box::new(voom_backup_manager::BackupManagerPlugin::new()), 30, &ctx)
+        .map_err(|e| anyhow::anyhow!("Failed to initialize backup manager: {e}"))?;
 
     // Job manager
-    kernel.register_plugin(Arc::new(voom_job_manager::JobManagerPlugin::new()), 20);
+    kernel
+        .init_and_register(Box::new(voom_job_manager::JobManagerPlugin::new()), 20, &ctx)
+        .map_err(|e| anyhow::anyhow!("Failed to initialize job manager: {e}"))?;
 
     // Web server
-    kernel.register_plugin(Arc::new(voom_web_server::WebServerPlugin::new()), 10);
+    kernel
+        .init_and_register(Box::new(voom_web_server::WebServerPlugin::new()), 10, &ctx)
+        .map_err(|e| anyhow::anyhow!("Failed to initialize web server: {e}"))?;
 
     Ok(kernel)
 }

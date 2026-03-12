@@ -3089,6 +3089,7 @@ name = "voom-kernel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "parking_lot",
  "rmp-serde",
  "serde",
@@ -3099,6 +3100,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "voom-domain",
  "voom-wit",
  "wait-timeout",

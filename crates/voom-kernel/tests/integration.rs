@@ -34,6 +34,7 @@ impl Plugin for DiscoveryLogger {
                     "logged_path": discovered.path.display().to_string(),
                     "size": discovered.size,
                 })),
+                claimed: false,
             }))
         } else {
             Ok(None)
@@ -73,6 +74,7 @@ impl Plugin for MockIntrospector {
                 plugin_name: "mock-introspector".to_string(),
                 produced_events: vec![introspected],
                 data: None,
+                claimed: false,
             }))
         } else {
             Ok(None)
@@ -107,6 +109,7 @@ impl Plugin for MockExecutor {
             plugin_name: "mock-mkvtoolnix".to_string(),
             produced_events: vec![],
             data: Some(serde_json::json!({"executed": true})),
+            claimed: false,
         }))
     }
 }
@@ -213,4 +216,187 @@ fn test_event_cascading() {
     // Dispatch the produced event (nothing handles file.introspected yet).
     let cascade_results = kernel.dispatch(produced[0].clone());
     assert!(cascade_results.is_empty());
+}
+
+// --- Executor double-dispatch tests ---
+
+/// Mock MKV-only executor that claims events it handles.
+struct MockMkvExecutor;
+
+impl Plugin for MockMkvExecutor {
+    fn name(&self) -> &str {
+        "mock-mkv-executor"
+    }
+    fn version(&self) -> &str {
+        "0.1.0"
+    }
+    fn capabilities(&self) -> &[Capability] {
+        &[]
+    }
+    fn handles(&self, event_type: &str) -> bool {
+        event_type == "plan.created"
+    }
+    fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
+        if let Event::PlanCreated(plan_event) = event {
+            let is_mkv = plan_event
+                .plan
+                .file
+                .container
+                == voom_domain::media::Container::Mkv;
+
+            let has_transcode = plan_event.plan.actions.iter().any(|a| {
+                matches!(
+                    a.operation,
+                    voom_domain::plan::OperationType::TranscodeVideo
+                        | voom_domain::plan::OperationType::TranscodeAudio
+                )
+            });
+
+            // Handle MKV files with non-transcode operations only
+            if is_mkv && !has_transcode {
+                return Ok(Some(EventResult {
+                    plugin_name: "mock-mkv-executor".into(),
+                    produced_events: vec![],
+                    data: Some(serde_json::json!({"handler": "mkvtoolnix"})),
+                    claimed: true,
+                }));
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// Mock FFmpeg executor that handles all plans and claims them.
+struct MockFfmpegExecutor;
+
+impl Plugin for MockFfmpegExecutor {
+    fn name(&self) -> &str {
+        "mock-ffmpeg-executor"
+    }
+    fn version(&self) -> &str {
+        "0.1.0"
+    }
+    fn capabilities(&self) -> &[Capability] {
+        &[]
+    }
+    fn handles(&self, event_type: &str) -> bool {
+        event_type == "plan.created"
+    }
+    fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
+        if let Event::PlanCreated(_) = event {
+            Ok(Some(EventResult {
+                plugin_name: "mock-ffmpeg-executor".into(),
+                produced_events: vec![],
+                data: Some(serde_json::json!({"handler": "ffmpeg"})),
+                claimed: true,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+fn make_plan(
+    container: voom_domain::media::Container,
+    actions: Vec<voom_domain::plan::PlannedAction>,
+) -> voom_domain::plan::Plan {
+    use voom_domain::media::MediaFile;
+    use voom_domain::plan::Plan;
+    let mut file = MediaFile::new(std::path::PathBuf::from("/media/test.mkv"));
+    file.container = container;
+    Plan {
+        id: uuid::Uuid::new_v4(),
+        file,
+        policy_name: "test".into(),
+        phase_name: "normalize".into(),
+        actions,
+        warnings: vec![],
+        skip_reason: None,
+        policy_hash: None,
+        evaluated_at: chrono::Utc::now(),
+    }
+}
+
+#[test]
+fn test_executor_claimed_mkv_metadata_goes_to_mkvtoolnix() {
+    use voom_domain::plan::{OperationType, PlannedAction};
+
+    let mut kernel = Kernel::new();
+
+    // MKV executor at priority 39, FFmpeg at 40
+    kernel.register_plugin(Arc::new(MockMkvExecutor), 39);
+    kernel.register_plugin(Arc::new(MockFfmpegExecutor), 40);
+
+    // MKV file with metadata-only actions
+    let plan = make_plan(
+        voom_domain::media::Container::Mkv,
+        vec![PlannedAction {
+            operation: OperationType::SetDefault,
+            track_index: Some(1),
+            parameters: serde_json::json!({}),
+            description: "Set default".into(),
+        }],
+    );
+
+    let event = Event::PlanCreated(PlanCreatedEvent { plan });
+    let results = kernel.dispatch(event);
+
+    // Only mkvtoolnix should handle (claims the event)
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].plugin_name, "mock-mkv-executor");
+    assert!(results[0].claimed);
+}
+
+#[test]
+fn test_executor_claimed_mp4_goes_to_ffmpeg() {
+    use voom_domain::plan::{OperationType, PlannedAction};
+
+    let mut kernel = Kernel::new();
+
+    kernel.register_plugin(Arc::new(MockMkvExecutor), 39);
+    kernel.register_plugin(Arc::new(MockFfmpegExecutor), 40);
+
+    // MP4 file — mkvtoolnix declines, ffmpeg handles
+    let plan = make_plan(
+        voom_domain::media::Container::Mp4,
+        vec![PlannedAction {
+            operation: OperationType::TranscodeVideo,
+            track_index: Some(0),
+            parameters: serde_json::json!({"codec": "hevc"}),
+            description: "Transcode".into(),
+        }],
+    );
+
+    let event = Event::PlanCreated(PlanCreatedEvent { plan });
+    let results = kernel.dispatch(event);
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].plugin_name, "mock-ffmpeg-executor");
+}
+
+#[test]
+fn test_executor_mkv_transcode_falls_through_to_ffmpeg() {
+    use voom_domain::plan::{OperationType, PlannedAction};
+
+    let mut kernel = Kernel::new();
+
+    kernel.register_plugin(Arc::new(MockMkvExecutor), 39);
+    kernel.register_plugin(Arc::new(MockFfmpegExecutor), 40);
+
+    // MKV file with transcode — mkvtoolnix declines, ffmpeg handles
+    let plan = make_plan(
+        voom_domain::media::Container::Mkv,
+        vec![PlannedAction {
+            operation: OperationType::TranscodeVideo,
+            track_index: Some(0),
+            parameters: serde_json::json!({"codec": "h264"}),
+            description: "Transcode to H.264".into(),
+        }],
+    );
+
+    let event = Event::PlanCreated(PlanCreatedEvent { plan });
+    let results = kernel.dispatch(event);
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].plugin_name, "mock-ffmpeg-executor");
 }

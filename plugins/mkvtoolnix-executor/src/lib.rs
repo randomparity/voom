@@ -239,6 +239,7 @@ impl Plugin for MkvtoolnixExecutorPlugin {
                             plugin_name: self.name().to_string(),
                             produced_events: vec![executing_event, completed_event],
                             data: Some(serde_json::to_value(&results).unwrap_or_default()),
+                            claimed: true,
                         }))
                     }
                     Err(e) => {
@@ -255,6 +256,7 @@ impl Plugin for MkvtoolnixExecutorPlugin {
                             plugin_name: self.name().to_string(),
                             produced_events: vec![executing_event, failed_event],
                             data: None,
+                            claimed: true,
                         }))
                     }
                 }

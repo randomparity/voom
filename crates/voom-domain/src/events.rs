@@ -56,6 +56,10 @@ pub struct EventResult {
     pub plugin_name: String,
     pub produced_events: Vec<Event>,
     pub data: Option<serde_json::Value>,
+    /// When `true`, the event bus stops dispatching this event to lower-priority
+    /// handlers. Produced events from the claiming result still cascade normally.
+    #[serde(default)]
+    pub claimed: bool,
 }
 
 // --- Event payload structs ---

@@ -462,6 +462,7 @@ mod tests {
                 plugin_name: self.name.clone(),
                 produced_events: vec![],
                 data: Some(serde_json::json!({"loaded": true})),
+                claimed: false,
             }))
         }
     }
