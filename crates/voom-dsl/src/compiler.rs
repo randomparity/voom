@@ -406,8 +406,7 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
                 .iter()
                 .map(|(kind, value)| CompiledDefault {
                     target: parse_track_target(kind),
-                    strategy: parse_default_strategy(value)
-                        .unwrap_or(DefaultStrategy::None),
+                    strategy: parse_default_strategy(value).unwrap_or(DefaultStrategy::None),
                 })
                 .collect();
             Ok(CompiledOperation::SetDefaults(defaults))

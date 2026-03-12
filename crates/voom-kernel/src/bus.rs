@@ -113,7 +113,11 @@ impl EventBus {
                 }
                 Err(_) => {
                     tracing::error!(plugin = %name, event = %event_type, "plugin panicked during event dispatch");
-                    results.push(make_error_result(name, &event_type, "plugin panicked".into()));
+                    results.push(make_error_result(
+                        name,
+                        &event_type,
+                        "plugin panicked".into(),
+                    ));
                 }
             }
         }
@@ -611,10 +615,7 @@ mod tests {
             fn handles(&self, event_type: &str) -> bool {
                 event_type == "file.discovered"
             }
-            fn on_event(
-                &self,
-                _event: &Event,
-            ) -> voom_domain::errors::Result<Option<EventResult>> {
+            fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
                 Ok(None)
             }
         }

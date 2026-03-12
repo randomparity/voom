@@ -2,6 +2,10 @@ use std::sync::Arc;
 
 use crate::Plugin;
 
+/// WIT result type for HTTP responses crossing the WASM boundary.
+#[cfg(feature = "wasm")]
+type WitHttpResult = Result<(u16, Vec<(String, String)>, Vec<u8>), String>;
+
 /// Loads native plugins (compiled Rust trait objects).
 pub struct NativePluginLoader;
 
@@ -144,6 +148,7 @@ pub mod wasm {
                     store,
                     component,
                     linker,
+                    instance: None,
                 }),
             }))
         }
@@ -177,11 +182,12 @@ pub mod wasm {
     }
 
     /// Internal state for a loaded WASM plugin instance.
-    #[allow(dead_code)]
     struct WasmPluginInner {
         store: wasmtime::Store<HostState>,
         component: wasmtime::component::Component,
         linker: wasmtime::component::Linker<HostState>,
+        /// Lazily instantiated component instance.
+        instance: Option<wasmtime::component::Instance>,
     }
 
     /// Maximum size for WASM event payloads (16 MiB).
@@ -233,11 +239,11 @@ pub mod wasm {
                 )));
             }
 
-            let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
             // Try to find and call the on-event export.
-            // The component may not be instantiated yet (lazy instantiation).
-            match call_on_event(&inner, &event_type, &payload) {
+            // The component is lazily instantiated on first call.
+            match call_on_event(&mut inner, &event_type, &payload) {
                 Ok(Some((plugin_name, produced, data))) => {
                     let result = voom_wit::event_result_from_wasm(plugin_name, produced, data)
                         .map_err(|e| voom_domain::errors::VoomError::Wasm(e.to_string()))?;
@@ -261,26 +267,166 @@ pub mod wasm {
 
     /// Call the on-event export of a WASM component.
     ///
-    /// This is a placeholder that returns None until full component instantiation
-    /// is wired up. The actual implementation will use the component's typed
-    /// function exports via wasmtime::component::TypedFunc.
+    /// Lazily instantiates the component on first call, then invokes the
+    /// `on-event` function from the `voom:plugin/plugin` interface.
+    ///
+    /// The WIT signature is:
+    ///   on-event: func(event: event-data) -> option<event-result>
+    /// where event-data is { event-type: string, payload: list<u8> }
+    /// and event-result is { plugin-name: string, produced-events: list<event-data>, data: option<list<u8>> }
     fn call_on_event(
-        _inner: &WasmPluginInner,
-        _event_type: &str,
-        _payload: &[u8],
-    ) -> Result<Option<(String, Vec<(String, Vec<u8>)>, Option<Vec<u8>>)>, anyhow::Error> {
-        // TODO: Instantiate the component (lazily) and call its on-event export.
-        // This requires the WASM component to implement the voom:plugin/plugin interface.
-        //
-        // The flow:
-        // 1. linker.instantiate(&mut store, &component) -> Instance
-        // 2. instance.get_typed_func::<(EventData,), (Option<EventResult>,)>("on-event")
-        // 3. func.call(&mut store, (event_data,))
-        // 4. Convert result back to domain types
-        //
-        // For now, return None (no-op) since we can't instantiate without a real
-        // WASM component binary to test against.
-        Ok(None)
+        inner: &mut WasmPluginInner,
+        event_type: &str,
+        payload: &[u8],
+    ) -> Result<Option<voom_wit::WasmEventResult>, anyhow::Error> {
+        use wasmtime::component::Val;
+
+        // Lazily instantiate the component.
+        if inner.instance.is_none() {
+            let instance = inner
+                .linker
+                .instantiate(&mut inner.store, &inner.component)?;
+            inner.instance = Some(instance);
+        }
+
+        let instance = inner.instance.as_ref().unwrap();
+
+        // Look up the on-event export from the plugin interface.
+        // The fully-qualified export name depends on whether the component uses
+        // a default export or a named interface export.
+        let on_event = instance
+            .get_export(&mut inner.store, None, "voom:plugin/plugin@0.1.0")
+            .and_then(|idx| instance.get_export(&mut inner.store, Some(&idx), "on-event"))
+            .and_then(|idx| instance.get_func(&mut inner.store, idx))
+            .or_else(|| {
+                // Fallback: try as a top-level export (for simpler components).
+                let idx = instance.get_export(&mut inner.store, None, "on-event")?;
+                instance.get_func(&mut inner.store, idx)
+            });
+
+        let on_event = match on_event {
+            Some(func) => func,
+            None => {
+                tracing::warn!("WASM component has no 'on-event' export");
+                return Ok(None);
+            }
+        };
+
+        // Build the event-data record as a Val::Record.
+        let event_data = Val::Record(vec![
+            ("event-type".into(), Val::String(event_type.into())),
+            (
+                "payload".into(),
+                Val::List(payload.iter().map(|b| Val::U8(*b)).collect()),
+            ),
+        ]);
+
+        // Prepare the result slot. The return type is option<event-result>.
+        let mut results = vec![Val::Option(None)];
+
+        on_event.call(&mut inner.store, &[event_data], &mut results)?;
+        on_event.post_return(&mut inner.store)?;
+
+        // Parse the option<event-result> return value.
+        match &results[0] {
+            Val::Option(None) => Ok(None),
+            Val::Option(Some(boxed_val)) => parse_event_result(boxed_val).map(Some),
+            other => anyhow::bail!(
+                "unexpected return type from on-event: expected Option, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+
+    /// Parse a Val representing an event-result record into the tuple form
+    /// expected by `event_result_from_wasm`.
+    fn parse_event_result(
+        val: &wasmtime::component::Val,
+    ) -> Result<voom_wit::WasmEventResult, anyhow::Error> {
+        use wasmtime::component::Val;
+
+        let fields = match val {
+            Val::Record(fields) => fields,
+            other => anyhow::bail!(
+                "expected Record for event-result, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        };
+
+        let mut plugin_name = String::new();
+        let mut produced_events = Vec::new();
+        let mut data: Option<Vec<u8>> = None;
+
+        for (name, field_val) in fields {
+            match name.as_str() {
+                "plugin-name" => {
+                    if let Val::String(s) = field_val {
+                        plugin_name = s.to_string();
+                    }
+                }
+                "produced-events" => {
+                    if let Val::List(items) = field_val {
+                        for item in items {
+                            if let Val::Record(event_fields) = item {
+                                let mut evt_type = String::new();
+                                let mut evt_payload = Vec::new();
+                                for (ename, eval) in event_fields {
+                                    match ename.as_str() {
+                                        "event-type" => {
+                                            if let Val::String(s) = eval {
+                                                evt_type = s.to_string();
+                                            }
+                                        }
+                                        "payload" => {
+                                            if let Val::List(bytes) = eval {
+                                                evt_payload = bytes
+                                                    .iter()
+                                                    .filter_map(|v| {
+                                                        if let Val::U8(b) = v {
+                                                            Some(*b)
+                                                        } else {
+                                                            None
+                                                        }
+                                                    })
+                                                    .collect();
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                produced_events.push((evt_type, evt_payload));
+                            }
+                        }
+                    }
+                }
+                "data" => match field_val {
+                    Val::Option(Some(boxed)) => {
+                        if let Val::List(bytes) = boxed.as_ref() {
+                            data =
+                                Some(
+                                    bytes
+                                        .iter()
+                                        .filter_map(|v| {
+                                            if let Val::U8(b) = v {
+                                                Some(*b)
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect(),
+                                );
+                        }
+                    }
+                    Val::Option(None) => {
+                        data = None;
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+
+        Ok((plugin_name, produced_events, data))
     }
 
     /// Register host function imports in the linker.
@@ -349,8 +495,7 @@ pub mod wasm {
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (url, headers): (String, Vec<(String, String)>)| {
                 let result = ctx.data().http_get(&url, &headers);
-                let wit_result: Result<(u16, Vec<(String, String)>, Vec<u8>), String> = match result
-                {
+                let wit_result: WitHttpResult = match result {
                     Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
                     Err(e) => Err(e),
                 };
@@ -364,8 +509,7 @@ pub mod wasm {
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (url, headers, body): (String, Vec<(String, String)>, Vec<u8>)| {
                 let result = ctx.data().http_post(&url, &headers, &body);
-                let wit_result: Result<(u16, Vec<(String, String)>, Vec<u8>), String> = match result
-                {
+                let wit_result: WitHttpResult = match result {
                     Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
                     Err(e) => Err(e),
                 };
@@ -373,23 +517,94 @@ pub mod wasm {
             },
         )?;
 
-        // read-file-metadata: stub (not yet implemented)
+        // read-file-metadata: func(path: string) -> result<list<u8>, string>
         host_instance.func_wrap(
             "read-file-metadata",
-            |_ctx: wasmtime::StoreContextMut<'_, HostState>,
-             (_path,): (String,)|
+            |ctx: wasmtime::StoreContextMut<'_, HostState>,
+             (path,): (String,)|
              -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
-                Ok((Err("read-file-metadata not yet implemented".to_string()),))
+                let file_path = std::path::Path::new(&path);
+
+                // Security: check path is within allowed directories.
+                if !ctx.data().allowed_paths.is_empty() {
+                    let allowed = ctx
+                        .data()
+                        .allowed_paths
+                        .iter()
+                        .any(|p| file_path.starts_with(p));
+                    if !allowed {
+                        return Ok((Err(format!(
+                            "path '{}' is not within allowed directories",
+                            path
+                        )),));
+                    }
+                }
+
+                match std::fs::metadata(file_path) {
+                    Ok(meta) => {
+                        let info = serde_json::json!({
+                            "size": meta.len(),
+                            "is_file": meta.is_file(),
+                            "is_dir": meta.is_dir(),
+                            "readonly": meta.permissions().readonly(),
+                            "modified": meta.modified().ok().map(|t| {
+                                t.duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs()
+                            }),
+                        });
+                        let bytes = rmp_serde::to_vec(&info)
+                            .map_err(|e| format!("failed to serialize metadata: {e}"));
+                        Ok((bytes,))
+                    }
+                    Err(e) => Ok((Err(format!(
+                        "failed to read metadata for '{}': {}",
+                        path, e
+                    )),)),
+                }
             },
         )?;
 
-        // list-files: stub (not yet implemented)
+        // list-files: func(dir: string, pattern: string) -> result<list<string>, string>
         host_instance.func_wrap(
             "list-files",
-            |_ctx: wasmtime::StoreContextMut<'_, HostState>,
-             (_dir, _pattern): (String, String)|
+            |ctx: wasmtime::StoreContextMut<'_, HostState>,
+             (dir, pattern): (String, String)|
              -> Result<(Result<Vec<String>, String>,), wasmtime::Error> {
-                Ok((Err("list-files not yet implemented".to_string()),))
+                let dir_path = std::path::Path::new(&dir);
+
+                // Security: check directory is within allowed paths.
+                if !ctx.data().allowed_paths.is_empty() {
+                    let allowed = ctx
+                        .data()
+                        .allowed_paths
+                        .iter()
+                        .any(|p| dir_path.starts_with(p));
+                    if !allowed {
+                        return Ok((Err(format!(
+                            "directory '{}' is not within allowed directories",
+                            dir
+                        )),));
+                    }
+                }
+
+                match std::fs::read_dir(dir_path) {
+                    Ok(entries) => {
+                        let files: Vec<String> = entries
+                            .filter_map(|e| e.ok())
+                            .filter(|e| {
+                                if pattern.is_empty() {
+                                    true
+                                } else {
+                                    e.file_name().to_string_lossy().contains(&pattern)
+                                }
+                            })
+                            .map(|e| e.file_name().to_string_lossy().to_string())
+                            .collect();
+                        Ok((Ok(files),))
+                    }
+                    Err(e) => Ok((Err(format!("failed to list directory '{}': {}", dir, e)),)),
+                }
             },
         )?;
 

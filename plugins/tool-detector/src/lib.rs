@@ -263,10 +263,7 @@ mod tests {
 
     #[test]
     fn test_parse_version_handbrake() {
-        assert_eq!(
-            parse_version("HandBrakeCLI", "HandBrake 1.8.2"),
-            "1.8.2"
-        );
+        assert_eq!(parse_version("HandBrakeCLI", "HandBrake 1.8.2"), "1.8.2");
     }
 
     #[test]
