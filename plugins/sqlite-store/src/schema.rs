@@ -66,10 +66,26 @@ CREATE TABLE IF NOT EXISTS plans (
     status TEXT NOT NULL DEFAULT 'pending',
     actions TEXT NOT NULL,
     warnings TEXT,
+    skip_reason TEXT,
+    policy_hash TEXT,
+    evaluated_at TEXT,
     created_at TEXT NOT NULL,
     executed_at TEXT,
     result TEXT
 );
+
+CREATE TABLE IF NOT EXISTS file_history (
+    id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    container TEXT NOT NULL,
+    track_count INTEGER NOT NULL,
+    introspected_at TEXT NOT NULL,
+    archived_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_history_file ON file_history(file_id);
 
 CREATE TABLE IF NOT EXISTS processing_stats (
     id TEXT PRIMARY KEY,
@@ -103,7 +119,52 @@ CREATE INDEX IF NOT EXISTS idx_stats_file ON processing_stats(file_id);
 
 /// Initialize the database schema.
 pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(SCHEMA_SQL)
+    conn.execute_batch(SCHEMA_SQL)?;
+    migrate(conn)?;
+    Ok(())
+}
+
+/// Run migrations for existing databases that may lack newer columns/tables.
+pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    // Check plans table for new columns
+    let has_column = |table: &str, column: &str| -> bool {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        columns.iter().any(|c| c == column)
+    };
+
+    if !has_column("plans", "skip_reason") {
+        conn.execute_batch("ALTER TABLE plans ADD COLUMN skip_reason TEXT")?;
+    }
+    if !has_column("plans", "policy_hash") {
+        conn.execute_batch("ALTER TABLE plans ADD COLUMN policy_hash TEXT")?;
+    }
+    if !has_column("plans", "evaluated_at") {
+        conn.execute_batch("ALTER TABLE plans ADD COLUMN evaluated_at TEXT")?;
+    }
+
+    // Create file_history table if it doesn't exist
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS file_history (
+            id TEXT PRIMARY KEY,
+            file_id TEXT NOT NULL,
+            path TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            container TEXT NOT NULL,
+            track_count INTEGER NOT NULL,
+            introspected_at TEXT NOT NULL,
+            archived_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_file_history_file ON file_history(file_id);",
+    )?;
+
+    Ok(())
 }
 
 /// Configure SQLite connection for optimal performance.
@@ -142,6 +203,7 @@ mod tests {
         assert!(tables.contains(&"plans".to_string()));
         assert!(tables.contains(&"processing_stats".to_string()));
         assert!(tables.contains(&"plugin_data".to_string()));
+        assert!(tables.contains(&"file_history".to_string()));
     }
 
     #[test]

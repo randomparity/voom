@@ -13,3 +13,5 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

@@ -76,11 +76,11 @@ impl Plugin for SqliteStorePlugin {
             }
             Event::PlanCompleted(e) => {
                 tracing::info!(path = %e.path.display(), phase = %e.phase_name, "plan completed");
-                store.update_plan_status(&e.path, &e.phase_name, "completed")?;
+                store.update_plan_status(&e.plan_id, "completed")?;
             }
             Event::PlanFailed(e) => {
                 tracing::info!(path = %e.path.display(), phase = %e.phase_name, error = %e.error, "plan failed");
-                store.update_plan_status(&e.path, &e.phase_name, "failed")?;
+                store.update_plan_status(&e.plan_id, "failed")?;
             }
             _ => {}
         }

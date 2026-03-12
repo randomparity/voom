@@ -274,6 +274,7 @@ mod tests {
             }),
             Event::PlanCreated(PlanCreatedEvent {
                 plan: Plan {
+                    id: uuid::Uuid::new_v4(),
                     file: voom_domain::media::MediaFile::new(PathBuf::from("/test.mkv")),
                     policy_name: "test".into(),
                     phase_name: "normalize".into(),
@@ -285,6 +286,8 @@ mod tests {
                     }],
                     warnings: vec![],
                     skip_reason: None,
+                    policy_hash: None,
+                    evaluated_at: chrono::Utc::now(),
                 },
             }),
         ];

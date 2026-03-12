@@ -6,9 +6,7 @@ use owo_colors::OwoColorize;
 
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
-use voom_domain::events::{
-    Event, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent,
-};
+use voom_domain::events::{Event, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent};
 use voom_job_manager::progress::ProgressReporter;
 use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 
@@ -71,9 +69,7 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
 
     // Publish discovery events through the event bus
     for event in &events {
-        kernel
-            .dispatch(Event::FileDiscovered(event.clone()))
-            .await;
+        kernel.dispatch(Event::FileDiscovered(event.clone())).await;
     }
 
     let file_count = events.len();
@@ -199,6 +195,30 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
                             "plans": plan_summaries,
                         })))
                     } else {
+                        // Verify file hasn't changed since introspection (TOCTOU guard)
+                        let exec_path = std::path::PathBuf::from(file_path);
+                        if !file.content_hash.is_empty() {
+                            match voom_discovery::hash_file(&exec_path) {
+                                Ok(current_hash) if current_hash != file.content_hash => {
+                                    tracing::warn!(path = %exec_path.display(), "file changed since introspection, skipping");
+                                    return Ok(Some(serde_json::json!({
+                                        "path": file_path_str,
+                                        "skipped": true,
+                                        "reason": "file changed since introspection",
+                                    })));
+                                }
+                                Err(e) => {
+                                    tracing::warn!(path = %exec_path.display(), error = %e, "hash check failed, skipping");
+                                    return Ok(Some(serde_json::json!({
+                                        "path": file_path_str,
+                                        "skipped": true,
+                                        "reason": format!("hash check failed: {e}"),
+                                    })));
+                                }
+                                _ => {} // hash matches, proceed
+                            }
+                        }
+
                         // Publish lifecycle events for each non-skipped plan
                         for plan in &result.plans {
                             if plan.is_skipped() {
@@ -217,6 +237,7 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
 
                             kernel
                                 .dispatch(Event::PlanCompleted(PlanCompletedEvent {
+                                    plan_id: plan.id,
                                     path: file.path.clone(),
                                     phase_name: plan.phase_name.clone(),
                                     actions_applied: plan.actions.len(),
@@ -325,7 +346,7 @@ mod tests {
     use voom_domain::capabilities::Capability;
     use voom_domain::events::{EventResult, FileDiscoveredEvent, FileIntrospectedEvent};
     use voom_domain::media::MediaFile;
-    use voom_domain::plan::{Plan, PlannedAction, OperationType};
+    use voom_domain::plan::{OperationType, Plan, PlannedAction};
 
     /// A test plugin that counts received plan lifecycle events.
     struct PlanRecordingPlugin {
@@ -368,10 +389,7 @@ mod tests {
                     | "plan.completed"
             )
         }
-        fn on_event(
-            &self,
-            event: &Event,
-        ) -> voom_domain::errors::Result<Option<EventResult>> {
+        fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
             match event {
                 Event::FileDiscovered(_) => {
                     self.discovered_count.fetch_add(1, Ordering::SeqCst);
@@ -396,6 +414,7 @@ mod tests {
 
     fn test_plan(phase: &str, skipped: bool) -> Plan {
         Plan {
+            id: uuid::Uuid::new_v4(),
             file: MediaFile::new(PathBuf::from("/tmp/test.mkv")),
             policy_name: "test-policy".into(),
             phase_name: phase.into(),
@@ -411,6 +430,8 @@ mod tests {
             } else {
                 None
             },
+            policy_hash: None,
+            evaluated_at: chrono::Utc::now(),
         }
     }
 
@@ -425,9 +446,7 @@ mod tests {
         // Simulate: PlanCreated + PlanExecuting + PlanCompleted for non-skipped plan
         let plan = test_plan("normalize", false);
         kernel
-            .dispatch(Event::PlanCreated(PlanCreatedEvent {
-                plan: plan.clone(),
-            }))
+            .dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }))
             .await;
         kernel
             .dispatch(Event::PlanExecuting(PlanExecutingEvent {
@@ -438,6 +457,7 @@ mod tests {
             .await;
         kernel
             .dispatch(Event::PlanCompleted(PlanCompletedEvent {
+                plan_id: plan.id,
                 path: file.path.clone(),
                 phase_name: plan.phase_name.clone(),
                 actions_applied: plan.actions.len(),
@@ -462,9 +482,7 @@ mod tests {
         // Simulate the process.rs logic: skip if plan.is_skipped()
         if !plan.is_skipped() {
             kernel
-                .dispatch(Event::PlanCreated(PlanCreatedEvent {
-                    plan: plan.clone(),
-                }))
+                .dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }))
                 .await;
         }
 
@@ -486,9 +504,7 @@ mod tests {
         // Simulate the process.rs logic: PlanCreated always, but
         // PlanExecuting/PlanCompleted only when NOT dry_run
         kernel
-            .dispatch(Event::PlanCreated(PlanCreatedEvent {
-                plan: plan.clone(),
-            }))
+            .dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }))
             .await;
 
         if !dry_run {
@@ -501,6 +517,7 @@ mod tests {
                 .await;
             kernel
                 .dispatch(Event::PlanCompleted(PlanCompletedEvent {
+                    plan_id: plan.id,
                     path: file.path.clone(),
                     phase_name: plan.phase_name.clone(),
                     actions_applied: plan.actions.len(),
@@ -526,16 +543,12 @@ mod tests {
             size: 1024,
             content_hash: "abc".into(),
         };
-        kernel
-            .dispatch(Event::FileDiscovered(discovered))
-            .await;
+        kernel.dispatch(Event::FileDiscovered(discovered)).await;
 
         // Simulate introspection event
         let file = MediaFile::new(PathBuf::from("/tmp/a.mkv"));
         kernel
-            .dispatch(Event::FileIntrospected(FileIntrospectedEvent {
-                file,
-            }))
+            .dispatch(Event::FileIntrospected(FileIntrospectedEvent { file }))
             .await;
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 1);

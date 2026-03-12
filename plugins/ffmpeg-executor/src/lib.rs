@@ -169,6 +169,7 @@ impl FfmpegExecutorPlugin {
             return Ok(None);
         }
 
+        let plan_id = plan.id;
         let path = plan.file.path.clone();
         let phase_name = plan.phase_name.clone();
         let action_count = plan.actions.len();
@@ -184,6 +185,7 @@ impl FfmpegExecutorPlugin {
             Ok(results) => {
                 let actions_applied = results.iter().filter(|r| r.success).count();
                 let completed_event = Event::PlanCompleted(PlanCompletedEvent {
+                    plan_id,
                     path,
                     phase_name,
                     actions_applied,
@@ -197,6 +199,7 @@ impl FfmpegExecutorPlugin {
             }
             Err(e) => {
                 let failed_event = Event::PlanFailed(PlanFailedEvent {
+                    plan_id,
                     path,
                     phase_name,
                     error: e.to_string(),
@@ -288,12 +291,15 @@ mod tests {
 
     fn plan_with_actions(file: MediaFile, actions: Vec<PlannedAction>) -> Plan {
         Plan {
+            id: uuid::Uuid::new_v4(),
             file,
             policy_name: "test".into(),
             phase_name: "process".into(),
             actions,
             warnings: vec![],
             skip_reason: None,
+            policy_hash: None,
+            evaluated_at: chrono::Utc::now(),
         }
     }
 

@@ -20,6 +20,9 @@ pub struct CompiledPolicy {
     pub phases: Vec<CompiledPhase>,
     /// Topologically sorted phase execution order.
     pub phase_order: Vec<String>,
+    /// xxHash64 of the policy source text.
+    #[serde(default)]
+    pub source_hash: String,
 }
 
 /// Compiled configuration block.
@@ -260,7 +263,9 @@ pub enum CompiledValueOrField {
 pub fn compile(source: &str) -> std::result::Result<CompiledPolicy, CompileError> {
     let ast = crate::parser::parse_policy(source).map_err(CompileError::Parse)?;
     validator::validate(&ast).map_err(CompileError::Validation)?;
-    compile_ast(&ast).map_err(CompileError::Compile)
+    let mut policy = compile_ast(&ast).map_err(CompileError::Compile)?;
+    policy.source_hash = format!("{:016x}", xxhash_rust::xxh3::xxh3_64(source.as_bytes()));
+    Ok(policy)
 }
 
 /// Compile a pre-parsed and validated AST into a [`CompiledPolicy`].
@@ -278,6 +283,7 @@ pub fn compile_ast(ast: &PolicyAst) -> std::result::Result<CompiledPolicy, DslEr
         config,
         phases,
         phase_order,
+        source_hash: String::new(),
     })
 }
 
@@ -923,6 +929,22 @@ mod tests {
         assert!(pos("normalize") < pos("audio_compat"));
         assert!(pos("transcode") < pos("validate"));
         assert!(pos("audio_compat") < pos("validate"));
+    }
+
+    #[test]
+    fn test_compiled_policy_has_source_hash() {
+        let source = r#"policy "test" {
+            phase init {
+                container mkv
+            }
+        }"#;
+        let policy = compile(source).unwrap();
+        assert!(!policy.source_hash.is_empty());
+        assert_eq!(policy.source_hash.len(), 16); // 64-bit hex
+
+        // Same source produces same hash
+        let policy2 = compile(source).unwrap();
+        assert_eq!(policy.source_hash, policy2.source_hash);
     }
 
     #[test]

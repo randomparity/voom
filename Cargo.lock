@@ -3034,17 +3034,20 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "voom-domain",
+ "xxhash-rust",
 ]
 
 [[package]]
 name = "voom-ffmpeg-executor"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
+ "uuid",
  "voom-domain",
  "voom-kernel",
 ]
@@ -3103,6 +3106,7 @@ dependencies = [
 name = "voom-mkvtoolnix-executor"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "tempfile",
@@ -3143,11 +3147,13 @@ dependencies = [
 name = "voom-policy-evaluator"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "insta",
  "regex",
  "serde",
  "serde_json",
  "tracing",
+ "uuid",
  "voom-domain",
  "voom-dsl",
  "voom-kernel",
@@ -3213,11 +3219,13 @@ name = "voom-wit"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "insta",
  "rmp-serde",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "uuid",
  "voom-domain",
 ]
 

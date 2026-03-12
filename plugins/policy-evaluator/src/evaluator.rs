@@ -6,6 +6,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use chrono::Utc;
+use uuid::Uuid;
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::{OperationType, Plan, PlannedAction};
 use voom_dsl::compiler::*;
@@ -67,12 +69,19 @@ fn evaluate_phase(
     phase_outcomes: &HashMap<String, PhaseOutcome>,
 ) -> Plan {
     let mut plan = Plan {
+        id: Uuid::new_v4(),
         file: file.clone(),
         policy_name: policy.name.clone(),
         phase_name: phase.name.clone(),
         actions: Vec::new(),
         warnings: Vec::new(),
         skip_reason: None,
+        policy_hash: if policy.source_hash.is_empty() {
+            None
+        } else {
+            Some(policy.source_hash.clone())
+        },
+        evaluated_at: Utc::now(),
     };
 
     // Check skip_when condition

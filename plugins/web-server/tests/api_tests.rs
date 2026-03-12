@@ -137,8 +137,14 @@ mod test_store {
         fn get_plans_for_file(&self, _file_id: &Uuid) -> Result<Vec<StoredPlan>> {
             Ok(Vec::new())
         }
-        fn update_plan_status(&self, _path: &Path, _phase: &str, _status: &str) -> Result<()> {
+        fn update_plan_status(&self, _plan_id: &Uuid, _status: &str) -> Result<()> {
             Ok(())
+        }
+        fn get_file_history(
+            &self,
+            _path: &Path,
+        ) -> Result<Vec<voom_domain::storage::FileHistoryEntry>> {
+            Ok(vec![])
         }
         fn record_stats(&self, _stats: &ProcessingStats) -> Result<()> {
             Ok(())

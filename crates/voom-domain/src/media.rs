@@ -67,6 +67,26 @@ impl MediaFile {
             .filter(|t| t.track_type.is_subtitle())
             .collect()
     }
+
+    pub fn with_tracks(mut self, tracks: Vec<Track>) -> Self {
+        self.tracks = tracks;
+        self
+    }
+
+    pub fn with_container(mut self, container: Container) -> Self {
+        self.container = container;
+        self
+    }
+
+    pub fn with_duration(mut self, duration: f64) -> Self {
+        self.duration = duration;
+        self
+    }
+
+    pub fn with_tags(mut self, tags: HashMap<String, String>) -> Self {
+        self.tags = tags;
+        self
+    }
 }
 
 /// A single track within a media file.
@@ -280,6 +300,20 @@ mod tests {
         assert_eq!(deserialized.path, mf.path);
         assert_eq!(deserialized.container, mf.container);
         assert_eq!(deserialized.tracks.len(), 1);
+    }
+
+    #[test]
+    fn test_media_file_builder_methods() {
+        let mf = MediaFile::new(PathBuf::from("/test.mkv"))
+            .with_container(Container::Mkv)
+            .with_duration(120.5)
+            .with_tracks(vec![Track::new(0, TrackType::Video, "hevc".into())])
+            .with_tags(HashMap::from([("title".into(), "Test Movie".into())]));
+
+        assert_eq!(mf.container, Container::Mkv);
+        assert_eq!(mf.duration, 120.5);
+        assert_eq!(mf.tracks.len(), 1);
+        assert_eq!(mf.tags["title"], "Test Movie");
     }
 
     #[test]

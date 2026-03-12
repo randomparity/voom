@@ -1,5 +1,7 @@
 pub mod scanner;
 
+pub use scanner::hash_file;
+
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult, FileDiscoveredEvent};

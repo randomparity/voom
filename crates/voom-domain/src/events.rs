@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use uuid::Uuid;
 
 use crate::media::MediaFile;
 use crate::plan::Plan;
@@ -96,6 +97,7 @@ pub struct PlanExecutingEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanCompletedEvent {
+    pub plan_id: Uuid,
     pub path: PathBuf,
     pub phase_name: String,
     pub actions_applied: usize,
@@ -103,6 +105,7 @@ pub struct PlanCompletedEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanFailedEvent {
+    pub plan_id: Uuid,
     pub path: PathBuf,
     pub phase_name: String,
     pub error: String,

@@ -119,9 +119,7 @@ pub async fn run(args: ScanArgs) -> Result<()> {
 
     // Publish discovery events through the event bus
     for event in &events {
-        kernel
-            .dispatch(Event::FileDiscovered(event.clone()))
-            .await;
+        kernel.dispatch(Event::FileDiscovered(event.clone())).await;
     }
 
     // Introspect each discovered file
@@ -168,9 +166,7 @@ pub async fn run(args: ScanArgs) -> Result<()> {
         match introspector.introspect(&event.path, event.size, &event.content_hash) {
             Ok(intro_event) => {
                 // Publish through the event bus — sqlite-store handles persistence
-                kernel
-                    .dispatch(Event::FileIntrospected(intro_event))
-                    .await;
+                kernel.dispatch(Event::FileIntrospected(intro_event)).await;
                 introspected += 1;
             }
             Err(e) => {
@@ -245,10 +241,7 @@ mod tests {
         fn handles(&self, event_type: &str) -> bool {
             matches!(event_type, "file.discovered" | "file.introspected")
         }
-        fn on_event(
-            &self,
-            event: &Event,
-        ) -> voom_domain::errors::Result<Option<EventResult>> {
+        fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
             match event {
                 Event::FileDiscovered(_) => {
                     self.discovered_count.fetch_add(1, Ordering::SeqCst);
@@ -281,9 +274,7 @@ mod tests {
             size: 1024,
             content_hash: "abc123".into(),
         };
-        kernel
-            .dispatch(Event::FileDiscovered(discovered))
-            .await;
+        kernel.dispatch(Event::FileDiscovered(discovered)).await;
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 1);
 
@@ -321,9 +312,7 @@ mod tests {
         ];
 
         for event in &events {
-            kernel
-                .dispatch(Event::FileDiscovered(event.clone()))
-                .await;
+            kernel.dispatch(Event::FileDiscovered(event.clone())).await;
         }
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 3);

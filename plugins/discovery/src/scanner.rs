@@ -35,7 +35,7 @@ fn is_media_file(path: &Path) -> bool {
 
 /// Compute xxHash64 of a file's contents using streaming reads.
 /// Uses a fixed 256KB buffer to avoid loading large files into memory.
-fn hash_file(path: &Path) -> Result<String> {
+pub fn hash_file(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)?;
     let mut hasher = Xxh3::new();
     let mut buf = [0u8; 256 * 1024]; // 256KB chunks

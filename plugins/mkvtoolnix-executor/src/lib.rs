@@ -190,6 +190,7 @@ impl Plugin for MkvtoolnixExecutorPlugin {
                         let actions_applied = results.iter().filter(|r| r.success).count();
 
                         let completed_event = Event::PlanCompleted(PlanCompletedEvent {
+                            plan_id: plan.id,
                             path: path.clone(),
                             phase_name: phase_name.clone(),
                             actions_applied,
@@ -203,6 +204,7 @@ impl Plugin for MkvtoolnixExecutorPlugin {
                     }
                     Err(e) => {
                         let failed_event = Event::PlanFailed(PlanFailedEvent {
+                            plan_id: plan.id,
                             path: path.clone(),
                             phase_name: phase_name.clone(),
                             error: e.to_string(),
@@ -252,12 +254,15 @@ mod tests {
         let mut file = MediaFile::new(PathBuf::from("/media/movie.mkv"));
         file.container = Container::Mkv;
         Plan {
+            id: uuid::Uuid::new_v4(),
             file,
             policy_name: "test-policy".into(),
             phase_name: "normalize".into(),
             actions,
             warnings: vec![],
             skip_reason: None,
+            policy_hash: None,
+            evaluated_at: chrono::Utc::now(),
         }
     }
 
@@ -265,12 +270,15 @@ mod tests {
         let mut file = MediaFile::new(PathBuf::from("/media/movie.mp4"));
         file.container = Container::Mp4;
         Plan {
+            id: uuid::Uuid::new_v4(),
             file,
             policy_name: "test-policy".into(),
             phase_name: "normalize".into(),
             actions,
             warnings: vec![],
             skip_reason: None,
+            policy_hash: None,
+            evaluated_at: chrono::Utc::now(),
         }
     }
 

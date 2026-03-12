@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
@@ -42,7 +42,10 @@ pub trait StorageTrait: Send + Sync {
     // Plans
     fn save_plan(&self, plan: &Plan) -> Result<Uuid>;
     fn get_plans_for_file(&self, file_id: &Uuid) -> Result<Vec<StoredPlan>>;
-    fn update_plan_status(&self, path: &Path, phase: &str, status: &str) -> Result<()>;
+    fn update_plan_status(&self, plan_id: &Uuid, status: &str) -> Result<()>;
+
+    // File history
+    fn get_file_history(&self, path: &Path) -> Result<Vec<FileHistoryEntry>>;
 
     // Stats
     fn record_stats(&self, stats: &ProcessingStats) -> Result<()>;
@@ -66,7 +69,23 @@ pub struct StoredPlan {
     pub status: String,
     pub actions_json: String,
     pub warnings: Option<String>,
+    pub skip_reason: Option<String>,
+    pub policy_hash: Option<String>,
+    pub evaluated_at: Option<String>,
     pub created_at: String,
     pub executed_at: Option<String>,
     pub result: Option<String>,
+}
+
+/// A historical snapshot of a file's state before it was updated.
+#[derive(Debug, Clone)]
+pub struct FileHistoryEntry {
+    pub id: Uuid,
+    pub file_id: Uuid,
+    pub path: PathBuf,
+    pub content_hash: String,
+    pub container: String,
+    pub track_count: u32,
+    pub introspected_at: String,
+    pub archived_at: String,
 }

@@ -129,13 +129,23 @@ impl FileRow {
         let tags: HashMap<String, String> = self
             .tags
             .as_deref()
-            .map(|s| serde_json::from_str(s).unwrap_or_default())
+            .map(|s| {
+                serde_json::from_str(s).unwrap_or_else(|e| {
+                    tracing::warn!(field = "tags", error = %e, "JSON parse failed, using empty default");
+                    HashMap::new()
+                })
+            })
             .unwrap_or_default();
 
         let plugin_metadata: HashMap<String, serde_json::Value> = self
             .plugin_metadata
             .as_deref()
-            .map(|s| serde_json::from_str(s).unwrap_or_default())
+            .map(|s| {
+                serde_json::from_str(s).unwrap_or_else(|e| {
+                    tracing::warn!(field = "plugin_metadata", error = %e, "JSON parse failed, using empty default");
+                    HashMap::new()
+                })
+            })
             .unwrap_or_default();
 
         Ok(MediaFile {
@@ -217,12 +227,37 @@ impl StorageTrait for SqliteStore {
             .unwrap_or_default();
         let path_str = file.path.to_string_lossy().to_string();
 
+        // Preserve existing file ID on re-scan to avoid orphaning related records
+        let existing_id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM files WHERE path = ?1",
+                params![&path_str],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| VoomError::Storage(format!("failed to query existing file: {e}")))?;
+
+        let effective_id = existing_id.clone().unwrap_or_else(|| file.id.to_string());
+
         // Wrap the delete-insert sequence in a transaction for atomicity
         conn.execute_batch("BEGIN")
             .map_err(|e| VoomError::Storage(format!("failed to begin transaction: {e}")))?;
 
         let result = (|| -> Result<()> {
-            // Delete old tracks before upserting, since the file id may change on re-scan
+            // Archive old file state to history before updating
+            if existing_id.is_some() {
+                conn.execute(
+                    "INSERT INTO file_history (id, file_id, path, content_hash, container, track_count, introspected_at, archived_at)
+                     SELECT ?1, f.id, f.path, f.content_hash, f.container,
+                            (SELECT COUNT(*) FROM tracks WHERE file_id = f.id),
+                            f.introspected_at, ?2
+                     FROM files f WHERE f.path = ?3",
+                    params![Uuid::new_v4().to_string(), &now, &path_str],
+                )
+                .map_err(|e| VoomError::Storage(format!("failed to archive file history: {e}")))?;
+            }
+
+            // Delete old tracks before upserting
             conn.execute(
                 "DELETE FROM tracks WHERE file_id IN (SELECT id FROM files WHERE path = ?1)",
                 params![&path_str],
@@ -233,7 +268,6 @@ impl StorageTrait for SqliteStore {
                 "INSERT INTO files (id, path, filename, size, content_hash, container, duration, bitrate, tags, plugin_metadata, introspected_at, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                  ON CONFLICT(path) DO UPDATE SET
-                    id = excluded.id,
                     filename = excluded.filename,
                     size = excluded.size,
                     content_hash = excluded.content_hash,
@@ -245,7 +279,7 @@ impl StorageTrait for SqliteStore {
                     introspected_at = excluded.introspected_at,
                     updated_at = excluded.updated_at",
                 params![
-                    file.id.to_string(),
+                    &effective_id,
                     &path_str,
                     filename,
                     file.size as i64,
@@ -272,7 +306,7 @@ impl StorageTrait for SqliteStore {
             for track in &file.tracks {
                 stmt.execute(params![
                     Uuid::new_v4().to_string(),
-                    file.id.to_string(),
+                    &effective_id,
                     track.index as i32,
                     track_type_to_str(track.track_type),
                     track.codec,
@@ -543,25 +577,34 @@ impl StorageTrait for SqliteStore {
     }
 
     fn claim_next_job(&self, worker_id: &str) -> Result<Option<Job>> {
-        let conn = self.conn()?;
+        let mut conn = self.conn()?;
         let now = format_datetime(&Utc::now());
 
-        // Atomically claim the highest-priority pending job
-        conn.execute(
+        // Use IMMEDIATE transaction to prevent TOCTOU race between concurrent workers
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| VoomError::Storage(format!("failed to begin transaction: {e}")))?;
+
+        tx.execute(
             "UPDATE jobs SET status = 'running', worker_id = ?1, started_at = ?2
              WHERE id = (SELECT id FROM jobs WHERE status = 'pending' ORDER BY priority ASC, created_at ASC LIMIT 1)",
             params![worker_id, now],
         )
         .map_err(|e| VoomError::Storage(format!("failed to claim job: {e}")))?;
 
-        // Return the claimed job
-        conn.query_row(
-            "SELECT * FROM jobs WHERE worker_id = ?1 AND status = 'running' ORDER BY started_at DESC LIMIT 1",
-            params![worker_id],
-            row_to_job,
-        )
-        .optional()
-        .map_err(|e| VoomError::Storage(format!("failed to get claimed job: {e}")))
+        let result = tx
+            .query_row(
+                "SELECT * FROM jobs WHERE worker_id = ?1 AND status = 'running' ORDER BY started_at DESC LIMIT 1",
+                params![worker_id],
+                row_to_job,
+            )
+            .optional()
+            .map_err(|e| VoomError::Storage(format!("failed to get claimed job: {e}")))?;
+
+        tx.commit()
+            .map_err(|e| VoomError::Storage(format!("failed to commit claim: {e}")))?;
+
+        Ok(result)
     }
 
     fn list_jobs(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>> {
@@ -626,7 +669,6 @@ impl StorageTrait for SqliteStore {
 
     fn save_plan(&self, plan: &Plan) -> Result<Uuid> {
         let conn = self.conn()?;
-        let id = Uuid::new_v4();
         let actions_json = serde_json::to_string(&plan.actions)
             .map_err(|e| VoomError::Storage(format!("failed to serialize actions: {e}")))?;
         let warnings_json =
@@ -639,36 +681,32 @@ impl StorageTrait for SqliteStore {
             };
 
         conn.execute(
-            "INSERT INTO plans (id, file_id, policy_name, phase_name, status, actions, warnings, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO plans (id, file_id, policy_name, phase_name, status, actions, warnings, skip_reason, policy_hash, evaluated_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
-                id.to_string(),
+                plan.id.to_string(),
                 plan.file.id.to_string(),
                 plan.policy_name,
                 plan.phase_name,
                 "pending",
                 actions_json,
                 warnings_json,
+                plan.skip_reason,
+                plan.policy_hash,
+                format_datetime(&plan.evaluated_at),
                 format_datetime(&Utc::now()),
             ],
         )
         .map_err(|e| VoomError::Storage(format!("failed to save plan: {e}")))?;
 
-        Ok(id)
+        Ok(plan.id)
     }
 
-    fn update_plan_status(&self, path: &Path, phase: &str, status: &str) -> Result<()> {
+    fn update_plan_status(&self, plan_id: &Uuid, status: &str) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE plans SET status = ?1, executed_at = ?2
-             WHERE phase_name = ?3
-               AND file_id = (SELECT id FROM files WHERE path = ?4)",
-            params![
-                status,
-                format_datetime(&Utc::now()),
-                phase,
-                path.to_string_lossy()
-            ],
+            "UPDATE plans SET status = ?1, executed_at = ?2 WHERE id = ?3",
+            params![status, format_datetime(&Utc::now()), plan_id.to_string()],
         )
         .map_err(|e| VoomError::Storage(format!("failed to update plan status: {e}")))?;
         Ok(())
@@ -678,7 +716,7 @@ impl StorageTrait for SqliteStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, file_id, policy_name, phase_name, status, actions, warnings, created_at, executed_at, result
+                "SELECT id, file_id, policy_name, phase_name, status, actions, warnings, skip_reason, policy_hash, evaluated_at, created_at, executed_at, result
                  FROM plans WHERE file_id = ?1 ORDER BY created_at",
             )
             .map_err(|e| VoomError::Storage(format!("failed to prepare plans query: {e}")))?;
@@ -693,6 +731,9 @@ impl StorageTrait for SqliteStore {
                     status: row.get("status")?,
                     actions_json: row.get("actions")?,
                     warnings: row.get("warnings")?,
+                    skip_reason: row.get("skip_reason")?,
+                    policy_hash: row.get("policy_hash")?,
+                    evaluated_at: row.get("evaluated_at")?,
                     created_at: row.get("created_at")?,
                     executed_at: row.get("executed_at")?,
                     result: row.get("result")?,
@@ -780,6 +821,36 @@ impl StorageTrait for SqliteStore {
         }
 
         Ok(pruned)
+    }
+
+    fn get_file_history(&self, path: &Path) -> Result<Vec<voom_domain::storage::FileHistoryEntry>> {
+        let conn = self.conn()?;
+        let path_str = path.to_string_lossy().to_string();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, file_id, path, content_hash, container, track_count, introspected_at, archived_at
+                 FROM file_history WHERE path = ?1 ORDER BY archived_at",
+            )
+            .map_err(|e| VoomError::Storage(format!("failed to prepare history query: {e}")))?;
+
+        let entries = stmt
+            .query_map(params![path_str], |row| {
+                Ok(voom_domain::storage::FileHistoryEntry {
+                    id: Uuid::parse_str(&row.get::<_, String>("id")?).unwrap_or_default(),
+                    file_id: Uuid::parse_str(&row.get::<_, String>("file_id")?).unwrap_or_default(),
+                    path: PathBuf::from(row.get::<_, String>("path")?),
+                    content_hash: row.get("content_hash")?,
+                    container: row.get("container")?,
+                    track_count: row.get::<_, i32>("track_count")? as u32,
+                    introspected_at: row.get("introspected_at")?,
+                    archived_at: row.get("archived_at")?,
+                })
+            })
+            .map_err(|e| VoomError::Storage(format!("failed to query history: {e}")))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| VoomError::Storage(format!("failed to collect history: {e}")))?;
+
+        Ok(entries)
     }
 }
 
@@ -1168,6 +1239,7 @@ mod tests {
         store.upsert_file(&file).unwrap();
 
         let plan = Plan {
+            id: Uuid::new_v4(),
             file: file.clone(),
             policy_name: "default".into(),
             phase_name: "normalize".into(),
@@ -1179,14 +1251,18 @@ mod tests {
             }],
             warnings: vec!["test warning".into()],
             skip_reason: None,
+            policy_hash: Some("abc123".into()),
+            evaluated_at: Utc::now(),
         };
 
         let plan_id = store.save_plan(&plan).unwrap();
+        assert_eq!(plan_id, plan.id);
         let plans = store.get_plans_for_file(&file.id).unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].id, plan_id);
         assert_eq!(plans[0].policy_name, "default");
         assert_eq!(plans[0].status, "pending");
+        assert_eq!(plans[0].policy_hash.as_deref(), Some("abc123"));
     }
 
     // --- Stats ---
@@ -1368,6 +1444,7 @@ mod tests {
         store.upsert_file(&file).unwrap();
 
         let plan = Plan {
+            id: Uuid::new_v4(),
             file: file.clone(),
             policy_name: "default".into(),
             phase_name: "normalize".into(),
@@ -1379,12 +1456,12 @@ mod tests {
             }],
             warnings: vec![],
             skip_reason: None,
+            policy_hash: None,
+            evaluated_at: Utc::now(),
         };
-        store.save_plan(&plan).unwrap();
+        let plan_id = store.save_plan(&plan).unwrap();
 
-        store
-            .update_plan_status(&file.path, "normalize", "completed")
-            .unwrap();
+        store.update_plan_status(&plan_id, "completed").unwrap();
 
         let plans = store.get_plans_for_file(&file.id).unwrap();
         assert_eq!(plans.len(), 1);
@@ -1399,6 +1476,7 @@ mod tests {
         store.upsert_file(&file).unwrap();
 
         let plan = Plan {
+            id: Uuid::new_v4(),
             file: file.clone(),
             policy_name: "default".into(),
             phase_name: "transcode".into(),
@@ -1410,15 +1488,84 @@ mod tests {
             }],
             warnings: vec![],
             skip_reason: None,
+            policy_hash: None,
+            evaluated_at: Utc::now(),
         };
-        store.save_plan(&plan).unwrap();
+        let plan_id = store.save_plan(&plan).unwrap();
 
-        store
-            .update_plan_status(&file.path, "transcode", "failed")
-            .unwrap();
+        store.update_plan_status(&plan_id, "failed").unwrap();
 
         let plans = store.get_plans_for_file(&file.id).unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].status, "failed");
+    }
+
+    // --- File ID preservation (F1) ---
+
+    #[test]
+    fn test_upsert_preserves_id_on_rescan() {
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/media/preserve_id.mkv"));
+        file.content_hash = "hash_v1".into();
+        store.upsert_file(&file).unwrap();
+
+        let original_id = store
+            .get_file_by_path(Path::new("/media/preserve_id.mkv"))
+            .unwrap()
+            .unwrap()
+            .id;
+
+        // Re-scan creates a new MediaFile with different UUID
+        let mut file2 = MediaFile::new(PathBuf::from("/media/preserve_id.mkv"));
+        file2.content_hash = "hash_v2".into();
+        assert_ne!(file2.id, original_id);
+
+        store.upsert_file(&file2).unwrap();
+
+        // The stored file should retain the original ID
+        let stored = store
+            .get_file_by_path(Path::new("/media/preserve_id.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.id, original_id);
+        assert_eq!(stored.content_hash, "hash_v2");
+    }
+
+    #[test]
+    fn test_upsert_creates_history_on_update() {
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/media/history_test.mkv"));
+        file.content_hash = "hash_v1".into();
+        file.container = Container::Mkv;
+        store.upsert_file(&file).unwrap();
+
+        // No history yet for first insert
+        let history = store
+            .get_file_history(Path::new("/media/history_test.mkv"))
+            .unwrap();
+        assert!(history.is_empty());
+
+        // Update the file
+        let mut file2 = MediaFile::new(PathBuf::from("/media/history_test.mkv"));
+        file2.content_hash = "hash_v2".into();
+        file2.container = Container::Mkv;
+        store.upsert_file(&file2).unwrap();
+
+        // Now should have one history entry
+        let history = store
+            .get_file_history(Path::new("/media/history_test.mkv"))
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content_hash, "hash_v1");
+        assert_eq!(history[0].container, "mkv");
+    }
+
+    #[test]
+    fn test_get_file_history_empty() {
+        let store = test_store();
+        let history = store
+            .get_file_history(Path::new("/nonexistent.mkv"))
+            .unwrap();
+        assert!(history.is_empty());
     }
 }

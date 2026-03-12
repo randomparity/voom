@@ -676,6 +676,7 @@ mod tests {
 
         // Simulate plan.completed event
         let event = Event::PlanCompleted(PlanCompletedEvent {
+            plan_id: uuid::Uuid::new_v4(),
             path: file_path.clone(),
             phase_name: "normalize".into(),
             actions_applied: 3,
@@ -713,6 +714,7 @@ mod tests {
 
         // Simulate plan.failed event
         let event = Event::PlanFailed(PlanFailedEvent {
+            plan_id: uuid::Uuid::new_v4(),
             path: file_path.clone(),
             phase_name: "normalize".into(),
             error: "ffmpeg crashed".into(),

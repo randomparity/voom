@@ -1,16 +1,24 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::media::MediaFile;
 
 /// A plan produced by the policy evaluator for a single file in a single phase.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
+    #[serde(default = "Uuid::new_v4")]
+    pub id: Uuid,
     pub file: MediaFile,
     pub policy_name: String,
     pub phase_name: String,
     pub actions: Vec<PlannedAction>,
     pub warnings: Vec<String>,
     pub skip_reason: Option<String>,
+    #[serde(default)]
+    pub policy_hash: Option<String>,
+    #[serde(default = "Utc::now")]
+    pub evaluated_at: DateTime<Utc>,
 }
 
 impl Plan {
@@ -22,6 +30,24 @@ impl Plan {
     /// Returns true if this plan was skipped.
     pub fn is_skipped(&self) -> bool {
         self.skip_reason.is_some()
+    }
+
+    /// Returns a new Plan with the given skip reason set.
+    pub fn with_skip_reason(mut self, reason: impl Into<String>) -> Self {
+        self.skip_reason = Some(reason.into());
+        self
+    }
+
+    /// Returns a new Plan with an additional warning.
+    pub fn with_warning(mut self, warning: impl Into<String>) -> Self {
+        self.warnings.push(warning.into());
+        self
+    }
+
+    /// Returns a new Plan with an additional action.
+    pub fn with_action(mut self, action: PlannedAction) -> Self {
+        self.actions.push(action);
+        self
     }
 }
 
@@ -109,6 +135,7 @@ mod tests {
 
     fn sample_plan() -> Plan {
         Plan {
+            id: Uuid::new_v4(),
             file: MediaFile::new(PathBuf::from("/test.mkv")),
             policy_name: "default".into(),
             phase_name: "normalize".into(),
@@ -120,6 +147,8 @@ mod tests {
             }],
             warnings: vec![],
             skip_reason: None,
+            policy_hash: None,
+            evaluated_at: Utc::now(),
         }
     }
 
@@ -162,5 +191,42 @@ mod tests {
     fn test_operation_type_as_str() {
         assert_eq!(OperationType::SetDefault.as_str(), "set_default");
         assert_eq!(OperationType::TranscodeVideo.as_str(), "transcode_video");
+    }
+
+    #[test]
+    fn test_plan_builder_methods() {
+        let plan = sample_plan();
+        let action = PlannedAction {
+            operation: OperationType::RemoveTrack,
+            track_index: Some(2),
+            parameters: serde_json::json!({}),
+            description: "Remove track 2".into(),
+        };
+
+        let plan = plan
+            .with_warning("test warning")
+            .with_action(action)
+            .with_skip_reason("no changes needed");
+
+        assert_eq!(plan.warnings, vec!["test warning"]);
+        assert_eq!(plan.actions.len(), 2);
+        assert!(plan.is_skipped());
+        assert_eq!(plan.skip_reason.as_deref(), Some("no changes needed"));
+    }
+
+    #[test]
+    fn test_plan_serde_backward_compat() {
+        // JSON without id/policy_hash/evaluated_at should deserialize with defaults
+        let json = r#"{
+            "file": {"id":"00000000-0000-0000-0000-000000000000","path":"/test.mkv","size":0,"content_hash":"","container":"Other","duration":0.0,"bitrate":null,"tracks":[],"tags":{},"plugin_metadata":{},"introspected_at":"2024-01-01T00:00:00Z"},
+            "policy_name": "test",
+            "phase_name": "init",
+            "actions": [],
+            "warnings": [],
+            "skip_reason": null
+        }"#;
+        let plan: Plan = serde_json::from_str(json).unwrap();
+        assert_eq!(plan.policy_name, "test");
+        assert!(plan.policy_hash.is_none());
     }
 }
