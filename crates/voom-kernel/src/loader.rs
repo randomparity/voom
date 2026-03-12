@@ -495,8 +495,7 @@ pub mod wasm {
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (url, headers): (String, Vec<(String, String)>)| {
                 let result = ctx.data().http_get(&url, &headers);
-                let wit_result: WitHttpResult = match result
-                {
+                let wit_result: WitHttpResult = match result {
                     Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
                     Err(e) => Err(e),
                 };
@@ -510,8 +509,7 @@ pub mod wasm {
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (url, headers, body): (String, Vec<(String, String)>, Vec<u8>)| {
                 let result = ctx.data().http_post(&url, &headers, &body);
-                let wit_result: WitHttpResult = match result
-                {
+                let wit_result: WitHttpResult = match result {
                     Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
                     Err(e) => Err(e),
                 };
