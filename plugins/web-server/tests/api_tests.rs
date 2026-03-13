@@ -291,7 +291,7 @@ async fn test_security_headers() {
     assert!(!csp.contains("unsafe-eval"));
     // unsafe-inline should only be in style-src, not in script-src
     assert!(csp.contains("style-src 'self' 'unsafe-inline'"));
-    assert!(csp.contains("script-src 'self' https://unpkg.com/htmx.org@"));
+    assert!(csp.contains("script-src 'self' https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"));
     assert!(headers.get("x-content-type-options").is_some());
     assert!(headers.get("x-frame-options").is_some());
     assert!(headers.get("referrer-policy").is_some());
@@ -349,6 +349,17 @@ async fn test_page_routes_accessible_without_auth() {
     resp.assert_status_ok();
     let resp = server.get("/jobs").await;
     resp.assert_status_ok();
+}
+
+// === Fallback 404 Tests ===
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_unknown_route_returns_json_404() {
+    let server = make_server(InMemoryStore::new());
+    let resp = server.get("/api/nonexistent").await;
+    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"], "Not found");
 }
 
 // === File Filter Validation Tests ===

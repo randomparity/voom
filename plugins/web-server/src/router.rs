@@ -1,10 +1,13 @@
 //! Axum router construction.
 
+use axum::http::StatusCode;
 use axum::middleware;
 use axum::routing::{get, post};
 use axum::Router;
+use tower::limit::ConcurrencyLimitLayer;
 
 use crate::api;
+use crate::error::ApiError;
 use crate::middleware::{auth_middleware, RequestIdLayer, SecurityHeadersLayer};
 use crate::sse;
 use crate::state::AppState;
@@ -45,11 +48,21 @@ pub fn build_router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
-        ));
+        ))
+        .layer(ConcurrencyLimitLayer::new(100));
 
     Router::new()
         .merge(authenticated_routes)
         .merge(page_routes)
+        .fallback(|| async {
+            (
+                StatusCode::NOT_FOUND,
+                axum::Json(ApiError {
+                    error: "Not found".into(),
+                    details: None,
+                }),
+            )
+        })
         .layer(RequestIdLayer)
         .layer(SecurityHeadersLayer)
         .with_state(state)

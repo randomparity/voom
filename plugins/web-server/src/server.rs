@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use axum::extract::DefaultBodyLimit;
 use voom_domain::storage::StorageTrait;
 
 use crate::router::build_router;
@@ -22,7 +23,7 @@ pub struct ServerConfig {
 pub async fn start_server(config: ServerConfig, store: Arc<dyn StorageTrait>) -> Result<()> {
     let templates = load_templates(config.template_dir.as_deref())?;
     let state = AppState::new(store, templates, config.auth_token);
-    let router = build_router(state);
+    let router = build_router(state).layer(DefaultBodyLimit::max(2 * 1024 * 1024)); // 2 MiB
 
     let addr: SocketAddr = format!("{}:{}", config.host, config.port)
         .parse()
