@@ -51,10 +51,11 @@ where
             let mut response = svc.call(req).await?;
             let headers = response.headers_mut();
 
+            // TODO: Replace 'unsafe-inline' with nonce-based CSP once templates support it
             headers.insert(
                 "Content-Security-Policy",
                 HeaderValue::from_static(
-                    "default-src 'self'; script-src 'self' https://unpkg.com/htmx.org@ https://unpkg.com/alpinejs@; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
+                    "default-src 'self'; script-src 'self' https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
                 ),
             );
             headers.insert(
@@ -130,11 +131,18 @@ impl AuthConfig {
     }
 
     /// Check if the given token is valid. Returns true if no auth is configured.
-    #[must_use] 
+    /// Uses constant-time comparison to prevent timing side-channel attacks.
+    #[must_use]
     pub fn validate(&self, provided: Option<&str>) -> bool {
+        use subtle::ConstantTimeEq;
         match &self.token {
             None => true, // No auth configured
-            Some(expected) => provided == Some(expected.as_str()),
+            Some(expected) => {
+                let provided_str = provided.unwrap_or("");
+                provided.is_some()
+                    && provided_str.len() == expected.len()
+                    && bool::from(provided_str.as_bytes().ct_eq(expected.as_bytes()))
+            }
         }
     }
 }

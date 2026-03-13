@@ -36,6 +36,9 @@ serde_json.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 
+# Security
+subtle = "2"
+
 # Errors & logging
 thiserror.workspace = true
 anyhow.workspace = true

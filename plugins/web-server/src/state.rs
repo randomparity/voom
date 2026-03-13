@@ -61,13 +61,20 @@ impl AppState {
 
     /// Validate an Authorization header value against the configured auth token.
     /// Returns true if no auth is configured (allow all) or if the Bearer token matches.
-    #[must_use] 
+    /// Validate an Authorization header value against the configured auth token.
+    /// Returns true if no auth is configured (allow all) or if the Bearer token matches.
+    /// Uses constant-time comparison to prevent timing side-channel attacks.
+    #[must_use]
     pub fn validate_auth(&self, header: Option<&str>) -> bool {
+        use subtle::ConstantTimeEq;
         match &self.auth_token {
             None => true, // no auth configured, allow all
-            Some(token) => {
-                header.is_some_and(|h| h.strip_prefix("Bearer ").is_some_and(|t| t == token))
-            }
+            Some(token) => header.is_some_and(|h| {
+                h.strip_prefix("Bearer ").is_some_and(|t| {
+                    t.len() == token.len()
+                        && bool::from(t.as_bytes().ct_eq(token.as_bytes()))
+                })
+            }),
         }
     }
 }
