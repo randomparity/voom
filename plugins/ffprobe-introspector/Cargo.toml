@@ -3,6 +3,11 @@ name = "voom-ffprobe-introspector"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "FFprobe introspection plugin for VOOM — media metadata extraction"
 
 [dependencies]
 voom-domain = { workspace = true }

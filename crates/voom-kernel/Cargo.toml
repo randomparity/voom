@@ -3,6 +3,11 @@ name = "voom-kernel"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Core kernel for VOOM — event bus, plugin registry, and capability routing"
 
 [dependencies]
 voom-domain = { workspace = true }

@@ -32,6 +32,10 @@ exclude = [
 edition = "2021"
 license = "MIT"
 rust-version = "1.75"
+repository = "https://github.com/randomparity/voom"
+readme = "README.md"
+keywords = ["video", "media", "policy", "mkvtoolnix", "ffmpeg"]
+categories = ["multimedia"]
 
 [workspace.dependencies]
 voom-domain = { path = "crates/voom-domain" }
