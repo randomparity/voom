@@ -1,5 +1,5 @@
 use anyhow::Result;
-use comfy_table::Cell;
+use comfy_table::{Cell, Color};
 use owo_colors::OwoColorize;
 
 use crate::cli::JobsCommands;
@@ -7,13 +7,13 @@ use crate::output;
 
 pub async fn run(cmd: JobsCommands) -> Result<()> {
     match cmd {
-        JobsCommands::List { status } => list(status).await,
+        JobsCommands::List { status, limit } => list(status, limit).await,
         JobsCommands::Status { id } => status(id).await,
         JobsCommands::Cancel { id } => cancel(id).await,
     }
 }
 
-async fn list(status_filter: Option<String>) -> Result<()> {
+async fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
     let config = crate::app::load_config()?;
     let store = crate::app::open_store(&config)?;
 
@@ -23,7 +23,7 @@ async fn list(status_filter: Option<String>) -> Result<()> {
     let filter_status = status_filter.as_deref().and_then(JobStatus::parse);
 
     let jobs = store
-        .list_jobs(filter_status, Some(50))
+        .list_jobs(filter_status, Some(limit))
         .map_err(|e| anyhow::anyhow!("failed to list jobs: {e}"))?;
 
     if jobs.is_empty() {
@@ -37,19 +37,23 @@ async fn list(status_filter: Option<String>) -> Result<()> {
     ]);
 
     for job in &jobs {
-        let status_cell = match job.status {
-            JobStatus::Pending => job.status.as_str().yellow().to_string(),
-            JobStatus::Running => job.status.as_str().cyan().to_string(),
-            JobStatus::Completed => job.status.as_str().green().to_string(),
-            JobStatus::Failed => job.status.as_str().red().to_string(),
-            JobStatus::Cancelled => job.status.as_str().dimmed().to_string(),
-            _ => job.status.as_str().to_string(),
+        let status_color = match job.status {
+            JobStatus::Pending => Some(Color::Yellow),
+            JobStatus::Running => Some(Color::Cyan),
+            JobStatus::Completed => Some(Color::Green),
+            JobStatus::Failed => Some(Color::Red),
+            JobStatus::Cancelled => Some(Color::DarkGrey),
+            _ => None,
         };
+        let mut status_cell = Cell::new(job.status.as_str());
+        if let Some(color) = status_color {
+            status_cell = status_cell.fg(color);
+        }
 
         table.add_row(vec![
             Cell::new(&job.id.to_string()[..8]),
             Cell::new(&job.job_type),
-            Cell::new(status_cell),
+            status_cell,
             Cell::new(format!("{:.0}%", job.progress * 100.0)),
             Cell::new(job.worker_id.as_deref().unwrap_or("-")),
             Cell::new(job.created_at.format("%Y-%m-%d %H:%M")),
@@ -63,11 +67,20 @@ async fn list(status_filter: Option<String>) -> Result<()> {
         .count_jobs_by_status()
         .map_err(|e| anyhow::anyhow!("failed to count jobs by status: {e}"))?;
     if !counts.is_empty() {
+        let total: u64 = counts.iter().map(|(_, c)| c).sum();
         let summary: Vec<String> = counts
             .iter()
             .map(|(status, count)| format!("{}: {count}", status.as_str()))
             .collect();
-        println!("\n{}", summary.join(" | ").dimmed());
+        let shown = jobs.len() as u64;
+        if shown < total {
+            println!(
+                "\n{} {}",
+                format!("Showing {shown} of {total} jobs.").dimmed(),
+                "Use --limit or --status to narrow results.".dimmed(),
+            );
+        }
+        println!("{}", summary.join(" | ").dimmed());
     }
 
     Ok(())
