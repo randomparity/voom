@@ -221,14 +221,21 @@ impl HostState {
         }
 
         // Security check: verify path arguments are within allowed directories.
+        // Canonicalize paths to prevent traversal attacks (e.g., /allowed/../etc/passwd).
         if !self.allowed_paths.is_empty() {
             for arg in args {
                 let path = Path::new(arg);
                 if path.is_absolute() || arg.starts_with("./") || arg.starts_with("../") {
+                    let canonical = std::fs::canonicalize(path).map_err(|e| {
+                        format!(
+                            "cannot resolve path '{}' for plugin '{}': {e}",
+                            arg, self.plugin_name
+                        )
+                    })?;
                     let allowed = self
                         .allowed_paths
                         .iter()
-                        .any(|allowed_dir| path.starts_with(allowed_dir));
+                        .any(|allowed_dir| canonical.starts_with(allowed_dir));
                     if !allowed {
                         return Err(format!(
                             "path '{}' is not within allowed directories for plugin '{}'",
@@ -584,10 +591,13 @@ mod tests {
 
     #[test]
     fn test_run_tool_path_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("file.txt");
+        std::fs::write(&file_path, "test").unwrap();
         let state = HostState::new("test".into())
             .with_tools(vec!["echo".into()])
-            .with_paths(vec![PathBuf::from("/tmp")]);
-        let result = state.run_tool("echo", &["/tmp/file.txt".into()], 5000);
+            .with_paths(vec![dir.path().to_path_buf()]);
+        let result = state.run_tool("echo", &[file_path.to_string_lossy().into()], 5000);
         assert!(result.is_ok());
     }
 
@@ -596,6 +606,25 @@ mod tests {
         let state = HostState::new("test".into())
             .with_tools(vec!["echo".into()])
             .with_paths(vec![PathBuf::from("/tmp")]);
+        let result = state.run_tool("echo", &["/etc/passwd".into()], 5000);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("not within allowed directories"));
+    }
+
+    #[test]
+    fn test_run_tool_path_traversal_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a file inside the allowed dir
+        let allowed_dir = dir.path().join("allowed");
+        std::fs::create_dir(&allowed_dir).unwrap();
+        std::fs::write(allowed_dir.join("file.txt"), "ok").unwrap();
+        // Try to access a file via traversal outside the allowed dir
+        let state = HostState::new("test".into())
+            .with_tools(vec!["echo".into()])
+            .with_paths(vec![allowed_dir]);
+        // /etc/passwd exists and will canonicalize to itself — outside allowed dir
         let result = state.run_tool("echo", &["/etc/passwd".into()], 5000);
         assert!(result.is_err());
         assert!(result

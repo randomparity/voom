@@ -65,6 +65,16 @@ pub mod wasm {
                 VoomError::Wasm(format!("failed to read {}: {e}", wasm_path.display()))
             })?;
 
+            const MAX_WASM_SIZE: usize = 256 * 1024 * 1024; // 256 MiB
+            if wasm_bytes.len() > MAX_WASM_SIZE {
+                return Err(VoomError::Wasm(format!(
+                    "WASM module {} exceeds size limit ({} bytes, max {})",
+                    wasm_path.display(),
+                    wasm_bytes.len(),
+                    MAX_WASM_SIZE
+                )));
+            }
+
             // Try to load the manifest from a sibling .toml file.
             let manifest = load_manifest(wasm_path)?;
 
