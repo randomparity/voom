@@ -307,24 +307,26 @@ fn execute_plans(
     }
 
     // Publish lifecycle events for each non-skipped plan.
-    // PlanCreated is dispatched first so executor plugins can claim it via the
-    // event bus. If no executor claims the plan, we emit PlanFailed so the
-    // backup-manager's restore path can trigger.
+    // PlanExecuting is dispatched first so the backup-manager can create a
+    // backup before any executor modifies the file. Then PlanCreated triggers
+    // the actual execution.
     for plan in &result.plans {
         if plan.is_skipped() || plan.is_empty() {
             continue;
         }
 
-        // Dispatch PlanCreated to let executor plugins claim the plan
-        let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
-
-        let claimed = results.iter().any(|r| r.claimed);
-
+        // Dispatch PlanExecuting first so backup-manager backs up the file
+        // BEFORE executors modify it
         kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
             path: file.path.clone(),
             phase_name: plan.phase_name.clone(),
             action_count: plan.actions.len(),
         }));
+
+        // Dispatch PlanCreated to let executor plugins claim and execute the plan
+        let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
+
+        let claimed = results.iter().any(|r| r.claimed);
 
         if claimed {
             // An executor plugin claimed the plan — treat as successful
@@ -542,14 +544,14 @@ mod tests {
 
         let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
 
-        // Simulate: PlanCreated + PlanExecuting + PlanCompleted for non-skipped plan
+        // Simulate: PlanExecuting + PlanCreated + PlanCompleted for non-skipped plan
         let plan = test_plan("normalize", false);
-        kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
         kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
             path: file.path.clone(),
             phase_name: plan.phase_name.clone(),
             action_count: plan.actions.len(),
         }));
+        kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
         kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
             plan_id: plan.id,
             path: file.path.clone(),
@@ -557,8 +559,8 @@ mod tests {
             actions_applied: plan.actions.len(),
         }));
 
-        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 1);
+        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 1);
     }
 
@@ -592,16 +594,14 @@ mod tests {
         let plan = test_plan("normalize", false);
         let dry_run = true;
 
-        // Simulate the process.rs logic: PlanCreated always, but
-        // PlanExecuting/PlanCompleted only when NOT dry_run
-        kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
-
+        // Simulate the process.rs logic: in dry_run mode, no events are dispatched
         if !dry_run {
             kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
                 path: file.path.clone(),
                 phase_name: plan.phase_name.clone(),
                 action_count: plan.actions.len(),
             }));
+            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
             kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
                 plan_id: plan.id,
                 path: file.path.clone(),
@@ -610,8 +610,8 @@ mod tests {
             }));
         }
 
-        // PlanCreated fires regardless, but no execution events in dry_run
-        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
+        // No events in dry_run
+        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
     }

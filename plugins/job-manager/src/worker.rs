@@ -173,6 +173,14 @@ impl WorkerPool {
                 let _permit = permit;
 
                 if cancelled.load(Ordering::SeqCst) {
+                    failed.fetch_add(1, Ordering::SeqCst);
+                    let _ = result_tx
+                        .send(JobResult {
+                            job_id,
+                            success: false,
+                            error: Some("cancelled".into()),
+                        })
+                        .await;
                     return;
                 }
 
@@ -185,13 +193,39 @@ impl WorkerPool {
                         .await
                     {
                         Ok(Ok(Some(job))) => job,
-                        Ok(Ok(None)) => return,
+                        Ok(Ok(None)) => {
+                            // Job was claimed by another worker — count as completed
+                            let _ = result_tx
+                                .send(JobResult {
+                                    job_id,
+                                    success: true,
+                                    error: None,
+                                })
+                                .await;
+                            return;
+                        }
                         Ok(Err(e)) => {
                             tracing::error!(error = %e, "Failed to claim job");
+                            failed.fetch_add(1, Ordering::SeqCst);
+                            let _ = result_tx
+                                .send(JobResult {
+                                    job_id,
+                                    success: false,
+                                    error: Some(format!("failed to claim: {e}")),
+                                })
+                                .await;
                             return;
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "Task join error");
+                            failed.fetch_add(1, Ordering::SeqCst);
+                            let _ = result_tx
+                                .send(JobResult {
+                                    job_id,
+                                    success: false,
+                                    error: Some(format!("task join error: {e}")),
+                                })
+                                .await;
                             return;
                         }
                     };
@@ -203,6 +237,14 @@ impl WorkerPool {
                     if let Err(e) = tokio::task::spawn_blocking(move || q.cancel(&jid)).await {
                         tracing::error!(error = %e, "failed to mark job as cancelled");
                     }
+                    failed.fetch_add(1, Ordering::SeqCst);
+                    let _ = result_tx
+                        .send(JobResult {
+                            job_id,
+                            success: false,
+                            error: Some("cancelled".into()),
+                        })
+                        .await;
                     return;
                 }
 

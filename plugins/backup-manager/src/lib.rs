@@ -387,6 +387,17 @@ impl Plugin for BackupManagerPlugin {
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
         match event {
             Event::PlanExecuting(evt) => {
+                // Skip if we already have a backup for this file (multiple
+                // phases may fire PlanExecuting for the same path).
+                if self.has_backup(&evt.path) {
+                    tracing::debug!(
+                        path = %evt.path.display(),
+                        phase = %evt.phase_name,
+                        "Backup already exists, skipping"
+                    );
+                    return Ok(None);
+                }
+
                 tracing::info!(
                     path = %evt.path.display(),
                     phase = %evt.phase_name,
