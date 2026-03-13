@@ -13,6 +13,7 @@ pub mod server;
 pub mod sse;
 pub mod state;
 pub mod templates;
+pub mod views;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;

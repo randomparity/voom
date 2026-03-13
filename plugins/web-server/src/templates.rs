@@ -9,6 +9,7 @@ use voom_domain::job::JobStatus;
 use voom_domain::storage::FileFilters;
 
 use crate::state::AppState;
+use crate::views::file_views;
 
 type HtmlResult = Result<Html<String>, (StatusCode, String)>;
 
@@ -26,6 +27,13 @@ fn render(templates: &tera::Tera, name: &str, ctx: &tera::Context) -> HtmlResult
 pub async fn dashboard(State(state): State<AppState>) -> HtmlResult {
     let store = state.store.clone();
     let store2 = state.store.clone();
+    let store3 = state.store.clone();
+
+    let total_files =
+        tokio::task::spawn_blocking(move || store3.count_files(&FileFilters::default()))
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let files = tokio::task::spawn_blocking(move || {
         store.list_files(&FileFilters {
@@ -43,18 +51,11 @@ pub async fn dashboard(State(state): State<AppState>) -> HtmlResult {
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let mut ctx = tera::Context::new();
-    ctx.insert("files", &files);
-    ctx.insert(
-        "job_counts",
-        &serde_json::to_value(
-            job_counts
-                .iter()
-                .map(|(s, c)| serde_json::json!({"status": format!("{:?}", s), "count": c}))
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_default(),
-    );
-    ctx.insert("total_files", &files.len());
+    ctx.insert("recent_files", &file_views(files));
+    ctx.insert("total_files", &total_files);
+    for (status, count) in &job_counts {
+        ctx.insert(format!("jobs_{}", status.as_str()), count);
+    }
 
     render(&state.templates, "dashboard.html", &ctx)
 }
@@ -93,7 +94,7 @@ pub async fn library(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let mut ctx = tera::Context::new();
-    ctx.insert("files", &files);
+    ctx.insert("files", &file_views(files));
     ctx.insert("page", &page);
     ctx.insert("per_page", &per_page);
     ctx.insert("filter_container", &params.container);
@@ -141,7 +142,14 @@ pub async fn file_detail(State(state): State<AppState>, Path(id): Path<uuid::Uui
         .collect();
 
     let mut ctx = tera::Context::new();
-    ctx.insert("file", &file);
+    let tracks_json: Vec<serde_json::Value> = file
+        .tracks
+        .iter()
+        .map(|t| serde_json::to_value(t).unwrap_or_default())
+        .collect();
+    let file_view = crate::views::FileView::from_media_file(file);
+    ctx.insert("file", &file_view);
+    ctx.insert("tracks", &tracks_json);
     ctx.insert("plans", &plans_json);
 
     render(&state.templates, "file_detail.html", &ctx)

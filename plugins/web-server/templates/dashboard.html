@@ -8,27 +8,27 @@
     <p>Overview of your media library and processing status</p>
 </div>
 
-<div class="card-grid">
-    <div class="stat-card accent">
+<div class="card-grid" hx-get="/" hx-trigger="every 10s" hx-select=".card-grid" hx-target=".card-grid" hx-swap="outerHTML">
+    <a href="/library" class="stat-card accent" style="text-decoration: none; color: inherit;">
         <div class="stat-value">{{ total_files | default(value=0) }}</div>
         <div class="stat-label">Total Files</div>
-    </div>
-    <div class="stat-card info">
+    </a>
+    <a href="/jobs?status=pending" class="stat-card info" style="text-decoration: none; color: inherit;">
         <div class="stat-value">{{ jobs_pending | default(value=0) }}</div>
         <div class="stat-label">Pending</div>
-    </div>
-    <div class="stat-card warning">
+    </a>
+    <a href="/jobs?status=running" class="stat-card warning" style="text-decoration: none; color: inherit;">
         <div class="stat-value">{{ jobs_running | default(value=0) }}</div>
         <div class="stat-label">Running</div>
-    </div>
-    <div class="stat-card success">
+    </a>
+    <a href="/jobs?status=completed" class="stat-card success" style="text-decoration: none; color: inherit;">
         <div class="stat-value">{{ jobs_completed | default(value=0) }}</div>
         <div class="stat-label">Completed</div>
-    </div>
-    <div class="stat-card danger">
+    </a>
+    <a href="/jobs?status=failed" class="stat-card danger" style="text-decoration: none; color: inherit;">
         <div class="stat-value">{{ jobs_failed | default(value=0) }}</div>
         <div class="stat-label">Failed</div>
-    </div>
+    </a>
 </div>
 
 <div class="card">
