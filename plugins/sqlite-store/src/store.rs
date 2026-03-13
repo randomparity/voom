@@ -867,15 +867,21 @@ impl StorageTrait for SqliteStore {
     }
 
     fn prune_missing_files(&self) -> Result<u64> {
-        // Phase 1: Query all file paths (release connection after)
+        self.prune_missing_files_under(Path::new("/"))
+    }
+
+    fn prune_missing_files_under(&self, root: &Path) -> Result<u64> {
+        let root_str = root.to_string_lossy().to_string();
+
+        // Phase 1: Query file paths under root (release connection after)
         let files: Vec<(String, String)> = {
             let conn = self.conn()?;
             let mut stmt = conn
-                .prepare("SELECT id, path FROM files")
+                .prepare("SELECT id, path FROM files WHERE path LIKE ?1 || '%'")
                 .map_err(|e| VoomError::Storage(format!("failed to prepare prune query: {e}")))?;
 
             let result = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .query_map(params![root_str], |row| Ok((row.get(0)?, row.get(1)?)))
                 .map_err(|e| VoomError::Storage(format!("failed to query files: {e}")))?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(|e| VoomError::Storage(format!("failed to collect files: {e}")))?;
@@ -893,18 +899,37 @@ impl StorageTrait for SqliteStore {
             return Ok(0);
         }
 
-        // Phase 3: Batch delete in chunks of 500
+        // Phase 3: Batch delete dependents then files in chunks of 500.
+        // Explicit deletion of plans and processing_stats ensures cleanup works
+        // on existing databases where CASCADE constraints may be missing.
         let conn = self.conn()?;
         let mut pruned = 0u64;
         for chunk in missing_ids.chunks(500) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
-            let sql = format!("DELETE FROM files WHERE id IN ({})", placeholders.join(","));
+            let in_clause = placeholders.join(",");
             let param_refs: Vec<&dyn rusqlite::types::ToSql> = chunk
                 .iter()
                 .map(|id| id as &dyn rusqlite::types::ToSql)
                 .collect();
+
+            // Delete dependent rows first
+            conn.execute(
+                &format!("DELETE FROM plans WHERE file_id IN ({in_clause})"),
+                param_refs.as_slice(),
+            )
+            .map_err(|e| VoomError::Storage(format!("failed to delete plans: {e}")))?;
+
+            conn.execute(
+                &format!("DELETE FROM processing_stats WHERE file_id IN ({in_clause})"),
+                param_refs.as_slice(),
+            )
+            .map_err(|e| VoomError::Storage(format!("failed to delete processing_stats: {e}")))?;
+
             let deleted = conn
-                .execute(&sql, param_refs.as_slice())
+                .execute(
+                    &format!("DELETE FROM files WHERE id IN ({in_clause})"),
+                    param_refs.as_slice(),
+                )
                 .map_err(|e| VoomError::Storage(format!("failed to delete files: {e}")))?;
             pruned += deleted as u64;
         }
@@ -1485,6 +1510,96 @@ mod tests {
 
         // File should be gone
         assert!(store.get_file(&file.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_prune_missing_files_under_scoped() {
+        let store = test_store();
+
+        // Insert files under two different roots
+        let mut file_a = MediaFile::new(PathBuf::from("/media/movies/a.mkv"));
+        file_a.content_hash = "aaa".to_string();
+        store.upsert_file(&file_a).unwrap();
+
+        let mut file_b = MediaFile::new(PathBuf::from("/media/tv/b.mkv"));
+        file_b.content_hash = "bbb".to_string();
+        store.upsert_file(&file_b).unwrap();
+
+        // Prune only under /media/movies — both are missing from disk
+        let pruned = store
+            .prune_missing_files_under(Path::new("/media/movies"))
+            .unwrap();
+        assert_eq!(pruned, 1);
+
+        // file_a should be gone, file_b should remain
+        assert!(store.get_file(&file_a.id).unwrap().is_none());
+        assert!(store.get_file(&file_b.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_prune_missing_files_under_cleans_dependents() {
+        let store = test_store();
+
+        let mut file = MediaFile::new(PathBuf::from("/media/movies/dep.mkv"));
+        file.content_hash = "dep".to_string();
+        store.upsert_file(&file).unwrap();
+
+        // Save a plan referencing this file
+        let plan = voom_domain::plan::Plan {
+            id: uuid::Uuid::new_v4(),
+            file: file.clone(),
+            policy_name: "test".into(),
+            phase_name: "normalize".into(),
+            actions: vec![PlannedAction {
+                operation: OperationType::SetDefault,
+                track_index: Some(0),
+                parameters: serde_json::json!({}),
+                description: "set default".into(),
+            }],
+            warnings: vec![],
+            skip_reason: None,
+            policy_hash: None,
+            evaluated_at: chrono::Utc::now(),
+        };
+        let plan_id = store.save_plan(&plan).unwrap();
+
+        // Record stats referencing this file
+        let mut stats =
+            voom_domain::stats::ProcessingStats::new(file.id, "test".into(), "normalize".into());
+        stats.outcome = "success".into();
+        stats.duration_ms = 1000;
+        stats.actions_taken = 1;
+        stats.tracks_modified = 1;
+        stats.file_size_before = Some(1000);
+        stats.file_size_after = Some(900);
+        store.record_stats(&stats).unwrap();
+
+        // Prune — file is missing from disk
+        let pruned = store
+            .prune_missing_files_under(Path::new("/media/movies"))
+            .unwrap();
+        assert_eq!(pruned, 1);
+
+        // File, plans, and stats should all be gone
+        assert!(store.get_file(&file.id).unwrap().is_none());
+        assert!(store.get_plans_for_file(&file.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_prune_missing_files_under_different_root_unaffected() {
+        let store = test_store();
+
+        let mut file = MediaFile::new(PathBuf::from("/media/tv/show.mkv"));
+        file.content_hash = "show".to_string();
+        store.upsert_file(&file).unwrap();
+
+        // Prune under /media/movies — should not touch /media/tv
+        let pruned = store
+            .prune_missing_files_under(Path::new("/media/movies"))
+            .unwrap();
+        assert_eq!(pruned, 0);
+
+        assert!(store.get_file(&file.id).unwrap().is_some());
     }
 
     // --- Concurrency ---

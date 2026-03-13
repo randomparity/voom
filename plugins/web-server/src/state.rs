@@ -157,6 +157,9 @@ mod tests {
         fn prune_missing_files(&self) -> VoomResult<u64> {
             Ok(0)
         }
+        fn prune_missing_files_under(&self, _root: &std::path::Path) -> VoomResult<u64> {
+            Ok(0)
+        }
     }
 
     fn make_state(auth_token: Option<String>) -> AppState {

@@ -62,6 +62,7 @@ pub trait StorageTrait: Send + Sync {
     // Maintenance
     fn vacuum(&self) -> Result<()>;
     fn prune_missing_files(&self) -> Result<u64>;
+    fn prune_missing_files_under(&self, root: &Path) -> Result<u64>;
 }
 
 /// A plan as stored in the database, with its own ID and status tracking.

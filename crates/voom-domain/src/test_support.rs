@@ -244,4 +244,8 @@ impl StorageTrait for InMemoryStore {
     fn prune_missing_files(&self) -> Result<u64> {
         Ok(0)
     }
+
+    fn prune_missing_files_under(&self, _root: &Path) -> Result<u64> {
+        Ok(0)
+    }
 }

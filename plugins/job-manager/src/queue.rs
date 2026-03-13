@@ -88,6 +88,21 @@ impl JobQueue {
         self.store.update_job(job_id, &update)
     }
 
+    /// Claim a specific job by ID for the given worker.
+    ///
+    /// Returns the job if it was pending and successfully claimed, or None if
+    /// the job was not found or not in pending state.
+    pub fn claim_by_id(&self, job_id: &Uuid, worker_id: &str) -> Result<Option<Job>> {
+        let update = JobUpdate {
+            status: Some(JobStatus::Running),
+            worker_id: Some(Some(worker_id.to_string())),
+            started_at: Some(Some(Utc::now())),
+            ..Default::default()
+        };
+        self.store.update_job(job_id, &update)?;
+        self.store.get_job(job_id)
+    }
+
     /// Get a job by ID.
     pub fn get(&self, job_id: &Uuid) -> Result<Option<Job>> {
         self.store.get_job(job_id)

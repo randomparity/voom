@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE TABLE IF NOT EXISTS plans (
     id TEXT PRIMARY KEY,
-    file_id TEXT NOT NULL REFERENCES files(id),
+    file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     policy_name TEXT NOT NULL,
     phase_name TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -89,7 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_file_history_file ON file_history(file_id);
 
 CREATE TABLE IF NOT EXISTS processing_stats (
     id TEXT PRIMARY KEY,
-    file_id TEXT NOT NULL REFERENCES files(id),
+    file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     policy_name TEXT NOT NULL,
     phase_name TEXT NOT NULL,
     outcome TEXT NOT NULL,
