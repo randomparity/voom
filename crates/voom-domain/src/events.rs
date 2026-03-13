@@ -110,6 +110,7 @@ impl EventResult {
             error,
             error_code: None,
             plugin_name: Some(name.clone()),
+            error_chain: Vec::new(),
         });
         Self {
             plugin_name: name,
@@ -177,6 +178,10 @@ pub struct PlanFailedEvent {
     pub error_code: Option<String>,
     #[serde(default)]
     pub plugin_name: Option<String>,
+    /// Chain of causal errors from source to root cause.
+    /// Populated when structured error information is available.
+    #[serde(default)]
+    pub error_chain: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

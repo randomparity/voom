@@ -156,18 +156,16 @@ impl Plugin for PhaseOrchestratorPlugin {
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
         match event {
+            // NOTE: Phase orchestration is triggered via direct API call (orchestrate()),
+            // not through the event bus. The CLI's process command calls orchestrate()
+            // directly for deterministic progress reporting and concurrency control.
+            // This handler is reserved for future event-driven orchestration.
             Event::PolicyEvaluate(evt) => {
                 tracing::info!(
                     path = %evt.path.display(),
                     policy = %evt.policy_name,
                     "Orchestrating policy evaluation"
                 );
-                // In the full pipeline, we'd:
-                // 1. Look up the file from storage
-                // 2. Look up the compiled policy
-                // 3. Call self.orchestrate()
-                // 4. For each plan with actions, dispatch to executors
-                // 5. Re-introspect after modifications
                 Ok(None)
             }
             _ => Ok(None),

@@ -127,7 +127,20 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
 /// Run migrations for existing databases that may lack newer columns/tables.
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // Check plans table for new columns
+    const KNOWN_TABLES: &[&str] = &[
+        "files",
+        "tracks",
+        "jobs",
+        "plans",
+        "processing_stats",
+        "file_history",
+        "plugin_data",
+    ];
     let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
+        assert!(
+            KNOWN_TABLES.contains(&table),
+            "unknown table: {table}"
+        );
         let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
         let columns: Vec<String> = stmt
             .query_map([], |row| row.get::<_, String>(1))?
