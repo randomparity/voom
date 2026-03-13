@@ -733,12 +733,26 @@ impl StorageTrait for SqliteStore {
                 })?)
             };
 
+        // Resolve file_id by path to handle ID preservation in upsert_file.
+        // When a file is re-scanned, upsert_file keeps the original DB ID, but
+        // the Plan's file.id may be a fresh UUID from the new introspection.
+        let path_str = plan.file.path.to_string_lossy().to_string();
+        let effective_file_id: String = conn
+            .query_row(
+                "SELECT id FROM files WHERE path = ?1",
+                params![&path_str],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| VoomError::Storage(format!("failed to resolve file id: {e}")))?
+            .unwrap_or_else(|| plan.file.id.to_string());
+
         conn.execute(
             "INSERT INTO plans (id, file_id, policy_name, phase_name, status, actions, warnings, skip_reason, policy_hash, evaluated_at, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 plan.id.to_string(),
-                plan.file.id.to_string(),
+                effective_file_id,
                 plan.policy_name,
                 plan.phase_name,
                 "pending",

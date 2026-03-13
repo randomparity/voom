@@ -186,7 +186,7 @@ async fn process_single_file(
     let file = introspect_file(path, file_size, content_hash, kernel).await?;
     let file_path_str = file.path.display().to_string();
 
-    let result = orchestrate_plans(compiled, &file, kernel)?;
+    let result = orchestrate_plans(compiled, &file)?;
 
     let needs_exec = voom_phase_orchestrator::PhaseOrchestratorPlugin::needs_execution(&result);
 
@@ -246,24 +246,19 @@ async fn introspect_file(
     Ok(file)
 }
 
-/// Run the phase orchestrator to produce plans, publishing PlanCreated events.
+/// Run the phase orchestrator to produce plans.
+///
+/// NOTE: This function does NOT dispatch PlanCreated events. The execute_plans
+/// function dispatches them when it's time to actually execute. Dispatching
+/// here would trigger executor plugins during dry-run mode.
 fn orchestrate_plans(
     compiled: &voom_dsl::CompiledPolicy,
     file: &voom_domain::media::MediaFile,
-    kernel: &voom_kernel::Kernel,
 ) -> std::result::Result<voom_phase_orchestrator::OrchestrationResult, String> {
     let orchestrator = voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
-    let result = orchestrator
+    orchestrator
         .orchestrate(compiled, file)
-        .map_err(|e| format!("orchestration failed: {e}"))?;
-
-    for plan in &result.plans {
-        if !plan.is_skipped() {
-            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
-        }
-    }
-
-    Ok(result)
+        .map_err(|e| format!("orchestration failed: {e}"))
 }
 
 /// Verify file integrity and publish plan lifecycle events for non-dry-run execution.
@@ -304,7 +299,7 @@ fn execute_plans(
     // event bus. If no executor claims the plan, we emit PlanFailed so the
     // backup-manager's restore path can trigger.
     for plan in &result.plans {
-        if plan.is_skipped() {
+        if plan.is_skipped() || plan.is_empty() {
             continue;
         }
 
