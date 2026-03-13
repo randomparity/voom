@@ -14,7 +14,6 @@ voom-domain = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rmp-serde = { workspace = true }
-anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
