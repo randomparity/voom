@@ -3258,7 +3258,6 @@ dependencies = [
 name = "voom-plugin-sdk"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -3322,6 +3321,7 @@ dependencies = [
  "futures-core",
  "serde",
  "serde_json",
+ "subtle",
  "tempfile",
  "tera",
  "thiserror 2.0.18",
@@ -3340,7 +3340,6 @@ dependencies = [
 name = "voom-wit"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
  "insta",
  "rmp-serde",
