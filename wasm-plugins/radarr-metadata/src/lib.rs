@@ -177,6 +177,8 @@ mod tests {
     use std::path::PathBuf;
     use voom_plugin_sdk::*;
 
+    const TEST_RADARR_TOKEN: &str = "test-api-key";
+
     /// Mock host that simulates Radarr API responses.
     struct MockHost {
         config: Option<RadarrConfig>,
@@ -188,7 +190,7 @@ mod tests {
             Self {
                 config: Some(RadarrConfig {
                     radarr_url: "http://localhost:7878".to_string(),
-                    api_key: "test-api-key".to_string(),
+                    api_key: TEST_RADARR_TOKEN.to_string(),
                 }),
                 movies: vec![RadarrMovie {
                     id: 42,

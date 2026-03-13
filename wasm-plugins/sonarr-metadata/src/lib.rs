@@ -209,6 +209,8 @@ mod tests {
     use std::path::PathBuf;
     use voom_plugin_sdk::*;
 
+    const TEST_SONARR_TOKEN: &str = "test-key";
+
     struct MockHost {
         config: Option<SonarrConfig>,
         series: Vec<SonarrSeries>,
@@ -220,7 +222,7 @@ mod tests {
             Self {
                 config: Some(SonarrConfig {
                     sonarr_url: "http://localhost:8989".to_string(),
-                    api_key: "test-key".to_string(),
+                    api_key: TEST_SONARR_TOKEN.to_string(),
                 }),
                 series: vec![SonarrSeries {
                     id: 10,
