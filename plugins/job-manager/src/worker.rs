@@ -1,10 +1,11 @@
 //! Worker pool for concurrent job processing using tokio tasks.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::progress::ProgressReporter;
@@ -62,18 +63,18 @@ pub struct JobResult {
 pub struct WorkerPool {
     config: WorkerPoolConfig,
     queue: Arc<JobQueue>,
-    cancelled: Arc<AtomicBool>,
+    token: CancellationToken,
     completed_count: Arc<AtomicU64>,
     failed_count: Arc<AtomicU64>,
 }
 
 impl WorkerPool {
     #[must_use]
-    pub fn new(queue: Arc<JobQueue>, config: WorkerPoolConfig) -> Self {
+    pub fn new(queue: Arc<JobQueue>, config: WorkerPoolConfig, token: CancellationToken) -> Self {
         Self {
             config,
             queue,
-            cancelled: Arc::new(AtomicBool::new(false)),
+            token,
             completed_count: Arc::new(AtomicU64::new(0)),
             failed_count: Arc::new(AtomicU64::new(0)),
         }
@@ -81,13 +82,13 @@ impl WorkerPool {
 
     /// Signal cancellation to all workers.
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
+        self.token.cancel();
     }
 
     /// Check if cancellation was requested.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
+        self.token.is_cancelled()
     }
 
     /// Get the number of completed jobs.
@@ -151,13 +152,12 @@ impl WorkerPool {
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
 
         for job_id in job_ids {
-            let permit = semaphore
-                .clone()
-                .acquire_owned()
-                .await
-                .expect("semaphore not closed");
+            let permit = tokio::select! {
+                p = semaphore.clone().acquire_owned() => p.expect("semaphore not closed"),
+                _ = self.token.cancelled() => break,
+            };
             let queue = self.queue.clone();
-            let cancelled = self.cancelled.clone();
+            let token = self.token.clone();
             let completed = self.completed_count.clone();
             let failed = self.failed_count.clone();
             let processor = processor.clone();
@@ -172,7 +172,7 @@ impl WorkerPool {
             let handle = tokio::spawn(async move {
                 let _permit = permit;
 
-                if cancelled.load(Ordering::SeqCst) {
+                if token.is_cancelled() {
                     failed.fetch_add(1, Ordering::SeqCst);
                     let _ = result_tx
                         .send(JobResult {
@@ -231,7 +231,7 @@ impl WorkerPool {
                     };
 
                 // Re-check cancellation after claiming (closes race with ErrorStrategy::Fail)
-                if cancelled.load(Ordering::SeqCst) {
+                if token.is_cancelled() {
                     let q = queue.clone();
                     let jid = job.id;
                     if let Err(e) = tokio::task::spawn_blocking(move || q.cancel(&jid)).await {
@@ -296,7 +296,7 @@ impl WorkerPool {
                         }
 
                         if on_error == ErrorStrategy::Fail {
-                            cancelled.store(true, Ordering::SeqCst);
+                            token.cancel();
                         }
                     }
                 }
@@ -347,6 +347,7 @@ mod tests {
     use crate::progress::NoopReporter;
     use crate::test_helpers::InMemoryStore;
     use std::sync::atomic::AtomicU32;
+    use tokio_util::sync::CancellationToken;
 
     fn test_queue() -> Arc<JobQueue> {
         let store = Arc::new(InMemoryStore::new());
@@ -362,6 +363,7 @@ mod tests {
                 max_workers: 2,
                 ..Default::default()
             },
+            CancellationToken::new(),
         );
 
         let counter = Arc::new(AtomicU32::new(0));
@@ -397,6 +399,7 @@ mod tests {
                 max_workers: 2,
                 ..Default::default()
             },
+            CancellationToken::new(),
         );
 
         let items: Vec<_> = (0..4)
@@ -432,6 +435,7 @@ mod tests {
                 max_workers: 1, // sequential to make behavior deterministic
                 ..Default::default()
             },
+            CancellationToken::new(),
         );
 
         let items = vec![
@@ -474,7 +478,7 @@ mod tests {
     #[test]
     fn test_cancellation() {
         let queue = test_queue();
-        let pool = WorkerPool::new(queue, WorkerPoolConfig::default());
+        let pool = WorkerPool::new(queue, WorkerPoolConfig::default(), CancellationToken::new());
         assert!(!pool.is_cancelled());
         pool.cancel();
         assert!(pool.is_cancelled());

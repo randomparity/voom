@@ -4,6 +4,8 @@ use anyhow::{Context, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::output::{max_filename_len, shrink_filename};
@@ -21,7 +23,7 @@ use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// direct-call pattern is intentional for CLI commands: it enables deterministic
 /// progress reporting, worker-pool concurrency control, and structured error
 /// handling that would be difficult to achieve through the asynchronous pub/sub bus.
-pub async fn run(args: ProcessArgs) -> Result<()> {
+pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let config = app::load_config()?;
     let kernel = Arc::new(app::bootstrap_kernel(&config)?);
 
@@ -44,6 +46,11 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
         }
     }
 
+    if token.is_cancelled() {
+        println!("{}", "Interrupted before discovery.".yellow());
+        return Ok(());
+    }
+
     // Discover files
     let events = discover_files(&path, &args, &kernel)?;
     if events.is_empty() {
@@ -60,7 +67,12 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
         ErrorHandling::Continue => ErrorStrategy::Continue,
     };
 
-    let (pool, effective_workers) = create_worker_pool(&config, &args)?;
+    if token.is_cancelled() {
+        println!("{}", "Interrupted before processing.".yellow());
+        return Ok(());
+    }
+
+    let (pool, effective_workers) = create_worker_pool(&config, &args, token.clone())?;
 
     let reporter: Arc<dyn ProgressReporter> = Arc::new(CliProgressReporter::new(file_count));
 
@@ -81,7 +93,11 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
         )
         .await;
 
-    print_summary(&pool, file_count, effective_workers, args.dry_run);
+    if token.is_cancelled() {
+        print_interrupted_summary(&pool, file_count);
+    } else {
+        print_summary(&pool, file_count, effective_workers, args.dry_run);
+    }
 
     Ok(())
 }
@@ -157,7 +173,11 @@ fn build_work_items(
 }
 
 /// Set up the job queue and worker pool.
-fn create_worker_pool(config: &app::AppConfig, args: &ProcessArgs) -> Result<(WorkerPool, usize)> {
+fn create_worker_pool(
+    config: &app::AppConfig,
+    args: &ProcessArgs,
+    token: CancellationToken,
+) -> Result<(WorkerPool, usize)> {
     let store = app::open_store(config)?;
     let queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
 
@@ -175,6 +195,7 @@ fn create_worker_pool(config: &app::AppConfig, args: &ProcessArgs) -> Result<(Wo
             max_workers: effective_workers,
             worker_prefix: "voom".to_string(),
         },
+        token,
     );
 
     Ok((pool, effective_workers))
@@ -355,6 +376,19 @@ fn execute_plans(
         "needs_execution": needs_exec,
         "plans_evaluated": result.plans.len(),
     })))
+}
+
+/// Print a summary when interrupted by CTRL-C.
+fn print_interrupted_summary(pool: &WorkerPool, file_count: usize) {
+    let completed = pool.completed_count();
+    let failed = pool.failed_count();
+    println!(
+        "\n{} {}/{} processed, {} errors",
+        "Interrupted.".bold().yellow(),
+        completed,
+        file_count,
+        failed,
+    );
 }
 
 /// Print the final summary line after processing.

@@ -42,6 +42,7 @@ owo-colors = "4"
 
 # Async
 tokio.workspace = true
+tokio-util.workspace = true
 
 # Serialization
 serde.workspace = true

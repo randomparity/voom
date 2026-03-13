@@ -5,6 +5,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
+use tokio_util::sync::CancellationToken;
 use voom_domain::events::Event;
 use voom_domain::storage::StorageTrait;
 
@@ -39,7 +40,7 @@ fn format_eta(start: &Instant, current: usize, total: usize) -> String {
 /// Discovery and introspection are driven directly for deterministic progress
 /// reporting, but all events are also published through the kernel's event bus
 /// so that subscribers (sqlite-store, SSE, WASM plugins) receive them.
-pub async fn run(args: ScanArgs) -> Result<()> {
+pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     let config = app::load_config()?;
     let kernel = app::bootstrap_kernel(&config)?;
 
@@ -183,6 +184,9 @@ pub async fn run(args: ScanArgs) -> Result<()> {
     let total = events.len() as u64;
 
     for (i, event) in events.iter().enumerate() {
+        if token.is_cancelled() {
+            break;
+        }
         let eta = format_eta(&intro_start, i + 1, total as usize);
         let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len() + 9); // "Probing "
         let name = event
@@ -222,6 +226,23 @@ pub async fn run(args: ScanArgs) -> Result<()> {
     pb.finish_and_clear();
 
     let total_elapsed = start.elapsed();
+    if token.is_cancelled() {
+        println!(
+            "\n{} {} files discovered, {}/{} introspected{} ({})",
+            "Interrupted.".bold().yellow(),
+            events.len(),
+            introspected,
+            total,
+            if errors > 0 {
+                format!(", {} {}", errors, "errors".red())
+            } else {
+                String::new()
+            },
+            HumanDuration(total_elapsed),
+        );
+        return Ok(());
+    }
+
     println!(
         "\n{} {} files discovered, {} introspected{} ({})",
         "Done.".bold().green(),

@@ -2,12 +2,13 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use owo_colors::OwoColorize;
+use tokio_util::sync::CancellationToken;
 use voom_domain::storage::StorageTrait;
 use voom_web_server::server::{start_server, ServerConfig};
 
 use crate::cli::ServeArgs;
 
-pub async fn run(args: ServeArgs) -> Result<()> {
+pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     let config = crate::app::load_config()?;
     let store: Arc<dyn StorageTrait> = crate::app::open_store(&config)?;
 
@@ -26,7 +27,8 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         auth_token: config.auth_token,
     };
 
-    start_server(server_config, store).await?;
+    let shutdown = async move { token.cancelled().await };
+    start_server(server_config, store, shutdown).await?;
 
     Ok(())
 }
