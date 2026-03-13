@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 use axum::response::Html;
 use serde::Deserialize;
 
+use voom_domain::job::JobStatus;
 use voom_domain::storage::FileFilters;
 
 use crate::state::AppState;
@@ -159,12 +160,21 @@ pub async fn policy_editor(State(state): State<AppState>, Path(name): Path<Strin
     render(&state.templates, "policy_editor.html", &ctx)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct JobsPageParams {
+    pub status: Option<String>,
+}
+
 /// GET /jobs -- Job monitor
-pub async fn jobs_page(State(state): State<AppState>) -> HtmlResult {
+pub async fn jobs_page(
+    State(state): State<AppState>,
+    Query(params): Query<JobsPageParams>,
+) -> HtmlResult {
     let store = state.store.clone();
+    let filter_status = params.status.as_deref().and_then(JobStatus::parse);
 
     let (jobs, counts) = tokio::task::spawn_blocking(move || {
-        let jobs = store.list_jobs(None, None)?;
+        let jobs = store.list_jobs(filter_status, None)?;
         let counts = store.count_jobs_by_status()?;
         Ok::<_, voom_domain::errors::VoomError>((jobs, counts))
     })
@@ -174,6 +184,7 @@ pub async fn jobs_page(State(state): State<AppState>) -> HtmlResult {
 
     let mut ctx = tera::Context::new();
     ctx.insert("jobs", &jobs);
+    ctx.insert("filter_status", &params.status.as_deref().unwrap_or(""));
     for (status, count) in &counts {
         ctx.insert(format!("jobs_{}", status.as_str()), count);
     }
