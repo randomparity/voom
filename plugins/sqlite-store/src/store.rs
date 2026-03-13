@@ -1612,7 +1612,7 @@ mod tests {
             policy_hash: None,
             evaluated_at: chrono::Utc::now(),
         };
-        let plan_id = store.save_plan(&plan).unwrap();
+        let _plan_id = store.save_plan(&plan).unwrap();
 
         // Record stats referencing this file
         let mut stats =
