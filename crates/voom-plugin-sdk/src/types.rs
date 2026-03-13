@@ -11,7 +11,7 @@ pub struct PluginInfo {
 }
 
 impl PluginInfo {
-    /// Create a new PluginInfo builder.
+    /// Create a new `PluginInfo` builder.
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -23,18 +23,21 @@ impl PluginInfo {
     }
 
     /// Set the description.
+    #[must_use]
     pub fn description(mut self, desc: impl Into<String>) -> Self {
         self.description = desc.into();
         self
     }
 
-    /// Add a capability string (e.g., "enrich_metadata:radarr").
+    /// Add a capability string (e.g., "`enrich_metadata:radarr`").
+    #[must_use]
     pub fn capability(mut self, cap: impl Into<String>) -> Self {
         self.capabilities.push(cap.into());
         self
     }
 
     /// Add a handled event type (e.g., "file.introspected").
+    #[must_use]
     pub fn handles(mut self, event_type: impl Into<String>) -> Self {
         self.handled_events.push(event_type.into());
         self

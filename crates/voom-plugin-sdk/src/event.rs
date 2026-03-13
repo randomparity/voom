@@ -5,12 +5,12 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use voom_domain::events::Event;
 
-/// Deserialize a domain Event from MessagePack bytes (as received from the host).
+/// Deserialize a domain Event from `MessagePack` bytes (as received from the host).
 pub fn deserialize_event(payload: &[u8]) -> Result<Event> {
     rmp_serde::from_slice(payload).context("failed to deserialize event from MessagePack")
 }
 
-/// Serialize a domain Event to MessagePack bytes (for sending to the host).
+/// Serialize a domain Event to `MessagePack` bytes (for sending to the host).
 pub fn serialize_event(event: &Event) -> Result<Vec<u8>> {
     rmp_serde::to_vec(event).context("failed to serialize event to MessagePack")
 }
