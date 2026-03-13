@@ -7,7 +7,9 @@ use owo_colors::OwoColorize;
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::output::{max_filename_len, shrink_filename};
-use voom_domain::events::{Event, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent};
+use voom_domain::events::{
+    Event, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
+};
 use voom_job_manager::progress::ProgressReporter;
 use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 
@@ -296,11 +298,21 @@ fn execute_plans(
         }
     }
 
-    // Publish lifecycle events for each non-skipped plan
+    // Publish lifecycle events for each non-skipped plan.
+    // PlanCreated is dispatched first so executor plugins can claim it via the
+    // event bus. If no executor claims the plan, we emit PlanFailed so the
+    // backup-manager's restore path can trigger.
     for plan in &result.plans {
         if plan.is_skipped() {
             continue;
         }
+
+        // Dispatch PlanCreated to let executor plugins claim the plan
+        let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent {
+            plan: plan.clone(),
+        }));
+
+        let claimed = results.iter().any(|r| r.claimed);
 
         kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
             path: file.path.clone(),
@@ -308,14 +320,26 @@ fn execute_plans(
             action_count: plan.actions.len(),
         }));
 
-        // In a full implementation, we'd execute the plan here
-
-        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
-            plan_id: plan.id,
-            path: file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            actions_applied: plan.actions.len(),
-        }));
+        if claimed {
+            // An executor plugin claimed the plan — treat as successful
+            kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
+                plan_id: plan.id,
+                path: file.path.clone(),
+                phase_name: plan.phase_name.clone(),
+                actions_applied: plan.actions.len(),
+            }));
+        } else {
+            // No executor claimed the plan — emit PlanFailed
+            kernel.dispatch(Event::PlanFailed(PlanFailedEvent {
+                plan_id: plan.id,
+                path: file.path.clone(),
+                phase_name: plan.phase_name.clone(),
+                error: "no executor available for plan".into(),
+                error_code: None,
+                plugin_name: None,
+                error_chain: vec![],
+            }));
+        }
     }
 
     Ok(Some(serde_json::json!({
