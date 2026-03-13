@@ -13,8 +13,7 @@ pub fn deserialize_event(payload: &[u8]) -> Result<Event> {
 
 /// Serialize a domain Event to `MessagePack` bytes (for sending to the host).
 pub fn serialize_event(event: &Event) -> Result<Vec<u8>> {
-    rmp_serde::to_vec(event)
-        .map_err(|e| VoomError::Wasm(format!("failed to serialize event: {e}")))
+    rmp_serde::to_vec(event).map_err(|e| VoomError::Wasm(format!("failed to serialize event: {e}")))
 }
 
 /// Deserialize any JSON-compatible type from bytes.
@@ -25,8 +24,7 @@ pub fn deserialize_json<T: DeserializeOwned>(data: &[u8]) -> Result<T> {
 
 /// Serialize any type to JSON bytes.
 pub fn serialize_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    serde_json::to_vec(value)
-        .map_err(|e| VoomError::Wasm(format!("failed to serialize JSON: {e}")))
+    serde_json::to_vec(value).map_err(|e| VoomError::Wasm(format!("failed to serialize JSON: {e}")))
 }
 
 /// Load a plugin config from a `get_plugin_data("config")` provider.

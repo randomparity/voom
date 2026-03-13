@@ -23,7 +23,7 @@ pub struct MediaFile {
 
 impl MediaFile {
     /// Create a new `MediaFile` with the given path and defaults.
-    #[must_use] 
+    #[must_use]
     pub fn new(path: PathBuf) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -41,7 +41,7 @@ impl MediaFile {
     }
 
     /// Returns tracks of the given type.
-    #[must_use] 
+    #[must_use]
     pub fn tracks_of_type(&self, track_type: TrackType) -> Vec<&Track> {
         self.tracks
             .iter()
@@ -50,13 +50,13 @@ impl MediaFile {
     }
 
     /// Returns all video tracks.
-    #[must_use] 
+    #[must_use]
     pub fn video_tracks(&self) -> Vec<&Track> {
         self.tracks_of_type(TrackType::Video)
     }
 
     /// Returns all audio tracks (any audio subtype).
-    #[must_use] 
+    #[must_use]
     pub fn audio_tracks(&self) -> Vec<&Track> {
         self.tracks
             .iter()
@@ -65,7 +65,7 @@ impl MediaFile {
     }
 
     /// Returns all subtitle tracks (any subtitle subtype).
-    #[must_use] 
+    #[must_use]
     pub fn subtitle_tracks(&self) -> Vec<&Track> {
         self.tracks
             .iter()
@@ -73,25 +73,25 @@ impl MediaFile {
             .collect()
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_tracks(mut self, tracks: Vec<Track>) -> Self {
         self.tracks = tracks;
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_container(mut self, container: Container) -> Self {
         self.container = container;
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_duration(mut self, duration: f64) -> Self {
         self.duration = duration;
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_tags(mut self, tags: HashMap<String, String>) -> Self {
         self.tags = tags;
         self
@@ -126,7 +126,7 @@ pub struct Track {
 
 impl Track {
     /// Create a new track with minimal required fields.
-    #[must_use] 
+    #[must_use]
     pub fn new(index: u32, track_type: TrackType, codec: String) -> Self {
         Self {
             index,
@@ -169,7 +169,7 @@ pub enum TrackType {
 }
 
 impl TrackType {
-    #[must_use] 
+    #[must_use]
     pub fn is_audio(&self) -> bool {
         matches!(
             self,
@@ -182,7 +182,7 @@ impl TrackType {
         )
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn is_subtitle(&self) -> bool {
         matches!(
             self,
@@ -190,12 +190,12 @@ impl TrackType {
         )
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn is_video(&self) -> bool {
         matches!(self, TrackType::Video)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             TrackType::Video => "video",
@@ -230,7 +230,7 @@ pub enum Container {
 
 impl Container {
     /// Parse a container format from a file extension.
-    #[must_use] 
+    #[must_use]
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_ascii_lowercase().as_str() {
             "mkv" | "mka" | "mks" => Container::Mkv,
@@ -245,7 +245,7 @@ impl Container {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             Container::Mkv => "mkv",

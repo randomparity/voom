@@ -30,7 +30,10 @@ async fn list() -> Result<()> {
         let entry = entry?;
         let path = entry.path();
         if path.extension().is_some_and(|e| e == "voom") {
-            let name = path.file_stem().expect("file has .voom extension so stem exists").to_string_lossy();
+            let name = path
+                .file_stem()
+                .expect("file has .voom extension so stem exists")
+                .to_string_lossy();
             match voom_dsl::compile(&std::fs::read_to_string(&path)?) {
                 Ok(policy) => {
                     println!(

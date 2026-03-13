@@ -38,7 +38,7 @@ pub struct ToolDetectorPlugin {
 }
 
 impl ToolDetectorPlugin {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::DetectTools],
@@ -74,13 +74,13 @@ impl ToolDetectorPlugin {
     }
 
     /// Check if a specific tool is available.
-    #[must_use] 
+    #[must_use]
     pub fn is_available(&self, name: &str) -> bool {
         self.cache.contains_key(name)
     }
 
     /// Get a detected tool by name.
-    #[must_use] 
+    #[must_use]
     pub fn get_tool(&self, name: &str) -> Option<&DetectedTool> {
         self.cache.get(name)
     }
@@ -93,7 +93,7 @@ impl ToolDetectorPlugin {
     }
 
     /// Get all detected tools.
-    #[must_use] 
+    #[must_use]
     pub fn detected_tools(&self) -> &HashMap<String, DetectedTool> {
         &self.cache
     }

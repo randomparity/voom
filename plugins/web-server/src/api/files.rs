@@ -149,10 +149,9 @@ mod tests {
 
     #[test]
     fn list_files_params_deserialize_with_values() {
-        let params: ListFilesParams = serde_json::from_str(
-            r#"{"container":"mkv","codec":"hevc","limit":50,"offset":10}"#,
-        )
-        .unwrap();
+        let params: ListFilesParams =
+            serde_json::from_str(r#"{"container":"mkv","codec":"hevc","limit":50,"offset":10}"#)
+                .unwrap();
         assert_eq!(params.container, Some("mkv".to_string()));
         assert_eq!(params.codec, Some("hevc".to_string()));
         assert_eq!(params.limit, Some(50));

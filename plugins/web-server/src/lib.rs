@@ -25,7 +25,7 @@ pub struct WebServerPlugin {
 }
 
 impl WebServerPlugin {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::ServeHttp],

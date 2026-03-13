@@ -23,13 +23,13 @@ pub struct Plan {
 
 impl Plan {
     /// Returns true if this plan has no actions to execute.
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.actions.is_empty()
     }
 
     /// Returns true if this plan was skipped.
-    #[must_use] 
+    #[must_use]
     pub fn is_skipped(&self) -> bool {
         self.skip_reason.is_some()
     }
@@ -50,7 +50,7 @@ impl Plan {
     }
 
     /// Returns a new Plan with an additional action.
-    #[must_use] 
+    #[must_use]
     pub fn with_action(mut self, action: PlannedAction) -> Self {
         self.actions.push(action);
         self
@@ -86,7 +86,7 @@ pub enum OperationType {
 }
 
 impl OperationType {
-    #[must_use] 
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             OperationType::SetDefault => "set_default",
@@ -211,9 +211,7 @@ mod tests {
             description: "Remove track 2".into(),
         };
 
-        let plan = plan
-            .with_warning("test warning")
-            .with_action(action);
+        let plan = plan.with_warning("test warning").with_action(action);
 
         assert_eq!(plan.warnings, vec!["test warning"]);
         assert_eq!(plan.actions.len(), 2);

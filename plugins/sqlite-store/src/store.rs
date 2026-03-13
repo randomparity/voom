@@ -94,7 +94,10 @@ fn str_to_track_type(s: &str) -> TrackType {
         "subtitle_commentary" => TrackType::SubtitleCommentary,
         "attachment" => TrackType::Attachment,
         other => {
-            tracing::warn!(track_type = other, "Unknown track type in database, defaulting to Video");
+            tracing::warn!(
+                track_type = other,
+                "Unknown track type in database, defaulting to Video"
+            );
             TrackType::Video
         }
     }

@@ -60,7 +60,7 @@ fn load_templates(template_dir: Option<&str>) -> Result<tera::Tera> {
 }
 
 /// Embedded templates — public for integration tests.
-#[must_use] 
+#[must_use]
 pub fn embedded_templates_for_test() -> tera::Tera {
     embedded_templates()
 }

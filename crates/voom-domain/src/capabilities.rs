@@ -37,7 +37,7 @@ pub enum Capability {
 
 impl Capability {
     /// Returns the capability kind as a string for matching.
-    #[must_use] 
+    #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
             Capability::Discover { .. } => "discover",
@@ -57,7 +57,7 @@ impl Capability {
     }
 
     /// Check if this capability can handle the given operation.
-    #[must_use] 
+    #[must_use]
     pub fn supports_operation(&self, operation: &str) -> bool {
         match self {
             Capability::Execute { operations, .. } => list_contains(operations, operation),
@@ -66,7 +66,7 @@ impl Capability {
     }
 
     /// Check if this capability can handle the given format.
-    #[must_use] 
+    #[must_use]
     pub fn supports_format(&self, format: &str) -> bool {
         match self {
             Capability::Introspect { formats } | Capability::Execute { formats, .. } => {

@@ -37,7 +37,7 @@ impl ProgressInfo {
 ///
 /// `FFmpeg` emits blocks of key=value pairs separated by `progress=continue` or
 /// `progress=end` lines. This function parses the last complete block.
-#[must_use] 
+#[must_use]
 pub fn parse_progress(output: &str) -> Option<ProgressInfo> {
     if output.trim().is_empty() {
         return None;
@@ -101,7 +101,7 @@ pub fn parse_progress(output: &str) -> Option<ProgressInfo> {
 /// Calculate completion percentage given progress time and total duration.
 ///
 /// Returns a value between 0.0 and 100.0.
-#[must_use] 
+#[must_use]
 pub fn completion_percentage(out_time_us: u64, total_duration_secs: f64) -> f64 {
     if total_duration_secs <= 0.0 {
         return 0.0;
@@ -115,7 +115,7 @@ pub fn completion_percentage(out_time_us: u64, total_duration_secs: f64) -> f64 
 ///
 /// `FFmpeg` stderr lines look like:
 /// `frame=  120 fps= 30 q=28.0 size=    1024kB time=00:00:04.00 bitrate=2097.2kbits/s speed=1.5x`
-#[must_use] 
+#[must_use]
 pub fn parse_stderr_progress(line: &str) -> Option<ProgressInfo> {
     let line = line.trim();
     if !line.contains("frame=") || !line.contains("time=") {

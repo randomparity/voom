@@ -125,7 +125,7 @@ pub struct AuthConfig {
 }
 
 impl AuthConfig {
-    #[must_use] 
+    #[must_use]
     pub fn new(token: Option<String>) -> Self {
         Self { token }
     }

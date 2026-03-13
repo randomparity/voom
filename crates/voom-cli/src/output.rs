@@ -68,7 +68,11 @@ pub fn format_scan_results(files: &[(std::path::PathBuf, u64, String)], format: 
                     })
                 })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&json).expect("serde_json::Value serialization cannot fail"));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json)
+                    .expect("serde_json::Value serialization cannot fail")
+            );
         }
         OutputFormat::Table => {
             let mut table = new_table();
@@ -110,7 +114,10 @@ pub fn format_file_info(file: &MediaFile, tracks_only: bool) {
 
 /// Format a media file as JSON.
 pub fn format_file_json(file: &MediaFile) {
-    println!("{}", serde_json::to_string_pretty(file).expect("MediaFile serialization cannot fail"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(file).expect("MediaFile serialization cannot fail")
+    );
 }
 
 /// Format tracks as a table.

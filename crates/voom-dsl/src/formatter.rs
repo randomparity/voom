@@ -6,7 +6,7 @@
 use crate::ast::*;
 
 /// Format a [`PolicyAst`] into a pretty-printed source string.
-#[must_use] 
+#[must_use]
 pub fn format_policy(ast: &PolicyAst) -> String {
     let mut out = String::new();
     out.push_str(&format!("policy \"{}\" {{\n", escape_string(&ast.name)));

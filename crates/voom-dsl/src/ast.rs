@@ -15,7 +15,7 @@ pub struct Span {
 }
 
 impl Span {
-    #[must_use] 
+    #[must_use]
     pub fn new(start: usize, end: usize, line: usize, col: usize) -> Self {
         Self {
             start,

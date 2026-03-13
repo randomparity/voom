@@ -21,7 +21,7 @@ pub struct FfprobeIntrospectorPlugin {
 }
 
 impl FfprobeIntrospectorPlugin {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::Introspect {
@@ -49,7 +49,7 @@ impl FfprobeIntrospectorPlugin {
     }
 
     /// Get the configured ffprobe path.
-    #[must_use] 
+    #[must_use]
     pub fn ffprobe_path(&self) -> &str {
         &self.ffprobe_path
     }

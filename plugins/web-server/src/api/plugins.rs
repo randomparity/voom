@@ -119,7 +119,11 @@ mod tests {
     async fn list_plugins_all_have_capabilities() {
         let result = list_plugins().await.unwrap().0;
         for plugin in &result.plugins {
-            assert!(!plugin.capabilities.is_empty(), "Plugin {} has no capabilities", plugin.name);
+            assert!(
+                !plugin.capabilities.is_empty(),
+                "Plugin {} has no capabilities",
+                plugin.name
+            );
         }
     }
 

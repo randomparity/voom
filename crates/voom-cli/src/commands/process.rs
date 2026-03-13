@@ -80,8 +80,7 @@ fn load_and_compile_policy(args: &ProcessArgs) -> Result<voom_dsl::CompiledPolic
     let policy_source = std::fs::read_to_string(&args.policy)
         .with_context(|| format!("Failed to read policy: {}", args.policy.display()))?;
 
-    voom_dsl::compile(&policy_source)
-        .map_err(|e| anyhow::anyhow!("policy compilation failed: {e}"))
+    voom_dsl::compile(&policy_source).map_err(|e| anyhow::anyhow!("policy compilation failed: {e}"))
 }
 
 /// Print the header line describing what we are about to do.
@@ -147,10 +146,7 @@ fn build_work_items(
 }
 
 /// Set up the job queue and worker pool.
-fn create_worker_pool(
-    config: &app::AppConfig,
-    args: &ProcessArgs,
-) -> Result<(WorkerPool, usize)> {
+fn create_worker_pool(config: &app::AppConfig, args: &ProcessArgs) -> Result<(WorkerPool, usize)> {
     let store = app::open_store(config)?;
     let queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
 
@@ -213,7 +209,14 @@ async fn process_single_file(
             "plans": plan_summaries,
         })))
     } else {
-        execute_plans(file_path, &file, &result, kernel, &file_path_str, needs_exec)
+        execute_plans(
+            file_path,
+            &file,
+            &result,
+            kernel,
+            &file_path_str,
+            needs_exec,
+        )
     }
 }
 
@@ -256,9 +259,7 @@ fn orchestrate_plans(
 
     for plan in &result.plans {
         if !plan.is_skipped() {
-            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent {
-                plan: plan.clone(),
-            }));
+            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
         }
     }
 
@@ -308,9 +309,7 @@ fn execute_plans(
         }
 
         // Dispatch PlanCreated to let executor plugins claim the plan
-        let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent {
-            plan: plan.clone(),
-        }));
+        let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
 
         let claimed = results.iter().any(|r| r.claimed);
 

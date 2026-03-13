@@ -221,10 +221,7 @@ impl StorageTrait for InMemoryStore {
         Ok(())
     }
 
-    fn get_file_history(
-        &self,
-        _path: &Path,
-    ) -> Result<Vec<crate::storage::FileHistoryEntry>> {
+    fn get_file_history(&self, _path: &Path) -> Result<Vec<crate::storage::FileHistoryEntry>> {
         Ok(vec![])
     }
 

@@ -8,7 +8,7 @@ use voom_dsl::compiler::{CompiledCompareOp, CompiledCondition, TrackTarget};
 use crate::filter::{compare_f64, track_matches};
 
 /// Evaluate a condition against a media file.
-#[must_use] 
+#[must_use]
 pub fn evaluate_condition(cond: &CompiledCondition, file: &MediaFile) -> bool {
     match cond {
         CompiledCondition::Exists { target, filter } => {
@@ -208,7 +208,7 @@ fn json_values_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
 }
 
 /// Resolve a `CompiledValueOrField` to a concrete string value.
-#[must_use] 
+#[must_use]
 pub fn resolve_value_or_field(
     vof: &voom_dsl::compiler::CompiledValueOrField,
     file: &MediaFile,

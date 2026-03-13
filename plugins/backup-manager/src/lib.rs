@@ -78,7 +78,7 @@ pub struct BackupManagerPlugin {
 }
 
 impl BackupManagerPlugin {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::Backup],
@@ -87,7 +87,7 @@ impl BackupManagerPlugin {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_config(config: BackupConfig) -> Self {
         Self {
             capabilities: vec![Capability::Backup],
@@ -110,8 +110,8 @@ impl BackupManagerPlugin {
         }
 
         // Validate the source file exists
-        let metadata =
-            fs::metadata(path).map_err(|e| plugin_err(format!("cannot backup {}: {e}", path.display())))?;
+        let metadata = fs::metadata(path)
+            .map_err(|e| plugin_err(format!("cannot backup {}: {e}", path.display())))?;
 
         // Validate disk space
         self.validate_disk_space(path)?;
@@ -139,7 +139,10 @@ impl BackupManagerPlugin {
             created_at: Utc::now(),
         };
 
-        let mut records = self.records.lock().map_err(|_| plugin_err("backup records lock poisoned"))?;
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|_| plugin_err("backup records lock poisoned"))?;
         records.insert(path.to_path_buf(), record.clone());
 
         tracing::info!(
@@ -154,7 +157,10 @@ impl BackupManagerPlugin {
 
     /// Restore a file from its backup.
     pub fn restore_file(&self, path: &Path) -> Result<()> {
-        let mut records = self.records.lock().map_err(|_| plugin_err("backup records lock poisoned"))?;
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|_| plugin_err("backup records lock poisoned"))?;
         let record = records
             .get(path)
             .ok_or_else(|| plugin_err(format!("no backup found for {}", path.display())))?;
@@ -179,7 +185,10 @@ impl BackupManagerPlugin {
 
     /// Remove the backup for a file (after successful execution).
     pub fn remove_backup(&self, path: &Path) -> Result<()> {
-        let mut records = self.records.lock().map_err(|_| plugin_err("backup records lock poisoned"))?;
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|_| plugin_err("backup records lock poisoned"))?;
         let record = records
             .get(path)
             .ok_or_else(|| plugin_err(format!("no backup found for {}", path.display())))?;
@@ -277,7 +286,10 @@ impl BackupManagerPlugin {
     /// Returns the number of backups removed.
     pub fn cleanup_all(&self) -> Result<u64> {
         let records: Vec<BackupRecord> = {
-            let records = self.records.lock().map_err(|_| plugin_err("backup records lock poisoned"))?;
+            let records = self
+                .records
+                .lock()
+                .map_err(|_| plugin_err("backup records lock poisoned"))?;
             records.values().cloned().collect()
         };
 
@@ -300,7 +312,10 @@ impl BackupManagerPlugin {
             removed += 1;
         }
 
-        let mut records_map = self.records.lock().map_err(|_| plugin_err("backup records lock poisoned"))?;
+        let mut records_map = self
+            .records
+            .lock()
+            .map_err(|_| plugin_err("backup records lock poisoned"))?;
         records_map.clear();
 
         tracing::info!(count = removed, "All backups cleaned up");

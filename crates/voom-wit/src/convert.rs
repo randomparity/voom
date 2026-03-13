@@ -71,7 +71,7 @@ pub fn event_result_to_wasm(result: &EventResult) -> Result<WasmEventResult> {
 }
 
 /// Convert a WIT capability string (e.g., "discover:file,smb") to a domain Capability.
-#[must_use] 
+#[must_use]
 pub fn capability_from_wit(cap_str: &str) -> Option<Capability> {
     let (kind, params) = cap_str.split_once(':').unwrap_or((cap_str, ""));
 
@@ -124,7 +124,7 @@ fn split_comma_list(s: &str) -> Vec<String> {
 }
 
 /// Convert a domain Capability to a WIT capability string.
-#[must_use] 
+#[must_use]
 pub fn capability_to_wit(cap: &Capability) -> String {
     match cap {
         Capability::Discover { schemes } => {

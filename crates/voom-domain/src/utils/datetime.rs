@@ -1,19 +1,19 @@
 use chrono::{DateTime, Utc};
 
 /// Format a datetime for display in human-readable form.
-#[must_use] 
+#[must_use]
 pub fn format_display(dt: &DateTime<Utc>) -> String {
     dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
 
 /// Format a datetime as ISO 8601 (for serialization/API responses).
-#[must_use] 
+#[must_use]
 pub fn format_iso(dt: &DateTime<Utc>) -> String {
     dt.to_rfc3339()
 }
 
 /// Format a duration in seconds to a human-readable string (e.g., "1h 23m 45s").
-#[must_use] 
+#[must_use]
 pub fn format_duration(seconds: f64) -> String {
     let total = seconds.round() as u64;
     let h = total / 3600;
@@ -29,7 +29,7 @@ pub fn format_duration(seconds: f64) -> String {
 }
 
 /// Format a file size in bytes to human-readable form.
-#[must_use] 
+#[must_use]
 pub fn format_size(bytes: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = 1024 * KIB;

@@ -28,7 +28,7 @@ pub struct FfmpegExecutorPlugin {
 
 impl FfmpegExecutorPlugin {
     /// Create a new `FFmpeg` executor plugin with default HW accel config.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::Execute {
@@ -49,7 +49,7 @@ impl FfmpegExecutorPlugin {
     }
 
     /// Create with a specific HW accel configuration.
-    #[must_use] 
+    #[must_use]
     pub fn with_hw_accel(mut self, hw_accel: HwAccelConfig) -> Self {
         self.hw_accel = hw_accel;
         self

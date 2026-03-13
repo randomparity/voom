@@ -192,7 +192,10 @@ mod tests {
             evaluated_at: chrono::Utc::now(),
         };
         assert!(store.save_plan(&plan).unwrap() != Uuid::nil());
-        assert!(store.get_plans_for_file(&Uuid::new_v4()).unwrap().is_empty());
+        assert!(store
+            .get_plans_for_file(&Uuid::new_v4())
+            .unwrap()
+            .is_empty());
         assert!(store.update_plan_status(&Uuid::new_v4(), "done").is_ok());
         assert!(store.get_file_history(Path::new("/x")).unwrap().is_empty());
 

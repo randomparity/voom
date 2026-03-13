@@ -29,7 +29,7 @@ pub struct PolicyEvaluatorPlugin {
 }
 
 impl PolicyEvaluatorPlugin {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::Evaluate],

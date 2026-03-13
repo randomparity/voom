@@ -19,7 +19,7 @@ pub struct ProcessingStats {
 }
 
 impl ProcessingStats {
-    #[must_use] 
+    #[must_use]
     pub fn new(file_id: Uuid, policy_name: String, phase_name: String) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -37,7 +37,7 @@ impl ProcessingStats {
     }
 
     /// Returns the change in file size, if both before and after sizes are known.
-    #[must_use] 
+    #[must_use]
     pub fn size_delta(&self) -> Option<i64> {
         match (self.file_size_before, self.file_size_after) {
             (Some(before), Some(after)) => Some(after as i64 - before as i64),

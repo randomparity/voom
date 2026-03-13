@@ -34,7 +34,7 @@ pub struct JobManagerPlugin {
 }
 
 impl JobManagerPlugin {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             queue: None,
@@ -51,7 +51,7 @@ impl JobManagerPlugin {
     }
 
     /// Get the job queue, if initialized.
-    #[must_use] 
+    #[must_use]
     pub fn queue(&self) -> Option<&Arc<JobQueue>> {
         self.queue.as_ref()
     }

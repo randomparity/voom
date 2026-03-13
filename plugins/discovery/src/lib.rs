@@ -72,7 +72,7 @@ pub struct DiscoveryPlugin {
 }
 
 impl DiscoveryPlugin {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::Discover {

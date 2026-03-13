@@ -30,7 +30,7 @@ pub enum Event {
 
 impl Event {
     /// Returns the event type string used for subscription matching.
-    #[must_use] 
+    #[must_use]
     pub fn event_type(&self) -> &str {
         match self {
             Event::FileDiscovered(_) => "file.discovered",

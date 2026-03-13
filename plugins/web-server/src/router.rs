@@ -82,27 +82,72 @@ mod tests {
 
     struct DummyStore;
     impl StorageTrait for DummyStore {
-        fn upsert_file(&self, _: &MediaFile) -> VoomResult<()> { Ok(()) }
-        fn get_file(&self, _: &uuid::Uuid) -> VoomResult<Option<MediaFile>> { Ok(None) }
-        fn get_file_by_path(&self, _: &Path) -> VoomResult<Option<MediaFile>> { Ok(None) }
-        fn list_files(&self, _: &FileFilters) -> VoomResult<Vec<MediaFile>> { Ok(vec![]) }
-        fn count_files(&self, _: &FileFilters) -> VoomResult<u64> { Ok(0) }
-        fn delete_file(&self, _: &uuid::Uuid) -> VoomResult<()> { Ok(()) }
-        fn create_job(&self, _: &Job) -> VoomResult<uuid::Uuid> { Ok(uuid::Uuid::new_v4()) }
-        fn get_job(&self, _: &uuid::Uuid) -> VoomResult<Option<Job>> { Ok(None) }
-        fn update_job(&self, _: &uuid::Uuid, _: &JobUpdate) -> VoomResult<()> { Ok(()) }
-        fn claim_next_job(&self, _: &str) -> VoomResult<Option<Job>> { Ok(None) }
-        fn list_jobs(&self, _: Option<JobStatus>, _: Option<u32>) -> VoomResult<Vec<Job>> { Ok(vec![]) }
-        fn count_jobs_by_status(&self) -> VoomResult<Vec<(JobStatus, u64)>> { Ok(vec![]) }
-        fn save_plan(&self, _: &Plan) -> VoomResult<uuid::Uuid> { Ok(uuid::Uuid::new_v4()) }
-        fn get_plans_for_file(&self, _: &uuid::Uuid) -> VoomResult<Vec<StoredPlan>> { Ok(vec![]) }
-        fn update_plan_status(&self, _: &uuid::Uuid, _: &str) -> VoomResult<()> { Ok(()) }
-        fn get_file_history(&self, _: &Path) -> VoomResult<Vec<voom_domain::storage::FileHistoryEntry>> { Ok(vec![]) }
-        fn record_stats(&self, _: &ProcessingStats) -> VoomResult<()> { Ok(()) }
-        fn get_plugin_data(&self, _: &str, _: &str) -> VoomResult<Option<Vec<u8>>> { Ok(None) }
-        fn set_plugin_data(&self, _: &str, _: &str, _: &[u8]) -> VoomResult<()> { Ok(()) }
-        fn vacuum(&self) -> VoomResult<()> { Ok(()) }
-        fn prune_missing_files(&self) -> VoomResult<u64> { Ok(0) }
+        fn upsert_file(&self, _: &MediaFile) -> VoomResult<()> {
+            Ok(())
+        }
+        fn get_file(&self, _: &uuid::Uuid) -> VoomResult<Option<MediaFile>> {
+            Ok(None)
+        }
+        fn get_file_by_path(&self, _: &Path) -> VoomResult<Option<MediaFile>> {
+            Ok(None)
+        }
+        fn list_files(&self, _: &FileFilters) -> VoomResult<Vec<MediaFile>> {
+            Ok(vec![])
+        }
+        fn count_files(&self, _: &FileFilters) -> VoomResult<u64> {
+            Ok(0)
+        }
+        fn delete_file(&self, _: &uuid::Uuid) -> VoomResult<()> {
+            Ok(())
+        }
+        fn create_job(&self, _: &Job) -> VoomResult<uuid::Uuid> {
+            Ok(uuid::Uuid::new_v4())
+        }
+        fn get_job(&self, _: &uuid::Uuid) -> VoomResult<Option<Job>> {
+            Ok(None)
+        }
+        fn update_job(&self, _: &uuid::Uuid, _: &JobUpdate) -> VoomResult<()> {
+            Ok(())
+        }
+        fn claim_next_job(&self, _: &str) -> VoomResult<Option<Job>> {
+            Ok(None)
+        }
+        fn list_jobs(&self, _: Option<JobStatus>, _: Option<u32>) -> VoomResult<Vec<Job>> {
+            Ok(vec![])
+        }
+        fn count_jobs_by_status(&self) -> VoomResult<Vec<(JobStatus, u64)>> {
+            Ok(vec![])
+        }
+        fn save_plan(&self, _: &Plan) -> VoomResult<uuid::Uuid> {
+            Ok(uuid::Uuid::new_v4())
+        }
+        fn get_plans_for_file(&self, _: &uuid::Uuid) -> VoomResult<Vec<StoredPlan>> {
+            Ok(vec![])
+        }
+        fn update_plan_status(&self, _: &uuid::Uuid, _: &str) -> VoomResult<()> {
+            Ok(())
+        }
+        fn get_file_history(
+            &self,
+            _: &Path,
+        ) -> VoomResult<Vec<voom_domain::storage::FileHistoryEntry>> {
+            Ok(vec![])
+        }
+        fn record_stats(&self, _: &ProcessingStats) -> VoomResult<()> {
+            Ok(())
+        }
+        fn get_plugin_data(&self, _: &str, _: &str) -> VoomResult<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        fn set_plugin_data(&self, _: &str, _: &str, _: &[u8]) -> VoomResult<()> {
+            Ok(())
+        }
+        fn vacuum(&self) -> VoomResult<()> {
+            Ok(())
+        }
+        fn prune_missing_files(&self) -> VoomResult<u64> {
+            Ok(0)
+        }
     }
 
     fn make_state(auth_token: Option<String>) -> AppState {

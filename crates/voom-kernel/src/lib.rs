@@ -47,7 +47,7 @@ pub struct Kernel {
 }
 
 impl Kernel {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             registry: registry::PluginRegistry::new(),

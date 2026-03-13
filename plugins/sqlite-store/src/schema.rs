@@ -137,10 +137,7 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "plugin_data",
     ];
     let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
-        assert!(
-            KNOWN_TABLES.contains(&table),
-            "unknown table: {table}"
-        );
+        assert!(KNOWN_TABLES.contains(&table), "unknown table: {table}");
         let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
         let columns: Vec<String> = stmt
             .query_map([], |row| row.get::<_, String>(1))?

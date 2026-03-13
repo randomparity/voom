@@ -44,7 +44,7 @@ pub struct EventBus {
 }
 
 impl EventBus {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             subscribers: RwLock::new(Vec::new()),

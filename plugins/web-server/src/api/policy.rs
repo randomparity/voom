@@ -176,8 +176,7 @@ mod tests {
 
     #[test]
     fn policy_input_deserialize() {
-        let input: PolicyInput =
-            serde_json::from_str(r#"{"source":"policy \"x\" {}"}"#).unwrap();
+        let input: PolicyInput = serde_json::from_str(r#"{"source":"policy \"x\" {}"}"#).unwrap();
         assert_eq!(input.source, r#"policy "x" {}"#);
     }
 

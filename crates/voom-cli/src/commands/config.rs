@@ -22,7 +22,8 @@ async fn show() -> Result<()> {
             .map(|line| {
                 let trimmed = line.trim();
                 if trimmed.starts_with("auth_token") && trimmed.contains('=') {
-                    let prefix = &line[..line.find('=').expect("line contains '=' (checked above)") + 1];
+                    let prefix =
+                        &line[..line.find('=').expect("line contains '=' (checked above)") + 1];
                     format!("{prefix} \"[REDACTED]\"")
                 } else {
                     line.to_string()

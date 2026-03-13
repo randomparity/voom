@@ -94,7 +94,7 @@ pub struct MkvtoolnixExecutorPlugin {
 }
 
 impl MkvtoolnixExecutorPlugin {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::Execute {
@@ -112,7 +112,7 @@ impl MkvtoolnixExecutorPlugin {
     /// Returns true if:
     /// - The file has an MKV container (or the plan includes `ConvertContainer` to MKV)
     /// - All actions use supported operation types
-    #[must_use] 
+    #[must_use]
     pub fn can_handle(&self, plan: &Plan) -> bool {
         let is_mkv = plan.file.container == Container::Mkv;
         let is_convert_to_mkv = plan.actions.iter().any(|a| {

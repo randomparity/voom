@@ -339,7 +339,13 @@ mod tests {
     #[test]
     fn scan_flags() {
         let cli = parse(&[
-            "voom", "scan", "/media", "--no-hash", "--workers", "4", "--table",
+            "voom",
+            "scan",
+            "/media",
+            "--no-hash",
+            "--workers",
+            "4",
+            "--table",
         ]);
         match cli.command {
             Commands::Scan(args) => {
@@ -464,7 +470,10 @@ mod tests {
     #[test]
     fn policy_list() {
         let cli = parse(&["voom", "policy", "list"]);
-        assert!(matches!(cli.command, Commands::Policy(PolicyCommands::List)));
+        assert!(matches!(
+            cli.command,
+            Commands::Policy(PolicyCommands::List)
+        ));
     }
 
     #[test]
@@ -765,9 +774,16 @@ mod tests {
 
     #[test]
     fn invalid_on_error_rejected() {
-        assert!(
-            try_parse(&["voom", "process", "/m", "--policy", "p", "--on-error", "retry"]).is_err()
-        );
+        assert!(try_parse(&[
+            "voom",
+            "process",
+            "/m",
+            "--policy",
+            "p",
+            "--on-error",
+            "retry"
+        ])
+        .is_err());
     }
 
     // ── Verbose flag is global (works after subcommand) ──────

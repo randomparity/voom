@@ -31,7 +31,10 @@ pub async fn run(args: ReportArgs) -> Result<()> {
                 "containers": output::container_counts(&files),
                 "codecs": codec_counts(&files),
             });
-            println!("{}", serde_json::to_string_pretty(&report).expect("report is serializable"));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).expect("report is serializable")
+            );
         }
         OutputFormat::Table => {
             println!("{}", "Library Report".bold().underline());

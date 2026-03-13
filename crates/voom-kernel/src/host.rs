@@ -73,7 +73,7 @@ pub struct InMemoryDataStore {
 }
 
 impl InMemoryDataStore {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             data: Mutex::new(HashMap::new()),
@@ -112,7 +112,7 @@ impl PluginDataStore for InMemoryDataStore {
 
 impl HostState {
     /// Create a new `HostState` for a plugin with default settings.
-    #[must_use] 
+    #[must_use]
     pub fn new(plugin_name: String) -> Self {
         Self {
             plugin_name,
@@ -129,28 +129,28 @@ impl HostState {
     }
 
     /// Enable HTTP access for this plugin.
-    #[must_use] 
+    #[must_use]
     pub fn with_http(mut self) -> Self {
         self.http_allowed = true;
         self
     }
 
     /// Set allowed tools for this plugin.
-    #[must_use] 
+    #[must_use]
     pub fn with_tools(mut self, tools: Vec<String>) -> Self {
         self.allowed_tools = tools;
         self
     }
 
     /// Set allowed filesystem paths for tool execution.
-    #[must_use] 
+    #[must_use]
     pub fn with_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.allowed_paths = paths;
         self
     }
 
     /// Set allowed capabilities for this plugin.
-    #[must_use] 
+    #[must_use]
     pub fn with_capabilities(mut self, capabilities: HashSet<String>) -> Self {
         self.allowed_capabilities = capabilities;
         self
@@ -178,7 +178,7 @@ impl HostState {
     }
 
     /// Get plugin-specific persisted data by key.
-    #[must_use] 
+    #[must_use]
     pub fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
         // Try persistent storage first, fall back to in-memory.
         if let Some(storage) = &self.storage {

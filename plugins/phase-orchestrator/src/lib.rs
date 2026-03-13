@@ -32,7 +32,7 @@ pub struct PhaseOrchestratorPlugin {
 }
 
 impl PhaseOrchestratorPlugin {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::Orchestrate],
@@ -82,7 +82,7 @@ impl PhaseOrchestratorPlugin {
     }
 
     /// Build a human-readable dry-run summary.
-    #[must_use] 
+    #[must_use]
     pub fn format_dry_run(result: &OrchestrationResult) -> String {
         let mut output = String::new();
 
@@ -111,7 +111,7 @@ impl PhaseOrchestratorPlugin {
     }
 
     /// Determine if the entire policy requires file modifications.
-    #[must_use] 
+    #[must_use]
     pub fn needs_execution(result: &OrchestrationResult) -> bool {
         result
             .plans
@@ -120,7 +120,7 @@ impl PhaseOrchestratorPlugin {
     }
 
     /// Get the error strategy for a given phase.
-    #[must_use] 
+    #[must_use]
     pub fn phase_error_strategy(policy: &CompiledPolicy, phase_name: &str) -> ErrorStrategy {
         policy
             .phases

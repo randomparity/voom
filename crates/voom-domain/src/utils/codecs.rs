@@ -132,14 +132,14 @@ pub fn normalize_codec(name: &str) -> Option<&'static str> {
 }
 
 /// Returns all known canonical codec names.
-#[must_use] 
+#[must_use]
 pub fn all_codec_names() -> &'static [&'static str] {
     &ALL_CODEC_NAMES
 }
 
 /// Find the closest matching codec name for "did you mean?" suggestions.
 /// Returns `None` if nothing is close enough (edit distance > 3).
-#[must_use] 
+#[must_use]
 pub fn suggest_codec(name: &str) -> Option<&'static str> {
     let lower = name.to_ascii_lowercase();
     let mut best: Option<(&str, usize)> = None;

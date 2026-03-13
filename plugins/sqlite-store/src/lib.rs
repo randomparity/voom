@@ -20,7 +20,7 @@ pub struct SqliteStorePlugin {
 }
 
 impl SqliteStorePlugin {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             store: None,
@@ -31,7 +31,7 @@ impl SqliteStorePlugin {
     }
 
     /// Get a reference to the underlying store. Returns None if not initialized.
-    #[must_use] 
+    #[must_use]
     pub fn store(&self) -> Option<&Arc<SqliteStore>> {
         self.store.as_ref()
     }
@@ -277,7 +277,9 @@ mod tests {
 
         // Verify data was stored
         let store = plugin.store().unwrap();
-        let data = store.get_plugin_data("tool-detector", "tool:ffprobe").unwrap();
+        let data = store
+            .get_plugin_data("tool-detector", "tool:ffprobe")
+            .unwrap();
         assert!(data.is_some());
         let value: serde_json::Value = serde_json::from_slice(&data.unwrap()).unwrap();
         assert_eq!(value["tool_name"], "ffprobe");

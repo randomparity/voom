@@ -17,7 +17,7 @@ pub struct FfmpegCommand {
 
 impl FfmpegCommand {
     /// Create a new command with default flags (`-y -hide_banner`).
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             args: vec!["-y".to_string(), "-hide_banner".to_string()],
@@ -25,7 +25,7 @@ impl FfmpegCommand {
     }
 
     /// Add an input file.
-    #[must_use] 
+    #[must_use]
     pub fn input(mut self, path: &Path) -> Self {
         self.args.push("-i".to_string());
         self.args.push(path.to_string_lossy().to_string());
@@ -33,14 +33,14 @@ impl FfmpegCommand {
     }
 
     /// Set the output file (must be called last before `build`).
-    #[must_use] 
+    #[must_use]
     pub fn output(mut self, path: &Path) -> Self {
         self.args.push(path.to_string_lossy().to_string());
         self
     }
 
     /// Map all streams from input (`-map 0`).
-    #[must_use] 
+    #[must_use]
     pub fn map_all(mut self) -> Self {
         self.args.push("-map".to_string());
         self.args.push("0".to_string());
@@ -48,7 +48,7 @@ impl FfmpegCommand {
     }
 
     /// Map a specific track by index (`-map 0:{index}`).
-    #[must_use] 
+    #[must_use]
     pub fn map_track(mut self, index: u32) -> Self {
         self.args.push("-map".to_string());
         self.args.push(format!("0:{index}"));
@@ -56,7 +56,7 @@ impl FfmpegCommand {
     }
 
     /// Copy all codecs (`-c copy`).
-    #[must_use] 
+    #[must_use]
     pub fn codec_copy(mut self) -> Self {
         self.args.push("-c".to_string());
         self.args.push("copy".to_string());
@@ -64,7 +64,7 @@ impl FfmpegCommand {
     }
 
     /// Set global video codec (`-c:v {codec}`).
-    #[must_use] 
+    #[must_use]
     pub fn video_codec(mut self, codec: &str) -> Self {
         self.args.push("-c:v".to_string());
         self.args.push(codec.to_string());
@@ -72,7 +72,7 @@ impl FfmpegCommand {
     }
 
     /// Set global audio codec (`-c:a {codec}`).
-    #[must_use] 
+    #[must_use]
     pub fn audio_codec(mut self, codec: &str) -> Self {
         self.args.push("-c:a".to_string());
         self.args.push(codec.to_string());
@@ -80,7 +80,7 @@ impl FfmpegCommand {
     }
 
     /// Set video codec for a specific stream (`-c:v:{stream} {codec}`).
-    #[must_use] 
+    #[must_use]
     pub fn video_codec_for_track(mut self, stream: u32, codec: &str) -> Self {
         self.args.push(format!("-c:v:{stream}"));
         self.args.push(codec.to_string());
@@ -88,7 +88,7 @@ impl FfmpegCommand {
     }
 
     /// Set audio codec for a specific stream (`-c:a:{stream} {codec}`).
-    #[must_use] 
+    #[must_use]
     pub fn audio_codec_for_track(mut self, stream: u32, codec: &str) -> Self {
         self.args.push(format!("-c:a:{stream}"));
         self.args.push(codec.to_string());
@@ -96,7 +96,7 @@ impl FfmpegCommand {
     }
 
     /// Set CRF value (`-crf {value}`).
-    #[must_use] 
+    #[must_use]
     pub fn crf(mut self, value: u32) -> Self {
         self.args.push("-crf".to_string());
         self.args.push(value.to_string());
@@ -104,7 +104,7 @@ impl FfmpegCommand {
     }
 
     /// Set audio bitrate (`-b:a {bitrate}`).
-    #[must_use] 
+    #[must_use]
     pub fn audio_bitrate(mut self, bitrate: &str) -> Self {
         self.args.push("-b:a".to_string());
         self.args.push(bitrate.to_string());
@@ -112,7 +112,7 @@ impl FfmpegCommand {
     }
 
     /// Set encoding preset (`-preset {preset}`).
-    #[must_use] 
+    #[must_use]
     pub fn preset(mut self, preset: &str) -> Self {
         self.args.push("-preset".to_string());
         self.args.push(preset.to_string());
@@ -123,7 +123,7 @@ impl FfmpegCommand {
     ///
     /// With `stream_index`: `-metadata:s:{index} {key}={value}`
     /// Without: `-metadata {key}={value}`
-    #[must_use] 
+    #[must_use]
     pub fn metadata(mut self, stream_index: Option<u32>, key: &str, value: &str) -> Self {
         match stream_index {
             Some(idx) => {
@@ -138,7 +138,7 @@ impl FfmpegCommand {
     }
 
     /// Set disposition on a stream (`-disposition:{stream_index} {value}`).
-    #[must_use] 
+    #[must_use]
     pub fn disposition(mut self, stream_index: u32, value: &str) -> Self {
         self.args.push(format!("-disposition:{stream_index}"));
         self.args.push(value.to_string());
@@ -146,7 +146,7 @@ impl FfmpegCommand {
     }
 
     /// Enable progress output to pipe (`-progress pipe:1`).
-    #[must_use] 
+    #[must_use]
     pub fn progress_pipe(mut self) -> Self {
         self.args.push("-progress".to_string());
         self.args.push("pipe:1".to_string());
@@ -154,14 +154,14 @@ impl FfmpegCommand {
     }
 
     /// Add a raw argument.
-    #[must_use] 
+    #[must_use]
     pub fn arg(mut self, arg: &str) -> Self {
         self.args.push(arg.to_string());
         self
     }
 
     /// Consume the builder and return the argument list.
-    #[must_use] 
+    #[must_use]
     pub fn build(self) -> Vec<String> {
         self.args
     }
@@ -301,7 +301,7 @@ pub fn build_ffmpeg_command(
 ///
 /// If a `ConvertContainer` action is present, uses the target container.
 /// Otherwise, preserves the input file's extension.
-#[must_use] 
+#[must_use]
 pub fn output_extension(file: &MediaFile, actions: &[&PlannedAction]) -> String {
     for action in actions {
         if action.operation == OperationType::ConvertContainer {
