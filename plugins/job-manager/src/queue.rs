@@ -1,4 +1,4 @@
-//! Job queue backed by StorageTrait, with priority ordering and status management.
+//! Job queue backed by `StorageTrait`, with priority ordering and status management.
 
 use std::sync::Arc;
 

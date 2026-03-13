@@ -16,7 +16,7 @@ use voom_domain::storage::{FileFilters, StorageTrait, StoredPlan};
 
 use crate::schema;
 
-/// Configuration for the SQLite store.
+/// Configuration for the `SQLite` store.
 pub struct SqliteStoreConfig {
     /// Maximum number of connections in the pool. Default: 8.
     pub pool_size: u32,
@@ -34,7 +34,7 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
-    /// Open (or create) a SQLite database at the given path.
+    /// Open (or create) a `SQLite` database at the given path.
     pub fn open(db_path: &Path) -> Result<Self> {
         Self::open_with_config(db_path, SqliteStoreConfig::default())
     }
@@ -45,7 +45,7 @@ impl SqliteStore {
         Self::from_manager(manager, config.pool_size)
     }
 
-    /// Create an in-memory SQLite store (useful for testing).
+    /// Create an in-memory `SQLite` store (useful for testing).
     pub fn in_memory() -> Result<Self> {
         let manager = SqliteConnectionManager::memory();
         Self::from_manager(manager, SqliteStoreConfig::default().pool_size)
@@ -93,7 +93,10 @@ fn str_to_track_type(s: &str) -> TrackType {
         "subtitle_forced" => TrackType::SubtitleForced,
         "subtitle_commentary" => TrackType::SubtitleCommentary,
         "attachment" => TrackType::Attachment,
-        _ => TrackType::Video, // fallback
+        other => {
+            tracing::warn!(track_type = other, "Unknown track type in database, defaulting to Video");
+            TrackType::Video
+        }
     }
 }
 
@@ -482,6 +485,32 @@ impl StorageTrait for SqliteStore {
         };
 
         Ok(files)
+    }
+
+    fn count_files(&self, filters: &FileFilters) -> Result<u64> {
+        let conn = self.conn()?;
+        let mut sql = String::from("SELECT COUNT(*) FROM files WHERE 1=1");
+        let mut param_values: Vec<String> = Vec::new();
+
+        if let Some(ref container) = filters.container {
+            param_values.push(container.clone());
+            sql.push_str(&format!(" AND container = ?{}", param_values.len()));
+        }
+        if let Some(ref prefix) = filters.path_prefix {
+            param_values.push(format!("{prefix}%"));
+            sql.push_str(&format!(" AND path LIKE ?{}", param_values.len()));
+        }
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
+            .iter()
+            .map(|v| v as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        let count: u64 = conn
+            .query_row(&sql, param_refs.as_slice(), |row| row.get(0))
+            .map_err(|e| VoomError::Storage(format!("failed to count files: {e}")))?;
+
+        Ok(count)
     }
 
     fn delete_file(&self, id: &Uuid) -> Result<()> {

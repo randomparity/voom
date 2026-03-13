@@ -30,6 +30,7 @@ impl Default for WorkerPoolConfig {
 
 impl WorkerPoolConfig {
     /// Resolve the actual worker count (0 means use CPU count).
+    #[must_use] 
     pub fn effective_workers(&self) -> usize {
         if self.max_workers == 0 {
             num_cpus()
@@ -67,6 +68,7 @@ pub struct WorkerPool {
 }
 
 impl WorkerPool {
+    #[must_use] 
     pub fn new(queue: Arc<JobQueue>, config: WorkerPoolConfig) -> Self {
         Self {
             config,
@@ -83,23 +85,26 @@ impl WorkerPool {
     }
 
     /// Check if cancellation was requested.
+    #[must_use] 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
     }
 
     /// Get the number of completed jobs.
+    #[must_use] 
     pub fn completed_count(&self) -> u64 {
         self.completed_count.load(Ordering::SeqCst)
     }
 
     /// Get the number of failed jobs.
+    #[must_use] 
     pub fn failed_count(&self) -> u64 {
         self.failed_count.load(Ordering::SeqCst)
     }
 
     /// Process a batch of work items concurrently.
     ///
-    /// `items` is a list of (job_type, priority, payload) tuples to enqueue.
+    /// `items` is a list of (`job_type`, priority, payload) tuples to enqueue.
     /// `processor` is called for each claimed job and should return Ok(output) or Err(error).
     /// `on_error` controls behavior when a job fails.
     /// `reporter` is notified of progress updates.
@@ -146,7 +151,7 @@ impl WorkerPool {
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
 
         for _ in 0..job_ids.len() {
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let permit = semaphore.clone().acquire_owned().await.expect("semaphore not closed");
             let queue = self.queue.clone();
             let cancelled = self.cancelled.clone();
             let completed = self.completed_count.clone();

@@ -127,25 +127,22 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
 /// Run migrations for existing databases that may lack newer columns/tables.
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // Check plans table for new columns
-    let has_column = |table: &str, column: &str| -> bool {
-        let mut stmt = conn
-            .prepare(&format!("PRAGMA table_info({table})"))
-            .unwrap();
+    let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
         let columns: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))?
             .filter_map(|r| r.ok())
             .collect();
-        columns.iter().any(|c| c == column)
+        Ok(columns.iter().any(|c| c == column))
     };
 
-    if !has_column("plans", "skip_reason") {
+    if !has_column("plans", "skip_reason")? {
         conn.execute_batch("ALTER TABLE plans ADD COLUMN skip_reason TEXT")?;
     }
-    if !has_column("plans", "policy_hash") {
+    if !has_column("plans", "policy_hash")? {
         conn.execute_batch("ALTER TABLE plans ADD COLUMN policy_hash TEXT")?;
     }
-    if !has_column("plans", "evaluated_at") {
+    if !has_column("plans", "evaluated_at")? {
         conn.execute_batch("ALTER TABLE plans ADD COLUMN evaluated_at TEXT")?;
     }
 
@@ -167,7 +164,7 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Configure SQLite connection for optimal performance.
+/// Configure `SQLite` connection for optimal performance.
 pub fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;

@@ -1,6 +1,6 @@
-//! FFmpeg progress parsing from `-progress pipe:1` output and stderr.
+//! `FFmpeg` progress parsing from `-progress pipe:1` output and stderr.
 
-/// Parsed progress information from FFmpeg output.
+/// Parsed progress information from `FFmpeg` output.
 #[derive(Debug, Clone)]
 pub struct ProgressInfo {
     pub frame: Option<u64>,
@@ -12,7 +12,7 @@ pub struct ProgressInfo {
     pub progress: ProgressState,
 }
 
-/// State of FFmpeg encoding progress.
+/// State of `FFmpeg` encoding progress.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProgressState {
     Continue,
@@ -33,10 +33,11 @@ impl ProgressInfo {
     }
 }
 
-/// Parse FFmpeg `-progress pipe:1` output (key=value lines) into ProgressInfo.
+/// Parse `FFmpeg` `-progress pipe:1` output (key=value lines) into `ProgressInfo`.
 ///
-/// FFmpeg emits blocks of key=value pairs separated by `progress=continue` or
+/// `FFmpeg` emits blocks of key=value pairs separated by `progress=continue` or
 /// `progress=end` lines. This function parses the last complete block.
+#[must_use] 
 pub fn parse_progress(output: &str) -> Option<ProgressInfo> {
     if output.trim().is_empty() {
         return None;
@@ -100,6 +101,7 @@ pub fn parse_progress(output: &str) -> Option<ProgressInfo> {
 /// Calculate completion percentage given progress time and total duration.
 ///
 /// Returns a value between 0.0 and 100.0.
+#[must_use] 
 pub fn completion_percentage(out_time_us: u64, total_duration_secs: f64) -> f64 {
     if total_duration_secs <= 0.0 {
         return 0.0;
@@ -109,10 +111,11 @@ pub fn completion_percentage(out_time_us: u64, total_duration_secs: f64) -> f64 
     pct.clamp(0.0, 100.0)
 }
 
-/// Parse FFmpeg stderr progress line.
+/// Parse `FFmpeg` stderr progress line.
 ///
-/// FFmpeg stderr lines look like:
+/// `FFmpeg` stderr lines look like:
 /// `frame=  120 fps= 30 q=28.0 size=    1024kB time=00:00:04.00 bitrate=2097.2kbits/s speed=1.5x`
+#[must_use] 
 pub fn parse_stderr_progress(line: &str) -> Option<ProgressInfo> {
     let line = line.trim();
     if !line.contains("frame=") || !line.contains("time=") {
@@ -165,7 +168,7 @@ pub fn parse_stderr_progress(line: &str) -> Option<ProgressInfo> {
     Some(info)
 }
 
-/// Extract a value from an FFmpeg stderr key=value segment.
+/// Extract a value from an `FFmpeg` stderr key=value segment.
 fn extract_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let start = line.find(key)?;
     let value_start = start + key.len();

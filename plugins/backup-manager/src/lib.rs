@@ -16,6 +16,24 @@ use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{Event, EventResult};
 use voom_kernel::{Plugin, PluginContext};
 
+/// Create a `VoomError::Plugin` for the backup-manager plugin.
+fn plugin_err(message: impl Into<String>) -> VoomError {
+    VoomError::Plugin {
+        plugin: "backup-manager".into(),
+        message: message.into(),
+    }
+}
+
+/// Build an `EventResult` for the backup-manager plugin with the given JSON data.
+fn backup_result(data: serde_json::Value) -> EventResult {
+    EventResult {
+        plugin_name: "backup-manager".into(),
+        produced_events: vec![],
+        data: Some(data),
+        claimed: false,
+    }
+}
+
 /// A record of a backed-up file.
 #[derive(Debug, Clone)]
 pub struct BackupRecord {
@@ -60,6 +78,7 @@ pub struct BackupManagerPlugin {
 }
 
 impl BackupManagerPlugin {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::Backup],
@@ -68,6 +87,7 @@ impl BackupManagerPlugin {
         }
     }
 
+    #[must_use] 
     pub fn with_config(config: BackupConfig) -> Self {
         Self {
             capabilities: vec![Capability::Backup],
@@ -77,13 +97,11 @@ impl BackupManagerPlugin {
     }
 
     /// Create a backup of the given file before modification.
-    /// Returns the BackupRecord on success.
+    /// Returns the `BackupRecord` on success.
     pub fn backup_file(&self, path: &Path) -> Result<BackupRecord> {
         // Validate the source file exists
-        let metadata = fs::metadata(path).map_err(|e| VoomError::Plugin {
-            plugin: "backup-manager".into(),
-            message: format!("cannot backup {}: {}", path.display(), e),
-        })?;
+        let metadata =
+            fs::metadata(path).map_err(|e| plugin_err(format!("cannot backup {}: {e}", path.display())))?;
 
         // Validate disk space
         self.validate_disk_space(path)?;
@@ -95,14 +113,12 @@ impl BackupManagerPlugin {
         }
 
         // Copy file to backup location
-        fs::copy(path, &backup_path).map_err(|e| VoomError::Plugin {
-            plugin: "backup-manager".into(),
-            message: format!(
-                "failed to copy {} to {}: {}",
+        fs::copy(path, &backup_path).map_err(|e| {
+            plugin_err(format!(
+                "failed to copy {} to {}: {e}",
                 path.display(),
                 backup_path.display(),
-                e
-            ),
+            ))
         })?;
 
         let record = BackupRecord {
@@ -113,7 +129,7 @@ impl BackupManagerPlugin {
             created_at: Utc::now(),
         };
 
-        let mut records = self.records.lock().unwrap();
+        let mut records = self.records.lock().expect("backup records mutex not poisoned");
         records.insert(path.to_path_buf(), record.clone());
 
         tracing::info!(
@@ -128,20 +144,17 @@ impl BackupManagerPlugin {
 
     /// Restore a file from its backup.
     pub fn restore_file(&self, path: &Path) -> Result<()> {
-        let mut records = self.records.lock().unwrap();
-        let record = records.get(path).ok_or_else(|| VoomError::Plugin {
-            plugin: "backup-manager".into(),
-            message: format!("no backup found for {}", path.display()),
-        })?;
+        let mut records = self.records.lock().expect("backup records mutex not poisoned");
+        let record = records
+            .get(path)
+            .ok_or_else(|| plugin_err(format!("no backup found for {}", path.display())))?;
 
-        fs::copy(&record.backup_path, path).map_err(|e| VoomError::Plugin {
-            plugin: "backup-manager".into(),
-            message: format!(
-                "failed to restore {} from {}: {}",
+        fs::copy(&record.backup_path, path).map_err(|e| {
+            plugin_err(format!(
+                "failed to restore {} from {}: {e}",
                 path.display(),
                 record.backup_path.display(),
-                e
-            ),
+            ))
         })?;
 
         tracing::info!(
@@ -156,20 +169,17 @@ impl BackupManagerPlugin {
 
     /// Remove the backup for a file (after successful execution).
     pub fn remove_backup(&self, path: &Path) -> Result<()> {
-        let mut records = self.records.lock().unwrap();
-        let record = records.get(path).ok_or_else(|| VoomError::Plugin {
-            plugin: "backup-manager".into(),
-            message: format!("no backup found for {}", path.display()),
-        })?;
+        let mut records = self.records.lock().expect("backup records mutex not poisoned");
+        let record = records
+            .get(path)
+            .ok_or_else(|| plugin_err(format!("no backup found for {}", path.display())))?;
 
         // Delete the backup file
-        fs::remove_file(&record.backup_path).map_err(|e| VoomError::Plugin {
-            plugin: "backup-manager".into(),
-            message: format!(
-                "failed to remove backup {}: {}",
+        fs::remove_file(&record.backup_path).map_err(|e| {
+            plugin_err(format!(
+                "failed to remove backup {}: {e}",
                 record.backup_path.display(),
-                e
-            ),
+            ))
         })?;
 
         // Try to clean up the backup directory if empty
@@ -201,17 +211,14 @@ impl BackupManagerPlugin {
         let required = file_size + self.config.min_free_space;
 
         if available < required {
-            return Err(VoomError::Plugin {
-                plugin: "backup-manager".into(),
-                message: format!(
-                    "insufficient disk space for backup of {}: need {} bytes (file {} + reserve {}), have {} available",
-                    path.display(),
-                    required,
-                    file_size,
-                    self.config.min_free_space,
-                    available,
-                ),
-            });
+            return Err(plugin_err(format!(
+                "insufficient disk space for backup of {}: need {} bytes (file {} + reserve {}), have {} available",
+                path.display(),
+                required,
+                file_size,
+                self.config.min_free_space,
+                available,
+            )));
         }
 
         Ok(())
@@ -241,13 +248,13 @@ impl BackupManagerPlugin {
 
     /// Check if a backup exists for the given file.
     pub fn has_backup(&self, path: &Path) -> bool {
-        let records = self.records.lock().unwrap();
+        let records = self.records.lock().expect("backup records mutex not poisoned");
         records.contains_key(path)
     }
 
     /// Get all active backup records.
     pub fn active_backups(&self) -> Vec<BackupRecord> {
-        let records = self.records.lock().unwrap();
+        let records = self.records.lock().expect("backup records mutex not poisoned");
         records.values().cloned().collect()
     }
 
@@ -256,20 +263,18 @@ impl BackupManagerPlugin {
     /// Returns the number of backups removed.
     pub fn cleanup_all(&self) -> Result<u64> {
         let records: Vec<BackupRecord> = {
-            let records = self.records.lock().unwrap();
+            let records = self.records.lock().expect("backup records mutex not poisoned");
             records.values().cloned().collect()
         };
 
         let mut removed = 0u64;
         for record in &records {
             if record.backup_path.exists() {
-                fs::remove_file(&record.backup_path).map_err(|e| VoomError::Plugin {
-                    plugin: "backup-manager".into(),
-                    message: format!(
-                        "failed to remove backup {}: {}",
+                fs::remove_file(&record.backup_path).map_err(|e| {
+                    plugin_err(format!(
+                        "failed to remove backup {}: {e}",
                         record.backup_path.display(),
-                        e
-                    ),
+                    ))
                 })?;
             }
             // Try to clean up parent directory if empty
@@ -281,7 +286,7 @@ impl BackupManagerPlugin {
             removed += 1;
         }
 
-        let mut records_map = self.records.lock().unwrap();
+        let mut records_map = self.records.lock().expect("backup records mutex not poisoned");
         records_map.clear();
 
         tracing::info!(count = removed, "All backups cleaned up");
@@ -303,11 +308,8 @@ impl BackupManagerPlugin {
 
         // Use libc::statvfs directly to avoid depending on df output format
         use std::ffi::CString;
-        let c_path =
-            CString::new(check.to_string_lossy().as_bytes()).map_err(|e| VoomError::Plugin {
-                plugin: "backup-manager".into(),
-                message: format!("invalid path for statvfs: {e}"),
-            })?;
+        let c_path = CString::new(check.to_string_lossy().as_bytes())
+            .map_err(|e| plugin_err(format!("invalid path for statvfs: {e}")))?;
 
         unsafe {
             let mut stat: libc::statvfs = std::mem::zeroed();
@@ -362,19 +364,13 @@ impl Plugin for BackupManagerPlugin {
                     "Backing up file before plan execution"
                 );
 
-                // Backup the file before execution
                 self.backup_file(&evt.path)?;
 
-                Ok(Some(EventResult {
-                    plugin_name: "backup-manager".into(),
-                    produced_events: vec![],
-                    data: Some(serde_json::json!({
-                        "backed_up": true,
-                        "path": evt.path,
-                        "phase": evt.phase_name,
-                    })),
-                    claimed: false,
-                }))
+                Ok(Some(backup_result(serde_json::json!({
+                    "backed_up": true,
+                    "path": evt.path,
+                    "phase": evt.phase_name,
+                }))))
             }
             Event::PlanCompleted(evt) => {
                 if self.has_backup(&evt.path) {
@@ -384,16 +380,11 @@ impl Plugin for BackupManagerPlugin {
                         "Plan completed successfully, removing backup"
                     );
                     self.remove_backup(&evt.path)?;
-                    Ok(Some(EventResult {
-                        plugin_name: "backup-manager".into(),
-                        produced_events: vec![],
-                        data: Some(serde_json::json!({
-                            "backup_removed": true,
-                            "path": evt.path,
-                            "phase": evt.phase_name,
-                        })),
-                        claimed: false,
-                    }))
+                    Ok(Some(backup_result(serde_json::json!({
+                        "backup_removed": true,
+                        "path": evt.path,
+                        "phase": evt.phase_name,
+                    }))))
                 } else {
                     Ok(None)
                 }
@@ -407,17 +398,12 @@ impl Plugin for BackupManagerPlugin {
                         "Plan failed, restoring file from backup"
                     );
                     self.restore_file(&evt.path)?;
-                    Ok(Some(EventResult {
-                        plugin_name: "backup-manager".into(),
-                        produced_events: vec![],
-                        data: Some(serde_json::json!({
-                            "restored": true,
-                            "path": evt.path,
-                            "phase": evt.phase_name,
-                            "error": evt.error,
-                        })),
-                        claimed: false,
-                    }))
+                    Ok(Some(backup_result(serde_json::json!({
+                        "restored": true,
+                        "path": evt.path,
+                        "phase": evt.phase_name,
+                        "error": evt.error,
+                    }))))
                 } else {
                     Ok(None)
                 }

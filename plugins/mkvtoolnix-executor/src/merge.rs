@@ -100,7 +100,7 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
 
 /// Determine the final output path after merge operations.
 ///
-/// If there is a ConvertContainer action, the file gets an `.mkv` extension.
+/// If there is a `ConvertContainer` action, the file gets an `.mkv` extension.
 /// Otherwise, the output replaces the original file.
 fn determine_final_path(original: &Path, actions: &[&PlannedAction]) -> std::path::PathBuf {
     for action in actions {

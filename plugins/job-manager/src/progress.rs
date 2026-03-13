@@ -2,7 +2,7 @@
 //!
 //! Supports two modes:
 //! - CLI mode: indicatif progress bars on stderr
-//! - Database mode: progress stored via StorageTrait for daemon/web UI polling
+//! - Database mode: progress stored via `StorageTrait` for daemon/web UI polling
 
 use uuid::Uuid;
 use voom_domain::job::Job;
@@ -74,7 +74,7 @@ impl ProgressReporter for TracingReporter {
     }
 }
 
-/// Reporter that stores progress in the database via StorageTrait.
+/// Reporter that stores progress in the database via `StorageTrait`.
 ///
 /// Used in daemon mode where the web UI polls for progress updates.
 pub struct StorageReporter {
