@@ -4,6 +4,9 @@
 # WASM plugin Cargo.lock (excluded from workspace, built independently)
 wasm-plugins/*/Cargo.lock
 
+# Python virtual environment (pre-commit)
+.venv/
+
 # Claude flow artifacts
 .claude-flow/
 .hive-mind/

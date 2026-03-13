@@ -74,6 +74,9 @@ async fn reset() -> Result<()> {
     }
 
     std::fs::remove_file(&db_path)?;
+    // Also remove WAL and SHM companion files to avoid corruption on next open
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     println!("{} Database reset.", "OK".bold().green());
 
     Ok(())

@@ -45,7 +45,7 @@ pub async fn run() -> Result<()> {
         );
     }
 
-    // 3. Create policies directory
+    // 3. Create policies directory and starter policy
     let policies_dir = config_dir.join("policies");
     if !policies_dir.exists() {
         std::fs::create_dir_all(&policies_dir)?;
@@ -56,10 +56,20 @@ pub async fn run() -> Result<()> {
         );
     }
 
+    let starter_policy = policies_dir.join("default.voom");
+    if !starter_policy.exists() {
+        std::fs::write(&starter_policy, default_policy_contents())?;
+        println!(
+            "  {} Created {}",
+            "OK".green(),
+            starter_policy.display().to_string().cyan()
+        );
+    }
+
     // 4. Create default config if missing
     if !config_path.exists() {
-        let contents = toml::to_string_pretty(&config)?;
-        std::fs::write(&config_path, contents)?;
+        let contents = app::default_config_contents();
+        std::fs::write(&config_path, &contents)?;
         println!(
             "  {} Created {}",
             "OK".green(),
@@ -117,6 +127,58 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
+/// Returns the contents of the starter policy file created by `voom init`.
+fn default_policy_contents() -> &'static str {
+    r#"// VOOM starter policy — customize this to match your media library preferences.
+// Documentation: https://github.com/randomparity/voom/blob/main/docs/INITIAL_DESIGN.md
+//
+// Policies are organized into phases that run in order. Each phase performs
+// a specific task (normalize tracks, transcode video, etc.). You can add
+// dependencies between phases and skip them conditionally.
+
+policy "default" {
+  config {
+    // Keep audio and subtitle tracks in these languages; remove others.
+    languages audio: [eng, und]
+    languages subtitle: [eng, und]
+
+    // Strings that identify commentary tracks.
+    commentary_patterns: ["commentary", "director", "cast"]
+
+    // What to do when a phase encounters an error: continue or abort.
+    on_error: continue
+  }
+
+  // Phase 1: Ensure all files use the MKV container.
+  phase containerize {
+    container mkv
+  }
+
+  // Phase 2: Clean up and reorder tracks.
+  phase normalize {
+    depends_on: [containerize]
+
+    // Keep only the audio/subtitle languages listed in config above.
+    keep audio where lang in [eng, und]
+    keep subtitles where lang in [eng, und]
+
+    // Set a predictable track order.
+    order tracks [
+      video, audio_main, audio_alternate,
+      subtitle_main, subtitle_forced,
+      audio_commentary, subtitle_commentary, attachment
+    ]
+
+    // Mark the first track per language as default; no default subtitle.
+    defaults {
+      audio: first_per_language
+      subtitle: none
+    }
+  }
+}
+"#
+}
+
 #[cfg(test)]
 mod tests {
     use crate::app;
@@ -150,17 +212,27 @@ mod tests {
     }
 
     #[test]
+    fn starter_policy_is_valid() {
+        let contents = super::default_policy_contents();
+        // Verify it parses successfully
+        let ast = voom_dsl::parse_policy(contents).expect("starter policy should parse");
+        assert_eq!(ast.name, "default");
+        // Verify it validates
+        voom_dsl::validate(&ast).expect("starter policy should validate");
+    }
+
+    #[test]
     fn init_creates_default_config_file() {
         let dir = tempfile::tempdir().unwrap();
         let config_file = dir.path().join("config.toml");
 
-        let config = app::AppConfig::default();
-        let contents = toml::to_string_pretty(&config).unwrap();
+        let contents = app::default_config_contents();
         std::fs::write(&config_file, &contents).unwrap();
 
-        // Verify the written file is valid TOML
+        // Verify the written file is valid TOML (all options are commented out)
         let reloaded: app::AppConfig =
             toml::from_str(&std::fs::read_to_string(&config_file).unwrap()).unwrap();
         assert!(reloaded.auth_token.is_none());
+        assert!(reloaded.plugins.disabled_plugins.is_empty());
     }
 }
