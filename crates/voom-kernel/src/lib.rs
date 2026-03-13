@@ -1,3 +1,5 @@
+//! VOOM kernel: event bus, plugin registry, capability routing, and plugin loaders.
+
 pub mod bus;
 pub mod capabilities;
 pub mod host;
@@ -45,6 +47,7 @@ pub struct Kernel {
 }
 
 impl Kernel {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             registry: registry::PluginRegistry::new(),
@@ -65,22 +68,31 @@ impl Kernel {
     ///
     /// This is the safe-by-default path that ensures every plugin is initialized
     /// before being registered. Prefer this over manually calling `init` + `register_plugin`.
+    ///
+    /// Accepts `Arc<dyn Plugin>` for consistency with [`register_plugin`]. The caller
+    /// must pass a freshly created `Arc` (refcount == 1) so that `Arc::get_mut` can
+    /// obtain the `&mut` reference needed to call `Plugin::init`.
     pub fn init_and_register(
         &mut self,
-        mut plugin: Box<dyn Plugin>,
+        mut plugin: Arc<dyn Plugin>,
         priority: i32,
         ctx: &PluginContext,
     ) -> Result<()> {
         let name = plugin.name().to_string();
-        plugin
+        let plugin_mut =
+            Arc::get_mut(&mut plugin).ok_or_else(|| voom_domain::errors::VoomError::Plugin {
+                plugin: name.clone(),
+                message: "init_and_register requires exclusive Arc ownership (refcount must be 1)"
+                    .into(),
+            })?;
+        plugin_mut
             .init(ctx)
             .map_err(|e| voom_domain::errors::VoomError::Plugin {
                 plugin: name.clone(),
                 message: format!("init failed: {e}"),
             })?;
-        let arc: Arc<dyn Plugin> = Arc::from(plugin);
-        self.registry.register(arc.clone());
-        self.bus.subscribe_plugin(arc, priority);
+        self.registry.register(plugin.clone());
+        self.bus.subscribe_plugin(plugin, priority);
         tracing::info!(plugin = %name, "plugin initialized and registered");
         Ok(())
     }
@@ -167,7 +179,7 @@ mod tests {
         let init_called = Arc::new(AtomicBool::new(false));
         let shutdown_called = Arc::new(AtomicBool::new(false));
 
-        let plugin = Box::new(LifecyclePlugin {
+        let plugin = Arc::new(LifecyclePlugin {
             init_called: init_called.clone(),
             shutdown_called: shutdown_called.clone(),
         });
@@ -190,7 +202,7 @@ mod tests {
         let shutdown_called = Arc::new(AtomicBool::new(false));
 
         {
-            let plugin = Box::new(LifecyclePlugin {
+            let plugin = Arc::new(LifecyclePlugin {
                 init_called: Arc::new(AtomicBool::new(false)),
                 shutdown_called: shutdown_called.clone(),
             });
@@ -212,7 +224,7 @@ mod tests {
     fn test_double_shutdown_is_safe() {
         let shutdown_called = Arc::new(AtomicBool::new(false));
 
-        let plugin = Box::new(LifecyclePlugin {
+        let plugin = Arc::new(LifecyclePlugin {
             init_called: Arc::new(AtomicBool::new(false)),
             shutdown_called: shutdown_called.clone(),
         });

@@ -6,24 +6,12 @@ use crate::Plugin;
 #[cfg(feature = "wasm")]
 type WitHttpResult = Result<(u16, Vec<(String, String)>, Vec<u8>), String>;
 
-/// Loads native plugins (compiled Rust trait objects).
-pub struct NativePluginLoader;
-
-impl NativePluginLoader {
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// Wrap any Plugin implementation into an Arc<dyn Plugin>.
-    pub fn load<P: Plugin + 'static>(&self, plugin: P) -> Arc<dyn Plugin> {
-        Arc::new(plugin)
-    }
-}
-
-impl Default for NativePluginLoader {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Wrap any native `Plugin` implementation into an `Arc<dyn Plugin>`.
+///
+/// This is the recommended way to create plugin trait objects for registration
+/// with the kernel. For WASM plugins, use `WasmPluginLoader` instead.
+pub fn load_native<P: Plugin + 'static>(plugin: P) -> Arc<dyn Plugin> {
+    Arc::new(plugin)
 }
 
 /// WASM plugin loader using wasmtime's component model.
@@ -683,11 +671,10 @@ mod tests {
     }
 
     #[test]
-    fn test_native_loader() {
-        let loader = NativePluginLoader::new();
-        let plugin = loader.load(MockPlugin {
+    fn test_mock_plugin_metadata() {
+        let plugin = MockPlugin {
             name: "test".into(),
-        });
+        };
         assert_eq!(plugin.name(), "test");
         assert_eq!(plugin.version(), "1.0.0");
         assert!(plugin.handles("anything"));

@@ -13,7 +13,7 @@ use wait_timeout::ChildExt;
 
 /// State provided to WASM plugins via host function imports.
 ///
-/// Each WASM plugin instance gets its own HostState, which holds
+/// Each WASM plugin instance gets its own `HostState`, which holds
 /// plugin-specific data and shared references to host services.
 /// Maximum size for plugin data values (1 MiB).
 pub const MAX_PLUGIN_DATA_VALUE_SIZE: usize = 1024 * 1024;
@@ -40,7 +40,7 @@ pub struct HostState {
     /// Name of the plugin this state belongs to.
     pub plugin_name: String,
     /// In-memory key-value store for plugin data.
-    /// In production this would be backed by StorageTrait.
+    /// In production this would be backed by `StorageTrait`.
     pub plugin_data: HashMap<String, Vec<u8>>,
     /// Allowed directories for tool execution (security sandbox).
     pub allowed_paths: Vec<PathBuf>,
@@ -67,12 +67,13 @@ pub trait PluginDataStore: Send + Sync {
     fn delete(&self, plugin_name: &str, key: &str) -> Result<(), String>;
 }
 
-/// In-memory implementation of PluginDataStore for testing.
+/// In-memory implementation of `PluginDataStore` for testing.
 pub struct InMemoryDataStore {
     data: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
 }
 
 impl InMemoryDataStore {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             data: Mutex::new(HashMap::new()),
@@ -110,7 +111,8 @@ impl PluginDataStore for InMemoryDataStore {
 }
 
 impl HostState {
-    /// Create a new HostState for a plugin with default settings.
+    /// Create a new `HostState` for a plugin with default settings.
+    #[must_use] 
     pub fn new(plugin_name: String) -> Self {
         Self {
             plugin_name,
@@ -127,30 +129,35 @@ impl HostState {
     }
 
     /// Enable HTTP access for this plugin.
+    #[must_use] 
     pub fn with_http(mut self) -> Self {
         self.http_allowed = true;
         self
     }
 
     /// Set allowed tools for this plugin.
+    #[must_use] 
     pub fn with_tools(mut self, tools: Vec<String>) -> Self {
         self.allowed_tools = tools;
         self
     }
 
     /// Set allowed filesystem paths for tool execution.
+    #[must_use] 
     pub fn with_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.allowed_paths = paths;
         self
     }
 
     /// Set allowed capabilities for this plugin.
+    #[must_use] 
     pub fn with_capabilities(mut self, capabilities: HashSet<String>) -> Self {
         self.allowed_capabilities = capabilities;
         self
     }
 
     /// Set persistent storage backend.
+    #[must_use]
     pub fn with_storage(mut self, storage: Arc<dyn PluginDataStore>) -> Self {
         self.storage = Some(storage);
         self
@@ -171,6 +178,7 @@ impl HostState {
     }
 
     /// Get plugin-specific persisted data by key.
+    #[must_use] 
     pub fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
         // Try persistent storage first, fall back to in-memory.
         if let Some(storage) = &self.storage {
