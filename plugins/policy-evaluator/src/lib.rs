@@ -38,14 +38,24 @@ impl PolicyEvaluatorPlugin {
     }
 
     /// Register a compiled policy by name.
-    pub fn register_policy(&self, policy: CompiledPolicy) {
+    pub fn register_policy(&self, policy: CompiledPolicy) -> Result<()> {
         let name = policy.name.clone();
-        self.policies.lock().expect("policies lock poisoned").insert(name, policy);
+        self.policies
+            .lock()
+            .map_err(|_| VoomError::Plugin {
+                plugin: "policy-evaluator".into(),
+                message: "policies lock poisoned".into(),
+            })?
+            .insert(name, policy);
+        Ok(())
     }
 
     /// Evaluate a policy against a file, returning plans for all phases.
     pub fn evaluate(&self, policy_name: &str, file: &MediaFile) -> Result<Vec<Plan>> {
-        let policies = self.policies.lock().expect("policies lock poisoned");
+        let policies = self.policies.lock().map_err(|_| VoomError::Plugin {
+            plugin: "policy-evaluator".into(),
+            message: "policies lock poisoned".into(),
+        })?;
         let policy = policies.get(policy_name).ok_or_else(|| VoomError::Plugin {
             plugin: "policy-evaluator".into(),
             message: format!("Unknown policy: {policy_name}"),
@@ -90,6 +100,9 @@ impl Plugin for PolicyEvaluatorPlugin {
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
         match event {
+            // NOTE: Policy evaluation is triggered via direct API call (evaluator::evaluate()),
+            // not through the event bus. This handler is reserved for future event-driven
+            // evaluation once storage integration is wired up.
             Event::PolicyEvaluate(evt) => {
                 tracing::info!(
                     path = %evt.path.display(),
@@ -97,10 +110,6 @@ impl Plugin for PolicyEvaluatorPlugin {
                     "Evaluating policy"
                 );
 
-                // In a full system, we'd look up the file from storage.
-                // For now, we just log that we received the event.
-                // The actual evaluation happens through the evaluate() method
-                // when the orchestrator calls us with a concrete MediaFile.
                 tracing::warn!(
                     "PolicyEvaluate event received but file lookup requires storage integration. \
                      Use evaluate() or evaluate_policy() directly."

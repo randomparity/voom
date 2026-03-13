@@ -99,6 +99,16 @@ impl BackupManagerPlugin {
     /// Create a backup of the given file before modification.
     /// Returns the `BackupRecord` on success.
     pub fn backup_file(&self, path: &Path) -> Result<BackupRecord> {
+        // Reject symlinks to prevent following links to unintended targets
+        let symlink_meta = fs::symlink_metadata(path)
+            .map_err(|e| plugin_err(format!("cannot read {}: {e}", path.display())))?;
+        if symlink_meta.is_symlink() {
+            return Err(plugin_err(format!(
+                "refusing to backup symlink: {}",
+                path.display()
+            )));
+        }
+
         // Validate the source file exists
         let metadata =
             fs::metadata(path).map_err(|e| plugin_err(format!("cannot backup {}: {e}", path.display())))?;
@@ -129,7 +139,7 @@ impl BackupManagerPlugin {
             created_at: Utc::now(),
         };
 
-        let mut records = self.records.lock().expect("backup records mutex not poisoned");
+        let mut records = self.records.lock().map_err(|_| plugin_err("backup records lock poisoned"))?;
         records.insert(path.to_path_buf(), record.clone());
 
         tracing::info!(
@@ -144,7 +154,7 @@ impl BackupManagerPlugin {
 
     /// Restore a file from its backup.
     pub fn restore_file(&self, path: &Path) -> Result<()> {
-        let mut records = self.records.lock().expect("backup records mutex not poisoned");
+        let mut records = self.records.lock().map_err(|_| plugin_err("backup records lock poisoned"))?;
         let record = records
             .get(path)
             .ok_or_else(|| plugin_err(format!("no backup found for {}", path.display())))?;
@@ -169,7 +179,7 @@ impl BackupManagerPlugin {
 
     /// Remove the backup for a file (after successful execution).
     pub fn remove_backup(&self, path: &Path) -> Result<()> {
-        let mut records = self.records.lock().expect("backup records mutex not poisoned");
+        let mut records = self.records.lock().map_err(|_| plugin_err("backup records lock poisoned"))?;
         let record = records
             .get(path)
             .ok_or_else(|| plugin_err(format!("no backup found for {}", path.display())))?;
@@ -248,14 +258,18 @@ impl BackupManagerPlugin {
 
     /// Check if a backup exists for the given file.
     pub fn has_backup(&self, path: &Path) -> bool {
-        let records = self.records.lock().expect("backup records mutex not poisoned");
-        records.contains_key(path)
+        self.records
+            .lock()
+            .ok()
+            .is_some_and(|r| r.contains_key(path))
     }
 
     /// Get all active backup records.
     pub fn active_backups(&self) -> Vec<BackupRecord> {
-        let records = self.records.lock().expect("backup records mutex not poisoned");
-        records.values().cloned().collect()
+        self.records
+            .lock()
+            .ok()
+            .map_or_else(Vec::new, |r| r.values().cloned().collect())
     }
 
     /// Clean up all backups (e.g., on successful completion).
@@ -263,7 +277,7 @@ impl BackupManagerPlugin {
     /// Returns the number of backups removed.
     pub fn cleanup_all(&self) -> Result<u64> {
         let records: Vec<BackupRecord> = {
-            let records = self.records.lock().expect("backup records mutex not poisoned");
+            let records = self.records.lock().map_err(|_| plugin_err("backup records lock poisoned"))?;
             records.values().cloned().collect()
         };
 
@@ -286,7 +300,7 @@ impl BackupManagerPlugin {
             removed += 1;
         }
 
-        let mut records_map = self.records.lock().expect("backup records mutex not poisoned");
+        let mut records_map = self.records.lock().map_err(|_| plugin_err("backup records lock poisoned"))?;
         records_map.clear();
 
         tracing::info!(count = removed, "All backups cleaned up");
@@ -610,12 +624,26 @@ mod tests {
     }
 
     #[test]
+    fn test_backup_rejects_symlink() {
+        let dir = TempDir::new().unwrap();
+        let real_file = create_test_file(dir.path(), "real.mkv", b"data");
+        let symlink_path = dir.path().join("link.mkv");
+        std::os::unix::fs::symlink(&real_file, &symlink_path).unwrap();
+
+        let plugin = BackupManagerPlugin::new();
+        let result = plugin.backup_file(&symlink_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("refusing to backup symlink"));
+    }
+
+    #[test]
     fn test_backup_nonexistent_file() {
         let plugin = BackupManagerPlugin::new();
         let result = plugin.backup_file(Path::new("/nonexistent/path/file.mkv"));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("cannot backup"));
+        assert!(err.contains("cannot read"));
     }
 
     #[test]
@@ -701,6 +729,7 @@ mod tests {
             error: "ffmpeg crashed".into(),
             error_code: None,
             plugin_name: None,
+            error_chain: vec![],
         });
 
         let result = plugin.on_event(&event).unwrap();
