@@ -378,7 +378,8 @@ mod tests {
     fn default_config_contents_is_valid_toml() {
         let contents = default_config_contents();
         // All options are commented out, so parsing should yield defaults
-        let config: AppConfig = toml::from_str(&contents).expect("default config should be valid TOML");
+        let config: AppConfig =
+            toml::from_str(&contents).expect("default config should be valid TOML");
         assert!(config.auth_token.is_none());
         assert!(config.plugins.wasm_dir.is_none());
         assert!(config.plugins.disabled_plugins.is_empty());
@@ -388,13 +389,19 @@ mod tests {
     fn default_config_contents_documents_all_fields() {
         let contents = default_config_contents();
         assert!(contents.contains("# data_dir"), "should document data_dir");
-        assert!(contents.contains("# auth_token"), "should document auth_token");
+        assert!(
+            contents.contains("# auth_token"),
+            "should document auth_token"
+        );
         assert!(contents.contains("# wasm_dir"), "should document wasm_dir");
         assert!(
             contents.contains("# disabled_plugins"),
             "should document disabled_plugins"
         );
-        assert!(contents.contains("[plugins]"), "should have plugins section");
+        assert!(
+            contents.contains("[plugins]"),
+            "should have plugins section"
+        );
     }
 
     // ── load_config with temp files ──────────────────────────
