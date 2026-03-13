@@ -660,6 +660,41 @@ impl StorageTrait for SqliteStore {
         Ok(result)
     }
 
+    fn claim_job_by_id(&self, job_id: &Uuid, worker_id: &str) -> Result<Option<Job>> {
+        let mut conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+        let id_str = job_id.to_string();
+
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| VoomError::Storage(format!("failed to begin transaction: {e}")))?;
+
+        let changed = tx
+            .execute(
+                "UPDATE jobs SET status = 'running', worker_id = ?1, started_at = ?2
+                 WHERE id = ?3 AND status = 'pending'",
+                params![worker_id, now, id_str],
+            )
+            .map_err(|e| VoomError::Storage(format!("failed to claim job by id: {e}")))?;
+
+        let result = if changed == 0 {
+            None
+        } else {
+            tx.query_row(
+                "SELECT * FROM jobs WHERE id = ?1",
+                params![id_str],
+                row_to_job,
+            )
+            .optional()
+            .map_err(|e| VoomError::Storage(format!("failed to get claimed job: {e}")))?
+        };
+
+        tx.commit()
+            .map_err(|e| VoomError::Storage(format!("failed to commit claim: {e}")))?;
+
+        Ok(result)
+    }
+
     fn list_jobs(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>> {
         let conn = self.conn()?;
         let mut sql = String::from("SELECT * FROM jobs");
@@ -871,13 +906,18 @@ impl StorageTrait for SqliteStore {
     }
 
     fn prune_missing_files_under(&self, root: &Path) -> Result<u64> {
-        let root_str = root.to_string_lossy().to_string();
+        // Escape LIKE wildcards in the root path to prevent injection
+        let root_str = root
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
 
         // Phase 1: Query file paths under root (release connection after)
         let files: Vec<(String, String)> = {
             let conn = self.conn()?;
             let mut stmt = conn
-                .prepare("SELECT id, path FROM files WHERE path LIKE ?1 || '%'")
+                .prepare("SELECT id, path FROM files WHERE path LIKE ?1 || '%' ESCAPE '\\'")
                 .map_err(|e| VoomError::Storage(format!("failed to prepare prune query: {e}")))?;
 
             let result = stmt
@@ -902,7 +942,8 @@ impl StorageTrait for SqliteStore {
         // Phase 3: Batch delete dependents then files in chunks of 500.
         // Explicit deletion of plans and processing_stats ensures cleanup works
         // on existing databases where CASCADE constraints may be missing.
-        let conn = self.conn()?;
+        // Each chunk is wrapped in an IMMEDIATE transaction for atomicity.
+        let mut conn = self.conn()?;
         let mut pruned = 0u64;
         for chunk in missing_ids.chunks(500) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
@@ -912,25 +953,35 @@ impl StorageTrait for SqliteStore {
                 .map(|id| id as &dyn rusqlite::types::ToSql)
                 .collect();
 
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e| {
+                    VoomError::Storage(format!("failed to begin prune transaction: {e}"))
+                })?;
+
             // Delete dependent rows first
-            conn.execute(
+            tx.execute(
                 &format!("DELETE FROM plans WHERE file_id IN ({in_clause})"),
                 param_refs.as_slice(),
             )
             .map_err(|e| VoomError::Storage(format!("failed to delete plans: {e}")))?;
 
-            conn.execute(
+            tx.execute(
                 &format!("DELETE FROM processing_stats WHERE file_id IN ({in_clause})"),
                 param_refs.as_slice(),
             )
             .map_err(|e| VoomError::Storage(format!("failed to delete processing_stats: {e}")))?;
 
-            let deleted = conn
+            let deleted = tx
                 .execute(
                     &format!("DELETE FROM files WHERE id IN ({in_clause})"),
                     param_refs.as_slice(),
                 )
                 .map_err(|e| VoomError::Storage(format!("failed to delete files: {e}")))?;
+
+            tx.commit()
+                .map_err(|e| VoomError::Storage(format!("failed to commit prune: {e}")))?;
+
             pruned += deleted as u64;
         }
 
@@ -1817,5 +1868,77 @@ mod tests {
             .get_file_history(Path::new("/nonexistent.mkv"))
             .unwrap();
         assert!(history.is_empty());
+    }
+
+    // --- claim_job_by_id ---
+
+    #[test]
+    fn test_claim_job_by_id_pending() {
+        let store = test_store();
+        let job = Job::new("test-task".to_string());
+        let id = store.create_job(&job).unwrap();
+
+        let claimed = store.claim_job_by_id(&id, "worker-1").unwrap();
+        assert!(claimed.is_some());
+        let claimed = claimed.unwrap();
+        assert_eq!(claimed.status, JobStatus::Running);
+        assert_eq!(claimed.worker_id.as_deref(), Some("worker-1"));
+        assert!(claimed.started_at.is_some());
+    }
+
+    #[test]
+    fn test_claim_job_by_id_non_pending_returns_none() {
+        let store = test_store();
+        let job = Job::new("test-task".to_string());
+        let id = store.create_job(&job).unwrap();
+
+        // Claim it first
+        store.claim_job_by_id(&id, "worker-1").unwrap();
+
+        // Try to claim it again — should return None (already Running)
+        let result = store.claim_job_by_id(&id, "worker-2").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_claim_job_by_id_nonexistent_returns_none() {
+        let store = test_store();
+        let fake_id = Uuid::new_v4();
+        let result = store.claim_job_by_id(&fake_id, "worker-1").unwrap();
+        assert!(result.is_none());
+    }
+
+    // --- prune LIKE escaping ---
+
+    #[test]
+    fn test_prune_like_escaping() {
+        let store = test_store();
+
+        // Insert a file with an underscore in the path
+        let mut file1 = MediaFile::new(PathBuf::from("/media/my_dir/video.mkv"));
+        file1.container = Container::Mkv;
+        store.upsert_file(&file1).unwrap();
+
+        // Insert a file that would match an unescaped `_` wildcard
+        let mut file2 = MediaFile::new(PathBuf::from("/media/myXdir/other.mkv"));
+        file2.container = Container::Mkv;
+        store.upsert_file(&file2).unwrap();
+
+        // Prune under /media/my_dir/ — should only match file1, not file2
+        // Both files exist on disk, so nothing will actually be pruned,
+        // but we can verify the query doesn't match file2 by checking counts
+        let conn = store.pool.get().unwrap();
+        let escaped_root = "/media/my\\_dir/".to_string();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE path LIKE ?1 || '%' ESCAPE '\\'",
+                params![escaped_root],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "LIKE with escaped underscore should match only exact underscore"
+        );
     }
 }

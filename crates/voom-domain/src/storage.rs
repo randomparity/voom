@@ -38,6 +38,9 @@ pub trait StorageTrait: Send + Sync {
     fn get_job(&self, id: &Uuid) -> Result<Option<Job>>;
     fn update_job(&self, id: &Uuid, update: &JobUpdate) -> Result<()>;
     fn claim_next_job(&self, worker_id: &str) -> Result<Option<Job>>;
+    /// Atomically claim a specific job by ID, only if it is still pending.
+    /// Returns the claimed job (now Running) or None if not pending/not found.
+    fn claim_job_by_id(&self, job_id: &Uuid, worker_id: &str) -> Result<Option<Job>>;
     fn list_jobs(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>>;
     fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>>;
 

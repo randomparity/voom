@@ -182,6 +182,19 @@ impl StorageTrait for InMemoryStore {
         }
     }
 
+    fn claim_job_by_id(&self, job_id: &Uuid, worker_id: &str) -> Result<Option<Job>> {
+        let mut jobs = self.jobs.lock().unwrap();
+        if let Some(job) = jobs.get_mut(job_id) {
+            if job.status == JobStatus::Pending {
+                job.status = JobStatus::Running;
+                job.worker_id = Some(worker_id.to_string());
+                job.started_at = Some(chrono::Utc::now());
+                return Ok(Some(job.clone()));
+            }
+        }
+        Ok(None)
+    }
+
     fn list_jobs(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>> {
         let jobs = self.jobs.lock().unwrap();
         let mut result: Vec<Job> = jobs

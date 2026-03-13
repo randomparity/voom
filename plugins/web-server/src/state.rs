@@ -121,6 +121,9 @@ mod tests {
         fn claim_next_job(&self, _: &str) -> VoomResult<Option<Job>> {
             Ok(None)
         }
+        fn claim_job_by_id(&self, _: &uuid::Uuid, _: &str) -> VoomResult<Option<Job>> {
+            Ok(None)
+        }
         fn list_jobs(&self, _: Option<JobStatus>, _: Option<u32>) -> VoomResult<Vec<Job>> {
             Ok(vec![])
         }

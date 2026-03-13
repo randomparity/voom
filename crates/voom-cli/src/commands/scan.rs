@@ -50,9 +50,10 @@ pub async fn run(args: ScanArgs) -> Result<()> {
 
     // Auto-prune stale file entries under the scanned directory
     let store = app::open_store(&config)?;
-    let pruned = store.prune_missing_files_under(&path)?;
-    if pruned > 0 {
-        println!("Pruned {pruned} stale entries.");
+    match store.prune_missing_files_under(&path) {
+        Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
+        Ok(_) => {}
+        Err(e) => eprintln!("{} auto-prune failed: {e}", "Warning:".yellow()),
     }
 
     println!(

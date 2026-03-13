@@ -29,26 +29,27 @@ pub async fn dashboard(State(state): State<AppState>) -> HtmlResult {
     let store2 = state.store.clone();
     let store3 = state.store.clone();
 
-    let total_files =
-        tokio::task::spawn_blocking(move || store3.count_files(&FileFilters::default()))
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let total_files_fut =
+        tokio::task::spawn_blocking(move || store3.count_files(&FileFilters::default()));
 
-    let files = tokio::task::spawn_blocking(move || {
+    let files_fut = tokio::task::spawn_blocking(move || {
         store.list_files(&FileFilters {
             limit: Some(10),
             ..Default::default()
         })
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    });
 
-    let job_counts = tokio::task::spawn_blocking(move || store2.count_jobs_by_status())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let job_counts_fut = tokio::task::spawn_blocking(move || store2.count_jobs_by_status());
+
+    let (total_files_res, files_res, job_counts_res) =
+        tokio::try_join!(total_files_fut, files_fut, job_counts_fut)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total_files =
+        total_files_res.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let files = files_res.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let job_counts =
+        job_counts_res.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let mut ctx = tera::Context::new();
     ctx.insert("recent_files", &file_views(files));
