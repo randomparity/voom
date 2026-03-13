@@ -6,6 +6,7 @@
 use crate::ast::*;
 
 /// Format a [`PolicyAst`] into a pretty-printed source string.
+#[must_use] 
 pub fn format_policy(ast: &PolicyAst) -> String {
     let mut out = String::new();
     out.push_str(&format!("policy \"{}\" {{\n", escape_string(&ast.name)));
@@ -498,7 +499,7 @@ fn format_compare_op(op: &CompareOp, out: &mut String) {
 }
 
 fn format_number(n: f64, out: &mut String) {
-    if n == n.floor() {
+    if (n - n.floor()).abs() < f64::EPSILON {
         out.push_str(&format!("{}", n as i64));
     } else {
         out.push_str(&format!("{n}"));

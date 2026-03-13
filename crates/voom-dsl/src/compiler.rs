@@ -1,7 +1,11 @@
-//! Compiler: AST → CompiledPolicy.
+//! Compiler: AST → `CompiledPolicy`.
 //!
 //! Transforms a validated [`PolicyAst`] into a [`CompiledPolicy`] structure
 //! that uses domain types and is ready for evaluation by the policy evaluator plugin.
+//!
+//! The `.unwrap()` calls in this module operate on grammar-guaranteed structures
+//! from the pest parser — the AST shape is validated before compilation.
+#![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;
 
@@ -53,7 +57,7 @@ pub struct CompiledPhase {
     pub operations: Vec<CompiledOperation>,
 }
 
-/// Compiled run_if trigger.
+/// Compiled `run_if` trigger.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledRunIf {
     pub phase: String,

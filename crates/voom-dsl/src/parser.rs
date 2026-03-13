@@ -2,6 +2,11 @@
 //!
 //! Uses pest to parse `.voom` source text into a CST, then converts
 //! the CST into typed AST nodes defined in [`crate::ast`].
+//!
+//! The `.unwrap()` calls throughout this module are safe because pest guarantees
+//! the CST structure matches the grammar — child nodes are always present when
+//! the grammar says they must be.
+#![allow(clippy::unwrap_used)]
 
 use pest::iterators::Pair;
 use pest::Parser;
