@@ -59,7 +59,7 @@ pub async fn run(args: ScanArgs) -> Result<()> {
     let pb = ProgressBar::new_spinner();
     pb.set_style(
         ProgressStyle::with_template("{spinner:.green} {msg}")
-            .unwrap()
+            .expect("valid progress template")
             .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
     );
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
@@ -99,7 +99,7 @@ pub async fn run(args: ScanArgs) -> Result<()> {
                             ProgressStyle::with_template(
                                 "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}"
                             )
-                            .unwrap()
+                            .expect("valid progress template")
                             .progress_chars("#>-"),
                         );
                     }
@@ -163,7 +163,7 @@ pub async fn run(args: ScanArgs) -> Result<()> {
         ProgressStyle::with_template(
             "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}",
         )
-        .unwrap()
+        .expect("valid progress template")
         .progress_chars("#>-"),
     );
     pb.set_message("Probing...");

@@ -31,7 +31,7 @@ pub async fn run(args: ReportArgs) -> Result<()> {
                 "containers": output::container_counts(&files),
                 "codecs": codec_counts(&files),
             });
-            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            println!("{}", serde_json::to_string_pretty(&report).expect("report is serializable"));
         }
         OutputFormat::Table => {
             println!("{}", "Library Report".bold().underline());
@@ -84,4 +84,56 @@ fn codec_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
     let mut sorted: Vec<_> = counts.into_iter().collect();
     sorted.sort_by(|a, b| b.1.cmp(&a.1));
     sorted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use voom_domain::media::{MediaFile, Track, TrackType};
+
+    fn make_track(codec: &str) -> Track {
+        Track::new(0, TrackType::Video, codec.to_string())
+    }
+
+    fn make_file(codecs: &[&str]) -> MediaFile {
+        MediaFile::new(PathBuf::from("/test.mkv"))
+            .with_tracks(codecs.iter().map(|c| make_track(c)).collect())
+    }
+
+    #[test]
+    fn codec_counts_empty_files() {
+        let result = codec_counts(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn codec_counts_single_file() {
+        let files = vec![make_file(&["hevc", "aac", "aac"])];
+        let counts = codec_counts(&files);
+        assert_eq!(counts[0], ("aac".to_string(), 2));
+        assert_eq!(counts[1], ("hevc".to_string(), 1));
+    }
+
+    #[test]
+    fn codec_counts_multiple_files() {
+        let files = vec![
+            make_file(&["hevc", "aac"]),
+            make_file(&["hevc", "opus", "srt"]),
+            make_file(&["avc", "aac"]),
+        ];
+        let counts = codec_counts(&files);
+        // hevc: 2, aac: 2, opus: 1, srt: 1, avc: 1
+        assert_eq!(counts[0].1, 2); // either hevc or aac first (both 2)
+        assert_eq!(counts[1].1, 2);
+    }
+
+    #[test]
+    fn codec_counts_sorted_descending() {
+        let files = vec![make_file(&["a", "b", "b", "b", "c", "c"])];
+        let counts = codec_counts(&files);
+        assert_eq!(counts[0], ("b".to_string(), 3));
+        assert_eq!(counts[1], ("c".to_string(), 2));
+        assert_eq!(counts[2], ("a".to_string(), 1));
+    }
 }

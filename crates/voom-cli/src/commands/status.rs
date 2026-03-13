@@ -64,3 +64,30 @@ pub async fn run() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::app;
+    use voom_domain::media::{Container, MediaFile};
+
+    #[test]
+    fn container_counts_from_output_module() {
+        let files = vec![
+            MediaFile::new(std::path::PathBuf::from("/a.mkv")).with_container(Container::Mkv),
+            MediaFile::new(std::path::PathBuf::from("/b.mkv")).with_container(Container::Mkv),
+            MediaFile::new(std::path::PathBuf::from("/c.mp4")).with_container(Container::Mp4),
+        ];
+        let counts = crate::output::container_counts(&files);
+        assert_eq!(counts[0], ("mkv".to_string(), 2));
+        assert_eq!(counts[1], ("mp4".to_string(), 1));
+    }
+
+    #[test]
+    fn status_paths_display() {
+        let config = app::AppConfig::default();
+        let config_path = app::config_path();
+        // Both paths should be displayable without panic
+        let _ = format!("Config: {}", config_path.display());
+        let _ = format!("Data: {}", config.data_dir.display());
+    }
+}

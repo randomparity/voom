@@ -41,3 +41,19 @@ pub async fn run(args: InspectArgs) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn inspect_nonexistent_file_returns_error() {
+        let args = InspectArgs {
+            file: std::path::PathBuf::from("/nonexistent/video.mkv"),
+            format: OutputFormat::Table,
+            tracks_only: false,
+        };
+        let result = run(args).await;
+        assert!(result.is_err());
+    }
+}

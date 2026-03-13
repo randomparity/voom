@@ -78,3 +78,31 @@ async fn reset() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::app;
+
+    #[test]
+    fn db_path_uses_data_dir() {
+        let config = app::AppConfig {
+            data_dir: std::path::PathBuf::from("/tmp/test-voom"),
+            plugins: app::PluginsConfig::default(),
+            auth_token: None,
+        };
+        let db_path = config.data_dir.join("voom.db");
+        assert_eq!(db_path, std::path::PathBuf::from("/tmp/test-voom/voom.db"));
+    }
+
+    #[test]
+    fn open_store_in_temp_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = app::AppConfig {
+            data_dir: dir.path().to_path_buf(),
+            plugins: app::PluginsConfig::default(),
+            auth_token: None,
+        };
+        let store = app::open_store(&config);
+        assert!(store.is_ok(), "should open store in temp directory");
+    }
+}

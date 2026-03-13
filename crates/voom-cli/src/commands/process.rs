@@ -27,51 +27,15 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
         .canonicalize()
         .with_context(|| format!("Path not found: {}", args.path.display()))?;
 
-    // Load and compile the policy
-    let policy_source = std::fs::read_to_string(&args.policy)
-        .with_context(|| format!("Failed to read policy: {}", args.policy.display()))?;
+    let compiled = load_and_compile_policy(&args)?;
 
-    let compiled = voom_dsl::compile(&policy_source)
-        .map_err(|e| anyhow::anyhow!("policy compilation failed: {e}"))?;
-
-    println!(
-        "{} policy {} to {}{}",
-        if args.dry_run {
-            "Dry-running".bold()
-        } else {
-            "Applying".bold()
-        },
-        compiled.name.cyan(),
-        path.display().to_string().cyan(),
-        if args.dry_run {
-            " (no changes will be made)"
-        } else {
-            ""
-        }
-    );
+    print_run_header(&compiled.name, &path, args.dry_run);
 
     // Discover files
-    let discovery = voom_discovery::DiscoveryPlugin::new();
-    let options = voom_discovery::ScanOptions {
-        root: path.clone(),
-        recursive: true,
-        hash_files: !args.no_backup,
-        workers: args.workers,
-        on_progress: None,
-    };
-
-    let events = discovery
-        .scan(&options)
-        .map_err(|e| anyhow::anyhow!("filesystem scan failed: {e}"))?;
-
+    let events = discover_files(&path, &args, &kernel)?;
     if events.is_empty() {
         println!("{}", "No media files found.".yellow());
         return Ok(());
-    }
-
-    // Publish discovery events through the event bus
-    for event in &events {
-        kernel.dispatch(Event::FileDiscovered(event.clone()));
     }
 
     let file_count = events.len();
@@ -83,8 +47,109 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
         ErrorHandling::Continue => ErrorStrategy::Continue,
     };
 
-    // Set up the job manager with storage
-    let store = app::open_store(&config)?;
+    let (pool, effective_workers) = create_worker_pool(&config, &args)?;
+
+    let reporter: Arc<dyn ProgressReporter> = Arc::new(CliProgressReporter::new(file_count));
+
+    let items = build_work_items(&events);
+    let compiled = Arc::new(compiled);
+    let dry_run = args.dry_run;
+
+    let _results = pool
+        .process_batch(
+            items,
+            move |job| {
+                let compiled = compiled.clone();
+                let kernel = kernel.clone();
+                async move { process_single_file(job, &compiled, &kernel, dry_run).await }
+            },
+            on_error,
+            reporter.clone(),
+        )
+        .await;
+
+    print_summary(&pool, file_count, effective_workers, args.dry_run);
+
+    Ok(())
+}
+
+/// Load and compile the DSL policy file.
+fn load_and_compile_policy(args: &ProcessArgs) -> Result<voom_dsl::CompiledPolicy> {
+    let policy_source = std::fs::read_to_string(&args.policy)
+        .with_context(|| format!("Failed to read policy: {}", args.policy.display()))?;
+
+    voom_dsl::compile(&policy_source)
+        .map_err(|e| anyhow::anyhow!("policy compilation failed: {e}"))
+}
+
+/// Print the header line describing what we are about to do.
+fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
+    println!(
+        "{} policy {} to {}{}",
+        if dry_run {
+            "Dry-running".bold()
+        } else {
+            "Applying".bold()
+        },
+        policy_name.cyan(),
+        path.display().to_string().cyan(),
+        if dry_run {
+            " (no changes will be made)"
+        } else {
+            ""
+        }
+    );
+}
+
+/// Walk the filesystem and discover media files, publishing events to the bus.
+fn discover_files(
+    path: &std::path::Path,
+    args: &ProcessArgs,
+    kernel: &voom_kernel::Kernel,
+) -> Result<Vec<voom_domain::events::FileDiscoveredEvent>> {
+    let discovery = voom_discovery::DiscoveryPlugin::new();
+    let options = voom_discovery::ScanOptions {
+        root: path.to_path_buf(),
+        recursive: true,
+        hash_files: !args.no_backup,
+        workers: args.workers,
+        on_progress: None,
+    };
+
+    let events = discovery
+        .scan(&options)
+        .map_err(|e| anyhow::anyhow!("filesystem scan failed: {e}"))?;
+
+    for event in &events {
+        kernel.dispatch(Event::FileDiscovered(event.clone()));
+    }
+
+    Ok(events)
+}
+
+/// Build work items from discovery events for the worker pool.
+fn build_work_items(
+    events: &[voom_domain::events::FileDiscoveredEvent],
+) -> Vec<(String, i32, Option<serde_json::Value>)> {
+    events
+        .iter()
+        .map(|evt| {
+            let payload = serde_json::json!({
+                "path": evt.path.to_string_lossy(),
+                "size": evt.size,
+                "content_hash": evt.content_hash,
+            });
+            ("process".to_string(), 100, Some(payload))
+        })
+        .collect()
+}
+
+/// Set up the job queue and worker pool.
+fn create_worker_pool(
+    config: &app::AppConfig,
+    args: &ProcessArgs,
+) -> Result<(WorkerPool, usize)> {
+    let store = app::open_store(config)?;
     let queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
 
     let effective_workers = if args.workers == 0 {
@@ -96,162 +161,172 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
     };
 
     let pool = WorkerPool::new(
-        queue.clone(),
+        queue,
         WorkerPoolConfig {
             max_workers: effective_workers,
             worker_prefix: "voom".to_string(),
         },
     );
 
-    // Create progress reporter
-    let reporter: Arc<dyn ProgressReporter> = Arc::new(CliProgressReporter::new(file_count));
+    Ok((pool, effective_workers))
+}
 
-    // Build work items with file paths as payloads
-    let items: Vec<(String, i32, Option<serde_json::Value>)> = events
-        .iter()
-        .map(|evt| {
-            let payload = serde_json::json!({
-                "path": evt.path.to_string_lossy(),
-                "size": evt.size,
-                "content_hash": evt.content_hash,
-            });
-            ("process".to_string(), 100, Some(payload))
-        })
-        .collect();
+/// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
+async fn process_single_file(
+    job: voom_domain::job::Job,
+    compiled: &voom_dsl::CompiledPolicy,
+    kernel: &voom_kernel::Kernel,
+    dry_run: bool,
+) -> std::result::Result<Option<serde_json::Value>, String> {
+    let payload = job.payload.as_ref().ok_or("missing payload")?;
+    let file_path = payload["path"].as_str().ok_or("missing path in payload")?;
+    let file_size = payload["size"].as_u64().unwrap_or(0);
+    let content_hash = payload["content_hash"].as_str().unwrap_or("").to_string();
 
-    let compiled = Arc::new(compiled);
-    let dry_run = args.dry_run;
+    let path = std::path::PathBuf::from(file_path);
 
-    let _results = pool
-        .process_batch(
-            items,
-            move |job| {
-                let compiled = compiled.clone();
-                let kernel = kernel.clone();
-                async move {
-                    let payload = job.payload.as_ref().ok_or("missing payload")?;
-                    let file_path = payload["path"].as_str().ok_or("missing path in payload")?;
-                    let file_size = payload["size"].as_u64().unwrap_or(0);
-                    let content_hash = payload["content_hash"].as_str().unwrap_or("").to_string();
+    let file = introspect_file(path, file_size, content_hash, kernel).await?;
+    let file_path_str = file.path.display().to_string();
 
-                    let path = std::path::PathBuf::from(file_path);
+    let result = orchestrate_plans(compiled, &file, kernel)?;
 
-                    // Introspect (blocking I/O)
-                    let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
-                    let intro_result = tokio::task::spawn_blocking(move || {
-                        introspector.introspect(&path, file_size, &content_hash)
-                    })
-                    .await
-                    .map_err(|e| format!("task join error: {e}"))?
-                    .map_err(|e| format!("introspection failed: {e}"))?;
+    let needs_exec = voom_phase_orchestrator::PhaseOrchestratorPlugin::needs_execution(&result);
 
-                    let file = intro_result.file.clone();
+    if dry_run {
+        let plan_summaries: Vec<serde_json::Value> = result
+            .plans
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "phase": p.phase_name,
+                    "actions": p.actions.len(),
+                    "skipped": p.is_skipped(),
+                })
+            })
+            .collect();
 
-                    // Publish introspection event
-                    kernel.dispatch(Event::FileIntrospected(
-                        voom_domain::events::FileIntrospectedEvent {
-                            file: intro_result.file,
-                        },
-                    ));
+        Ok(Some(serde_json::json!({
+            "path": file_path_str,
+            "needs_execution": needs_exec,
+            "plans": plan_summaries,
+        })))
+    } else {
+        execute_plans(file_path, &file, &result, kernel, &file_path_str, needs_exec)
+    }
+}
 
-                    let file_path_str = file.path.display().to_string();
+/// Run ffprobe introspection on a single file (blocking I/O on a spawn_blocking thread).
+async fn introspect_file(
+    path: std::path::PathBuf,
+    file_size: u64,
+    content_hash: String,
+    kernel: &voom_kernel::Kernel,
+) -> std::result::Result<voom_domain::media::MediaFile, String> {
+    let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
+    let intro_result = tokio::task::spawn_blocking(move || {
+        introspector.introspect(&path, file_size, &content_hash)
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+    .map_err(|e| format!("introspection failed: {e}"))?;
 
-                    // Orchestrate
-                    let orchestrator = voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
-                    let result = orchestrator
-                        .orchestrate(&compiled, &file)
-                        .map_err(|e| format!("orchestration failed: {e}"))?;
+    let file = intro_result.file.clone();
 
-                    let needs_exec =
-                        voom_phase_orchestrator::PhaseOrchestratorPlugin::needs_execution(&result);
+    kernel.dispatch(Event::FileIntrospected(
+        voom_domain::events::FileIntrospectedEvent {
+            file: intro_result.file,
+        },
+    ));
 
-                    // Publish PlanCreated for each non-skipped plan
-                    for plan in &result.plans {
-                        if !plan.is_skipped() {
-                            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent {
-                                plan: plan.clone(),
-                            }));
-                        }
-                    }
+    Ok(file)
+}
 
-                    if dry_run {
-                        let plan_summaries: Vec<serde_json::Value> = result
-                            .plans
-                            .iter()
-                            .map(|p| {
-                                serde_json::json!({
-                                    "phase": p.phase_name,
-                                    "actions": p.actions.len(),
-                                    "skipped": p.is_skipped(),
-                                })
-                            })
-                            .collect();
+/// Run the phase orchestrator to produce plans, publishing PlanCreated events.
+fn orchestrate_plans(
+    compiled: &voom_dsl::CompiledPolicy,
+    file: &voom_domain::media::MediaFile,
+    kernel: &voom_kernel::Kernel,
+) -> std::result::Result<voom_phase_orchestrator::OrchestrationResult, String> {
+    let orchestrator = voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
+    let result = orchestrator
+        .orchestrate(compiled, file)
+        .map_err(|e| format!("orchestration failed: {e}"))?;
 
-                        Ok(Some(serde_json::json!({
-                            "path": file_path_str,
-                            "needs_execution": needs_exec,
-                            "plans": plan_summaries,
-                        })))
-                    } else {
-                        // Verify file hasn't changed since introspection (TOCTOU guard)
-                        let exec_path = std::path::PathBuf::from(file_path);
-                        if !file.content_hash.is_empty() {
-                            match voom_discovery::hash_file(&exec_path) {
-                                Ok(current_hash) if current_hash != file.content_hash => {
-                                    tracing::warn!(path = %exec_path.display(), "file changed since introspection, skipping");
-                                    return Ok(Some(serde_json::json!({
-                                        "path": file_path_str,
-                                        "skipped": true,
-                                        "reason": "file changed since introspection",
-                                    })));
-                                }
-                                Err(e) => {
-                                    tracing::warn!(path = %exec_path.display(), error = %e, "hash check failed, skipping");
-                                    return Ok(Some(serde_json::json!({
-                                        "path": file_path_str,
-                                        "skipped": true,
-                                        "reason": format!("hash check failed: {e}"),
-                                    })));
-                                }
-                                _ => {} // hash matches, proceed
-                            }
-                        }
+    for plan in &result.plans {
+        if !plan.is_skipped() {
+            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent {
+                plan: plan.clone(),
+            }));
+        }
+    }
 
-                        // Publish lifecycle events for each non-skipped plan
-                        for plan in &result.plans {
-                            if plan.is_skipped() {
-                                continue;
-                            }
+    Ok(result)
+}
 
-                            kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
-                                path: file.path.clone(),
-                                phase_name: plan.phase_name.clone(),
-                                action_count: plan.actions.len(),
-                            }));
+/// Verify file integrity and publish plan lifecycle events for non-dry-run execution.
+fn execute_plans(
+    file_path: &str,
+    file: &voom_domain::media::MediaFile,
+    result: &voom_phase_orchestrator::OrchestrationResult,
+    kernel: &voom_kernel::Kernel,
+    file_path_str: &str,
+    needs_exec: bool,
+) -> std::result::Result<Option<serde_json::Value>, String> {
+    // Verify file hasn't changed since introspection (TOCTOU guard)
+    let exec_path = std::path::PathBuf::from(file_path);
+    if !file.content_hash.is_empty() {
+        match voom_discovery::hash_file(&exec_path) {
+            Ok(current_hash) if current_hash != file.content_hash => {
+                tracing::warn!(path = %exec_path.display(), "file changed since introspection, skipping");
+                return Ok(Some(serde_json::json!({
+                    "path": file_path_str,
+                    "skipped": true,
+                    "reason": "file changed since introspection",
+                })));
+            }
+            Err(e) => {
+                tracing::warn!(path = %exec_path.display(), error = %e, "hash check failed, skipping");
+                return Ok(Some(serde_json::json!({
+                    "path": file_path_str,
+                    "skipped": true,
+                    "reason": format!("hash check failed: {e}"),
+                })));
+            }
+            _ => {} // hash matches, proceed
+        }
+    }
 
-                            // In a full implementation, we'd execute the plan here
+    // Publish lifecycle events for each non-skipped plan
+    for plan in &result.plans {
+        if plan.is_skipped() {
+            continue;
+        }
 
-                            kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
-                                plan_id: plan.id,
-                                path: file.path.clone(),
-                                phase_name: plan.phase_name.clone(),
-                                actions_applied: plan.actions.len(),
-                            }));
-                        }
+        kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
+            path: file.path.clone(),
+            phase_name: plan.phase_name.clone(),
+            action_count: plan.actions.len(),
+        }));
 
-                        Ok(Some(serde_json::json!({
-                            "path": file_path_str,
-                            "needs_execution": needs_exec,
-                            "plans_evaluated": result.plans.len(),
-                        })))
-                    }
-                }
-            },
-            on_error,
-            reporter.clone(),
-        )
-        .await;
+        // In a full implementation, we'd execute the plan here
 
+        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
+            plan_id: plan.id,
+            path: file.path.clone(),
+            phase_name: plan.phase_name.clone(),
+            actions_applied: plan.actions.len(),
+        }));
+    }
+
+    Ok(Some(serde_json::json!({
+        "path": file_path_str,
+        "needs_execution": needs_exec,
+        "plans_evaluated": result.plans.len(),
+    })))
+}
+
+/// Print the final summary line after processing.
+fn print_summary(pool: &WorkerPool, file_count: usize, effective_workers: usize, dry_run: bool) {
     let completed = pool.completed_count();
     let failed = pool.failed_count();
     let skipped = file_count as u64 - completed - failed;
@@ -269,14 +344,12 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
         effective_workers,
     );
 
-    if args.dry_run {
+    if dry_run {
         println!(
             "\n{}",
             "This was a dry run. No files were modified.".dimmed()
         );
     }
-
-    Ok(())
 }
 
 /// CLI progress reporter using indicatif progress bars.
@@ -291,7 +364,7 @@ impl CliProgressReporter {
         let overall = multi.add(ProgressBar::new(total as u64));
         overall.set_style(
             ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                .unwrap()
+                .expect("valid progress template")
                 .progress_chars("#>-"),
         );
         Self {

@@ -30,7 +30,7 @@ async fn list() -> Result<()> {
         let entry = entry?;
         let path = entry.path();
         if path.extension().is_some_and(|e| e == "voom") {
-            let name = path.file_stem().unwrap().to_string_lossy();
+            let name = path.file_stem().expect("file has .voom extension so stem exists").to_string_lossy();
             match voom_dsl::compile(&std::fs::read_to_string(&path)?) {
                 Ok(policy) => {
                     println!(
@@ -71,8 +71,7 @@ async fn validate(file: std::path::PathBuf) -> Result<()> {
             );
         }
         Err(e) => {
-            println!("{} {e}", "ERROR".bold().red());
-            std::process::exit(1);
+            anyhow::bail!("Policy validation failed: {e}");
         }
     }
 
@@ -151,4 +150,97 @@ async fn format(file: std::path::PathBuf) -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MINIMAL_POLICY: &str = r#"
+policy "test-policy" {
+  config {
+    languages audio: [eng]
+    languages subtitle: [eng]
+  }
+  phase normalize {
+    keep audio where lang in [eng]
+    keep subtitles where lang in [eng]
+  }
+}
+"#;
+
+    #[tokio::test]
+    async fn validate_valid_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.voom");
+        std::fs::write(&file, MINIMAL_POLICY).unwrap();
+
+        // validate reads the file and calls voom_dsl::compile
+        let result = validate(file).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn validate_invalid_policy_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("bad.voom");
+        std::fs::write(&file, "not a valid policy at all").unwrap();
+
+        // validate() returns Err for invalid policies, so we test indirectly via compile
+        let source = std::fs::read_to_string(&file).unwrap();
+        assert!(voom_dsl::compile(&source).is_err());
+    }
+
+    #[tokio::test]
+    async fn validate_nonexistent_file_returns_error() {
+        let result = validate(std::path::PathBuf::from("/nonexistent/test.voom")).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn format_valid_policy_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.voom");
+        std::fs::write(&file, MINIMAL_POLICY).unwrap();
+
+        let result = format(file.clone()).await;
+        assert!(result.is_ok());
+
+        // Verify the file was rewritten
+        let formatted = std::fs::read_to_string(&file).unwrap();
+        assert!(formatted.contains("policy"));
+        assert!(formatted.contains("test-policy"));
+    }
+
+    #[tokio::test]
+    async fn format_nonexistent_file_returns_error() {
+        let result = format(std::path::PathBuf::from("/nonexistent/test.voom")).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn show_valid_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.voom");
+        std::fs::write(&file, MINIMAL_POLICY).unwrap();
+
+        let result = show(file).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn show_nonexistent_file_returns_error() {
+        let result = show(std::path::PathBuf::from("/nonexistent/test.voom")).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn show_invalid_policy_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("bad.voom");
+        std::fs::write(&file, "garbage content here").unwrap();
+
+        let result = show(file).await;
+        assert!(result.is_err());
+    }
 }

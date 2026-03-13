@@ -6,7 +6,6 @@ use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, ContentArrangement, Table};
 use owo_colors::OwoColorize;
 use voom_domain::media::{MediaFile, Track};
-use voom_domain::plan::Plan;
 use voom_domain::utils::datetime;
 
 use crate::cli::OutputFormat;
@@ -69,7 +68,7 @@ pub fn format_scan_results(files: &[(std::path::PathBuf, u64, String)], format: 
                     })
                 })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            println!("{}", serde_json::to_string_pretty(&json).expect("serde_json::Value serialization cannot fail"));
         }
         OutputFormat::Table => {
             let mut table = new_table();
@@ -111,7 +110,7 @@ pub fn format_file_info(file: &MediaFile, tracks_only: bool) {
 
 /// Format a media file as JSON.
 pub fn format_file_json(file: &MediaFile) {
-    println!("{}", serde_json::to_string_pretty(file).unwrap());
+    println!("{}", serde_json::to_string_pretty(file).expect("MediaFile serialization cannot fail"));
 }
 
 /// Format tracks as a table.
@@ -166,36 +165,6 @@ fn track_details(track: &Track) -> String {
     }
 
     parts.join(", ")
-}
-
-/// Format plan output for dry-run display.
-#[allow(dead_code)]
-pub fn format_plans(plans: &[Plan]) {
-    for plan in plans {
-        println!("\n{} {}", "Phase:".bold(), plan.phase_name.bold().cyan());
-
-        if let Some(ref reason) = plan.skip_reason {
-            println!("  {} {reason}", "SKIPPED:".yellow());
-            continue;
-        }
-
-        if plan.actions.is_empty() {
-            println!("  {}", "No actions needed.".dimmed());
-        } else {
-            for (i, action) in plan.actions.iter().enumerate() {
-                println!(
-                    "  {}. {} {}",
-                    (i + 1).to_string().bold(),
-                    action.operation.as_str().green(),
-                    action.description
-                );
-            }
-        }
-
-        for warning in &plan.warnings {
-            println!("  {} {warning}", "WARNING:".yellow().bold());
-        }
-    }
 }
 
 /// Format a list of plugins as a table.

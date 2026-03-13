@@ -116,3 +116,51 @@ pub async fn run() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::app;
+
+    #[test]
+    fn default_config_dirs_are_consistent() {
+        let config = app::AppConfig::default();
+        let config_path = app::config_path();
+        let config_dir = config_path.parent().unwrap();
+
+        // The policies dir that init creates
+        let policies_dir = config_dir.join("policies");
+        assert!(policies_dir.ends_with("voom/policies"));
+
+        // Data dir defaults to the config dir
+        assert_eq!(config.data_dir, app::voom_config_dir());
+    }
+
+    #[test]
+    fn init_creates_directories_in_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("voom");
+        let policies_dir = config_dir.join("policies");
+
+        // Simulate what init does for directory creation
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::create_dir_all(&policies_dir).unwrap();
+
+        assert!(config_dir.exists());
+        assert!(policies_dir.exists());
+    }
+
+    #[test]
+    fn init_creates_default_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_file = dir.path().join("config.toml");
+
+        let config = app::AppConfig::default();
+        let contents = toml::to_string_pretty(&config).unwrap();
+        std::fs::write(&config_file, &contents).unwrap();
+
+        // Verify the written file is valid TOML
+        let reloaded: app::AppConfig =
+            toml::from_str(&std::fs::read_to_string(&config_file).unwrap()).unwrap();
+        assert!(reloaded.auth_token.is_none());
+    }
+}

@@ -30,3 +30,43 @@ pub async fn run(args: ServeArgs) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::ServeArgs;
+
+    #[test]
+    fn server_config_from_default_args() {
+        let args = ServeArgs {
+            port: 8080,
+            host: "127.0.0.1".to_string(),
+        };
+        let server_config = ServerConfig {
+            host: args.host.clone(),
+            port: args.port,
+            template_dir: None,
+            auth_token: None,
+        };
+        assert_eq!(server_config.port, 8080);
+        assert_eq!(server_config.host, "127.0.0.1");
+        assert!(server_config.auth_token.is_none());
+    }
+
+    #[test]
+    fn server_config_with_auth_token() {
+        let config = crate::app::AppConfig {
+            data_dir: std::path::PathBuf::from("/tmp"),
+            plugins: crate::app::PluginsConfig::default(),
+            auth_token: Some("secret".to_string()),
+        };
+        let server_config = ServerConfig {
+            host: "0.0.0.0".to_string(),
+            port: 3000,
+            template_dir: None,
+            auth_token: config.auth_token.clone(),
+        };
+        assert_eq!(server_config.auth_token.as_deref(), Some("secret"));
+        assert_eq!(server_config.port, 3000);
+    }
+}
