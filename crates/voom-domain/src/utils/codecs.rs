@@ -132,18 +132,20 @@ pub fn normalize_codec(name: &str) -> Option<&'static str> {
 }
 
 /// Returns all known canonical codec names.
+#[must_use] 
 pub fn all_codec_names() -> &'static [&'static str] {
     &ALL_CODEC_NAMES
 }
 
 /// Find the closest matching codec name for "did you mean?" suggestions.
 /// Returns `None` if nothing is close enough (edit distance > 3).
+#[must_use] 
 pub fn suggest_codec(name: &str) -> Option<&'static str> {
     let lower = name.to_ascii_lowercase();
     let mut best: Option<(&str, usize)> = None;
     for &canonical in all_codec_names() {
         let dist = edit_distance(&lower, canonical);
-        if dist <= 3 && (best.is_none() || dist < best.unwrap().1) {
+        if dist <= 3 && best.as_ref().is_none_or(|b| dist < b.1) {
             best = Some((canonical, dist));
         }
     }
@@ -151,7 +153,7 @@ pub fn suggest_codec(name: &str) -> Option<&'static str> {
     for table in [&*VIDEO_CODECS, &*AUDIO_CODECS, &*SUBTITLE_CODECS] {
         for (&alias, &canonical) in table {
             let dist = edit_distance(&lower, alias);
-            if dist <= 3 && (best.is_none() || dist < best.unwrap().1) {
+            if dist <= 3 && best.as_ref().is_none_or(|b| dist < b.1) {
                 best = Some((canonical, dist));
             }
         }

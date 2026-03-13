@@ -1,14 +1,17 @@
 /// Normalize a track title by trimming whitespace and collapsing runs of whitespace.
+#[must_use] 
 pub fn normalize_title(title: &str) -> String {
     title.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Normalize a file extension by lowercasing and stripping the leading dot.
+#[must_use] 
 pub fn normalize_extension(ext: &str) -> String {
     ext.trim_start_matches('.').to_ascii_lowercase()
 }
 
 /// Normalize a tag key for consistent lookups (lowercase, trim whitespace).
+#[must_use] 
 pub fn normalize_tag_key(key: &str) -> String {
     key.trim().to_ascii_lowercase()
 }

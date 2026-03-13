@@ -21,6 +21,7 @@ pub struct Job {
 }
 
 impl Job {
+    #[must_use] 
     pub fn new(job_type: String) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -39,6 +40,7 @@ impl Job {
         }
     }
 
+    #[must_use] 
     pub fn is_terminal(&self) -> bool {
         matches!(
             self.status,
@@ -48,6 +50,7 @@ impl Job {
 }
 
 /// Status of a job.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
@@ -59,6 +62,7 @@ pub enum JobStatus {
 }
 
 impl JobStatus {
+    #[must_use] 
     pub fn as_str(&self) -> &'static str {
         match self {
             JobStatus::Pending => "pending",
@@ -69,6 +73,7 @@ impl JobStatus {
         }
     }
 
+    #[must_use] 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "pending" => Some(JobStatus::Pending),
