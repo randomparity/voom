@@ -35,6 +35,7 @@
                 <tr>
                     <th>ID</th>
                     <th>Type</th>
+                    <th>File</th>
                     <th>Status</th>
                     <th>Progress</th>
                     <th>Message</th>
@@ -50,6 +51,13 @@
                         </span>
                     </td>
                     <td>{{ job.job_type | default(value="--") }}</td>
+                    <td class="mono text-secondary" style="font-size: 0.8rem;" title="{{ job.payload.path | default(value='') }}">
+                        {% if job.payload.path %}
+                            {{ job.payload.path | default(value="") | split(pat="/") | last }}
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
                     <td>
                         {% if job.status | default(value="") == "Pending" %}
                         <span class="badge badge-pending">Pending</span>

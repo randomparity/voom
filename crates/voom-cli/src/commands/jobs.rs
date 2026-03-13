@@ -33,7 +33,7 @@ async fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
 
     let mut table = output::new_table();
     table.set_header(vec![
-        "ID", "Type", "Status", "Progress", "Worker", "Created",
+        "ID", "Type", "File", "Status", "Progress", "Worker", "Created",
     ]);
 
     for job in &jobs {
@@ -50,9 +50,18 @@ async fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
             status_cell = status_cell.fg(color);
         }
 
+        let file_name = job
+            .payload
+            .as_ref()
+            .and_then(|p| p["path"].as_str())
+            .and_then(|p| std::path::Path::new(p).file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
         table.add_row(vec![
             Cell::new(&job.id.to_string()[..8]),
             Cell::new(&job.job_type),
+            Cell::new(&file_name),
             status_cell,
             Cell::new(format!("{:.0}%", job.progress * 100.0)),
             Cell::new(job.worker_id.as_deref().unwrap_or("-")),
@@ -97,6 +106,11 @@ async fn status(id: String) -> Result<()> {
         Some(job) => {
             println!("{} {}", "Job:".bold(), job.id.to_string().cyan());
             println!("{} {}", "Type:".bold(), job.job_type);
+            if let Some(ref payload) = job.payload {
+                if let Some(path) = payload["path"].as_str() {
+                    println!("{} {}", "File:".bold(), path);
+                }
+            }
             println!("{} {}", "Status:".bold(), job.status.as_str());
             println!("{} {:.1}%", "Progress:".bold(), job.progress * 100.0);
             if let Some(ref msg) = job.progress_message {

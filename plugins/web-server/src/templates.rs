@@ -163,13 +163,20 @@ pub async fn policy_editor(State(state): State<AppState>, Path(name): Path<Strin
 pub async fn jobs_page(State(state): State<AppState>) -> HtmlResult {
     let store = state.store.clone();
 
-    let jobs = tokio::task::spawn_blocking(move || store.list_jobs(None, Some(100)))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let (jobs, counts) = tokio::task::spawn_blocking(move || {
+        let jobs = store.list_jobs(None, None)?;
+        let counts = store.count_jobs_by_status()?;
+        Ok::<_, voom_domain::errors::VoomError>((jobs, counts))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let mut ctx = tera::Context::new();
     ctx.insert("jobs", &jobs);
+    for (status, count) in &counts {
+        ctx.insert(format!("jobs_{}", status.as_str()), count);
+    }
 
     render(&state.templates, "jobs.html", &ctx)
 }
