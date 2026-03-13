@@ -1,3 +1,5 @@
+//! `SQLite` storage plugin: persistent storage for files, tracks, jobs, plans, and plugin data.
+
 pub mod schema;
 pub mod store;
 
@@ -11,13 +13,14 @@ use voom_kernel::{Plugin, PluginContext};
 
 use crate::store::SqliteStore;
 
-/// The SQLite storage plugin. Persists media files, jobs, plans, and stats.
+/// The `SQLite` storage plugin. Persists media files, jobs, plans, and stats.
 pub struct SqliteStorePlugin {
     store: Option<Arc<SqliteStore>>,
     capabilities: Vec<Capability>,
 }
 
 impl SqliteStorePlugin {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             store: None,
@@ -28,6 +31,7 @@ impl SqliteStorePlugin {
     }
 
     /// Get a reference to the underlying store. Returns None if not initialized.
+    #[must_use] 
     pub fn store(&self) -> Option<&Arc<SqliteStore>> {
         self.store.as_ref()
     }
@@ -146,5 +150,137 @@ impl Plugin for SqliteStorePlugin {
     fn shutdown(&self) -> Result<()> {
         tracing::info!("sqlite store shutting down");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_creates_plugin_with_store_capability() {
+        let plugin = SqliteStorePlugin::new();
+        assert_eq!(
+            plugin.capabilities(),
+            &[Capability::Store {
+                backend: "sqlite".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn default_creates_same_as_new() {
+        let plugin = SqliteStorePlugin::default();
+        assert_eq!(plugin.name(), "sqlite-store");
+        assert_eq!(
+            plugin.capabilities(),
+            &[Capability::Store {
+                backend: "sqlite".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn plugin_name_and_version() {
+        let plugin = SqliteStorePlugin::new();
+        assert_eq!(plugin.name(), "sqlite-store");
+        assert!(!plugin.version().is_empty());
+    }
+
+    #[test]
+    fn store_is_none_before_init() {
+        let plugin = SqliteStorePlugin::new();
+        assert!(plugin.store().is_none());
+    }
+
+    #[test]
+    fn handles_expected_event_types() {
+        let plugin = SqliteStorePlugin::new();
+        assert!(plugin.handles("file.introspected"));
+        assert!(plugin.handles("plan.created"));
+        assert!(plugin.handles("plan.completed"));
+        assert!(plugin.handles("plan.failed"));
+        assert!(plugin.handles("metadata.enriched"));
+        assert!(plugin.handles("tool.detected"));
+    }
+
+    #[test]
+    fn does_not_handle_unrelated_event_types() {
+        let plugin = SqliteStorePlugin::new();
+        assert!(!plugin.handles("file.discovered"));
+        assert!(!plugin.handles("policy.evaluate"));
+        assert!(!plugin.handles("job.started"));
+        assert!(!plugin.handles(""));
+    }
+
+    #[test]
+    fn on_event_returns_none_when_store_not_initialized() {
+        let plugin = SqliteStorePlugin::new();
+        // Even for a handled event type, returns None if store is not init'd
+        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent {
+            tool_name: "ffprobe".into(),
+            version: "6.0".into(),
+            path: "/usr/bin/ffprobe".into(),
+        });
+        let result = plugin.on_event(&event).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn init_creates_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut plugin = SqliteStorePlugin::new();
+        let ctx = PluginContext {
+            config: serde_json::Value::Null,
+            data_dir: tmp.path().to_path_buf(),
+        };
+        plugin.init(&ctx).unwrap();
+        assert!(plugin.store().is_some());
+    }
+
+    #[test]
+    fn init_creates_data_dir_if_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("nested").join("dir");
+        let mut plugin = SqliteStorePlugin::new();
+        let ctx = PluginContext {
+            config: serde_json::Value::Null,
+            data_dir: nested,
+        };
+        plugin.init(&ctx).unwrap();
+        assert!(plugin.store().is_some());
+    }
+
+    #[test]
+    fn shutdown_succeeds() {
+        let plugin = SqliteStorePlugin::new();
+        assert!(plugin.shutdown().is_ok());
+    }
+
+    #[test]
+    fn on_event_with_initialized_store_handles_tool_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut plugin = SqliteStorePlugin::new();
+        let ctx = PluginContext {
+            config: serde_json::Value::Null,
+            data_dir: tmp.path().to_path_buf(),
+        };
+        plugin.init(&ctx).unwrap();
+
+        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent {
+            tool_name: "ffprobe".into(),
+            version: "6.0".into(),
+            path: "/usr/bin/ffprobe".into(),
+        });
+        let result = plugin.on_event(&event).unwrap();
+        assert!(result.is_none()); // on_event always returns None for store
+
+        // Verify data was stored
+        let store = plugin.store().unwrap();
+        let data = store.get_plugin_data("tool-detector", "tool:ffprobe").unwrap();
+        assert!(data.is_some());
+        let value: serde_json::Value = serde_json::from_slice(&data.unwrap()).unwrap();
+        assert_eq!(value["tool_name"], "ffprobe");
+        assert_eq!(value["version"], "6.0");
     }
 }
