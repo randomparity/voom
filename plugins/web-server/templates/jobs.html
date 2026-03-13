@@ -36,9 +36,10 @@
 </div>
 
 <div class="card" style="margin-bottom: 1rem; padding: 1rem;">
-    <form action="/jobs" method="get" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+    <form id="filter-form" action="/jobs" method="get" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
         <label for="filter-status" style="font-weight: 500;">Status:</label>
-        <select name="status" id="filter-status" style="padding: 0.4rem 0.6rem; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-secondary); color: var(--text-primary);">
+        <select name="status" id="filter-status" onchange="this.form.submit()"
+                style="padding: 0.4rem 0.6rem; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary);">
             <option value="" {% if filter_status == "" %}selected{% endif %}>All</option>
             <option value="pending" {% if filter_status == "pending" %}selected{% endif %}>Pending</option>
             <option value="running" {% if filter_status == "running" %}selected{% endif %}>Running</option>
@@ -46,14 +47,13 @@
             <option value="failed" {% if filter_status == "failed" %}selected{% endif %}>Failed</option>
             <option value="cancelled" {% if filter_status == "cancelled" %}selected{% endif %}>Cancelled</option>
         </select>
-        <button type="submit" class="btn btn-sm" style="padding: 0.4rem 0.8rem;">Filter</button>
         {% if filter_status != "" %}
         <a href="/jobs" style="font-size: 0.85rem;">Clear</a>
         {% endif %}
         <span style="flex: 1;"></span>
         <input type="text" id="filter-search" placeholder="Search by filename or ID..."
                oninput="filterJobRows(this.value)"
-               style="padding: 0.4rem 0.6rem; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-secondary); color: var(--text-primary); min-width: 220px;">
+               style="padding: 0.4rem 0.6rem; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary); min-width: 220px;">
         <span id="filter-count" style="font-size: 0.8rem; color: var(--text-secondary);"></span>
     </form>
 </div>
