@@ -82,6 +82,37 @@ pub const KNOWN_PLUGIN_NAMES: &[&str] = &[
     "web-server",
 ];
 
+/// Generate a default config.toml with all options commented out and documented.
+pub fn default_config_contents() -> String {
+    let data_dir = default_data_dir();
+    let data_dir_str = data_dir.display();
+
+    format!(
+        r#"# VOOM configuration file
+# See https://github.com/randomparity/voom for documentation.
+
+# Directory where VOOM stores its database and plugin data.
+# data_dir = "{data_dir_str}"
+
+# Optional bearer token for authenticating REST API and SSE requests.
+# When set, all API requests must include an "Authorization: Bearer <token>" header.
+# auth_token = "your-secret-token"
+
+[plugins]
+
+# Directory containing WASM plugin files (.wasm).
+# Defaults to the config directory if not set.
+# wasm_dir = "{data_dir_str}/plugins/wasm"
+
+# List of plugin names to disable at startup.
+# Valid names: sqlite-store, tool-detector, discovery, ffprobe-introspector,
+#   policy-evaluator, phase-orchestrator, mkvtoolnix-executor, ffmpeg-executor,
+#   backup-manager, job-manager, web-server
+# disabled_plugins = ["web-server"]
+"#
+    )
+}
+
 /// Save config back to the TOML file, creating the directory if needed.
 pub fn save_config(config: &AppConfig) -> Result<()> {
     let path = config_path();
@@ -339,6 +370,31 @@ mod tests {
         for name in KNOWN_PLUGIN_NAMES {
             assert!(seen.insert(name), "duplicate plugin name: {name}");
         }
+    }
+
+    // ── default_config_contents ───────────────────────────────
+
+    #[test]
+    fn default_config_contents_is_valid_toml() {
+        let contents = default_config_contents();
+        // All options are commented out, so parsing should yield defaults
+        let config: AppConfig = toml::from_str(&contents).expect("default config should be valid TOML");
+        assert!(config.auth_token.is_none());
+        assert!(config.plugins.wasm_dir.is_none());
+        assert!(config.plugins.disabled_plugins.is_empty());
+    }
+
+    #[test]
+    fn default_config_contents_documents_all_fields() {
+        let contents = default_config_contents();
+        assert!(contents.contains("# data_dir"), "should document data_dir");
+        assert!(contents.contains("# auth_token"), "should document auth_token");
+        assert!(contents.contains("# wasm_dir"), "should document wasm_dir");
+        assert!(
+            contents.contains("# disabled_plugins"),
+            "should document disabled_plugins"
+        );
+        assert!(contents.contains("[plugins]"), "should have plugins section");
     }
 
     // ── load_config with temp files ──────────────────────────

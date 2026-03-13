@@ -58,8 +58,8 @@ pub async fn run() -> Result<()> {
 
     // 4. Create default config if missing
     if !config_path.exists() {
-        let contents = toml::to_string_pretty(&config)?;
-        std::fs::write(&config_path, contents)?;
+        let contents = app::default_config_contents();
+        std::fs::write(&config_path, &contents)?;
         println!(
             "  {} Created {}",
             "OK".green(),
@@ -154,13 +154,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config_file = dir.path().join("config.toml");
 
-        let config = app::AppConfig::default();
-        let contents = toml::to_string_pretty(&config).unwrap();
+        let contents = app::default_config_contents();
         std::fs::write(&config_file, &contents).unwrap();
 
-        // Verify the written file is valid TOML
+        // Verify the written file is valid TOML (all options are commented out)
         let reloaded: app::AppConfig =
             toml::from_str(&std::fs::read_to_string(&config_file).unwrap()).unwrap();
         assert!(reloaded.auth_token.is_none());
+        assert!(reloaded.plugins.disabled_plugins.is_empty());
     }
 }
