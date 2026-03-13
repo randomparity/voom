@@ -59,6 +59,7 @@ fn load_templates(template_dir: Option<&str>) -> Result<tera::Tera> {
 }
 
 /// Embedded templates — public for integration tests.
+#[must_use] 
 pub fn embedded_templates_for_test() -> tera::Tera {
     embedded_templates()
 }
@@ -96,4 +97,83 @@ fn embedded_templates() -> tera::Tera {
         .expect("Failed to add settings template");
 
     tera
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_config_fields() {
+        let config = ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 8080,
+            template_dir: None,
+            auth_token: Some("secret".into()),
+        };
+        assert_eq!(config.host, "127.0.0.1");
+        assert_eq!(config.port, 8080);
+        assert!(config.template_dir.is_none());
+        assert_eq!(config.auth_token, Some("secret".to_string()));
+    }
+
+    #[test]
+    fn server_config_clone() {
+        let config = ServerConfig {
+            host: "0.0.0.0".into(),
+            port: 3000,
+            template_dir: Some("/tmp/templates".into()),
+            auth_token: None,
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.host, "0.0.0.0");
+        assert_eq!(cloned.port, 3000);
+        assert_eq!(cloned.template_dir, Some("/tmp/templates".to_string()));
+        assert!(cloned.auth_token.is_none());
+    }
+
+    #[test]
+    fn embedded_templates_contains_all_expected_templates() {
+        let tera = embedded_templates();
+        let names: Vec<&str> = tera.get_template_names().collect();
+        let expected = [
+            "base.html",
+            "dashboard.html",
+            "library.html",
+            "file_detail.html",
+            "policies.html",
+            "policy_editor.html",
+            "jobs.html",
+            "plugins.html",
+            "settings.html",
+        ];
+        for name in &expected {
+            assert!(names.contains(name), "Missing template: {name}");
+        }
+    }
+
+    #[test]
+    fn embedded_templates_for_test_returns_same_templates() {
+        let tera = embedded_templates_for_test();
+        let names: Vec<&str> = tera.get_template_names().collect();
+        assert!(names.contains(&"dashboard.html"));
+        assert!(names.contains(&"base.html"));
+    }
+
+    #[test]
+    fn load_templates_falls_back_to_embedded_when_dir_missing() {
+        // Using a non-existent directory should fall back to embedded
+        let result = load_templates(Some("/nonexistent/path/that/does/not/exist"));
+        assert!(result.is_ok());
+        let tera = result.unwrap();
+        let names: Vec<&str> = tera.get_template_names().collect();
+        assert!(names.contains(&"dashboard.html"));
+    }
+
+    #[test]
+    fn load_templates_none_falls_back_to_embedded() {
+        // With None, it tries "web/templates" which likely doesn't exist in test CWD
+        let result = load_templates(None);
+        assert!(result.is_ok());
+    }
 }

@@ -54,3 +54,60 @@ pub fn build_router(state: AppState) -> Router {
         .layer(SecurityHeadersLayer)
         .with_state(state)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::sync::Arc;
+    use voom_domain::errors::Result as VoomResult;
+    use voom_domain::job::{Job, JobStatus, JobUpdate};
+    use voom_domain::media::MediaFile;
+    use voom_domain::plan::Plan;
+    use voom_domain::stats::ProcessingStats;
+    use voom_domain::storage::{FileFilters, StorageTrait, StoredPlan};
+
+    struct DummyStore;
+    impl StorageTrait for DummyStore {
+        fn upsert_file(&self, _: &MediaFile) -> VoomResult<()> { Ok(()) }
+        fn get_file(&self, _: &uuid::Uuid) -> VoomResult<Option<MediaFile>> { Ok(None) }
+        fn get_file_by_path(&self, _: &Path) -> VoomResult<Option<MediaFile>> { Ok(None) }
+        fn list_files(&self, _: &FileFilters) -> VoomResult<Vec<MediaFile>> { Ok(vec![]) }
+        fn count_files(&self, _: &FileFilters) -> VoomResult<u64> { Ok(0) }
+        fn delete_file(&self, _: &uuid::Uuid) -> VoomResult<()> { Ok(()) }
+        fn create_job(&self, _: &Job) -> VoomResult<uuid::Uuid> { Ok(uuid::Uuid::new_v4()) }
+        fn get_job(&self, _: &uuid::Uuid) -> VoomResult<Option<Job>> { Ok(None) }
+        fn update_job(&self, _: &uuid::Uuid, _: &JobUpdate) -> VoomResult<()> { Ok(()) }
+        fn claim_next_job(&self, _: &str) -> VoomResult<Option<Job>> { Ok(None) }
+        fn list_jobs(&self, _: Option<JobStatus>, _: Option<u32>) -> VoomResult<Vec<Job>> { Ok(vec![]) }
+        fn count_jobs_by_status(&self) -> VoomResult<Vec<(JobStatus, u64)>> { Ok(vec![]) }
+        fn save_plan(&self, _: &Plan) -> VoomResult<uuid::Uuid> { Ok(uuid::Uuid::new_v4()) }
+        fn get_plans_for_file(&self, _: &uuid::Uuid) -> VoomResult<Vec<StoredPlan>> { Ok(vec![]) }
+        fn update_plan_status(&self, _: &uuid::Uuid, _: &str) -> VoomResult<()> { Ok(()) }
+        fn get_file_history(&self, _: &Path) -> VoomResult<Vec<voom_domain::storage::FileHistoryEntry>> { Ok(vec![]) }
+        fn record_stats(&self, _: &ProcessingStats) -> VoomResult<()> { Ok(()) }
+        fn get_plugin_data(&self, _: &str, _: &str) -> VoomResult<Option<Vec<u8>>> { Ok(None) }
+        fn set_plugin_data(&self, _: &str, _: &str, _: &[u8]) -> VoomResult<()> { Ok(()) }
+        fn vacuum(&self) -> VoomResult<()> { Ok(()) }
+        fn prune_missing_files(&self) -> VoomResult<u64> { Ok(0) }
+    }
+
+    fn make_state(auth_token: Option<String>) -> AppState {
+        let store = Arc::new(DummyStore);
+        let templates = tera::Tera::default();
+        AppState::new(store, templates, auth_token)
+    }
+
+    #[test]
+    fn build_router_returns_valid_router() {
+        let state = make_state(None);
+        // Should not panic — validates that all routes wire up correctly
+        let _router = build_router(state);
+    }
+
+    #[test]
+    fn build_router_with_auth_token() {
+        let state = make_state(Some("test-token".into()));
+        let _router = build_router(state);
+    }
+}

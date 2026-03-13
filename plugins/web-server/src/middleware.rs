@@ -110,7 +110,7 @@ where
             let request_id = Uuid::new_v4().to_string();
             response.headers_mut().insert(
                 axum::http::HeaderName::from_static("x-request-id"),
-                HeaderValue::from_str(&request_id).unwrap(),
+                HeaderValue::from_str(&request_id).expect("UUID is valid header value"),
             );
             Ok(response)
         })
@@ -124,11 +124,13 @@ pub struct AuthConfig {
 }
 
 impl AuthConfig {
+    #[must_use] 
     pub fn new(token: Option<String>) -> Self {
         Self { token }
     }
 
     /// Check if the given token is valid. Returns true if no auth is configured.
+    #[must_use] 
     pub fn validate(&self, provided: Option<&str>) -> bool {
         match &self.token {
             None => true, // No auth configured
@@ -138,7 +140,7 @@ impl AuthConfig {
 }
 
 /// Axum middleware that enforces Bearer token authentication on API routes.
-/// If AppState has no auth_token configured, all requests pass through.
+/// If `AppState` has no `auth_token` configured, all requests pass through.
 pub async fn auth_middleware(
     State(state): State<AppState>,
     request: axum::extract::Request,
