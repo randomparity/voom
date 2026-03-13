@@ -6,6 +6,7 @@ use crate::media::MediaFile;
 use crate::plan::Plan;
 
 /// All event types that flow through the event bus.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
     FileDiscovered(FileDiscoveredEvent),
@@ -29,6 +30,7 @@ pub enum Event {
 
 impl Event {
     /// Returns the event type string used for subscription matching.
+    #[must_use]
     pub fn event_type(&self) -> &str {
         match self {
             Event::FileDiscovered(_) => "file.discovered",
@@ -58,6 +60,65 @@ pub struct EventResult {
     /// handlers. Produced events from the claiming result still cascade normally.
     #[serde(default)]
     pub claimed: bool,
+}
+
+impl EventResult {
+    /// Build the standard pair of lifecycle events that executor plugins emit
+    /// when a plan execution succeeds: `PlanExecuting` + `PlanCompleted`.
+    pub fn plan_succeeded(
+        plugin_name: impl Into<String>,
+        plan: &crate::plan::Plan,
+        actions_applied: usize,
+        data: Option<serde_json::Value>,
+    ) -> Self {
+        let executing = Event::PlanExecuting(PlanExecutingEvent {
+            path: plan.file.path.clone(),
+            phase_name: plan.phase_name.clone(),
+            action_count: plan.actions.len(),
+        });
+        let completed = Event::PlanCompleted(PlanCompletedEvent {
+            plan_id: plan.id,
+            path: plan.file.path.clone(),
+            phase_name: plan.phase_name.clone(),
+            actions_applied,
+        });
+        Self {
+            plugin_name: plugin_name.into(),
+            produced_events: vec![executing, completed],
+            data,
+            claimed: true,
+        }
+    }
+
+    /// Build the standard pair of lifecycle events that executor plugins emit
+    /// when a plan execution fails: `PlanExecuting` + `PlanFailed`.
+    pub fn plan_failed(
+        plugin_name: impl Into<String>,
+        plan: &crate::plan::Plan,
+        error: String,
+    ) -> Self {
+        let name: String = plugin_name.into();
+        let executing = Event::PlanExecuting(PlanExecutingEvent {
+            path: plan.file.path.clone(),
+            phase_name: plan.phase_name.clone(),
+            action_count: plan.actions.len(),
+        });
+        let failed = Event::PlanFailed(PlanFailedEvent {
+            plan_id: plan.id,
+            path: plan.file.path.clone(),
+            phase_name: plan.phase_name.clone(),
+            error,
+            error_code: None,
+            plugin_name: Some(name.clone()),
+            error_chain: Vec::new(),
+        });
+        Self {
+            plugin_name: name,
+            produced_events: vec![executing, failed],
+            data: None,
+            claimed: true,
+        }
+    }
 }
 
 // --- Event payload structs ---
@@ -117,6 +178,10 @@ pub struct PlanFailedEvent {
     pub error_code: Option<String>,
     #[serde(default)]
     pub plugin_name: Option<String>,
+    /// Chain of causal errors from source to root cause.
+    /// Populated when structured error information is available.
+    #[serde(default)]
+    pub error_chain: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,5 +1,9 @@
 //! Semantic validation for VOOM DSL ASTs.
 //!
+//! The `.unwrap()` calls in this module operate on structures that are guaranteed
+//! to exist by construction (e.g., cycle detection paths, AST lookups).
+#![allow(clippy::unwrap_used)]
+//!
 //! Checks for:
 //! - Unknown codecs (with did-you-mean suggestions)
 //! - Invalid language codes

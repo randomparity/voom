@@ -45,8 +45,8 @@ pub fn run_ffprobe(
     // Drain stdout and stderr in background threads to prevent pipe buffer
     // deadlock. Without this, ffprobe blocks writing to a full pipe while
     // we block waiting for it to exit.
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let stdout = child.stdout.take().expect("stdout piped in Command::new");
+    let stderr = child.stderr.take().expect("stderr piped in Command::new");
 
     let stdout_handle = std::thread::spawn(move || std::io::read_to_string(stdout));
     let stderr_handle = std::thread::spawn(move || std::io::read_to_string(stderr));

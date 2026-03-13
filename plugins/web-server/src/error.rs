@@ -37,18 +37,25 @@ impl IntoResponse for WebError {
         let (status, error_msg) = match &self {
             WebError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             WebError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-            WebError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
-            WebError::Storage(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
-        };
-
-        let details = match &self {
-            WebError::Storage(_) => Some("database operation failed".to_string()),
-            _ => None,
+            WebError::Internal(msg) => {
+                tracing::error!(error = %msg, "internal server error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".to_string(),
+                )
+            }
+            WebError::Storage(msg) => {
+                tracing::error!(error = %msg, "storage error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Database operation failed".to_string(),
+                )
+            }
         };
 
         let body = axum::Json(ApiError {
             error: error_msg,
-            details,
+            details: None,
         });
 
         (status, body).into_response()

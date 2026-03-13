@@ -31,6 +31,7 @@ pub enum PhaseOutcome {
 }
 
 /// Evaluate a compiled policy against a media file, producing plans for all phases.
+#[must_use]
 pub fn evaluate(policy: &CompiledPolicy, file: &MediaFile) -> EvaluationResult {
     let mut plans = Vec::new();
     let mut phase_outcomes: HashMap<String, PhaseOutcome> = HashMap::new();
@@ -135,7 +136,6 @@ fn evaluate_phase(
     let mut ctx = PhaseContext {
         plan: &mut plan,
         file,
-        _config: &policy.config,
     };
 
     for op in &phase.operations {
@@ -162,7 +162,6 @@ fn evaluate_phase(
 struct PhaseContext<'a> {
     plan: &'a mut Plan,
     file: &'a MediaFile,
-    _config: &'a CompiledConfig,
 }
 
 /// Process a single operation, adding planned actions to the plan.

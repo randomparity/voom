@@ -1,6 +1,6 @@
-//! FFmpeg Executor Plugin.
+//! `FFmpeg` Executor Plugin.
 //!
-//! Executes media plans using FFmpeg for transcoding, container conversion,
+//! Executes media plans using `FFmpeg` for transcoding, container conversion,
 //! and metadata operations on non-MKV files (or any file requiring transcode).
 
 pub mod command;
@@ -9,9 +9,7 @@ pub mod progress;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::events::{
-    Event, EventResult, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
-};
+use voom_domain::events::{Event, EventResult, PlanCreatedEvent};
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionResult, OperationType, Plan, PlannedAction};
 use voom_kernel::Plugin;
@@ -19,9 +17,9 @@ use voom_kernel::Plugin;
 use crate::command::{build_ffmpeg_command, output_extension};
 use crate::hwaccel::HwAccelConfig;
 
-/// FFmpeg executor plugin.
+/// `FFmpeg` executor plugin.
 ///
-/// Handles `plan.created` events by building and executing FFmpeg commands
+/// Handles `plan.created` events by building and executing `FFmpeg` commands
 /// for transcoding, container conversion, and metadata operations.
 pub struct FfmpegExecutorPlugin {
     capabilities: Vec<Capability>,
@@ -29,7 +27,8 @@ pub struct FfmpegExecutorPlugin {
 }
 
 impl FfmpegExecutorPlugin {
-    /// Create a new FFmpeg executor plugin with default HW accel config.
+    /// Create a new `FFmpeg` executor plugin with default HW accel config.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::Execute {
@@ -50,6 +49,7 @@ impl FfmpegExecutorPlugin {
     }
 
     /// Create with a specific HW accel configuration.
+    #[must_use]
     pub fn with_hw_accel(mut self, hw_accel: HwAccelConfig) -> Self {
         self.hw_accel = hw_accel;
         self
@@ -59,7 +59,7 @@ impl FfmpegExecutorPlugin {
     ///
     /// Returns `true` when the plan contains transcode operations, or when
     /// the file is non-MKV and needs metadata/remux work. MKV files with
-    /// only metadata operations are left to the MKVToolNix executor.
+    /// only metadata operations are left to the `MKVToolNix` executor.
     pub fn can_handle(&self, plan: &Plan) -> bool {
         if plan.is_empty() || plan.is_skipped() {
             return false;
@@ -101,7 +101,7 @@ impl FfmpegExecutorPlugin {
 
     /// Execute a plan and return action results.
     ///
-    /// Builds an FFmpeg command from the plan's actions, but does not actually
+    /// Builds an `FFmpeg` command from the plan's actions, but does not actually
     /// run the subprocess (that is left to the caller or the event handler).
     /// Returns the expected action results.
     pub fn execute_plan(&self, plan: &Plan) -> Result<Vec<ActionResult>> {
@@ -169,52 +169,21 @@ impl FfmpegExecutorPlugin {
             return Ok(None);
         }
 
-        let plan_id = plan.id;
-        let path = plan.file.path.clone();
-        let phase_name = plan.phase_name.clone();
-        let action_count = plan.actions.len();
-
-        // Emit executing event
-        let executing_event = Event::PlanExecuting(PlanExecutingEvent {
-            path: path.clone(),
-            phase_name: phase_name.clone(),
-            action_count,
-        });
-
         match self.execute_plan(plan) {
             Ok(results) => {
                 let actions_applied = results.iter().filter(|r| r.success).count();
-                let completed_event = Event::PlanCompleted(PlanCompletedEvent {
-                    plan_id,
-                    path,
-                    phase_name,
+                Ok(Some(EventResult::plan_succeeded(
+                    "ffmpeg-executor",
+                    plan,
                     actions_applied,
-                });
-
-                Ok(Some(EventResult {
-                    plugin_name: "ffmpeg-executor".into(),
-                    produced_events: vec![executing_event, completed_event],
-                    data: Some(serde_json::to_value(&results).unwrap_or_default()),
-                    claimed: true,
-                }))
+                    Some(serde_json::to_value(&results).unwrap_or_default()),
+                )))
             }
-            Err(e) => {
-                let failed_event = Event::PlanFailed(PlanFailedEvent {
-                    plan_id,
-                    path,
-                    phase_name,
-                    error: e.to_string(),
-                    error_code: None,
-                    plugin_name: Some("ffmpeg-executor".into()),
-                });
-
-                Ok(Some(EventResult {
-                    plugin_name: "ffmpeg-executor".into(),
-                    produced_events: vec![executing_event, failed_event],
-                    data: None,
-                    claimed: true,
-                }))
-            }
+            Err(e) => Ok(Some(EventResult::plan_failed(
+                "ffmpeg-executor",
+                plan,
+                e.to_string(),
+            ))),
         }
     }
 }
@@ -268,6 +237,7 @@ impl Plugin for FfmpegExecutorPlugin {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use voom_domain::events::PlanExecutingEvent;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
 
     fn sample_mp4_file() -> MediaFile {

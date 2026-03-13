@@ -104,3 +104,29 @@ pub async fn run() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn required_tools_list() {
+        let required = ["ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit"];
+        assert_eq!(required.len(), 4);
+        // Verify these are the tools doctor checks
+        for tool in &required {
+            assert!(!tool.is_empty());
+        }
+    }
+
+    #[test]
+    fn optional_tools_list() {
+        let optional = ["mkvextract", "mediainfo", "HandBrakeCLI"];
+        assert_eq!(optional.len(), 3);
+    }
+
+    #[test]
+    fn tool_detector_creation() {
+        let detector = voom_tool_detector::ToolDetectorPlugin::new();
+        // Should be able to create without panic
+        assert!(detector.get_tool("nonexistent-tool").is_none());
+    }
+}

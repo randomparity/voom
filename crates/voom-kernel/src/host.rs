@@ -13,7 +13,7 @@ use wait_timeout::ChildExt;
 
 /// State provided to WASM plugins via host function imports.
 ///
-/// Each WASM plugin instance gets its own HostState, which holds
+/// Each WASM plugin instance gets its own `HostState`, which holds
 /// plugin-specific data and shared references to host services.
 /// Maximum size for plugin data values (1 MiB).
 pub const MAX_PLUGIN_DATA_VALUE_SIZE: usize = 1024 * 1024;
@@ -40,7 +40,7 @@ pub struct HostState {
     /// Name of the plugin this state belongs to.
     pub plugin_name: String,
     /// In-memory key-value store for plugin data.
-    /// In production this would be backed by StorageTrait.
+    /// In production this would be backed by `StorageTrait`.
     pub plugin_data: HashMap<String, Vec<u8>>,
     /// Allowed directories for tool execution (security sandbox).
     pub allowed_paths: Vec<PathBuf>,
@@ -67,12 +67,13 @@ pub trait PluginDataStore: Send + Sync {
     fn delete(&self, plugin_name: &str, key: &str) -> Result<(), String>;
 }
 
-/// In-memory implementation of PluginDataStore for testing.
+/// In-memory implementation of `PluginDataStore` for testing.
 pub struct InMemoryDataStore {
     data: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
 }
 
 impl InMemoryDataStore {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             data: Mutex::new(HashMap::new()),
@@ -110,7 +111,8 @@ impl PluginDataStore for InMemoryDataStore {
 }
 
 impl HostState {
-    /// Create a new HostState for a plugin with default settings.
+    /// Create a new `HostState` for a plugin with default settings.
+    #[must_use]
     pub fn new(plugin_name: String) -> Self {
         Self {
             plugin_name,
@@ -127,30 +129,35 @@ impl HostState {
     }
 
     /// Enable HTTP access for this plugin.
+    #[must_use]
     pub fn with_http(mut self) -> Self {
         self.http_allowed = true;
         self
     }
 
     /// Set allowed tools for this plugin.
+    #[must_use]
     pub fn with_tools(mut self, tools: Vec<String>) -> Self {
         self.allowed_tools = tools;
         self
     }
 
     /// Set allowed filesystem paths for tool execution.
+    #[must_use]
     pub fn with_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.allowed_paths = paths;
         self
     }
 
     /// Set allowed capabilities for this plugin.
+    #[must_use]
     pub fn with_capabilities(mut self, capabilities: HashSet<String>) -> Self {
         self.allowed_capabilities = capabilities;
         self
     }
 
     /// Set persistent storage backend.
+    #[must_use]
     pub fn with_storage(mut self, storage: Arc<dyn PluginDataStore>) -> Self {
         self.storage = Some(storage);
         self
@@ -171,6 +178,7 @@ impl HostState {
     }
 
     /// Get plugin-specific persisted data by key.
+    #[must_use]
     pub fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
         // Try persistent storage first, fall back to in-memory.
         if let Some(storage) = &self.storage {
@@ -213,14 +221,21 @@ impl HostState {
         }
 
         // Security check: verify path arguments are within allowed directories.
+        // Canonicalize paths to prevent traversal attacks (e.g., /allowed/../etc/passwd).
         if !self.allowed_paths.is_empty() {
             for arg in args {
                 let path = Path::new(arg);
                 if path.is_absolute() || arg.starts_with("./") || arg.starts_with("../") {
+                    let canonical = std::fs::canonicalize(path).map_err(|e| {
+                        format!(
+                            "cannot resolve path '{}' for plugin '{}': {e}",
+                            arg, self.plugin_name
+                        )
+                    })?;
                     let allowed = self
                         .allowed_paths
                         .iter()
-                        .any(|allowed_dir| path.starts_with(allowed_dir));
+                        .any(|allowed_dir| canonical.starts_with(allowed_dir));
                     if !allowed {
                         return Err(format!(
                             "path '{}' is not within allowed directories for plugin '{}'",
@@ -576,10 +591,13 @@ mod tests {
 
     #[test]
     fn test_run_tool_path_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("file.txt");
+        std::fs::write(&file_path, "test").unwrap();
         let state = HostState::new("test".into())
             .with_tools(vec!["echo".into()])
-            .with_paths(vec![PathBuf::from("/tmp")]);
-        let result = state.run_tool("echo", &["/tmp/file.txt".into()], 5000);
+            .with_paths(vec![dir.path().to_path_buf()]);
+        let result = state.run_tool("echo", &[file_path.to_string_lossy().into()], 5000);
         assert!(result.is_ok());
     }
 
@@ -588,6 +606,25 @@ mod tests {
         let state = HostState::new("test".into())
             .with_tools(vec!["echo".into()])
             .with_paths(vec![PathBuf::from("/tmp")]);
+        let result = state.run_tool("echo", &["/etc/passwd".into()], 5000);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("not within allowed directories"));
+    }
+
+    #[test]
+    fn test_run_tool_path_traversal_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a file inside the allowed dir
+        let allowed_dir = dir.path().join("allowed");
+        std::fs::create_dir(&allowed_dir).unwrap();
+        std::fs::write(allowed_dir.join("file.txt"), "ok").unwrap();
+        // Try to access a file via traversal outside the allowed dir
+        let state = HostState::new("test".into())
+            .with_tools(vec!["echo".into()])
+            .with_paths(vec![allowed_dir]);
+        // /etc/passwd exists and will canonicalize to itself — outside allowed dir
         let result = state.run_tool("echo", &["/etc/passwd".into()], 5000);
         assert!(result.is_err());
         assert!(result

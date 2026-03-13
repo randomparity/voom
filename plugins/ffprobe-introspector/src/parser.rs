@@ -9,7 +9,7 @@ use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::utils::codecs::normalize_codec;
 use voom_domain::utils::language::normalize_language;
 
-/// Parse ffprobe JSON output into a MediaFile.
+/// Parse ffprobe JSON output into a `MediaFile`.
 pub fn parse_ffprobe_output(
     json: &serde_json::Value,
     path: &Path,
@@ -282,7 +282,7 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
     }
 }
 
-/// Parse frame rate from r_frame_rate (e.g., "24000/1001").
+/// Parse frame rate from `r_frame_rate` (e.g., "24000/1001").
 fn parse_frame_rate(stream: &serde_json::Value) -> Option<f64> {
     let r_frame_rate = stream.get("r_frame_rate")?.as_str()?;
     if let Some((num, den)) = r_frame_rate.split_once('/') {
@@ -295,7 +295,7 @@ fn parse_frame_rate(stream: &serde_json::Value) -> Option<f64> {
     r_frame_rate.parse().ok()
 }
 
-/// Detect variable frame rate by comparing r_frame_rate and avg_frame_rate.
+/// Detect variable frame rate by comparing `r_frame_rate` and `avg_frame_rate`.
 fn detect_vfr(stream: &serde_json::Value) -> bool {
     let r_rate = parse_fraction(stream.get("r_frame_rate").and_then(|v| v.as_str()));
     let avg_rate = parse_fraction(stream.get("avg_frame_rate").and_then(|v| v.as_str()));

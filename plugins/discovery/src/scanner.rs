@@ -185,7 +185,7 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
     Ok(discovered)
 }
 
-/// Build a FileDiscoveredEvent for a single file.
+/// Build a `FileDiscoveredEvent` for a single file.
 fn build_event(path: &Path, compute_hash: bool) -> Result<FileDiscoveredEvent> {
     let metadata = fs::metadata(path)?;
     let size = metadata.len();

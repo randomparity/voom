@@ -141,6 +141,7 @@ static ALL_LANGUAGE_CODES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 });
 
 /// Returns all known canonical 3-letter language codes.
+#[must_use]
 pub fn all_language_codes() -> &'static [&'static str] {
     &ALL_LANGUAGE_CODES
 }

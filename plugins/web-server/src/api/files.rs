@@ -52,6 +52,7 @@ pub async fn list_files(
     Query(params): Query<ListFilesParams>,
 ) -> Result<Json<FileListResponse>, WebError> {
     let store = state.store.clone();
+    let count_store = state.store.clone();
     let filters = FileFilters {
         container: truncate_filter(params.container),
         has_codec: truncate_filter(params.codec),
@@ -60,13 +61,18 @@ pub async fn list_files(
         limit: Some(params.limit.unwrap_or(100).min(MAX_LIMIT)),
         offset: Some(params.offset.unwrap_or(0).min(MAX_OFFSET)),
     };
+    let count_filters = filters.clone();
 
     let files = tokio::task::spawn_blocking(move || store.list_files(&filters))
         .await
         .map_err(|e| WebError::Internal(e.to_string()))?
         .map_err(|e| WebError::Storage(e.to_string()))?;
 
-    let total = files.len();
+    let total = tokio::task::spawn_blocking(move || count_store.count_files(&count_filters))
+        .await
+        .map_err(|e| WebError::Internal(e.to_string()))?
+        .map_err(|e| WebError::Storage(e.to_string()))? as usize;
+
     Ok(Json(FileListResponse { files, total }))
 }
 
@@ -99,4 +105,77 @@ pub async fn delete_file(
         .map_err(|e| WebError::Storage(e.to_string()))?;
 
     Ok(Json(serde_json::json!({"deleted": true})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_filter_none_returns_none() {
+        assert_eq!(truncate_filter(None), None);
+    }
+
+    #[test]
+    fn truncate_filter_short_string_unchanged() {
+        let input = Some("mkv".to_string());
+        assert_eq!(truncate_filter(input), Some("mkv".to_string()));
+    }
+
+    #[test]
+    fn truncate_filter_at_max_length_unchanged() {
+        let s = "a".repeat(MAX_FILTER_STRING_LEN);
+        assert_eq!(truncate_filter(Some(s.clone())), Some(s));
+    }
+
+    #[test]
+    fn truncate_filter_over_max_is_truncated() {
+        let s = "b".repeat(MAX_FILTER_STRING_LEN + 100);
+        let result = truncate_filter(Some(s));
+        let expected = "b".repeat(MAX_FILTER_STRING_LEN);
+        assert_eq!(result, Some(expected));
+    }
+
+    #[test]
+    fn list_files_params_deserialize_defaults() {
+        let params: ListFilesParams = serde_json::from_str("{}").unwrap();
+        assert!(params.container.is_none());
+        assert!(params.codec.is_none());
+        assert!(params.language.is_none());
+        assert!(params.path_prefix.is_none());
+        assert!(params.limit.is_none());
+        assert!(params.offset.is_none());
+    }
+
+    #[test]
+    fn list_files_params_deserialize_with_values() {
+        let params: ListFilesParams =
+            serde_json::from_str(r#"{"container":"mkv","codec":"hevc","limit":50,"offset":10}"#)
+                .unwrap();
+        assert_eq!(params.container, Some("mkv".to_string()));
+        assert_eq!(params.codec, Some("hevc".to_string()));
+        assert_eq!(params.limit, Some(50));
+        assert_eq!(params.offset, Some(10));
+    }
+
+    #[test]
+    fn file_list_response_serialization() {
+        let response = FileListResponse {
+            files: vec![],
+            total: 0,
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["files"], serde_json::json!([]));
+        assert_eq!(json["total"], 0);
+    }
+
+    #[test]
+    fn max_limit_value() {
+        assert_eq!(MAX_LIMIT, 10_000);
+    }
+
+    #[test]
+    fn max_offset_value() {
+        assert_eq!(MAX_OFFSET, 1_000_000);
+    }
 }

@@ -1,3 +1,5 @@
+//! `FFprobe` introspection plugin: media file analysis via ffprobe JSON output.
+
 pub mod ffprobe;
 pub mod parser;
 
@@ -8,7 +10,7 @@ use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult, FileIntrospectedEvent};
 use voom_kernel::{Plugin, PluginContext};
 
-/// FFprobe introspector plugin: extracts media metadata using ffprobe.
+/// `FFprobe` introspector plugin: extracts media metadata using ffprobe.
 ///
 /// Listens for `FileDiscovered` events, runs ffprobe on each file,
 /// and emits `FileIntrospected` events with complete `MediaFile` data.
@@ -19,6 +21,7 @@ pub struct FfprobeIntrospectorPlugin {
 }
 
 impl FfprobeIntrospectorPlugin {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::Introspect {
@@ -39,12 +42,14 @@ impl FfprobeIntrospectorPlugin {
     }
 
     /// Set a custom path to the ffprobe binary.
+    #[must_use]
     pub fn with_ffprobe_path(mut self, path: impl Into<String>) -> Self {
         self.ffprobe_path = path.into();
         self
     }
 
     /// Get the configured ffprobe path.
+    #[must_use]
     pub fn ffprobe_path(&self) -> &str {
         &self.ffprobe_path
     }

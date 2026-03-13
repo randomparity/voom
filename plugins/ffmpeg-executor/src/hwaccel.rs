@@ -1,4 +1,4 @@
-//! Hardware acceleration detection and configuration for FFmpeg.
+//! Hardware acceleration detection and configuration for `FFmpeg`.
 
 use std::process::Command;
 
@@ -7,11 +7,11 @@ use std::process::Command;
 pub enum HwAccelBackend {
     /// NVIDIA NVENC/NVDEC
     Nvenc,
-    /// Intel QuickSync Video
+    /// Intel `QuickSync` Video
     Qsv,
     /// Linux VA-API
     Vaapi,
-    /// macOS VideoToolbox
+    /// macOS `VideoToolbox`
     Videotoolbox,
 }
 
@@ -24,6 +24,7 @@ pub struct HwAccelConfig {
 
 impl HwAccelConfig {
     /// Create a new config with HW accel enabled but no detected backend.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             backend: None,
@@ -32,6 +33,7 @@ impl HwAccelConfig {
     }
 
     /// Detect available hardware acceleration by querying ffmpeg.
+    #[must_use]
     pub fn detect() -> Self {
         let backend = Self::detect_backend();
         Self {
@@ -40,9 +42,10 @@ impl HwAccelConfig {
         }
     }
 
-    /// Get the FFmpeg encoder name for a codec with this HW backend.
+    /// Get the `FFmpeg` encoder name for a codec with this HW backend.
     ///
     /// Falls back to the software encoder when HW accel is disabled or unavailable.
+    #[must_use]
     pub fn encoder_name(&self, codec: &str) -> String {
         if !self.enabled {
             return software_encoder(codec).to_string();
@@ -70,7 +73,8 @@ impl HwAccelConfig {
         }
     }
 
-    /// Get FFmpeg input args for HW acceleration (e.g., `-hwaccel cuda`).
+    /// Get `FFmpeg` input args for HW acceleration (e.g., `-hwaccel cuda`).
+    #[must_use]
     pub fn input_args(&self) -> Vec<String> {
         if !self.enabled {
             return Vec::new();
@@ -127,7 +131,8 @@ impl Default for HwAccelConfig {
     }
 }
 
-/// Map a codec name to the FFmpeg software encoder name.
+/// Map a codec name to the `FFmpeg` software encoder name.
+#[must_use]
 pub fn software_encoder(codec: &str) -> &str {
     match codec {
         "hevc" | "h265" => "libx265",

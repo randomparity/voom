@@ -1,7 +1,7 @@
 //! Phase Orchestrator Plugin.
 //!
-//! Sequences phase execution with dependency resolution, skip_when evaluation,
-//! run_if triggers, and per-phase error handling. Coordinates the policy
+//! Sequences phase execution with dependency resolution, `skip_when` evaluation,
+//! `run_if` triggers, and per-phase error handling. Coordinates the policy
 //! evaluator and executors to process files through all phases of a policy.
 
 use voom_domain::capabilities::Capability;
@@ -32,6 +32,7 @@ pub struct PhaseOrchestratorPlugin {
 }
 
 impl PhaseOrchestratorPlugin {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::Orchestrate],
@@ -81,6 +82,7 @@ impl PhaseOrchestratorPlugin {
     }
 
     /// Build a human-readable dry-run summary.
+    #[must_use]
     pub fn format_dry_run(result: &OrchestrationResult) -> String {
         let mut output = String::new();
 
@@ -109,6 +111,7 @@ impl PhaseOrchestratorPlugin {
     }
 
     /// Determine if the entire policy requires file modifications.
+    #[must_use]
     pub fn needs_execution(result: &OrchestrationResult) -> bool {
         result
             .plans
@@ -117,6 +120,7 @@ impl PhaseOrchestratorPlugin {
     }
 
     /// Get the error strategy for a given phase.
+    #[must_use]
     pub fn phase_error_strategy(policy: &CompiledPolicy, phase_name: &str) -> ErrorStrategy {
         policy
             .phases
@@ -152,18 +156,16 @@ impl Plugin for PhaseOrchestratorPlugin {
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
         match event {
+            // NOTE: Phase orchestration is triggered via direct API call (orchestrate()),
+            // not through the event bus. The CLI's process command calls orchestrate()
+            // directly for deterministic progress reporting and concurrency control.
+            // This handler is reserved for future event-driven orchestration.
             Event::PolicyEvaluate(evt) => {
                 tracing::info!(
                     path = %evt.path.display(),
                     policy = %evt.policy_name,
                     "Orchestrating policy evaluation"
                 );
-                // In the full pipeline, we'd:
-                // 1. Look up the file from storage
-                // 2. Look up the compiled policy
-                // 3. Call self.orchestrate()
-                // 4. For each plan with actions, dispatch to executors
-                // 5. Re-introspect after modifications
                 Ok(None)
             }
             _ => Ok(None),

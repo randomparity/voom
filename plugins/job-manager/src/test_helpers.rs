@@ -1,169 +1,209 @@
-//! In-memory StorageTrait implementation for testing the job manager.
+//! Re-export the shared InMemoryStore from voom-domain.
+//!
+//! The canonical implementation lives in `voom_domain::test_support::InMemoryStore`.
+//! This module re-exports it so that existing test code continues to compile unchanged.
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Mutex;
+pub use voom_domain::test_support::InMemoryStore;
 
-use uuid::Uuid;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use uuid::Uuid;
+    use voom_domain::job::{Job, JobStatus, JobUpdate};
+    use voom_domain::media::MediaFile;
+    use voom_domain::plan::Plan;
+    use voom_domain::stats::ProcessingStats;
+    use voom_domain::storage::{FileFilters, StorageTrait};
 
-use voom_domain::errors::{Result, VoomError};
-use voom_domain::job::{Job, JobStatus, JobUpdate};
-use voom_domain::media::MediaFile;
-use voom_domain::plan::Plan;
-use voom_domain::stats::ProcessingStats;
-use voom_domain::storage::{FileFilters, StorageTrait, StoredPlan};
+    fn make_job(job_type: &str, priority: i32) -> Job {
+        let mut job = Job::new(job_type.to_string());
+        job.priority = priority;
+        job
+    }
 
-/// Simple in-memory storage for testing. Only implements job methods fully.
-pub struct InMemoryStore {
-    jobs: Mutex<HashMap<Uuid, Job>>,
-}
+    #[test]
+    fn create_and_get_job() {
+        let store = InMemoryStore::new();
+        let job = make_job("test", 0);
+        let id = job.id;
+        store.create_job(&job).unwrap();
+        let fetched = store.get_job(&id).unwrap().unwrap();
+        assert_eq!(fetched.id, id);
+        assert_eq!(fetched.job_type, "test");
+    }
 
-impl InMemoryStore {
-    pub fn new() -> Self {
-        Self {
-            jobs: Mutex::new(HashMap::new()),
+    #[test]
+    fn get_nonexistent_job_returns_none() {
+        let store = InMemoryStore::new();
+        let result = store.get_job(&Uuid::new_v4()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn update_job_status() {
+        let store = InMemoryStore::new();
+        let job = make_job("test", 0);
+        let id = job.id;
+        store.create_job(&job).unwrap();
+
+        let update = JobUpdate {
+            status: Some(JobStatus::Running),
+            progress: Some(0.5),
+            progress_message: None,
+            output: None,
+            error: None,
+            worker_id: Some(Some("w1".to_string())),
+            started_at: None,
+            completed_at: None,
+        };
+        store.update_job(&id, &update).unwrap();
+
+        let fetched = store.get_job(&id).unwrap().unwrap();
+        assert_eq!(fetched.status, JobStatus::Running);
+        assert!((fetched.progress - 0.5).abs() < f64::EPSILON);
+        assert_eq!(fetched.worker_id, Some("w1".to_string()));
+    }
+
+    #[test]
+    fn update_nonexistent_job_errors() {
+        let store = InMemoryStore::new();
+        let update = JobUpdate {
+            status: Some(JobStatus::Failed),
+            ..Default::default()
+        };
+        let result = store.update_job(&Uuid::new_v4(), &update);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn claim_next_job_picks_highest_priority() {
+        let store = InMemoryStore::new();
+        let low = make_job("low", 10);
+        let high = make_job("high", 1);
+        store.create_job(&low).unwrap();
+        store.create_job(&high).unwrap();
+
+        let claimed = store.claim_next_job("worker-1").unwrap().unwrap();
+        assert_eq!(claimed.job_type, "high");
+        assert_eq!(claimed.status, JobStatus::Running);
+        assert_eq!(claimed.worker_id, Some("worker-1".to_string()));
+    }
+
+    #[test]
+    fn claim_next_job_returns_none_when_empty() {
+        let store = InMemoryStore::new();
+        let result = store.claim_next_job("w1").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn claim_next_job_skips_running_jobs() {
+        let store = InMemoryStore::new();
+        let job = make_job("test", 0);
+        let id = job.id;
+        store.create_job(&job).unwrap();
+        store.claim_next_job("w1").unwrap(); // claims it
+
+        // No more pending jobs
+        let result = store.claim_next_job("w2").unwrap();
+        assert!(result.is_none());
+
+        // Verify the job is running
+        let fetched = store.get_job(&id).unwrap().unwrap();
+        assert_eq!(fetched.status, JobStatus::Running);
+    }
+
+    #[test]
+    fn list_jobs_filters_by_status() {
+        let store = InMemoryStore::new();
+        let j1 = make_job("a", 0);
+        let j2 = make_job("b", 0);
+        store.create_job(&j1).unwrap();
+        store.create_job(&j2).unwrap();
+        store.claim_next_job("w1").unwrap(); // one becomes Running
+
+        let pending = store.list_jobs(Some(JobStatus::Pending), None).unwrap();
+        assert_eq!(pending.len(), 1);
+
+        let running = store.list_jobs(Some(JobStatus::Running), None).unwrap();
+        assert_eq!(running.len(), 1);
+
+        let all = store.list_jobs(None, None).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn list_jobs_respects_limit() {
+        let store = InMemoryStore::new();
+        for i in 0..5 {
+            store.create_job(&make_job(&format!("j{i}"), i)).unwrap();
         }
-    }
-}
-
-impl StorageTrait for InMemoryStore {
-    fn upsert_file(&self, _file: &MediaFile) -> Result<()> {
-        Ok(())
-    }
-    fn get_file(&self, _id: &Uuid) -> Result<Option<MediaFile>> {
-        Ok(None)
-    }
-    fn get_file_by_path(&self, _path: &Path) -> Result<Option<MediaFile>> {
-        Ok(None)
-    }
-    fn list_files(&self, _filters: &FileFilters) -> Result<Vec<MediaFile>> {
-        Ok(Vec::new())
-    }
-    fn delete_file(&self, _id: &Uuid) -> Result<()> {
-        Ok(())
+        let limited = store.list_jobs(None, Some(3)).unwrap();
+        assert_eq!(limited.len(), 3);
     }
 
-    fn create_job(&self, job: &Job) -> Result<Uuid> {
-        let mut jobs = self.jobs.lock().unwrap();
-        jobs.insert(job.id, job.clone());
-        Ok(job.id)
+    #[test]
+    fn count_jobs_by_status_counts_correctly() {
+        let store = InMemoryStore::new();
+        store.create_job(&make_job("a", 0)).unwrap();
+        store.create_job(&make_job("b", 1)).unwrap();
+        store.create_job(&make_job("c", 2)).unwrap();
+        store.claim_next_job("w1").unwrap();
+
+        let counts = store.count_jobs_by_status().unwrap();
+        let map: HashMap<JobStatus, u64> = counts.into_iter().collect();
+        assert_eq!(map.get(&JobStatus::Pending), Some(&2));
+        assert_eq!(map.get(&JobStatus::Running), Some(&1));
     }
 
-    fn get_job(&self, id: &Uuid) -> Result<Option<Job>> {
-        let jobs = self.jobs.lock().unwrap();
-        Ok(jobs.get(id).cloned())
+    #[test]
+    fn file_methods_work() {
+        let store = InMemoryStore::new();
+        let file = MediaFile::new(PathBuf::from("/x"));
+
+        // File operations are fully functional
+        assert!(store.upsert_file(&file).is_ok());
+        assert!(store.get_file(&file.id).unwrap().is_some());
+        assert!(store.get_file_by_path(Path::new("/x")).unwrap().is_some());
+        assert_eq!(store.list_files(&FileFilters::default()).unwrap().len(), 1);
+        assert!(store.delete_file(&file.id).is_ok());
+        assert!(store.get_file(&file.id).unwrap().is_none());
+
+        // Non-existent lookups return None
+        assert!(store.get_file(&Uuid::new_v4()).unwrap().is_none());
     }
 
-    fn update_job(&self, id: &Uuid, update: &JobUpdate) -> Result<()> {
-        let mut jobs = self.jobs.lock().unwrap();
-        let job = jobs
-            .get_mut(id)
-            .ok_or_else(|| VoomError::Storage(format!("job {id} not found")))?;
+    #[test]
+    fn stub_methods_return_defaults() {
+        let store = InMemoryStore::new();
+        let file = MediaFile::new(PathBuf::from("/x"));
 
-        if let Some(status) = update.status {
-            job.status = status;
-        }
-        if let Some(progress) = update.progress {
-            job.progress = progress;
-        }
-        if let Some(ref msg) = update.progress_message {
-            job.progress_message = msg.clone();
-        }
-        if let Some(ref output) = update.output {
-            job.output = output.clone();
-        }
-        if let Some(ref error) = update.error {
-            job.error = error.clone();
-        }
-        if let Some(ref worker) = update.worker_id {
-            job.worker_id = worker.clone();
-        }
-        if let Some(ref started) = update.started_at {
-            job.started_at = *started;
-        }
-        if let Some(ref completed) = update.completed_at {
-            job.completed_at = *completed;
-        }
+        let plan = Plan {
+            id: Uuid::new_v4(),
+            file: file.clone(),
+            policy_name: "test".into(),
+            phase_name: "phase1".into(),
+            actions: vec![],
+            warnings: vec![],
+            skip_reason: None,
+            policy_hash: None,
+            evaluated_at: chrono::Utc::now(),
+        };
+        assert!(store.save_plan(&plan).unwrap() != Uuid::nil());
+        assert!(store
+            .get_plans_for_file(&Uuid::new_v4())
+            .unwrap()
+            .is_empty());
+        assert!(store.update_plan_status(&Uuid::new_v4(), "done").is_ok());
+        assert!(store.get_file_history(Path::new("/x")).unwrap().is_empty());
 
-        Ok(())
-    }
-
-    fn claim_next_job(&self, worker_id: &str) -> Result<Option<Job>> {
-        let mut jobs = self.jobs.lock().unwrap();
-
-        // Find the pending job with highest priority (lowest number)
-        let job_id = jobs
-            .values()
-            .filter(|j| j.status == JobStatus::Pending)
-            .min_by_key(|j| (j.priority, j.created_at))
-            .map(|j| j.id);
-
-        if let Some(id) = job_id {
-            let job = jobs.get_mut(&id).unwrap();
-            job.status = JobStatus::Running;
-            job.worker_id = Some(worker_id.to_string());
-            job.started_at = Some(chrono::Utc::now());
-            Ok(Some(job.clone()))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn list_jobs(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>> {
-        let jobs = self.jobs.lock().unwrap();
-        let mut result: Vec<Job> = jobs
-            .values()
-            .filter(|j| status.map_or(true, |s| j.status == s))
-            .cloned()
-            .collect();
-        result.sort_by(|a, b| {
-            a.priority
-                .cmp(&b.priority)
-                .then(b.created_at.cmp(&a.created_at))
-        });
-        if let Some(limit) = limit {
-            result.truncate(limit as usize);
-        }
-        Ok(result)
-    }
-
-    fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>> {
-        let jobs = self.jobs.lock().unwrap();
-        let mut counts: HashMap<JobStatus, u64> = HashMap::new();
-        for job in jobs.values() {
-            *counts.entry(job.status).or_insert(0) += 1;
-        }
-        Ok(counts.into_iter().collect())
-    }
-
-    fn save_plan(&self, _plan: &Plan) -> Result<Uuid> {
-        Ok(Uuid::new_v4())
-    }
-    fn get_plans_for_file(&self, _file_id: &Uuid) -> Result<Vec<StoredPlan>> {
-        Ok(Vec::new())
-    }
-    fn update_plan_status(&self, _plan_id: &Uuid, _status: &str) -> Result<()> {
-        Ok(())
-    }
-    fn get_file_history(
-        &self,
-        _path: &Path,
-    ) -> Result<Vec<voom_domain::storage::FileHistoryEntry>> {
-        Ok(vec![])
-    }
-    fn record_stats(&self, _stats: &ProcessingStats) -> Result<()> {
-        Ok(())
-    }
-    fn get_plugin_data(&self, _plugin: &str, _key: &str) -> Result<Option<Vec<u8>>> {
-        Ok(None)
-    }
-    fn set_plugin_data(&self, _plugin: &str, _key: &str, _value: &[u8]) -> Result<()> {
-        Ok(())
-    }
-    fn vacuum(&self) -> Result<()> {
-        Ok(())
-    }
-    fn prune_missing_files(&self) -> Result<u64> {
-        Ok(0)
+        let stats = ProcessingStats::new(file.id, "test".into(), "phase1".into());
+        assert!(store.record_stats(&stats).is_ok());
+        assert!(store.get_plugin_data("p", "k").unwrap().is_none());
+        assert!(store.set_plugin_data("p", "k", b"v").is_ok());
+        assert!(store.vacuum().is_ok());
+        assert_eq!(store.prune_missing_files().unwrap(), 0);
     }
 }

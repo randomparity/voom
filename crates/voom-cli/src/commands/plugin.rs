@@ -99,12 +99,8 @@ async fn info(name: String) -> Result<()> {
             }
         }
         None => {
-            println!("{} Plugin \"{}\" not found.", "ERROR".bold().red(), name);
-            println!("\nAvailable plugins:");
-            for n in kernel.registry.plugin_names() {
-                println!("  - {n}");
-            }
-            std::process::exit(1);
+            let available = kernel.registry.plugin_names().join(", ");
+            anyhow::bail!("Plugin \"{name}\" not found. Available: {available}");
         }
     }
 
@@ -112,19 +108,25 @@ async fn info(name: String) -> Result<()> {
 }
 
 async fn enable(name: String) -> Result<()> {
-    // Validate that this is a known plugin name
+    set_plugin_enabled(name, true)
+}
+
+async fn disable(name: String) -> Result<()> {
+    set_plugin_enabled(name, false)
+}
+
+/// Shared implementation for enable/disable: validates the plugin name, checks
+/// current state, mutates the disabled list, and saves the config.
+fn set_plugin_enabled(name: String, enabled: bool) -> Result<()> {
     if !app::KNOWN_PLUGIN_NAMES.contains(&name.as_str()) {
-        println!("{} Unknown plugin \"{}\".", "ERROR".bold().red(), name);
-        println!("\nKnown plugins:");
-        for n in app::KNOWN_PLUGIN_NAMES {
-            println!("  - {n}");
-        }
-        std::process::exit(1);
+        let known = app::KNOWN_PLUGIN_NAMES.join(", ");
+        bail!("Unknown plugin \"{name}\". Known plugins: {known}");
     }
 
     let mut config = app::load_config()?;
+    let is_disabled = config.plugins.disabled_plugins.contains(&name);
 
-    if !config.plugins.disabled_plugins.contains(&name) {
+    if enabled && !is_disabled {
         println!(
             "Plugin \"{}\" is already {}.",
             name.cyan(),
@@ -133,32 +135,7 @@ async fn enable(name: String) -> Result<()> {
         return Ok(());
     }
 
-    config.plugins.disabled_plugins.retain(|d| d != &name);
-    app::save_config(&config)?;
-
-    println!(
-        "{} Plugin \"{}\" has been {}.",
-        "OK".bold().green(),
-        name.cyan(),
-        "enabled".green()
-    );
-    Ok(())
-}
-
-async fn disable(name: String) -> Result<()> {
-    // Validate that this is a known plugin name
-    if !app::KNOWN_PLUGIN_NAMES.contains(&name.as_str()) {
-        println!("{} Unknown plugin \"{}\".", "ERROR".bold().red(), name);
-        println!("\nKnown plugins:");
-        for n in app::KNOWN_PLUGIN_NAMES {
-            println!("  - {n}");
-        }
-        std::process::exit(1);
-    }
-
-    let mut config = app::load_config()?;
-
-    if config.plugins.disabled_plugins.contains(&name) {
+    if !enabled && is_disabled {
         println!(
             "Plugin \"{}\" is already {}.",
             name.cyan(),
@@ -167,15 +144,28 @@ async fn disable(name: String) -> Result<()> {
         return Ok(());
     }
 
-    config.plugins.disabled_plugins.push(name.clone());
+    if enabled {
+        config.plugins.disabled_plugins.retain(|d| d != &name);
+    } else {
+        config.plugins.disabled_plugins.push(name.clone());
+    }
     app::save_config(&config)?;
 
-    println!(
-        "{} Plugin \"{}\" has been {}.",
-        "OK".bold().green(),
-        name.cyan(),
-        "disabled".yellow()
-    );
+    if enabled {
+        println!(
+            "{} Plugin \"{}\" has been {}.",
+            "OK".bold().green(),
+            name.cyan(),
+            "enabled".green()
+        );
+    } else {
+        println!(
+            "{} Plugin \"{}\" has been {}.",
+            "OK".bold().green(),
+            name.cyan(),
+            "disabled".yellow()
+        );
+    }
     Ok(())
 }
 
@@ -268,4 +258,54 @@ async fn install(path: PathBuf) -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn install_nonexistent_file_fails() {
+        let result = install(PathBuf::from("/nonexistent/plugin.wasm")).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("not found"),
+            "should report file not found"
+        );
+    }
+
+    #[tokio::test]
+    async fn install_non_wasm_extension_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("plugin.txt");
+        std::fs::write(&file, "not a wasm file").unwrap();
+
+        let result = install(file).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains(".wasm"),
+            "should mention .wasm requirement"
+        );
+    }
+
+    #[tokio::test]
+    async fn install_wasm_without_manifest_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("plugin.wasm");
+        std::fs::write(&file, b"\0asm").unwrap();
+
+        let result = install(file).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("Manifest"),
+            "should report missing manifest"
+        );
+    }
+
+    #[test]
+    fn known_plugins_enable_disable_validation() {
+        // Verify that enable/disable check against KNOWN_PLUGIN_NAMES
+        assert!(app::KNOWN_PLUGIN_NAMES.contains(&"sqlite-store"));
+        assert!(!app::KNOWN_PLUGIN_NAMES.contains(&"nonexistent-plugin"));
+    }
 }

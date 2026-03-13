@@ -81,3 +81,61 @@ pub async fn get_job(
     job.map(Json)
         .ok_or_else(|| WebError::NotFound(format!("Job {id} not found")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_jobs_params_deserialize_defaults() {
+        let params: ListJobsParams = serde_json::from_str("{}").unwrap();
+        assert!(params.status.is_none());
+        assert!(params.limit.is_none());
+    }
+
+    #[test]
+    fn list_jobs_params_deserialize_with_values() {
+        let params: ListJobsParams =
+            serde_json::from_str(r#"{"status":"running","limit":25}"#).unwrap();
+        assert_eq!(params.status, Some("running".to_string()));
+        assert_eq!(params.limit, Some(25));
+    }
+
+    #[test]
+    fn job_list_response_serialization() {
+        let response = JobListResponse { jobs: vec![] };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["jobs"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn job_stats_response_serialization() {
+        let response = JobStatsResponse {
+            counts: vec![
+                JobStatusCount {
+                    status: JobStatus::Pending,
+                    count: 5,
+                },
+                JobStatusCount {
+                    status: JobStatus::Running,
+                    count: 2,
+                },
+            ],
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        let counts = json["counts"].as_array().unwrap();
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts[0]["count"], 5);
+        assert_eq!(counts[1]["count"], 2);
+    }
+
+    #[test]
+    fn job_status_count_serialization() {
+        let count = JobStatusCount {
+            status: JobStatus::Completed,
+            count: 42,
+        };
+        let json = serde_json::to_value(&count).unwrap();
+        assert_eq!(json["count"], 42);
+    }
+}

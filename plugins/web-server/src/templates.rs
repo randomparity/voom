@@ -185,3 +185,79 @@ pub async fn settings(State(state): State<AppState>) -> HtmlResult {
     let ctx = tera::Context::new();
     render(&state.templates, "settings.html", &ctx)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_tera() -> tera::Tera {
+        crate::server::embedded_templates_for_test()
+    }
+
+    #[test]
+    fn render_success_returns_html() {
+        let tera = make_tera();
+        let ctx = tera::Context::new();
+        let result = render(&tera, "policies.html", &ctx);
+        assert!(result.is_ok());
+        let html = result.unwrap().0;
+        assert!(html.contains("html"), "Expected HTML content");
+    }
+
+    #[test]
+    fn render_missing_template_returns_500() {
+        let tera = make_tera();
+        let ctx = tera::Context::new();
+        let result = render(&tera, "nonexistent.html", &ctx);
+        assert!(result.is_err());
+        let (status, _msg) = result.unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn render_settings_page() {
+        let tera = make_tera();
+        let ctx = tera::Context::new();
+        let result = render(&tera, "settings.html", &ctx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn render_plugins_page() {
+        let tera = make_tera();
+        let ctx = tera::Context::new();
+        let result = render(&tera, "plugins.html", &ctx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn render_policy_editor_with_name() {
+        let tera = make_tera();
+        let mut ctx = tera::Context::new();
+        ctx.insert("policy_name", "my-policy");
+        let result = render(&tera, "policy_editor.html", &ctx);
+        assert!(result.is_ok());
+        let html = result.unwrap().0;
+        assert!(html.contains("my-policy"));
+    }
+
+    #[test]
+    fn library_params_defaults() {
+        // Verify LibraryParams can deserialize with all optional fields absent
+        let params: LibraryParams = serde_json::from_str("{}").unwrap();
+        assert!(params.container.is_none());
+        assert!(params.codec.is_none());
+        assert!(params.language.is_none());
+        assert!(params.path_prefix.is_none());
+        assert!(params.page.is_none());
+    }
+
+    #[test]
+    fn library_params_with_values() {
+        let params: LibraryParams =
+            serde_json::from_str(r#"{"container":"mkv","codec":"hevc","page":3}"#).unwrap();
+        assert_eq!(params.container, Some("mkv".to_string()));
+        assert_eq!(params.codec, Some("hevc".to_string()));
+        assert_eq!(params.page, Some(3));
+    }
+}

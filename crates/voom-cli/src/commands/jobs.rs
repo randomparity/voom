@@ -43,6 +43,7 @@ async fn list(status_filter: Option<String>) -> Result<()> {
             JobStatus::Completed => job.status.as_str().green().to_string(),
             JobStatus::Failed => job.status.as_str().red().to_string(),
             JobStatus::Cancelled => job.status.as_str().dimmed().to_string(),
+            _ => job.status.as_str().to_string(),
         };
 
         table.add_row(vec![
@@ -100,8 +101,7 @@ async fn status(id: String) -> Result<()> {
             }
         }
         None => {
-            println!("{} Job {id} not found.", "ERROR".bold().red());
-            std::process::exit(1);
+            anyhow::bail!("Job {id} not found");
         }
     }
 
@@ -127,4 +127,50 @@ async fn cancel(id: String) -> Result<()> {
     println!("{} Job {id} cancelled.", "OK".bold().green());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use voom_domain::job::JobStatus;
+
+    #[test]
+    fn job_status_parse_valid_values() {
+        assert_eq!(JobStatus::parse("pending"), Some(JobStatus::Pending));
+        assert_eq!(JobStatus::parse("running"), Some(JobStatus::Running));
+        assert_eq!(JobStatus::parse("completed"), Some(JobStatus::Completed));
+        assert_eq!(JobStatus::parse("failed"), Some(JobStatus::Failed));
+        assert_eq!(JobStatus::parse("cancelled"), Some(JobStatus::Cancelled));
+    }
+
+    #[test]
+    fn job_status_parse_invalid_returns_none() {
+        assert_eq!(JobStatus::parse("unknown"), None);
+        assert_eq!(JobStatus::parse(""), None);
+    }
+
+    #[test]
+    fn job_status_as_str_roundtrip() {
+        let statuses = [
+            JobStatus::Pending,
+            JobStatus::Running,
+            JobStatus::Completed,
+            JobStatus::Failed,
+            JobStatus::Cancelled,
+        ];
+        for status in &statuses {
+            let s = status.as_str();
+            assert_eq!(JobStatus::parse(s), Some(*status));
+        }
+    }
+
+    #[test]
+    fn uuid_parse_valid() {
+        let valid = "550e8400-e29b-41d4-a716-446655440000";
+        assert!(uuid::Uuid::parse_str(valid).is_ok());
+    }
+
+    #[test]
+    fn uuid_parse_invalid() {
+        assert!(uuid::Uuid::parse_str("not-a-uuid").is_err());
+    }
 }

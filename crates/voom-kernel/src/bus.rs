@@ -15,7 +15,7 @@ struct Subscriber {
     handler: Arc<dyn Plugin>,
 }
 
-/// Create an error EventResult for a plugin failure (error or panic).
+/// Create an error `EventResult` for a plugin failure (error or panic).
 fn make_error_result(plugin_name: String, event_type: &str, error: String) -> EventResult {
     EventResult {
         plugin_name: plugin_name.clone(),
@@ -44,6 +44,7 @@ pub struct EventBus {
 }
 
 impl EventBus {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             subscribers: RwLock::new(Vec::new()),

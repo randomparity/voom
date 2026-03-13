@@ -127,7 +127,7 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
         ($name:expr, $plugin:expr, $priority:expr, $label:expr) => {
             if !disabled.iter().any(|d| d == $name) {
                 kernel
-                    .init_and_register(Box::new($plugin), $priority, &ctx)
+                    .init_and_register(Arc::new($plugin), $priority, &ctx)
                     .map_err(|e| anyhow::anyhow!("Failed to initialize {}: {e}", $label))?;
             }
         };
@@ -224,10 +224,180 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
 }
 
 /// Open a storage handle using the configured data directory.
-/// Opens a second connection (SQLite WAL mode supports concurrent readers).
+/// Opens a second connection (`SQLite` WAL mode supports concurrent readers).
 pub fn open_store(config: &AppConfig) -> Result<Arc<voom_sqlite_store::store::SqliteStore>> {
     let db_path = config.data_dir.join("voom.db");
     let store = voom_sqlite_store::store::SqliteStore::open(&db_path)
         .map_err(|e| anyhow::anyhow!("Failed to open store: {e}"))?;
     Ok(Arc::new(store))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Default config ───────────────────────────────────────
+
+    #[test]
+    fn default_config_has_expected_fields() {
+        let config = AppConfig::default();
+        assert!(config.auth_token.is_none());
+        assert!(config.plugins.wasm_dir.is_none());
+        assert!(config.plugins.disabled_plugins.is_empty());
+    }
+
+    #[test]
+    fn default_data_dir_ends_with_voom() {
+        let config = AppConfig::default();
+        assert!(
+            config.data_dir.ends_with("voom"),
+            "data_dir should end with 'voom', got: {:?}",
+            config.data_dir
+        );
+    }
+
+    // ── Config paths ─────────────────────────────────────────
+
+    #[test]
+    fn config_path_ends_with_config_toml() {
+        let path = config_path();
+        assert_eq!(path.file_name().unwrap(), "config.toml");
+        assert!(path.parent().unwrap().ends_with("voom"));
+    }
+
+    #[test]
+    fn voom_config_dir_ends_with_voom() {
+        let dir = voom_config_dir();
+        assert!(
+            dir.ends_with("voom"),
+            "config dir should end with 'voom', got: {:?}",
+            dir
+        );
+    }
+
+    // ── TOML serialization round-trip ────────────────────────
+
+    #[test]
+    fn config_toml_round_trip() {
+        let config = AppConfig {
+            data_dir: PathBuf::from("/tmp/voom-data"),
+            plugins: PluginsConfig {
+                wasm_dir: Some(PathBuf::from("/tmp/wasm")),
+                disabled_plugins: vec!["web-server".into(), "backup-manager".into()],
+            },
+            auth_token: Some("secret-token".into()),
+        };
+
+        let toml_str = toml::to_string_pretty(&config).expect("serialize");
+        let loaded: AppConfig = toml::from_str(&toml_str).expect("deserialize");
+
+        assert_eq!(loaded.data_dir, config.data_dir);
+        assert_eq!(loaded.plugins.wasm_dir, config.plugins.wasm_dir);
+        assert_eq!(
+            loaded.plugins.disabled_plugins,
+            config.plugins.disabled_plugins
+        );
+        assert_eq!(loaded.auth_token, config.auth_token);
+    }
+
+    #[test]
+    fn empty_toml_gives_defaults() {
+        let config: AppConfig = toml::from_str("").expect("empty TOML should parse");
+        assert!(config.auth_token.is_none());
+        assert!(config.plugins.disabled_plugins.is_empty());
+        // data_dir gets the serde default
+        assert!(config.data_dir.ends_with("voom"));
+    }
+
+    #[test]
+    fn partial_toml_fills_defaults() {
+        let config: AppConfig =
+            toml::from_str("auth_token = \"tok123\"").expect("partial TOML should parse");
+        assert_eq!(config.auth_token.as_deref(), Some("tok123"));
+        assert!(config.plugins.disabled_plugins.is_empty());
+    }
+
+    // ── KNOWN_PLUGIN_NAMES ───────────────────────────────────
+
+    #[test]
+    fn known_plugin_names_contains_expected() {
+        assert!(KNOWN_PLUGIN_NAMES.contains(&"sqlite-store"));
+        assert!(KNOWN_PLUGIN_NAMES.contains(&"ffmpeg-executor"));
+        assert!(KNOWN_PLUGIN_NAMES.contains(&"web-server"));
+        assert!(KNOWN_PLUGIN_NAMES.contains(&"discovery"));
+        assert!(KNOWN_PLUGIN_NAMES.contains(&"job-manager"));
+    }
+
+    #[test]
+    fn known_plugin_names_count() {
+        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 11);
+    }
+
+    #[test]
+    fn known_plugin_names_has_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for name in KNOWN_PLUGIN_NAMES {
+            assert!(seen.insert(name), "duplicate plugin name: {name}");
+        }
+    }
+
+    // ── load_config with temp files ──────────────────────────
+
+    #[test]
+    fn load_config_from_valid_toml_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(&file, "auth_token = \"test\"\n").unwrap();
+
+        let contents = std::fs::read_to_string(&file).unwrap();
+        let config: AppConfig = toml::from_str(&contents).unwrap();
+        assert_eq!(config.auth_token.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn load_config_from_invalid_toml_is_error() {
+        let result: Result<AppConfig, _> = toml::from_str("not valid {{{{ toml");
+        assert!(result.is_err());
+    }
+
+    // ── save_config ──────────────────────────────────────────
+
+    #[test]
+    fn save_and_reload_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+
+        let config = AppConfig {
+            data_dir: dir.path().to_path_buf(),
+            plugins: PluginsConfig {
+                wasm_dir: None,
+                disabled_plugins: vec!["web-server".into()],
+            },
+            auth_token: Some("my-token".into()),
+        };
+
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        std::fs::write(&file, &toml_str).unwrap();
+
+        let contents = std::fs::read_to_string(&file).unwrap();
+        let reloaded: AppConfig = toml::from_str(&contents).unwrap();
+        assert_eq!(reloaded.auth_token.as_deref(), Some("my-token"));
+        assert_eq!(reloaded.plugins.disabled_plugins, vec!["web-server"]);
+    }
+
+    // ── open_store ───────────────────────────────────────────
+
+    #[test]
+    fn open_store_creates_db_in_data_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = AppConfig {
+            data_dir: dir.path().to_path_buf(),
+            plugins: PluginsConfig::default(),
+            auth_token: None,
+        };
+
+        let store = open_store(&config);
+        assert!(store.is_ok());
+        assert!(dir.path().join("voom.db").exists());
+    }
 }

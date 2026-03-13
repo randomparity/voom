@@ -11,6 +11,7 @@ pub struct PluginRegistry {
 }
 
 impl PluginRegistry {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             plugins: RwLock::new(HashMap::new()),

@@ -1,26 +1,28 @@
 //! Conversion functions between domain types and WASM boundary representations.
 //!
-//! At the WASM boundary, events are serialized as MessagePack bytes inside
+//! At the WASM boundary, events are serialized as `MessagePack` bytes inside
 //! `EventData { event_type: String, payload: Vec<u8> }` structs.
 
-use anyhow::{Context, Result};
 use voom_domain::capabilities::Capability;
+use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{Event, EventResult};
 
-/// Serialize a domain Event into the WASM boundary format: (event_type, payload_bytes).
+/// Serialize a domain Event into the WASM boundary format: (`event_type`, `payload_bytes`).
 pub fn event_to_wasm(event: &Event) -> Result<(String, Vec<u8>)> {
     let event_type = event.event_type().to_string();
-    let payload = rmp_serde::to_vec(event).context("failed to serialize event to MessagePack")?;
+    let payload = rmp_serde::to_vec(event)
+        .map_err(|e| VoomError::Wasm(format!("failed to serialize event: {e}")))?;
     Ok((event_type, payload))
 }
 
 /// Deserialize a domain Event from WASM boundary format.
 pub fn event_from_wasm(event_type: &str, payload: &[u8]) -> Result<Event> {
     let _ = event_type; // event_type is encoded in the enum variant
-    rmp_serde::from_slice(payload).context("failed to deserialize event from MessagePack")
+    rmp_serde::from_slice(payload)
+        .map_err(|e| VoomError::Wasm(format!("failed to deserialize event: {e}")))
 }
 
-/// Convert a WASM event result back into a domain EventResult.
+/// Convert a WASM event result back into a domain `EventResult`.
 ///
 /// The `produced_events` are MessagePack-encoded event payloads,
 /// and `data` is JSON-encoded optional data.
@@ -37,7 +39,7 @@ pub fn event_result_from_wasm(
     let json_data = data
         .map(|d| serde_json::from_slice(&d))
         .transpose()
-        .context("failed to deserialize event result data from JSON")?;
+        .map_err(|e| VoomError::Wasm(format!("failed to deserialize JSON: {e}")))?;
 
     Ok(EventResult {
         plugin_name,
@@ -47,10 +49,10 @@ pub fn event_result_from_wasm(
     })
 }
 
-/// Serialized form of an EventResult for the WASM boundary.
+/// Serialized form of an `EventResult` for the WASM boundary.
 pub type WasmEventResult = (String, Vec<(String, Vec<u8>)>, Option<Vec<u8>>);
 
-/// Serialize a domain EventResult into WASM boundary format.
+/// Serialize a domain `EventResult` into WASM boundary format.
 pub fn event_result_to_wasm(result: &EventResult) -> Result<WasmEventResult> {
     let produced = result
         .produced_events
@@ -63,12 +65,13 @@ pub fn event_result_to_wasm(result: &EventResult) -> Result<WasmEventResult> {
         .as_ref()
         .map(serde_json::to_vec)
         .transpose()
-        .context("failed to serialize event result data to JSON")?;
+        .map_err(|e| VoomError::Wasm(format!("failed to serialize JSON: {e}")))?;
 
     Ok((result.plugin_name.clone(), produced, data))
 }
 
 /// Convert a WIT capability string (e.g., "discover:file,smb") to a domain Capability.
+#[must_use]
 pub fn capability_from_wit(cap_str: &str) -> Option<Capability> {
     let (kind, params) = cap_str.split_once(':').unwrap_or((cap_str, ""));
 
@@ -121,6 +124,7 @@ fn split_comma_list(s: &str) -> Vec<String> {
 }
 
 /// Convert a domain Capability to a WIT capability string.
+#[must_use]
 pub fn capability_to_wit(cap: &Capability) -> String {
     match cap {
         Capability::Discover { schemes } => {
@@ -161,6 +165,7 @@ pub fn capability_to_wit(cap: &Capability) -> String {
         Capability::EnrichMetadata { source } => format!("enrich_metadata:{source}"),
         Capability::Transcribe => "transcribe".to_string(),
         Capability::Synthesize => "synthesize".to_string(),
+        other => format!("unknown:{}", other.kind()),
     }
 }
 

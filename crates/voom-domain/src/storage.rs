@@ -19,7 +19,7 @@ pub struct FileFilters {
     pub offset: Option<u32>,
 }
 
-/// Abstract storage interface. Implemented by storage plugins (e.g., SQLite).
+/// Abstract storage interface. Implemented by storage plugins (e.g., `SQLite`).
 ///
 /// All methods are synchronous (blocking) since rusqlite is synchronous.
 /// Callers should use `tokio::task::spawn_blocking` for async contexts.
@@ -29,6 +29,8 @@ pub trait StorageTrait: Send + Sync {
     fn get_file(&self, id: &Uuid) -> Result<Option<MediaFile>>;
     fn get_file_by_path(&self, path: &Path) -> Result<Option<MediaFile>>;
     fn list_files(&self, filters: &FileFilters) -> Result<Vec<MediaFile>>;
+    /// Count total files matching the given filters (ignoring limit/offset).
+    fn count_files(&self, filters: &FileFilters) -> Result<u64>;
     fn delete_file(&self, id: &Uuid) -> Result<()>;
 
     // Jobs
@@ -42,6 +44,9 @@ pub trait StorageTrait: Send + Sync {
     // Plans
     fn save_plan(&self, plan: &Plan) -> Result<Uuid>;
     fn get_plans_for_file(&self, file_id: &Uuid) -> Result<Vec<StoredPlan>>;
+    // TODO: Replace `status: &str` with a typed `PlanStatus` enum for compile-time
+    // safety. Deferred because it requires coordinating changes across StorageTrait,
+    // SqliteStore, StoredPlan, and all test helpers.
     fn update_plan_status(&self, plan_id: &Uuid, status: &str) -> Result<()>;
 
     // File history

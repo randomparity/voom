@@ -1,12 +1,12 @@
+//! `MKVToolNix` executor plugin: mkvmerge and mkvpropedit command building and execution.
+
 use std::ffi::OsStr;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::events::{
-    Event, EventResult, PlanCompletedEvent, PlanExecutingEvent, PlanFailedEvent,
-};
+use voom_domain::events::{Event, EventResult};
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionResult, OperationType, Plan, PlannedAction};
 use voom_kernel::Plugin;
@@ -81,9 +81,9 @@ const SUPPORTED_OPS: &[OperationType] = &[
     OperationType::ConvertContainer,
 ];
 
-/// MKVToolNix executor plugin.
+/// `MKVToolNix` executor plugin.
 ///
-/// Executes media plans using MKVToolNix command-line tools:
+/// Executes media plans using `MKVToolNix` command-line tools:
 /// - **mkvpropedit** for in-place metadata operations (fast, no remux)
 /// - **mkvmerge** for structural operations (track removal, reordering, container conversion)
 ///
@@ -94,6 +94,7 @@ pub struct MkvtoolnixExecutorPlugin {
 }
 
 impl MkvtoolnixExecutorPlugin {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::Execute {
@@ -109,8 +110,9 @@ impl MkvtoolnixExecutorPlugin {
     /// Check whether this plugin can handle all operations in the given plan.
     ///
     /// Returns true if:
-    /// - The file has an MKV container (or the plan includes ConvertContainer to MKV)
+    /// - The file has an MKV container (or the plan includes `ConvertContainer` to MKV)
     /// - All actions use supported operation types
+    #[must_use]
     pub fn can_handle(&self, plan: &Plan) -> bool {
         let is_mkv = plan.file.container == Container::Mkv;
         let is_convert_to_mkv = plan.actions.iter().any(|a| {
@@ -214,51 +216,21 @@ impl Plugin for MkvtoolnixExecutorPlugin {
                     return Ok(None);
                 }
 
-                let path = plan.file.path.clone();
-                let phase_name = plan.phase_name.clone();
-
-                // Emit executing event
-                let executing_event = Event::PlanExecuting(PlanExecutingEvent {
-                    path: path.clone(),
-                    phase_name: phase_name.clone(),
-                    action_count: plan.actions.len(),
-                });
-
                 match self.execute_plan(plan) {
                     Ok(results) => {
                         let actions_applied = results.iter().filter(|r| r.success).count();
-
-                        let completed_event = Event::PlanCompleted(PlanCompletedEvent {
-                            plan_id: plan.id,
-                            path: path.clone(),
-                            phase_name: phase_name.clone(),
+                        Ok(Some(EventResult::plan_succeeded(
+                            self.name(),
+                            plan,
                             actions_applied,
-                        });
-
-                        Ok(Some(EventResult {
-                            plugin_name: self.name().to_string(),
-                            produced_events: vec![executing_event, completed_event],
-                            data: Some(serde_json::to_value(&results).unwrap_or_default()),
-                            claimed: true,
-                        }))
+                            Some(serde_json::to_value(&results).unwrap_or_default()),
+                        )))
                     }
-                    Err(e) => {
-                        let failed_event = Event::PlanFailed(PlanFailedEvent {
-                            plan_id: plan.id,
-                            path: path.clone(),
-                            phase_name: phase_name.clone(),
-                            error: e.to_string(),
-                            error_code: None,
-                            plugin_name: Some("mkvtoolnix-executor".into()),
-                        });
-
-                        Ok(Some(EventResult {
-                            plugin_name: self.name().to_string(),
-                            produced_events: vec![executing_event, failed_event],
-                            data: None,
-                            claimed: true,
-                        }))
-                    }
+                    Err(e) => Ok(Some(EventResult::plan_failed(
+                        "mkvtoolnix-executor",
+                        plan,
+                        e.to_string(),
+                    ))),
                 }
             }
             _ => Ok(None),

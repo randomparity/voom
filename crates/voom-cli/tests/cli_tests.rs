@@ -190,7 +190,7 @@ fn test_policy_validate_invalid_file() {
         .args(["policy", "validate", tmp.path().to_str().unwrap()])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("ERROR"));
+        .stderr(predicate::str::contains("Policy validation failed"));
 }
 
 #[test]

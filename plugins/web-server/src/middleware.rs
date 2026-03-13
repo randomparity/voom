@@ -51,10 +51,11 @@ where
             let mut response = svc.call(req).await?;
             let headers = response.headers_mut();
 
+            // TODO: Replace 'unsafe-inline' with nonce-based CSP once templates support it
             headers.insert(
                 "Content-Security-Policy",
                 HeaderValue::from_static(
-                    "default-src 'self'; script-src 'self' https://unpkg.com/htmx.org@ https://unpkg.com/alpinejs@; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
+                    "default-src 'self'; script-src 'self' https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
                 ),
             );
             headers.insert(
@@ -110,7 +111,7 @@ where
             let request_id = Uuid::new_v4().to_string();
             response.headers_mut().insert(
                 axum::http::HeaderName::from_static("x-request-id"),
-                HeaderValue::from_str(&request_id).unwrap(),
+                HeaderValue::from_str(&request_id).expect("UUID is valid header value"),
             );
             Ok(response)
         })
@@ -124,21 +125,30 @@ pub struct AuthConfig {
 }
 
 impl AuthConfig {
+    #[must_use]
     pub fn new(token: Option<String>) -> Self {
         Self { token }
     }
 
     /// Check if the given token is valid. Returns true if no auth is configured.
+    /// Uses constant-time comparison to prevent timing side-channel attacks.
+    #[must_use]
     pub fn validate(&self, provided: Option<&str>) -> bool {
+        use subtle::ConstantTimeEq;
         match &self.token {
             None => true, // No auth configured
-            Some(expected) => provided == Some(expected.as_str()),
+            Some(expected) => {
+                let provided_str = provided.unwrap_or("");
+                provided.is_some()
+                    && provided_str.len() == expected.len()
+                    && bool::from(provided_str.as_bytes().ct_eq(expected.as_bytes()))
+            }
         }
     }
 }
 
 /// Axum middleware that enforces Bearer token authentication on API routes.
-/// If AppState has no auth_token configured, all requests pass through.
+/// If `AppState` has no `auth_token` configured, all requests pass through.
 pub async fn auth_middleware(
     State(state): State<AppState>,
     request: axum::extract::Request,

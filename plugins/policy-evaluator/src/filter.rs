@@ -5,6 +5,7 @@ use voom_dsl::compiler::CompiledCompareOp;
 use voom_dsl::compiler::CompiledFilter;
 
 /// Returns true if the track matches the filter.
+#[must_use]
 pub fn track_matches(track: &Track, filter: &CompiledFilter) -> bool {
     match filter {
         CompiledFilter::LangIn(langs) => langs.iter().any(|l| l == &track.language),
@@ -32,7 +33,7 @@ pub fn track_matches(track: &Track, filter: &CompiledFilter) -> bool {
     }
 }
 
-/// Check if a track is a commentary track based on its TrackType.
+/// Check if a track is a commentary track based on its `TrackType`.
 fn is_commentary_track(track: &Track) -> bool {
     matches!(
         track.track_type,
@@ -56,6 +57,7 @@ fn is_font_attachment(track: &Track) -> bool {
 }
 
 /// Check if a track is a commentary track based on title patterns.
+#[must_use]
 pub fn is_commentary_by_pattern(track: &Track, patterns: &[String]) -> bool {
     if patterns.is_empty() {
         return is_commentary_track(track);
@@ -77,6 +79,7 @@ fn compare_string(left: &str, op: &CompiledCompareOp, right: &str) -> bool {
 }
 
 /// Compare two f64 values using the given operator.
+#[must_use]
 pub fn compare_f64(left: f64, op: &CompiledCompareOp, right: f64) -> bool {
     match op {
         CompiledCompareOp::Eq => (left - right).abs() < f64::EPSILON,

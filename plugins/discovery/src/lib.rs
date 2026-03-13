@@ -1,3 +1,5 @@
+//! Filesystem discovery plugin: parallel directory walking with content hashing.
+
 pub mod scanner;
 
 pub use scanner::hash_file;
@@ -70,6 +72,7 @@ pub struct DiscoveryPlugin {
 }
 
 impl DiscoveryPlugin {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::Discover {

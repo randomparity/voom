@@ -14,12 +14,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Set up tracing based on verbosity
-    let filter = match cli.verbose {
-        0 => "warn",
-        1 => "info",
-        2 => "debug",
-        _ => "trace",
-    };
+    let filter = verbosity_filter(cli.verbose);
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)),
@@ -42,5 +37,36 @@ async fn main() -> Result<()> {
         Commands::Init => commands::init::run().await,
         Commands::Status => commands::status::run().await,
         Commands::Completions(args) => commands::completions::run(args),
+    }
+}
+
+/// Map verbosity count to tracing filter string.
+fn verbosity_filter(verbose: u8) -> &'static str {
+    match verbose {
+        0 => "warn",
+        1 => "info",
+        2 => "debug",
+        _ => "trace",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verbosity_mapping() {
+        assert_eq!(verbosity_filter(0), "warn");
+        assert_eq!(verbosity_filter(1), "info");
+        assert_eq!(verbosity_filter(2), "debug");
+        assert_eq!(verbosity_filter(3), "trace");
+        assert_eq!(verbosity_filter(255), "trace");
+    }
+
+    #[test]
+    fn cli_verify_command() {
+        // clap provides a debug_assert that validates the CLI definition
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
     }
 }

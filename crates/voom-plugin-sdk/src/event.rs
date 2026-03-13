@@ -1,28 +1,30 @@
 //! Event serialization/deserialization helpers for the WASM boundary.
 
-use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::Event;
 
-/// Deserialize a domain Event from MessagePack bytes (as received from the host).
+/// Deserialize a domain Event from `MessagePack` bytes (as received from the host).
 pub fn deserialize_event(payload: &[u8]) -> Result<Event> {
-    rmp_serde::from_slice(payload).context("failed to deserialize event from MessagePack")
+    rmp_serde::from_slice(payload)
+        .map_err(|e| VoomError::Wasm(format!("failed to deserialize event: {e}")))
 }
 
-/// Serialize a domain Event to MessagePack bytes (for sending to the host).
+/// Serialize a domain Event to `MessagePack` bytes (for sending to the host).
 pub fn serialize_event(event: &Event) -> Result<Vec<u8>> {
-    rmp_serde::to_vec(event).context("failed to serialize event to MessagePack")
+    rmp_serde::to_vec(event).map_err(|e| VoomError::Wasm(format!("failed to serialize event: {e}")))
 }
 
 /// Deserialize any JSON-compatible type from bytes.
 pub fn deserialize_json<T: DeserializeOwned>(data: &[u8]) -> Result<T> {
-    serde_json::from_slice(data).context("failed to deserialize JSON from bytes")
+    serde_json::from_slice(data)
+        .map_err(|e| VoomError::Wasm(format!("failed to deserialize JSON: {e}")))
 }
 
 /// Serialize any type to JSON bytes.
 pub fn serialize_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    serde_json::to_vec(value).context("failed to serialize to JSON bytes")
+    serde_json::to_vec(value).map_err(|e| VoomError::Wasm(format!("failed to serialize JSON: {e}")))
 }
 
 /// Load a plugin config from a `get_plugin_data("config")` provider.

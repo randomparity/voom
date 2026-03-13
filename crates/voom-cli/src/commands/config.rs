@@ -16,13 +16,28 @@ async fn show() -> Result<()> {
 
     if path.exists() {
         let contents = std::fs::read_to_string(&path)?;
+        // Redact auth_token value to avoid leaking secrets
+        let redacted = contents
+            .lines()
+            .map(|line| {
+                let trimmed = line.trim();
+                if trimmed.starts_with("auth_token") && trimmed.contains('=') {
+                    let prefix =
+                        &line[..line.find('=').expect("line contains '=' (checked above)") + 1];
+                    format!("{prefix} \"[REDACTED]\"")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         println!(
             "{} {}",
             "Config:".bold(),
             path.display().to_string().dimmed()
         );
         println!();
-        println!("{contents}");
+        println!("{redacted}");
     } else {
         println!(
             "{} No config file found at {}",
@@ -72,4 +87,26 @@ async fn edit() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app;
+
+    #[test]
+    fn default_config_serializes_to_valid_toml() {
+        let config = app::AppConfig::default();
+        let toml_str =
+            toml::to_string_pretty(&config).expect("default config should serialize to TOML");
+        assert!(!toml_str.is_empty());
+        // Verify it can be parsed back
+        let _: app::AppConfig = toml::from_str(&toml_str).expect("serialized TOML should parse");
+    }
+
+    #[test]
+    fn config_path_is_in_voom_dir() {
+        let path = app::config_path();
+        let dir = app::voom_config_dir();
+        assert_eq!(path.parent().unwrap(), dir);
+    }
 }

@@ -15,6 +15,7 @@ pub struct Span {
 }
 
 impl Span {
+    #[must_use]
     pub fn new(start: usize, end: usize, line: usize, col: usize) -> Self {
         Self {
             start,
@@ -147,7 +148,7 @@ pub enum ConditionNode {
     Not(Box<ConditionNode>),
 }
 
-/// Track query used in exists()/count() conditions.
+/// Track query used in `exists()/count()` conditions.
 #[derive(Debug, Clone, Serialize)]
 pub struct TrackQueryNode {
     pub target: String,
@@ -173,7 +174,7 @@ pub enum FilterNode {
     Not(Box<FilterNode>),
 }
 
-/// Track reference used in actions like set_default.
+/// Track reference used in actions like `set_default`.
 #[derive(Debug, Clone, Serialize)]
 pub struct TrackRefNode {
     pub target: String,
