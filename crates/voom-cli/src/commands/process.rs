@@ -10,6 +10,7 @@ use crate::output::{max_filename_len, shrink_filename};
 use voom_domain::events::{
     Event, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
 };
+use voom_domain::storage::StorageTrait;
 use voom_job_manager::progress::ProgressReporter;
 use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 
@@ -32,6 +33,16 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
     let compiled = load_and_compile_policy(&args)?;
 
     print_run_header(&compiled.name, &path, args.dry_run);
+
+    // Auto-prune stale file entries under the target directory
+    {
+        let store = app::open_store(&config)?;
+        match store.prune_missing_files_under(&path) {
+            Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
+            Ok(_) => {}
+            Err(e) => eprintln!("{} auto-prune failed: {e}", "Warning:".yellow()),
+        }
+    }
 
     // Discover files
     let events = discover_files(&path, &args, &kernel)?;
@@ -228,12 +239,13 @@ async fn introspect_file(
     kernel: &voom_kernel::Kernel,
 ) -> std::result::Result<voom_domain::media::MediaFile, String> {
     let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
+    let path_display = path.display().to_string();
     let intro_result = tokio::task::spawn_blocking(move || {
         introspector.introspect(&path, file_size, &content_hash)
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
-    .map_err(|e| format!("introspection failed: {e}"))?;
+    .map_err(|e| format!("introspection failed for {path_display}: {e}"))?;
 
     let file = intro_result.file.clone();
 

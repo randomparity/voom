@@ -17,7 +17,7 @@ pub fn run_ffprobe(
     let mut child = Command::new(ffprobe_path)
         .args([
             "-v",
-            "quiet",
+            "error",
             "-print_format",
             "json",
             "-show_format",

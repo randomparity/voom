@@ -196,6 +196,9 @@ pub enum JobsCommands {
         /// Filter by status
         #[arg(long)]
         status: Option<String>,
+        /// Maximum number of jobs to display
+        #[arg(short = 'n', long, default_value = "50")]
+        limit: u32,
     },
     /// Show job details
     Status {
@@ -575,7 +578,10 @@ mod tests {
     fn jobs_list_no_filter() {
         let cli = parse(&["voom", "jobs", "list"]);
         match cli.command {
-            Commands::Jobs(JobsCommands::List { status }) => assert!(status.is_none()),
+            Commands::Jobs(JobsCommands::List { status, limit }) => {
+                assert!(status.is_none());
+                assert_eq!(limit, 50);
+            }
             _ => panic!("expected Jobs List"),
         }
     }
@@ -584,7 +590,7 @@ mod tests {
     fn jobs_list_with_status_filter() {
         let cli = parse(&["voom", "jobs", "list", "--status", "running"]);
         match cli.command {
-            Commands::Jobs(JobsCommands::List { status }) => {
+            Commands::Jobs(JobsCommands::List { status, .. }) => {
                 assert_eq!(status.as_deref(), Some("running"));
             }
             _ => panic!("expected Jobs List"),

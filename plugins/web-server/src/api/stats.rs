@@ -26,10 +26,11 @@ pub async fn get_stats(State(state): State<AppState>) -> Result<Json<DashboardSt
     let store = state.store.clone();
     let store2 = state.store.clone();
 
-    let files = tokio::task::spawn_blocking(move || store.list_files(&FileFilters::default()))
-        .await
-        .map_err(|e| WebError::Internal(e.to_string()))?
-        .map_err(|e| WebError::Storage(e.to_string()))?;
+    let total_files =
+        tokio::task::spawn_blocking(move || store.count_files(&FileFilters::default()))
+            .await
+            .map_err(|e| WebError::Internal(e.to_string()))?
+            .map_err(|e| WebError::Storage(e.to_string()))?;
 
     let job_counts = tokio::task::spawn_blocking(move || store2.count_jobs_by_status())
         .await
@@ -37,7 +38,7 @@ pub async fn get_stats(State(state): State<AppState>) -> Result<Json<DashboardSt
         .map_err(|e| WebError::Storage(e.to_string()))?;
 
     Ok(Json(DashboardStats {
-        total_files: files.len(),
+        total_files: total_files as usize,
         total_jobs: job_counts
             .into_iter()
             .map(|(status, count)| JobCount {

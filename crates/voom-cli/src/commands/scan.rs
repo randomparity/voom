@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 use voom_domain::events::Event;
+use voom_domain::storage::StorageTrait;
 
 use crate::app;
 use crate::cli::ScanArgs;
@@ -46,6 +47,14 @@ pub async fn run(args: ScanArgs) -> Result<()> {
         .path
         .canonicalize()
         .with_context(|| format!("Path not found: {}", args.path.display()))?;
+
+    // Auto-prune stale file entries under the scanned directory
+    let store = app::open_store(&config)?;
+    match store.prune_missing_files_under(&path) {
+        Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
+        Ok(_) => {}
+        Err(e) => eprintln!("{} auto-prune failed: {e}", "Warning:".yellow()),
+    }
 
     println!(
         "{} {}",

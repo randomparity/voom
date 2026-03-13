@@ -150,7 +150,7 @@ impl WorkerPool {
         let (result_tx, mut result_rx) = mpsc::channel::<JobResult>(job_ids.len().max(1));
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
 
-        for _ in 0..job_ids.len() {
+        for job_id in job_ids {
             let permit = semaphore
                 .clone()
                 .acquire_owned()
@@ -176,30 +176,31 @@ impl WorkerPool {
                     return;
                 }
 
-                // Claim from queue (blocking storage call)
+                // Claim the specific job by ID (blocking storage call)
                 let queue_claim = queue.clone();
                 let wid = worker_id.clone();
-                let job = match tokio::task::spawn_blocking(move || queue_claim.claim(&wid)).await {
-                    Ok(Ok(Some(job))) => job,
-                    Ok(Ok(None)) => return,
-                    Ok(Err(e)) => {
-                        tracing::error!(error = %e, "Failed to claim job");
-                        return;
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "Task join error");
-                        return;
-                    }
-                };
+                let jid = job_id;
+                let job =
+                    match tokio::task::spawn_blocking(move || queue_claim.claim_by_id(&jid, &wid))
+                        .await
+                    {
+                        Ok(Ok(Some(job))) => job,
+                        Ok(Ok(None)) => return,
+                        Ok(Err(e)) => {
+                            tracing::error!(error = %e, "Failed to claim job");
+                            return;
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "Task join error");
+                            return;
+                        }
+                    };
 
                 // Re-check cancellation after claiming (closes race with ErrorStrategy::Fail)
                 if cancelled.load(Ordering::SeqCst) {
                     let q = queue.clone();
                     let jid = job.id;
-                    if let Err(e) =
-                        tokio::task::spawn_blocking(move || q.fail(&jid, "cancelled".to_string()))
-                            .await
-                    {
+                    if let Err(e) = tokio::task::spawn_blocking(move || q.cancel(&jid)).await {
                         tracing::error!(error = %e, "failed to mark job as cancelled");
                     }
                     return;
@@ -218,6 +219,17 @@ impl WorkerPool {
                         }
                         completed.fetch_add(1, Ordering::SeqCst);
                         reporter.on_job_complete(job_id, true, None);
+
+                        if let Err(e) = result_tx
+                            .send(JobResult {
+                                job_id,
+                                success: true,
+                                error: None,
+                            })
+                            .await
+                        {
+                            tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
+                        }
                     }
                     Err(error) => {
                         let q = queue.clone();
@@ -230,21 +242,21 @@ impl WorkerPool {
                         failed.fetch_add(1, Ordering::SeqCst);
                         reporter.on_job_complete(job_id, false, Some(&error));
 
+                        if let Err(e) = result_tx
+                            .send(JobResult {
+                                job_id,
+                                success: false,
+                                error: Some(error),
+                            })
+                            .await
+                        {
+                            tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
+                        }
+
                         if on_error == ErrorStrategy::Fail {
                             cancelled.store(true, Ordering::SeqCst);
                         }
                     }
-                }
-
-                if let Err(e) = result_tx
-                    .send(JobResult {
-                        job_id,
-                        success: true,
-                        error: None,
-                    })
-                    .await
-                {
-                    tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
                 }
             });
 

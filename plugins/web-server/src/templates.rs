@@ -5,9 +5,11 @@ use axum::http::StatusCode;
 use axum::response::Html;
 use serde::Deserialize;
 
+use voom_domain::job::JobStatus;
 use voom_domain::storage::FileFilters;
 
 use crate::state::AppState;
+use crate::views::file_views;
 
 type HtmlResult = Result<Html<String>, (StatusCode, String)>;
 
@@ -25,35 +27,36 @@ fn render(templates: &tera::Tera, name: &str, ctx: &tera::Context) -> HtmlResult
 pub async fn dashboard(State(state): State<AppState>) -> HtmlResult {
     let store = state.store.clone();
     let store2 = state.store.clone();
+    let store3 = state.store.clone();
 
-    let files = tokio::task::spawn_blocking(move || {
+    let total_files_fut =
+        tokio::task::spawn_blocking(move || store3.count_files(&FileFilters::default()));
+
+    let files_fut = tokio::task::spawn_blocking(move || {
         store.list_files(&FileFilters {
             limit: Some(10),
             ..Default::default()
         })
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    });
 
-    let job_counts = tokio::task::spawn_blocking(move || store2.count_jobs_by_status())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let job_counts_fut = tokio::task::spawn_blocking(move || store2.count_jobs_by_status());
+
+    let (total_files_res, files_res, job_counts_res) =
+        tokio::try_join!(total_files_fut, files_fut, job_counts_fut)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total_files =
+        total_files_res.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let files = files_res.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let job_counts =
+        job_counts_res.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let mut ctx = tera::Context::new();
-    ctx.insert("files", &files);
-    ctx.insert(
-        "job_counts",
-        &serde_json::to_value(
-            job_counts
-                .iter()
-                .map(|(s, c)| serde_json::json!({"status": format!("{:?}", s), "count": c}))
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_default(),
-    );
-    ctx.insert("total_files", &files.len());
+    ctx.insert("recent_files", &file_views(files));
+    ctx.insert("total_files", &total_files);
+    for (status, count) in &job_counts {
+        ctx.insert(format!("jobs_{}", status.as_str()), count);
+    }
 
     render(&state.templates, "dashboard.html", &ctx)
 }
@@ -92,7 +95,7 @@ pub async fn library(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let mut ctx = tera::Context::new();
-    ctx.insert("files", &files);
+    ctx.insert("files", &file_views(files));
     ctx.insert("page", &page);
     ctx.insert("per_page", &per_page);
     ctx.insert("filter_container", &params.container);
@@ -140,7 +143,14 @@ pub async fn file_detail(State(state): State<AppState>, Path(id): Path<uuid::Uui
         .collect();
 
     let mut ctx = tera::Context::new();
-    ctx.insert("file", &file);
+    let tracks_json: Vec<serde_json::Value> = file
+        .tracks
+        .iter()
+        .map(|t| serde_json::to_value(t).unwrap_or_default())
+        .collect();
+    let file_view = crate::views::FileView::from_media_file(file);
+    ctx.insert("file", &file_view);
+    ctx.insert("tracks", &tracks_json);
     ctx.insert("plans", &plans_json);
 
     render(&state.templates, "file_detail.html", &ctx)
@@ -159,17 +169,34 @@ pub async fn policy_editor(State(state): State<AppState>, Path(name): Path<Strin
     render(&state.templates, "policy_editor.html", &ctx)
 }
 
-/// GET /jobs -- Job monitor
-pub async fn jobs_page(State(state): State<AppState>) -> HtmlResult {
-    let store = state.store.clone();
+#[derive(Debug, Deserialize)]
+pub struct JobsPageParams {
+    pub status: Option<String>,
+}
 
-    let jobs = tokio::task::spawn_blocking(move || store.list_jobs(None, Some(100)))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+/// GET /jobs -- Job monitor
+pub async fn jobs_page(
+    State(state): State<AppState>,
+    Query(params): Query<JobsPageParams>,
+) -> HtmlResult {
+    let store = state.store.clone();
+    let filter_status = params.status.as_deref().and_then(JobStatus::parse);
+
+    let (jobs, counts) = tokio::task::spawn_blocking(move || {
+        let jobs = store.list_jobs(filter_status, None)?;
+        let counts = store.count_jobs_by_status()?;
+        Ok::<_, voom_domain::errors::VoomError>((jobs, counts))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let mut ctx = tera::Context::new();
     ctx.insert("jobs", &jobs);
+    ctx.insert("filter_status", &params.status.as_deref().unwrap_or(""));
+    for (status, count) in &counts {
+        ctx.insert(format!("jobs_{}", status.as_str()), count);
+    }
 
     render(&state.templates, "jobs.html", &ctx)
 }

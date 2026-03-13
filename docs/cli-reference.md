@@ -33,6 +33,8 @@ voom scan <PATH> [OPTIONS]
 | `-w`, `--workers <N>` | `0` (auto) | Number of parallel workers for hashing |
 | `--no-hash` | `false` | Skip content hashing (faster scans) |
 
+Before scanning, stale database entries for files that no longer exist under the scanned directory are automatically pruned (along with their associated plans and processing stats).
+
 The scanner walks the directory tree (using rayon for parallelism), identifies media files by extension, computes xxHash64 content hashes (unless `--no-hash`), and runs ffprobe for metadata extraction. Results are stored in the SQLite database.
 
 **Examples:**
@@ -85,6 +87,8 @@ voom process <PATH> --policy <FILE> [OPTIONS]
 | `-w`, `--workers <N>` | `0` (auto) | Number of parallel workers |
 | `--approve` | `false` | Require interactive approval for each file |
 | `--no-backup` | `false` | Skip creating backups before modifications |
+
+Before processing, stale database entries for files that no longer exist under the target directory are automatically pruned (along with their associated plans and processing stats).
 
 Error handling strategies:
 - **`fail`** — Stop processing on first error
@@ -284,7 +288,7 @@ Database maintenance commands.
 
 #### `voom db prune`
 
-Remove entries for files that no longer exist on disk.
+Remove entries for files that no longer exist on disk. Also cleans up associated plans and processing stats for pruned files.
 
 ```bash
 voom db prune
