@@ -1,0 +1,649 @@
+#!/usr/bin/env python3
+"""Generate a corpus of synthetic video files with diverse characteristics.
+
+Uses ffmpeg to create tiny test files covering various containers, codecs,
+resolutions, channel layouts, subtitle formats, HDR metadata, VFR, and
+attachments — designed as a companion to select-test-corpus for functional
+testing when no real library exists.
+"""
+
+import argparse
+import os
+import random
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Metadata pools (drawn from randomly per-file for realistic variety)
+# ---------------------------------------------------------------------------
+
+TITLE_POOL = [
+    "The Silent Echo", "Orbital Descent S02E07", "Crimson Meridian",
+    "Waypoint Zero", "The Last Cartographer", "Neon Reef",
+    "Parallax S01E03 — Inversion", "Dustwalker", "Abyssal Reach",
+    "Iron Chorus", "The Vanishing Gradient", "Solstice Run",
+]
+
+ENCODER_POOL = [
+    "libebml v1.4.4 + libmatroska v1.7.1", "Lavf60.3.100",
+    "HandBrake 1.7.3 2024011800", "MakeMKV v1.17.6",
+    "x264 core 164 r3108", "mkvmerge v82.0",
+]
+
+LANG_POOL = ["eng", "spa", "fra", "deu", "jpn", "und", "zho", "por", "ita",
+             "kor", "rus", "ara"]
+
+AUDIO_TITLE_POOL = [
+    "English 5.1 Surround", "Director's Commentary", "Music & Effects",
+    "Descriptive Audio", "Stereo", "Original Mix", "DTS-HD MA 7.1",
+    "AAC Stereo", "Commentary by Director",
+]
+
+SUB_TITLE_POOL = [
+    "English (SDH)", "Forced Signs & Songs", "Full Subtitles",
+    "Commentary Subtitles", "Closed Captions", "Hearing Impaired",
+]
+
+HANDLER_POOL = [
+    "VideoHandler", "SoundHandler", "Apple Video Media Handler",
+    "GPAC ISO Video Handler", "GPAC ISO Audio Handler",
+]
+
+
+def random_timestamp(rng):
+    """Return a random ISO 8601 timestamp between 2018 and 2025."""
+    year = rng.randint(2018, 2025)
+    month = rng.randint(1, 12)
+    day = rng.randint(1, 28)
+    hour = rng.randint(0, 23)
+    minute = rng.randint(0, 59)
+    second = rng.randint(0, 59)
+    return f"{year}-{month:02d}-{day:02d}T{hour:02d}:{minute:02d}:{second:02d}Z"
+
+
+# ---------------------------------------------------------------------------
+# File manifest
+# ---------------------------------------------------------------------------
+
+def build_manifest():
+    """Return the list of file specs to generate."""
+    return [
+        {
+            "stem": "basic-h264-aac",
+            "ext": "mp4",
+            "video": {"codec": "libx264", "size": "1920x1080", "fps": 24},
+            "audio": [{"codec": "aac", "channels": 2}],
+            "subs": [],
+            "special": [],
+        },
+        {
+            "stem": "hevc-surround",
+            "ext": "mkv",
+            "video": {"codec": "libx265", "size": "1920x1080", "fps": 24},
+            "audio": [
+                {"codec": "ac3", "channels": 6},
+                {"codec": "aac", "channels": 2},
+            ],
+            "subs": [
+                {"format": "srt", "lang": "eng"},
+                {"format": "srt", "lang": "spa", "forced": True},
+            ],
+            "special": [],
+        },
+        {
+            "stem": "sd-mpeg2",
+            "ext": "avi",
+            "video": {"codec": "mpeg2video", "size": "720x480", "fps": 30},
+            "audio": [{"codec": "mp3", "channels": 1}],
+            "subs": [],
+            "special": [],
+        },
+        {
+            "stem": "vp9-opus",
+            "ext": "webm",
+            "video": {"codec": "libvpx-vp9", "size": "1280x720", "fps": 24},
+            "audio": [{"codec": "libopus", "channels": 2}],
+            "subs": [{"format": "webvtt", "lang": "eng"}],
+            "special": [],
+        },
+        {
+            "stem": "4k-hevc-hdr10",
+            "ext": "mkv",
+            "video": {"codec": "libx265", "size": "3840x2160", "fps": 24},
+            "audio": [{"codec": "eac3", "channels": 6}],
+            "subs": [{"format": "ass", "lang": "eng"}],
+            "special": ["hdr10"],
+        },
+        {
+            "stem": "multichannel-flac",
+            "ext": "mkv",
+            "video": {"codec": "libx264", "size": "1920x1080", "fps": 24},
+            "audio": [
+                {"codec": "flac", "channels": 2},
+                {"codec": "ac3", "channels": 6, "title": "Director's Commentary",
+                 "disposition": "comment"},
+            ],
+            "subs": [{"format": "srt", "lang": "eng"}],
+            "special": [],
+        },
+        {
+            "stem": "vfr-h264",
+            "ext": "mp4",
+            "video": {"codec": "libx264", "size": "1280x720", "fps": 30},
+            "audio": [{"codec": "aac", "channels": 2}],
+            "subs": [],
+            "special": ["vfr"],
+        },
+        {
+            "stem": "attachment",
+            "ext": "mkv",
+            "video": {"codec": "libx264", "size": "1280x720", "fps": 24},
+            "audio": [{"codec": "aac", "channels": 2}],
+            "subs": [{"format": "srt", "lang": "eng"}],
+            "special": ["attachment"],
+        },
+        {
+            "stem": "av1-opus",
+            "ext": "mp4",
+            "video": {"codec": "libsvtav1", "size": "1280x720", "fps": 24},
+            "audio": [{"codec": "libopus", "channels": 2}],
+            "subs": [],
+            "special": [],
+            "requires_encoder": "libsvtav1",
+        },
+        {
+            "stem": "hevc-truehd",
+            "ext": "mkv",
+            "video": {"codec": "libx265", "size": "1920x1080", "fps": 24},
+            "audio": [{"codec": "truehd", "channels": 2}],
+            "subs": [{"format": "srt", "lang": "eng", "forced": True}],
+            "special": [],
+            "requires_encoder": "truehd",
+        },
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Encoder availability
+# ---------------------------------------------------------------------------
+
+def probe_encoders():
+    """Return the set of available ffmpeg encoder names."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-encoders", "-hide_banner"],
+            capture_output=True, text=True, timeout=10,
+        )
+        encoders = set()
+        for line in result.stdout.splitlines():
+            parts = line.strip().split()
+            # Lines look like: " V..... libx264  ..."
+            if len(parts) >= 2 and len(parts[0]) >= 6:
+                flags = parts[0]
+                if any(c in flags for c in "VAS"):
+                    encoders.add(parts[1])
+        return encoders
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return set()
+
+
+# ---------------------------------------------------------------------------
+# Subtitle temp file helpers
+# ---------------------------------------------------------------------------
+
+def write_srt(path, duration):
+    """Write a minimal SRT subtitle file."""
+    path.write_text(
+        "1\n"
+        f"00:00:00,000 --> 00:00:{duration:02d},000\n"
+        "Test subtitle line\n\n"
+    )
+
+
+def write_ass(path, duration):
+    """Write a minimal ASS subtitle file."""
+    path.write_text(
+        "[Script Info]\n"
+        "Title: Test\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1920\n"
+        "PlayResY: 1080\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,"
+        "&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,10,1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+        "Effect, Text\n"
+        f"Dialogue: 0,0:00:00.00,0:00:{duration:02d}.00,Default,,0,0,0,,"
+        "Test subtitle line\n"
+    )
+
+
+def write_vtt(path, duration):
+    """Write a minimal WebVTT subtitle file."""
+    path.write_text(
+        "WEBVTT\n\n"
+        f"00:00:00.000 --> 00:00:{duration:02d}.000\n"
+        "Test subtitle line\n\n"
+    )
+
+
+SUB_WRITERS = {
+    "srt": write_srt,
+    "ass": write_ass,
+    "webvtt": write_vtt,
+}
+
+
+# ---------------------------------------------------------------------------
+# ffmpeg command builder
+# ---------------------------------------------------------------------------
+
+def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
+    """Build the ffmpeg command list for a given file spec.
+
+    Returns (cmd_list, temp_files_to_cleanup).
+    """
+    outfile = dest / f"{spec['stem']}.{spec['ext']}"
+    cmd = ["ffmpeg", "-y", "-hide_banner"]
+
+    specials = set(spec.get("special", []))
+    video = spec["video"]
+    audios = spec["audio"]
+    subs = spec.get("subs", [])
+
+    # --- Video input ---
+    vf_filters = [f"testsrc2=duration={duration}:size={video['size']}:rate={video['fps']}"]
+    if "vfr" in specials:
+        # Vary PTS to create variable frame rate
+        vf_filters.append("setpts='PTS+0.002*sin(N*0.1)/TB'")
+    cmd += ["-f", "lavfi", "-i", ",".join(vf_filters)]
+
+    # --- Audio inputs ---
+    for i, audio in enumerate(audios):
+        ch = audio["channels"]
+        if ch <= 2:
+            cmd += ["-f", "lavfi", "-i",
+                    f"sine=frequency={440 + i * 110}:duration={duration}:sample_rate=48000"]
+        else:
+            # Generate 5.1/7.1 by merging multiple sine sources
+            freqs = [220, 330, 440, 550, 660, 770, 880, 990][:ch]
+            filter_parts = []
+            for j, freq in enumerate(freqs):
+                filter_parts.append(f"sine=frequency={freq}:duration={duration}:sample_rate=48000")
+            amerge_input = "|".join(filter_parts)
+            cmd += ["-f", "lavfi", "-i", f"amovie='{amerge_input}'" if False else ""]
+            # Actually, use a complex filter approach — replace last two args
+            cmd = cmd[:-2]
+            sine_filter = ";".join(
+                f"sine=frequency={freq}:duration={duration}:sample_rate=48000"
+                for freq in freqs
+            )
+            cmd += ["-f", "lavfi", "-i",
+                    f"sine=frequency=440:duration={duration}:sample_rate=48000"]
+
+    # --- Subtitle inputs ---
+    sub_files = []
+    for i, sub in enumerate(subs):
+        fmt = sub["format"]
+        ext = "vtt" if fmt == "webvtt" else fmt
+        sub_path = Path(tmpdir) / f"sub_{spec['stem']}_{i}.{ext}"
+        SUB_WRITERS[fmt](sub_path, min(duration, 59))
+        sub_files.append(sub_path)
+        cmd += ["-i", str(sub_path)]
+
+    # --- Map streams ---
+    cmd += ["-map", "0:v"]
+    for i in range(len(audios)):
+        cmd += ["-map", f"{1 if audios[0]['channels'] <= 2 or i == 0 else 1}:a"]
+        # For multi-channel that fell back to mono input, we'll handle below
+    # For multi-audio with >2 channels, we generated a single sine for all.
+    # Remap: all audio inputs are at indices 1..len(audios)
+    # Actually, let's simplify: generate one sine input per audio track
+    # and use pan filter for multichannel.
+
+    # --- Rebuild command cleanly ---
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+
+    # Video input
+    video_input = f"testsrc2=duration={duration}:size={video['size']}:rate={video['fps']}"
+    if "vfr" in specials:
+        video_input += ",setpts='PTS+0.003*sin(N*0.15)/TB'"
+    cmd += ["-f", "lavfi", "-i", video_input]
+
+    # Audio inputs (one sine per audio track)
+    for i, audio in enumerate(audios):
+        cmd += ["-f", "lavfi", "-i",
+                f"sine=frequency={440 + i * 110}:duration={duration}:sample_rate=48000"]
+
+    # Subtitle inputs
+    sub_files = []
+    for i, sub in enumerate(subs):
+        fmt = sub["format"]
+        ext = "vtt" if fmt == "webvtt" else fmt
+        sub_path = Path(tmpdir) / f"sub_{spec['stem']}_{i}.{ext}"
+        SUB_WRITERS[fmt](sub_path, min(duration, 59))
+        sub_files.append(sub_path)
+        cmd += ["-i", str(sub_path)]
+
+    # Map all streams
+    stream_idx = 0
+    cmd += ["-map", f"{stream_idx}:v"]
+    stream_idx += 1
+
+    for i, audio in enumerate(audios):
+        cmd += ["-map", f"{stream_idx}:a"]
+        stream_idx += 1
+
+    for i in range(len(subs)):
+        cmd += ["-map", f"{stream_idx}"]
+        stream_idx += 1
+
+    # --- Video codec ---
+    vcodec = video["codec"]
+    cmd += ["-c:v", vcodec]
+    if vcodec == "libx264":
+        cmd += ["-preset", "ultrafast", "-crf", "28"]
+    elif vcodec == "libx265":
+        cmd += ["-preset", "ultrafast", "-crf", "32"]
+        cmd += ["-tag:v", "hvc1"]
+    elif vcodec == "libvpx-vp9":
+        cmd += ["-b:v", "200k", "-crf", "40", "-row-mt", "1", "-speed", "8"]
+    elif vcodec == "libsvtav1":
+        cmd += ["-preset", "12", "-crf", "50"]
+    elif vcodec == "mpeg2video":
+        cmd += ["-b:v", "1M"]
+
+    # HDR10 metadata
+    if "hdr10" in specials:
+        cmd += [
+            "-pix_fmt", "yuv420p10le",
+            "-color_primaries", "bt2020",
+            "-color_trc", "smpte2084",
+            "-colorspace", "bt2020nc",
+        ]
+        if vcodec == "libx265":
+            cmd += ["-x265-params",
+                    "hdr-opt=1:repeat-headers=1:colorprim=bt2020:"
+                    "transfer=smpte2084:colormatrix=bt2020nc:"
+                    "master-display=G(13250,34500)B(7500,3000)"
+                    "R(34000,16000)WP(15635,16450)L(10000000,1):"
+                    "max-cll=1000,400"]
+
+    # --- Audio codecs ---
+    for i, audio in enumerate(audios):
+        cmd += [f"-c:a:{i}", audio["codec"]]
+        ch = audio["channels"]
+        if ch == 1:
+            cmd += [f"-ac:a:{i}", "1"]
+        elif ch == 6:
+            cmd += [f"-ac:a:{i}", "6", f"-channel_layout:a:{i}", "5.1"]
+        elif ch == 8:
+            cmd += [f"-ac:a:{i}", "8", f"-channel_layout:a:{i}", "7.1"]
+        # else stereo is default
+
+        if audio["codec"] == "aac":
+            cmd += [f"-b:a:{i}", "128k"]
+        elif audio["codec"] == "ac3":
+            cmd += [f"-b:a:{i}", "384k"]
+        elif audio["codec"] == "eac3":
+            cmd += [f"-b:a:{i}", "448k"]
+        elif audio["codec"] == "mp3":
+            cmd += [f"-b:a:{i}", "128k"]
+        elif audio["codec"] == "truehd":
+            # truehd encoder doesn't take bitrate; set sample format
+            cmd += [f"-strict", "-2"]
+
+    # --- Subtitle codecs ---
+    for i, sub in enumerate(subs):
+        fmt = sub["format"]
+        if spec["ext"] == "mkv":
+            if fmt == "srt":
+                cmd += [f"-c:s:{i}", "srt"]
+            elif fmt == "ass":
+                cmd += [f"-c:s:{i}", "ass"]
+            else:
+                cmd += [f"-c:s:{i}", "copy"]
+        elif spec["ext"] == "mp4":
+            cmd += [f"-c:s:{i}", "mov_text"]
+        elif spec["ext"] == "webm":
+            cmd += [f"-c:s:{i}", "webvtt"]
+
+    # --- Container-level metadata ---
+    cmd += ["-metadata", f"title={rng.choice(TITLE_POOL)}"]
+    cmd += ["-metadata", f"encoder={rng.choice(ENCODER_POOL)}"]
+    cmd += ["-metadata", f"creation_time={random_timestamp(rng)}"]
+
+    # --- Track-level metadata & dispositions ---
+    # Video track is stream 0
+    cmd += ["-metadata:s:v:0", f"handler_name={rng.choice(HANDLER_POOL)}"]
+    cmd += ["-metadata:s:v:0", f"language={rng.choice(LANG_POOL)}"]
+
+    # Audio tracks
+    for i, audio in enumerate(audios):
+        lang = audio.get("lang", rng.choice(LANG_POOL))
+        title = audio.get("title", rng.choice(AUDIO_TITLE_POOL))
+        cmd += [f"-metadata:s:a:{i}", f"language={lang}"]
+        cmd += [f"-metadata:s:a:{i}", f"title={title}"]
+        cmd += [f"-metadata:s:a:{i}", f"handler_name={rng.choice(HANDLER_POOL)}"]
+
+        disp = audio.get("disposition", "default" if i == 0 else "0")
+        cmd += [f"-disposition:a:{i}", disp]
+
+    # Subtitle tracks
+    for i, sub in enumerate(subs):
+        lang = sub.get("lang", rng.choice(LANG_POOL))
+        title = rng.choice(SUB_TITLE_POOL)
+        cmd += [f"-metadata:s:s:{i}", f"language={lang}"]
+        cmd += [f"-metadata:s:s:{i}", f"title={title}"]
+
+        if sub.get("forced"):
+            cmd += [f"-disposition:s:{i}", "forced"]
+        elif i == 0:
+            cmd += [f"-disposition:s:{i}", "default"]
+
+    # --- Attachment ---
+    if "attachment" in specials:
+        font_path = Path(tmpdir) / "DummyFont.ttf"
+        # Create a minimal dummy file (not a real font, but ffmpeg accepts it)
+        font_path.write_bytes(b"\x00\x01\x00\x00" + b"\x00" * 28)
+        cmd += ["-attach", str(font_path),
+                "-metadata:s:t:0", "mimetype=font/sfnt",
+                "-metadata:s:t:0", "filename=DummyFont.ttf"]
+
+    # --- Duration limit ---
+    cmd += ["-t", str(duration)]
+
+    # --- Output ---
+    cmd += [str(outfile)]
+
+    return cmd, outfile
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def format_size(n):
+    """Format bytes as a human-readable string."""
+    if n < 1024:
+        return f"{n} B"
+    for unit in ("KiB", "MiB", "GiB"):
+        n /= 1024
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+    return f"{n:.1f} TiB"
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="generate-test-corpus",
+        description="Generate synthetic video files with diverse characteristics for testing.",
+    )
+    parser.add_argument(
+        "dest", metavar="DEST",
+        help="Directory to generate files into (created if needed)",
+    )
+    parser.add_argument(
+        "--duration", type=int, default=2, metavar="SECS",
+        help="Duration of each file in seconds (default: 2)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show ffmpeg commands without running them",
+    )
+    parser.add_argument(
+        "--only", metavar="NAMES",
+        help="Comma-separated list of file stems to generate (default: all)",
+    )
+    parser.add_argument(
+        "--skip", metavar="NAMES",
+        help="Comma-separated list of file stems to skip",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, metavar="N",
+        help="RNG seed for metadata randomization (default: 42)",
+    )
+    parser.add_argument(
+        "--verbose", action="store_true",
+        help="Show full ffmpeg output",
+    )
+    args = parser.parse_args()
+
+    dest = Path(args.dest)
+    rng = random.Random(args.seed)
+    manifest = build_manifest()
+
+    # Filter manifest
+    only = set(args.only.split(",")) if args.only else None
+    skip = set(args.skip.split(",")) if args.skip else set()
+
+    specs = []
+    for spec in manifest:
+        if only and spec["stem"] not in only:
+            continue
+        if spec["stem"] in skip:
+            continue
+        specs.append(spec)
+
+    if not specs:
+        print("No files to generate (check --only / --skip filters).", file=sys.stderr)
+        sys.exit(1)
+
+    # Check ffmpeg availability
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=10)
+    except FileNotFoundError:
+        print("Error: ffmpeg not found in PATH", file=sys.stderr)
+        sys.exit(1)
+
+    # Probe available encoders
+    available = probe_encoders()
+    if not available:
+        print("Warning: could not probe ffmpeg encoders, will try all files",
+              file=sys.stderr)
+
+    if not args.dry_run:
+        dest.mkdir(parents=True, exist_ok=True)
+
+    total = len(specs)
+    ok_count = 0
+    skip_count = 0
+    fail_count = 0
+    total_size = 0
+
+    with tempfile.TemporaryDirectory(prefix="voom-corpus-") as tmpdir:
+        for idx, spec in enumerate(specs, 1):
+            stem = spec["stem"]
+            filename = f"{stem}.{spec['ext']}"
+
+            # Check encoder availability
+            req = spec.get("requires_encoder")
+            if req and available and req not in available:
+                print(f"[{idx}/{total}] Skipping {filename} — encoder '{req}' not available")
+                skip_count += 1
+                continue
+
+            # Reset RNG per-file but derived from seed + index for reproducibility
+            file_rng = random.Random(args.seed + idx)
+
+            try:
+                cmd, outfile = build_ffmpeg_cmd(spec, dest, args.duration, file_rng, tmpdir)
+            except Exception as e:
+                print(f"[{idx}/{total}] FAILED {filename} — error building command: {e}")
+                fail_count += 1
+                continue
+
+            if args.dry_run:
+                print(f"[{idx}/{total}] {filename}")
+                # Quote args with spaces for readability
+                quoted = []
+                for arg in cmd:
+                    if " " in arg or "'" in arg or "=" in arg:
+                        quoted.append(f"'{arg}'")
+                    else:
+                        quoted.append(arg)
+                print(f"  {' '.join(quoted)}")
+                print()
+                ok_count += 1
+                continue
+
+            print(f"[{idx}/{total}] Generating {filename}...", end=" ", flush=True)
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=not args.verbose,
+                    timeout=120,
+                )
+                if result.returncode != 0:
+                    print("FAILED")
+                    stderr = result.stderr if not args.verbose else ""
+                    if stderr:
+                        # Show last few lines of stderr
+                        lines = stderr.decode("utf-8", errors="replace").strip().splitlines()
+                        for line in lines[-5:]:
+                            print(f"  {line}")
+                    fail_count += 1
+                    continue
+
+                size = outfile.stat().st_size
+                total_size += size
+                print(f"OK ({format_size(size)})")
+                ok_count += 1
+
+            except subprocess.TimeoutExpired:
+                print("FAILED (timeout)")
+                fail_count += 1
+            except Exception as e:
+                print(f"FAILED ({e})")
+                fail_count += 1
+
+    # Summary
+    print()
+    if args.dry_run:
+        print(f"Dry run complete: {ok_count} files would be generated")
+    else:
+        parts = [f"{ok_count} generated"]
+        if skip_count:
+            parts.append(f"{skip_count} skipped")
+        if fail_count:
+            parts.append(f"{fail_count} failed")
+        print(f"Summary: {', '.join(parts)}")
+        if total_size:
+            print(f"Total size: {format_size(total_size)}")
+
+    if skip_count:
+        print(f"Destination: {dest}")
+
+    sys.exit(fail_count)
+
+
+if __name__ == "__main__":
+    main()
