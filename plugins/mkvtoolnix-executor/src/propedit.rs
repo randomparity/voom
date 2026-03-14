@@ -55,6 +55,26 @@ pub fn execute_propedit_actions(
     }
 }
 
+/// Properties that live in the Matroska Segment/Info element and can be
+/// edited via `mkvpropedit --edit info --set/--delete`.
+/// Other metadata (ENCODER, etc.) lives in the Tags element and requires
+/// `--tags all:` to clear.
+fn is_segment_info_property(name: &str) -> bool {
+    matches!(
+        name.to_lowercase().as_str(),
+        "title"
+            | "date"
+            | "segment-uid"
+            | "prev-uid"
+            | "next-uid"
+            | "segment-filename"
+            | "prev-filename"
+            | "next-filename"
+            | "muxing-application"
+            | "writing-application"
+    )
+}
+
 /// Push `--edit track:N --set flag=value` args for a track flag operation.
 fn push_track_flag(args: &mut Vec<String>, action: &PlannedAction, flag_value: &str) {
     if let Some(idx) = action.track_index {
@@ -103,33 +123,46 @@ pub fn build_propedit_args(path: &Path, actions: &[&PlannedAction]) -> Result<Ve
             OperationType::SetContainerTag => {
                 let tag = action.parameters["tag"].as_str().unwrap_or("title");
                 let value = action.parameters["value"].as_str().unwrap_or("");
-                validate_metadata_value(tag)?;
-                validate_metadata_value(value)?;
-                args.push("--edit".into());
-                args.push("info".into());
-                args.push("--set".into());
-                args.push(format!("{}={}", tag, value));
-            }
-            OperationType::ClearContainerTags => {
-                if let Some(tags) = action.parameters["tags"].as_array() {
-                    for tag_val in tags {
-                        if let Some(tag) = tag_val.as_str() {
-                            validate_metadata_value(tag)?;
-                            args.push("--edit".into());
-                            args.push("info".into());
-                            args.push("--delete".into());
-                            args.push(tag.to_string());
-                        }
-                    }
+                if is_segment_info_property(tag) {
+                    validate_metadata_value(tag)?;
+                    validate_metadata_value(value)?;
+                    args.push("--edit".into());
+                    args.push("info".into());
+                    args.push("--set".into());
+                    args.push(format!("{}={}", tag, value));
+                } else {
+                    tracing::debug!(
+                        tag = tag,
+                        "skipping set_tag in propedit: not a segment info property"
+                    );
                 }
             }
+            OperationType::ClearContainerTags => {
+                // MKV stores metadata in two places: segment info properties
+                // (title, date, etc.) and Tags elements (ENCODER, etc.).
+                // `--tags all:` clears all Tags elements (empty filename = remove).
+                args.push("--tags".into());
+                args.push("all:".into());
+            }
             OperationType::DeleteContainerTag => {
+                // MKV Tags element entries (ENCODER, etc.) cannot be individually
+                // deleted via mkvpropedit CLI — only `--tags all:` can clear them.
+                // Segment info properties (title) can be deleted with --edit info.
+                // We handle the known segment info case; for Tags entries,
+                // ClearContainerTags (--tags all:) is the correct approach.
                 let tag = action.parameters["tag"].as_str().unwrap_or("");
-                validate_metadata_value(tag)?;
-                args.push("--edit".into());
-                args.push("info".into());
-                args.push("--delete".into());
-                args.push(tag.to_string());
+                if is_segment_info_property(tag) {
+                    validate_metadata_value(tag)?;
+                    args.push("--edit".into());
+                    args.push("info".into());
+                    args.push("--delete".into());
+                    args.push(tag.to_string());
+                } else {
+                    tracing::debug!(
+                        tag = tag,
+                        "skipping delete_tag in propedit: not a segment info property, use clear_tags instead"
+                    );
+                }
             }
             _ => {
                 // Non-propedit operations are ignored here
@@ -360,38 +393,41 @@ mod tests {
         let action = make_action(
             OperationType::ClearContainerTags,
             None,
-            serde_json::json!({"tags": ["title", "encoder"]}),
+            serde_json::json!({"tags": ["title", "ENCODER"]}),
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
+        // Uses --tags all: to clear all Matroska Tags elements
+        assert_eq!(args, vec!["/media/movie.mkv", "--tags", "all:",]);
+    }
+
+    #[test]
+    fn test_build_propedit_args_delete_container_tag_segment_info() {
+        // "title" is a segment info property — emits --edit info --delete
+        let action = make_action(
+            OperationType::DeleteContainerTag,
+            None,
+            serde_json::json!({"tag": "title"}),
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
         assert_eq!(
             args,
-            vec![
-                "/media/movie.mkv",
-                "--edit",
-                "info",
-                "--delete",
-                "title",
-                "--edit",
-                "info",
-                "--delete",
-                "encoder",
-            ]
+            vec!["/media/movie.mkv", "--edit", "info", "--delete", "title",]
         );
     }
 
     #[test]
-    fn test_build_propedit_args_delete_container_tag() {
+    fn test_build_propedit_args_delete_container_tag_non_segment_info() {
+        // "ENCODER" is a Tags element entry — skipped in propedit (needs --tags all:)
         let action = make_action(
             OperationType::DeleteContainerTag,
             None,
-            serde_json::json!({"tag": "encoder"}),
+            serde_json::json!({"tag": "ENCODER"}),
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
-        assert_eq!(
-            args,
-            vec!["/media/movie.mkv", "--edit", "info", "--delete", "encoder",]
-        );
+        // Only the file path, no delete args since ENCODER isn't a segment info property
+        assert_eq!(args, vec!["/media/movie.mkv"]);
     }
 }
