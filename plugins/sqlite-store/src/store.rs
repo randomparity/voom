@@ -7,12 +7,13 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Row};
 use uuid::Uuid;
 
+use voom_domain::bad_file::{BadFile, BadFileSource};
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::job::{Job, JobStatus, JobUpdate};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::Plan;
 use voom_domain::stats::ProcessingStats;
-use voom_domain::storage::{FileFilters, StorageTrait, StoredPlan};
+use voom_domain::storage::{BadFileFilters, FileFilters, StorageTrait, StoredPlan};
 
 use crate::schema;
 
@@ -894,6 +895,117 @@ impl StorageTrait for SqliteStore {
         Ok(())
     }
 
+    fn upsert_bad_file(&self, bad_file: &BadFile) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO bad_files (id, path, size, content_hash, error, error_source, attempt_count, first_seen_at, last_seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(path) DO UPDATE SET
+                 error = excluded.error,
+                 error_source = excluded.error_source,
+                 size = excluded.size,
+                 content_hash = excluded.content_hash,
+                 attempt_count = attempt_count + 1,
+                 last_seen_at = excluded.last_seen_at",
+            params![
+                bad_file.id.to_string(),
+                bad_file.path.to_string_lossy().to_string(),
+                bad_file.size as i64,
+                bad_file.content_hash,
+                bad_file.error,
+                bad_file.error_source.to_string(),
+                bad_file.attempt_count as i64,
+                bad_file.first_seen_at.to_rfc3339(),
+                bad_file.last_seen_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| VoomError::Storage(format!("failed to upsert bad file: {e}")))?;
+        Ok(())
+    }
+
+    fn get_bad_file_by_path(&self, path: &Path) -> Result<Option<BadFile>> {
+        let conn = self.conn()?;
+        let path_str = path.to_string_lossy().to_string();
+        conn.query_row(
+            "SELECT id, path, size, content_hash, error, error_source, attempt_count, first_seen_at, last_seen_at
+             FROM bad_files WHERE path = ?1",
+            params![path_str],
+            row_to_bad_file,
+        )
+        .optional()
+        .map_err(|e| VoomError::Storage(format!("failed to get bad file: {e}")))
+    }
+
+    fn list_bad_files(&self, filters: &BadFileFilters) -> Result<Vec<BadFile>> {
+        let conn = self.conn()?;
+        let mut sql = String::from(
+            "SELECT id, path, size, content_hash, error, error_source, attempt_count, first_seen_at, last_seen_at FROM bad_files WHERE 1=1",
+        );
+        let mut param_values: Vec<String> = Vec::new();
+
+        if let Some(ref prefix) = filters.path_prefix {
+            param_values.push(format!("{prefix}%"));
+            sql.push_str(&format!(" AND path LIKE ?{}", param_values.len()));
+        }
+        if let Some(ref source) = filters.error_source {
+            param_values.push(source.to_string());
+            sql.push_str(&format!(" AND error_source = ?{}", param_values.len()));
+        }
+
+        sql.push_str(" ORDER BY last_seen_at DESC");
+
+        let limit = filters.limit.unwrap_or(10_000).min(10_000);
+        let offset = filters.offset.unwrap_or(0);
+        param_values.push(limit.to_string());
+        sql.push_str(&format!(" LIMIT ?{}", param_values.len()));
+        param_values.push(offset.to_string());
+        sql.push_str(&format!(" OFFSET ?{}", param_values.len()));
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| VoomError::Storage(format!("failed to prepare bad files query: {e}")))?;
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
+            .iter()
+            .map(|v| v as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        let bad_files = stmt
+            .query_map(param_refs.as_slice(), row_to_bad_file)
+            .map_err(|e| VoomError::Storage(format!("failed to query bad files: {e}")))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| VoomError::Storage(format!("failed to collect bad files: {e}")))?;
+
+        Ok(bad_files)
+    }
+
+    fn count_bad_files(&self) -> Result<u64> {
+        let conn = self.conn()?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM bad_files", [], |row| row.get(0))
+            .map_err(|e| VoomError::Storage(format!("failed to count bad files: {e}")))?;
+        Ok(count as u64)
+    }
+
+    fn delete_bad_file(&self, id: &Uuid) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM bad_files WHERE id = ?1",
+            params![id.to_string()],
+        )
+        .map_err(|e| VoomError::Storage(format!("failed to delete bad file: {e}")))?;
+        Ok(())
+    }
+
+    fn delete_bad_file_by_path(&self, path: &Path) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM bad_files WHERE path = ?1",
+            params![path.to_string_lossy().to_string()],
+        )
+        .map_err(|e| VoomError::Storage(format!("failed to delete bad file by path: {e}")))?;
+        Ok(())
+    }
+
     fn vacuum(&self) -> Result<()> {
         let conn = self.conn()?;
         conn.execute_batch("VACUUM")
@@ -912,6 +1024,46 @@ impl StorageTrait for SqliteStore {
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_");
+
+        // Also prune bad_files whose paths no longer exist under root
+        {
+            let bad_files: Vec<(String, String)> = {
+                let conn = self.conn()?;
+                let mut stmt = conn
+                    .prepare("SELECT id, path FROM bad_files WHERE path LIKE ?1 || '%' ESCAPE '\\'")
+                    .map_err(|e| {
+                        VoomError::Storage(format!("failed to prepare bad_files prune: {e}"))
+                    })?;
+                let result = stmt
+                    .query_map(params![root_str], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map_err(|e| VoomError::Storage(format!("failed to query bad_files: {e}")))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(|e| VoomError::Storage(format!("failed to collect bad_files: {e}")))?;
+                result
+            };
+            let missing_bad_ids: Vec<&str> = bad_files
+                .iter()
+                .filter(|(_, path)| !Path::new(path).exists())
+                .map(|(id, _)| id.as_str())
+                .collect();
+            if !missing_bad_ids.is_empty() {
+                let conn = self.conn()?;
+                for chunk in missing_bad_ids.chunks(500) {
+                    let placeholders: Vec<String> =
+                        (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+                    let in_clause = placeholders.join(",");
+                    let param_refs: Vec<&dyn rusqlite::types::ToSql> = chunk
+                        .iter()
+                        .map(|id| id as &dyn rusqlite::types::ToSql)
+                        .collect();
+                    conn.execute(
+                        &format!("DELETE FROM bad_files WHERE id IN ({in_clause})"),
+                        param_refs.as_slice(),
+                    )
+                    .map_err(|e| VoomError::Storage(format!("failed to prune bad_files: {e}")))?;
+                }
+            }
+        }
 
         // Phase 1: Query file paths under root (release connection after)
         let files: Vec<(String, String)> = {
@@ -1083,6 +1235,32 @@ impl SqliteStore {
 
         Ok(tracks)
     }
+}
+
+fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
+    let id_str: String = row.get("id")?;
+    let path_str: String = row.get("path")?;
+    let error_source_str: String = row.get("error_source")?;
+    let first_seen_str: String = row.get("first_seen_at")?;
+    let last_seen_str: String = row.get("last_seen_at")?;
+
+    Ok(BadFile {
+        id: Uuid::parse_str(&id_str).unwrap_or_default(),
+        path: PathBuf::from(path_str),
+        size: row.get::<_, i64>("size")? as u64,
+        content_hash: row.get("content_hash")?,
+        error: row.get("error")?,
+        error_source: error_source_str
+            .parse::<BadFileSource>()
+            .unwrap_or(BadFileSource::Introspection),
+        attempt_count: row.get::<_, i64>("attempt_count")? as u32,
+        first_seen_at: DateTime::parse_from_rfc3339(&first_seen_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_default(),
+        last_seen_at: DateTime::parse_from_rfc3339(&last_seen_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_default(),
+    })
 }
 
 /// Extension trait for `rusqlite::Result<T>` to convert to `Option<T>`.
@@ -1909,6 +2087,154 @@ mod tests {
     }
 
     // --- prune LIKE escaping ---
+
+    // --- Bad files ---
+
+    fn sample_bad_file() -> BadFile {
+        BadFile::new(
+            PathBuf::from("/media/movies/corrupt.mkv"),
+            1024,
+            Some("hash123".into()),
+            "ffprobe returned exit code 1".into(),
+            BadFileSource::Introspection,
+        )
+    }
+
+    #[test]
+    fn test_upsert_and_get_bad_file() {
+        let store = test_store();
+        let bf = sample_bad_file();
+        store.upsert_bad_file(&bf).unwrap();
+
+        let loaded = store
+            .get_bad_file_by_path(Path::new("/media/movies/corrupt.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.path, bf.path);
+        assert_eq!(loaded.error, bf.error);
+        assert_eq!(loaded.error_source, BadFileSource::Introspection);
+        assert_eq!(loaded.attempt_count, 1);
+    }
+
+    #[test]
+    fn test_upsert_bad_file_increments_attempt_count() {
+        let store = test_store();
+        let bf = sample_bad_file();
+        store.upsert_bad_file(&bf).unwrap();
+
+        // Upsert again with different error
+        let bf2 = BadFile::new(
+            PathBuf::from("/media/movies/corrupt.mkv"),
+            1024,
+            Some("hash123".into()),
+            "new error message".into(),
+            BadFileSource::Introspection,
+        );
+        store.upsert_bad_file(&bf2).unwrap();
+
+        let loaded = store
+            .get_bad_file_by_path(Path::new("/media/movies/corrupt.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.attempt_count, 2);
+        assert_eq!(loaded.error, "new error message");
+    }
+
+    #[test]
+    fn test_get_bad_file_by_path_not_found() {
+        let store = test_store();
+        let result = store
+            .get_bad_file_by_path(Path::new("/nonexistent.mkv"))
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_list_bad_files_no_filter() {
+        let store = test_store();
+        let bf = sample_bad_file();
+        store.upsert_bad_file(&bf).unwrap();
+
+        let files = store.list_bad_files(&BadFileFilters::default()).unwrap();
+        assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    fn test_list_bad_files_with_path_prefix() {
+        let store = test_store();
+        let bf1 = sample_bad_file();
+        store.upsert_bad_file(&bf1).unwrap();
+
+        let bf2 = BadFile::new(
+            PathBuf::from("/other/bad.avi"),
+            512,
+            None,
+            "io error".into(),
+            BadFileSource::Io,
+        );
+        store.upsert_bad_file(&bf2).unwrap();
+
+        let filters = BadFileFilters {
+            path_prefix: Some("/media".into()),
+            ..Default::default()
+        };
+        let files = store.list_bad_files(&filters).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, PathBuf::from("/media/movies/corrupt.mkv"));
+    }
+
+    #[test]
+    fn test_list_bad_files_with_error_source_filter() {
+        let store = test_store();
+        let bf1 = sample_bad_file();
+        store.upsert_bad_file(&bf1).unwrap();
+
+        let bf2 = BadFile::new(
+            PathBuf::from("/media/io_error.mkv"),
+            512,
+            None,
+            "io error".into(),
+            BadFileSource::Io,
+        );
+        store.upsert_bad_file(&bf2).unwrap();
+
+        let filters = BadFileFilters {
+            error_source: Some(BadFileSource::Io),
+            ..Default::default()
+        };
+        let files = store.list_bad_files(&filters).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].error_source, BadFileSource::Io);
+    }
+
+    #[test]
+    fn test_count_bad_files() {
+        let store = test_store();
+        assert_eq!(store.count_bad_files().unwrap(), 0);
+
+        store.upsert_bad_file(&sample_bad_file()).unwrap();
+        assert_eq!(store.count_bad_files().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_delete_bad_file() {
+        let store = test_store();
+        let bf = sample_bad_file();
+        store.upsert_bad_file(&bf).unwrap();
+
+        store.delete_bad_file(&bf.id).unwrap();
+        assert!(store.get_bad_file_by_path(&bf.path).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_delete_bad_file_by_path() {
+        let store = test_store();
+        let bf = sample_bad_file();
+        store.upsert_bad_file(&bf).unwrap();
+
+        store.delete_bad_file_by_path(&bf.path).unwrap();
+        assert!(store.get_bad_file_by_path(&bf.path).unwrap().is_none());
+    }
 
     #[test]
     fn test_prune_like_escaping() {

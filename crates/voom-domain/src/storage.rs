@@ -2,11 +2,21 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
+use crate::bad_file::{BadFile, BadFileSource};
 use crate::errors::Result;
 use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::MediaFile;
 use crate::plan::Plan;
 use crate::stats::ProcessingStats;
+
+/// Filters for querying bad files from storage.
+#[derive(Debug, Clone, Default)]
+pub struct BadFileFilters {
+    pub path_prefix: Option<String>,
+    pub error_source: Option<BadFileSource>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
 
 /// Filters for querying files from storage.
 #[derive(Debug, Clone, Default)]
@@ -61,6 +71,14 @@ pub trait StorageTrait: Send + Sync {
     // Plugin data (key-value)
     fn get_plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>>;
     fn set_plugin_data(&self, plugin: &str, key: &str, value: &[u8]) -> Result<()>;
+
+    // Bad files
+    fn upsert_bad_file(&self, bad_file: &BadFile) -> Result<()>;
+    fn get_bad_file_by_path(&self, path: &Path) -> Result<Option<BadFile>>;
+    fn list_bad_files(&self, filters: &BadFileFilters) -> Result<Vec<BadFile>>;
+    fn count_bad_files(&self) -> Result<u64>;
+    fn delete_bad_file(&self, id: &Uuid) -> Result<()>;
+    fn delete_bad_file_by_path(&self, path: &Path) -> Result<()>;
 
     // Maintenance
     fn vacuum(&self) -> Result<()>;

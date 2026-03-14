@@ -9,8 +9,10 @@ use tokio_util::sync::CancellationToken;
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::output::{max_filename_len, shrink_filename};
+use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{
-    Event, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
+    Event, FileIntrospectionFailedEvent, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent,
+    PlanFailedEvent,
 };
 use voom_domain::storage::StorageTrait;
 use voom_job_manager::progress::ProgressReporter;
@@ -52,9 +54,36 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     }
 
     // Discover files
-    let events = discover_files(&path, &args, &kernel)?;
+    let mut events = discover_files(&path, &args, &kernel)?;
     if events.is_empty() {
         println!("{}", "No media files found.".yellow());
+        return Ok(());
+    }
+
+    // Filter out known-bad files unless --force-rescan is set
+    if !args.force_rescan {
+        let store = app::open_store(&config)?;
+        let bad_files = store
+            .list_bad_files(&voom_domain::storage::BadFileFilters::default())
+            .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
+        if !bad_files.is_empty() {
+            let bad_paths: std::collections::HashSet<_> =
+                bad_files.iter().map(|bf| &bf.path).collect();
+            let before = events.len();
+            events.retain(|e| !bad_paths.contains(&e.path));
+            let skipped = before - events.len();
+            if skipped > 0 {
+                println!(
+                    "Skipping {} known-bad files (use {} to re-attempt).",
+                    skipped.to_string().yellow(),
+                    "--force-rescan".bold()
+                );
+            }
+        }
+    }
+
+    if events.is_empty() {
+        println!("{}", "No processable files found.".yellow());
         return Ok(());
     }
 
@@ -260,23 +289,51 @@ async fn introspect_file(
     kernel: &voom_kernel::Kernel,
 ) -> std::result::Result<voom_domain::media::MediaFile, String> {
     let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
+    let path_for_event = path.clone();
+    let hash_for_event = content_hash.clone();
     let path_display = path.display().to_string();
     let intro_result = tokio::task::spawn_blocking(move || {
         introspector.introspect(&path, file_size, &content_hash)
     })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
-    .map_err(|e| format!("introspection failed for {path_display}: {e}"))?;
+    .await;
 
-    let file = intro_result.file.clone();
-
-    kernel.dispatch(Event::FileIntrospected(
-        voom_domain::events::FileIntrospectedEvent {
-            file: intro_result.file,
-        },
-    ));
-
-    Ok(file)
+    match intro_result {
+        Ok(Ok(intro_event)) => {
+            let file = intro_event.file.clone();
+            kernel.dispatch(Event::FileIntrospected(
+                voom_domain::events::FileIntrospectedEvent {
+                    file: intro_event.file,
+                },
+            ));
+            Ok(file)
+        }
+        Ok(Err(e)) => {
+            let error_msg = format!("introspection failed for {path_display}: {e}");
+            kernel.dispatch(Event::FileIntrospectionFailed(
+                FileIntrospectionFailedEvent {
+                    path: path_for_event,
+                    size: file_size,
+                    content_hash: Some(hash_for_event),
+                    error: e.to_string(),
+                    error_source: BadFileSource::Introspection,
+                },
+            ));
+            Err(error_msg)
+        }
+        Err(e) => {
+            let error_msg = format!("task join error: {e}");
+            kernel.dispatch(Event::FileIntrospectionFailed(
+                FileIntrospectionFailedEvent {
+                    path: path_for_event,
+                    size: file_size,
+                    content_hash: Some(hash_for_event),
+                    error: error_msg.clone(),
+                    error_source: BadFileSource::Introspection,
+                },
+            ));
+            Err(error_msg)
+        }
+    }
 }
 
 /// Run the phase orchestrator to produce plans.

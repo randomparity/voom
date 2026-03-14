@@ -6,7 +6,8 @@ use anyhow::{Context, Result};
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 use tokio_util::sync::CancellationToken;
-use voom_domain::events::Event;
+use voom_domain::bad_file::BadFileSource;
+use voom_domain::events::{Event, FileIntrospectionFailedEvent};
 use voom_domain::storage::StorageTrait;
 
 use crate::app;
@@ -212,10 +213,28 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
             }
             Ok(Err(e)) => {
                 tracing::warn!(path = %event.path.display(), error = %e, "introspection failed");
+                kernel.dispatch(Event::FileIntrospectionFailed(
+                    FileIntrospectionFailedEvent {
+                        path: event.path.clone(),
+                        size: event.size,
+                        content_hash: Some(event.content_hash.clone()),
+                        error: e.to_string(),
+                        error_source: BadFileSource::Introspection,
+                    },
+                ));
                 errors += 1;
             }
             Err(e) => {
                 tracing::warn!(path = %event.path.display(), error = %e, "introspection task panicked");
+                kernel.dispatch(Event::FileIntrospectionFailed(
+                    FileIntrospectionFailedEvent {
+                        path: event.path.clone(),
+                        size: event.size,
+                        content_hash: Some(event.content_hash.clone()),
+                        error: format!("task panicked: {e}"),
+                        error_source: BadFileSource::Introspection,
+                    },
+                ));
                 errors += 1;
             }
         }

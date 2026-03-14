@@ -154,6 +154,30 @@ mod tests {
         fn set_plugin_data(&self, _: &str, _: &str, _: &[u8]) -> VoomResult<()> {
             Ok(())
         }
+        fn upsert_bad_file(&self, _: &voom_domain::bad_file::BadFile) -> VoomResult<()> {
+            Ok(())
+        }
+        fn get_bad_file_by_path(
+            &self,
+            _: &Path,
+        ) -> VoomResult<Option<voom_domain::bad_file::BadFile>> {
+            Ok(None)
+        }
+        fn list_bad_files(
+            &self,
+            _: &voom_domain::storage::BadFileFilters,
+        ) -> VoomResult<Vec<voom_domain::bad_file::BadFile>> {
+            Ok(vec![])
+        }
+        fn count_bad_files(&self) -> VoomResult<u64> {
+            Ok(0)
+        }
+        fn delete_bad_file(&self, _: &uuid::Uuid) -> VoomResult<()> {
+            Ok(())
+        }
+        fn delete_bad_file_by_path(&self, _: &Path) -> VoomResult<()> {
+            Ok(())
+        }
         fn vacuum(&self) -> VoomResult<()> {
             Ok(())
         }

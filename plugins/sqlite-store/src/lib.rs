@@ -60,6 +60,7 @@ impl Plugin for SqliteStorePlugin {
         matches!(
             event_type,
             "file.introspected"
+                | "file.introspection_failed"
                 | "plan.created"
                 | "plan.completed"
                 | "plan.failed"
@@ -77,7 +78,20 @@ impl Plugin for SqliteStorePlugin {
         match event {
             Event::FileIntrospected(e) => {
                 store.upsert_file(&e.file)?;
+                // Auto-clear any bad file entry when introspection succeeds
+                store.delete_bad_file_by_path(&e.file.path)?;
                 tracing::info!(path = %e.file.path.display(), "stored introspected file");
+            }
+            Event::FileIntrospectionFailed(e) => {
+                let bad_file = voom_domain::bad_file::BadFile::new(
+                    e.path.clone(),
+                    e.size,
+                    e.content_hash.clone(),
+                    e.error.clone(),
+                    e.error_source,
+                );
+                store.upsert_bad_file(&bad_file)?;
+                tracing::info!(path = %e.path.display(), error = %e.error, "stored bad file");
             }
             Event::PlanCreated(e) => {
                 let plan_id = store.save_plan(&e.plan)?;
@@ -197,6 +211,7 @@ mod tests {
     fn handles_expected_event_types() {
         let plugin = SqliteStorePlugin::new();
         assert!(plugin.handles("file.introspected"));
+        assert!(plugin.handles("file.introspection_failed"));
         assert!(plugin.handles("plan.created"));
         assert!(plugin.handles("plan.completed"));
         assert!(plugin.handles("plan.failed"));
@@ -255,6 +270,73 @@ mod tests {
     fn shutdown_succeeds() {
         let plugin = SqliteStorePlugin::new();
         assert!(plugin.shutdown().is_ok());
+    }
+
+    #[test]
+    fn on_event_handles_introspection_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut plugin = SqliteStorePlugin::new();
+        let ctx = PluginContext {
+            config: serde_json::Value::Null,
+            data_dir: tmp.path().to_path_buf(),
+        };
+        plugin.init(&ctx).unwrap();
+
+        let event =
+            Event::FileIntrospectionFailed(voom_domain::events::FileIntrospectionFailedEvent {
+                path: "/media/corrupt.mkv".into(),
+                size: 2048,
+                content_hash: Some("abc123".into()),
+                error: "ffprobe failed".into(),
+                error_source: voom_domain::bad_file::BadFileSource::Introspection,
+            });
+        plugin.on_event(&event).unwrap();
+
+        // Verify bad file was stored
+        let store = plugin.store().unwrap();
+        use voom_domain::storage::StorageTrait;
+        let bf = store
+            .get_bad_file_by_path(std::path::Path::new("/media/corrupt.mkv"))
+            .unwrap();
+        assert!(bf.is_some());
+        assert_eq!(bf.unwrap().error, "ffprobe failed");
+    }
+
+    #[test]
+    fn on_event_introspected_clears_bad_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut plugin = SqliteStorePlugin::new();
+        let ctx = PluginContext {
+            config: serde_json::Value::Null,
+            data_dir: tmp.path().to_path_buf(),
+        };
+        plugin.init(&ctx).unwrap();
+
+        // First mark file as bad
+        let fail_event =
+            Event::FileIntrospectionFailed(voom_domain::events::FileIntrospectionFailedEvent {
+                path: "/media/recovered.mkv".into(),
+                size: 2048,
+                content_hash: Some("abc123".into()),
+                error: "ffprobe failed".into(),
+                error_source: voom_domain::bad_file::BadFileSource::Introspection,
+            });
+        plugin.on_event(&fail_event).unwrap();
+
+        // Then successfully introspect it
+        let file =
+            voom_domain::media::MediaFile::new(std::path::PathBuf::from("/media/recovered.mkv"));
+        let success_event =
+            Event::FileIntrospected(voom_domain::events::FileIntrospectedEvent { file });
+        plugin.on_event(&success_event).unwrap();
+
+        // Bad file entry should be cleared
+        let store = plugin.store().unwrap();
+        use voom_domain::storage::StorageTrait;
+        let bf = store
+            .get_bad_file_by_path(std::path::Path::new("/media/recovered.mkv"))
+            .unwrap();
+        assert!(bf.is_none());
     }
 
     #[test]
