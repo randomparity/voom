@@ -443,6 +443,25 @@ fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut 
         OperationNode::Actions { target, .. } => {
             validate_track_target(target, line, col, errors);
         }
+        OperationNode::ClearTags => {}
+        OperationNode::SetTag { tag, .. } => {
+            if tag.is_empty() {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    "set_tag requires a non-empty tag name".to_string(),
+                ));
+            }
+        }
+        OperationNode::DeleteTag(tag) => {
+            if tag.is_empty() {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    "delete_tag requires a non-empty tag name".to_string(),
+                ));
+            }
+        }
     }
 }
 
@@ -803,5 +822,38 @@ mod tests {
             }
             _ => panic!("expected validation error"),
         }
+    }
+
+    #[test]
+    fn test_clear_tags_valid() {
+        let input = r#"policy "test" {
+            phase clean {
+                clear_tags
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_set_tag_valid() {
+        let input = r#"policy "test" {
+            phase clean {
+                set_tag "title" "My Movie"
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_delete_tag_valid() {
+        let input = r#"policy "test" {
+            phase clean {
+                delete_tag "encoder"
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
     }
 }

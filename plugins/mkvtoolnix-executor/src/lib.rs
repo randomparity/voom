@@ -58,6 +58,8 @@ const PROPEDIT_OPS: &[OperationType] = &[
     OperationType::SetTitle,
     OperationType::SetLanguage,
     OperationType::SetContainerTag,
+    OperationType::ClearContainerTags,
+    OperationType::DeleteContainerTag,
 ];
 
 /// Operations that require mkvmerge (structural changes, remux).
@@ -76,6 +78,8 @@ const SUPPORTED_OPS: &[OperationType] = &[
     OperationType::SetTitle,
     OperationType::SetLanguage,
     OperationType::SetContainerTag,
+    OperationType::ClearContainerTags,
+    OperationType::DeleteContainerTag,
     OperationType::RemoveTrack,
     OperationType::ReorderTracks,
     OperationType::ConvertContainer,

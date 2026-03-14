@@ -1,0 +1,16 @@
+policy "clean-convert" {
+  phase clean {
+    clear_tags
+    container mkv
+    set_tag "title" "My Movie"
+    delete_tag "encoder"
+  }
+
+  phase metadata {
+    depends_on: [clean]
+    set_tag "source" "voom"
+    when exists(audio where lang == jpn) {
+      set_tag "language" "Japanese"
+    }
+  }
+}

@@ -110,6 +110,27 @@ pub fn build_propedit_args(path: &Path, actions: &[&PlannedAction]) -> Result<Ve
                 args.push("--set".into());
                 args.push(format!("{}={}", tag, value));
             }
+            OperationType::ClearContainerTags => {
+                if let Some(tags) = action.parameters["tags"].as_array() {
+                    for tag_val in tags {
+                        if let Some(tag) = tag_val.as_str() {
+                            validate_metadata_value(tag)?;
+                            args.push("--edit".into());
+                            args.push("info".into());
+                            args.push("--delete".into());
+                            args.push(tag.to_string());
+                        }
+                    }
+                }
+            }
+            OperationType::DeleteContainerTag => {
+                let tag = action.parameters["tag"].as_str().unwrap_or("");
+                validate_metadata_value(tag)?;
+                args.push("--edit".into());
+                args.push("info".into());
+                args.push("--delete".into());
+                args.push(tag.to_string());
+            }
             _ => {
                 // Non-propedit operations are ignored here
                 tracing::warn!(
@@ -332,5 +353,45 @@ mod tests {
         let actions: Vec<&PlannedAction> = vec![&action];
         let result = build_propedit_args(Path::new("/media/movie.mkv"), &actions);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_propedit_args_clear_container_tags() {
+        let action = make_action(
+            OperationType::ClearContainerTags,
+            None,
+            serde_json::json!({"tags": ["title", "encoder"]}),
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "/media/movie.mkv",
+                "--edit",
+                "info",
+                "--delete",
+                "title",
+                "--edit",
+                "info",
+                "--delete",
+                "encoder",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_propedit_args_delete_container_tag() {
+        let action = make_action(
+            OperationType::DeleteContainerTag,
+            None,
+            serde_json::json!({"tag": "encoder"}),
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
+        assert_eq!(
+            args,
+            vec!["/media/movie.mkv", "--edit", "info", "--delete", "encoder",]
+        );
     }
 }

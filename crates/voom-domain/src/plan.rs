@@ -83,6 +83,8 @@ pub enum OperationType {
     TranscodeAudio,
     SynthesizeAudio,
     SetContainerTag,
+    ClearContainerTags,
+    DeleteContainerTag,
 }
 
 impl OperationType {
@@ -102,6 +104,8 @@ impl OperationType {
             OperationType::TranscodeAudio => "transcode_audio",
             OperationType::SynthesizeAudio => "synthesize_audio",
             OperationType::SetContainerTag => "set_container_tag",
+            OperationType::ClearContainerTags => "clear_container_tags",
+            OperationType::DeleteContainerTag => "delete_container_tag",
         }
     }
 }

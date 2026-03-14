@@ -97,6 +97,12 @@ pub enum OperationNode {
         name: String,
         settings: Vec<SynthSetting>,
     },
+    ClearTags,
+    SetTag {
+        tag: String,
+        value: ValueOrField,
+    },
+    DeleteTag(String),
     When(WhenNode),
     Rules {
         mode: String,

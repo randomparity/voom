@@ -41,6 +41,9 @@ impl FfmpegExecutorPlugin {
                     "clear_default".to_string(),
                     "set_title".to_string(),
                     "set_language".to_string(),
+                    "set_container_tag".to_string(),
+                    "clear_container_tags".to_string(),
+                    "delete_container_tag".to_string(),
                 ],
                 formats: vec![], // Supports all formats
             }],
@@ -205,6 +208,8 @@ fn is_metadata_op(action: &PlannedAction) -> bool {
             | OperationType::SetTitle
             | OperationType::SetLanguage
             | OperationType::SetContainerTag
+            | OperationType::ClearContainerTags
+            | OperationType::DeleteContainerTag
     )
 }
 
