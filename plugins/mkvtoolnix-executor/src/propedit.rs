@@ -114,6 +114,7 @@ pub fn build_propedit_args(path: &Path, actions: &[&PlannedAction]) -> Result<Ve
             OperationType::SetLanguage => {
                 if let Some(idx) = action.track_index {
                     let language = action.parameters["language"].as_str().unwrap_or("und");
+                    validate_metadata_value(language)?;
                     args.push("--edit".into());
                     args.push(format!("track:{}", idx + 1));
                     args.push("--set".into());
@@ -370,6 +371,18 @@ mod tests {
             OperationType::SetTitle,
             Some(0),
             serde_json::json!({"title": "Bad\x00Title"}),
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let result = build_propedit_args(Path::new("/media/movie.mkv"), &actions);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_propedit_args_rejects_control_chars_in_language() {
+        let action = make_action(
+            OperationType::SetLanguage,
+            Some(0),
+            serde_json::json!({"language": "en\x00g"}),
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let result = build_propedit_args(Path::new("/media/movie.mkv"), &actions);

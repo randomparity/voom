@@ -30,6 +30,7 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     let shutdown = async move { token.cancelled().await };
     start_server(server_config, store, shutdown).await?;
 
+    println!("Server stopped.");
     Ok(())
 }
 

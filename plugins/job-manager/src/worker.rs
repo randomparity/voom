@@ -135,8 +135,6 @@ impl WorkerPool {
             "Starting worker pool"
         );
 
-        reporter.on_batch_start(items.len());
-
         // Enqueue all items
         let mut job_ids = Vec::with_capacity(items.len());
         for (job_type, priority, payload) in items {
@@ -147,6 +145,8 @@ impl WorkerPool {
                 }
             }
         }
+
+        reporter.on_batch_start(job_ids.len());
 
         let (result_tx, mut result_rx) = mpsc::channel::<JobResult>(job_ids.len().max(1));
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
@@ -195,6 +195,7 @@ impl WorkerPool {
                         Ok(Ok(Some(job))) => job,
                         Ok(Ok(None)) => {
                             // Job was claimed by another worker — count as completed
+                            completed.fetch_add(1, Ordering::SeqCst);
                             let _ = result_tx
                                 .send(JobResult {
                                     job_id,

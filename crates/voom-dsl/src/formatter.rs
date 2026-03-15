@@ -346,11 +346,7 @@ fn format_track_query(query: &TrackQueryNode, out: &mut String) {
 fn format_filter(filter: &FilterNode, out: &mut String) {
     match filter {
         FilterNode::LangIn(langs) => {
-            if langs.len() == 1 {
-                out.push_str(&format!("lang == {}", langs[0]));
-            } else {
-                out.push_str(&format!("lang in [{}]", langs.join(", ")));
-            }
+            out.push_str(&format!("lang in [{}]", langs.join(", ")));
         }
         FilterNode::LangCompare(op, lang) => {
             out.push_str("lang ");
@@ -359,11 +355,7 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
             out.push_str(lang);
         }
         FilterNode::CodecIn(codecs) => {
-            if codecs.len() == 1 {
-                out.push_str(&format!("codec == {}", codecs[0]));
-            } else {
-                out.push_str(&format!("codec in [{}]", codecs.join(", ")));
-            }
+            out.push_str(&format!("codec in [{}]", codecs.join(", ")));
         }
         FilterNode::CodecCompare(op, codec) => {
             out.push_str("codec ");

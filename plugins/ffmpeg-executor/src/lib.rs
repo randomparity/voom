@@ -499,9 +499,9 @@ mod tests {
 
         let result = result.unwrap();
         assert_eq!(result.plugin_name, "ffmpeg-executor");
-        assert_eq!(result.produced_events.len(), 2);
-        assert_eq!(result.produced_events[0].event_type(), "plan.executing");
-        assert_eq!(result.produced_events[1].event_type(), "plan.completed");
+        // Lifecycle events are dispatched by the orchestrator, not produced by executors
+        assert!(result.produced_events.is_empty());
+        assert!(result.claimed);
     }
 
     #[test]

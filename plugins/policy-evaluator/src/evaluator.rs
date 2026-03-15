@@ -582,7 +582,8 @@ fn process_clear_tags(ctx: &mut PhaseContext) {
     if ctx.file.tags.is_empty() {
         return;
     }
-    let tag_keys: Vec<String> = ctx.file.tags.keys().cloned().collect();
+    let mut tag_keys: Vec<String> = ctx.file.tags.keys().cloned().collect();
+    tag_keys.sort();
     ctx.plan.actions.push(PlannedAction {
         operation: OperationType::ClearContainerTags,
         track_index: None,
@@ -615,6 +616,8 @@ fn process_delete_tag(tag: &str, ctx: &mut PhaseContext) {
             parameters: serde_json::json!({ "tag": tag }),
             description: format!("Delete container tag '{tag}'"),
         });
+    } else {
+        tracing::debug!(tag, "delete_tag: tag not present in file, skipping");
     }
 }
 

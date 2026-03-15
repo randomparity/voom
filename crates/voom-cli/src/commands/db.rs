@@ -69,8 +69,11 @@ async fn reset() -> Result<()> {
     );
     eprintln!("Type 'yes' to confirm:");
 
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
+    let input = tokio::task::spawn_blocking(|| {
+        let mut buf = String::new();
+        std::io::stdin().read_line(&mut buf).map(|_| buf)
+    })
+    .await??;
 
     if input.trim() != "yes" {
         println!("{}", "Aborted.".dimmed());
@@ -207,8 +210,11 @@ async fn clean_bad(yes: bool) -> Result<()> {
         );
         eprintln!("Type 'yes' to confirm:");
 
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
+        let input = tokio::task::spawn_blocking(|| {
+            let mut buf = String::new();
+            std::io::stdin().read_line(&mut buf).map(|_| buf)
+        })
+        .await??;
 
         if input.trim() != "yes" {
             println!("{}", "Aborted.".dimmed());
@@ -221,10 +227,11 @@ async fn clean_bad(yes: bool) -> Result<()> {
     let mut errors = 0u64;
 
     for bf in &bad_files {
-        if bf.path.exists() {
+        let should_delete_entry = if bf.path.exists() {
             match std::fs::remove_file(&bf.path) {
                 Ok(()) => {
                     deleted += 1;
+                    true
                 }
                 Err(e) => {
                     eprintln!(
@@ -233,14 +240,18 @@ async fn clean_bad(yes: bool) -> Result<()> {
                         bf.path.display()
                     );
                     errors += 1;
+                    false
                 }
             }
         } else {
             missing += 1;
+            true
+        };
+        if should_delete_entry {
+            store
+                .delete_bad_file(&bf.id)
+                .map_err(|e| anyhow::anyhow!("failed to delete bad file entry: {e}"))?;
         }
-        store
-            .delete_bad_file(&bf.id)
-            .map_err(|e| anyhow::anyhow!("failed to delete bad file entry: {e}"))?;
     }
 
     println!(

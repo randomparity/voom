@@ -4,6 +4,10 @@ use uuid::Uuid;
 
 use crate::media::MediaFile;
 
+fn epoch() -> DateTime<Utc> {
+    DateTime::UNIX_EPOCH
+}
+
 /// A plan produced by the policy evaluator for a single file in a single phase.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
@@ -17,7 +21,7 @@ pub struct Plan {
     pub skip_reason: Option<String>,
     #[serde(default)]
     pub policy_hash: Option<String>,
-    #[serde(default = "Utc::now")]
+    #[serde(default = "epoch")]
     pub evaluated_at: DateTime<Utc>,
 }
 

@@ -109,13 +109,15 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let compiled = Arc::new(compiled);
     let dry_run = args.dry_run;
 
+    let token_for_workers = token.clone();
     let _results = pool
         .process_batch(
             items,
             move |job| {
                 let compiled = compiled.clone();
                 let kernel = kernel.clone();
-                async move { process_single_file(job, &compiled, &kernel, dry_run).await }
+                let token = token_for_workers.clone();
+                async move { process_single_file(job, &compiled, &kernel, dry_run, &token).await }
             },
             on_error,
             reporter.clone(),
@@ -236,6 +238,7 @@ async fn process_single_file(
     compiled: &voom_dsl::CompiledPolicy,
     kernel: &voom_kernel::Kernel,
     dry_run: bool,
+    token: &CancellationToken,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let payload = job.payload.as_ref().ok_or("missing payload")?;
     let file_path = payload["path"].as_str().ok_or("missing path in payload")?;
@@ -277,6 +280,7 @@ async fn process_single_file(
             kernel,
             &file_path_str,
             needs_exec,
+            token,
         )
     }
 }
@@ -359,6 +363,7 @@ fn execute_plans(
     kernel: &voom_kernel::Kernel,
     file_path_str: &str,
     needs_exec: bool,
+    token: &CancellationToken,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     // Verify file hasn't changed since introspection (TOCTOU guard)
     let exec_path = std::path::PathBuf::from(file_path);
@@ -391,6 +396,10 @@ fn execute_plans(
     for plan in &result.plans {
         if plan.is_skipped() || plan.is_empty() {
             continue;
+        }
+
+        if token.is_cancelled() {
+            break;
         }
 
         // Dispatch PlanExecuting first so backup-manager backs up the file

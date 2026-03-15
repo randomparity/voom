@@ -108,6 +108,13 @@ fn parse_uuid(s: &str) -> Result<Uuid> {
     Uuid::parse_str(s).map_err(|e| VoomError::Storage(format!("invalid UUID '{s}': {e}")))
 }
 
+/// Escape LIKE wildcard characters so user-supplied strings match literally.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 fn parse_datetime(s: &str) -> Result<DateTime<Utc>> {
     s.parse::<DateTime<Utc>>()
         .map_err(|e| VoomError::Storage(format!("invalid datetime '{s}': {e}")))
@@ -216,10 +223,17 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
     let payload_str: Option<String> = row.get("payload")?;
     let output_str: Option<String> = row.get("output")?;
 
+    let id_str: String = row.get("id")?;
     Ok(Job {
-        id: Uuid::parse_str(&row.get::<_, String>("id")?).unwrap_or_default(),
+        id: Uuid::parse_str(&id_str).unwrap_or_else(|e| {
+            tracing::warn!(id = %id_str, error = %e, "corrupt UUID in jobs table");
+            Uuid::default()
+        }),
         job_type: row.get("job_type")?,
-        status: JobStatus::parse(&status_str).unwrap_or(JobStatus::Pending),
+        status: JobStatus::parse(&status_str).unwrap_or_else(|| {
+            tracing::warn!(status = %status_str, "unknown job status in jobs table");
+            JobStatus::Pending
+        }),
         priority: row.get("priority")?,
         payload: payload_str.and_then(|s| serde_json::from_str(&s).ok()),
         progress: row.get("progress")?,
@@ -227,7 +241,10 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
         output: output_str.and_then(|s| serde_json::from_str(&s).ok()),
         error: row.get("error")?,
         worker_id: row.get("worker_id")?,
-        created_at: created_str.parse().unwrap_or_else(|_| Utc::now()),
+        created_at: created_str.parse().unwrap_or_else(|e| {
+            tracing::warn!(created_at = %created_str, error = %e, "corrupt datetime in jobs table");
+            Utc::now()
+        }),
         started_at: started_str.and_then(|s| s.parse().ok()),
         completed_at: completed_str.and_then(|s| s.parse().ok()),
     })
@@ -422,8 +439,11 @@ impl StorageTrait for SqliteStore {
             sql.push_str(&format!(" AND container = ?{}", param_values.len()));
         }
         if let Some(ref prefix) = filters.path_prefix {
-            param_values.push(format!("{prefix}%"));
-            sql.push_str(&format!(" AND path LIKE ?{}", param_values.len()));
+            param_values.push(format!("{}%", escape_like(prefix)));
+            sql.push_str(&format!(
+                " AND path LIKE ?{} ESCAPE '\\'",
+                param_values.len()
+            ));
         }
 
         sql.push_str(" ORDER BY path");
@@ -501,8 +521,11 @@ impl StorageTrait for SqliteStore {
             sql.push_str(&format!(" AND container = ?{}", param_values.len()));
         }
         if let Some(ref prefix) = filters.path_prefix {
-            param_values.push(format!("{prefix}%"));
-            sql.push_str(&format!(" AND path LIKE ?{}", param_values.len()));
+            param_values.push(format!("{}%", escape_like(prefix)));
+            sql.push_str(&format!(
+                " AND path LIKE ?{} ESCAPE '\\'",
+                param_values.len()
+            ));
         }
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
@@ -895,6 +918,11 @@ impl StorageTrait for SqliteStore {
         Ok(())
     }
 
+    /// Insert or update a bad file record.
+    ///
+    /// On conflict (same path), the existing row's `id` is preserved; the
+    /// caller's `bad_file.id` is used only for the initial insert. The
+    /// `attempt_count` is incremented on each subsequent upsert.
     fn upsert_bad_file(&self, bad_file: &BadFile) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
@@ -944,8 +972,11 @@ impl StorageTrait for SqliteStore {
         let mut param_values: Vec<String> = Vec::new();
 
         if let Some(ref prefix) = filters.path_prefix {
-            param_values.push(format!("{prefix}%"));
-            sql.push_str(&format!(" AND path LIKE ?{}", param_values.len()));
+            param_values.push(format!("{}%", escape_like(prefix)));
+            sql.push_str(&format!(
+                " AND path LIKE ?{} ESCAPE '\\'",
+                param_values.len()
+            ));
         }
         if let Some(ref source) = filters.error_source {
             param_values.push(source.to_string());
@@ -1018,12 +1049,7 @@ impl StorageTrait for SqliteStore {
     }
 
     fn prune_missing_files_under(&self, root: &Path) -> Result<u64> {
-        // Escape LIKE wildcards in the root path to prevent injection
-        let root_str = root
-            .to_string_lossy()
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
+        let root_str = escape_like(&root.to_string_lossy());
 
         // Also prune bad_files whose paths no longer exist under root
         {
@@ -1245,21 +1271,31 @@ fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
     let last_seen_str: String = row.get("last_seen_at")?;
 
     Ok(BadFile {
-        id: Uuid::parse_str(&id_str).unwrap_or_default(),
+        id: Uuid::parse_str(&id_str).unwrap_or_else(|e| {
+            tracing::warn!(id = %id_str, error = %e, "corrupt UUID in bad_files table");
+            Uuid::default()
+        }),
         path: PathBuf::from(path_str),
         size: row.get::<_, i64>("size")? as u64,
         content_hash: row.get("content_hash")?,
         error: row.get("error")?,
-        error_source: error_source_str
-            .parse::<BadFileSource>()
-            .unwrap_or(BadFileSource::Introspection),
+        error_source: error_source_str.parse::<BadFileSource>().unwrap_or_else(|_| {
+            tracing::warn!(error_source = %error_source_str, "unknown error_source in bad_files table");
+            BadFileSource::Introspection
+        }),
         attempt_count: row.get::<_, i64>("attempt_count")? as u32,
         first_seen_at: DateTime::parse_from_rfc3339(&first_seen_str)
             .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_default(),
+            .unwrap_or_else(|e| {
+                tracing::warn!(first_seen_at = %first_seen_str, error = %e, "corrupt datetime in bad_files table");
+                DateTime::default()
+            }),
         last_seen_at: DateTime::parse_from_rfc3339(&last_seen_str)
             .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_default(),
+            .unwrap_or_else(|e| {
+                tracing::warn!(last_seen_at = %last_seen_str, error = %e, "corrupt datetime in bad_files table");
+                DateTime::default()
+            }),
     })
 }
 
@@ -2227,6 +2263,32 @@ mod tests {
     }
 
     #[test]
+    fn test_upsert_bad_file_preserves_original_id() {
+        let store = test_store();
+        let bf1 = sample_bad_file();
+        let original_id = bf1.id;
+        store.upsert_bad_file(&bf1).unwrap();
+
+        // Upsert same path with a different UUID
+        let bf2 = BadFile::new(
+            PathBuf::from("/media/movies/corrupt.mkv"),
+            1024,
+            Some("hash123".into()),
+            "different error".into(),
+            BadFileSource::Introspection,
+        );
+        assert_ne!(bf2.id, original_id);
+        store.upsert_bad_file(&bf2).unwrap();
+
+        // The original ID should be preserved
+        let loaded = store
+            .get_bad_file_by_path(Path::new("/media/movies/corrupt.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.id, original_id);
+    }
+
+    #[test]
     fn test_delete_bad_file_by_path() {
         let store = test_store();
         let bf = sample_bad_file();
@@ -2234,6 +2296,73 @@ mod tests {
 
         store.delete_bad_file_by_path(&bf.path).unwrap();
         assert!(store.get_bad_file_by_path(&bf.path).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_list_files_like_escaping() {
+        let store = test_store();
+
+        // Insert files with LIKE wildcard characters in path
+        let mut file1 = MediaFile::new(PathBuf::from("/media/50%_done/video.mkv"));
+        file1.content_hash = "h1".into();
+        store.upsert_file(&file1).unwrap();
+
+        let mut file2 = MediaFile::new(PathBuf::from("/media/50X_done/other.mkv"));
+        file2.content_hash = "h2".into();
+        store.upsert_file(&file2).unwrap();
+
+        let mut file3 = MediaFile::new(PathBuf::from("/media/my_dir/video.mkv"));
+        file3.content_hash = "h3".into();
+        store.upsert_file(&file3).unwrap();
+
+        // path_prefix with % in it should only match literal %
+        let filters = FileFilters {
+            path_prefix: Some("/media/50%".into()),
+            ..Default::default()
+        };
+        let files = store.list_files(&filters).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, PathBuf::from("/media/50%_done/video.mkv"));
+
+        // path_prefix with _ should only match literal _
+        let filters = FileFilters {
+            path_prefix: Some("/media/my_".into()),
+            ..Default::default()
+        };
+        let files = store.list_files(&filters).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, PathBuf::from("/media/my_dir/video.mkv"));
+    }
+
+    #[test]
+    fn test_list_bad_files_like_escaping() {
+        let store = test_store();
+
+        let bf1 = BadFile::new(
+            PathBuf::from("/media/50%_done/corrupt.mkv"),
+            1024,
+            None,
+            "error".into(),
+            BadFileSource::Introspection,
+        );
+        store.upsert_bad_file(&bf1).unwrap();
+
+        let bf2 = BadFile::new(
+            PathBuf::from("/media/50X_done/other.mkv"),
+            512,
+            None,
+            "error".into(),
+            BadFileSource::Introspection,
+        );
+        store.upsert_bad_file(&bf2).unwrap();
+
+        let filters = BadFileFilters {
+            path_prefix: Some("/media/50%".into()),
+            ..Default::default()
+        };
+        let files = store.list_bad_files(&filters).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, PathBuf::from("/media/50%_done/corrupt.mkv"));
     }
 
     #[test]

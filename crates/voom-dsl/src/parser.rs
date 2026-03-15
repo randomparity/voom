@@ -249,12 +249,7 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
                 let op_span = span_from_pair(&child);
                 let mut tag_inner = child.into_inner();
                 let tag = parse_string_value(&tag_inner.next().unwrap());
-                let val_pair = tag_inner.next().unwrap();
-                let val = if val_pair.as_rule() == Rule::field_access {
-                    ValueOrField::Field(build_field_access(&val_pair))
-                } else {
-                    ValueOrField::Value(build_value(val_pair))
-                };
+                let val = parse_set_tag_value(tag_inner.next().unwrap());
                 operations.push(SpannedOperation {
                     span: op_span,
                     node: OperationNode::SetTag { tag, value: val },
@@ -798,12 +793,7 @@ fn build_action(pair: Pair<'_, Rule>) -> Result<ActionNode> {
     }
     if text.starts_with("set_tag") {
         let tag = parse_string_value(&inner.next().unwrap());
-        let val_pair = inner.next().unwrap();
-        let val = if val_pair.as_rule() == Rule::field_access {
-            ValueOrField::Field(build_field_access(&val_pair))
-        } else {
-            ValueOrField::Value(build_value(val_pair))
-        };
+        let val = parse_set_tag_value(inner.next().unwrap());
         return Ok(ActionNode::SetTag(tag, val));
     }
 
@@ -824,6 +814,15 @@ fn build_track_ref(pair: Pair<'_, Rule>) -> Result<TrackRefNode> {
         None
     };
     Ok(TrackRefNode { target, filter })
+}
+
+/// Parse a `set_tag` value: either a field access or a literal value.
+fn parse_set_tag_value(val_pair: Pair<'_, Rule>) -> ValueOrField {
+    if val_pair.as_rule() == Rule::field_access {
+        ValueOrField::Field(build_field_access(&val_pair))
+    } else {
+        ValueOrField::Value(build_value(val_pair))
+    }
 }
 
 fn build_field_access(pair: &Pair<'_, Rule>) -> Vec<String> {

@@ -66,58 +66,38 @@ pub struct EventResult {
 }
 
 impl EventResult {
-    /// Build the standard pair of lifecycle events that executor plugins emit
-    /// when a plan execution succeeds: `PlanExecuting` + `PlanCompleted`.
+    /// Build a result for executor plugins when a plan execution succeeds.
+    ///
+    /// Lifecycle events (`PlanExecuting`, `PlanCompleted`) are dispatched by the
+    /// orchestrator in `process.rs`, not produced by executors, to avoid
+    /// duplicate dispatches.
     pub fn plan_succeeded(
         plugin_name: impl Into<String>,
-        plan: &crate::plan::Plan,
-        actions_applied: usize,
+        _plan: &crate::plan::Plan,
+        _actions_applied: usize,
         data: Option<serde_json::Value>,
     ) -> Self {
-        let executing = Event::PlanExecuting(PlanExecutingEvent {
-            path: plan.file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            action_count: plan.actions.len(),
-        });
-        let completed = Event::PlanCompleted(PlanCompletedEvent {
-            plan_id: plan.id,
-            path: plan.file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            actions_applied,
-        });
         Self {
             plugin_name: plugin_name.into(),
-            produced_events: vec![executing, completed],
+            produced_events: vec![],
             data,
             claimed: true,
         }
     }
 
-    /// Build the standard pair of lifecycle events that executor plugins emit
-    /// when a plan execution fails: `PlanExecuting` + `PlanFailed`.
+    /// Build a result for executor plugins when a plan execution fails.
+    ///
+    /// Lifecycle events (`PlanExecuting`, `PlanFailed`) are dispatched by the
+    /// orchestrator in `process.rs`, not produced by executors, to avoid
+    /// duplicate dispatches.
     pub fn plan_failed(
         plugin_name: impl Into<String>,
-        plan: &crate::plan::Plan,
-        error: String,
+        _plan: &crate::plan::Plan,
+        _error: String,
     ) -> Self {
-        let name: String = plugin_name.into();
-        let executing = Event::PlanExecuting(PlanExecutingEvent {
-            path: plan.file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            action_count: plan.actions.len(),
-        });
-        let failed = Event::PlanFailed(PlanFailedEvent {
-            plan_id: plan.id,
-            path: plan.file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            error,
-            error_code: None,
-            plugin_name: Some(name.clone()),
-            error_chain: Vec::new(),
-        });
         Self {
-            plugin_name: name,
-            produced_events: vec![executing, failed],
+            plugin_name: plugin_name.into(),
+            produced_events: vec![],
             data: None,
             claimed: true,
         }
