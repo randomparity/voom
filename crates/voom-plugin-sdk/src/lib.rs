@@ -23,11 +23,22 @@
 //!
 //! struct MyPlugin;
 //!
+//! // PluginInfo here is the WIT-generated record (plain struct), not the SDK builder.
 //! impl Guest for MyPlugin {
 //!     fn get_info() -> PluginInfo {
-//!         PluginInfo::new("my-plugin", "0.1.0")
-//!             .capability("enrich_metadata:my-plugin")
-//!             .handles("file.introspected")
+//!         PluginInfo {
+//!             name: "my-plugin".to_string(),
+//!             version: "0.1.0".to_string(),
+//!             capabilities: vec![
+//!                 Capability::EnrichMetadata(EnrichCap {
+//!                     source: "my-plugin".to_string(),
+//!                 }),
+//!             ],
+//!         }
+//!     }
+//!
+//!     fn handles(event_type: String) -> bool {
+//!         event_type == "file.introspected"
 //!     }
 //!
 //!     fn on_event(event: EventData) -> Option<EventResult> {
@@ -58,4 +69,8 @@ pub use voom_domain;
 pub use event::{
     deserialize_event, deserialize_json, load_plugin_config, serialize_event, serialize_json,
 };
+
+/// `PluginInfoData` mirrors the WIT `plugin-info` record (name, version, capabilities).
+/// For the builder pattern in non-WIT contexts, use `types::PluginInfo` directly.
+/// The builder is not re-exported here to avoid collision with WIT-generated `PluginInfo`.
 pub use types::{OnEventResult, PluginInfoData};
