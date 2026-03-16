@@ -62,6 +62,7 @@ mod tests {
             data_dir: std::path::PathBuf::from("/tmp"),
             plugins: crate::app::PluginsConfig::default(),
             auth_token: Some("secret".to_string()),
+            plugin: std::collections::HashMap::new(),
         };
         let server_config = ServerConfig {
             host: "0.0.0.0".to_string(),

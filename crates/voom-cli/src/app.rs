@@ -1,5 +1,6 @@
 //! Application bootstrap: config loading, plugin initialization, kernel wiring.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -17,6 +18,11 @@ pub struct AppConfig {
     /// Optional Bearer token for authenticating API and SSE requests.
     #[serde(default)]
     pub auth_token: Option<String>,
+    /// Per-plugin configuration sections. Each key is a plugin name,
+    /// and the value is an arbitrary TOML table passed to the plugin at init.
+    /// Example: `[plugin.ffprobe-introspector]` with `ffprobe_path = "/usr/local/bin/ffprobe"`.
+    #[serde(default)]
+    pub plugin: HashMap<String, toml::Table>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -33,6 +39,7 @@ impl Default for AppConfig {
             data_dir: default_data_dir(),
             plugins: PluginsConfig::default(),
             auth_token: None,
+            plugin: HashMap::new(),
         }
     }
 }
@@ -54,8 +61,27 @@ pub fn config_path() -> PathBuf {
 }
 
 /// Load config from the default path, or return defaults if not found.
+///
+/// On Unix, warns if the config file is group- or world-readable, since it
+/// may contain API keys or tokens.
 pub fn load_config() -> Result<AppConfig> {
     let path = config_path();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            let mode = meta.permissions().mode();
+            if mode & 0o077 != 0 {
+                tracing::warn!(
+                    path = %path.display(),
+                    "config file has loose permissions ({:o}); it may contain API keys — consider: chmod 600 {}",
+                    mode & 0o777, path.display()
+                );
+            }
+        }
+    }
+
     match std::fs::read_to_string(&path) {
         Ok(contents) => toml::from_str(&contents)
             .with_context(|| format!("Failed to parse config from {}", path.display())),
@@ -109,11 +135,27 @@ pub fn default_config_contents() -> String {
 #   policy-evaluator, phase-orchestrator, mkvtoolnix-executor, ffmpeg-executor,
 #   backup-manager, job-manager, web-server
 # disabled_plugins = ["web-server"]
+
+# Per-plugin configuration. Use [plugin.<name>] sections to pass
+# settings to specific plugins. The section name must match the plugin name.
+#
+# [plugin.ffprobe-introspector]
+# ffprobe_path = "/usr/local/bin/ffprobe"
+#
+# [plugin.tvdb-metadata]
+# api_key = "your-tvdb-api-key"
+#
+# [plugin.radarr-metadata]
+# radarr_url = "http://localhost:7878"
+# api_key = "your-radarr-api-key"
 "#
     )
 }
 
 /// Save config back to the TOML file, creating the directory if needed.
+///
+/// On Unix, the file is created with mode `0o600` to prevent other users
+/// from reading API keys or tokens stored in the config.
 pub fn save_config(config: &AppConfig) -> Result<()> {
     let path = config_path();
     if let Some(parent) = path.parent() {
@@ -121,8 +163,25 @@ pub fn save_config(config: &AppConfig) -> Result<()> {
             .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
     }
     let toml_str = toml::to_string_pretty(config).context("Failed to serialize config to TOML")?;
-    std::fs::write(&path, toml_str)
-        .with_context(|| format!("Failed to write config to {}", path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .and_then(|mut f| f.write_all(toml_str.as_bytes()))
+            .with_context(|| format!("Failed to write config to {}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&path, toml_str)
+            .with_context(|| format!("Failed to write config to {}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -146,17 +205,29 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
     let mut kernel = Kernel::new();
     let data_dir = &config.data_dir;
 
-    let ctx = voom_kernel::PluginContext {
-        config: serde_json::json!({}),
-        data_dir: data_dir.clone(),
-    };
-
     let disabled = &config.plugins.disabled_plugins;
 
-    // Helper macro to conditionally register a plugin (skips if disabled)
+    // Helper macro to conditionally register a plugin (skips if disabled).
+    // Looks up per-plugin config from config.plugin by name.
     macro_rules! register_if_enabled {
         ($name:expr, $plugin:expr, $priority:expr, $label:expr) => {
             if !disabled.iter().any(|d| d == $name) {
+                let plugin_config = config
+                    .plugin
+                    .get($name)
+                    .map(|t| match serde_json::to_value(t) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(plugin = $name, error = %e,
+                                "failed to convert plugin config to JSON; using empty config");
+                            serde_json::json!({})
+                        }
+                    })
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let ctx = voom_kernel::PluginContext {
+                    config: plugin_config,
+                    data_dir: data_dir.clone(),
+                };
                 kernel
                     .init_and_register(Arc::new($plugin), $priority, &ctx)
                     .map_err(|e| anyhow::anyhow!("Failed to initialize {}: {e}", $label))?;
@@ -251,6 +322,9 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
         "web server"
     );
 
+    // TODO: load WASM plugins here using loader.load_dir_with_config()
+    // once WASM plugin integration is wired up (Sprint 13).
+
     Ok(kernel)
 }
 
@@ -310,6 +384,14 @@ mod tests {
 
     #[test]
     fn config_toml_round_trip() {
+        let mut plugin_config = HashMap::new();
+        let mut table = toml::Table::new();
+        table.insert(
+            "ffprobe_path".into(),
+            toml::Value::String("/usr/local/bin/ffprobe".into()),
+        );
+        plugin_config.insert("ffprobe-introspector".into(), table);
+
         let config = AppConfig {
             data_dir: PathBuf::from("/tmp/voom-data"),
             plugins: PluginsConfig {
@@ -317,6 +399,7 @@ mod tests {
                 disabled_plugins: vec!["web-server".into(), "backup-manager".into()],
             },
             auth_token: Some("secret-token".into()),
+            plugin: plugin_config,
         };
 
         let toml_str = toml::to_string_pretty(&config).expect("serialize");
@@ -329,6 +412,12 @@ mod tests {
             config.plugins.disabled_plugins
         );
         assert_eq!(loaded.auth_token, config.auth_token);
+        assert_eq!(
+            loaded.plugin["ffprobe-introspector"]["ffprobe_path"]
+                .as_str()
+                .unwrap(),
+            "/usr/local/bin/ffprobe"
+        );
     }
 
     #[test]
@@ -402,6 +491,10 @@ mod tests {
             contents.contains("[plugins]"),
             "should have plugins section"
         );
+        assert!(
+            contents.contains("[plugin."),
+            "should document per-plugin config sections"
+        );
     }
 
     // ── load_config with temp files ──────────────────────────
@@ -437,6 +530,7 @@ mod tests {
                 disabled_plugins: vec!["web-server".into()],
             },
             auth_token: Some("my-token".into()),
+            plugin: HashMap::new(),
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -448,6 +542,102 @@ mod tests {
         assert_eq!(reloaded.plugins.disabled_plugins, vec!["web-server"]);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_save_config_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config_file = dir.path().join("config.toml");
+
+        let config = AppConfig {
+            data_dir: dir.path().to_path_buf(),
+            plugins: PluginsConfig::default(),
+            auth_token: Some("secret".into()),
+            plugin: HashMap::new(),
+        };
+
+        // Write config using the same logic as save_config (can't override config_path(),
+        // so replicate the write logic here).
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&config_file)
+                .and_then(|mut f| f.write_all(toml_str.as_bytes()))
+                .unwrap();
+        }
+
+        let meta = std::fs::metadata(&config_file).unwrap();
+        let mode = meta.permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "config file should be owner-only (0600), got {:o}",
+            mode
+        );
+    }
+
+    // ── plugin config ──────────────────────────────────────────
+
+    #[test]
+    fn plugin_config_toml_roundtrip() {
+        let toml_str = r#"
+[plugin.tvdb-metadata]
+api_key = "abc123"
+
+[plugin.radarr-metadata]
+radarr_url = "http://localhost:7878"
+api_key = "xyz789"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).expect("parse");
+        assert_eq!(
+            config.plugin["tvdb-metadata"]["api_key"].as_str().unwrap(),
+            "abc123"
+        );
+        assert_eq!(
+            config.plugin["radarr-metadata"]["radarr_url"]
+                .as_str()
+                .unwrap(),
+            "http://localhost:7878"
+        );
+        assert_eq!(
+            config.plugin["radarr-metadata"]["api_key"]
+                .as_str()
+                .unwrap(),
+            "xyz789"
+        );
+    }
+
+    #[test]
+    fn plugin_config_empty_by_default() {
+        let config: AppConfig = toml::from_str("").expect("parse");
+        assert!(config.plugin.is_empty());
+    }
+
+    #[test]
+    fn plugin_config_partial() {
+        let toml_str = r#"
+[plugin.tvdb-metadata]
+api_key = "abc123"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).expect("parse");
+        assert!(config.plugin.contains_key("tvdb-metadata"));
+        assert!(!config.plugin.contains_key("ffprobe-introspector"));
+
+        // Unconfigured plugin gets empty json
+        let unconfigured = config
+            .plugin
+            .get("ffprobe-introspector")
+            .map(|t| serde_json::to_value(t).unwrap_or_default())
+            .unwrap_or_else(|| serde_json::json!({}));
+        assert_eq!(unconfigured, serde_json::json!({}));
+    }
+
     // ── open_store ───────────────────────────────────────────
 
     #[test]
@@ -457,6 +647,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             plugins: PluginsConfig::default(),
             auth_token: None,
+            plugin: HashMap::new(),
         };
 
         let store = open_store(&config);

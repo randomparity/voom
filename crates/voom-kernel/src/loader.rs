@@ -61,6 +61,25 @@ pub mod wasm {
             wasm_path: &Path,
             host_state: Option<HostState>,
         ) -> Result<Arc<dyn Plugin>, VoomError> {
+            let manifest = load_manifest(wasm_path)?;
+            self.load_with_manifest(wasm_path, manifest, host_state)
+        }
+
+        /// Load a WASM plugin with a pre-loaded manifest and custom HostState.
+        ///
+        /// This avoids re-reading the manifest when the caller has already loaded
+        /// it (e.g. `load_dir_with_config` reads the manifest to determine the
+        /// plugin name for config lookup).
+        ///
+        /// **Note:** `allowed_capabilities` from the manifest always replaces any
+        /// value set on the incoming `host_state`. This ensures the plugin cannot
+        /// escalate its own capabilities via config.
+        pub fn load_with_manifest(
+            &self,
+            wasm_path: &Path,
+            manifest: Option<PluginManifest>,
+            host_state: Option<HostState>,
+        ) -> Result<Arc<dyn Plugin>, VoomError> {
             let wasm_bytes = std::fs::read(wasm_path).map_err(|e| {
                 VoomError::Wasm(format!("failed to read {}: {e}", wasm_path.display()))
             })?;
@@ -74,9 +93,6 @@ pub mod wasm {
                     MAX_WASM_SIZE
                 )));
             }
-
-            // Try to load the manifest from a sibling .toml file.
-            let manifest = load_manifest(wasm_path)?;
 
             // Compile the WASM component.
             let component = wasmtime::component::Component::new(&self.engine, &wasm_bytes)
@@ -102,7 +118,7 @@ pub mod wasm {
             // Create the store with host state and resource limits.
             let mut state = host_state.unwrap_or_else(|| HostState::new(plugin_name.clone()));
 
-            // Populate allowed capabilities from manifest.
+            // Populate allowed capabilities from manifest (always overwrites).
             if let Some(ref manifest) = manifest {
                 state.allowed_capabilities = manifest
                     .capabilities
@@ -153,6 +169,22 @@ pub mod wasm {
 
         /// Load all `.wasm` plugins from a directory.
         pub fn load_dir(&self, dir: &Path) -> Vec<Result<Arc<dyn Plugin>, VoomError>> {
+            self.load_dir_with_config(dir, &std::collections::HashMap::new())
+        }
+
+        /// Load all `.wasm` plugins from a directory, seeding each plugin's
+        /// `HostState` with its per-plugin configuration from the provided map.
+        ///
+        /// The `plugin_configs` keys should match plugin names (from their
+        /// manifest `.toml` file or the `.wasm` filename stem).
+        ///
+        /// This method is wired for use when WASM plugin loading is added to
+        /// `bootstrap_kernel` (Sprint 13 integration work).
+        pub fn load_dir_with_config(
+            &self,
+            dir: &Path,
+            plugin_configs: &std::collections::HashMap<String, toml::Table>,
+        ) -> Vec<Result<Arc<dyn Plugin>, VoomError>> {
             let entries = match std::fs::read_dir(dir) {
                 Ok(entries) => entries,
                 Err(e) => {
@@ -174,7 +206,37 @@ pub mod wasm {
                         .map(|ext| ext == "wasm")
                         .unwrap_or(false)
                 })
-                .map(|entry| self.load(&entry.path()))
+                .map(|entry| {
+                    let wasm_path = entry.path();
+                    // Read manifest once — used for both name lookup and load_with_manifest.
+                    let manifest = load_manifest(&wasm_path)?;
+
+                    let plugin_name = manifest
+                        .as_ref()
+                        .map(|m| m.name.clone())
+                        .unwrap_or_else(|| {
+                            wasm_path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("unknown")
+                                .to_string()
+                        });
+
+                    // Build HostState with config seeded if present.
+                    let host_state = plugin_configs.get(&plugin_name).map(|table| {
+                        let config_value = match serde_json::to_value(table) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!(plugin = %plugin_name, error = %e,
+                                    "failed to convert plugin config to JSON; using empty config");
+                                serde_json::json!({})
+                            }
+                        };
+                        HostState::new(plugin_name.clone()).with_initial_config(config_value)
+                    });
+
+                    self.load_with_manifest(&wasm_path, manifest, host_state)
+                })
                 .collect()
         }
     }
