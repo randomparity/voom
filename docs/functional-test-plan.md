@@ -73,8 +73,9 @@ voom --help
 
 1. Run `voom config show`
 
-**Expected:** Displays the contents of `config.toml` with all documented
-options. If an `auth_token` is set, its value is REDACTED in output.
+**Expected:** If a config file exists, displays its contents (with `auth_token`
+REDACTED if set). If no config file exists, prints the default configuration
+values (serialized from `AppConfig::default()`).
 
 ### 2.2 Edit configuration
 
@@ -888,6 +889,31 @@ policy "bad-codec" {
 ```
 **Expected:** Validation warning about unknown codec, possibly with a
 did-you-mean suggestion.
+
+### 15.11 Container metadata operations
+
+```
+policy "tags" {
+  config { on_error: abort }
+  phase p {
+    clear_tags
+    set_tag "title" "My Movie"
+    delete_tag "encoder"
+  }
+}
+```
+**Expected:** Validates OK.
+
+### 15.12 Duplicate phase names
+
+```
+policy "dup" {
+  config { on_error: abort }
+  phase p { container mkv }
+  phase p { container mp4 }
+}
+```
+**Expected:** Validation error reporting duplicate phase name.
 
 ---
 

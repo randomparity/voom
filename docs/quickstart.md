@@ -36,27 +36,25 @@ voom init
 voom doctor
 ```
 
-This creates `~/.config/voom/config.toml` with default settings.
+This creates `~/.config/voom/config.toml` with default settings and a starter policy at `~/.config/voom/policies/default.voom`.
 
 ## Configuration
 
 Edit `~/.config/voom/config.toml`:
 
 ```toml
-[library]
-paths = ["/path/to/your/media"]
+# Where VOOM stores its database and data files
+data_dir = "/home/you/.config/voom"
 
-[processing]
-workers = 4
-on_error = "continue"
-backup = true
+# Optional Bearer token for authenticating API and SSE requests
+# auth_token = "your-secret-token"
 
-[backup]
-directory = "/path/to/backups"  # or "sibling" for .bak files next to originals
+[plugins]
+# Directory for WASM plugins (default: ~/.config/voom/plugins/wasm/)
+# wasm_dir = "/path/to/wasm/plugins"
 
-[server]
-port = 8080
-host = "127.0.0.1"
+# Plugins to disable by name
+disabled_plugins = []
 ```
 
 Or use the CLI:
@@ -272,7 +270,7 @@ synthesize "Stereo AAC" {
   codec: aac
   channels: stereo
   source: prefer(codec in [truehd, dts_hd, flac] and channels >= 6)
-  bitrate: 192k
+  bitrate: "192k"
   skip_if_exists { codec in [aac] and channels == 2 }
   title: "Stereo (AAC)"
   language: inherit

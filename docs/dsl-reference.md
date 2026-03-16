@@ -149,6 +149,7 @@ Both `keep` and `remove` operate on a track target:
 | `subtitle` / `subtitles` | Subtitle tracks (both spellings accepted) |
 | `video` | Video tracks |
 | `attachments` | Attachment tracks (fonts, images, etc.) |
+| `track` | Any track type (wildcard; valid in `exists()` and `count()` queries) |
 
 ### `order tracks`
 
@@ -174,6 +175,8 @@ Track type identifiers for ordering:
 | `subtitle_forced` | Forced subtitles |
 | `subtitle_commentary` | Commentary subtitles |
 | `attachment` | Attachments |
+| `audio` | All audio tracks (unclassified) |
+| `subtitle` / `subtitles` | All subtitle tracks (unclassified) |
 
 ### `defaults`
 
@@ -193,6 +196,7 @@ Default strategies:
 | `first_per_language` | First track of each language is marked default |
 | `none` | No tracks marked as default |
 | `first` | Only the first track is marked default |
+| `all` | All tracks of this type are marked as default |
 
 ### Track Actions
 
@@ -226,6 +230,37 @@ container mp4
 
 If the file is not already in the target format, it will be remuxed (no re-encoding).
 
+## Container Metadata Operations
+
+### `clear_tags`
+
+Remove all container-level metadata tags from the file.
+
+```
+clear_tags
+```
+
+### `set_tag`
+
+Set a container-level metadata tag to a literal value or a plugin field reference.
+
+```
+set_tag "title" "My Movie"
+set_tag "title" plugin.radarr.title
+```
+
+### `delete_tag`
+
+Remove a specific container-level metadata tag.
+
+```
+delete_tag "encoder"
+delete_tag "creation_time"
+```
+
+> **Ordering note:** The validator reports an error if `set_tag` appears before `clear_tags`
+> in the same phase, because `clear_tags` would overwrite the tag just set.
+
 ## Transcode Operations
 
 ### Video Transcode
@@ -247,6 +282,7 @@ transcode video to hevc {
 transcode audio to aac {
   preserve: [truehd, dts_hd, flac]   // don't transcode these codecs
   bitrate: 192k                       // target bitrate
+  channels: stereo                    // channel layout (stereo, 5.1, etc.)
 }
 ```
 
@@ -343,7 +379,7 @@ exists(subtitle where forced)
 exists(audio where codec in [truehd, dts_hd])
 ```
 
-Track queries use the same targets as track operations: `audio`, `subtitle`/`subtitles`, `video`, `attachments`.
+Track queries use the same targets as track operations — `audio`, `subtitle`/`subtitles`, `video`, `attachments` — plus the `track` wildcard which matches any track type.
 
 ### Track Count
 
@@ -454,6 +490,8 @@ Actions are executed inside `when` and `rules` blocks.
 | Set Forced | `set_forced <track_ref>` | Set forced flag on matching tracks |
 | Set Language | `set_language <track_ref> <value>` | Set language on matching tracks |
 | Set Tag | `set_tag "<key>" <value>` | Set a container-level tag |
+| Delete Tag | `delete_tag "<key>"` | Remove a container-level tag |
+| Clear Tags | `clear_tags` | Remove all container-level tags |
 
 ### Track References
 
@@ -516,24 +554,36 @@ Codec names are normalized by the compiler (e.g., `h265` → `hevc`). Common cod
 | | `opus` | |
 | | `pcm` | |
 
+### Limits
+
+| Limit | Value |
+|-------|-------|
+| Maximum policy source size | 1 MiB (1,048,576 bytes) |
+
 ## Compilation Pipeline
 
 ```
 Source (.voom)
     │
     ▼
-  pest parser ──── syntax errors with line/column
-    │
-    ▼
-  AST builder ──── structural errors
+  Parser (pest → AST) ── syntax and structural errors
     │
     ▼
   Validator ────── semantic errors:
     │               • Unknown codec (with "did you mean?" suggestions)
+    │               • Unknown container format
+    │               • Unknown language code
+    │               • Invalid `on_error` value (config and phase level)
     │               • Circular phase dependencies
-    │               • Unreachable phases
-    │               • Conflicting actions
-    │               • Invalid language codes
+    │               • Duplicate phase names
+    │               • Unreachable phases (referenced in `depends_on` but not defined)
+    │               • Unknown phase in `run_if`
+    │               • Invalid `run_if` trigger
+    │               • Conflicting keep/remove on the same track type
+    │               • `set_tag`/`delete_tag` conflict on the same tag key
+    │               • `set_tag` before `clear_tags` ordering error
+    │               • Invalid number suffix
+    │               • Invalid defaults strategy
     ▼
   Compiler ─────── CompiledPolicy (domain types, ready for evaluation)
 ```
@@ -541,7 +591,7 @@ Source (.voom)
 ### Programmatic API
 
 ```rust
-use voom_dsl::{parse_policy, validate, compile, format_policy};
+use voom_dsl::{parse_policy, validate, compile, compile_ast, format_policy};
 
 // Parse source to AST
 let ast = parse_policy(source)?;
@@ -549,13 +599,13 @@ let ast = parse_policy(source)?;
 // Validate semantics (returns Result<(), ValidationErrors>)
 validate(&ast)?;
 
-// Compile to domain types
-let compiled = compile(source)?;    // parse + validate + compile
-// or
-let compiled = compile_ast(&ast)?;  // compile from existing AST
+// Compile to domain types (parse + validate + compile in one step)
+let compiled = compile(source)?;
+// or compile from an existing AST
+let compiled = compile_ast(&ast)?;
 
-// Format/pretty-print
-let formatted = format_policy(source)?;
+// Format/pretty-print (takes &PolicyAst, returns String)
+let formatted = format_policy(&ast);
 ```
 
 ## Complete Example
