@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.wasm
+wit/
+.pytest_cache/
