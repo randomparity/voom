@@ -153,6 +153,38 @@ class TestNoMatch:
         assert info is not None
 
 
+class TestReDoSPrevention:
+    """Length guards against pathological regex inputs."""
+
+    def test_rejects_very_long_input(self):
+        long_input = "A" * 5000 + ".S01E01.mkv"
+        assert parse_filename(long_input) is None
+
+    def test_rejects_long_basename(self):
+        long_basename = "A" * 600 + ".S01E01.mkv"
+        assert parse_filename(long_basename) is None
+
+    def test_pathological_spaces(self):
+        """Spaces followed by '1x' should not cause excessive backtracking."""
+        import time
+        pathological = " " * 1000 + "1x01.mkv"
+        start = time.monotonic()
+        result = parse_filename(pathological)
+        elapsed = time.monotonic() - start
+        assert result is None
+        assert elapsed < 0.1, f"Took {elapsed:.3f}s — possible ReDoS"
+
+
+class TestMultiEpisodeRange:
+    """Non-sequential multi-episode handling."""
+
+    def test_non_sequential_multi_episode(self):
+        """S01E02E05 should return [2, 5], not [2, 3, 4, 5]."""
+        info = parse_filename("Show.S01E02E05.mkv")
+        assert info is not None
+        assert info.episode_numbers == [2, 5]
+
+
 class TestEpisodeInfoProperties:
     """EpisodeInfo dataclass properties."""
 

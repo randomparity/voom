@@ -52,7 +52,6 @@ class TestAuthentication:
         assert cached is not None
         data = json.loads(bytes(cached))
         assert data["token"] == "mock-bearer-token-abc"
-        assert "expiry" in data
 
     def test_auth_failure_raises(self, mock_host):
         mock_host.set_config({"api_key": "bad-key"})
@@ -172,6 +171,22 @@ class TestLookup:
         metadata = client.lookup("Doctor Who", season=1, episode=1, year=2005)
         assert metadata is not None
         assert metadata["series_id"] == 200
+
+
+class TestLookupEdgeCases:
+    """Edge cases in the full lookup flow."""
+
+    def test_lookup_non_numeric_series_id(self, mock_host_with_tvdb):
+        """API returning non-numeric series id should return None."""
+        mock_host_with_tvdb.set_http_response("/v4/search", MockHttpResponse(
+            status=200,
+            body=json.dumps({
+                "data": [{"id": "not-a-number", "name": "Test Show", "year": "2020"}],
+            }).encode(),
+        ))
+        client = TvdbClient.from_config(mock_host_with_tvdb)
+        result = client.lookup("Test Show", season=1, episode=1)
+        assert result is None
 
 
 class TestBestMatch:

@@ -52,7 +52,7 @@ def mock_host_with_tvdb(mock_host):
     ))
 
     # Episodes response
-    mock_host.set_http_response("/v4/series/73255", MockHttpResponse(
+    mock_host.set_http_response("/series/73255/episodes", MockHttpResponse(
         status=200,
         body=json.dumps({
             "status": "success",

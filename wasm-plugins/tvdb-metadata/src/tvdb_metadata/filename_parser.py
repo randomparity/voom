@@ -81,12 +81,8 @@ def _collect_episodes(match: re.Match) -> list[int]:
     ep2 = match.group("ep2") if "ep2" in match.groupdict() else None
     if ep2 is not None:
         ep2_int = int(ep2)
-        if ep2_int == eps[0] + 1:
-            # Adjacent episodes: S01E02E03 or S01E02-E03
+        if ep2_int > eps[0]:
             eps.append(ep2_int)
-        elif ep2_int > eps[0]:
-            # Range: S01E02-E05
-            eps = list(range(eps[0], ep2_int + 1))
     return eps
 
 
@@ -103,10 +99,16 @@ def parse_filename(filename: str) -> EpisodeInfo | None:
 
     Returns None if no episode pattern is found.
     """
+    if len(filename) > 4096:
+        return None
+
     # Extract just the path components we care about
     # Try the filename first, then include parent directory
     parts = filename.replace("\\", "/").split("/")
     basename = parts[-1] if parts else filename
+
+    if len(basename) > 512:
+        return None
 
     # Remove file extension
     name_no_ext = re.sub(r"\.\w{2,4}$", "", basename)

@@ -17,7 +17,10 @@ def unpack(data: bytes) -> dict:
     Handles rmp_serde conventions: enum variants as 1-element maps,
     PathBuf as strings, etc.
     """
-    return umsgpack.unpackb(data)
+    try:
+        return umsgpack.unpackb(data)
+    except RecursionError:
+        raise ValueError("msgpack payload nesting depth exceeds limit")
 
 
 def pack(obj: dict) -> bytes:

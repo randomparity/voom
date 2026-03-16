@@ -2,14 +2,14 @@
 
 import json
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from tvdb_metadata.filename_parser import parse_filename
 from tvdb_metadata.msgpack_helpers import pack_event, unpack_event
 from tvdb_metadata import plugin as plugin_module
-from tvdb_metadata.tvdb_client import TvdbClient
+from tvdb_metadata.tvdb_client import TvdbClient, TvdbError
 
 from helpers import MockHost, MockHttpResponse
 
@@ -44,15 +44,17 @@ class TestOnEvent:
         """Build a mock event-data dict with MessagePack payload."""
         payload = pack_event("FileIntrospected", {
             "file": {
+                "id": "00000000-0000-0000-0000-000000000000",
                 "path": file_path,
                 "size": 1_500_000_000,
                 "content_hash": "abc123",
-                "container": "mkv",
+                "container": "Mkv",
                 "duration": 3600.0,
                 "bitrate": None,
                 "tracks": [],
-                "tags": [],
-                "plugin_metadata": [],
+                "tags": {},
+                "plugin_metadata": {},
+                "introspected_at": "2024-01-01T00:00:00Z",
             },
         })
         return {"event_type": "file.introspected", "payload": payload}
@@ -133,15 +135,17 @@ class TestMsgpackRoundTrip:
     def test_event_roundtrip(self):
         original = {
             "file": {
+                "id": "00000000-0000-0000-0000-000000000000",
                 "path": "/test/file.mkv",
                 "size": 1024,
                 "content_hash": "hash",
-                "container": "mkv",
+                "container": "Mkv",
                 "duration": 60.0,
                 "bitrate": None,
                 "tracks": [],
-                "tags": [],
-                "plugin_metadata": [],
+                "tags": {},
+                "plugin_metadata": {},
+                "introspected_at": "2024-01-01T00:00:00Z",
             },
         }
         packed = pack_event("FileIntrospected", original)
@@ -166,3 +170,61 @@ class TestMsgpackRoundTrip:
         assert data["path"] == "/test/show.mkv"
         assert data["source"] == "tvdb"
         assert data["metadata"]["series_name"] == "Test"
+
+
+class TestExceptionHandling:
+    """Verify exceptions in lookup path don't propagate as WASM traps."""
+
+    def _make_event(self, file_path="/media/tv/Breaking Bad/Breaking.Bad.S01E01.720p.mkv"):
+        payload = pack_event("FileIntrospected", {
+            "file": {
+                "id": "00000000-0000-0000-0000-000000000000",
+                "path": file_path,
+                "size": 1_500_000_000,
+                "content_hash": "abc123",
+                "container": "Mkv",
+                "duration": 3600.0,
+                "bitrate": None,
+                "tracks": [],
+                "tags": {},
+                "plugin_metadata": {},
+                "introspected_at": "2024-01-01T00:00:00Z",
+            },
+        })
+        return {"event_type": "file.introspected", "payload": payload}
+
+    def test_uncaught_exception_in_lookup(self, mock_host_with_tvdb, monkeypatch):
+        """ValueError in TvdbClient.lookup should be caught by on_event."""
+        monkeypatch.setattr(plugin_module, "_get_host_bridge", lambda: mock_host_with_tvdb)
+
+        with patch.object(TvdbClient, "lookup", side_effect=ValueError("unexpected")):
+            result = plugin_module.on_event(self._make_event())
+        assert result is None
+
+    def test_missing_file_key_in_payload(self, mock_host_with_tvdb, monkeypatch):
+        """Payload without 'file' key returns None."""
+        monkeypatch.setattr(plugin_module, "_get_host_bridge", lambda: mock_host_with_tvdb)
+
+        payload = pack_event("FileIntrospected", {"not_file": "data"})
+        event = {"event_type": "file.introspected", "payload": payload}
+        result = plugin_module.on_event(event)
+        assert result is None
+
+    def test_deeply_nested_payload(self, mock_host_with_tvdb, monkeypatch):
+        """Deeply nested msgpack should not crash — returns None."""
+        monkeypatch.setattr(plugin_module, "_get_host_bridge", lambda: mock_host_with_tvdb)
+
+        # Build a payload that will fail to unpack as a valid event
+        import umsgpack
+        nested = "leaf"
+        for _ in range(500):
+            nested = {"a": nested}
+        try:
+            bad_payload = umsgpack.packb(nested)
+        except RecursionError:
+            pytest.skip("Cannot build deeply nested payload")
+
+        event = {"event_type": "file.introspected", "payload": bad_payload}
+        result = plugin_module.on_event(event)
+        # Either returns None (not a valid event) or handles gracefully
+        assert result is None

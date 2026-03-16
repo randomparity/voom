@@ -120,15 +120,21 @@ def on_event(event) -> "object | None":
     # Deserialize the MessagePack event payload
     try:
         variant, data = unpack_event(bytes(payload))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         _log("warn", f"Failed to deserialize event: {e}")
         return None
 
     if variant != "FileIntrospected":
         return None
 
-    file_data = data.get("file", {})
+    file_data = data.get("file")
+    if not file_data or not isinstance(file_data, dict):
+        _log("warn", f"FileIntrospected payload missing 'file' key: {list(data.keys())}")
+        return None
     file_path = file_data.get("path", "")
+    if not file_path:
+        _log("warn", "FileIntrospected payload has empty path")
+        return None
 
     _log("info", f"Processing file for TVDB lookup: {file_path}")
 
@@ -159,7 +165,7 @@ def on_event(event) -> "object | None":
             episode=info.episode_number,
             year=info.year,
         )
-    except TvdbError as e:
+    except Exception as e:
         _log("error", f"TVDB lookup failed: {e}")
         return None
 
@@ -194,11 +200,17 @@ def _get_host_bridge():
     return None
 
 
+_log_sink = None  # Set by tests to capture log output
+
+
 def _log(level: str, message: str):
     """Log via host if available, otherwise no-op."""
-    if _host_module is not None:
+    if _log_sink is not None:
+        _log_sink(level, message)
+        return
+    bridge = _get_host_bridge()
+    if bridge is not None:
         try:
-            bridge = _HostBridge(_host_module)
             bridge.log(level, message)
         except Exception:
             pass
@@ -208,7 +220,7 @@ def _make_event_result(plugin_name: str, produced_events: list, data=None):
     """Build an EventResult, using WIT types if available."""
     try:
         from voom.plugin.plugin import EventResult  # type: ignore[import]
-        from voom.plugin.types import EventData, EventResult as TypesEventResult  # type: ignore[import]
+        from voom.plugin.types import EventData  # type: ignore[import]
 
         wit_events = [
             EventData(event_type=e["event_type"], payload=e["payload"])

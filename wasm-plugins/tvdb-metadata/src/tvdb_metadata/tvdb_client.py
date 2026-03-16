@@ -5,7 +5,15 @@ since Python's urllib/socket are unavailable in the WASM sandbox.
 """
 
 import json
-import time
+
+try:
+    from urllib.parse import quote as _url_quote
+except ImportError:
+    def _url_quote(s, safe=""):
+        """Minimal percent-encoding fallback for WASM environments."""
+        import string
+        _safe = set(string.ascii_letters + string.digits + "-._~" + safe)
+        return "".join(c if c in _safe else f"%{ord(c):02X}" for c in s)
 
 # These will be the WIT-generated host module functions.
 # In tests, they are monkeypatched. At runtime in WASM, they are provided
@@ -13,8 +21,6 @@ import time
 _host = None
 
 TVDB_API_BASE = "https://api4.thetvdb.com/v4"
-TOKEN_TTL_SECONDS = 24 * 60 * 60  # 24 hours
-CACHE_TTL_SECONDS = 60 * 60  # 1 hour
 
 
 class TvdbError(Exception):
@@ -28,7 +34,6 @@ class TvdbClient:
         self.api_key = api_key
         self._host = host_funcs
         self._token: str | None = None
-        self._token_expiry: float = 0
 
     @classmethod
     def from_config(cls, host_funcs) -> "TvdbClient | None":
@@ -52,10 +57,12 @@ class TvdbClient:
     def authenticate(self) -> str:
         """Authenticate with TVDB API and return bearer token.
 
-        Caches the token in plugin data with expiry tracking.
+        Caches the token in-memory and in plugin data. The 401 retry
+        logic in _api_get() handles token expiration by re-authenticating,
+        so no TTL tracking is needed (avoids time.time() WASI issues).
         """
-        # Check cached token
-        if self._token and time.time() < self._token_expiry:
+        # Check in-memory cache
+        if self._token:
             return self._token
 
         # Check plugin data for cached token
@@ -63,9 +70,9 @@ class TvdbClient:
         if cached is not None:
             try:
                 token_data = json.loads(bytes(cached))
-                if token_data.get("expiry", 0) > time.time():
-                    self._token = token_data["token"]
-                    self._token_expiry = token_data["expiry"]
+                token = token_data.get("token")
+                if token:
+                    self._token = token
                     return self._token
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
@@ -85,10 +92,9 @@ class TvdbClient:
             raise TvdbError("No token in TVDB auth response")
 
         self._token = token
-        self._token_expiry = time.time() + TOKEN_TTL_SECONDS
 
         # Cache token in plugin data
-        token_data = json.dumps({"token": token, "expiry": self._token_expiry})
+        token_data = json.dumps({"token": token})
         self._host.set_plugin_data("tvdb_token", token_data.encode("utf-8"))
 
         return token
@@ -106,7 +112,7 @@ class TvdbClient:
         if resp.status == 401:
             # Token expired, clear cache and retry once
             self._token = None
-            self._token_expiry = 0
+            self._host.set_plugin_data("tvdb_token", b"")
             token = self.authenticate()
             headers = [
                 ("Authorization", f"Bearer {token}"),
@@ -123,29 +129,25 @@ class TvdbClient:
         """Search for TV series by name.
 
         Returns list of series results with id, name, year, etc.
+        Results are cached in plugin data for the plugin's lifetime.
         """
-        # Check cache
-        cache_key = f"search:{name.lower()}"
+        # Check cache (no TTL — plugin data is per-lifetime only)
+        cache_key = f"search:{name[:128].lower()}"
         cached = self._host.get_plugin_data(cache_key)
         if cached is not None:
             try:
                 cache_data = json.loads(bytes(cached))
-                if cache_data.get("expiry", 0) > time.time():
-                    return cache_data["results"]
+                return cache_data["results"]
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
 
         # Query API
-        from urllib.parse import quote
-        encoded_name = quote(name)
+        encoded_name = _url_quote(name, safe="")
         result = self._api_get(f"/search?query={encoded_name}&type=series")
         series_list = result.get("data", [])
 
         # Cache results
-        cache_data = json.dumps({
-            "results": series_list,
-            "expiry": time.time() + CACHE_TTL_SECONDS,
-        })
+        cache_data = json.dumps({"results": series_list})
         self._host.set_plugin_data(cache_key, cache_data.encode("utf-8"))
 
         return series_list
@@ -179,7 +181,11 @@ class TvdbClient:
         if series_id is None:
             return None
 
-        episodes = self.get_episodes(int(series_id), season)
+        try:
+            series_id_int = int(series_id)
+        except (ValueError, TypeError):
+            return None
+        episodes = self.get_episodes(series_id_int, season)
         ep_data = None
         for ep in episodes:
             if ep.get("number") == episode or ep.get("episodeNumber") == episode:
