@@ -890,6 +890,31 @@ policy "bad-codec" {
 **Expected:** Validation warning about unknown codec, possibly with a
 did-you-mean suggestion.
 
+### 15.11 Container metadata operations
+
+```
+policy "tags" {
+  config { on_error: abort }
+  phase p {
+    clear_tags
+    set_tag "title" "My Movie"
+    delete_tag "encoder"
+  }
+}
+```
+**Expected:** Validates OK.
+
+### 15.12 Duplicate phase names
+
+```
+policy "dup" {
+  config { on_error: abort }
+  phase p { container mkv }
+  phase p { container mp4 }
+}
+```
+**Expected:** Validation error reporting duplicate phase name.
+
 ---
 
 ## 16. Shell Completions (`voom completions`)

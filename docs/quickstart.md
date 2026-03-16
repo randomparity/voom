@@ -270,7 +270,7 @@ synthesize "Stereo AAC" {
   codec: aac
   channels: stereo
   source: prefer(codec in [truehd, dts_hd, flac] and channels >= 6)
-  bitrate: 192k
+  bitrate: "192k"
   skip_if_exists { codec in [aac] and channels == 2 }
   title: "Stereo (AAC)"
   language: inherit
