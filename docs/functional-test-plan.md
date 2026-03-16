@@ -73,8 +73,9 @@ voom --help
 
 1. Run `voom config show`
 
-**Expected:** Displays the contents of `config.toml` with all documented
-options. If an `auth_token` is set, its value is REDACTED in output.
+**Expected:** If a config file exists, displays its contents (with `auth_token`
+REDACTED if set). If no config file exists, prints the default configuration
+values (serialized from `AppConfig::default()`).
 
 ### 2.2 Edit configuration
 

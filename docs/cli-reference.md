@@ -32,6 +32,7 @@ voom scan <PATH> [OPTIONS]
 | `-r`, `--recursive` | `true` | Recurse into subdirectories |
 | `-w`, `--workers <N>` | `0` (auto) | Number of parallel workers for hashing |
 | `--no-hash` | `false` | Skip content hashing (faster scans) |
+| `--table` | `false` | Show full file table after scan completes |
 
 Before scanning, stale database entries for files that no longer exist under the scanned directory are automatically pruned (along with their associated plans and processing stats).
 
@@ -307,6 +308,8 @@ voom db vacuum
 
 Reset the database, deleting all data. **This is destructive and cannot be undone.**
 
+Also removes WAL (`voom.db-wal`) and SHM (`voom.db-shm`) companion files to avoid corruption on next open.
+
 ```bash
 voom db reset
 ```
@@ -324,7 +327,7 @@ voom db list-bad [OPTIONS]
 | `--path <PREFIX>` | *none* | Filter by path prefix |
 | `-f`, `--format <FORMAT>` | `table` | Output format: `table` or `json` |
 
-Shows path, error message, error source, attempt count, and last seen timestamp.
+Shows path, error message, error source, attempt count, file size, and last seen timestamp.
 
 #### `voom db purge-bad`
 
@@ -376,7 +379,7 @@ Configuration file location: `~/.config/voom/config.toml`
 
 ### `voom init`
 
-Run first-time setup. Creates the configuration directory and default config file at `~/.config/voom/config.toml`.
+Run first-time setup. Creates the configuration directory, default config file at `~/.config/voom/config.toml`, and a starter policy at `~/.config/voom/policies/default.voom`.
 
 ```bash
 voom init
