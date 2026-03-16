@@ -1,0 +1,21 @@
+[project]
+name = "tvdb-metadata"
+version = "0.1.0"
+description = "TVDB metadata enrichment plugin for VOOM (WASM/componentize-py)"
+requires-python = ">=3.11"
+dependencies = [
+    "u-msgpack-python>=2.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.componentize-py]
+wit-directory = "wit"
+world = "voom-plugin"
+module = "tvdb_metadata.plugin"
