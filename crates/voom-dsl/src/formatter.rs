@@ -181,6 +181,20 @@ fn format_operation(op: &OperationNode, out: &mut String, level: usize) {
             indent(out, level);
             out.push_str("}\n");
         }
+        OperationNode::ClearTags => {
+            indent(out, level);
+            out.push_str("clear_tags\n");
+        }
+        OperationNode::SetTag { tag, value } => {
+            indent(out, level);
+            out.push_str(&format!("set_tag \"{}\" ", escape_string(tag)));
+            format_value_or_field(value, out);
+            out.push('\n');
+        }
+        OperationNode::DeleteTag(tag) => {
+            indent(out, level);
+            out.push_str(&format!("delete_tag \"{}\"\n", escape_string(tag)));
+        }
         OperationNode::When(when) => {
             format_when(when, out, level);
         }
@@ -332,11 +346,7 @@ fn format_track_query(query: &TrackQueryNode, out: &mut String) {
 fn format_filter(filter: &FilterNode, out: &mut String) {
     match filter {
         FilterNode::LangIn(langs) => {
-            if langs.len() == 1 {
-                out.push_str(&format!("lang == {}", langs[0]));
-            } else {
-                out.push_str(&format!("lang in [{}]", langs.join(", ")));
-            }
+            out.push_str(&format!("lang in [{}]", langs.join(", ")));
         }
         FilterNode::LangCompare(op, lang) => {
             out.push_str("lang ");
@@ -345,11 +355,7 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
             out.push_str(lang);
         }
         FilterNode::CodecIn(codecs) => {
-            if codecs.len() == 1 {
-                out.push_str(&format!("codec == {}", codecs[0]));
-            } else {
-                out.push_str(&format!("codec in [{}]", codecs.join(", ")));
-            }
+            out.push_str(&format!("codec in [{}]", codecs.join(", ")));
         }
         FilterNode::CodecCompare(op, codec) => {
             out.push_str("codec ");
@@ -718,6 +724,76 @@ mod tests {
         let ast1 = parse_policy(input).unwrap();
         let formatted = format_policy(&ast1);
         assert!(formatted.contains("lang != jpn"));
+        let ast2 = parse_policy(&formatted).unwrap();
+        assert_eq!(
+            ast1.phases[0].operations.len(),
+            ast2.phases[0].operations.len()
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_clear_tags() {
+        let input = r#"policy "test" {
+            phase clean {
+                clear_tags
+            }
+        }"#;
+        let ast1 = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast1);
+        assert!(formatted.contains("clear_tags"));
+        let ast2 = parse_policy(&formatted).unwrap();
+        assert!(matches!(
+            &ast2.phases[0].operations[0].node,
+            OperationNode::ClearTags
+        ));
+    }
+
+    #[test]
+    fn test_roundtrip_set_tag() {
+        let input = r#"policy "test" {
+            phase clean {
+                set_tag "title" "My Movie"
+            }
+        }"#;
+        let ast1 = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast1);
+        assert!(formatted.contains(r#"set_tag "title" "My Movie""#));
+        let ast2 = parse_policy(&formatted).unwrap();
+        match &ast2.phases[0].operations[0].node {
+            OperationNode::SetTag { tag, .. } => assert_eq!(tag, "title"),
+            other => panic!("expected SetTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_delete_tag() {
+        let input = r#"policy "test" {
+            phase clean {
+                delete_tag "encoder"
+            }
+        }"#;
+        let ast1 = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast1);
+        assert!(formatted.contains(r#"delete_tag "encoder""#));
+        let ast2 = parse_policy(&formatted).unwrap();
+        match &ast2.phases[0].operations[0].node {
+            OperationNode::DeleteTag(tag) => assert_eq!(tag, "encoder"),
+            other => panic!("expected DeleteTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_container_metadata_combined() {
+        let input = r#"policy "test" {
+            phase clean {
+                clear_tags
+                container mkv
+                set_tag "title" "My Movie"
+                delete_tag "encoder"
+            }
+        }"#;
+        let ast1 = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast1);
         let ast2 = parse_policy(&formatted).unwrap();
         assert_eq!(
             ast1.phases[0].operations.len(),

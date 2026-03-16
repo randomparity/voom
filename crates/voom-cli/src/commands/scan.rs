@@ -5,7 +5,9 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
-use voom_domain::events::Event;
+use tokio_util::sync::CancellationToken;
+use voom_domain::bad_file::BadFileSource;
+use voom_domain::events::{Event, FileIntrospectionFailedEvent};
 use voom_domain::storage::StorageTrait;
 
 use crate::app;
@@ -39,7 +41,7 @@ fn format_eta(start: &Instant, current: usize, total: usize) -> String {
 /// Discovery and introspection are driven directly for deterministic progress
 /// reporting, but all events are also published through the kernel's event bus
 /// so that subscribers (sqlite-store, SSE, WASM plugins) receive them.
-pub async fn run(args: ScanArgs) -> Result<()> {
+pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     let config = app::load_config()?;
     let kernel = app::bootstrap_kernel(&config)?;
 
@@ -183,6 +185,9 @@ pub async fn run(args: ScanArgs) -> Result<()> {
     let total = events.len() as u64;
 
     for (i, event) in events.iter().enumerate() {
+        if token.is_cancelled() {
+            break;
+        }
         let eta = format_eta(&intro_start, i + 1, total as usize);
         let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len() + 9); // "Probing "
         let name = event
@@ -208,10 +213,28 @@ pub async fn run(args: ScanArgs) -> Result<()> {
             }
             Ok(Err(e)) => {
                 tracing::warn!(path = %event.path.display(), error = %e, "introspection failed");
+                kernel.dispatch(Event::FileIntrospectionFailed(
+                    FileIntrospectionFailedEvent {
+                        path: event.path.clone(),
+                        size: event.size,
+                        content_hash: Some(event.content_hash.clone()),
+                        error: e.to_string(),
+                        error_source: BadFileSource::Introspection,
+                    },
+                ));
                 errors += 1;
             }
             Err(e) => {
                 tracing::warn!(path = %event.path.display(), error = %e, "introspection task panicked");
+                kernel.dispatch(Event::FileIntrospectionFailed(
+                    FileIntrospectionFailedEvent {
+                        path: event.path.clone(),
+                        size: event.size,
+                        content_hash: Some(event.content_hash.clone()),
+                        error: format!("task panicked: {e}"),
+                        error_source: BadFileSource::Introspection,
+                    },
+                ));
                 errors += 1;
             }
         }
@@ -222,6 +245,23 @@ pub async fn run(args: ScanArgs) -> Result<()> {
     pb.finish_and_clear();
 
     let total_elapsed = start.elapsed();
+    if token.is_cancelled() {
+        println!(
+            "\n{} {} files discovered, {}/{} introspected{} ({})",
+            "Interrupted.".bold().yellow(),
+            events.len(),
+            introspected,
+            total,
+            if errors > 0 {
+                format!(", {} {}", errors, "errors".red())
+            } else {
+                String::new()
+            },
+            HumanDuration(total_elapsed),
+        );
+        return Ok(());
+    }
+
     println!(
         "\n{} {} files discovered, {} introspected{} ({})",
         "Done.".bold().green(),

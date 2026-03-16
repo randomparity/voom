@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
+use crate::bad_file::BadFileSource;
 use crate::media::MediaFile;
 use crate::plan::Plan;
 
@@ -11,6 +12,7 @@ use crate::plan::Plan;
 pub enum Event {
     FileDiscovered(FileDiscoveredEvent),
     FileIntrospected(FileIntrospectedEvent),
+    FileIntrospectionFailed(FileIntrospectionFailedEvent),
     /// Emitted by WASM metadata plugins. Consumed by the sqlite-store plugin
     /// to persist enriched metadata as plugin data keyed by file path.
     MetadataEnriched(MetadataEnrichedEvent),
@@ -35,6 +37,7 @@ impl Event {
         match self {
             Event::FileDiscovered(_) => "file.discovered",
             Event::FileIntrospected(_) => "file.introspected",
+            Event::FileIntrospectionFailed(_) => "file.introspection_failed",
             Event::MetadataEnriched(_) => "metadata.enriched",
             Event::PolicyEvaluate(_) => "policy.evaluate",
             Event::PlanCreated(_) => "plan.created",
@@ -63,58 +66,38 @@ pub struct EventResult {
 }
 
 impl EventResult {
-    /// Build the standard pair of lifecycle events that executor plugins emit
-    /// when a plan execution succeeds: `PlanExecuting` + `PlanCompleted`.
+    /// Build a result for executor plugins when a plan execution succeeds.
+    ///
+    /// Lifecycle events (`PlanExecuting`, `PlanCompleted`) are dispatched by the
+    /// orchestrator in `process.rs`, not produced by executors, to avoid
+    /// duplicate dispatches.
     pub fn plan_succeeded(
         plugin_name: impl Into<String>,
-        plan: &crate::plan::Plan,
-        actions_applied: usize,
+        _plan: &crate::plan::Plan,
+        _actions_applied: usize,
         data: Option<serde_json::Value>,
     ) -> Self {
-        let executing = Event::PlanExecuting(PlanExecutingEvent {
-            path: plan.file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            action_count: plan.actions.len(),
-        });
-        let completed = Event::PlanCompleted(PlanCompletedEvent {
-            plan_id: plan.id,
-            path: plan.file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            actions_applied,
-        });
         Self {
             plugin_name: plugin_name.into(),
-            produced_events: vec![executing, completed],
+            produced_events: vec![],
             data,
             claimed: true,
         }
     }
 
-    /// Build the standard pair of lifecycle events that executor plugins emit
-    /// when a plan execution fails: `PlanExecuting` + `PlanFailed`.
+    /// Build a result for executor plugins when a plan execution fails.
+    ///
+    /// Lifecycle events (`PlanExecuting`, `PlanFailed`) are dispatched by the
+    /// orchestrator in `process.rs`, not produced by executors, to avoid
+    /// duplicate dispatches.
     pub fn plan_failed(
         plugin_name: impl Into<String>,
-        plan: &crate::plan::Plan,
-        error: String,
+        _plan: &crate::plan::Plan,
+        _error: String,
     ) -> Self {
-        let name: String = plugin_name.into();
-        let executing = Event::PlanExecuting(PlanExecutingEvent {
-            path: plan.file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            action_count: plan.actions.len(),
-        });
-        let failed = Event::PlanFailed(PlanFailedEvent {
-            plan_id: plan.id,
-            path: plan.file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            error,
-            error_code: None,
-            plugin_name: Some(name.clone()),
-            error_chain: Vec::new(),
-        });
         Self {
-            plugin_name: name,
-            produced_events: vec![executing, failed],
+            plugin_name: plugin_name.into(),
+            produced_events: vec![],
             data: None,
             claimed: true,
         }
@@ -133,6 +116,15 @@ pub struct FileDiscoveredEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileIntrospectedEvent {
     pub file: MediaFile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileIntrospectionFailedEvent {
+    pub path: PathBuf,
+    pub size: u64,
+    pub content_hash: Option<String>,
+    pub error: String,
+    pub error_source: BadFileSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,6 +288,36 @@ mod tests {
         let event: PlanFailedEvent = serde_json::from_str(json).unwrap();
         assert!(event.error_code.is_none());
         assert!(event.plugin_name.is_none());
+    }
+
+    #[test]
+    fn test_file_introspection_failed_event_type() {
+        let event = Event::FileIntrospectionFailed(FileIntrospectionFailedEvent {
+            path: PathBuf::from("/test/bad.mkv"),
+            size: 1024,
+            content_hash: Some("abc".into()),
+            error: "ffprobe failed".into(),
+            error_source: BadFileSource::Introspection,
+        });
+        assert_eq!(event.event_type(), "file.introspection_failed");
+    }
+
+    #[test]
+    fn test_file_introspection_failed_serde_roundtrip() {
+        let event = Event::FileIntrospectionFailed(FileIntrospectionFailedEvent {
+            path: PathBuf::from("/test/bad.mkv"),
+            size: 2048,
+            content_hash: None,
+            error: "corrupt header".into(),
+            error_source: BadFileSource::Parse,
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.event_type(), "file.introspection_failed");
+
+        let bytes = rmp_serde::to_vec(&event).unwrap();
+        let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(deserialized.event_type(), "file.introspection_failed");
     }
 
     #[test]

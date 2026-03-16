@@ -195,6 +195,15 @@ fn process_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(
         CompiledOperation::Synthesize(synth) => {
             process_synthesize(synth, ctx);
         }
+        CompiledOperation::ClearTags => {
+            process_clear_tags(ctx);
+        }
+        CompiledOperation::SetTag { tag, value } => {
+            process_set_tag(tag, value, ctx)?;
+        }
+        CompiledOperation::DeleteTag(tag) => {
+            process_delete_tag(tag, ctx);
+        }
         CompiledOperation::Conditional(cond) => {
             process_conditional(cond, ctx)?;
         }
@@ -567,6 +576,49 @@ fn process_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
         parameters: serde_json::Value::Object(params),
         description: format!("Synthesize audio: {}", synth.name),
     });
+}
+
+fn process_clear_tags(ctx: &mut PhaseContext) {
+    if ctx.file.tags.is_empty() {
+        return;
+    }
+    let mut tag_keys: Vec<String> = ctx.file.tags.keys().cloned().collect();
+    tag_keys.sort();
+    ctx.plan.actions.push(PlannedAction {
+        operation: OperationType::ClearContainerTags,
+        track_index: None,
+        parameters: serde_json::json!({ "tags": tag_keys }),
+        description: format!("Clear all container tags ({})", tag_keys.join(", ")),
+    });
+}
+
+fn process_set_tag(
+    tag: &str,
+    value: &CompiledValueOrField,
+    ctx: &mut PhaseContext,
+) -> Result<(), String> {
+    let val = resolve_value_or_field(value, ctx.file)
+        .ok_or_else(|| format!("Cannot resolve tag value for '{tag}'"))?;
+    ctx.plan.actions.push(PlannedAction {
+        operation: OperationType::SetContainerTag,
+        track_index: None,
+        parameters: serde_json::json!({ "tag": tag, "value": val }),
+        description: format!("Set container tag '{tag}' = '{val}'"),
+    });
+    Ok(())
+}
+
+fn process_delete_tag(tag: &str, ctx: &mut PhaseContext) {
+    if ctx.file.tags.contains_key(tag) {
+        ctx.plan.actions.push(PlannedAction {
+            operation: OperationType::DeleteContainerTag,
+            track_index: None,
+            parameters: serde_json::json!({ "tag": tag }),
+            description: format!("Delete container tag '{tag}'"),
+        });
+    } else {
+        tracing::debug!(tag, "delete_tag: tag not present in file, skipping");
+    }
 }
 
 fn process_conditional(cond: &CompiledConditional, ctx: &mut PhaseContext) -> Result<(), String> {
@@ -1224,5 +1276,126 @@ mod tests {
             assert_eq!(plan.policy_name, "production-normalize");
             assert!(!plan.phase_name.is_empty());
         }
+    }
+
+    #[test]
+    fn test_clear_tags_with_tags() {
+        let mut file = test_file();
+        file.tags.insert("title".into(), "Old Title".into());
+        file.tags.insert("encoder".into(), "HandBrake".into());
+
+        let policy = test_policy(
+            r#"policy "test" {
+            phase clean {
+                clear_tags
+            }
+        }"#,
+        );
+
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        assert_eq!(plan.actions.len(), 1);
+        assert_eq!(plan.actions[0].operation, OperationType::ClearContainerTags);
+        let tags = plan.actions[0].parameters["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 2);
+    }
+
+    #[test]
+    fn test_clear_tags_without_tags() {
+        let file = test_file();
+
+        let policy = test_policy(
+            r#"policy "test" {
+            phase clean {
+                clear_tags
+            }
+        }"#,
+        );
+
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        assert!(plan.actions.is_empty(), "no actions when no tags exist");
+    }
+
+    #[test]
+    fn test_set_tag_operation() {
+        let file = test_file();
+
+        let policy = test_policy(
+            r#"policy "test" {
+            phase clean {
+                set_tag "title" "My Movie"
+            }
+        }"#,
+        );
+
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        assert_eq!(plan.actions.len(), 1);
+        assert_eq!(plan.actions[0].operation, OperationType::SetContainerTag);
+        assert_eq!(plan.actions[0].parameters["tag"], "title");
+        assert_eq!(plan.actions[0].parameters["value"], "My Movie");
+    }
+
+    #[test]
+    fn test_delete_tag_existing() {
+        let mut file = test_file();
+        file.tags.insert("encoder".into(), "HandBrake".into());
+
+        let policy = test_policy(
+            r#"policy "test" {
+            phase clean {
+                delete_tag "encoder"
+            }
+        }"#,
+        );
+
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        assert_eq!(plan.actions.len(), 1);
+        assert_eq!(plan.actions[0].operation, OperationType::DeleteContainerTag);
+        assert_eq!(plan.actions[0].parameters["tag"], "encoder");
+    }
+
+    #[test]
+    fn test_delete_tag_nonexistent() {
+        let file = test_file();
+
+        let policy = test_policy(
+            r#"policy "test" {
+            phase clean {
+                delete_tag "nonexistent"
+            }
+        }"#,
+        );
+
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        assert!(plan.actions.is_empty(), "no action when tag doesn't exist");
+    }
+
+    #[test]
+    fn test_combined_container_metadata_ordering() {
+        let mut file = test_file();
+        file.tags.insert("title".into(), "Old".into());
+        file.tags.insert("encoder".into(), "x".into());
+
+        let policy = test_policy(
+            r#"policy "test" {
+            phase clean {
+                clear_tags
+                set_tag "title" "New Title"
+                delete_tag "encoder"
+            }
+        }"#,
+        );
+
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        // clear_tags produces 1 action, set_tag produces 1, delete_tag produces 1 (tag exists on file)
+        assert_eq!(plan.actions.len(), 3);
+        assert_eq!(plan.actions[0].operation, OperationType::ClearContainerTags);
+        assert_eq!(plan.actions[1].operation, OperationType::SetContainerTag);
+        assert_eq!(plan.actions[2].operation, OperationType::DeleteContainerTag);
     }
 }

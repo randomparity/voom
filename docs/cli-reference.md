@@ -35,7 +35,7 @@ voom scan <PATH> [OPTIONS]
 
 Before scanning, stale database entries for files that no longer exist under the scanned directory are automatically pruned (along with their associated plans and processing stats).
 
-The scanner walks the directory tree (using rayon for parallelism), identifies media files by extension, computes xxHash64 content hashes (unless `--no-hash`), and runs ffprobe for metadata extraction. Results are stored in the SQLite database.
+The scanner walks the directory tree (using rayon for parallelism), identifies media files by extension, computes xxHash64 content hashes (unless `--no-hash`), and runs ffprobe for metadata extraction. Results are stored in the SQLite database. Files that fail introspection are recorded as "bad files" for tracking and can be reviewed with `voom db list-bad`.
 
 **Examples:**
 
@@ -87,8 +87,9 @@ voom process <PATH> --policy <FILE> [OPTIONS]
 | `-w`, `--workers <N>` | `0` (auto) | Number of parallel workers |
 | `--approve` | `false` | Require interactive approval for each file |
 | `--no-backup` | `false` | Skip creating backups before modifications |
+| `--force-rescan` | `false` | Re-attempt introspection on previously failed files |
 
-Before processing, stale database entries for files that no longer exist under the target directory are automatically pruned (along with their associated plans and processing stats).
+Before processing, stale database entries for files that no longer exist under the target directory are automatically pruned (along with their associated plans and processing stats). Files that previously failed introspection (tracked as "bad files") are automatically skipped unless `--force-rescan` is set.
 
 Error handling strategies:
 - **`fail`** — Stop processing on first error
@@ -310,6 +311,43 @@ Reset the database, deleting all data. **This is destructive and cannot be undon
 voom db reset
 ```
 
+#### `voom db list-bad`
+
+List files that failed introspection (corrupt, unreadable, or unparseable media files).
+
+```
+voom db list-bad [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--path <PREFIX>` | *none* | Filter by path prefix |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table` or `json` |
+
+Shows path, error message, error source, attempt count, and last seen timestamp.
+
+#### `voom db purge-bad`
+
+Remove bad file entries from the database without deleting the files from disk. Use this when you have manually dealt with the files (e.g., fixed or moved them).
+
+```bash
+voom db purge-bad
+```
+
+#### `voom db clean-bad`
+
+Delete bad files from disk and remove their database entries. Requires confirmation unless `--yes` is set.
+
+```
+voom db clean-bad [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--yes` | `false` | Skip confirmation prompt |
+
+Reports how many files were deleted, how many were already missing, and any deletion errors.
+
 ---
 
 ### `voom config`
@@ -348,7 +386,9 @@ voom init
 
 ### `voom status`
 
-Show library and daemon status — file counts, processing state, and background job activity.
+Show library and daemon status — file counts, container breakdown, bad file count, plugin count, and configuration paths.
+
+If bad files exist, the count is highlighted in red with a hint to run `voom db list-bad`.
 
 ```bash
 voom status

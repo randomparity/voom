@@ -214,6 +214,13 @@ fn snapshot_when_else_block() {
     assert_yaml_snapshot!(ast);
 }
 
+#[test]
+fn snapshot_container_metadata() {
+    let input = include_str!("fixtures/container-metadata.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_yaml_snapshot!(ast);
+}
+
 // === Example policy parsing tests ===
 // Verify all sample policies in docs/examples/ are syntactically valid.
 

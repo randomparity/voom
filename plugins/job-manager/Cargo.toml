@@ -16,6 +16,7 @@ voom-kernel = { path = "../../crates/voom-kernel" }
 
 # Async
 tokio.workspace = true
+tokio-util.workspace = true
 
 # Serialization
 serde.workspace = true

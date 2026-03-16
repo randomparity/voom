@@ -153,6 +153,7 @@ The event bus is the sole communication mechanism between plugins. It uses tokio
 |-------|---------|-------------|
 | `file.discovered` | Discovery | New file found during scan |
 | `file.introspected` | Introspector | File metadata extracted |
+| `file.introspection_failed` | CLI (scan/process) | File introspection failed |
 | `metadata.enriched` | WASM plugins | External metadata added |
 | `policy.evaluate` | Orchestrator | Request policy evaluation |
 | `plan.created` | Evaluator | Execution plan generated |
@@ -211,12 +212,13 @@ DSL Policy File (.voom)              Media Files on Disk
 - **`TrackType`** — Classified track type: `Video`, `AudioMain`, `AudioAlternate`, `AudioCommentary`, `SubtitleMain`, `SubtitleForced`, etc.
 - **`Plan`** — Serializable execution plan linking a file + policy + phase to a list of `PlannedAction`s.
 - **`PlannedAction`** — Single operation (e.g., `SetDefault`, `RemoveTrack`, `TranscodeVideo`) with parameters.
+- **`BadFile`** — A file that failed introspection, with error details, attempt count, and timestamps.
 - **`Event`** — Tagged union of all event types for inter-plugin communication.
 - **`Capability`** — What a plugin can do, used for routing.
 
 ### Storage
 
-SQLite database in WAL mode with r2d2 connection pool. Tables: `files`, `tracks`, `jobs`, `plans`, `processing_stats`, `plugin_data`. All domain types are serde-serializable (JSON + MessagePack).
+SQLite database in WAL mode with r2d2 connection pool. Tables: `files`, `tracks`, `jobs`, `plans`, `processing_stats`, `plugin_data`, `bad_files`. All domain types are serde-serializable (JSON + MessagePack). The `bad_files` table tracks files that failed introspection, with upsert semantics that increment `attempt_count` on repeated failures.
 
 ## DSL Pipeline
 

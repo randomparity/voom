@@ -18,6 +18,7 @@ config_item = {
 phase = { "phase" ~ ident ~ "{" ~ phase_item* ~ "}" }
 phase_item = {
     skip_when | depends_on | run_if | on_error
+  | clear_tags_op | set_tag_op | delete_tag_op
   | container_op | keep_op | remove_op | order_op
   | defaults_op | actions_op | transcode_op | synthesize_op
   | when_block | rules_block
@@ -30,6 +31,10 @@ run_if     = { "run_if" ~ ident ~ "." ~ ("modified" | "completed") }
 on_error   = { "on_error" ~ ":" ~ ident }
 
 // Operations
+clear_tags_op = { "clear_tags" }
+set_tag_op    = { "set_tag" ~ string ~ (field_access | value) }
+delete_tag_op = { "delete_tag" ~ string }
+
 container_op = { "container" ~ ident }
 
 keep_op   = { "keep" ~ track_target ~ where_clause? }

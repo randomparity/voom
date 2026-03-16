@@ -134,6 +134,10 @@ pub struct ProcessArgs {
     /// Skip creating backups before modifications
     #[arg(long)]
     pub no_backup: bool,
+
+    /// Re-attempt introspection on previously failed files
+    #[arg(long)]
+    pub force_rescan: bool,
 }
 
 // === Policy ===
@@ -244,6 +248,23 @@ pub enum DbCommands {
     Vacuum,
     /// Reset the database (destructive!)
     Reset,
+    /// List files that failed introspection
+    ListBad {
+        /// Filter by path prefix
+        #[arg(long)]
+        path: Option<String>,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Remove bad file DB entries without deleting files from disk
+    PurgeBad,
+    /// Delete bad files from disk and remove their DB entries
+    CleanBad {
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 // === Config ===
@@ -679,6 +700,61 @@ mod tests {
     fn db_reset() {
         let cli = parse(&["voom", "db", "reset"]);
         assert!(matches!(cli.command, Commands::Db(DbCommands::Reset)));
+    }
+
+    #[test]
+    fn db_list_bad() {
+        let cli = parse(&["voom", "db", "list-bad"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Db(DbCommands::ListBad { .. })
+        ));
+    }
+
+    #[test]
+    fn db_list_bad_with_path() {
+        let cli = parse(&["voom", "db", "list-bad", "--path", "/media"]);
+        match cli.command {
+            Commands::Db(DbCommands::ListBad { path, .. }) => {
+                assert_eq!(path, Some("/media".to_string()));
+            }
+            _ => panic!("expected ListBad"),
+        }
+    }
+
+    #[test]
+    fn db_purge_bad() {
+        let cli = parse(&["voom", "db", "purge-bad"]);
+        assert!(matches!(cli.command, Commands::Db(DbCommands::PurgeBad)));
+    }
+
+    #[test]
+    fn db_clean_bad() {
+        let cli = parse(&["voom", "db", "clean-bad", "--yes"]);
+        match cli.command {
+            Commands::Db(DbCommands::CleanBad { yes }) => {
+                assert!(yes);
+            }
+            _ => panic!("expected CleanBad"),
+        }
+    }
+
+    #[test]
+    fn process_force_rescan() {
+        let cli = parse(&[
+            "voom",
+            "process",
+            "/tmp",
+            "--policy",
+            "test.voom",
+            "--force-rescan",
+        ]);
+        match cli.command {
+            Commands::Process(args) => {
+                assert!(args.force_rescan);
+            }
+            _ => panic!("expected Process"),
+        }
     }
 
     // ── Config subcommands ───────────────────────────────────

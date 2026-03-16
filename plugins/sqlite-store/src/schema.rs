@@ -109,12 +109,25 @@ CREATE TABLE IF NOT EXISTS plugin_data (
     PRIMARY KEY (plugin_name, key)
 );
 
+CREATE TABLE IF NOT EXISTS bad_files (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    size INTEGER NOT NULL,
+    content_hash TEXT,
+    error TEXT NOT NULL,
+    error_source TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 CREATE INDEX IF NOT EXISTS idx_files_hash ON files(content_hash);
 CREATE INDEX IF NOT EXISTS idx_tracks_file ON tracks(file_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, priority);
 CREATE INDEX IF NOT EXISTS idx_plans_file ON plans(file_id);
 CREATE INDEX IF NOT EXISTS idx_stats_file ON processing_stats(file_id);
+CREATE INDEX IF NOT EXISTS idx_bad_files_path ON bad_files(path);
 "#;
 
 /// Initialize the database schema.
@@ -135,6 +148,7 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "processing_stats",
         "file_history",
         "plugin_data",
+        "bad_files",
     ];
     let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
         assert!(KNOWN_TABLES.contains(&table), "unknown table: {table}");
@@ -169,6 +183,22 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             archived_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_file_history_file ON file_history(file_id);",
+    )?;
+
+    // Create bad_files table if it doesn't exist
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS bad_files (
+            id TEXT PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            size INTEGER NOT NULL,
+            content_hash TEXT,
+            error TEXT NOT NULL,
+            error_source TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 1,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_bad_files_path ON bad_files(path);",
     )?;
 
     Ok(())
@@ -211,6 +241,7 @@ mod tests {
         assert!(tables.contains(&"processing_stats".to_string()));
         assert!(tables.contains(&"plugin_data".to_string()));
         assert!(tables.contains(&"file_history".to_string()));
+        assert!(tables.contains(&"bad_files".to_string()));
     }
 
     #[test]

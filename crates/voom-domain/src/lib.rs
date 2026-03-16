@@ -1,5 +1,6 @@
 //! Shared domain types for VOOM: media files, tracks, plans, events, and capabilities.
 
+pub mod bad_file;
 pub mod capabilities;
 pub mod errors;
 pub mod events;
@@ -12,6 +13,7 @@ pub mod storage;
 pub mod test_support;
 pub mod utils;
 
+pub use bad_file::{BadFile, BadFileSource};
 pub use capabilities::Capability;
 pub use errors::{Result, VoomError};
 pub use events::Event;
@@ -19,4 +21,4 @@ pub use job::{Job, JobStatus, JobUpdate};
 pub use media::{Container, MediaFile, Track, TrackType};
 pub use plan::{ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction};
 pub use stats::ProcessingStats;
-pub use storage::{FileFilters, StorageTrait, StoredPlan};
+pub use storage::{BadFileFilters, FileFilters, StorageTrait, StoredPlan};

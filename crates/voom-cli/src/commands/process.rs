@@ -4,11 +4,15 @@ use anyhow::{Context, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::output::{max_filename_len, shrink_filename};
+use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{
-    Event, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
+    Event, FileIntrospectionFailedEvent, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent,
+    PlanFailedEvent,
 };
 use voom_domain::storage::StorageTrait;
 use voom_job_manager::progress::ProgressReporter;
@@ -21,7 +25,7 @@ use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// direct-call pattern is intentional for CLI commands: it enables deterministic
 /// progress reporting, worker-pool concurrency control, and structured error
 /// handling that would be difficult to achieve through the asynchronous pub/sub bus.
-pub async fn run(args: ProcessArgs) -> Result<()> {
+pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let config = app::load_config()?;
     let kernel = Arc::new(app::bootstrap_kernel(&config)?);
 
@@ -44,10 +48,42 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
         }
     }
 
+    if token.is_cancelled() {
+        println!("{}", "Interrupted before discovery.".yellow());
+        return Ok(());
+    }
+
     // Discover files
-    let events = discover_files(&path, &args, &kernel)?;
+    let mut events = discover_files(&path, &args, &kernel)?;
     if events.is_empty() {
         println!("{}", "No media files found.".yellow());
+        return Ok(());
+    }
+
+    // Filter out known-bad files unless --force-rescan is set
+    if !args.force_rescan {
+        let store = app::open_store(&config)?;
+        let bad_files = store
+            .list_bad_files(&voom_domain::storage::BadFileFilters::default())
+            .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
+        if !bad_files.is_empty() {
+            let bad_paths: std::collections::HashSet<_> =
+                bad_files.iter().map(|bf| &bf.path).collect();
+            let before = events.len();
+            events.retain(|e| !bad_paths.contains(&e.path));
+            let skipped = before - events.len();
+            if skipped > 0 {
+                println!(
+                    "Skipping {} known-bad files (use {} to re-attempt).",
+                    skipped.to_string().yellow(),
+                    "--force-rescan".bold()
+                );
+            }
+        }
+    }
+
+    if events.is_empty() {
+        println!("{}", "No processable files found.".yellow());
         return Ok(());
     }
 
@@ -60,7 +96,12 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
         ErrorHandling::Continue => ErrorStrategy::Continue,
     };
 
-    let (pool, effective_workers) = create_worker_pool(&config, &args)?;
+    if token.is_cancelled() {
+        println!("{}", "Interrupted before processing.".yellow());
+        return Ok(());
+    }
+
+    let (pool, effective_workers) = create_worker_pool(&config, &args, token.clone())?;
 
     let reporter: Arc<dyn ProgressReporter> = Arc::new(CliProgressReporter::new(file_count));
 
@@ -68,20 +109,26 @@ pub async fn run(args: ProcessArgs) -> Result<()> {
     let compiled = Arc::new(compiled);
     let dry_run = args.dry_run;
 
+    let token_for_workers = token.clone();
     let _results = pool
         .process_batch(
             items,
             move |job| {
                 let compiled = compiled.clone();
                 let kernel = kernel.clone();
-                async move { process_single_file(job, &compiled, &kernel, dry_run).await }
+                let token = token_for_workers.clone();
+                async move { process_single_file(job, &compiled, &kernel, dry_run, &token).await }
             },
             on_error,
             reporter.clone(),
         )
         .await;
 
-    print_summary(&pool, file_count, effective_workers, args.dry_run);
+    if token.is_cancelled() {
+        print_interrupted_summary(&pool, file_count);
+    } else {
+        print_summary(&pool, file_count, effective_workers, args.dry_run);
+    }
 
     Ok(())
 }
@@ -157,7 +204,11 @@ fn build_work_items(
 }
 
 /// Set up the job queue and worker pool.
-fn create_worker_pool(config: &app::AppConfig, args: &ProcessArgs) -> Result<(WorkerPool, usize)> {
+fn create_worker_pool(
+    config: &app::AppConfig,
+    args: &ProcessArgs,
+    token: CancellationToken,
+) -> Result<(WorkerPool, usize)> {
     let store = app::open_store(config)?;
     let queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
 
@@ -175,6 +226,7 @@ fn create_worker_pool(config: &app::AppConfig, args: &ProcessArgs) -> Result<(Wo
             max_workers: effective_workers,
             worker_prefix: "voom".to_string(),
         },
+        token,
     );
 
     Ok((pool, effective_workers))
@@ -186,6 +238,7 @@ async fn process_single_file(
     compiled: &voom_dsl::CompiledPolicy,
     kernel: &voom_kernel::Kernel,
     dry_run: bool,
+    token: &CancellationToken,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let payload = job.payload.as_ref().ok_or("missing payload")?;
     let file_path = payload["path"].as_str().ok_or("missing path in payload")?;
@@ -227,6 +280,7 @@ async fn process_single_file(
             kernel,
             &file_path_str,
             needs_exec,
+            token,
         )
     }
 }
@@ -239,23 +293,51 @@ async fn introspect_file(
     kernel: &voom_kernel::Kernel,
 ) -> std::result::Result<voom_domain::media::MediaFile, String> {
     let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
+    let path_for_event = path.clone();
+    let hash_for_event = content_hash.clone();
     let path_display = path.display().to_string();
     let intro_result = tokio::task::spawn_blocking(move || {
         introspector.introspect(&path, file_size, &content_hash)
     })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
-    .map_err(|e| format!("introspection failed for {path_display}: {e}"))?;
+    .await;
 
-    let file = intro_result.file.clone();
-
-    kernel.dispatch(Event::FileIntrospected(
-        voom_domain::events::FileIntrospectedEvent {
-            file: intro_result.file,
-        },
-    ));
-
-    Ok(file)
+    match intro_result {
+        Ok(Ok(intro_event)) => {
+            let file = intro_event.file.clone();
+            kernel.dispatch(Event::FileIntrospected(
+                voom_domain::events::FileIntrospectedEvent {
+                    file: intro_event.file,
+                },
+            ));
+            Ok(file)
+        }
+        Ok(Err(e)) => {
+            let error_msg = format!("introspection failed for {path_display}: {e}");
+            kernel.dispatch(Event::FileIntrospectionFailed(
+                FileIntrospectionFailedEvent {
+                    path: path_for_event,
+                    size: file_size,
+                    content_hash: Some(hash_for_event),
+                    error: e.to_string(),
+                    error_source: BadFileSource::Introspection,
+                },
+            ));
+            Err(error_msg)
+        }
+        Err(e) => {
+            let error_msg = format!("task join error: {e}");
+            kernel.dispatch(Event::FileIntrospectionFailed(
+                FileIntrospectionFailedEvent {
+                    path: path_for_event,
+                    size: file_size,
+                    content_hash: Some(hash_for_event),
+                    error: error_msg.clone(),
+                    error_source: BadFileSource::Introspection,
+                },
+            ));
+            Err(error_msg)
+        }
+    }
 }
 
 /// Run the phase orchestrator to produce plans.
@@ -281,6 +363,7 @@ fn execute_plans(
     kernel: &voom_kernel::Kernel,
     file_path_str: &str,
     needs_exec: bool,
+    token: &CancellationToken,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     // Verify file hasn't changed since introspection (TOCTOU guard)
     let exec_path = std::path::PathBuf::from(file_path);
@@ -307,24 +390,30 @@ fn execute_plans(
     }
 
     // Publish lifecycle events for each non-skipped plan.
-    // PlanCreated is dispatched first so executor plugins can claim it via the
-    // event bus. If no executor claims the plan, we emit PlanFailed so the
-    // backup-manager's restore path can trigger.
+    // PlanExecuting is dispatched first so the backup-manager can create a
+    // backup before any executor modifies the file. Then PlanCreated triggers
+    // the actual execution.
     for plan in &result.plans {
         if plan.is_skipped() || plan.is_empty() {
             continue;
         }
 
-        // Dispatch PlanCreated to let executor plugins claim the plan
-        let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
+        if token.is_cancelled() {
+            break;
+        }
 
-        let claimed = results.iter().any(|r| r.claimed);
-
+        // Dispatch PlanExecuting first so backup-manager backs up the file
+        // BEFORE executors modify it
         kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
             path: file.path.clone(),
             phase_name: plan.phase_name.clone(),
             action_count: plan.actions.len(),
         }));
+
+        // Dispatch PlanCreated to let executor plugins claim and execute the plan
+        let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
+
+        let claimed = results.iter().any(|r| r.claimed);
 
         if claimed {
             // An executor plugin claimed the plan — treat as successful
@@ -353,6 +442,19 @@ fn execute_plans(
         "needs_execution": needs_exec,
         "plans_evaluated": result.plans.len(),
     })))
+}
+
+/// Print a summary when interrupted by CTRL-C.
+fn print_interrupted_summary(pool: &WorkerPool, file_count: usize) {
+    let completed = pool.completed_count();
+    let failed = pool.failed_count();
+    println!(
+        "\n{} {}/{} processed, {} errors",
+        "Interrupted.".bold().yellow(),
+        completed,
+        file_count,
+        failed,
+    );
 }
 
 /// Print the final summary line after processing.
@@ -542,14 +644,14 @@ mod tests {
 
         let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
 
-        // Simulate: PlanCreated + PlanExecuting + PlanCompleted for non-skipped plan
+        // Simulate: PlanExecuting + PlanCreated + PlanCompleted for non-skipped plan
         let plan = test_plan("normalize", false);
-        kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
         kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
             path: file.path.clone(),
             phase_name: plan.phase_name.clone(),
             action_count: plan.actions.len(),
         }));
+        kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
         kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
             plan_id: plan.id,
             path: file.path.clone(),
@@ -557,8 +659,8 @@ mod tests {
             actions_applied: plan.actions.len(),
         }));
 
-        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 1);
+        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 1);
     }
 
@@ -592,16 +694,14 @@ mod tests {
         let plan = test_plan("normalize", false);
         let dry_run = true;
 
-        // Simulate the process.rs logic: PlanCreated always, but
-        // PlanExecuting/PlanCompleted only when NOT dry_run
-        kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
-
+        // Simulate the process.rs logic: in dry_run mode, no events are dispatched
         if !dry_run {
             kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
                 path: file.path.clone(),
                 phase_name: plan.phase_name.clone(),
                 action_count: plan.actions.len(),
             }));
+            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
             kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
                 plan_id: plan.id,
                 path: file.path.clone(),
@@ -610,8 +710,8 @@ mod tests {
             }));
         }
 
-        // PlanCreated fires regardless, but no execution events in dry_run
-        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
+        // No events in dry_run
+        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
     }

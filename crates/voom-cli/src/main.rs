@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 mod app;
@@ -22,16 +23,27 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
+    // Install CTRL-C handler: first press cancels gracefully, second force-exits.
+    let token = CancellationToken::new();
+    let token_bg = token.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        eprintln!("\nInterrupted. Finishing in-flight work... (press Ctrl-C again to force quit)");
+        token_bg.cancel();
+        tokio::signal::ctrl_c().await.ok();
+        std::process::exit(130);
+    });
+
     match cli.command {
-        Commands::Scan(args) => commands::scan::run(args).await,
+        Commands::Scan(args) => commands::scan::run(args, token).await,
         Commands::Inspect(args) => commands::inspect::run(args).await,
-        Commands::Process(args) => commands::process::run(args).await,
+        Commands::Process(args) => commands::process::run(args, token).await,
         Commands::Policy(sub) => commands::policy::run(sub).await,
         Commands::Plugin(sub) => commands::plugin::run(sub).await,
         Commands::Jobs(sub) => commands::jobs::run(sub).await,
         Commands::Report(args) => commands::report::run(args).await,
         Commands::Doctor => commands::doctor::run().await,
-        Commands::Serve(args) => commands::serve::run(args).await,
+        Commands::Serve(args) => commands::serve::run(args, token).await,
         Commands::Db(sub) => commands::db::run(sub).await,
         Commands::Config(sub) => commands::config::run(sub).await,
         Commands::Init => commands::init::run().await,

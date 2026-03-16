@@ -20,7 +20,13 @@ pub struct ServerConfig {
 }
 
 /// Start the web server.
-pub async fn start_server(config: ServerConfig, store: Arc<dyn StorageTrait>) -> Result<()> {
+///
+/// The `shutdown` future is awaited for graceful shutdown (e.g. CTRL-C).
+pub async fn start_server(
+    config: ServerConfig,
+    store: Arc<dyn StorageTrait>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
     let templates = load_templates(config.template_dir.as_deref())?;
     let state = AppState::new(store, templates, config.auth_token);
     let router = build_router(state).layer(DefaultBodyLimit::max(2 * 1024 * 1024)); // 2 MiB
@@ -36,6 +42,7 @@ pub async fn start_server(config: ServerConfig, store: Arc<dyn StorageTrait>) ->
         .context("Failed to bind address")?;
 
     axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown)
         .await
         .context("Server error")?;
 

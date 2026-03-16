@@ -95,6 +95,12 @@ pub enum CompiledOperation {
         settings: HashMap<String, serde_json::Value>,
     },
     Synthesize(CompiledSynthesize),
+    ClearTags,
+    SetTag {
+        tag: String,
+        value: CompiledValueOrField,
+    },
+    DeleteTag(String),
     Conditional(CompiledConditional),
     Rules {
         mode: RulesMode,
@@ -446,6 +452,12 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
         OperationNode::Synthesize { name, settings } => Ok(CompiledOperation::Synthesize(
             compile_synthesize(name, settings)?,
         )),
+        OperationNode::ClearTags => Ok(CompiledOperation::ClearTags),
+        OperationNode::SetTag { tag, value } => Ok(CompiledOperation::SetTag {
+            tag: tag.clone(),
+            value: compile_value_or_field(value),
+        }),
+        OperationNode::DeleteTag(tag) => Ok(CompiledOperation::DeleteTag(tag.clone())),
         OperationNode::When(when) => Ok(CompiledOperation::Conditional(compile_conditional(when)?)),
         OperationNode::Rules { mode, rules } => {
             let compiled_rules: Vec<CompiledRule> = rules
@@ -994,5 +1006,59 @@ mod tests {
         assert_eq!(deserialized.name, policy.name);
         assert_eq!(deserialized.phases.len(), policy.phases.len());
         assert_eq!(deserialized.phase_order, policy.phase_order);
+    }
+
+    #[test]
+    fn test_compile_clear_tags() {
+        let policy = compile(
+            r#"policy "test" {
+            phase clean {
+                clear_tags
+            }
+        }"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            &policy.phases[0].operations[0],
+            CompiledOperation::ClearTags
+        ));
+    }
+
+    #[test]
+    fn test_compile_set_tag() {
+        let policy = compile(
+            r#"policy "test" {
+            phase clean {
+                set_tag "title" "My Movie"
+            }
+        }"#,
+        )
+        .unwrap();
+        match &policy.phases[0].operations[0] {
+            CompiledOperation::SetTag { tag, value } => {
+                assert_eq!(tag, "title");
+                match value {
+                    CompiledValueOrField::Value(v) => assert_eq!(v, "My Movie"),
+                    other => panic!("expected Value, got {other:?}"),
+                }
+            }
+            other => panic!("expected SetTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compile_delete_tag() {
+        let policy = compile(
+            r#"policy "test" {
+            phase clean {
+                delete_tag "encoder"
+            }
+        }"#,
+        )
+        .unwrap();
+        match &policy.phases[0].operations[0] {
+            CompiledOperation::DeleteTag(tag) => assert_eq!(tag, "encoder"),
+            other => panic!("expected DeleteTag, got {other:?}"),
+        }
     }
 }

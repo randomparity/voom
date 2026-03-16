@@ -58,6 +58,8 @@ const PROPEDIT_OPS: &[OperationType] = &[
     OperationType::SetTitle,
     OperationType::SetLanguage,
     OperationType::SetContainerTag,
+    OperationType::ClearContainerTags,
+    OperationType::DeleteContainerTag,
 ];
 
 /// Operations that require mkvmerge (structural changes, remux).
@@ -76,6 +78,8 @@ const SUPPORTED_OPS: &[OperationType] = &[
     OperationType::SetTitle,
     OperationType::SetLanguage,
     OperationType::SetContainerTag,
+    OperationType::ClearContainerTags,
+    OperationType::DeleteContainerTag,
     OperationType::RemoveTrack,
     OperationType::ReorderTracks,
     OperationType::ConvertContainer,
@@ -131,7 +135,9 @@ impl MkvtoolnixExecutorPlugin {
 
     /// Execute all actions in a plan, returning results for each action.
     ///
-    /// Propedit (metadata) actions run first, then merge (structural) actions.
+    /// For MKV files: propedit (metadata) actions run first, then merge (structural).
+    /// For non-MKV files being converted to MKV: merge runs first (to create the MKV),
+    /// then propedit operates on the resulting file.
     pub fn execute_plan(&self, plan: &Plan) -> Result<Vec<ActionResult>> {
         let path = &plan.file.path;
 
@@ -147,26 +153,59 @@ impl MkvtoolnixExecutorPlugin {
 
         let mut results = Vec::new();
 
-        // Run propedit actions first (in-place, fast)
-        if !propedit_actions.is_empty() {
-            tracing::info!(
-                path = %path.display(),
-                count = propedit_actions.len(),
-                "running propedit actions"
-            );
-            let propedit_results = propedit::execute_propedit_actions(path, &propedit_actions)?;
-            results.extend(propedit_results);
-        }
+        // For non-MKV source files, merge must run first to create the MKV
+        // before propedit can operate on it.
+        let is_mkv = plan.file.container == Container::Mkv;
+        let propedit_first = is_mkv || merge_actions.is_empty();
 
-        // Run merge actions second (requires remux)
-        if !merge_actions.is_empty() {
-            tracing::info!(
-                path = %path.display(),
-                count = merge_actions.len(),
-                "running merge actions"
-            );
-            let merge_results = merge::execute_merge_actions(path, &merge_actions)?;
-            results.extend(merge_results);
+        if propedit_first {
+            // MKV source: propedit first (in-place, fast), then merge
+            if !propedit_actions.is_empty() {
+                tracing::info!(
+                    path = %path.display(),
+                    count = propedit_actions.len(),
+                    "running propedit actions"
+                );
+                let propedit_results = propedit::execute_propedit_actions(path, &propedit_actions)?;
+                results.extend(propedit_results);
+            }
+
+            if !merge_actions.is_empty() {
+                tracing::info!(
+                    path = %path.display(),
+                    count = merge_actions.len(),
+                    "running merge actions"
+                );
+                let merge_results = merge::execute_merge_actions(path, &merge_actions)?;
+                results.extend(merge_results);
+            }
+        } else {
+            // Non-MKV source: merge first (convert to MKV), then propedit
+            // on the resulting .mkv file (merge removes the original).
+            let mut converted_path = path.to_path_buf();
+            if !merge_actions.is_empty() {
+                tracing::info!(
+                    path = %path.display(),
+                    count = merge_actions.len(),
+                    "running merge actions (convert to MKV first)"
+                );
+                let merge_results = merge::execute_merge_actions(path, &merge_actions)?;
+                results.extend(merge_results);
+
+                // After ConvertContainer, the file is now at the .mkv path
+                converted_path.set_extension("mkv");
+            }
+
+            if !propedit_actions.is_empty() {
+                tracing::info!(
+                    path = %converted_path.display(),
+                    count = propedit_actions.len(),
+                    "running propedit actions (on converted MKV)"
+                );
+                let propedit_results =
+                    propedit::execute_propedit_actions(&converted_path, &propedit_actions)?;
+                results.extend(propedit_results);
+            }
         }
 
         Ok(results)

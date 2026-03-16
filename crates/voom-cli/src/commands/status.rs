@@ -29,6 +29,21 @@ pub async fn run() -> Result<()> {
                         voom_domain::utils::datetime::format_size(total_size).cyan()
                     );
 
+                    // Bad file count
+                    match store.count_bad_files() {
+                        Ok(0) => {}
+                        Ok(n) => {
+                            println!(
+                                "  {} bad files (run {} to see details)",
+                                n.to_string().red(),
+                                "voom db list-bad".bold()
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to count bad files: {e}");
+                        }
+                    }
+
                     // Container breakdown (top 5)
                     let sorted = output::container_counts(&files);
                     if !sorted.is_empty() {

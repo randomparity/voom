@@ -296,6 +296,59 @@ fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>) {
         }
     }
 
+    // Detect set_tag / delete_tag conflicts
+    let mut set_tag_keys: HashSet<&str> = HashSet::new();
+    let mut delete_tag_keys: HashSet<&str> = HashSet::new();
+    let mut has_clear_tags = false;
+    let mut clear_tags_index: Option<usize> = None;
+
+    for (i, spanned_op) in phase.operations.iter().enumerate() {
+        match &spanned_op.node {
+            OperationNode::ClearTags => {
+                has_clear_tags = true;
+                clear_tags_index = Some(i);
+            }
+            OperationNode::SetTag { tag, .. } => {
+                set_tag_keys.insert(tag.as_str());
+            }
+            OperationNode::DeleteTag(tag) => {
+                delete_tag_keys.insert(tag.as_str());
+            }
+            _ => {}
+        }
+    }
+
+    for key in &set_tag_keys {
+        if delete_tag_keys.contains(key) {
+            errors.push(DslError::validation(
+                phase.span.line,
+                phase.span.col,
+                format!(
+                    "tag \"{key}\" is both set and deleted in phase \"{}\"",
+                    phase.name
+                ),
+            ));
+        }
+    }
+
+    // Warn if set_tag appears before clear_tags (clear will undo the set)
+    if has_clear_tags && !set_tag_keys.is_empty() {
+        let clear_idx = clear_tags_index.unwrap();
+        for (i, spanned_op) in phase.operations.iter().enumerate() {
+            if let OperationNode::SetTag { tag, .. } = &spanned_op.node {
+                if i < clear_idx {
+                    errors.push(DslError::validation(
+                        spanned_op.span.line,
+                        spanned_op.span.col,
+                        format!(
+                            "set_tag \"{tag}\" appears before clear_tags and will be overwritten"
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
     // Check for unfiltered keep+remove on the same broad target category
     for target in &kept_targets {
         let broad_category = broad_track_category(target);
@@ -442,6 +495,25 @@ fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut 
         }
         OperationNode::Actions { target, .. } => {
             validate_track_target(target, line, col, errors);
+        }
+        OperationNode::ClearTags => {}
+        OperationNode::SetTag { tag, .. } => {
+            if tag.is_empty() {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    "set_tag requires a non-empty tag name".to_string(),
+                ));
+            }
+        }
+        OperationNode::DeleteTag(tag) => {
+            if tag.is_empty() {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    "delete_tag requires a non-empty tag name".to_string(),
+                ));
+            }
         }
     }
 }
@@ -803,5 +875,38 @@ mod tests {
             }
             _ => panic!("expected validation error"),
         }
+    }
+
+    #[test]
+    fn test_clear_tags_valid() {
+        let input = r#"policy "test" {
+            phase clean {
+                clear_tags
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_set_tag_valid() {
+        let input = r#"policy "test" {
+            phase clean {
+                set_tag "title" "My Movie"
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_delete_tag_valid() {
+        let input = r#"policy "test" {
+            phase clean {
+                delete_tag "encoder"
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
     }
 }

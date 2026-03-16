@@ -238,6 +238,31 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
                     node: build_synthesize(child)?,
                 });
             }
+            Rule::clear_tags_op => {
+                let op_span = span_from_pair(&child);
+                operations.push(SpannedOperation {
+                    span: op_span,
+                    node: OperationNode::ClearTags,
+                });
+            }
+            Rule::set_tag_op => {
+                let op_span = span_from_pair(&child);
+                let mut tag_inner = child.into_inner();
+                let tag = parse_string_value(&tag_inner.next().unwrap());
+                let val = parse_set_tag_value(tag_inner.next().unwrap());
+                operations.push(SpannedOperation {
+                    span: op_span,
+                    node: OperationNode::SetTag { tag, value: val },
+                });
+            }
+            Rule::delete_tag_op => {
+                let op_span = span_from_pair(&child);
+                let tag = parse_string_value(&child.into_inner().next().unwrap());
+                operations.push(SpannedOperation {
+                    span: op_span,
+                    node: OperationNode::DeleteTag(tag),
+                });
+            }
             Rule::when_block => {
                 let op_span = span_from_pair(&child);
                 operations.push(SpannedOperation {
@@ -768,12 +793,7 @@ fn build_action(pair: Pair<'_, Rule>) -> Result<ActionNode> {
     }
     if text.starts_with("set_tag") {
         let tag = parse_string_value(&inner.next().unwrap());
-        let val_pair = inner.next().unwrap();
-        let val = if val_pair.as_rule() == Rule::field_access {
-            ValueOrField::Field(build_field_access(&val_pair))
-        } else {
-            ValueOrField::Value(build_value(val_pair))
-        };
+        let val = parse_set_tag_value(inner.next().unwrap());
         return Ok(ActionNode::SetTag(tag, val));
     }
 
@@ -794,6 +814,15 @@ fn build_track_ref(pair: Pair<'_, Rule>) -> Result<TrackRefNode> {
         None
     };
     Ok(TrackRefNode { target, filter })
+}
+
+/// Parse a `set_tag` value: either a field access or a literal value.
+fn parse_set_tag_value(val_pair: Pair<'_, Rule>) -> ValueOrField {
+    if val_pair.as_rule() == Rule::field_access {
+        ValueOrField::Field(build_field_access(&val_pair))
+    } else {
+        ValueOrField::Value(build_value(val_pair))
+    }
 }
 
 fn build_field_access(pair: &Pair<'_, Rule>) -> Vec<String> {
@@ -1179,5 +1208,103 @@ mod tests {
             OperationNode::Container(name) => assert_eq!(name, "mkv"),
             _ => panic!("expected Container"),
         }
+    }
+
+    #[test]
+    fn test_parse_clear_tags() {
+        let input = r#"policy "test" {
+            phase clean {
+                clear_tags
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::ClearTags => {}
+            other => panic!("expected ClearTags, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_set_tag_literal() {
+        let input = r#"policy "test" {
+            phase clean {
+                set_tag "title" "My Movie"
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::SetTag { tag, value } => {
+                assert_eq!(tag, "title");
+                match value {
+                    ValueOrField::Value(Value::String(s)) => assert_eq!(s, "My Movie"),
+                    other => panic!("expected string value, got {other:?}"),
+                }
+            }
+            other => panic!("expected SetTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_set_tag_field_access() {
+        let input = r#"policy "test" {
+            phase clean {
+                set_tag "source" plugin.metadata
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::SetTag { tag, value } => {
+                assert_eq!(tag, "source");
+                match value {
+                    ValueOrField::Field(path) => assert_eq!(path, &["plugin", "metadata"]),
+                    other => panic!("expected field access, got {other:?}"),
+                }
+            }
+            other => panic!("expected SetTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_delete_tag() {
+        let input = r#"policy "test" {
+            phase clean {
+                delete_tag "encoder"
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::DeleteTag(tag) => assert_eq!(tag, "encoder"),
+            other => panic!("expected DeleteTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_combined_container_metadata() {
+        let input = r#"policy "test" {
+            phase clean {
+                clear_tags
+                container mkv
+                set_tag "title" "My Movie"
+                delete_tag "encoder"
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert_eq!(ast.phases[0].operations.len(), 4);
+        assert!(matches!(
+            &ast.phases[0].operations[0].node,
+            OperationNode::ClearTags
+        ));
+        assert!(matches!(
+            &ast.phases[0].operations[1].node,
+            OperationNode::Container(_)
+        ));
+        assert!(matches!(
+            &ast.phases[0].operations[2].node,
+            OperationNode::SetTag { .. }
+        ));
+        assert!(matches!(
+            &ast.phases[0].operations[3].node,
+            OperationNode::DeleteTag(_)
+        ));
     }
 }

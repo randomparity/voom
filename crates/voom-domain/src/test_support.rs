@@ -13,12 +13,13 @@ use std::sync::Mutex;
 
 use uuid::Uuid;
 
+use crate::bad_file::BadFile;
 use crate::errors::{Result, VoomError};
 use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::MediaFile;
 use crate::plan::Plan;
 use crate::stats::ProcessingStats;
-use crate::storage::{FileFilters, StorageTrait, StoredPlan};
+use crate::storage::{BadFileFilters, FileFilters, StorageTrait, StoredPlan};
 
 /// In-memory storage for testing. Implements the full `StorageTrait` with
 /// working file and job methods. Plan/stats/plugin-data methods are stubs.
@@ -247,6 +248,30 @@ impl StorageTrait for InMemoryStore {
     }
 
     fn set_plugin_data(&self, _plugin: &str, _key: &str, _value: &[u8]) -> Result<()> {
+        Ok(())
+    }
+
+    fn upsert_bad_file(&self, _bad_file: &BadFile) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_bad_file_by_path(&self, _path: &Path) -> Result<Option<BadFile>> {
+        Ok(None)
+    }
+
+    fn list_bad_files(&self, _filters: &BadFileFilters) -> Result<Vec<BadFile>> {
+        Ok(Vec::new())
+    }
+
+    fn count_bad_files(&self) -> Result<u64> {
+        Ok(0)
+    }
+
+    fn delete_bad_file(&self, _id: &Uuid) -> Result<()> {
+        Ok(())
+    }
+
+    fn delete_bad_file_by_path(&self, _path: &Path) -> Result<()> {
         Ok(())
     }
 

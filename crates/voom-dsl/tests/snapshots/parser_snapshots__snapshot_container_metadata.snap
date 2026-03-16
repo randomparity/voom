@@ -1,0 +1,97 @@
+---
+source: crates/voom-dsl/tests/parser_snapshots.rs
+assertion_line: 221
+expression: ast
+---
+name: clean-convert
+config: ~
+phases:
+  - name: clean
+    skip_when: ~
+    depends_on: []
+    run_if: ~
+    on_error: ~
+    operations:
+      - node: ClearTags
+        span:
+          start: 45
+          end: 55
+          line: 3
+          col: 5
+      - node:
+          Container: mkv
+        span:
+          start: 60
+          end: 73
+          line: 4
+          col: 5
+      - node:
+          SetTag:
+            tag: title
+            value:
+              Value:
+                String: My Movie
+        span:
+          start: 78
+          end: 104
+          line: 5
+          col: 5
+      - node:
+          DeleteTag: encoder
+        span:
+          start: 109
+          end: 129
+          line: 6
+          col: 5
+    span:
+      start: 27
+      end: 133
+      line: 2
+      col: 3
+  - name: metadata
+    skip_when: ~
+    depends_on:
+      - clean
+    run_if: ~
+    on_error: ~
+    operations:
+      - node:
+          SetTag:
+            tag: source
+            value:
+              Value:
+                String: voom
+        span:
+          start: 182
+          end: 205
+          line: 11
+          col: 5
+      - node:
+          When:
+            condition:
+              Exists:
+                target: audio
+                filter:
+                  LangIn:
+                    - jpn
+            then_actions:
+              - SetTag:
+                  - language
+                  - Value:
+                      String: Japanese
+            else_actions: []
+        span:
+          start: 210
+          end: 293
+          line: 12
+          col: 5
+    span:
+      start: 137
+      end: 294
+      line: 9
+      col: 3
+span:
+  start: 0
+  end: 297
+  line: 1
+  col: 1

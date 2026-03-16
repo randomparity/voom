@@ -145,6 +145,14 @@ impl FfmpegCommand {
         self
     }
 
+    /// Clear a metadata key (set to empty value: `-metadata key=`).
+    #[must_use]
+    pub fn clear_metadata(mut self, key: &str) -> Self {
+        self.args.push("-metadata".to_string());
+        self.args.push(format!("{key}="));
+        self
+    }
+
     /// Enable progress output to pipe (`-progress pipe:1`).
     #[must_use]
     pub fn progress_pipe(mut self) -> Self {
@@ -281,6 +289,32 @@ pub fn build_ffmpeg_command(
                         validate_metadata_value(lang)?;
                         cmd = cmd.metadata(Some(stream), "language", lang);
                     }
+                }
+            }
+            OperationType::SetContainerTag => {
+                if let (Some(tag), Some(value)) = (
+                    action.parameters.get("tag").and_then(|v| v.as_str()),
+                    action.parameters.get("value").and_then(|v| v.as_str()),
+                ) {
+                    validate_metadata_value(tag)?;
+                    validate_metadata_value(value)?;
+                    cmd = cmd.metadata(None, tag, value);
+                }
+            }
+            OperationType::ClearContainerTags => {
+                if let Some(tags) = action.parameters.get("tags").and_then(|v| v.as_array()) {
+                    for tag_val in tags {
+                        if let Some(tag) = tag_val.as_str() {
+                            validate_metadata_value(tag)?;
+                            cmd = cmd.clear_metadata(tag);
+                        }
+                    }
+                }
+            }
+            OperationType::DeleteContainerTag => {
+                if let Some(tag) = action.parameters.get("tag").and_then(|v| v.as_str()) {
+                    validate_metadata_value(tag)?;
+                    cmd = cmd.clear_metadata(tag);
                 }
             }
             _ => {
@@ -661,5 +695,67 @@ mod tests {
 
         let result = build_ffmpeg_command(&file, &actions, output, None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_command_set_container_tag() {
+        let file = sample_mp4_file();
+        let action = PlannedAction {
+            operation: OperationType::SetContainerTag,
+            track_index: None,
+            parameters: serde_json::json!({"tag": "title", "value": "My Movie"}),
+            description: "Set container tag".into(),
+        };
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mp4");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        assert!(args.contains(&"-metadata".to_string()));
+        assert!(args.contains(&"title=My Movie".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_clear_container_tags() {
+        let file = sample_mp4_file();
+        let action = PlannedAction {
+            operation: OperationType::ClearContainerTags,
+            track_index: None,
+            parameters: serde_json::json!({"tags": ["title", "encoder"]}),
+            description: "Clear all tags".into(),
+        };
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mp4");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        assert!(args.contains(&"title=".to_string()));
+        assert!(args.contains(&"encoder=".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_delete_container_tag() {
+        let file = sample_mp4_file();
+        let action = PlannedAction {
+            operation: OperationType::DeleteContainerTag,
+            track_index: None,
+            parameters: serde_json::json!({"tag": "encoder"}),
+            description: "Delete container tag".into(),
+        };
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mp4");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        assert!(args.contains(&"-metadata".to_string()));
+        assert!(args.contains(&"encoder=".to_string()));
+    }
+
+    #[test]
+    fn test_ffmpeg_clear_metadata_method() {
+        let cmd = FfmpegCommand::new()
+            .input(Path::new("/input.mp4"))
+            .clear_metadata("title")
+            .output(Path::new("/output.mp4"));
+        let args = cmd.build();
+        assert!(args.contains(&"-metadata".to_string()));
+        assert!(args.contains(&"title=".to_string()));
     }
 }

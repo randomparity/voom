@@ -315,6 +315,26 @@ voom plugin disable whisper-transcriber
 voom plugin install /path/to/my-plugin.wasm
 ```
 
+## Handling Bad Files
+
+When a file fails introspection (corrupt, unreadable, etc.), it is recorded in the database as a "bad file". On subsequent runs, bad files are automatically skipped to avoid re-failing.
+
+```bash
+# See which files are bad and why
+voom db list-bad
+
+# Re-attempt introspection on bad files
+voom process /path/to/media --policy normalize.voom --force-rescan
+
+# Remove bad file entries from DB (after manually fixing files)
+voom db purge-bad
+
+# Delete bad files from disk and DB
+voom db clean-bad --yes
+```
+
+The `voom status` command shows the bad file count when any exist.
+
 ## Database Maintenance
 
 ```bash
