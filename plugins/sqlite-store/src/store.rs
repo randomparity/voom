@@ -13,7 +13,9 @@ use voom_domain::job::{Job, JobStatus, JobUpdate};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::Plan;
 use voom_domain::stats::ProcessingStats;
-use voom_domain::storage::{BadFileFilters, FileFilters, JobFilters, StorageTrait, StoredPlan};
+use voom_domain::storage::{
+    BadFileFilters, FileFilters, JobFilters, PlanStatus, StorageTrait, StoredPlan,
+};
 
 use crate::schema;
 
@@ -235,10 +237,18 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
             JobStatus::Pending
         }),
         priority: row.get("priority")?,
-        payload: payload_str.and_then(|s| serde_json::from_str(&s).ok()),
+        payload: payload_str.and_then(|s| {
+            serde_json::from_str(&s)
+                .map_err(|e| tracing::warn!(error = %e, "invalid JSON payload in jobs table"))
+                .ok()
+        }),
         progress: row.get("progress")?,
         progress_message: row.get("progress_message")?,
-        output: output_str.and_then(|s| serde_json::from_str(&s).ok()),
+        output: output_str.and_then(|s| {
+            serde_json::from_str(&s)
+                .map_err(|e| tracing::warn!(error = %e, "invalid JSON output in jobs table"))
+                .ok()
+        }),
         error: row.get("error")?,
         worker_id: row.get("worker_id")?,
         created_at: created_str.parse().unwrap_or_else(|e| {
@@ -840,11 +850,15 @@ impl StorageTrait for SqliteStore {
         Ok(plan.id)
     }
 
-    fn update_plan_status(&self, plan_id: &Uuid, status: &str) -> Result<()> {
+    fn update_plan_status(&self, plan_id: &Uuid, status: PlanStatus) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
             "UPDATE plans SET status = ?1, executed_at = ?2 WHERE id = ?3",
-            params![status, format_datetime(&Utc::now()), plan_id.to_string()],
+            params![
+                status.as_str(),
+                format_datetime(&Utc::now()),
+                plan_id.to_string()
+            ],
         )
         .map_err(|e| VoomError::Storage(format!("failed to update plan status: {e}")))?;
         Ok(())
@@ -874,7 +888,10 @@ impl StorageTrait for SqliteStore {
                     }),
                     policy_name: row.get("policy_name")?,
                     phase_name: row.get("phase_name")?,
-                    status: row.get("status")?,
+                    status: {
+                        let s: String = row.get("status")?;
+                        PlanStatus::parse(&s).unwrap_or(PlanStatus::Pending)
+                    },
                     actions_json: row.get("actions")?,
                     warnings: row.get("warnings")?,
                     skip_reason: row.get("skip_reason")?,
@@ -1700,7 +1717,7 @@ mod tests {
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].id, plan_id);
         assert_eq!(plans[0].policy_name, "default");
-        assert_eq!(plans[0].status, "pending");
+        assert_eq!(plans[0].status, PlanStatus::Pending);
         assert_eq!(plans[0].policy_hash.as_deref(), Some("abc123"));
     }
 
@@ -1995,11 +2012,13 @@ mod tests {
         };
         let plan_id = store.save_plan(&plan).unwrap();
 
-        store.update_plan_status(&plan_id, "completed").unwrap();
+        store
+            .update_plan_status(&plan_id, PlanStatus::Completed)
+            .unwrap();
 
         let plans = store.get_plans_for_file(&file.id).unwrap();
         assert_eq!(plans.len(), 1);
-        assert_eq!(plans[0].status, "completed");
+        assert_eq!(plans[0].status, PlanStatus::Completed);
         assert!(plans[0].executed_at.is_some());
     }
 
@@ -2027,11 +2046,13 @@ mod tests {
         };
         let plan_id = store.save_plan(&plan).unwrap();
 
-        store.update_plan_status(&plan_id, "failed").unwrap();
+        store
+            .update_plan_status(&plan_id, PlanStatus::Failed)
+            .unwrap();
 
         let plans = store.get_plans_for_file(&file.id).unwrap();
         assert_eq!(plans.len(), 1);
-        assert_eq!(plans[0].status, "failed");
+        assert_eq!(plans[0].status, PlanStatus::Failed);
     }
 
     // --- File ID preservation (F1) ---

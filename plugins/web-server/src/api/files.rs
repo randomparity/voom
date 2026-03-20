@@ -8,7 +8,7 @@ use uuid::Uuid;
 use voom_domain::media::MediaFile;
 use voom_domain::storage::FileFilters;
 
-use crate::error::WebError;
+use crate::error::{spawn_store_op, WebError};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -63,15 +63,8 @@ pub async fn list_files(
     };
     let count_filters = filters.clone();
 
-    let files = tokio::task::spawn_blocking(move || store.list_files(&filters))
-        .await
-        .map_err(|e| WebError::Internal(e.to_string()))?
-        .map_err(|e| WebError::Storage(e.to_string()))?;
-
-    let total = tokio::task::spawn_blocking(move || count_store.count_files(&count_filters))
-        .await
-        .map_err(|e| WebError::Internal(e.to_string()))?
-        .map_err(|e| WebError::Storage(e.to_string()))? as usize;
+    let files = spawn_store_op(move || store.list_files(&filters)).await?;
+    let total = spawn_store_op(move || count_store.count_files(&count_filters)).await? as usize;
 
     Ok(Json(FileListResponse { files, total }))
 }
@@ -83,10 +76,7 @@ pub async fn get_file(
     Path(id): Path<Uuid>,
 ) -> Result<Json<MediaFile>, WebError> {
     let store = state.store.clone();
-    let file = tokio::task::spawn_blocking(move || store.get_file(&id))
-        .await
-        .map_err(|e| WebError::Internal(e.to_string()))?
-        .map_err(|e| WebError::Storage(e.to_string()))?;
+    let file = spawn_store_op(move || store.get_file(&id)).await?;
 
     file.map(Json)
         .ok_or_else(|| WebError::NotFound(format!("File {id} not found")))
@@ -99,10 +89,7 @@ pub async fn delete_file(
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, WebError> {
     let store = state.store.clone();
-    tokio::task::spawn_blocking(move || store.delete_file(&id))
-        .await
-        .map_err(|e| WebError::Internal(e.to_string()))?
-        .map_err(|e| WebError::Storage(e.to_string()))?;
+    spawn_store_op(move || store.delete_file(&id)).await?;
 
     Ok(Json(serde_json::json!({"deleted": true})))
 }

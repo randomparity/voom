@@ -19,26 +19,26 @@ pub enum HwAccelBackend {
 #[derive(Debug, Clone)]
 pub struct HwAccelConfig {
     pub backend: Option<HwAccelBackend>,
-    pub enabled: bool,
 }
 
 impl HwAccelConfig {
     /// Create a new config with no detected backend (HW accel disabled).
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            backend: None,
-            enabled: false,
-        }
+        Self { backend: None }
+    }
+
+    /// Whether hardware acceleration is available.
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        self.backend.is_some()
     }
 
     /// Detect available hardware acceleration by querying ffmpeg.
     #[must_use]
     pub fn detect() -> Self {
-        let backend = Self::detect_backend();
         Self {
-            backend,
-            enabled: backend.is_some(),
+            backend: Self::detect_backend(),
         }
     }
 
@@ -47,7 +47,7 @@ impl HwAccelConfig {
     /// Falls back to the software encoder when HW accel is disabled or unavailable.
     #[must_use]
     pub fn encoder_name(&self, codec: &str) -> String {
-        if !self.enabled {
+        if !self.enabled() {
             return software_encoder(codec).to_string();
         }
 
@@ -76,7 +76,7 @@ impl HwAccelConfig {
     /// Get `FFmpeg` input args for HW acceleration (e.g., `-hwaccel cuda`).
     #[must_use]
     pub fn input_args(&self) -> Vec<String> {
-        if !self.enabled {
+        if !self.enabled() {
             return Vec::new();
         }
 
@@ -170,10 +170,7 @@ mod tests {
 
     #[test]
     fn test_hwaccel_config_disabled() {
-        let config = HwAccelConfig {
-            backend: Some(HwAccelBackend::Nvenc),
-            enabled: false,
-        };
+        let config = HwAccelConfig { backend: None };
         // When disabled, should return software encoder names
         assert_eq!(config.encoder_name("hevc"), "libx265");
         assert_eq!(config.encoder_name("h264"), "libx264");
@@ -185,7 +182,6 @@ mod tests {
     fn test_encoder_name_with_nvenc() {
         let config = HwAccelConfig {
             backend: Some(HwAccelBackend::Nvenc),
-            enabled: true,
         };
         assert_eq!(config.encoder_name("hevc"), "hevc_nvenc");
         assert_eq!(config.encoder_name("h265"), "hevc_nvenc");
@@ -203,7 +199,6 @@ mod tests {
     fn test_encoder_name_with_qsv() {
         let config = HwAccelConfig {
             backend: Some(HwAccelBackend::Qsv),
-            enabled: true,
         };
         assert_eq!(config.encoder_name("h264"), "h264_qsv");
         assert_eq!(config.encoder_name("hevc"), "hevc_qsv");
@@ -216,7 +211,6 @@ mod tests {
     fn test_encoder_name_with_vaapi() {
         let config = HwAccelConfig {
             backend: Some(HwAccelBackend::Vaapi),
-            enabled: true,
         };
         assert_eq!(config.encoder_name("hevc"), "hevc_vaapi");
         assert_eq!(config.encoder_name("h264"), "h264_vaapi");
@@ -227,7 +221,6 @@ mod tests {
     fn test_encoder_name_with_videotoolbox() {
         let config = HwAccelConfig {
             backend: Some(HwAccelBackend::Videotoolbox),
-            enabled: true,
         };
         assert_eq!(config.encoder_name("hevc"), "hevc_videotoolbox");
         assert_eq!(config.encoder_name("h264"), "h264_videotoolbox");
@@ -238,10 +231,7 @@ mod tests {
 
     #[test]
     fn test_no_backend() {
-        let config = HwAccelConfig {
-            backend: None,
-            enabled: true,
-        };
+        let config = HwAccelConfig { backend: None };
         assert_eq!(config.encoder_name("hevc"), "libx265");
         assert!(config.input_args().is_empty());
     }
@@ -250,6 +240,6 @@ mod tests {
     fn test_default() {
         let config = HwAccelConfig::default();
         assert!(config.backend.is_none());
-        assert!(!config.enabled);
+        assert!(!config.enabled());
     }
 }

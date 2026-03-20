@@ -3,6 +3,8 @@
 //! Executes media plans using `FFmpeg` for transcoding, container conversion,
 //! and metadata operations on non-MKV files (or any file requiring transcode).
 
+#![allow(clippy::missing_errors_doc)]
+
 pub mod command;
 pub mod hwaccel;
 pub mod progress;
@@ -132,7 +134,7 @@ impl FfmpegExecutorPlugin {
             .unwrap_or("output");
         let output_path = parent.join(format!("{stem}.voom_tmp.{ext}"));
 
-        let hw_accel = if self.hw_accel.enabled {
+        let hw_accel = if self.hw_accel.enabled() {
             Some(&self.hw_accel)
         } else {
             None

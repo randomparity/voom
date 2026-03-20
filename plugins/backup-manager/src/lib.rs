@@ -4,6 +4,8 @@
 //! capability. Creates backups of media files before any modifications are
 //! applied, enabling safe rollback if execution fails.
 
+#![allow(clippy::missing_errors_doc)]
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -338,9 +340,12 @@ impl BackupManagerPlugin {
         let c_path = CString::new(check.to_string_lossy().as_bytes())
             .map_err(|e| plugin_err(format!("invalid path for statvfs: {e}")))?;
 
+        // SAFETY: `c_path` is a valid NUL-terminated C string (from CString::new above),
+        // and `stat` is passed as an out-pointer that statvfs will fully initialize on success.
         unsafe {
-            let mut stat: libc::statvfs = std::mem::zeroed();
-            if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
+            let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+            if libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) == 0 {
+                let stat = stat.assume_init();
                 // Available space for unprivileged users
                 Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
             } else {

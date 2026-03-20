@@ -27,6 +27,7 @@ use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let config = app::load_config()?;
     let kernel = Arc::new(app::bootstrap_kernel(&config)?);
+    let store = app::open_store(&config)?;
 
     let path = args
         .path
@@ -38,13 +39,10 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     print_run_header(&compiled.name, &path, args.dry_run);
 
     // Auto-prune stale file entries under the target directory
-    {
-        let store = app::open_store(&config)?;
-        match store.prune_missing_files_under(&path) {
-            Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
-            Ok(_) => {}
-            Err(e) => eprintln!("{} auto-prune failed: {e}", "Warning:".yellow()),
-        }
+    match store.prune_missing_files_under(&path) {
+        Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
+        Ok(_) => {}
+        Err(e) => eprintln!("{} auto-prune failed: {e}", "Warning:".yellow()),
     }
 
     if token.is_cancelled() {
@@ -61,7 +59,6 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
 
     // Filter out known-bad files unless --force-rescan is set
     if !args.force_rescan {
-        let store = app::open_store(&config)?;
         let bad_files = store
             .list_bad_files(&voom_domain::storage::BadFileFilters::default())
             .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
@@ -100,7 +97,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         return Ok(());
     }
 
-    let (pool, effective_workers) = create_worker_pool(&config, &args, token.clone())?;
+    let (pool, effective_workers) = create_worker_pool(&store, &args, token.clone())?;
 
     let reporter: Arc<dyn ProgressReporter> = Arc::new(CliProgressReporter::new(file_count));
 
@@ -185,6 +182,14 @@ fn discover_files(
     Ok(events)
 }
 
+/// Typed payload for the process worker pool, replacing freeform JSON.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ProcessJobPayload {
+    path: String,
+    size: u64,
+    content_hash: String,
+}
+
 /// Build work items from discovery events for the worker pool.
 fn build_work_items(
     events: &[voom_domain::events::FileDiscoveredEvent],
@@ -192,23 +197,24 @@ fn build_work_items(
     events
         .iter()
         .map(|evt| {
-            let payload = serde_json::json!({
-                "path": evt.path.to_string_lossy(),
-                "size": evt.size,
-                "content_hash": evt.content_hash,
-            });
-            ("process".to_string(), 100, Some(payload))
+            let payload = ProcessJobPayload {
+                path: evt.path.to_string_lossy().into_owned(),
+                size: evt.size,
+                content_hash: evt.content_hash.clone(),
+            };
+            let value =
+                serde_json::to_value(&payload).expect("ProcessJobPayload is always serializable");
+            ("process".to_string(), 100, Some(value))
         })
         .collect()
 }
 
 /// Set up the job queue and worker pool.
 fn create_worker_pool(
-    config: &app::AppConfig,
+    store: &Arc<dyn voom_domain::storage::StorageTrait>,
     args: &ProcessArgs,
     token: CancellationToken,
 ) -> Result<(WorkerPool, usize)> {
-    let store = app::open_store(config)?;
     let queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
 
     let effective_workers = if args.workers == 0 {
@@ -239,14 +245,13 @@ async fn process_single_file(
     dry_run: bool,
     token: &CancellationToken,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
-    let payload = job.payload.as_ref().ok_or("missing payload")?;
-    let file_path = payload["path"].as_str().ok_or("missing path in payload")?;
-    let file_size = payload["size"].as_u64().unwrap_or(0);
-    let content_hash = payload["content_hash"].as_str().unwrap_or("").to_string();
+    let raw_payload = job.payload.as_ref().ok_or("missing payload")?;
+    let payload: ProcessJobPayload =
+        serde_json::from_value(raw_payload.clone()).map_err(|e| format!("invalid payload: {e}"))?;
 
-    let path = std::path::PathBuf::from(file_path);
+    let path = std::path::PathBuf::from(&payload.path);
 
-    let file = introspect_file(path, file_size, content_hash, kernel).await?;
+    let file = introspect_file(path, payload.size, payload.content_hash, kernel).await?;
 
     let result = orchestrate_plans(compiled, &file)?;
 
@@ -275,7 +280,7 @@ async fn process_single_file(
     }
 }
 
-/// Run ffprobe introspection on a single file (blocking I/O on a spawn_blocking thread).
+/// Run ffprobe introspection on a single file (blocking I/O on a `spawn_blocking` thread).
 async fn introspect_file(
     path: std::path::PathBuf,
     file_size: u64,
@@ -332,7 +337,7 @@ async fn introspect_file(
 
 /// Run the phase orchestrator to produce plans.
 ///
-/// NOTE: This function does NOT dispatch PlanCreated events. The execute_plans
+/// NOTE: This function does NOT dispatch `PlanCreated` events. The `execute_plans`
 /// function dispatches them when it's time to actually execute. Dispatching
 /// here would trigger executor plugins during dry-run mode.
 fn orchestrate_plans(

@@ -127,7 +127,11 @@ mod tests {
         fn get_plans_for_file(&self, _: &uuid::Uuid) -> VoomResult<Vec<StoredPlan>> {
             Ok(vec![])
         }
-        fn update_plan_status(&self, _: &uuid::Uuid, _: &str) -> VoomResult<()> {
+        fn update_plan_status(
+            &self,
+            _: &uuid::Uuid,
+            _: voom_domain::storage::PlanStatus,
+        ) -> VoomResult<()> {
             Ok(())
         }
         fn get_file_history(

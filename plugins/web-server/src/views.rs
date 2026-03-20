@@ -15,8 +15,8 @@ pub struct FileView {
     pub track_count: usize,
     /// Human-readable duration (e.g., "1h 23m 45s").
     pub duration_human: String,
-    /// All other MediaFile fields, flattened into the same JSON object.
-    /// Computed field names (filename, size_human, track_count, duration_human)
+    /// All other `MediaFile` fields, flattened into the same JSON object.
+    /// Computed field names (`filename`, `size_human`, `track_count`, `duration_human`)
     /// must not collide with `MediaFile` field names.
     #[serde(flatten)]
     pub file: MediaFile,

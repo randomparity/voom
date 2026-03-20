@@ -1,5 +1,7 @@
 //! `SQLite` storage plugin: persistent storage for files, tracks, jobs, plans, and plugin data.
 
+#![allow(clippy::missing_errors_doc)]
+
 pub mod schema;
 pub mod store;
 
@@ -99,11 +101,12 @@ impl Plugin for SqliteStorePlugin {
             }
             Event::PlanCompleted(e) => {
                 tracing::info!(path = %e.path.display(), phase = %e.phase_name, "plan completed");
-                store.update_plan_status(&e.plan_id, "completed")?;
+                store
+                    .update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Completed)?;
             }
             Event::PlanFailed(e) => {
                 tracing::info!(path = %e.path.display(), phase = %e.phase_name, error = %e.error, "plan failed");
-                store.update_plan_status(&e.plan_id, "failed")?;
+                store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Failed)?;
             }
             Event::MetadataEnriched(e) => {
                 let key = format!("metadata:{}", e.path.display());

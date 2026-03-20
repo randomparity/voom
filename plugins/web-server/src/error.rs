@@ -62,6 +62,21 @@ impl IntoResponse for WebError {
     }
 }
 
+/// Run a blocking storage operation on a background thread.
+///
+/// Wraps `tokio::task::spawn_blocking` with the standard double-map_err pattern
+/// used across all web handlers: `JoinError` → Internal, `StorageError` → Storage.
+pub async fn spawn_store_op<F, T>(f: F) -> Result<T, WebError>
+where
+    F: FnOnce() -> Result<T, voom_domain::errors::VoomError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| WebError::Internal(e.to_string()))?
+        .map_err(|e| WebError::Storage(e.to_string()))
+}
+
 impl From<voom_domain::errors::VoomError> for WebError {
     fn from(err: voom_domain::errors::VoomError) -> Self {
         match &err {

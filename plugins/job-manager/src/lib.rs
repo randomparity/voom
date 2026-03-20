@@ -7,6 +7,8 @@
 //! - Pluggable progress reporting (CLI, database, custom)
 //! - Batch processing with error handling strategies
 
+#![allow(clippy::missing_errors_doc)]
+
 pub mod progress;
 pub mod queue;
 pub mod worker;

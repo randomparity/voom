@@ -211,7 +211,9 @@ mod tests {
             .get_plans_for_file(&Uuid::new_v4())
             .unwrap()
             .is_empty());
-        assert!(store.update_plan_status(&Uuid::new_v4(), "done").is_ok());
+        assert!(store
+            .update_plan_status(&Uuid::new_v4(), voom_domain::storage::PlanStatus::Completed)
+            .is_ok());
         assert!(store.get_file_history(Path::new("/x")).unwrap().is_empty());
 
         let stats = ProcessingStats::new(file.id, "test".into(), "phase1".into());

@@ -4,6 +4,8 @@
 //! `run_if` triggers, and per-phase error handling. Coordinates the policy
 //! evaluator and executors to process files through all phases of a policy.
 
+#![allow(clippy::missing_errors_doc)]
+
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};

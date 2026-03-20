@@ -40,7 +40,11 @@ impl ProcessingStats {
     #[must_use]
     pub fn size_delta(&self) -> Option<i64> {
         match (self.file_size_before, self.file_size_after) {
-            (Some(before), Some(after)) => Some(after as i64 - before as i64),
+            (Some(before), Some(after)) => {
+                let a = i64::try_from(after).unwrap_or(i64::MAX);
+                let b = i64::try_from(before).unwrap_or(i64::MAX);
+                Some(a.saturating_sub(b))
+            }
             _ => None,
         }
     }

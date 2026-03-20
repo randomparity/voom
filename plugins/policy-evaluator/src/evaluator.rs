@@ -139,7 +139,7 @@ fn evaluate_phase(
     };
 
     for op in &phase.operations {
-        if let Err(msg) = process_operation(op, &mut ctx) {
+        if let Err(msg) = emit_operation(op, &mut ctx) {
             match phase.on_error {
                 ErrorStrategy::Abort => {
                     ctx.plan.warnings.push(format!("Error (aborting): {msg}"));
@@ -164,57 +164,57 @@ struct PhaseContext<'a> {
     file: &'a MediaFile,
 }
 
-/// Process a single operation, adding planned actions to the plan.
-fn process_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), String> {
+/// Emit planned actions for a single operation into the plan.
+fn emit_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), String> {
     match op {
         CompiledOperation::SetContainer(container) => {
-            process_set_container(container, ctx);
+            emit_set_container(container, ctx);
         }
         CompiledOperation::Keep { target, filter } => {
-            process_keep(target, filter.as_ref(), ctx);
+            emit_keep(target, filter.as_ref(), ctx);
         }
         CompiledOperation::Remove { target, filter } => {
-            process_remove(target, filter.as_ref(), ctx);
+            emit_remove(target, filter.as_ref(), ctx);
         }
         CompiledOperation::ReorderTracks(order) => {
-            process_reorder(order, ctx);
+            emit_reorder(order, ctx);
         }
         CompiledOperation::SetDefaults(defaults) => {
-            process_set_defaults(defaults, ctx);
+            emit_set_defaults(defaults, ctx);
         }
         CompiledOperation::ClearActions { target, settings } => {
-            process_clear_actions(target, settings, ctx);
+            emit_clear_actions(target, settings, ctx);
         }
         CompiledOperation::Transcode {
             target,
             codec,
             settings,
         } => {
-            process_transcode(target, codec, settings, ctx);
+            emit_transcode(target, codec, settings, ctx);
         }
         CompiledOperation::Synthesize(synth) => {
-            process_synthesize(synth, ctx);
+            emit_synthesize(synth, ctx);
         }
         CompiledOperation::ClearTags => {
-            process_clear_tags(ctx);
+            emit_clear_tags(ctx);
         }
         CompiledOperation::SetTag { tag, value } => {
-            process_set_tag(tag, value, ctx)?;
+            emit_set_tag(tag, value, ctx)?;
         }
         CompiledOperation::DeleteTag(tag) => {
-            process_delete_tag(tag, ctx);
+            emit_delete_tag(tag, ctx);
         }
         CompiledOperation::Conditional(cond) => {
-            process_conditional(cond, ctx)?;
+            emit_conditional(cond, ctx)?;
         }
         CompiledOperation::Rules { mode, rules } => {
-            process_rules(mode, rules, ctx)?;
+            emit_rules(mode, rules, ctx)?;
         }
     }
     Ok(())
 }
 
-fn process_set_container(container: &str, ctx: &mut PhaseContext) {
+fn emit_set_container(container: &str, ctx: &mut PhaseContext) {
     let target = Container::from_extension(container);
     if ctx.file.container != target {
         ctx.plan.actions.push(PlannedAction {
@@ -231,7 +231,7 @@ fn process_set_container(container: &str, ctx: &mut PhaseContext) {
     }
 }
 
-fn process_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
+fn emit_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
     let tracks = tracks_for_target(ctx.file, target);
     for track in &tracks {
         let should_remove = match filter {
@@ -257,7 +257,7 @@ fn process_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut
     }
 }
 
-fn process_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
+fn emit_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
     let tracks = tracks_for_target(ctx.file, target);
     for track in &tracks {
         let should_remove = match filter {
@@ -283,7 +283,7 @@ fn process_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &m
     }
 }
 
-fn process_reorder(order: &[String], ctx: &mut PhaseContext) {
+fn emit_reorder(order: &[String], ctx: &mut PhaseContext) {
     ctx.plan.actions.push(PlannedAction {
         operation: OperationType::ReorderTracks,
         track_index: None,
@@ -294,7 +294,7 @@ fn process_reorder(order: &[String], ctx: &mut PhaseContext) {
     });
 }
 
-fn process_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
+fn emit_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
     for default in defaults {
         let tracks = tracks_for_target(ctx.file, &default.target);
         match default.strategy {
@@ -395,7 +395,7 @@ fn process_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
     }
 }
 
-fn process_clear_actions(
+fn emit_clear_actions(
     target: &TrackTarget,
     settings: &HashMap<String, serde_json::Value>,
     ctx: &mut PhaseContext,
@@ -454,7 +454,7 @@ fn process_clear_actions(
     }
 }
 
-fn process_transcode(
+fn emit_transcode(
     target: &TrackTarget,
     codec: &str,
     settings: &HashMap<String, serde_json::Value>,
@@ -505,7 +505,7 @@ fn process_transcode(
     }
 }
 
-fn process_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
+fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
     // Check create_if condition
     if let Some(ref cond) = synth.create_if {
         if !evaluate_condition(cond, ctx.file) {
@@ -577,7 +577,7 @@ fn process_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
     });
 }
 
-fn process_clear_tags(ctx: &mut PhaseContext) {
+fn emit_clear_tags(ctx: &mut PhaseContext) {
     if ctx.file.tags.is_empty() {
         return;
     }
@@ -591,7 +591,7 @@ fn process_clear_tags(ctx: &mut PhaseContext) {
     });
 }
 
-fn process_set_tag(
+fn emit_set_tag(
     tag: &str,
     value: &CompiledValueOrField,
     ctx: &mut PhaseContext,
@@ -607,7 +607,7 @@ fn process_set_tag(
     Ok(())
 }
 
-fn process_delete_tag(tag: &str, ctx: &mut PhaseContext) {
+fn emit_delete_tag(tag: &str, ctx: &mut PhaseContext) {
     if ctx.file.tags.contains_key(tag) {
         ctx.plan.actions.push(PlannedAction {
             operation: OperationType::DeleteContainerTag,
@@ -620,7 +620,7 @@ fn process_delete_tag(tag: &str, ctx: &mut PhaseContext) {
     }
 }
 
-fn process_conditional(cond: &CompiledConditional, ctx: &mut PhaseContext) -> Result<(), String> {
+fn emit_conditional(cond: &CompiledConditional, ctx: &mut PhaseContext) -> Result<(), String> {
     let matched = evaluate_condition(&cond.condition, ctx.file);
     let actions = if matched {
         &cond.then_actions
@@ -628,12 +628,12 @@ fn process_conditional(cond: &CompiledConditional, ctx: &mut PhaseContext) -> Re
         &cond.else_actions
     };
     for action in actions {
-        process_action(action, ctx)?;
+        emit_action(action, ctx)?;
     }
     Ok(())
 }
 
-fn process_rules(
+fn emit_rules(
     mode: &RulesMode,
     rules: &[CompiledRule],
     ctx: &mut PhaseContext,
@@ -642,21 +642,21 @@ fn process_rules(
         let matched = evaluate_condition(&rule.conditional.condition, ctx.file);
         if matched {
             for action in &rule.conditional.then_actions {
-                process_action(action, ctx)?;
+                emit_action(action, ctx)?;
             }
             if *mode == RulesMode::First {
                 break;
             }
         } else {
             for action in &rule.conditional.else_actions {
-                process_action(action, ctx)?;
+                emit_action(action, ctx)?;
             }
         }
     }
     Ok(())
 }
 
-fn process_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), String> {
+fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), String> {
     match action {
         CompiledAction::Skip(phase) => {
             ctx.plan.skip_reason = Some(match phase {

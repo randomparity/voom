@@ -40,6 +40,11 @@ pub struct FileFilters {
 ///
 /// All methods are synchronous (blocking) since rusqlite is synchronous.
 /// Callers should use `tokio::task::spawn_blocking` for async contexts.
+///
+/// # Errors
+///
+/// All methods return [`VoomError::Storage`](crate::errors::VoomError::Storage) on database or I/O failures.
+#[allow(clippy::missing_errors_doc)]
 pub trait StorageTrait: Send + Sync {
     // Files
     fn upsert_file(&self, file: &MediaFile) -> Result<()>;
@@ -64,10 +69,7 @@ pub trait StorageTrait: Send + Sync {
     // Plans
     fn save_plan(&self, plan: &Plan) -> Result<Uuid>;
     fn get_plans_for_file(&self, file_id: &Uuid) -> Result<Vec<StoredPlan>>;
-    // TODO: Replace `status: &str` with a typed `PlanStatus` enum for compile-time
-    // safety. Deferred because it requires coordinating changes across StorageTrait,
-    // SqliteStore, StoredPlan, and all test helpers.
-    fn update_plan_status(&self, plan_id: &Uuid, status: &str) -> Result<()>;
+    fn update_plan_status(&self, plan_id: &Uuid, status: PlanStatus) -> Result<()>;
 
     // File history
     fn get_file_history(&self, path: &Path) -> Result<Vec<FileHistoryEntry>>;
@@ -93,6 +95,48 @@ pub trait StorageTrait: Send + Sync {
     fn prune_missing_files_under(&self, root: &Path) -> Result<u64>;
 }
 
+/// Status of a stored plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStatus {
+    Pending,
+    Executing,
+    Completed,
+    Failed,
+    Skipped,
+}
+
+impl PlanStatus {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PlanStatus::Pending => "pending",
+            PlanStatus::Executing => "executing",
+            PlanStatus::Completed => "completed",
+            PlanStatus::Failed => "failed",
+            PlanStatus::Skipped => "skipped",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "pending" => Some(PlanStatus::Pending),
+            "executing" => Some(PlanStatus::Executing),
+            "completed" => Some(PlanStatus::Completed),
+            "failed" => Some(PlanStatus::Failed),
+            "skipped" => Some(PlanStatus::Skipped),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for PlanStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A plan as stored in the database, with its own ID and status tracking.
 #[derive(Debug, Clone)]
 pub struct StoredPlan {
@@ -100,7 +144,7 @@ pub struct StoredPlan {
     pub file_id: Uuid,
     pub policy_name: String,
     pub phase_name: String,
-    pub status: String,
+    pub status: PlanStatus,
     pub actions_json: String,
     pub warnings: Option<String>,
     pub skip_reason: Option<String>,

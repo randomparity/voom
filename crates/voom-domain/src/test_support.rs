@@ -231,7 +231,11 @@ impl StorageTrait for InMemoryStore {
         Ok(Vec::new())
     }
 
-    fn update_plan_status(&self, _plan_id: &Uuid, _status: &str) -> Result<()> {
+    fn update_plan_status(
+        &self,
+        _plan_id: &Uuid,
+        _status: crate::storage::PlanStatus,
+    ) -> Result<()> {
         Ok(())
     }
 

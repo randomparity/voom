@@ -656,7 +656,6 @@ mod tests {
 
         let hw = HwAccelConfig {
             backend: Some(crate::hwaccel::HwAccelBackend::Nvenc),
-            enabled: true,
         };
         let args = build_ffmpeg_command(&file, &actions, output, Some(&hw)).unwrap();
 

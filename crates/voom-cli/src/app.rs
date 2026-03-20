@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use voom_kernel::Kernel;
 
 /// Application configuration loaded from TOML.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
@@ -23,6 +23,20 @@ pub struct AppConfig {
     /// Example: `[plugin.ffprobe-introspector]` with `ffprobe_path = "/usr/local/bin/ffprobe"`.
     #[serde(default)]
     pub plugin: HashMap<String, toml::Table>,
+}
+
+impl std::fmt::Debug for AppConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppConfig")
+            .field("data_dir", &self.data_dir)
+            .field("plugins", &self.plugins)
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("plugin", &self.plugin)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -5,7 +5,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::error::WebError;
+use crate::error::{spawn_store_op, WebError};
 use crate::state::AppState;
 use voom_domain::job::{Job, JobStatus};
 use voom_domain::storage::JobFilters;
@@ -43,10 +43,7 @@ pub async fn list_jobs(
     let limit = params.limit;
 
     let filters = JobFilters { status, limit };
-    let jobs = tokio::task::spawn_blocking(move || store.list_jobs(&filters))
-        .await
-        .map_err(|e| WebError::Internal(e.to_string()))?
-        .map_err(|e| WebError::Storage(e.to_string()))?;
+    let jobs = spawn_store_op(move || store.list_jobs(&filters)).await?;
 
     Ok(Json(JobListResponse { jobs }))
 }
@@ -55,10 +52,7 @@ pub async fn list_jobs(
 #[tracing::instrument(skip(state))]
 pub async fn job_stats(State(state): State<AppState>) -> Result<Json<JobStatsResponse>, WebError> {
     let store = state.store.clone();
-    let counts = tokio::task::spawn_blocking(move || store.count_jobs_by_status())
-        .await
-        .map_err(|e| WebError::Internal(e.to_string()))?
-        .map_err(|e| WebError::Storage(e.to_string()))?;
+    let counts = spawn_store_op(move || store.count_jobs_by_status()).await?;
 
     let counts = counts
         .into_iter()
@@ -75,10 +69,7 @@ pub async fn get_job(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Job>, WebError> {
     let store = state.store.clone();
-    let job = tokio::task::spawn_blocking(move || store.get_job(&id))
-        .await
-        .map_err(|e| WebError::Internal(e.to_string()))?
-        .map_err(|e| WebError::Storage(e.to_string()))?;
+    let job = spawn_store_op(move || store.get_job(&id)).await?;
 
     job.map(Json)
         .ok_or_else(|| WebError::NotFound(format!("Job {id} not found")))

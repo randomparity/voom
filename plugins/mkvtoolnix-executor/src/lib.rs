@@ -1,5 +1,7 @@
 //! `MKVToolNix` executor plugin: mkvmerge and mkvpropedit command building and execution.
 
+#![allow(clippy::missing_errors_doc)]
+
 use std::ffi::OsStr;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;

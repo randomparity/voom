@@ -1,5 +1,7 @@
 //! `FFprobe` introspection plugin: media file analysis via ffprobe JSON output.
 
+#![allow(clippy::missing_errors_doc)]
+
 pub mod ffprobe;
 pub mod parser;
 

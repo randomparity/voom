@@ -1,5 +1,7 @@
 //! VOOM kernel: event bus, plugin registry, capability routing, and plugin loaders.
 
+#![allow(clippy::missing_errors_doc)]
+
 pub mod bus;
 pub mod host;
 pub mod loader;
@@ -66,9 +68,9 @@ impl Kernel {
     /// Initialize a plugin via `init()`, then register it with the given priority.
     ///
     /// This is the safe-by-default path that ensures every plugin is initialized
-    /// before being registered. Prefer this over manually calling `init` + `register_plugin`.
+    /// before being registered. Prefer this over manually calling `init` + [`register_plugin`](Self::register_plugin).
     ///
-    /// Accepts `Arc<dyn Plugin>` for consistency with [`register_plugin`]. The caller
+    /// Accepts `Arc<dyn Plugin>` for consistency with [`register_plugin`](Self::register_plugin). The caller
     /// must pass a freshly created `Arc` (refcount == 1) so that `Arc::get_mut` can
     /// obtain the `&mut` reference needed to call `Plugin::init`.
     pub fn init_and_register(
