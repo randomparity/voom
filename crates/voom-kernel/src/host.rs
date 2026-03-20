@@ -163,6 +163,25 @@ impl HostState {
         self
     }
 
+    /// Pre-seed plugin data with initial configuration from the host.
+    ///
+    /// Stores the config as JSON bytes under the `"config"` key in the
+    /// in-memory plugin data store. WASM plugins can then retrieve it
+    /// via `get_plugin_data("config")`.
+    ///
+    /// Note: both `{}` (empty object) and `null` are treated as "no config"
+    /// and do **not** seed the store. A plugin that receives no config and one
+    /// that receives `{}` are therefore indistinguishable via `get_plugin_data`.
+    #[must_use]
+    pub fn with_initial_config(mut self, config: serde_json::Value) -> Self {
+        if !config.is_null() && config != serde_json::json!({}) {
+            if let Ok(bytes) = serde_json::to_vec(&config) {
+                self.plugin_data.insert("config".to_string(), bytes);
+            }
+        }
+        self
+    }
+
     // --- Host function implementations ---
 
     /// Log a message at the given level.
@@ -178,11 +197,17 @@ impl HostState {
     }
 
     /// Get plugin-specific persisted data by key.
+    ///
+    /// Lookup order: persistent storage (if attached) → in-memory `plugin_data`.
+    /// This means config seeded via `with_initial_config` acts as a default that
+    /// the plugin can override by calling `set_plugin_data` (which writes to storage).
     #[must_use]
     pub fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
-        // Try persistent storage first, fall back to in-memory.
         if let Some(storage) = &self.storage {
-            storage.get(&self.plugin_name, key)
+            // Check persistent storage first, fall back to in-memory (seeded config).
+            storage
+                .get(&self.plugin_name, key)
+                .or_else(|| self.plugin_data.get(key).cloned())
         } else {
             self.plugin_data.get(key).cloned()
         }
@@ -630,6 +655,66 @@ mod tests {
         assert!(result
             .unwrap_err()
             .contains("not within allowed directories"));
+    }
+
+    #[test]
+    fn test_with_initial_config() {
+        let config = serde_json::json!({"api_key": "abc123", "url": "http://localhost"});
+        let state = HostState::new("test".into()).with_initial_config(config.clone());
+        let data = state
+            .get_plugin_data("config")
+            .expect("config should be seeded");
+        let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        assert_eq!(loaded, config);
+    }
+
+    #[test]
+    fn test_with_initial_config_empty_does_not_seed() {
+        let state = HostState::new("test".into()).with_initial_config(serde_json::json!({}));
+        assert!(state.get_plugin_data("config").is_none());
+    }
+
+    #[test]
+    fn test_with_initial_config_null_does_not_seed() {
+        let state = HostState::new("test".into()).with_initial_config(serde_json::Value::Null);
+        assert!(state.get_plugin_data("config").is_none());
+    }
+
+    #[test]
+    fn test_with_initial_config_with_storage() {
+        // Seeded config should be accessible even when persistent storage is attached.
+        let store = Arc::new(InMemoryDataStore::new());
+        let config = serde_json::json!({"api_key": "abc123"});
+        let state = HostState::new("test".into())
+            .with_storage(store.clone())
+            .with_initial_config(config.clone());
+
+        // get_plugin_data should fall through to in-memory seeded config.
+        let data = state
+            .get_plugin_data("config")
+            .expect("seeded config should be accessible with storage attached");
+        let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        assert_eq!(loaded, config);
+    }
+
+    #[test]
+    fn test_with_initial_config_storage_overrides_seed() {
+        // A value written to storage should take precedence over the seeded default.
+        let store = Arc::new(InMemoryDataStore::new());
+        let config = serde_json::json!({"api_key": "original"});
+        let mut state = HostState::new("test".into())
+            .with_storage(store.clone())
+            .with_initial_config(config);
+
+        // Override via set_plugin_data (writes to storage).
+        let override_config = serde_json::json!({"api_key": "overridden"});
+        let override_bytes = serde_json::to_vec(&override_config).unwrap();
+        state.set_plugin_data("config", &override_bytes).unwrap();
+
+        // Should get the storage value, not the seeded one.
+        let data = state.get_plugin_data("config").unwrap();
+        let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        assert_eq!(loaded, override_config);
     }
 
     #[test]

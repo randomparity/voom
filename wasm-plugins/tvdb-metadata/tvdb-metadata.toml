@@ -1,0 +1,8 @@
+name = "tvdb-metadata"
+version = "0.1.0"
+description = "TV metadata enrichment via TVDB API v4"
+handles_events = ["file.introspected"]
+
+[[capabilities]]
+[capabilities.EnrichMetadata]
+source = "tvdb"
