@@ -116,7 +116,6 @@ impl Plugin for DiscoveryPlugin {
     }
 
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        tracing::info!("discovery plugin initialized");
         Ok(())
     }
 }

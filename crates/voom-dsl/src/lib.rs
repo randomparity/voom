@@ -26,8 +26,12 @@ pub mod formatter;
 pub mod parser;
 pub mod validator;
 
-pub use ast::*;
-pub use compiler::{compile, compile_ast, CompileError, CompiledPolicy};
+pub use ast::{
+    ActionNode, CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode,
+    PolicyAst, RuleNode, RunIfNode, Span, SpannedOperation, SynthSetting, TrackQueryNode,
+    TrackRefNode, Value, ValueOrField, WhenNode,
+};
+pub use compiler::{compile, CompileError, CompiledPolicy};
 pub use errors::{DslError, ValidationErrors};
 pub use formatter::format_policy;
 pub use parser::parse_policy;

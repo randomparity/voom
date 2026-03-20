@@ -15,7 +15,7 @@ mod tests {
     use voom_domain::media::MediaFile;
     use voom_domain::plan::Plan;
     use voom_domain::stats::ProcessingStats;
-    use voom_domain::storage::{FileFilters, StorageTrait};
+    use voom_domain::storage::{FileFilters, JobFilters, StorageTrait};
 
     fn make_job(job_type: &str, priority: i32) -> Job {
         let mut job = Job::new(job_type.to_string());
@@ -124,13 +124,23 @@ mod tests {
         store.create_job(&j2).unwrap();
         store.claim_next_job("w1").unwrap(); // one becomes Running
 
-        let pending = store.list_jobs(Some(JobStatus::Pending), None).unwrap();
+        let pending = store
+            .list_jobs(&JobFilters {
+                status: Some(JobStatus::Pending),
+                limit: None,
+            })
+            .unwrap();
         assert_eq!(pending.len(), 1);
 
-        let running = store.list_jobs(Some(JobStatus::Running), None).unwrap();
+        let running = store
+            .list_jobs(&JobFilters {
+                status: Some(JobStatus::Running),
+                limit: None,
+            })
+            .unwrap();
         assert_eq!(running.len(), 1);
 
-        let all = store.list_jobs(None, None).unwrap();
+        let all = store.list_jobs(&JobFilters::default()).unwrap();
         assert_eq!(all.len(), 2);
     }
 
@@ -140,7 +150,12 @@ mod tests {
         for i in 0..5 {
             store.create_job(&make_job(&format!("j{i}"), i)).unwrap();
         }
-        let limited = store.list_jobs(None, Some(3)).unwrap();
+        let limited = store
+            .list_jobs(&JobFilters {
+                status: None,
+                limit: Some(3),
+            })
+            .unwrap();
         assert_eq!(limited.len(), 3);
     }
 

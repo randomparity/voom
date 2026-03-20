@@ -21,4 +21,4 @@ pub use job::{Job, JobStatus, JobUpdate};
 pub use media::{Container, MediaFile, Track, TrackType};
 pub use plan::{ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction};
 pub use stats::ProcessingStats;
-pub use storage::{BadFileFilters, FileFilters, StorageTrait, StoredPlan};
+pub use storage::{BadFileFilters, FileFilters, JobFilters, StorageTrait, StoredPlan};

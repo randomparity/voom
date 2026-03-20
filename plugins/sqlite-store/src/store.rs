@@ -13,7 +13,7 @@ use voom_domain::job::{Job, JobStatus, JobUpdate};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::Plan;
 use voom_domain::stats::ProcessingStats;
-use voom_domain::storage::{BadFileFilters, FileFilters, StorageTrait, StoredPlan};
+use voom_domain::storage::{BadFileFilters, FileFilters, JobFilters, StorageTrait, StoredPlan};
 
 use crate::schema;
 
@@ -245,8 +245,20 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
             tracing::warn!(created_at = %created_str, error = %e, "corrupt datetime in jobs table");
             Utc::now()
         }),
-        started_at: started_str.and_then(|s| s.parse().ok()),
-        completed_at: completed_str.and_then(|s| s.parse().ok()),
+        started_at: started_str.and_then(|s| {
+            s.parse()
+                .map_err(|e| {
+                    tracing::warn!(started_at = %s, error = %e, "corrupt datetime in jobs table");
+                })
+                .ok()
+        }),
+        completed_at: completed_str.and_then(|s| {
+            s.parse()
+                .map_err(|e| {
+                    tracing::warn!(completed_at = %s, error = %e, "corrupt datetime in jobs table");
+                })
+                .ok()
+        }),
     })
 }
 
@@ -719,19 +731,19 @@ impl StorageTrait for SqliteStore {
         Ok(result)
     }
 
-    fn list_jobs(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>> {
+    fn list_jobs(&self, filters: &JobFilters) -> Result<Vec<Job>> {
         let conn = self.conn()?;
         let mut sql = String::from("SELECT * FROM jobs");
         let mut param_values: Vec<String> = Vec::new();
 
-        if let Some(status) = status {
+        if let Some(status) = filters.status {
             param_values.push(status.as_str().to_string());
             sql.push_str(&format!(" WHERE status = ?{}", param_values.len()));
         }
 
         sql.push_str(" ORDER BY priority ASC, created_at DESC");
 
-        if let Some(limit) = limit {
+        if let Some(limit) = filters.limit {
             let clamped = limit.min(10_000);
             param_values.push(clamped.to_string());
             sql.push_str(&format!(" LIMIT ?{}", param_values.len()));
@@ -849,9 +861,17 @@ impl StorageTrait for SqliteStore {
 
         let plans = stmt
             .query_map(params![file_id.to_string()], |row| {
+                let id_str: String = row.get("id")?;
+                let file_id_str: String = row.get("file_id")?;
                 Ok(StoredPlan {
-                    id: Uuid::parse_str(&row.get::<_, String>("id")?).unwrap_or_default(),
-                    file_id: Uuid::parse_str(&row.get::<_, String>("file_id")?).unwrap_or_default(),
+                    id: Uuid::parse_str(&id_str).unwrap_or_else(|e| {
+                        tracing::warn!(id = %id_str, error = %e, "corrupt UUID in plans table");
+                        Uuid::default()
+                    }),
+                    file_id: Uuid::parse_str(&file_id_str).unwrap_or_else(|e| {
+                        tracing::warn!(file_id = %file_id_str, error = %e, "corrupt UUID in plans table");
+                        Uuid::default()
+                    }),
                     policy_name: row.get("policy_name")?,
                     phase_name: row.get("phase_name")?,
                     status: row.get("status")?,
@@ -1072,23 +1092,7 @@ impl StorageTrait for SqliteStore {
                 .filter(|(_, path)| !Path::new(path).exists())
                 .map(|(id, _)| id.as_str())
                 .collect();
-            if !missing_bad_ids.is_empty() {
-                let conn = self.conn()?;
-                for chunk in missing_bad_ids.chunks(500) {
-                    let placeholders: Vec<String> =
-                        (1..=chunk.len()).map(|i| format!("?{i}")).collect();
-                    let in_clause = placeholders.join(",");
-                    let param_refs: Vec<&dyn rusqlite::types::ToSql> = chunk
-                        .iter()
-                        .map(|id| id as &dyn rusqlite::types::ToSql)
-                        .collect();
-                    conn.execute(
-                        &format!("DELETE FROM bad_files WHERE id IN ({in_clause})"),
-                        param_refs.as_slice(),
-                    )
-                    .map_err(|e| VoomError::Storage(format!("failed to prune bad_files: {e}")))?;
-                }
-            }
+            self.chunked_delete("bad_files", "id", &missing_bad_ids)?;
         }
 
         // Phase 1: Query file paths under root (release connection after)
@@ -1117,51 +1121,12 @@ impl StorageTrait for SqliteStore {
             return Ok(0);
         }
 
-        // Phase 3: Batch delete dependents then files in chunks of 500.
+        // Phase 3: Delete dependents then files.
         // Explicit deletion of plans and processing_stats ensures cleanup works
         // on existing databases where CASCADE constraints may be missing.
-        // Each chunk is wrapped in an IMMEDIATE transaction for atomicity.
-        let mut conn = self.conn()?;
-        let mut pruned = 0u64;
-        for chunk in missing_ids.chunks(500) {
-            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
-            let in_clause = placeholders.join(",");
-            let param_refs: Vec<&dyn rusqlite::types::ToSql> = chunk
-                .iter()
-                .map(|id| id as &dyn rusqlite::types::ToSql)
-                .collect();
-
-            let tx = conn
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .map_err(|e| {
-                    VoomError::Storage(format!("failed to begin prune transaction: {e}"))
-                })?;
-
-            // Delete dependent rows first
-            tx.execute(
-                &format!("DELETE FROM plans WHERE file_id IN ({in_clause})"),
-                param_refs.as_slice(),
-            )
-            .map_err(|e| VoomError::Storage(format!("failed to delete plans: {e}")))?;
-
-            tx.execute(
-                &format!("DELETE FROM processing_stats WHERE file_id IN ({in_clause})"),
-                param_refs.as_slice(),
-            )
-            .map_err(|e| VoomError::Storage(format!("failed to delete processing_stats: {e}")))?;
-
-            let deleted = tx
-                .execute(
-                    &format!("DELETE FROM files WHERE id IN ({in_clause})"),
-                    param_refs.as_slice(),
-                )
-                .map_err(|e| VoomError::Storage(format!("failed to delete files: {e}")))?;
-
-            tx.commit()
-                .map_err(|e| VoomError::Storage(format!("failed to commit prune: {e}")))?;
-
-            pruned += deleted as u64;
-        }
+        self.chunked_delete("plans", "file_id", &missing_ids)?;
+        self.chunked_delete("processing_stats", "file_id", &missing_ids)?;
+        let pruned = self.chunked_delete("files", "id", &missing_ids)?;
 
         Ok(pruned)
     }
@@ -1178,9 +1143,17 @@ impl StorageTrait for SqliteStore {
 
         let entries = stmt
             .query_map(params![path_str], |row| {
+                let id_str: String = row.get("id")?;
+                let file_id_str: String = row.get("file_id")?;
                 Ok(voom_domain::storage::FileHistoryEntry {
-                    id: Uuid::parse_str(&row.get::<_, String>("id")?).unwrap_or_default(),
-                    file_id: Uuid::parse_str(&row.get::<_, String>("file_id")?).unwrap_or_default(),
+                    id: Uuid::parse_str(&id_str).unwrap_or_else(|e| {
+                        tracing::warn!(id = %id_str, error = %e, "corrupt UUID in file_history table");
+                        Uuid::default()
+                    }),
+                    file_id: Uuid::parse_str(&file_id_str).unwrap_or_else(|e| {
+                        tracing::warn!(file_id = %file_id_str, error = %e, "corrupt UUID in file_history table");
+                        Uuid::default()
+                    }),
                     path: PathBuf::from(row.get::<_, String>("path")?),
                     content_hash: row.get("content_hash")?,
                     container: row.get("container")?,
@@ -1199,6 +1172,32 @@ impl StorageTrait for SqliteStore {
 
 // Private helper methods
 impl SqliteStore {
+    /// Delete rows from `table` where `column` matches any of `ids`, in chunks of 500.
+    /// Returns the total number of rows deleted.
+    fn chunked_delete(&self, table: &str, column: &str, ids: &[&str]) -> Result<u64> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn()?;
+        let mut total = 0u64;
+        for chunk in ids.chunks(500) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+            let in_clause = placeholders.join(",");
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> = chunk
+                .iter()
+                .map(|id| id as &dyn rusqlite::types::ToSql)
+                .collect();
+            let deleted = conn
+                .execute(
+                    &format!("DELETE FROM {table} WHERE {column} IN ({in_clause})"),
+                    param_refs.as_slice(),
+                )
+                .map_err(|e| VoomError::Storage(format!("failed to delete from {table}: {e}")))?;
+            total += deleted as u64;
+        }
+        Ok(total)
+    }
+
     fn load_tracks_batch(
         &self,
         conn: &rusqlite::Connection,
@@ -1611,16 +1610,31 @@ mod tests {
         // Claim one to make it running
         store.claim_next_job("w-1").unwrap();
 
-        let all = store.list_jobs(None, None).unwrap();
+        let all = store.list_jobs(&JobFilters::default()).unwrap();
         assert_eq!(all.len(), 2);
 
-        let pending = store.list_jobs(Some(JobStatus::Pending), None).unwrap();
+        let pending = store
+            .list_jobs(&JobFilters {
+                status: Some(JobStatus::Pending),
+                limit: None,
+            })
+            .unwrap();
         assert_eq!(pending.len(), 1);
 
-        let running = store.list_jobs(Some(JobStatus::Running), None).unwrap();
+        let running = store
+            .list_jobs(&JobFilters {
+                status: Some(JobStatus::Running),
+                limit: None,
+            })
+            .unwrap();
         assert_eq!(running.len(), 1);
 
-        let limited = store.list_jobs(None, Some(1)).unwrap();
+        let limited = store
+            .list_jobs(&JobFilters {
+                status: None,
+                limit: Some(1),
+            })
+            .unwrap();
         assert_eq!(limited.len(), 1);
     }
 
@@ -1946,7 +1960,12 @@ mod tests {
         }
 
         // Requesting limit > 10_000 should be clamped and still work
-        let jobs = store.list_jobs(None, Some(20_000)).unwrap();
+        let jobs = store
+            .list_jobs(&JobFilters {
+                status: None,
+                limit: Some(20_000),
+            })
+            .unwrap();
         assert_eq!(jobs.len(), 3);
     }
 

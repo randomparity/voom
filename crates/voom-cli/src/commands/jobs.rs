@@ -18,12 +18,15 @@ async fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
     let store = crate::app::open_store(&config)?;
 
     use voom_domain::job::JobStatus;
-    use voom_domain::storage::StorageTrait;
+    use voom_domain::storage::JobFilters;
 
     let filter_status = status_filter.as_deref().and_then(JobStatus::parse);
 
     let jobs = store
-        .list_jobs(filter_status, Some(limit))
+        .list_jobs(&JobFilters {
+            status: filter_status,
+            limit: Some(limit),
+        })
         .map_err(|e| anyhow::anyhow!("failed to list jobs: {e}"))?;
 
     if jobs.is_empty() {
@@ -101,7 +104,6 @@ async fn status(id: String) -> Result<()> {
 
     let uuid = uuid::Uuid::parse_str(&id).map_err(|_| anyhow::anyhow!("Invalid job ID: {id}"))?;
 
-    use voom_domain::storage::StorageTrait;
     match store.get_job(&uuid)? {
         Some(job) => {
             println!("{} {}", "Job:".bold(), job.id.to_string().cyan());
@@ -141,7 +143,6 @@ async fn cancel(id: String) -> Result<()> {
 
     let uuid = uuid::Uuid::parse_str(&id).map_err(|_| anyhow::anyhow!("Invalid job ID: {id}"))?;
 
-    use voom_domain::storage::StorageTrait;
     let update = voom_domain::JobUpdate {
         status: Some(voom_domain::JobStatus::Cancelled),
         ..Default::default()

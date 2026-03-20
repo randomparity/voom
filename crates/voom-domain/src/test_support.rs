@@ -19,7 +19,7 @@ use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::MediaFile;
 use crate::plan::Plan;
 use crate::stats::ProcessingStats;
-use crate::storage::{BadFileFilters, FileFilters, StorageTrait, StoredPlan};
+use crate::storage::{BadFileFilters, FileFilters, JobFilters, StorageTrait, StoredPlan};
 
 /// In-memory storage for testing. Implements the full `StorageTrait` with
 /// working file and job methods. Plan/stats/plugin-data methods are stubs.
@@ -196,11 +196,11 @@ impl StorageTrait for InMemoryStore {
         Ok(None)
     }
 
-    fn list_jobs(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>> {
+    fn list_jobs(&self, filters: &JobFilters) -> Result<Vec<Job>> {
         let jobs = self.jobs.lock().unwrap();
         let mut result: Vec<Job> = jobs
             .values()
-            .filter(|j| status.map_or(true, |s| j.status == s))
+            .filter(|j| filters.status.map_or(true, |s| j.status == s))
             .cloned()
             .collect();
         result.sort_by(|a, b| {
@@ -208,7 +208,7 @@ impl StorageTrait for InMemoryStore {
                 .cmp(&b.priority)
                 .then(b.created_at.cmp(&a.created_at))
         });
-        if let Some(limit) = limit {
+        if let Some(limit) = filters.limit {
             result.truncate(limit as usize);
         }
         Ok(result)

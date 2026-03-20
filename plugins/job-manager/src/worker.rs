@@ -135,7 +135,6 @@ impl WorkerPool {
             "Starting worker pool"
         );
 
-        // Enqueue all items
         let mut job_ids = Vec::with_capacity(items.len());
         for (job_type, priority, payload) in items {
             match self.queue.enqueue(&job_type, priority, payload) {
@@ -306,16 +305,13 @@ impl WorkerPool {
             handles.push(handle);
         }
 
-        // Drop our sender so the channel closes when all workers finish
         drop(result_tx);
 
-        // Collect results
         let mut results = Vec::new();
         while let Some(result) = result_rx.recv().await {
             results.push(result);
         }
 
-        // Wait for all tasks
         for handle in handles {
             if let Err(e) = handle.await {
                 tracing::error!(error = %e, "worker task join error");

@@ -111,7 +111,6 @@ impl Plugin for JobManagerPlugin {
     }
 
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        tracing::info!("Job manager plugin initialized");
         Ok(())
     }
 }

@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::error::WebError;
 use crate::state::AppState;
 use voom_domain::job::{Job, JobStatus};
+use voom_domain::storage::JobFilters;
 
 #[derive(Debug, Deserialize)]
 pub struct ListJobsParams {
@@ -41,7 +42,8 @@ pub async fn list_jobs(
     let status = params.status.as_deref().and_then(JobStatus::parse);
     let limit = params.limit;
 
-    let jobs = tokio::task::spawn_blocking(move || store.list_jobs(status, limit))
+    let filters = JobFilters { status, limit };
+    let jobs = tokio::task::spawn_blocking(move || store.list_jobs(&filters))
         .await
         .map_err(|e| WebError::Internal(e.to_string()))?
         .map_err(|e| WebError::Storage(e.to_string()))?;

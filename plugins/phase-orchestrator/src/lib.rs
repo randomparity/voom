@@ -151,6 +151,10 @@ impl Plugin for PhaseOrchestratorPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
+        // Claims "policy.evaluate" so the kernel routes these events here, but
+        // on_event currently only logs and returns Ok(None). Actual orchestration
+        // is driven via the direct `orchestrate()` API for deterministic progress
+        // reporting. This claim is reserved for future event-driven orchestration.
         event_type == "policy.evaluate"
     }
 
@@ -173,7 +177,6 @@ impl Plugin for PhaseOrchestratorPlugin {
     }
 
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        tracing::info!("Phase orchestrator plugin initialized");
         Ok(())
     }
 }

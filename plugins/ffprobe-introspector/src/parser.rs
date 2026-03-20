@@ -284,15 +284,7 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
 
 /// Parse frame rate from `r_frame_rate` (e.g., "24000/1001").
 fn parse_frame_rate(stream: &serde_json::Value) -> Option<f64> {
-    let r_frame_rate = stream.get("r_frame_rate")?.as_str()?;
-    if let Some((num, den)) = r_frame_rate.split_once('/') {
-        let num: f64 = num.parse().ok()?;
-        let den: f64 = den.parse().ok()?;
-        if den > 0.0 {
-            return Some(num / den);
-        }
-    }
-    r_frame_rate.parse().ok()
+    parse_fraction(stream.get("r_frame_rate").and_then(|v| v.as_str()))
 }
 
 /// Detect variable frame rate by comparing `r_frame_rate` and `avg_frame_rate`.

@@ -122,7 +122,6 @@ impl Plugin for PolicyEvaluatorPlugin {
     }
 
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        tracing::info!("Policy evaluator plugin initialized");
         Ok(())
     }
 }

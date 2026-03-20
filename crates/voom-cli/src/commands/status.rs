@@ -15,7 +15,6 @@ pub async fn run() -> Result<()> {
         Ok(kernel) => {
             match app::open_store(&config) {
                 Ok(store) => {
-                    use voom_domain::storage::StorageTrait;
                     let files = store
                         .list_files(&voom_domain::FileFilters::default())
                         .map_err(|e| anyhow::anyhow!("failed to list files from database: {e}"))?;

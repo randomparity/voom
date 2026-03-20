@@ -6,7 +6,7 @@ use axum::response::Html;
 use serde::Deserialize;
 
 use voom_domain::job::JobStatus;
-use voom_domain::storage::FileFilters;
+use voom_domain::storage::{FileFilters, JobFilters};
 
 use crate::state::AppState;
 use crate::views::file_views;
@@ -183,7 +183,10 @@ pub async fn jobs_page(
     let filter_status = params.status.as_deref().and_then(JobStatus::parse);
 
     let (jobs, counts) = tokio::task::spawn_blocking(move || {
-        let jobs = store.list_jobs(filter_status, None)?;
+        let jobs = store.list_jobs(&JobFilters {
+            status: filter_status,
+            limit: None,
+        })?;
         let counts = store.count_jobs_by_status()?;
         Ok::<_, voom_domain::errors::VoomError>((jobs, counts))
     })
@@ -218,7 +221,7 @@ mod tests {
     use super::*;
 
     fn make_tera() -> tera::Tera {
-        crate::server::embedded_templates_for_test()
+        crate::server::embedded_templates()
     }
 
     #[test]

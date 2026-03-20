@@ -315,33 +315,32 @@ fn process_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
                 }
             }
             DefaultStrategy::First => {
-                let mut first = true;
-                for track in &tracks {
-                    if first {
-                        if !track.is_default {
+                if let Some((first_track, rest)) = tracks.split_first() {
+                    if !first_track.is_default {
+                        ctx.plan.actions.push(PlannedAction {
+                            operation: OperationType::SetDefault,
+                            track_index: Some(first_track.index),
+                            parameters: serde_json::json!({}),
+                            description: format!(
+                                "Set default on {} track {}",
+                                target_str(&default.target),
+                                first_track.index
+                            ),
+                        });
+                    }
+                    for track in rest {
+                        if track.is_default {
                             ctx.plan.actions.push(PlannedAction {
-                                operation: OperationType::SetDefault,
+                                operation: OperationType::ClearDefault,
                                 track_index: Some(track.index),
                                 parameters: serde_json::json!({}),
                                 description: format!(
-                                    "Set default on {} track {}",
+                                    "Clear default flag on {} track {}",
                                     target_str(&default.target),
                                     track.index
                                 ),
                             });
                         }
-                        first = false;
-                    } else if track.is_default {
-                        ctx.plan.actions.push(PlannedAction {
-                            operation: OperationType::ClearDefault,
-                            track_index: Some(track.index),
-                            parameters: serde_json::json!({}),
-                            description: format!(
-                                "Clear default flag on {} track {}",
-                                target_str(&default.target),
-                                track.index
-                            ),
-                        });
                     }
                 }
             }

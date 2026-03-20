@@ -330,7 +330,7 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
 
 /// Open a storage handle using the configured data directory.
 /// Opens a second connection (`SQLite` WAL mode supports concurrent readers).
-pub fn open_store(config: &AppConfig) -> Result<Arc<voom_sqlite_store::store::SqliteStore>> {
+pub fn open_store(config: &AppConfig) -> Result<Arc<dyn voom_domain::storage::StorageTrait>> {
     let db_path = config.data_dir.join("voom.db");
     let store = voom_sqlite_store::store::SqliteStore::open(&db_path)
         .map_err(|e| anyhow::anyhow!("Failed to open store: {e}"))?;

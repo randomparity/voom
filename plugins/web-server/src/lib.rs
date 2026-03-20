@@ -62,7 +62,6 @@ impl Plugin for WebServerPlugin {
     }
 
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        tracing::info!("Web server plugin initialized");
         Ok(())
     }
 }

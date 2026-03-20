@@ -24,9 +24,7 @@ pub fn track_matches(track: &Track, filter: &CompiledFilter) -> bool {
         CompiledFilter::Default => track.is_default,
         CompiledFilter::Font => is_font_attachment(track),
         CompiledFilter::TitleContains(s) => track.title.to_lowercase().contains(&s.to_lowercase()),
-        CompiledFilter::TitleMatches(pattern) => regex::Regex::new(pattern)
-            .map(|re| re.is_match(&track.title))
-            .unwrap_or(false),
+        CompiledFilter::TitleMatches(compiled_re) => compiled_re.regex().is_match(&track.title),
         CompiledFilter::And(filters) => filters.iter().all(|f| track_matches(track, f)),
         CompiledFilter::Or(filters) => filters.iter().any(|f| track_matches(track, f)),
         CompiledFilter::Not(inner) => !track_matches(track, inner),

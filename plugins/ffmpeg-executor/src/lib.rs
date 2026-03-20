@@ -177,16 +177,16 @@ impl FfmpegExecutorPlugin {
                 let actions_applied = results.iter().filter(|r| r.success).count();
                 Ok(Some(EventResult::plan_succeeded(
                     "ffmpeg-executor",
-                    plan,
-                    actions_applied,
-                    Some(serde_json::to_value(&results).unwrap_or_default()),
+                    Some(serde_json::json!({
+                        "actions_applied": actions_applied,
+                        "results": serde_json::to_value(&results).unwrap_or_default(),
+                    })),
                 )))
             }
-            Err(e) => Ok(Some(EventResult::plan_failed(
-                "ffmpeg-executor",
-                plan,
-                e.to_string(),
-            ))),
+            Err(e) => {
+                tracing::error!(error = %e, "ffmpeg plan execution failed");
+                Ok(Some(EventResult::plan_failed("ffmpeg-executor")))
+            }
         }
     }
 }

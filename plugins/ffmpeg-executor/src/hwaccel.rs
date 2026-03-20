@@ -23,12 +23,12 @@ pub struct HwAccelConfig {
 }
 
 impl HwAccelConfig {
-    /// Create a new config with HW accel enabled but no detected backend.
+    /// Create a new config with no detected backend (HW accel disabled).
     #[must_use]
     pub fn new() -> Self {
         Self {
             backend: None,
-            enabled: true,
+            enabled: false,
         }
     }
 
@@ -250,6 +250,6 @@ mod tests {
     fn test_default() {
         let config = HwAccelConfig::default();
         assert!(config.backend.is_none());
-        assert!(config.enabled);
+        assert!(!config.enabled);
     }
 }

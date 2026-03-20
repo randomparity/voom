@@ -20,7 +20,6 @@ async fn prune() -> Result<()> {
     let config = app::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::StorageTrait;
     let count = store
         .prune_missing_files()
         .map_err(|e| anyhow::anyhow!("failed to prune missing files: {e}"))?;
@@ -42,7 +41,6 @@ async fn vacuum() -> Result<()> {
     let config = app::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::StorageTrait;
     store
         .vacuum()
         .map_err(|e| anyhow::anyhow!("failed to vacuum database: {e}"))?;
@@ -93,7 +91,7 @@ async fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
     let config = app::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::{BadFileFilters, StorageTrait};
+    use voom_domain::storage::BadFileFilters;
     let filters = BadFileFilters {
         path_prefix: path,
         ..Default::default()
@@ -153,7 +151,7 @@ async fn purge_bad() -> Result<()> {
     let config = app::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::{BadFileFilters, StorageTrait};
+    use voom_domain::storage::BadFileFilters;
     let bad_files = store
         .list_bad_files(&BadFileFilters::default())
         .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
@@ -183,7 +181,7 @@ async fn clean_bad(yes: bool) -> Result<()> {
     let config = app::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::{BadFileFilters, StorageTrait};
+    use voom_domain::storage::BadFileFilters;
     let bad_files = store
         .list_bad_files(&BadFileFilters::default())
         .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;

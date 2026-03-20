@@ -10,7 +10,6 @@ pub async fn run(args: ReportArgs) -> Result<()> {
     let config = app::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::StorageTrait;
     let files = store
         .list_files(&voom_domain::FileFilters::default())
         .map_err(|e| anyhow::anyhow!("failed to list files from database: {e}"))?;
@@ -78,15 +77,9 @@ pub async fn run(args: ReportArgs) -> Result<()> {
 }
 
 fn codec_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
-    let mut counts = std::collections::HashMap::new();
-    for file in files {
-        for track in &file.tracks {
-            *counts.entry(track.codec.clone()).or_insert(0) += 1;
-        }
-    }
-    let mut sorted: Vec<_> = counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
-    sorted
+    output::count_by(files, |f| {
+        f.tracks.iter().map(|t| t.codec.clone()).collect::<Vec<_>>()
+    })
 }
 
 #[cfg(test)]

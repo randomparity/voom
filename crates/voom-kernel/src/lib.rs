@@ -1,7 +1,6 @@
 //! VOOM kernel: event bus, plugin registry, capability routing, and plugin loaders.
 
 pub mod bus;
-pub mod capabilities;
 pub mod host;
 pub mod loader;
 pub mod manifest;

@@ -40,11 +40,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/plugins", get(templates::plugins_page))
         .route("/settings", get(templates::settings));
 
-    // Auth middleware protects API routes and the SSE endpoint.
-    // Page routes (HTML) remain public.
+    // Auth middleware protects all routes (API, SSE, and HTML pages) when
+    // an auth_token is configured. Without a token, all routes are public.
     let authenticated_routes = Router::new()
         .nest("/api", api_routes)
         .route("/events", get(sse::events_handler))
+        .merge(page_routes)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -53,7 +54,6 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .merge(authenticated_routes)
-        .merge(page_routes)
         .fallback(|| async {
             (
                 StatusCode::NOT_FOUND,
@@ -78,7 +78,7 @@ mod tests {
     use voom_domain::media::MediaFile;
     use voom_domain::plan::Plan;
     use voom_domain::stats::ProcessingStats;
-    use voom_domain::storage::{FileFilters, StorageTrait, StoredPlan};
+    use voom_domain::storage::{FileFilters, JobFilters, StorageTrait, StoredPlan};
 
     struct DummyStore;
     impl StorageTrait for DummyStore {
@@ -115,7 +115,7 @@ mod tests {
         fn claim_job_by_id(&self, _: &uuid::Uuid, _: &str) -> VoomResult<Option<Job>> {
             Ok(None)
         }
-        fn list_jobs(&self, _: Option<JobStatus>, _: Option<u32>) -> VoomResult<Vec<Job>> {
+        fn list_jobs(&self, _: &JobFilters) -> VoomResult<Vec<Job>> {
             Ok(vec![])
         }
         fn count_jobs_by_status(&self) -> VoomResult<Vec<(JobStatus, u64)>> {

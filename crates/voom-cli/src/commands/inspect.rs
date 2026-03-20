@@ -15,7 +15,6 @@ pub async fn run(args: InspectArgs) -> Result<()> {
     let config = app::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::StorageTrait;
     if let Ok(Some(file)) = store.get_file_by_path(&path) {
         match args.format {
             OutputFormat::Json => output::format_file_json(&file),

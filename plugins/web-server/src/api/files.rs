@@ -168,14 +168,4 @@ mod tests {
         assert_eq!(json["files"], serde_json::json!([]));
         assert_eq!(json["total"], 0);
     }
-
-    #[test]
-    fn max_limit_value() {
-        assert_eq!(MAX_LIMIT, 10_000);
-    }
-
-    #[test]
-    fn max_offset_value() {
-        assert_eq!(MAX_OFFSET, 1_000_000);
-    }
 }

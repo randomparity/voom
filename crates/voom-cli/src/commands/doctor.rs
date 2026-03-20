@@ -31,7 +31,6 @@ pub async fn run() -> Result<()> {
     match &kernel_result {
         Ok(_kernel) => match app::open_store(&config) {
             Ok(store) => {
-                use voom_domain::storage::StorageTrait;
                 match store.list_files(&voom_domain::FileFilters {
                     limit: Some(1),
                     ..Default::default()
@@ -107,22 +106,6 @@ pub async fn run() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn required_tools_list() {
-        let required = ["ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit"];
-        assert_eq!(required.len(), 4);
-        // Verify these are the tools doctor checks
-        for tool in &required {
-            assert!(!tool.is_empty());
-        }
-    }
-
-    #[test]
-    fn optional_tools_list() {
-        let optional = ["mkvextract", "mediainfo", "HandBrakeCLI"];
-        assert_eq!(optional.len(), 3);
-    }
-
     #[test]
     fn tool_detector_creation() {
         let detector = voom_tool_detector::ToolDetectorPlugin::new();

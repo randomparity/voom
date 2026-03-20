@@ -8,13 +8,66 @@
 #![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;
+use std::fmt;
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use voom_domain::utils::codecs;
 
 use crate::ast::*;
 use crate::errors::{DslError, ValidationErrors};
 use crate::validator;
+
+/// A pre-compiled regex that supports `Clone`, `Debug`, `Serialize`, and `Deserialize`.
+///
+/// Serialized as the pattern string; deserialization re-compiles the regex.
+#[derive(Clone)]
+pub struct CompiledRegex {
+    pattern: String,
+    regex: Regex,
+}
+
+impl CompiledRegex {
+    /// Compile a new regex from the given pattern.
+    pub fn new(pattern: &str) -> Result<Self, regex::Error> {
+        let regex = Regex::new(pattern)?;
+        Ok(Self {
+            pattern: pattern.to_string(),
+            regex,
+        })
+    }
+
+    /// Returns the underlying compiled `Regex`.
+    #[must_use]
+    pub fn regex(&self) -> &Regex {
+        &self.regex
+    }
+
+    /// Returns the original pattern string.
+    #[must_use]
+    pub fn pattern(&self) -> &str {
+        &self.pattern
+    }
+}
+
+impl fmt::Debug for CompiledRegex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("CompiledRegex").field(&self.pattern).finish()
+    }
+}
+
+impl Serialize for CompiledRegex {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.pattern.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for CompiledRegex {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let pattern = String::deserialize(deserializer)?;
+        CompiledRegex::new(&pattern).map_err(serde::de::Error::custom)
+    }
+}
 
 /// A compiled policy ready for evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,7 +147,7 @@ pub enum CompiledOperation {
         codec: String,
         settings: HashMap<String, serde_json::Value>,
     },
-    Synthesize(CompiledSynthesize),
+    Synthesize(Box<CompiledSynthesize>),
     ClearTags,
     SetTag {
         tag: String,
@@ -232,7 +285,7 @@ pub enum CompiledFilter {
     Default,
     Font,
     TitleContains(String),
-    TitleMatches(String),
+    TitleMatches(CompiledRegex),
     And(Vec<CompiledFilter>),
     Or(Vec<CompiledFilter>),
     Not(Box<CompiledFilter>),
@@ -282,7 +335,7 @@ pub fn compile(source: &str) -> std::result::Result<CompiledPolicy, CompileError
 }
 
 /// Compile a pre-parsed and validated AST into a [`CompiledPolicy`].
-pub fn compile_ast(ast: &PolicyAst) -> std::result::Result<CompiledPolicy, DslError> {
+pub(crate) fn compile_ast(ast: &PolicyAst) -> std::result::Result<CompiledPolicy, DslError> {
     let config = compile_config(ast.config.as_ref());
     let phases: Vec<CompiledPhase> = ast
         .phases
@@ -450,7 +503,7 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
             })
         }
         OperationNode::Synthesize { name, settings } => Ok(CompiledOperation::Synthesize(
-            compile_synthesize(name, settings)?,
+            Box::new(compile_synthesize(name, settings)?),
         )),
         OperationNode::ClearTags => Ok(CompiledOperation::ClearTags),
         OperationNode::SetTag { tag, value } => Ok(CompiledOperation::SetTag {
@@ -622,7 +675,11 @@ fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, Ds
         FilterNode::Default => Ok(CompiledFilter::Default),
         FilterNode::Font => Ok(CompiledFilter::Font),
         FilterNode::TitleContains(s) => Ok(CompiledFilter::TitleContains(s.clone())),
-        FilterNode::TitleMatches(s) => Ok(CompiledFilter::TitleMatches(s.clone())),
+        FilterNode::TitleMatches(s) => {
+            let compiled = CompiledRegex::new(s)
+                .map_err(|e| DslError::compile(format!("invalid regex pattern '{}': {}", s, e)))?;
+            Ok(CompiledFilter::TitleMatches(compiled))
+        }
         FilterNode::And(items) => {
             let compiled: Vec<CompiledFilter> = items
                 .iter()

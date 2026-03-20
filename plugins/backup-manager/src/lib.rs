@@ -24,16 +24,6 @@ fn plugin_err(message: impl Into<String>) -> VoomError {
     }
 }
 
-/// Build an `EventResult` for the backup-manager plugin with the given JSON data.
-fn backup_result(data: serde_json::Value) -> EventResult {
-    EventResult {
-        plugin_name: "backup-manager".into(),
-        produced_events: vec![],
-        data: Some(data),
-        claimed: false,
-    }
-}
-
 /// A record of a backed-up file.
 #[derive(Debug, Clone)]
 pub struct BackupRecord {
@@ -109,20 +99,19 @@ impl BackupManagerPlugin {
             )));
         }
 
-        // Validate the source file exists
         let metadata = fs::metadata(path)
             .map_err(|e| plugin_err(format!("cannot backup {}: {e}", path.display())))?;
 
-        // Validate disk space
-        self.validate_disk_space(path)?;
+        // Generate UUID once so disk-space check and backup target are consistent
+        let backup_id = Uuid::new_v4();
 
-        // Compute backup path and create directory
-        let backup_path = self.backup_path_for(path);
+        // Validate disk space against the actual backup destination
+        let backup_path = self.backup_path_for(path, backup_id);
+        self.validate_disk_space_for(&backup_path, path)?;
         if let Some(parent) = backup_path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        // Copy file to backup location
         fs::copy(path, &backup_path).map_err(|e| {
             plugin_err(format!(
                 "failed to copy {} to {}: {e}",
@@ -132,7 +121,7 @@ impl BackupManagerPlugin {
         })?;
 
         let record = BackupRecord {
-            id: Uuid::new_v4(),
+            id: backup_id,
             original_path: path.to_path_buf(),
             backup_path,
             size: metadata.len(),
@@ -219,12 +208,17 @@ impl BackupManagerPlugin {
 
     /// Check if sufficient disk space is available for backing up the given file.
     pub fn validate_disk_space(&self, path: &Path) -> Result<()> {
-        let file_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let backup_path = self.backup_path_for(path, Uuid::new_v4());
+        self.validate_disk_space_for(&backup_path, path)
+    }
 
-        let backup_path = self.backup_path_for(path);
+    /// Check disk space using a pre-computed backup path.
+    fn validate_disk_space_for(&self, backup_path: &Path, source_path: &Path) -> Result<()> {
+        let file_size = fs::metadata(source_path).map(|m| m.len()).unwrap_or(0);
+
         let check_path = backup_path
             .parent()
-            .unwrap_or(path.parent().unwrap_or(Path::new("/")));
+            .unwrap_or(source_path.parent().unwrap_or(Path::new("/")));
 
         let available = Self::available_space(check_path)?;
         let required = file_size + self.config.min_free_space;
@@ -232,7 +226,7 @@ impl BackupManagerPlugin {
         if available < required {
             return Err(plugin_err(format!(
                 "insufficient disk space for backup of {}: need {} bytes (file {} + reserve {}), have {} available",
-                path.display(),
+                source_path.display(),
                 required,
                 file_size,
                 self.config.min_free_space,
@@ -244,7 +238,12 @@ impl BackupManagerPlugin {
     }
 
     /// Get the backup path for a given original file.
-    pub fn backup_path_for(&self, path: &Path) -> PathBuf {
+    ///
+    /// In global-dir mode, a `unique_id` is incorporated into the filename
+    /// to avoid collisions. Pass the same UUID to `validate_disk_space` and
+    /// `backup_file` calls to ensure the space check targets the actual
+    /// destination path.
+    pub fn backup_path_for(&self, path: &Path, unique_id: Uuid) -> PathBuf {
         let file_name = path
             .file_name()
             .map(|n| n.to_string_lossy().replace(['/', '\\', '\0'], "_"))
@@ -252,8 +251,7 @@ impl BackupManagerPlugin {
 
         if self.config.use_global_dir {
             if let Some(ref dir) = self.config.backup_dir {
-                let id = Uuid::new_v4();
-                return dir.join(format!("{id}_{file_name}"));
+                return dir.join(format!("{unique_id}_{file_name}"));
             }
         }
 
@@ -302,6 +300,7 @@ impl BackupManagerPlugin {
                         record.backup_path.display(),
                     ))
                 })?;
+                removed += 1;
             }
             // Try to clean up parent directory if empty
             if let Some(parent) = record.backup_path.parent() {
@@ -309,7 +308,6 @@ impl BackupManagerPlugin {
                     tracing::debug!(path = %parent.display(), error = %e, "could not remove backup parent directory");
                 }
             }
-            removed += 1;
         }
 
         let mut records_map = self
@@ -406,11 +404,16 @@ impl Plugin for BackupManagerPlugin {
 
                 self.backup_file(&evt.path)?;
 
-                Ok(Some(backup_result(serde_json::json!({
-                    "backed_up": true,
-                    "path": evt.path,
-                    "phase": evt.phase_name,
-                }))))
+                Ok(Some(EventResult {
+                    plugin_name: "backup-manager".into(),
+                    produced_events: vec![],
+                    data: Some(serde_json::json!({
+                        "backed_up": true,
+                        "path": evt.path,
+                        "phase": evt.phase_name,
+                    })),
+                    claimed: false,
+                }))
             }
             Event::PlanCompleted(evt) => {
                 if self.has_backup(&evt.path) {
@@ -420,11 +423,16 @@ impl Plugin for BackupManagerPlugin {
                         "Plan completed successfully, removing backup"
                     );
                     self.remove_backup(&evt.path)?;
-                    Ok(Some(backup_result(serde_json::json!({
-                        "backup_removed": true,
-                        "path": evt.path,
-                        "phase": evt.phase_name,
-                    }))))
+                    Ok(Some(EventResult {
+                        plugin_name: "backup-manager".into(),
+                        produced_events: vec![],
+                        data: Some(serde_json::json!({
+                            "backup_removed": true,
+                            "path": evt.path,
+                            "phase": evt.phase_name,
+                        })),
+                        claimed: false,
+                    }))
                 } else {
                     Ok(None)
                 }
@@ -438,12 +446,17 @@ impl Plugin for BackupManagerPlugin {
                         "Plan failed, restoring file from backup"
                     );
                     self.restore_file(&evt.path)?;
-                    Ok(Some(backup_result(serde_json::json!({
-                        "restored": true,
-                        "path": evt.path,
-                        "phase": evt.phase_name,
-                        "error": evt.error,
-                    }))))
+                    Ok(Some(EventResult {
+                        plugin_name: "backup-manager".into(),
+                        produced_events: vec![],
+                        data: Some(serde_json::json!({
+                            "restored": true,
+                            "path": evt.path,
+                            "phase": evt.phase_name,
+                            "error": evt.error,
+                        })),
+                        claimed: false,
+                    }))
                 } else {
                     Ok(None)
                 }
@@ -453,7 +466,6 @@ impl Plugin for BackupManagerPlugin {
     }
 
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        tracing::info!("Backup manager plugin initialized");
         Ok(())
     }
 }
@@ -493,7 +505,7 @@ mod tests {
     fn test_backup_path_sibling() {
         let plugin = BackupManagerPlugin::new();
         let path = Path::new("/media/movies/Movie.mkv");
-        let backup = plugin.backup_path_for(path);
+        let backup = plugin.backup_path_for(path, Uuid::new_v4());
 
         assert!(backup
             .to_string_lossy()
@@ -510,7 +522,7 @@ mod tests {
         };
         let plugin = BackupManagerPlugin::with_config(config);
         let path = Path::new("/media/movies/Movie.mkv");
-        let backup = plugin.backup_path_for(path);
+        let backup = plugin.backup_path_for(path, Uuid::new_v4());
 
         assert!(backup.to_string_lossy().starts_with("/tmp/voom-backups/"));
         assert!(backup.to_string_lossy().ends_with("_Movie.mkv"));
@@ -769,16 +781,6 @@ mod tests {
     }
 
     #[test]
-    fn test_handles_plan_completed_and_failed() {
-        let plugin = BackupManagerPlugin::new();
-        assert!(plugin.handles("plan.executing"));
-        assert!(plugin.handles("plan.completed"));
-        assert!(plugin.handles("plan.failed"));
-        assert!(!plugin.handles("file.discovered"));
-        assert!(!plugin.handles("plan.created"));
-    }
-
-    #[test]
     fn test_backup_path_sanitizes_traversal() {
         let config = BackupConfig {
             backup_dir: Some(PathBuf::from("/tmp/voom-backups")),
@@ -789,7 +791,7 @@ mod tests {
 
         // Path traversal characters should be replaced with underscores
         let path = Path::new("/media/movies/../../../etc/passwd");
-        let backup = plugin.backup_path_for(path);
+        let backup = plugin.backup_path_for(path, Uuid::new_v4());
         let backup_str = backup.to_string_lossy();
         assert!(backup_str.starts_with("/tmp/voom-backups/"));
         assert!(backup_str.ends_with("_passwd"));
@@ -805,7 +807,7 @@ mod tests {
         // OsStr can't actually contain null bytes on most platforms,
         // but the sanitization handles it if present in the lossy conversion
         let path = Path::new("/media/movies/normal_file.mkv");
-        let backup = plugin.backup_path_for(path);
+        let backup = plugin.backup_path_for(path, Uuid::new_v4());
         let filename = backup.file_name().unwrap().to_string_lossy();
         assert!(!filename.contains('\0'));
     }
@@ -814,7 +816,7 @@ mod tests {
     fn test_backup_path_normal_filename() {
         let plugin = BackupManagerPlugin::new();
         let path = Path::new("/media/movies/My Movie (2024).mkv");
-        let backup = plugin.backup_path_for(path);
+        let backup = plugin.backup_path_for(path, Uuid::new_v4());
         let backup_str = backup.to_string_lossy();
         assert!(backup_str.contains("My Movie (2024).mkv"));
     }

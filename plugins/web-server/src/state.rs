@@ -87,7 +87,7 @@ mod tests {
     use voom_domain::media::MediaFile;
     use voom_domain::plan::Plan;
     use voom_domain::stats::ProcessingStats;
-    use voom_domain::storage::{FileFilters, StorageTrait, StoredPlan};
+    use voom_domain::storage::{FileFilters, JobFilters, StorageTrait, StoredPlan};
 
     struct DummyStore;
     impl StorageTrait for DummyStore {
@@ -124,7 +124,7 @@ mod tests {
         fn claim_job_by_id(&self, _: &uuid::Uuid, _: &str) -> VoomResult<Option<Job>> {
             Ok(None)
         }
-        fn list_jobs(&self, _: Option<JobStatus>, _: Option<u32>) -> VoomResult<Vec<Job>> {
+        fn list_jobs(&self, _: &JobFilters) -> VoomResult<Vec<Job>> {
             Ok(vec![])
         }
         fn count_jobs_by_status(&self) -> VoomResult<Vec<(JobStatus, u64)>> {

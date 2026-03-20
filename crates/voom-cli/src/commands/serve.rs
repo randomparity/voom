@@ -1,16 +1,13 @@
-use std::sync::Arc;
-
 use anyhow::Result;
 use owo_colors::OwoColorize;
 use tokio_util::sync::CancellationToken;
-use voom_domain::storage::StorageTrait;
 use voom_web_server::server::{start_server, ServerConfig};
 
 use crate::cli::ServeArgs;
 
 pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     let config = crate::app::load_config()?;
-    let store: Arc<dyn StorageTrait> = crate::app::open_store(&config)?;
+    let store = crate::app::open_store(&config)?;
 
     println!(
         "{} Starting VOOM web server on {}:{}",

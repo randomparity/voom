@@ -66,14 +66,12 @@ fn load_templates(template_dir: Option<&str>) -> Result<tera::Tera> {
     }
 }
 
-/// Embedded templates — public for integration tests.
-#[must_use]
-pub fn embedded_templates_for_test() -> tera::Tera {
-    embedded_templates()
-}
-
 /// Embedded templates as fallback when web/templates/ doesn't exist on disk.
-fn embedded_templates() -> tera::Tera {
+///
+/// Public so that integration tests and other crates can obtain the same
+/// template set without starting the full server.
+#[must_use]
+pub fn embedded_templates() -> tera::Tera {
     let mut tera = tera::Tera::default();
 
     tera.add_raw_template("base.html", include_str!("../templates/base.html"))
@@ -161,8 +159,8 @@ mod tests {
     }
 
     #[test]
-    fn embedded_templates_for_test_returns_same_templates() {
-        let tera = embedded_templates_for_test();
+    fn embedded_templates_returns_same_as_direct_call() {
+        let tera = embedded_templates();
         let names: Vec<&str> = tera.get_template_names().collect();
         assert!(names.contains(&"dashboard.html"));
         assert!(names.contains(&"base.html"));

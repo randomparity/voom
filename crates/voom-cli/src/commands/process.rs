@@ -14,7 +14,6 @@ use voom_domain::events::{
     Event, FileIntrospectionFailedEvent, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent,
     PlanFailedEvent,
 };
-use voom_domain::storage::StorageTrait;
 use voom_job_manager::progress::ProgressReporter;
 use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 
@@ -248,7 +247,6 @@ async fn process_single_file(
     let path = std::path::PathBuf::from(file_path);
 
     let file = introspect_file(path, file_size, content_hash, kernel).await?;
-    let file_path_str = file.path.display().to_string();
 
     let result = orchestrate_plans(compiled, &file)?;
 
@@ -268,20 +266,12 @@ async fn process_single_file(
             .collect();
 
         Ok(Some(serde_json::json!({
-            "path": file_path_str,
+            "path": file.path.display().to_string(),
             "needs_execution": needs_exec,
             "plans": plan_summaries,
         })))
     } else {
-        execute_plans(
-            file_path,
-            &file,
-            &result,
-            kernel,
-            &file_path_str,
-            needs_exec,
-            token,
-        )
+        execute_plans(&file, &result, kernel, needs_exec, token)
     }
 }
 
@@ -357,16 +347,16 @@ fn orchestrate_plans(
 
 /// Verify file integrity and publish plan lifecycle events for non-dry-run execution.
 fn execute_plans(
-    file_path: &str,
     file: &voom_domain::media::MediaFile,
     result: &voom_phase_orchestrator::OrchestrationResult,
     kernel: &voom_kernel::Kernel,
-    file_path_str: &str,
     needs_exec: bool,
     token: &CancellationToken,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
+    let file_path_str = file.path.display().to_string();
+
     // Verify file hasn't changed since introspection (TOCTOU guard)
-    let exec_path = std::path::PathBuf::from(file_path);
+    let exec_path = file.path.clone();
     if !file.content_hash.is_empty() {
         match voom_discovery::hash_file(&exec_path) {
             Ok(current_hash) if current_hash != file.content_hash => {

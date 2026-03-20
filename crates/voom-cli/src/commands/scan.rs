@@ -2,17 +2,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::app;
+use crate::cli::ScanArgs;
+use crate::output::{self, max_filename_len, shrink_filename};
 use anyhow::{Context, Result};
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 use tokio_util::sync::CancellationToken;
 use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{Event, FileIntrospectionFailedEvent};
-use voom_domain::storage::StorageTrait;
-
-use crate::app;
-use crate::cli::ScanArgs;
-use crate::output::{self, max_filename_len, shrink_filename};
 
 /// Fixed-width overhead of the progress bar line (spinner + bar + counters + percent + padding).
 const PROGRESS_FIXED_WIDTH: usize = 77;

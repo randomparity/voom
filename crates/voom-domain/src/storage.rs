@@ -9,6 +9,13 @@ use crate::media::MediaFile;
 use crate::plan::Plan;
 use crate::stats::ProcessingStats;
 
+/// Filters for querying jobs from storage.
+#[derive(Debug, Clone, Default)]
+pub struct JobFilters {
+    pub status: Option<JobStatus>,
+    pub limit: Option<u32>,
+}
+
 /// Filters for querying bad files from storage.
 #[derive(Debug, Clone, Default)]
 pub struct BadFileFilters {
@@ -51,7 +58,7 @@ pub trait StorageTrait: Send + Sync {
     /// Atomically claim a specific job by ID, only if it is still pending.
     /// Returns the claimed job (now Running) or None if not pending/not found.
     fn claim_job_by_id(&self, job_id: &Uuid, worker_id: &str) -> Result<Option<Job>>;
-    fn list_jobs(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>>;
+    fn list_jobs(&self, filters: &JobFilters) -> Result<Vec<Job>>;
     fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>>;
 
     // Plans

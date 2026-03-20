@@ -110,6 +110,43 @@ impl PluginDataStore for InMemoryDataStore {
     }
 }
 
+/// Adapter that implements `PluginDataStore` by delegating to `StorageTrait`.
+/// Use this in production to give WASM plugins persistent data storage.
+pub struct StorageBackedDataStore {
+    store: Arc<dyn voom_domain::storage::StorageTrait>,
+}
+
+impl StorageBackedDataStore {
+    pub fn new(store: Arc<dyn voom_domain::storage::StorageTrait>) -> Self {
+        Self { store }
+    }
+}
+
+impl PluginDataStore for StorageBackedDataStore {
+    fn get(&self, plugin_name: &str, key: &str) -> Option<Vec<u8>> {
+        self.store
+            .get_plugin_data(plugin_name, key)
+            .ok()
+            .flatten()
+            .filter(|v| !v.is_empty()) // Treat empty values as tombstones (deleted keys)
+    }
+
+    fn set(&self, plugin_name: &str, key: &str, value: &[u8]) -> Result<(), String> {
+        self.store
+            .set_plugin_data(plugin_name, key, value)
+            .map_err(|e| e.to_string())
+    }
+
+    fn delete(&self, plugin_name: &str, key: &str) -> Result<(), String> {
+        // StorageTrait doesn't have a dedicated delete_plugin_data method,
+        // so we write an empty value as a tombstone. The get() implementation
+        // filters out empty values, making this indistinguishable from a true delete.
+        self.store
+            .set_plugin_data(plugin_name, key, &[])
+            .map_err(|e| e.to_string())
+    }
+}
+
 impl HostState {
     /// Create a new `HostState` for a plugin with default settings.
     #[must_use]
@@ -271,9 +308,10 @@ impl HostState {
             }
         }
 
-        // Security check: verify plugin has execute capability.
-        if !self.allowed_capabilities.is_empty()
-            && !self
+        // Security check: verify plugin has execute capability (empty = deny all,
+        // consistent with allowed_tools).
+        if self.allowed_capabilities.is_empty()
+            || !self
                 .allowed_capabilities
                 .iter()
                 .any(|c| c.starts_with("execute"))
@@ -354,28 +392,7 @@ impl HostState {
             .call()
             .map_err(|e| format!("HTTP GET failed: {e}"))?;
 
-        let status = response.status();
-        let header_names = response.headers_names();
-        let resp_headers: Vec<(String, String)> = header_names
-            .iter()
-            .filter_map(|name| {
-                response
-                    .header(name)
-                    .map(|val| (name.clone(), val.to_string()))
-            })
-            .collect();
-        let mut body = Vec::new();
-        response
-            .into_reader()
-            .take(10 * 1024 * 1024) // 10 MiB limit
-            .read_to_end(&mut body)
-            .map_err(|e| format!("failed to read response body: {e}"))?;
-
-        Ok(HttpResponse {
-            status,
-            headers: resp_headers,
-            body,
-        })
+        parse_response(response)
     }
 
     /// Perform an HTTP POST request.
@@ -401,29 +418,34 @@ impl HostState {
             .send_bytes(body)
             .map_err(|e| format!("HTTP POST failed: {e}"))?;
 
-        let status = response.status();
-        let header_names = response.headers_names();
-        let resp_headers: Vec<(String, String)> = header_names
-            .iter()
-            .filter_map(|name| {
-                response
-                    .header(name)
-                    .map(|val| (name.clone(), val.to_string()))
-            })
-            .collect();
-        let mut resp_body = Vec::new();
-        response
-            .into_reader()
-            .take(10 * 1024 * 1024) // 10 MiB limit
-            .read_to_end(&mut resp_body)
-            .map_err(|e| format!("failed to read response body: {e}"))?;
-
-        Ok(HttpResponse {
-            status,
-            headers: resp_headers,
-            body: resp_body,
-        })
+        parse_response(response)
     }
+}
+
+/// Extract status, headers, and body from a ureq response.
+fn parse_response(response: ureq::Response) -> Result<HttpResponse, String> {
+    let status = response.status();
+    let header_names = response.headers_names();
+    let headers: Vec<(String, String)> = header_names
+        .iter()
+        .filter_map(|name| {
+            response
+                .header(name)
+                .map(|val| (name.clone(), val.to_string()))
+        })
+        .collect();
+    let mut body = Vec::new();
+    response
+        .into_reader()
+        .take(10 * 1024 * 1024) // 10 MiB limit
+        .read_to_end(&mut body)
+        .map_err(|e| format!("failed to read response body: {e}"))?;
+
+    Ok(HttpResponse {
+        status,
+        headers,
+        body,
+    })
 }
 
 /// Output from running an external tool.
@@ -498,7 +520,9 @@ mod tests {
 
     #[test]
     fn test_run_tool_allowed() {
-        let state = HostState::new("test".into()).with_tools(vec!["echo".into()]);
+        let state = HostState::new("test".into())
+            .with_tools(vec!["echo".into()])
+            .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         let result = state.run_tool("echo", &["hello".into()], 5000);
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -562,7 +586,9 @@ mod tests {
 
     #[test]
     fn test_run_tool_successful_with_timeout() {
-        let state = HostState::new("test".into()).with_tools(vec!["echo".into()]);
+        let state = HostState::new("test".into())
+            .with_tools(vec!["echo".into()])
+            .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         let result = state.run_tool("echo", &["hello".into()], 5000);
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -572,7 +598,9 @@ mod tests {
 
     #[test]
     fn test_run_tool_timeout() {
-        let state = HostState::new("test".into()).with_tools(vec!["sleep".into()]);
+        let state = HostState::new("test".into())
+            .with_tools(vec!["sleep".into()])
+            .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         let result = state.run_tool("sleep", &["10".into()], 100);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -621,7 +649,8 @@ mod tests {
         std::fs::write(&file_path, "test").unwrap();
         let state = HostState::new("test".into())
             .with_tools(vec!["echo".into()])
-            .with_paths(vec![dir.path().to_path_buf()]);
+            .with_paths(vec![dir.path().to_path_buf()])
+            .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         let result = state.run_tool("echo", &[file_path.to_string_lossy().into()], 5000);
         assert!(result.is_ok());
     }
@@ -630,7 +659,8 @@ mod tests {
     fn test_run_tool_path_blocked() {
         let state = HostState::new("test".into())
             .with_tools(vec!["echo".into()])
-            .with_paths(vec![PathBuf::from("/tmp")]);
+            .with_paths(vec![PathBuf::from("/tmp")])
+            .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         let result = state.run_tool("echo", &["/etc/passwd".into()], 5000);
         assert!(result.is_err());
         assert!(result
@@ -648,7 +678,8 @@ mod tests {
         // Try to access a file via traversal outside the allowed dir
         let state = HostState::new("test".into())
             .with_tools(vec!["echo".into()])
-            .with_paths(vec![allowed_dir]);
+            .with_paths(vec![allowed_dir])
+            .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         // /etc/passwd exists and will canonicalize to itself — outside allowed dir
         let result = state.run_tool("echo", &["/etc/passwd".into()], 5000);
         assert!(result.is_err());

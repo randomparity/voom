@@ -6,7 +6,7 @@ use chrono::Utc;
 use uuid::Uuid;
 use voom_domain::errors::Result;
 use voom_domain::job::{Job, JobStatus, JobUpdate};
-use voom_domain::storage::StorageTrait;
+use voom_domain::storage::{JobFilters, StorageTrait};
 
 /// Job queue backed by a storage implementation.
 ///
@@ -103,7 +103,7 @@ impl JobQueue {
 
     /// List jobs, optionally filtered by status.
     pub fn list(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>> {
-        self.store.list_jobs(status, limit)
+        self.store.list_jobs(&JobFilters { status, limit })
     }
 
     /// Get job counts grouped by status.
