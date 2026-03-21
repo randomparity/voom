@@ -42,7 +42,9 @@
 //! In a real plugin, you might call an external API (via host HTTP functions)
 //! to look up movie/TV metadata from services like Radarr, Sonarr, or TMDb.
 
-use voom_plugin_sdk::{deserialize_event, serialize_event, Event, OnEventResult, PluginInfoData};
+use voom_plugin_sdk::{
+    deserialize_event, serialize_event, Event, HostFunctions, OnEventResult, PluginInfoData,
+};
 
 /// Plugin information for the host to query.
 pub fn get_info() -> PluginInfoData {
@@ -59,7 +61,7 @@ pub fn handles(event_type: &str) -> bool {
 }
 
 /// Process an event and optionally return a result.
-pub fn on_event(event_type: &str, payload: &[u8]) -> Option<OnEventResult> {
+pub fn on_event(event_type: &str, payload: &[u8], _host: &dyn HostFunctions) -> Option<OnEventResult> {
     if event_type != "file.introspected" {
         return None;
     }
@@ -137,6 +139,9 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use voom_plugin_sdk::*;
+
+    struct NoopHost;
+    impl HostFunctions for NoopHost {}
 
     fn make_test_file() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/media/movies/test.mkv"));
@@ -233,7 +238,7 @@ mod tests {
         });
 
         let payload = serialize_event(&event).unwrap();
-        let result = on_event("file.introspected", &payload);
+        let result = on_event("file.introspected", &payload, &NoopHost);
 
         assert!(result.is_some());
         let result = result.unwrap();
@@ -257,13 +262,13 @@ mod tests {
 
     #[test]
     fn test_on_event_wrong_type() {
-        let result = on_event("file.discovered", &[]);
+        let result = on_event("file.discovered", &[], &NoopHost);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_on_event_invalid_payload() {
-        let result = on_event("file.introspected", &[0xFF, 0xFE]);
+        let result = on_event("file.introspected", &[0xFF, 0xFE], &NoopHost);
         assert!(result.is_none());
     }
 }

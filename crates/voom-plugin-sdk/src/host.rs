@@ -1,0 +1,92 @@
+//! Host function abstraction for WASM plugins.
+//!
+//! In a real WASM plugin, these functions are provided by the host via WIT imports.
+//! This module defines the shared trait and associated types so that all WASM plugins
+//! use a single definition rather than each defining their own.
+
+/// Abstraction over host-provided functions.
+///
+/// In a real WASM plugin, these would be WIT imports from the host interface.
+/// Plugins that only need a subset of host functions can rely on the default
+/// implementations, which return errors or no-ops for unimplemented functions.
+pub trait HostFunctions {
+    /// Execute an HTTP GET request via the host.
+    ///
+    /// Used by plugins that query external APIs (e.g., Radarr, Sonarr).
+    fn http_get(&self, url: &str, headers: &[(String, String)]) -> Result<HttpResponse, String> {
+        let _ = (url, headers);
+        Err("http_get not available".to_string())
+    }
+
+    /// Run an external tool via the host's sandboxed tool runner.
+    ///
+    /// Used by plugins that invoke CLI tools (e.g., ffmpeg, whisper, HandBrakeCLI).
+    fn run_tool(&self, tool: &str, args: &[String], timeout_ms: u64) -> Result<ToolOutput, String> {
+        let _ = (tool, args, timeout_ms);
+        Err("run_tool not available".to_string())
+    }
+
+    /// Retrieve plugin-specific data from the host's data store.
+    fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>>;
+
+    /// Store plugin-specific data in the host's data store.
+    fn set_plugin_data(&self, key: &str, value: &[u8]) -> Result<(), String>;
+
+    /// Log a message at the given level via the host's logging system.
+    fn log(&self, level: &str, message: &str);
+}
+
+/// HTTP response returned by the host's `http_get` function.
+#[derive(Debug)]
+pub struct HttpResponse {
+    /// HTTP status code.
+    pub status: u16,
+    /// Response body bytes.
+    pub body: Vec<u8>,
+}
+
+/// Output from a tool execution via the host's `run_tool` function.
+#[derive(Debug)]
+pub struct ToolOutput {
+    /// Process exit code.
+    pub exit_code: i32,
+    /// Standard output bytes.
+    pub stdout: Vec<u8>,
+    /// Standard error bytes.
+    pub stderr: Vec<u8>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestHost;
+
+    impl HostFunctions for TestHost {
+        fn get_plugin_data(&self, _key: &str) -> Option<Vec<u8>> {
+            None
+        }
+
+        fn set_plugin_data(&self, _key: &str, _value: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn log(&self, _level: &str, _message: &str) {}
+    }
+
+    #[test]
+    fn test_default_http_get_returns_error() {
+        let host = TestHost;
+        let result = host.http_get("http://example.com", &[]);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "http_get not available");
+    }
+
+    #[test]
+    fn test_default_run_tool_returns_error() {
+        let host = TestHost;
+        let result = host.run_tool("ffmpeg", &[], 1000);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "run_tool not available");
+    }
+}

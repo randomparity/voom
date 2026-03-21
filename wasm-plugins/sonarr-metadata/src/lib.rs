@@ -31,7 +31,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, Event, OnEventResult, PluginInfoData,
+    deserialize_event, load_plugin_config, serialize_event, Event, HostFunctions, HttpResponse,
+    OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -94,20 +95,6 @@ pub fn on_event(
         produced_events: vec![(enriched_event.event_type().to_string(), produced_payload)],
         data: None,
     })
-}
-
-// --- Host function abstraction ---
-
-pub trait HostFunctions {
-    fn http_get(&self, url: &str, headers: &[(String, String)]) -> Result<HttpResponse, String>;
-    fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>>;
-    fn set_plugin_data(&self, key: &str, value: &[u8]) -> Result<(), String>;
-    fn log(&self, level: &str, message: &str);
-}
-
-pub struct HttpResponse {
-    pub status: u16,
-    pub body: Vec<u8>,
 }
 
 // --- Sonarr data types ---

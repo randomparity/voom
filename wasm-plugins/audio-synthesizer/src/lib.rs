@@ -30,8 +30,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, Event, OnEventResult, OperationType,
-    PluginInfoData,
+    deserialize_event, load_plugin_config, serialize_event, Event, HostFunctions, OnEventResult,
+    OperationType, PluginInfoData, ToolOutput,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -197,21 +197,6 @@ fn simple_hash(s: &str) -> u64 {
         hash = hash.wrapping_mul(33).wrapping_add(b as u64);
     }
     hash
-}
-
-// --- Host function abstraction ---
-
-pub trait HostFunctions {
-    fn run_tool(&self, tool: &str, args: &[String], timeout_ms: u64) -> Result<ToolOutput, String>;
-    fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>>;
-    fn set_plugin_data(&self, key: &str, value: &[u8]) -> Result<(), String>;
-    fn log(&self, level: &str, message: &str);
-}
-
-pub struct ToolOutput {
-    pub exit_code: i32,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
 }
 
 // --- Config ---

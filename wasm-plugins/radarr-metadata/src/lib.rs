@@ -31,7 +31,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, Event, OnEventResult, PluginInfoData,
+    deserialize_event, load_plugin_config, serialize_event, Event, HostFunctions, HttpResponse,
+    OnEventResult, PluginInfoData,
 };
 
 /// Plugin identity and capabilities.
@@ -103,23 +104,6 @@ pub fn on_event(
         produced_events: vec![(enriched_event.event_type().to_string(), produced_payload)],
         data: None,
     })
-}
-
-// --- Host function abstraction ---
-
-/// Abstraction over host-provided functions.
-/// In a real WASM plugin, these would be WIT imports from the host interface.
-pub trait HostFunctions {
-    fn http_get(&self, url: &str, headers: &[(String, String)]) -> Result<HttpResponse, String>;
-    fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>>;
-    fn set_plugin_data(&self, key: &str, value: &[u8]) -> Result<(), String>;
-    fn log(&self, level: &str, message: &str);
-}
-
-/// HTTP response from the host.
-pub struct HttpResponse {
-    pub status: u16,
-    pub body: Vec<u8>,
 }
 
 // --- Radarr data types ---

@@ -54,6 +54,7 @@
 #![allow(clippy::missing_errors_doc)]
 
 pub mod event;
+pub mod host;
 pub mod types;
 
 // Re-export domain types commonly used by plugins.
@@ -76,3 +77,6 @@ pub use event::{
 /// For the builder pattern in non-WIT contexts, use `types::PluginInfo` directly.
 /// The builder is not re-exported here to avoid collision with WIT-generated `PluginInfo`.
 pub use types::{OnEventResult, PluginInfoData};
+
+// Re-export host abstractions for WASM plugins.
+pub use host::{HostFunctions, HttpResponse, ToolOutput};
