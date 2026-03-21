@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -198,9 +199,9 @@ pub struct StoredPlan {
     pub warnings: Option<String>,
     pub skip_reason: Option<String>,
     pub policy_hash: Option<String>,
-    pub evaluated_at: Option<String>,
-    pub created_at: String,
-    pub executed_at: Option<String>,
+    pub evaluated_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub executed_at: Option<DateTime<Utc>>,
     pub result: Option<String>,
 }
 
@@ -211,8 +212,8 @@ pub struct FileHistoryEntry {
     pub file_id: Uuid,
     pub path: PathBuf,
     pub content_hash: String,
-    pub container: String,
+    pub container: Container,
     pub track_count: u32,
-    pub introspected_at: String,
-    pub archived_at: String,
+    pub introspected_at: DateTime<Utc>,
+    pub archived_at: DateTime<Utc>,
 }

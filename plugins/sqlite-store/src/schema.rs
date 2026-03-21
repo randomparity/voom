@@ -155,8 +155,7 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
         let columns: Vec<String> = stmt
             .query_map([], |row| row.get::<_, String>(1))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(columns.iter().any(|c| c == column))
     };
 

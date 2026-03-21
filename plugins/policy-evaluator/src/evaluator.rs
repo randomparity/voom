@@ -527,11 +527,11 @@ fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
         params.insert("source_track".into(), serde_json::json!(idx));
     }
 
-    ctx.plan.actions.push(PlannedAction {
-        operation: OperationType::SynthesizeAudio,
-        track_index: source_index,
-        parameters: serde_json::Value::Object(params),
-        description: format!("Synthesize audio: {}", synth.name),
+    let params_val = serde_json::Value::Object(params);
+    let desc = format!("Synthesize audio: {}", synth.name);
+    ctx.plan.actions.push(match source_index {
+        Some(idx) => PlannedAction::track_op(OperationType::SynthesizeAudio, idx, params_val, desc),
+        None => PlannedAction::file_op(OperationType::SynthesizeAudio, params_val, desc),
     });
 }
 
@@ -628,46 +628,10 @@ fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), St
             return Err(expanded);
         }
         CompiledAction::SetDefault { target, filter } => {
-            let tracks = tracks_for_target(ctx.file, target);
-            for track in &tracks {
-                let matches = match filter {
-                    Some(f) => track_matches(track, f),
-                    None => true,
-                };
-                if matches && !track.is_default {
-                    ctx.plan.actions.push(PlannedAction {
-                        operation: OperationType::SetDefault,
-                        track_index: Some(track.index),
-                        parameters: serde_json::json!({}),
-                        description: format!(
-                            "Set default on {} track {}",
-                            target_str(target),
-                            track.index
-                        ),
-                    });
-                }
-            }
+            emit_flag_action(ctx, target, filter, FlagKind::Default)?;
         }
         CompiledAction::SetForced { target, filter } => {
-            let tracks = tracks_for_target(ctx.file, target);
-            for track in &tracks {
-                let matches = match filter {
-                    Some(f) => track_matches(track, f),
-                    None => true,
-                };
-                if matches && !track.is_forced {
-                    ctx.plan.actions.push(PlannedAction {
-                        operation: OperationType::SetForced,
-                        track_index: Some(track.index),
-                        parameters: serde_json::json!({}),
-                        description: format!(
-                            "Set forced on {} track {}",
-                            target_str(target),
-                            track.index
-                        ),
-                    });
-                }
-            }
+            emit_flag_action(ctx, target, filter, FlagKind::Forced)?;
         }
         CompiledAction::SetLanguage {
             target,
@@ -678,21 +642,17 @@ fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), St
                 .ok_or_else(|| "Cannot resolve language value".to_string())?;
             let tracks = tracks_for_target(ctx.file, target);
             for track in &tracks {
-                let matches = match filter {
-                    Some(f) => track_matches(track, f),
-                    None => true,
-                };
-                if matches && track.language != lang {
-                    ctx.plan.actions.push(PlannedAction {
-                        operation: OperationType::SetLanguage,
-                        track_index: Some(track.index),
-                        parameters: serde_json::json!({"language": lang}),
-                        description: format!(
+                if filter_matches(track, filter) && track.language != lang {
+                    ctx.plan.actions.push(PlannedAction::track_op(
+                        OperationType::SetLanguage,
+                        track.index,
+                        serde_json::json!({"language": lang}),
+                        format!(
                             "Set language on {} track {} to '{lang}'",
                             target_str(target),
                             track.index
                         ),
-                    });
+                    ));
                 }
             }
         }
@@ -720,6 +680,46 @@ fn expand_template(template: &str, file: &MediaFile) -> String {
     template
         .replace("{filename}", &filename)
         .replace("{path}", &file.path.to_string_lossy())
+}
+
+fn filter_matches(track: &Track, filter: &Option<CompiledFilter>) -> bool {
+    match filter {
+        Some(f) => track_matches(track, f),
+        None => true,
+    }
+}
+
+enum FlagKind {
+    Default,
+    Forced,
+}
+
+fn emit_flag_action(
+    ctx: &mut PhaseContext,
+    target: &TrackTarget,
+    filter: &Option<CompiledFilter>,
+    kind: FlagKind,
+) -> Result<(), String> {
+    let (op, label, is_set_fn): (OperationType, &str, fn(&Track) -> bool) = match kind {
+        FlagKind::Default => (OperationType::SetDefault, "default", |t| t.is_default),
+        FlagKind::Forced => (OperationType::SetForced, "forced", |t| t.is_forced),
+    };
+    let tracks = tracks_for_target(ctx.file, target);
+    for track in &tracks {
+        if filter_matches(track, filter) && !is_set_fn(track) {
+            ctx.plan.actions.push(PlannedAction::track_op(
+                op,
+                track.index,
+                serde_json::json!({}),
+                format!(
+                    "Set {label} on {} track {}",
+                    target_str(target),
+                    track.index
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn tracks_for_target<'a>(file: &'a MediaFile, target: &TrackTarget) -> Vec<&'a Track> {

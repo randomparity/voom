@@ -127,7 +127,7 @@ pub enum OperationType {
 impl OperationType {
     /// The set of operation types that are metadata-only edits (no transcode or remux).
     ///
-    /// Both the FFmpeg and MKVToolNix executors use this to decide whether a plan
+    /// Both the `FFmpeg` and `MKVToolNix` executors use this to decide whether a plan
     /// requires structural changes or can be handled via in-place metadata edits.
     pub const METADATA_OPS: &[OperationType] = &[
         OperationType::SetDefault,

@@ -1,4 +1,4 @@
-//! Shared in-memory StorageTrait implementation for testing.
+//! Shared in-memory `StorageTrait` implementation for testing.
 //!
 //! Gated behind the `testing` feature. Enable in your crate's
 //! `[dev-dependencies]` with:
@@ -158,16 +158,16 @@ impl JobStorage for InMemoryStore {
             job.progress = progress;
         }
         if let Some(ref msg) = update.progress_message {
-            job.progress_message = msg.clone();
+            job.progress_message.clone_from(msg);
         }
         if let Some(ref output) = update.output {
-            job.output = output.clone();
+            job.output.clone_from(output);
         }
         if let Some(ref error) = update.error {
-            job.error = error.clone();
+            job.error.clone_from(error);
         }
         if let Some(ref worker) = update.worker_id {
-            job.worker_id = worker.clone();
+            job.worker_id.clone_from(worker);
         }
         if let Some(ref started) = update.started_at {
             job.started_at = *started;
@@ -216,7 +216,7 @@ impl JobStorage for InMemoryStore {
         let jobs = self.jobs.lock().unwrap();
         let mut result: Vec<Job> = jobs
             .values()
-            .filter(|j| filters.status.map_or(true, |s| j.status == s))
+            .filter(|j| filters.status.is_none_or(|s| j.status == s))
             .cloned()
             .collect();
         result.sort_by(|a, b| {

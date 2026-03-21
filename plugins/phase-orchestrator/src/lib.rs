@@ -9,7 +9,6 @@
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
-use voom_domain::media::MediaFile;
 use voom_domain::plan::{PhaseOutcome, PhaseResult, Plan};
 use voom_dsl::compiler::{CompiledPolicy, ErrorStrategy};
 use voom_kernel::{Plugin, PluginContext};
@@ -46,17 +45,14 @@ impl PhaseOrchestratorPlugin {
     /// This is a "dry run" orchestration that produces plans without executing them.
     /// In a full pipeline, the orchestrator would also invoke executors between phases
     /// and re-introspect the file after modifications.
-    pub fn orchestrate(
-        &self,
-        policy: &CompiledPolicy,
-        file: &MediaFile,
-    ) -> Result<OrchestrationResult> {
-        let eval_result = voom_policy_evaluator::evaluator::evaluate(policy, file);
-
+    ///
+    /// The caller is responsible for running policy evaluation first (via
+    /// `voom_policy_evaluator::evaluator::evaluate`) and passing the resulting plans.
+    pub fn orchestrate(&self, plans: Vec<Plan>) -> Result<OrchestrationResult> {
         let mut phase_results = Vec::new();
         let mut file_modified = false;
 
-        for plan in &eval_result.plans {
+        for plan in &plans {
             let outcome = if plan.is_skipped() {
                 PhaseOutcome::Skipped
             } else if plan.actions.is_empty() {
@@ -77,7 +73,7 @@ impl PhaseOrchestratorPlugin {
         }
 
         Ok(OrchestrationResult {
-            plans: eval_result.plans,
+            plans,
             phase_results,
             file_modified,
         })
@@ -174,6 +170,10 @@ mod tests {
     use std::path::PathBuf;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
 
+    fn eval(policy: &CompiledPolicy, file: &MediaFile) -> Vec<Plan> {
+        voom_policy_evaluator::evaluator::evaluate(policy, file).plans
+    }
+
     fn test_file() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/media/Movie.mkv"));
         file.container = Container::Mkv;
@@ -212,7 +212,7 @@ mod tests {
         let policy =
             voom_dsl::compile(r#"policy "test" { phase init { container mkv } }"#).unwrap();
         let file = test_file();
-        let result = orch.orchestrate(&policy, &file).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
         assert_eq!(result.plans.len(), 1);
         assert!(!result.file_modified); // Already MKV
     }
@@ -231,7 +231,7 @@ mod tests {
         )
         .unwrap();
         let file = test_file();
-        let result = orch.orchestrate(&policy, &file).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
         assert_eq!(result.plans.len(), 2);
         // normalize phase should remove jpn audio
         assert!(result.file_modified);
@@ -250,7 +250,7 @@ mod tests {
         )
         .unwrap();
         let file = test_file(); // video is hevc
-        let result = orch.orchestrate(&policy, &file).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
         assert!(result.plans[0].is_skipped());
         assert!(!result.file_modified);
     }
@@ -270,7 +270,7 @@ mod tests {
         )
         .unwrap();
         let file = test_file();
-        let result = orch.orchestrate(&policy, &file).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
         let output = PhaseOrchestratorPlugin::format_dry_run(&result);
         assert!(output.contains("Phase: containerize"));
         assert!(output.contains("Phase: normalize"));
@@ -285,14 +285,14 @@ mod tests {
         let policy =
             voom_dsl::compile(r#"policy "test" { phase init { container mkv } }"#).unwrap();
         let file = test_file();
-        let result = orch.orchestrate(&policy, &file).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
         assert!(!PhaseOrchestratorPlugin::needs_execution(&result));
 
         // Changes needed
         let policy =
             voom_dsl::compile(r#"policy "test" { phase norm { keep audio where lang in [eng] } }"#)
                 .unwrap();
-        let result = orch.orchestrate(&policy, &file).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
         assert!(PhaseOrchestratorPlugin::needs_execution(&result));
     }
 
@@ -337,7 +337,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = orch.orchestrate(&policy, &file).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
         assert_eq!(result.plans.len(), 2);
         // containerize does nothing (already MKV), so validate is skipped
         assert!(result.plans[1].is_skipped());
@@ -350,7 +350,7 @@ mod tests {
             include_str!("../../../crates/voom-dsl/tests/fixtures/production-normalize.voom");
         let policy = voom_dsl::compile(source).unwrap();
         let file = test_file();
-        let result = orch.orchestrate(&policy, &file).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
         assert_eq!(result.plans.len(), 6);
 
         let output = PhaseOrchestratorPlugin::format_dry_run(&result);

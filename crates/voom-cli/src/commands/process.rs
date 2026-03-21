@@ -107,6 +107,8 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let dry_run = args.dry_run;
 
     let token_for_workers = token.clone();
+    let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
+    let ffprobe_path = Arc::new(ffprobe_path);
     let _results = pool
         .process_batch(
             items,
@@ -114,7 +116,18 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                 let compiled = compiled.clone();
                 let kernel = kernel.clone();
                 let token = token_for_workers.clone();
-                async move { process_single_file(job, &compiled, &kernel, dry_run, &token).await }
+                let ffprobe_path = ffprobe_path.clone();
+                async move {
+                    process_single_file(
+                        job,
+                        &compiled,
+                        &kernel,
+                        dry_run,
+                        &token,
+                        ffprobe_path.as_deref(),
+                    )
+                    .await
+                }
             },
             on_error,
             reporter.clone(),
@@ -244,6 +257,7 @@ async fn process_single_file(
     kernel: &voom_kernel::Kernel,
     dry_run: bool,
     token: &CancellationToken,
+    ffprobe_path: Option<&str>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let raw_payload = job.payload.as_ref().ok_or("missing payload")?;
     let payload: ProcessJobPayload =
@@ -251,8 +265,14 @@ async fn process_single_file(
 
     let path = std::path::PathBuf::from(&payload.path);
 
-    let file = crate::introspect::introspect_file(path, payload.size, payload.content_hash, kernel)
-        .await?;
+    let file = crate::introspect::introspect_file(
+        path,
+        payload.size,
+        payload.content_hash,
+        kernel,
+        ffprobe_path,
+    )
+    .await?;
 
     let result = orchestrate_plans(compiled, &file)?;
 
@@ -290,9 +310,10 @@ fn orchestrate_plans(
     compiled: &voom_dsl::CompiledPolicy,
     file: &voom_domain::media::MediaFile,
 ) -> std::result::Result<voom_phase_orchestrator::OrchestrationResult, String> {
+    let plans = voom_policy_evaluator::evaluator::evaluate(compiled, file).plans;
     let orchestrator = voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
     orchestrator
-        .orchestrate(compiled, file)
+        .orchestrate(plans)
         .map_err(|e| format!("orchestration failed: {e}"))
 }
 

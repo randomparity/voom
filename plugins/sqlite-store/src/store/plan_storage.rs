@@ -6,7 +6,9 @@ use voom_domain::errors::Result;
 use voom_domain::plan::Plan;
 use voom_domain::storage::{PlanStatus, PlanStorage, StoredPlan};
 
-use super::{format_datetime, row_uuid, storage_err, OptionalExt, SqliteStore};
+use super::{
+    format_datetime, parse_optional_datetime, row_uuid, storage_err, OptionalExt, SqliteStore,
+};
 
 impl PlanStorage for SqliteStore {
     fn save_plan(&self, plan: &Plan) -> Result<Uuid> {
@@ -104,9 +106,24 @@ impl PlanStorage for SqliteStore {
                     warnings: row.get("warnings")?,
                     skip_reason: row.get("skip_reason")?,
                     policy_hash: row.get("policy_hash")?,
-                    evaluated_at: row.get("evaluated_at")?,
-                    created_at: row.get("created_at")?,
-                    executed_at: row.get("executed_at")?,
+                    evaluated_at: parse_optional_datetime(
+                        row.get("evaluated_at")?,
+                        "plans.evaluated_at",
+                    )?,
+                    created_at: {
+                        let s: String = row.get("created_at")?;
+                        s.parse().map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                format!("invalid datetime in plans.created_at: {e}").into(),
+                            )
+                        })?
+                    },
+                    executed_at: parse_optional_datetime(
+                        row.get("executed_at")?,
+                        "plans.executed_at",
+                    )?,
                     result: row.get("result")?,
                 })
             })

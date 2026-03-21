@@ -15,6 +15,7 @@ pub fn format_iso(dt: &DateTime<Utc>) -> String {
 /// Format a duration in seconds to a human-readable string (e.g., "1h 23m 45s").
 #[must_use]
 pub fn format_duration(seconds: f64) -> String {
+    #[allow(clippy::cast_sign_loss)] // negative durations aren't meaningful
     let total = seconds.round() as u64;
     let h = total / 3600;
     let m = (total % 3600) / 60;
@@ -30,6 +31,7 @@ pub fn format_duration(seconds: f64) -> String {
 
 /// Format a file size in bytes to human-readable form.
 #[must_use]
+#[allow(clippy::cast_precision_loss)] // precision loss is negligible for display formatting
 pub fn format_size(bytes: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = 1024 * KIB;

@@ -26,16 +26,20 @@ pub fn dispatch_introspection_failure(
 ///
 /// Creates a standalone `FfprobeIntrospectorPlugin` per call rather than using
 /// the kernel-registered instance. This is necessary because each call runs on
-/// a separate `spawn_blocking` thread and the plugin is not `Clone`. The
-/// trade-off is that per-plugin configuration (custom `ffprobe_path`) is not
-/// applied. Events are dispatched to the kernel for downstream subscribers.
+/// a separate `spawn_blocking` thread and the plugin is not `Clone`.
+/// Pass `ffprobe_path` to use a custom ffprobe binary (e.g. from config).
+/// Events are dispatched to the kernel for downstream subscribers.
 pub async fn introspect_file(
     path: std::path::PathBuf,
     file_size: u64,
     content_hash: String,
     kernel: &voom_kernel::Kernel,
+    ffprobe_path: Option<&str>,
 ) -> std::result::Result<voom_domain::media::MediaFile, String> {
-    let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
+    let mut introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
+    if let Some(fp) = ffprobe_path {
+        introspector = introspector.with_ffprobe_path(fp);
+    }
     let path_for_event = path.clone();
     let hash_for_event = content_hash.clone();
     let path_display = path.display().to_string();

@@ -39,6 +39,17 @@ impl std::fmt::Debug for AppConfig {
     }
 }
 
+impl AppConfig {
+    /// Returns the configured ffprobe binary path, if set via
+    /// `[plugin.ffprobe-introspector] ffprobe_path = "..."`.
+    pub fn ffprobe_path(&self) -> Option<&str> {
+        self.plugin
+            .get("ffprobe-introspector")
+            .and_then(|t| t.get("ffprobe_path"))
+            .and_then(|v| v.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginsConfig {
     #[serde(default)]

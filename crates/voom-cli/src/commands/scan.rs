@@ -202,6 +202,7 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
             event.size,
             event.content_hash.clone(),
             &kernel,
+            config.ffprobe_path(),
         )
         .await
         {

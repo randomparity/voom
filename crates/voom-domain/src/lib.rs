@@ -10,6 +10,11 @@ pub mod plan;
 pub mod stats;
 pub mod storage;
 #[cfg(feature = "testing")]
+#[allow(
+    clippy::unwrap_used,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use
+)]
 pub mod test_support;
 pub mod utils;
 

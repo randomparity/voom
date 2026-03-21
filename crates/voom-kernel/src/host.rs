@@ -164,35 +164,30 @@ impl HostState {
         }
     }
 
-    /// Enable HTTP access for this plugin.
     #[must_use]
     pub fn with_http(mut self) -> Self {
         self.http_allowed = true;
         self
     }
 
-    /// Set allowed tools for this plugin.
     #[must_use]
     pub fn with_tools(mut self, tools: Vec<String>) -> Self {
         self.allowed_tools = tools;
         self
     }
 
-    /// Set allowed filesystem paths for tool execution.
     #[must_use]
     pub fn with_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.allowed_paths = paths;
         self
     }
 
-    /// Set allowed capabilities for this plugin.
     #[must_use]
     pub fn with_capabilities(mut self, capabilities: HashSet<String>) -> Self {
         self.allowed_capabilities = capabilities;
         self
     }
 
-    /// Set persistent storage backend.
     #[must_use]
     pub fn with_storage(mut self, storage: Arc<dyn PluginDataStore>) -> Self {
         self.storage = Some(storage);

@@ -12,8 +12,7 @@ use crate::output;
 /// introspection. This bypasses the kernel-registered instance intentionally:
 /// inspect does not need the full plugin lifecycle (event bus, storage
 /// persistence, etc.) and should work even when the kernel is not bootstrapped.
-/// The trade-off is that per-plugin configuration (e.g. a custom `ffprobe_path`
-/// from config.toml) is not applied to this ad-hoc instance.
+/// The ad-hoc instance respects `ffprobe_path` from config.
 pub async fn run(args: InspectArgs) -> Result<()> {
     let path = args
         .file
@@ -35,7 +34,10 @@ pub async fn run(args: InspectArgs) -> Result<()> {
     // Not in DB — introspect live
     println!("{}", style("File not in database, introspecting...").dim());
 
-    let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
+    let mut introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
+    if let Some(fp) = config.ffprobe_path() {
+        introspector = introspector.with_ffprobe_path(fp);
+    }
     let size = std::fs::metadata(&path)?.len();
 
     let event = introspector

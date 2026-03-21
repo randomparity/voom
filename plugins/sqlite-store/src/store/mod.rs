@@ -144,7 +144,7 @@ pub(crate) fn parse_uuid(s: &str) -> Result<Uuid> {
 }
 
 /// Parse an optional datetime string, returning an error for corrupt values.
-fn parse_optional_datetime(
+pub(crate) fn parse_optional_datetime(
     s: Option<String>,
     field: &str,
 ) -> rusqlite::Result<Option<DateTime<Utc>>> {
@@ -184,7 +184,7 @@ pub(crate) fn escape_like(s: &str) -> String {
         .replace('_', "\\_")
 }
 
-fn parse_datetime(s: &str) -> Result<DateTime<Utc>> {
+pub(crate) fn parse_datetime(s: &str) -> Result<DateTime<Utc>> {
     s.parse::<DateTime<Utc>>()
         .map_err(|e| VoomError::Storage(format!("invalid datetime '{s}': {e}")))
 }
@@ -1298,7 +1298,7 @@ mod tests {
             .unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].content_hash, "hash_v1");
-        assert_eq!(history[0].container, "mkv");
+        assert_eq!(history[0].container, Container::Mkv);
     }
 
     #[test]

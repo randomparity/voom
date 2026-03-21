@@ -113,7 +113,7 @@ pub async fn delete_file(
     // Verify the file exists before deleting
     let file = spawn_store_op(move || store_check.get_file(&id)).await?;
     if file.is_none() {
-        return Ok(Json(DeleteResponse { deleted: false }));
+        return Err(WebError::NotFound(format!("File {id} not found")));
     }
 
     spawn_store_op(move || store.delete_file(&id)).await?;

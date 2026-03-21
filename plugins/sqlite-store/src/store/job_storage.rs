@@ -2,23 +2,21 @@ use chrono::Utc;
 use rusqlite::params;
 use uuid::Uuid;
 
-use voom_domain::errors::Result;
+use voom_domain::errors::{Result, VoomError};
 use voom_domain::job::{Job, JobStatus, JobUpdate};
 use voom_domain::storage::{JobFilters, JobStorage};
 
 use super::{format_datetime, row_to_job, storage_err, SqlQuery, SqliteStore};
 
+fn serialize_json(value: &serde_json::Value) -> Result<String> {
+    serde_json::to_string(value).map_err(super::storage_err("failed to serialize JSON"))
+}
+
 impl JobStorage for SqliteStore {
     fn create_job(&self, job: &Job) -> Result<Uuid> {
         let conn = self.conn()?;
-        let payload_json = job
-            .payload
-            .as_ref()
-            .map(|p| serde_json::to_string(p).unwrap_or_default());
-        let output_json = job
-            .output
-            .as_ref()
-            .map(|o| serde_json::to_string(o).unwrap_or_default());
+        let payload_json = job.payload.as_ref().map(serialize_json).transpose()?;
+        let output_json = job.output.as_ref().map(serialize_json).transpose()?;
 
         conn.execute(
             "INSERT INTO jobs (id, job_type, status, priority, payload, progress, progress_message, output, error, worker_id, created_at, started_at, completed_at)
@@ -73,9 +71,7 @@ impl JobStorage for SqliteStore {
             sets.push(format!("progress_message = ?{}", param_values.len()));
         }
         if let Some(ref output) = update.output {
-            let json = output
-                .as_ref()
-                .map(|o| serde_json::to_string(o).unwrap_or_default());
+            let json = output.as_ref().map(serialize_json).transpose()?;
             param_values.push(Box::new(json));
             sets.push(format!("output = ?{}", param_values.len()));
         }
@@ -181,10 +177,10 @@ impl JobStorage for SqliteStore {
 
     fn list_jobs(&self, filters: &JobFilters) -> Result<Vec<Job>> {
         let conn = self.conn()?;
-        let mut q = SqlQuery::new("SELECT * FROM jobs");
+        let mut q = SqlQuery::new("SELECT * FROM jobs WHERE 1=1");
 
         if let Some(status) = filters.status {
-            q.condition(" WHERE status = {}", status.as_str().to_string());
+            q.condition(" AND status = {}", status.as_str().to_string());
         }
 
         q.sql.push_str(" ORDER BY priority ASC, created_at DESC");
@@ -224,14 +220,16 @@ impl JobStorage for SqliteStore {
 
         let result = counts
             .into_iter()
-            .filter_map(|(s, c)| match JobStatus::parse(&s) {
-                Some(status) => Some((status, c)),
-                None => {
-                    tracing::error!(status = %s, count = c, "unknown job status in database — data integrity issue");
-                    None
-                }
+            .map(|(s, c)| {
+                JobStatus::parse(&s)
+                    .map(|status| (status, c))
+                    .ok_or_else(|| {
+                        VoomError::Storage(format!(
+                            "unknown job status in database: '{s}' (count={c}) — data integrity issue"
+                        ))
+                    })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(result)
     }

@@ -86,7 +86,7 @@ impl BackupManagerPlugin {
     }
 
     #[must_use]
-    pub fn with_config(config: BackupConfig) -> Self {
+    pub fn from_config(config: BackupConfig) -> Self {
         Self {
             capabilities: vec![Capability::Backup],
             config,
@@ -364,7 +364,7 @@ mod tests {
             use_global_dir: true,
             min_free_space: 0,
         };
-        let plugin = BackupManagerPlugin::with_config(config);
+        let plugin = BackupManagerPlugin::from_config(config);
         let path = Path::new("/media/movies/Movie.mkv");
         let backup = plugin.backup_path_for(path, Uuid::new_v4());
 
@@ -383,7 +383,7 @@ mod tests {
             use_global_dir: true,
             min_free_space: 0,
         };
-        let plugin = BackupManagerPlugin::with_config(config);
+        let plugin = BackupManagerPlugin::from_config(config);
 
         // Create backup
         let record = plugin.backup_file(&file_path).unwrap();
@@ -413,7 +413,7 @@ mod tests {
             use_global_dir: true,
             min_free_space: 0,
         };
-        let plugin = BackupManagerPlugin::with_config(config);
+        let plugin = BackupManagerPlugin::from_config(config);
 
         let record = plugin.backup_file(&file_path).unwrap();
         let backup_path = record.backup_path.clone();
@@ -435,7 +435,7 @@ mod tests {
             use_global_dir: true,
             min_free_space: 0,
         };
-        let plugin = BackupManagerPlugin::with_config(config);
+        let plugin = BackupManagerPlugin::from_config(config);
 
         assert!(!plugin.has_backup(&file_path).unwrap());
         plugin.backup_file(&file_path).unwrap();
@@ -453,7 +453,7 @@ mod tests {
             use_global_dir: true,
             min_free_space: 0,
         };
-        let plugin = BackupManagerPlugin::with_config(config);
+        let plugin = BackupManagerPlugin::from_config(config);
 
         plugin.backup_file(&file1).unwrap();
         plugin.backup_file(&file2).unwrap();
@@ -473,7 +473,7 @@ mod tests {
             use_global_dir: true,
             min_free_space: 0,
         };
-        let plugin = BackupManagerPlugin::with_config(config);
+        let plugin = BackupManagerPlugin::from_config(config);
 
         let r1 = plugin.backup_file(&file1).unwrap();
         let r2 = plugin.backup_file(&file2).unwrap();
@@ -499,7 +499,7 @@ mod tests {
             use_global_dir: true,
             min_free_space: 0,
         };
-        let plugin = BackupManagerPlugin::with_config(config);
+        let plugin = BackupManagerPlugin::from_config(config);
 
         // Should not error with 0 min_free_space on a real filesystem
         assert!(plugin.validate_disk_space(&file_path).is_ok());
@@ -558,7 +558,7 @@ mod tests {
             use_global_dir: true,
             min_free_space: 0,
         };
-        let plugin = BackupManagerPlugin::with_config(config);
+        let plugin = BackupManagerPlugin::from_config(config);
 
         // Create a backup first
         let record = plugin.backup_file(&file_path).unwrap();
@@ -594,7 +594,7 @@ mod tests {
             use_global_dir: true,
             min_free_space: 0,
         };
-        let plugin = BackupManagerPlugin::with_config(config);
+        let plugin = BackupManagerPlugin::from_config(config);
 
         // Create a backup
         plugin.backup_file(&file_path).unwrap();
@@ -631,7 +631,7 @@ mod tests {
             use_global_dir: true,
             min_free_space: 0,
         };
-        let plugin = BackupManagerPlugin::with_config(config);
+        let plugin = BackupManagerPlugin::from_config(config);
 
         // Path traversal characters should be replaced with underscores
         let path = Path::new("/media/movies/../../../etc/passwd");

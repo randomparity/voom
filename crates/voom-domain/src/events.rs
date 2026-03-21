@@ -117,6 +117,7 @@ impl EventResult {
     /// On success the result carries the action results as JSON data and is
     /// marked as claimed.  On failure a failed result is returned (callers
     /// should log the error if needed).
+    #[must_use]
     pub fn from_plan_execution(
         plugin_name: &str,
         outcome: crate::errors::Result<Vec<ActionResult>>,
