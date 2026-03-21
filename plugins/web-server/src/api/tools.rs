@@ -20,7 +20,7 @@ const KNOWN_TOOLS: &[&str] = &[
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DetectedTool {
-    pub tool_name: String,
+    pub name: String,
     pub version: String,
     pub path: String,
 }
@@ -73,21 +73,21 @@ mod tests {
     #[test]
     fn detected_tool_serialization() {
         let tool = DetectedTool {
-            tool_name: "ffprobe".into(),
+            name: "ffprobe".into(),
             version: "6.1".into(),
             path: "/usr/bin/ffprobe".into(),
         };
         let json = serde_json::to_value(&tool).unwrap();
-        assert_eq!(json["tool_name"], "ffprobe");
+        assert_eq!(json["name"], "ffprobe");
         assert_eq!(json["version"], "6.1");
         assert_eq!(json["path"], "/usr/bin/ffprobe");
     }
 
     #[test]
     fn detected_tool_deserialization() {
-        let json = r#"{"tool_name":"ffmpeg","version":"7.0","path":"/usr/local/bin/ffmpeg"}"#;
+        let json = r#"{"name":"ffmpeg","version":"7.0","path":"/usr/local/bin/ffmpeg"}"#;
         let tool: DetectedTool = serde_json::from_str(json).unwrap();
-        assert_eq!(tool.tool_name, "ffmpeg");
+        assert_eq!(tool.name, "ffmpeg");
         assert_eq!(tool.version, "7.0");
         assert_eq!(tool.path, "/usr/local/bin/ffmpeg");
     }
@@ -96,7 +96,7 @@ mod tests {
     fn tool_list_response_serialization() {
         let response = ToolListResponse {
             tools: vec![DetectedTool {
-                tool_name: "mkvmerge".into(),
+                name: "mkvmerge".into(),
                 version: "81.0".into(),
                 path: "/usr/bin/mkvmerge".into(),
             }],
@@ -105,7 +105,7 @@ mod tests {
         let json = serde_json::to_value(&response).unwrap();
         let tools = json["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["tool_name"], "mkvmerge");
+        assert_eq!(tools[0]["name"], "mkvmerge");
         assert_eq!(json["total"], 1);
     }
 

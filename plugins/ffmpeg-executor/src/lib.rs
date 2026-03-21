@@ -114,11 +114,12 @@ impl FfmpegExecutorPlugin {
         !(is_mkv && only_metadata)
     }
 
-    /// Execute a plan by building FFmpeg commands from the plan's actions.
+    /// Build FFmpeg args for a plan but do not execute the subprocess.
     ///
-    /// This method constructs the commands but does not actually run the
-    /// subprocess -- that is left to the caller or the event handler.
-    /// Returns the expected action results.
+    /// This is currently a stub: it constructs the FFmpeg command arguments
+    /// via [`build_ffmpeg_command`] and logs them, but does not spawn a
+    /// process. It returns placeholder success results for every action in
+    /// the plan.
     pub fn execute_plan(&self, plan: &Plan) -> Result<Vec<ActionResult>> {
         if !self.can_handle(plan) {
             return Err(VoomError::Plugin {

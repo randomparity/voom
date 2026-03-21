@@ -210,6 +210,34 @@ impl MkvtoolnixExecutorPlugin {
 
         Ok(results)
     }
+
+    /// Handle a `plan.created` event.
+    fn handle_plan_created(
+        &self,
+        plan_event: &voom_domain::events::PlanCreatedEvent,
+    ) -> Result<Option<EventResult>> {
+        let plan = &plan_event.plan;
+
+        // Skip empty or already-skipped plans
+        if plan.is_empty() || plan.is_skipped() {
+            return Ok(None);
+        }
+
+        // Check if we can handle this plan
+        if !self.can_handle(plan) {
+            tracing::debug!(
+                path = %plan.file.path.display(),
+                phase = %plan.phase_name,
+                "plan not handled by mkvtoolnix executor"
+            );
+            return Ok(None);
+        }
+
+        Ok(Some(EventResult::from_plan_execution(
+            self.name(),
+            self.execute_plan(plan),
+        )))
+    }
 }
 
 impl Default for MkvtoolnixExecutorPlugin {
@@ -237,29 +265,7 @@ impl Plugin for MkvtoolnixExecutorPlugin {
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
         match event {
-            Event::PlanCreated(plan_created) => {
-                let plan = &plan_created.plan;
-
-                // Skip empty or already-skipped plans
-                if plan.is_empty() || plan.is_skipped() {
-                    return Ok(None);
-                }
-
-                // Check if we can handle this plan
-                if !self.can_handle(plan) {
-                    tracing::debug!(
-                        path = %plan.file.path.display(),
-                        phase = %plan.phase_name,
-                        "plan not handled by mkvtoolnix executor"
-                    );
-                    return Ok(None);
-                }
-
-                Ok(Some(EventResult::from_plan_execution(
-                    self.name(),
-                    self.execute_plan(plan),
-                )))
-            }
+            Event::PlanCreated(plan_event) => self.handle_plan_created(plan_event),
             _ => Ok(None),
         }
     }

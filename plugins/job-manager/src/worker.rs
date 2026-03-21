@@ -177,136 +177,11 @@ impl WorkerPool {
 
             let handle = tokio::spawn(async move {
                 let _permit = permit;
-
-                if token.is_cancelled() {
-                    failed.fetch_add(1, Ordering::SeqCst);
-                    let _ = result_tx
-                        .send(JobResult {
-                            job_id,
-                            success: false,
-                            error: Some("cancelled".into()),
-                        })
-                        .await;
-                    return;
-                }
-
-                // Claim the specific job by ID (blocking storage call)
-                let queue_claim = queue.clone();
-                let wid = worker_id.clone();
-                let jid = job_id;
-                let job =
-                    match tokio::task::spawn_blocking(move || queue_claim.claim_by_id(&jid, &wid))
-                        .await
-                    {
-                        Ok(Ok(Some(job))) => job,
-                        Ok(Ok(None)) => {
-                            // Job was claimed by another worker — count as completed
-                            completed.fetch_add(1, Ordering::SeqCst);
-                            let _ = result_tx
-                                .send(JobResult {
-                                    job_id,
-                                    success: true,
-                                    error: None,
-                                })
-                                .await;
-                            return;
-                        }
-                        Ok(Err(e)) => {
-                            tracing::error!(error = %e, "Failed to claim job");
-                            failed.fetch_add(1, Ordering::SeqCst);
-                            let _ = result_tx
-                                .send(JobResult {
-                                    job_id,
-                                    success: false,
-                                    error: Some(format!("failed to claim: {e}")),
-                                })
-                                .await;
-                            return;
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "Task join error");
-                            failed.fetch_add(1, Ordering::SeqCst);
-                            let _ = result_tx
-                                .send(JobResult {
-                                    job_id,
-                                    success: false,
-                                    error: Some(format!("task join error: {e}")),
-                                })
-                                .await;
-                            return;
-                        }
-                    };
-
-                // Re-check cancellation after claiming (closes race with ErrorStrategy::Fail)
-                if token.is_cancelled() {
-                    let q = queue.clone();
-                    let jid = job.id;
-                    if let Err(e) = tokio::task::spawn_blocking(move || q.cancel(&jid)).await {
-                        tracing::error!(error = %e, "failed to mark job as cancelled");
-                    }
-                    failed.fetch_add(1, Ordering::SeqCst);
-                    let _ = result_tx
-                        .send(JobResult {
-                            job_id,
-                            success: false,
-                            error: Some("cancelled".into()),
-                        })
-                        .await;
-                    return;
-                }
-
-                let job_id = job.id;
-                reporter.on_job_start(&job);
-
-                match processor(job).await {
-                    Ok(output) => {
-                        let q = queue.clone();
-                        if let Err(e) =
-                            tokio::task::spawn_blocking(move || q.complete(&job_id, output)).await
-                        {
-                            tracing::error!(job_id = %job_id, error = %e, "failed to mark job as complete");
-                        }
-                        completed.fetch_add(1, Ordering::SeqCst);
-                        reporter.on_job_complete(job_id, true, None);
-
-                        if let Err(e) = result_tx
-                            .send(JobResult {
-                                job_id,
-                                success: true,
-                                error: None,
-                            })
-                            .await
-                        {
-                            tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
-                        }
-                    }
-                    Err(error) => {
-                        let q = queue.clone();
-                        let err = error.clone();
-                        if let Err(e) =
-                            tokio::task::spawn_blocking(move || q.fail(&job_id, err)).await
-                        {
-                            tracing::error!(job_id = %job_id, error = %e, "failed to mark job as failed");
-                        }
-                        failed.fetch_add(1, Ordering::SeqCst);
-                        reporter.on_job_complete(job_id, false, Some(&error));
-
-                        if let Err(e) = result_tx
-                            .send(JobResult {
-                                job_id,
-                                success: false,
-                                error: Some(error),
-                            })
-                            .await
-                        {
-                            tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
-                        }
-
-                        if on_error == ErrorStrategy::Fail {
-                            token.cancel();
-                        }
-                    }
-                }
+                run_one_job(
+                    job_id, queue, token, completed, failed, processor, reporter, result_tx,
+                    worker_id, on_error,
+                )
+                .await;
             });
 
             handles.push(handle);
@@ -331,6 +206,149 @@ impl WorkerPool {
         );
 
         results
+    }
+}
+
+/// Execute a single job: claim it, run the processor, and record the result.
+#[allow(clippy::too_many_arguments)]
+async fn run_one_job<F, Fut>(
+    job_id: Uuid,
+    queue: Arc<JobQueue>,
+    token: CancellationToken,
+    completed: Arc<AtomicU64>,
+    failed: Arc<AtomicU64>,
+    processor: Arc<F>,
+    reporter: Arc<dyn ProgressReporter>,
+    result_tx: mpsc::Sender<JobResult>,
+    worker_id: String,
+    on_error: ErrorStrategy,
+) where
+    F: Fn(voom_domain::job::Job) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = std::result::Result<Option<serde_json::Value>, String>>
+        + Send
+        + 'static,
+{
+    if token.is_cancelled() {
+        failed.fetch_add(1, Ordering::SeqCst);
+        let _ = result_tx
+            .send(JobResult {
+                job_id,
+                success: false,
+                error: Some("cancelled".into()),
+            })
+            .await;
+        return;
+    }
+
+    // Claim the specific job by ID (blocking storage call)
+    let queue_claim = queue.clone();
+    let wid = worker_id.clone();
+    let jid = job_id;
+    let job = match tokio::task::spawn_blocking(move || queue_claim.claim_by_id(&jid, &wid)).await {
+        Ok(Ok(Some(job))) => job,
+        Ok(Ok(None)) => {
+            // Job was claimed by another worker — count as completed
+            completed.fetch_add(1, Ordering::SeqCst);
+            let _ = result_tx
+                .send(JobResult {
+                    job_id,
+                    success: true,
+                    error: None,
+                })
+                .await;
+            return;
+        }
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "Failed to claim job");
+            failed.fetch_add(1, Ordering::SeqCst);
+            let _ = result_tx
+                .send(JobResult {
+                    job_id,
+                    success: false,
+                    error: Some(format!("failed to claim: {e}")),
+                })
+                .await;
+            return;
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Task join error");
+            failed.fetch_add(1, Ordering::SeqCst);
+            let _ = result_tx
+                .send(JobResult {
+                    job_id,
+                    success: false,
+                    error: Some(format!("task join error: {e}")),
+                })
+                .await;
+            return;
+        }
+    };
+
+    // Re-check cancellation after claiming (closes race with ErrorStrategy::Fail)
+    if token.is_cancelled() {
+        let q = queue.clone();
+        let jid = job.id;
+        if let Err(e) = tokio::task::spawn_blocking(move || q.cancel(&jid)).await {
+            tracing::error!(error = %e, "failed to mark job as cancelled");
+        }
+        failed.fetch_add(1, Ordering::SeqCst);
+        let _ = result_tx
+            .send(JobResult {
+                job_id,
+                success: false,
+                error: Some("cancelled".into()),
+            })
+            .await;
+        return;
+    }
+
+    let job_id = job.id;
+    reporter.on_job_start(&job);
+
+    match processor(job).await {
+        Ok(output) => {
+            let q = queue.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || q.complete(&job_id, output)).await {
+                tracing::error!(job_id = %job_id, error = %e, "failed to mark job as complete");
+            }
+            completed.fetch_add(1, Ordering::SeqCst);
+            reporter.on_job_complete(job_id, true, None);
+
+            if let Err(e) = result_tx
+                .send(JobResult {
+                    job_id,
+                    success: true,
+                    error: None,
+                })
+                .await
+            {
+                tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
+            }
+        }
+        Err(error) => {
+            let q = queue.clone();
+            let err = error.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || q.fail(&job_id, err)).await {
+                tracing::error!(job_id = %job_id, error = %e, "failed to mark job as failed");
+            }
+            failed.fetch_add(1, Ordering::SeqCst);
+            reporter.on_job_complete(job_id, false, Some(&error));
+
+            if let Err(e) = result_tx
+                .send(JobResult {
+                    job_id,
+                    success: false,
+                    error: Some(error),
+                })
+                .await
+            {
+                tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
+            }
+
+            if on_error == ErrorStrategy::Fail {
+                token.cancel();
+            }
+        }
     }
 }
 
