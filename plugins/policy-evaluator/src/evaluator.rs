@@ -19,12 +19,16 @@ use crate::filter::track_matches;
 #[derive(Debug)]
 pub struct EvaluationResult {
     pub plans: Vec<Plan>,
-    pub phase_outcomes: HashMap<String, PhaseOutcome>,
+    pub phase_outcomes: HashMap<String, EvaluationOutcome>,
 }
 
 /// Outcome of a single phase evaluation.
+///
+/// This is internal to the evaluator and distinct from `voom_domain::plan::PhaseOutcome`,
+/// which represents execution outcomes. This type tracks evaluation-time outcomes
+/// (e.g., whether a phase produced modifications) for dependency resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PhaseOutcome {
+pub enum EvaluationOutcome {
     Executed { modified: bool },
     Skipped,
     Failed,
@@ -34,7 +38,7 @@ pub enum PhaseOutcome {
 #[must_use]
 pub fn evaluate(policy: &CompiledPolicy, file: &MediaFile) -> EvaluationResult {
     let mut plans = Vec::new();
-    let mut phase_outcomes: HashMap<String, PhaseOutcome> = HashMap::new();
+    let mut phase_outcomes: HashMap<String, EvaluationOutcome> = HashMap::new();
 
     for phase_name in &policy.phase_order {
         let phase = match policy.phases.iter().find(|p| &p.name == phase_name) {
@@ -45,9 +49,9 @@ pub fn evaluate(policy: &CompiledPolicy, file: &MediaFile) -> EvaluationResult {
         let plan = evaluate_phase(phase, policy, file, &phase_outcomes);
 
         let outcome = if plan.is_skipped() {
-            PhaseOutcome::Skipped
+            EvaluationOutcome::Skipped
         } else {
-            PhaseOutcome::Executed {
+            EvaluationOutcome::Executed {
                 modified: !plan.is_empty(),
             }
         };
@@ -67,7 +71,7 @@ fn evaluate_phase(
     phase: &CompiledPhase,
     policy: &CompiledPolicy,
     file: &MediaFile,
-    phase_outcomes: &HashMap<String, PhaseOutcome>,
+    phase_outcomes: &HashMap<String, EvaluationOutcome>,
 ) -> Plan {
     let mut plan = Plan {
         id: Uuid::new_v4(),
@@ -98,9 +102,9 @@ fn evaluate_phase(
         let should_run = match phase_outcomes.get(&run_if.phase) {
             Some(outcome) => match run_if.trigger {
                 RunIfTrigger::Modified => {
-                    matches!(outcome, PhaseOutcome::Executed { modified: true })
+                    matches!(outcome, EvaluationOutcome::Executed { modified: true })
                 }
-                RunIfTrigger::Completed => matches!(outcome, PhaseOutcome::Executed { .. }),
+                RunIfTrigger::Completed => matches!(outcome, EvaluationOutcome::Executed { .. }),
             },
             None => false, // Referenced phase hasn't run
         };
@@ -120,7 +124,7 @@ fn evaluate_phase(
     // Check all depends_on phases completed
     for dep in &phase.depends_on {
         match phase_outcomes.get(dep) {
-            Some(PhaseOutcome::Failed) => {
+            Some(EvaluationOutcome::Failed) => {
                 plan.skip_reason = Some(format!("dependency '{dep}' failed"));
                 return plan;
             }

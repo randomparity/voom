@@ -26,7 +26,7 @@ The core is a thin kernel with zero media knowledge. ALL functionality is implem
 - **Native plugins** — compiled into the binary as trait objects, zero overhead
 - **WASM plugins** — loaded at runtime via wasmtime, sandboxed, language-agnostic (via WIT interfaces)
 
-Plugins communicate exclusively through an **event bus** (tokio channels). No plugin directly calls another. The kernel routes work based on **capability matching**, not hardcoded types.
+Plugins communicate exclusively through an **event bus** (synchronous priority-ordered dispatch with `parking_lot::RwLock`). No plugin directly calls another. The kernel routes work based on **capability matching**, not hardcoded types.
 
 ### Workspace crates (`crates/`)
 - **voom-kernel** — Event bus, plugin registry, native + WASM loader, capability routing

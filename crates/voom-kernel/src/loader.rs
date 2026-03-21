@@ -521,7 +521,7 @@ pub mod wasm {
         host_instance.func_wrap(
             "get-plugin-data",
             |ctx: wasmtime::StoreContextMut<'_, HostState>, (key,): (String,)| {
-                let result = ctx.data().get_plugin_data(&key);
+                let result = ctx.data().resolve_plugin_data(&key);
                 Ok((result,))
             },
         )?;

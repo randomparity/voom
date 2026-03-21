@@ -1,5 +1,5 @@
 use anyhow::Result;
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::app;
 use crate::output;
@@ -7,13 +7,17 @@ use crate::output;
 pub async fn run() -> Result<()> {
     let config = app::load_config()?;
 
-    println!("{}", "VOOM Status".bold().underline());
+    println!("{}", style("VOOM Status").bold().underlined());
     println!();
 
     // Database stats
-    match app::bootstrap_kernel(&config) {
-        Ok(kernel) => {
-            match app::open_store(&config) {
+    match app::bootstrap_kernel_with_store(&config) {
+        Ok((kernel, store_opt)) => {
+            let store = match store_opt {
+                Some(s) => Ok(s),
+                None => app::open_store(&config),
+            };
+            match store {
                 Ok(store) => {
                     let files = store
                         .list_files(&voom_domain::FileFilters::default())
@@ -21,11 +25,11 @@ pub async fn run() -> Result<()> {
 
                     let total_size: u64 = files.iter().map(|f| f.size).sum();
 
-                    println!("{}", "Library:".bold());
+                    println!("{}", style("Library:").bold());
                     println!(
                         "  {} files, {}",
-                        files.len().to_string().cyan(),
-                        voom_domain::utils::datetime::format_size(total_size).cyan()
+                        style(files.len()).cyan(),
+                        style(voom_domain::utils::datetime::format_size(total_size)).cyan()
                     );
 
                     // Bad file count
@@ -34,8 +38,8 @@ pub async fn run() -> Result<()> {
                         Ok(n) => {
                             println!(
                                 "  {} bad files (run {} to see details)",
-                                n.to_string().red(),
-                                "voom db list-bad".bold()
+                                style(n).red(),
+                                style("voom db list-bad").bold()
                             );
                         }
                         Err(e) => {
@@ -55,24 +59,24 @@ pub async fn run() -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    println!("{} Cannot access database: {e}", "WARNING".yellow());
+                    println!("{} Cannot access database: {e}", style("WARNING").yellow());
                 }
             }
 
             // Plugin count
             let plugin_count = kernel.registry.plugin_names().len();
             println!();
-            println!("{}", "Plugins:".bold());
+            println!("{}", style("Plugins:").bold());
             println!("  {plugin_count} registered");
         }
         Err(e) => {
-            println!("{} Cannot initialize kernel: {e}", "ERROR".red());
+            println!("{} Cannot initialize kernel: {e}", style("ERROR").red());
         }
     }
 
     // Config path
     println!();
-    println!("{}", "Paths:".bold());
+    println!("{}", style("Paths:").bold());
     println!("  Config: {}", app::config_path().display());
     println!("  Data:   {}", config.data_dir.display());
 

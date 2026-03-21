@@ -130,29 +130,24 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
     let is_forced = disp_flag("forced");
     let is_commentary = disp_flag("comment");
 
+    // Common fields shared across all track types
+    let common = Track {
+        index,
+        codec,
+        language,
+        title,
+        is_default,
+        is_forced,
+        ..Track::default()
+    };
+
     match codec_type {
         "video" => {
             // Skip attached pictures (album art)
             if disp_flag("attached_pic") {
                 return Some(Track {
-                    index,
                     track_type: TrackType::Attachment,
-                    codec,
-                    language,
-                    title,
-                    is_default,
-                    is_forced,
-                    channels: None,
-                    channel_layout: None,
-                    sample_rate: None,
-                    bit_depth: None,
-                    width: None,
-                    height: None,
-                    frame_rate: None,
-                    is_vfr: false,
-                    is_hdr: false,
-                    hdr_format: None,
-                    pixel_format: None,
+                    ..common
                 });
             }
 
@@ -173,17 +168,7 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
                 .map(|s| s.to_string());
 
             Some(Track {
-                index,
                 track_type: TrackType::Video,
-                codec,
-                language,
-                title,
-                is_default,
-                is_forced,
-                channels: None,
-                channel_layout: None,
-                sample_rate: None,
-                bit_depth: None,
                 width,
                 height,
                 frame_rate,
@@ -191,6 +176,7 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
                 is_hdr,
                 hdr_format,
                 pixel_format,
+                ..common
             })
         }
         "audio" => {
@@ -211,72 +197,32 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
                 .and_then(|b| b.as_str())
                 .and_then(|s| s.parse::<u32>().ok());
 
-            let track_type = classify_audio_track(&title, is_default, is_commentary, is_forced);
+            let track_type =
+                classify_audio_track(&common.title, is_default, is_commentary, is_forced);
 
             Some(Track {
-                index,
                 track_type,
-                codec,
-                language,
-                title,
-                is_default,
-                is_forced,
                 channels,
                 channel_layout,
                 sample_rate,
                 bit_depth,
-                width: None,
-                height: None,
-                frame_rate: None,
-                is_vfr: false,
-                is_hdr: false,
-                hdr_format: None,
-                pixel_format: None,
+                ..common
             })
         }
         "subtitle" => {
-            let track_type = classify_subtitle_track(&title, is_default, is_commentary, is_forced);
+            let track_type =
+                classify_subtitle_track(&common.title, is_default, is_commentary, is_forced);
 
             Some(Track {
-                index,
                 track_type,
-                codec,
-                language,
-                title,
-                is_default,
-                is_forced,
-                channels: None,
-                channel_layout: None,
-                sample_rate: None,
-                bit_depth: None,
-                width: None,
-                height: None,
-                frame_rate: None,
-                is_vfr: false,
-                is_hdr: false,
-                hdr_format: None,
-                pixel_format: None,
+                ..common
             })
         }
         "attachment" => Some(Track {
-            index,
             track_type: TrackType::Attachment,
-            codec,
-            language,
-            title,
             is_default: false,
             is_forced: false,
-            channels: None,
-            channel_layout: None,
-            sample_rate: None,
-            bit_depth: None,
-            width: None,
-            height: None,
-            frame_rate: None,
-            is_vfr: false,
-            is_hdr: false,
-            hdr_format: None,
-            pixel_format: None,
+            ..common
         }),
         _ => None,
     }

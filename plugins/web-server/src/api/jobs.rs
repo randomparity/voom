@@ -5,7 +5,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::error::{spawn_store_op, WebError};
+use crate::errors::{spawn_store_op, WebError};
 use crate::state::AppState;
 use voom_domain::job::{Job, JobStatus};
 use voom_domain::storage::JobFilters;

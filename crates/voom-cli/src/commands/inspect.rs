@@ -1,10 +1,19 @@
 use anyhow::{Context, Result};
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::app;
 use crate::cli::{InspectArgs, OutputFormat};
 use crate::output;
 
+/// Run the inspect command.
+///
+/// When the file is already in the database we return the stored data.
+/// Otherwise we create a temporary `FfprobeIntrospectorPlugin` for a one-shot
+/// introspection. This bypasses the kernel-registered instance intentionally:
+/// inspect does not need the full plugin lifecycle (event bus, storage
+/// persistence, etc.) and should work even when the kernel is not bootstrapped.
+/// The trade-off is that per-plugin configuration (e.g. a custom `ffprobe_path`
+/// from config.toml) is not applied to this ad-hoc instance.
 pub async fn run(args: InspectArgs) -> Result<()> {
     let path = args
         .file
@@ -24,7 +33,7 @@ pub async fn run(args: InspectArgs) -> Result<()> {
     }
 
     // Not in DB — introspect live
-    println!("{}", "File not in database, introspecting...".dimmed());
+    println!("{}", style("File not in database, introspecting...").dim());
 
     let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
     let size = std::fs::metadata(&path)?.len();

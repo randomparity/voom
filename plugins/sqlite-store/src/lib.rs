@@ -61,13 +61,13 @@ impl Plugin for SqliteStorePlugin {
     fn handles(&self, event_type: &str) -> bool {
         matches!(
             event_type,
-            "file.introspected"
-                | "file.introspection_failed"
-                | "plan.created"
-                | "plan.completed"
-                | "plan.failed"
-                | "metadata.enriched"
-                | "tool.detected"
+            Event::FILE_INTROSPECTED
+                | Event::FILE_INTROSPECTION_FAILED
+                | Event::PLAN_CREATED
+                | Event::PLAN_COMPLETED
+                | Event::PLAN_FAILED
+                | Event::METADATA_ENRICHED
+                | Event::TOOL_DETECTED
         )
     }
 
@@ -213,21 +213,21 @@ mod tests {
     #[test]
     fn handles_expected_event_types() {
         let plugin = SqliteStorePlugin::new();
-        assert!(plugin.handles("file.introspected"));
-        assert!(plugin.handles("file.introspection_failed"));
-        assert!(plugin.handles("plan.created"));
-        assert!(plugin.handles("plan.completed"));
-        assert!(plugin.handles("plan.failed"));
-        assert!(plugin.handles("metadata.enriched"));
-        assert!(plugin.handles("tool.detected"));
+        assert!(plugin.handles(Event::FILE_INTROSPECTED));
+        assert!(plugin.handles(Event::FILE_INTROSPECTION_FAILED));
+        assert!(plugin.handles(Event::PLAN_CREATED));
+        assert!(plugin.handles(Event::PLAN_COMPLETED));
+        assert!(plugin.handles(Event::PLAN_FAILED));
+        assert!(plugin.handles(Event::METADATA_ENRICHED));
+        assert!(plugin.handles(Event::TOOL_DETECTED));
     }
 
     #[test]
     fn does_not_handle_unrelated_event_types() {
         let plugin = SqliteStorePlugin::new();
-        assert!(!plugin.handles("file.discovered"));
-        assert!(!plugin.handles("policy.evaluate"));
-        assert!(!plugin.handles("job.started"));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
+        assert!(!plugin.handles(Event::POLICY_EVALUATE));
+        assert!(!plugin.handles(Event::JOB_STARTED));
         assert!(!plugin.handles(""));
     }
 

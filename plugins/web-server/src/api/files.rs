@@ -5,20 +5,32 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use voom_domain::media::MediaFile;
+use voom_domain::media::{Container, MediaFile};
 use voom_domain::storage::FileFilters;
 
-use crate::error::{spawn_store_op, WebError};
+use crate::errors::{spawn_store_op, WebError};
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
-pub struct ListFilesParams {
+/// Shared filter fields used by both API and page handlers.
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct FileFilterParams {
     pub container: Option<String>,
     pub codec: Option<String>,
     pub language: Option<String>,
     pub path_prefix: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListFilesParams {
+    #[serde(flatten)]
+    pub filters: FileFilterParams,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeleteResponse {
+    pub deleted: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -54,10 +66,14 @@ pub async fn list_files(
     let store = state.store.clone();
     let count_store = state.store.clone();
     let filters = FileFilters {
-        container: truncate_filter(params.container),
-        has_codec: truncate_filter(params.codec),
-        has_language: truncate_filter(params.language),
-        path_prefix: truncate_filter(params.path_prefix),
+        container: params
+            .filters
+            .container
+            .as_deref()
+            .map(Container::from_extension),
+        has_codec: truncate_filter(params.filters.codec),
+        has_language: truncate_filter(params.filters.language),
+        path_prefix: truncate_filter(params.filters.path_prefix),
         limit: Some(params.limit.unwrap_or(100).min(MAX_LIMIT)),
         offset: Some(params.offset.unwrap_or(0).min(MAX_OFFSET)),
     };
@@ -87,11 +103,11 @@ pub async fn get_file(
 pub async fn delete_file(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, WebError> {
+) -> Result<Json<DeleteResponse>, WebError> {
     let store = state.store.clone();
     spawn_store_op(move || store.delete_file(&id)).await?;
 
-    Ok(Json(serde_json::json!({"deleted": true})))
+    Ok(Json(DeleteResponse { deleted: true }))
 }
 
 #[cfg(test)]
@@ -126,10 +142,10 @@ mod tests {
     #[test]
     fn list_files_params_deserialize_defaults() {
         let params: ListFilesParams = serde_json::from_str("{}").unwrap();
-        assert!(params.container.is_none());
-        assert!(params.codec.is_none());
-        assert!(params.language.is_none());
-        assert!(params.path_prefix.is_none());
+        assert!(params.filters.container.is_none());
+        assert!(params.filters.codec.is_none());
+        assert!(params.filters.language.is_none());
+        assert!(params.filters.path_prefix.is_none());
         assert!(params.limit.is_none());
         assert!(params.offset.is_none());
     }
@@ -139,8 +155,8 @@ mod tests {
         let params: ListFilesParams =
             serde_json::from_str(r#"{"container":"mkv","codec":"hevc","limit":50,"offset":10}"#)
                 .unwrap();
-        assert_eq!(params.container, Some("mkv".to_string()));
-        assert_eq!(params.codec, Some("hevc".to_string()));
+        assert_eq!(params.filters.container, Some("mkv".to_string()));
+        assert_eq!(params.filters.codec, Some("hevc".to_string()));
         assert_eq!(params.limit, Some(50));
         assert_eq!(params.offset, Some(10));
     }

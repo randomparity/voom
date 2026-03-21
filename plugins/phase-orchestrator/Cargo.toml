@@ -14,8 +14,6 @@ voom-domain = { workspace = true }
 voom-kernel = { workspace = true }
 voom-dsl = { workspace = true }
 voom-policy-evaluator = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

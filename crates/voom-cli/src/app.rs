@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use voom_kernel::Kernel;
+use voom_kernel::{Kernel, Plugin};
 
 /// Application configuration loaded from TOML.
 #[derive(Clone, Serialize, Deserialize)]
@@ -216,6 +216,19 @@ pub fn save_config(config: &AppConfig) -> Result<()> {
 // 20  = job manager
 // 10  = web server (last, depends on all other plugins being registered)
 pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
+    let (kernel, _store) = bootstrap_kernel_with_store(config)?;
+    Ok(kernel)
+}
+
+/// Bootstrap result containing the kernel and, when the sqlite-store plugin
+/// is enabled, the store handle it created during initialization.
+///
+/// Using the returned store avoids opening a second SQLite connection (see
+/// [`open_store`]), keeping all CLI commands and the event bus on the same
+/// connection pool.
+pub fn bootstrap_kernel_with_store(
+    config: &AppConfig,
+) -> Result<(Kernel, Option<Arc<dyn voom_domain::storage::StorageTrait>>)> {
     let mut kernel = Kernel::new();
     let data_dir = &config.data_dir;
 
@@ -249,13 +262,40 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
         };
     }
 
-    // Storage plugin (highest priority — stores everything)
-    register_if_enabled!(
-        "sqlite-store",
-        voom_sqlite_store::SqliteStorePlugin::new(),
-        100,
-        "storage"
-    );
+    // Storage plugin (highest priority — stores everything).
+    // Initialized manually (not via the macro) so we can capture the store
+    // handle and return it to callers, avoiding a second SQLite connection.
+    let mut store_handle: Option<Arc<dyn voom_domain::storage::StorageTrait>> = None;
+    if !disabled.iter().any(|d| d == "sqlite-store") {
+        let mut plugin = voom_sqlite_store::SqliteStorePlugin::new();
+        let plugin_config = config
+            .plugin
+            .get("sqlite-store")
+            .map(|t| match serde_json::to_value(t) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(plugin = "sqlite-store", error = %e,
+                        "failed to convert plugin config to JSON; using empty config");
+                    serde_json::json!({})
+                }
+            })
+            .unwrap_or_else(|| serde_json::json!({}));
+        let ctx = voom_kernel::PluginContext {
+            config: plugin_config,
+            data_dir: data_dir.clone(),
+        };
+        plugin
+            .init(&ctx)
+            .map_err(|e| anyhow::anyhow!("Failed to initialize storage: {e}"))?;
+
+        // Capture the store handle before moving the plugin into an Arc
+        store_handle = plugin
+            .store()
+            .map(|s| Arc::clone(s) as Arc<dyn voom_domain::storage::StorageTrait>);
+
+        let plugin_arc: Arc<dyn voom_kernel::Plugin> = Arc::new(plugin);
+        kernel.register_plugin(plugin_arc, 100);
+    }
 
     // Tool detector
     register_if_enabled!(
@@ -339,11 +379,17 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
     // TODO: load WASM plugins here using loader.load_dir_with_config()
     // once WASM plugin integration is wired up (Sprint 13).
 
-    Ok(kernel)
+    Ok((kernel, store_handle))
 }
 
-/// Open a storage handle using the configured data directory.
-/// Opens a second connection (`SQLite` WAL mode supports concurrent readers).
+/// Open a standalone storage handle using the configured data directory.
+///
+/// This creates an independent SQLite connection. When a kernel is also in use,
+/// prefer [`bootstrap_kernel_with_store`] to reuse the store that the
+/// sqlite-store plugin already opened, avoiding a second connection pool.
+///
+/// This function is still useful for commands that need storage but not the
+/// full kernel (e.g. `db prune`, `jobs list`).
 pub fn open_store(config: &AppConfig) -> Result<Arc<dyn voom_domain::storage::StorageTrait>> {
     let db_path = config.data_dir.join("voom.db");
     let store = voom_sqlite_store::store::SqliteStore::open(&db_path)

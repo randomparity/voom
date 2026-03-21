@@ -1,6 +1,6 @@
 use anyhow::Result;
 use comfy_table::Cell;
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::app;
 use crate::cli::{OutputFormat, ReportArgs};
@@ -17,7 +17,7 @@ pub async fn run(args: ReportArgs) -> Result<()> {
     if files.is_empty() {
         println!(
             "{}",
-            "No files in database. Run 'voom scan' first.".yellow()
+            style("No files in database. Run 'voom scan' first.").yellow()
         );
         return Ok(());
     }
@@ -36,7 +36,7 @@ pub async fn run(args: ReportArgs) -> Result<()> {
             );
         }
         OutputFormat::Table => {
-            println!("{}", "Library Report".bold().underline());
+            println!("{}", style("Library Report").bold().underlined());
             println!();
 
             let total_size: u64 = files.iter().map(|f| f.size).sum();
@@ -44,14 +44,17 @@ pub async fn run(args: ReportArgs) -> Result<()> {
 
             println!(
                 "  {} files, {}, {}",
-                files.len().to_string().bold(),
-                voom_domain::utils::datetime::format_size(total_size).cyan(),
-                voom_domain::utils::datetime::format_duration(total_duration).dimmed(),
+                style(files.len()).bold(),
+                style(voom_domain::utils::datetime::format_size(total_size)).cyan(),
+                style(voom_domain::utils::datetime::format_duration(
+                    total_duration
+                ))
+                .dim(),
             );
             println!();
 
             // Container breakdown
-            println!("{}", "Containers:".bold());
+            println!("{}", style("Containers:").bold());
             let containers = output::container_counts(&files);
             let mut table = output::new_table();
             table.set_header(vec!["Container", "Count"]);
@@ -62,7 +65,7 @@ pub async fn run(args: ReportArgs) -> Result<()> {
             println!();
 
             // Codec breakdown
-            println!("{}", "Codecs:".bold());
+            println!("{}", style("Codecs:").bold());
             let codecs = codec_counts(&files);
             let mut table = output::new_table();
             table.set_header(vec!["Codec", "Count"]);

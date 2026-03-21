@@ -8,7 +8,7 @@
 #![allow(clippy::missing_errors_doc)]
 
 pub mod api;
-pub mod error;
+pub mod errors;
 pub mod middleware;
 pub mod router;
 pub mod server;
@@ -23,6 +23,12 @@ use voom_domain::events::{Event, EventResult};
 use voom_kernel::{Plugin, PluginContext};
 
 /// The web server plugin.
+///
+/// This Plugin impl handles no events and performs no work during `init()`.
+/// It exists so the plugin registry can list and discover the web server as a
+/// registered plugin with the `ServeHttp` capability. The actual web server
+/// lifecycle (binding, serving, shutdown) is managed separately by the
+/// `voom serve` CLI command via [`server::run`].
 pub struct WebServerPlugin {
     capabilities: Vec<Capability>,
 }
@@ -84,8 +90,8 @@ mod tests {
     #[test]
     fn test_plugin_handles_no_events() {
         let plugin = WebServerPlugin::new();
-        assert!(!plugin.handles("file.discovered"));
-        assert!(!plugin.handles("job.started"));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
+        assert!(!plugin.handles(Event::JOB_STARTED));
     }
 
     #[test]

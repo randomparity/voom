@@ -14,7 +14,7 @@ VOOM (Video Orchestration Operations Manager) is a policy-driven video library m
 │                       Core Kernel                              │
 │   ┌────────────┐  ┌───────────┐  ┌────────────────────────┐    │
 │   │  Event Bus │  │ Registry  │  │  Plugin Loader         │    │
-│   │  (tokio)   │  │           │  │  (native + wasmtime)   │    │
+│   │(sync/prio) │  │           │  │  (native + wasmtime)   │    │
 │   └────────────┘  └───────────┘  └────────────────────────┘    │
 ├────────────────────────────────────────────────────────────────┤
 │                      DSL Engine                                │
@@ -33,7 +33,7 @@ VOOM (Video Orchestration Operations Manager) is a policy-driven video library m
 │            WASM Plugins (loaded at runtime via wasmtime)       │
 │                                                                │
 │   Radarr ───────── Sonarr ──────────── Whisper                 │
-│   HandBrake ────── Audio Synthesizer ─ Custom...               │
+│   TVDB ─────────── HandBrake ───────── Audio Synthesizer       │
 ├────────────────────────────────────────────────────────────────┤
 │                   Domain Types (shared)                        │
 │   MediaFile · Track · Plan · Action · Event · Capability       │
@@ -82,6 +82,7 @@ voom/
     ├── example-metadata/     # Example plugin demonstrating the SDK
     ├── radarr-metadata/      # Movie metadata enrichment via Radarr API
     ├── sonarr-metadata/      # TV metadata enrichment via Sonarr API
+    ├── tvdb-metadata/        # TV metadata enrichment from TVDB API
     ├── whisper-transcriber/   # Audio transcription via Whisper
     ├── audio-synthesizer/    # Audio track synthesis
     └── handbrake-executor/   # HandBrakeCLI-based transcoding
@@ -145,7 +146,7 @@ When the kernel needs to route an operation, it finds all plugins with matching 
 
 ## Event Bus
 
-The event bus is the sole communication mechanism between plugins. It uses tokio broadcast channels.
+The event bus is the sole communication mechanism between plugins. It uses synchronous priority-ordered dispatch with `parking_lot::RwLock`.
 
 ### Event Types
 

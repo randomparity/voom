@@ -1,5 +1,5 @@
 use anyhow::Result;
-use owo_colors::OwoColorize;
+use console::style;
 use tokio_util::sync::CancellationToken;
 use voom_web_server::server::{start_server, ServerConfig};
 
@@ -7,15 +7,19 @@ use crate::cli::ServeArgs;
 
 pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     let config = crate::app::load_config()?;
-    let store = crate::app::open_store(&config)?;
+    let (_kernel, store) = crate::app::bootstrap_kernel_with_store(&config)?;
+    let store = match store {
+        Some(s) => s,
+        None => crate::app::open_store(&config)?,
+    };
 
     println!(
         "{} Starting VOOM web server on {}:{}",
-        "●".bold().green(),
-        args.host.cyan(),
-        args.port.to_string().cyan()
+        style("●").bold().green(),
+        style(&args.host).cyan(),
+        style(args.port).cyan()
     );
-    println!("  {} http://{}:{}", "→".bold(), args.host, args.port);
+    println!("  {} http://{}:{}", style("→").bold(), args.host, args.port);
 
     let server_config = ServerConfig {
         host: args.host,

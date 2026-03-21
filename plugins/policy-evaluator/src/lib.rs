@@ -97,7 +97,7 @@ impl Plugin for PolicyEvaluatorPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "policy.evaluate"
+        event_type == Event::POLICY_EVALUATE
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
@@ -157,9 +157,9 @@ mod tests {
     #[test]
     fn handles_policy_evaluate_event_type() {
         let plugin = PolicyEvaluatorPlugin::new();
-        assert!(plugin.handles("policy.evaluate"));
-        assert!(!plugin.handles("file.introspected"));
-        assert!(!plugin.handles("plan.created"));
+        assert!(plugin.handles(Event::POLICY_EVALUATE));
+        assert!(!plugin.handles(Event::FILE_INTROSPECTED));
+        assert!(!plugin.handles(Event::PLAN_CREATED));
         assert!(!plugin.handles(""));
     }
 

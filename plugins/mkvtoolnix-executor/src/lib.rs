@@ -14,8 +14,8 @@ use voom_domain::plan::{ActionResult, OperationType, Plan, PlannedAction};
 use voom_kernel::Plugin;
 use wait_timeout::ChildExt;
 
-mod merge;
-mod propedit;
+pub mod merge;
+pub mod propedit;
 
 /// Run a subprocess with a timeout, killing it if it exceeds the deadline.
 fn run_with_timeout(tool: &str, args: &[impl AsRef<OsStr>], timeout: Duration) -> Result<Output> {
@@ -30,14 +30,36 @@ fn run_with_timeout(tool: &str, args: &[impl AsRef<OsStr>], timeout: Duration) -
         })?;
 
     match child.wait_timeout(timeout) {
-        Ok(Some(_status)) => child
-            .wait_with_output()
-            .map_err(|e| VoomError::ToolExecution {
-                tool: tool.into(),
-                message: format!("failed to read output: {e}"),
-            }),
+        Ok(Some(status)) => {
+            // Process already exited — drain stdout/stderr from the pipes
+            // (cannot use wait_with_output here since the process is already reaped).
+            use std::io::Read;
+            let mut stdout_buf = Vec::new();
+            let mut stderr_buf = Vec::new();
+            if let Some(mut out) = child.stdout.take() {
+                out.read_to_end(&mut stdout_buf).ok();
+            }
+            if let Some(mut err) = child.stderr.take() {
+                err.read_to_end(&mut stderr_buf).ok();
+            }
+            Ok(Output {
+                status,
+                stdout: stdout_buf,
+                stderr: stderr_buf,
+            })
+        }
         Ok(None) => {
+            // Timed out — kill the process and drain its pipes to avoid zombies.
             child.kill().ok();
+            use std::io::Read;
+            let mut stdout_buf = Vec::new();
+            let mut stderr_buf = Vec::new();
+            if let Some(mut out) = child.stdout.take() {
+                out.read_to_end(&mut stdout_buf).ok();
+            }
+            if let Some(mut err) = child.stderr.take() {
+                err.read_to_end(&mut stderr_buf).ok();
+            }
             child.wait().ok();
             Err(VoomError::ToolExecution {
                 tool: tool.into(),
@@ -51,18 +73,8 @@ fn run_with_timeout(tool: &str, args: &[impl AsRef<OsStr>], timeout: Duration) -
     }
 }
 
-/// Operations that can be handled via mkvpropedit (in-place metadata edits).
-const PROPEDIT_OPS: &[OperationType] = &[
-    OperationType::SetDefault,
-    OperationType::ClearDefault,
-    OperationType::SetForced,
-    OperationType::ClearForced,
-    OperationType::SetTitle,
-    OperationType::SetLanguage,
-    OperationType::SetContainerTag,
-    OperationType::ClearContainerTags,
-    OperationType::DeleteContainerTag,
-];
+// Propedit (in-place metadata) operations are identified by
+// `OperationType::is_metadata_op()` — defined once in voom-domain.
 
 /// Operations that require mkvmerge (structural changes, remux).
 const MERGE_OPS: &[OperationType] = &[
@@ -71,21 +83,10 @@ const MERGE_OPS: &[OperationType] = &[
     OperationType::ConvertContainer,
 ];
 
-/// All operations supported by this executor.
-const SUPPORTED_OPS: &[OperationType] = &[
-    OperationType::SetDefault,
-    OperationType::ClearDefault,
-    OperationType::SetForced,
-    OperationType::ClearForced,
-    OperationType::SetTitle,
-    OperationType::SetLanguage,
-    OperationType::SetContainerTag,
-    OperationType::ClearContainerTags,
-    OperationType::DeleteContainerTag,
-    OperationType::RemoveTrack,
-    OperationType::ReorderTracks,
-    OperationType::ConvertContainer,
-];
+/// Check whether the given operation type is supported by this executor.
+fn is_supported_op(op: OperationType) -> bool {
+    op.is_metadata_op() || MERGE_OPS.contains(&op)
+}
 
 /// `MKVToolNix` executor plugin.
 ///
@@ -102,12 +103,16 @@ pub struct MkvtoolnixExecutorPlugin {
 impl MkvtoolnixExecutorPlugin {
     #[must_use]
     pub fn new() -> Self {
+        let mut operations: Vec<String> = OperationType::METADATA_OPS
+            .iter()
+            .map(|op| op.as_str().to_string())
+            .collect();
+        for op in MERGE_OPS {
+            operations.push(op.as_str().to_string());
+        }
         Self {
             capabilities: vec![Capability::Execute {
-                operations: SUPPORTED_OPS
-                    .iter()
-                    .map(|op| op.as_str().to_string())
-                    .collect(),
+                operations,
                 formats: vec!["mkv".into()],
             }],
         }
@@ -130,9 +135,7 @@ impl MkvtoolnixExecutorPlugin {
             return false;
         }
 
-        plan.actions
-            .iter()
-            .all(|a| SUPPORTED_OPS.contains(&a.operation))
+        plan.actions.iter().all(|a| is_supported_op(a.operation))
     }
 
     /// Execute all actions in a plan, returning results for each action.
@@ -234,7 +237,7 @@ impl Plugin for MkvtoolnixExecutorPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "plan.created"
+        event_type == Event::PLAN_CREATED
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
@@ -257,22 +260,10 @@ impl Plugin for MkvtoolnixExecutorPlugin {
                     return Ok(None);
                 }
 
-                match self.execute_plan(plan) {
-                    Ok(results) => {
-                        let actions_applied = results.iter().filter(|r| r.success).count();
-                        Ok(Some(EventResult::plan_succeeded(
-                            self.name(),
-                            Some(serde_json::json!({
-                                "actions_applied": actions_applied,
-                                "results": serde_json::to_value(&results).unwrap_or_default(),
-                            })),
-                        )))
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "mkvtoolnix plan execution failed");
-                        Ok(Some(EventResult::plan_failed("mkvtoolnix-executor")))
-                    }
-                }
+                Ok(EventResult::from_plan_execution(
+                    self.name(),
+                    self.execute_plan(plan),
+                ))
             }
             _ => Ok(None),
         }
@@ -285,7 +276,7 @@ fn classify_actions(actions: &[PlannedAction]) -> (Vec<&PlannedAction>, Vec<&Pla
     let mut merge = Vec::new();
 
     for action in actions {
-        if PROPEDIT_OPS.contains(&action.operation) {
+        if action.operation.is_metadata_op() {
             propedit.push(action);
         } else if MERGE_OPS.contains(&action.operation) {
             merge.push(action);
@@ -363,10 +354,10 @@ mod tests {
     #[test]
     fn test_handles_plan_created() {
         let plugin = MkvtoolnixExecutorPlugin::new();
-        assert!(plugin.handles("plan.created"));
-        assert!(!plugin.handles("file.discovered"));
-        assert!(!plugin.handles("plan.completed"));
-        assert!(!plugin.handles("plan.executing"));
+        assert!(plugin.handles(Event::PLAN_CREATED));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
+        assert!(!plugin.handles(Event::PLAN_COMPLETED));
+        assert!(!plugin.handles(Event::PLAN_EXECUTING));
     }
 
     #[test]

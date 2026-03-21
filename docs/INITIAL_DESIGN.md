@@ -50,7 +50,7 @@
 │                       Core Kernel                              │
 │   ┌────────────┐  ┌───────────┐  ┌────────────────────────┐    │
 │   │  Event Bus │  │ Registry  │  │  Plugin Loader         │    │
-│   │  (tokio)   │  │           │  │  (native + wasmtime)   │    │
+│   │(sync/prio) │  │           │  │  (native + wasmtime)   │    │
 │   └────────────┘  └───────────┘  └────────────────────────┘    │
 ├────────────────────────────────────────────────────────────────┤
 │                      DSL Engine                                │
@@ -70,7 +70,7 @@
 │            WASM Plugins (loaded at runtime via wasmtime)       │
 │                                                                │
 │   Radarr ───────── Sonarr ──────────── Whisper                 │
-│   HandBrake ────── Plex ────────────── Custom...               │
+│   TVDB ─────────── HandBrake ─────────── Custom...             │
 │                                                                │
 ├────────────────────────────────────────────────────────────────┤
 │                   Domain Types (shared)                        │
@@ -159,7 +159,7 @@ voom/
 │   ├── voom-kernel/              # Core kernel: event bus, registry, loader
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── bus.rs            # Event bus (tokio channels)
+│   │       ├── bus.rs            # Event bus (synchronous priority-ordered dispatch, parking_lot::RwLock)
 │   │       ├── registry.rs       # Plugin registry
 │   │       ├── loader.rs         # Native + WASM plugin loading
 │   │       ├── capabilities.rs   # Capability descriptors
@@ -231,7 +231,8 @@ voom/
 │   ├── radarr-metadata/
 │   ├── sonarr-metadata/
 │   ├── whisper-transcriber/
-│   └── audio-synthesizer/
+│   ├── audio-synthesizer/
+│   └── tvdb-metadata/
 │
 ├── web/                          # Static web assets
 │   ├── static/
@@ -304,7 +305,8 @@ struct Subscriber {
 
 impl EventBus {
     /// Dispatch event to all subscribers, ordered by priority.
-    pub async fn publish(&self, event: Event) -> Vec<EventResult> { ... }
+    /// Synchronous — uses `parking_lot::RwLock` for dispatch.
+    pub fn publish(&self, event: Event) -> Vec<EventResult> { ... }
 
     /// Subscribe a plugin to an event type.
     pub fn subscribe(&self, event_type: &str, plugin: Arc<dyn Plugin>, priority: i32) { ... }
@@ -1010,6 +1012,7 @@ Source text (.voom file)
 | `sonarr-metadata` | `EnrichMetadata { source: "sonarr" }` | Sonarr API (via host HTTP) | Rust→WASM |
 | `whisper-transcriber` | `Transcribe` | Whisper (via host tool runner) | Rust→WASM |
 | `audio-synthesizer` | `Synthesize` | ffmpeg (via host tool runner) | Rust→WASM |
+| `tvdb-metadata` | `EnrichMetadata { source: "tvdb" }` | TVDB API (via host HTTP) | Rust→WASM |
 
 ### 7.3 Example future community plugins
 
@@ -1160,34 +1163,35 @@ CREATE INDEX idx_stats_file ON processing_stats(file_id);
 ### 8.2 Storage trait
 
 ```rust
-#[async_trait]
+/// Synchronous — backed by blocking rusqlite with r2d2 connection pool.
+/// Web handlers use `tokio::task::spawn_blocking` to call these methods.
 pub trait StorageTrait: Send + Sync {
     // Files
-    async fn upsert_file(&self, file: &MediaFile) -> Result<()>;
-    async fn get_file(&self, id: &Uuid) -> Result<Option<MediaFile>>;
-    async fn get_file_by_path(&self, path: &Path) -> Result<Option<MediaFile>>;
-    async fn list_files(&self, filters: &FileFilters) -> Result<Vec<MediaFile>>;
-    async fn delete_file(&self, id: &Uuid) -> Result<()>;
+    fn upsert_file(&self, file: &MediaFile) -> Result<()>;
+    fn get_file(&self, id: &Uuid) -> Result<Option<MediaFile>>;
+    fn get_file_by_path(&self, path: &Path) -> Result<Option<MediaFile>>;
+    fn list_files(&self, filters: &FileFilters) -> Result<Vec<MediaFile>>;
+    fn delete_file(&self, id: &Uuid) -> Result<()>;
 
     // Jobs
-    async fn create_job(&self, job: &Job) -> Result<Uuid>;
-    async fn get_job(&self, id: &Uuid) -> Result<Option<Job>>;
-    async fn update_job(&self, id: &Uuid, update: JobUpdate) -> Result<()>;
-    async fn claim_next_job(&self, worker_id: &str) -> Result<Option<Job>>;
+    fn create_job(&self, job: &Job) -> Result<Uuid>;
+    fn get_job(&self, id: &Uuid) -> Result<Option<Job>>;
+    fn update_job(&self, id: &Uuid, update: &JobUpdate) -> Result<()>;
+    fn claim_next_job(&self, worker_id: &str) -> Result<Option<Job>>;
 
     // Plans
-    async fn save_plan(&self, plan: &Plan) -> Result<Uuid>;
+    fn save_plan(&self, plan: &Plan) -> Result<Uuid>;
 
     // Stats
-    async fn record_stats(&self, stats: &ProcessingStats) -> Result<()>;
+    fn record_stats(&self, stats: &ProcessingStats) -> Result<()>;
 
     // Plugin data
-    async fn get_plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>>;
-    async fn set_plugin_data(&self, plugin: &str, key: &str, value: &[u8]) -> Result<()>;
+    fn get_plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>>;
+    fn set_plugin_data(&self, plugin: &str, key: &str, value: &[u8]) -> Result<()>;
 
     // Maintenance
-    async fn vacuum(&self) -> Result<()>;
-    async fn prune_missing_files(&self) -> Result<u64>;
+    fn vacuum(&self) -> Result<()>;
+    fn prune_missing_files(&self) -> Result<u64>;
 }
 ```
 
@@ -1498,6 +1502,7 @@ voom
 - `wasm-plugins/sonarr-metadata`: TV metadata enrichment
 - `wasm-plugins/whisper-transcriber`: Transcription (uses host tool runner)
 - `wasm-plugins/audio-synthesizer`: Audio synthesis (uses host tool runner)
+- `wasm-plugins/tvdb-metadata`: TV metadata enrichment from TVDB (uses host HTTP functions)
 - `wasm-plugins/handbrake-executor`: Video transcoding (similar to ffmpeg)
 - `voom-plugin-sdk` crate:
   - Host function bindings
@@ -1522,7 +1527,7 @@ voom
 | 2 | Domain Model & Core Utilities | M | S1 | Missing edge-case types discovered later |
 | 3 | DSL Lexer & Parser | XL | S2 | Grammar expressiveness vs. simplicity |
 | 4 | DSL Compiler & Validation | XL | S3 | Covering all policy semantics in DSL |
-| 5 | Storage Plugin (SQLite) | L | S1, S2 | rusqlite async patterns |
+| 5 | Storage Plugin (SQLite) | L | S1, S2 | rusqlite blocking + connection pooling |
 | 6 | Discovery & Introspection | L | S5 | ffprobe JSON edge cases |
 | 7 | Policy Evaluation | XL | S4, S6 | Condition/action combinatorics |
 | 8 | Executor Plugins | XL | S7 | FFmpeg transcoding complexity, HW accel |
@@ -1569,7 +1574,7 @@ voom
 | WASM/WIT interface stability | High | Pin wasmtime version, keep WIT interface small and stable |
 | WASM serialization overhead for hot paths | Medium | Core plugins are native (zero overhead). Only metadata plugins use WASM. |
 | pest grammar limitations for complex syntax | Medium | pest handles PEG well; fallback to hand-written parser if needed |
-| rusqlite async story | Low | Use spawn_blocking for DB calls, or deadpool-sqlite |
+| rusqlite blocking calls from async context | Low | Use spawn_blocking for DB calls from web handlers |
 | FFmpeg command building complexity | High | Port tested logic from v1, comprehensive integration tests |
 | Compilation time for large workspace | Medium | Separate crates, feature flags, cargo-nextest for parallel tests |
 | Plugin SDK ergonomics in Rust | Medium | Proc macros to reduce boilerplate, comprehensive examples |

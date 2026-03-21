@@ -15,8 +15,6 @@ voom-kernel = { workspace = true }
 walkdir = { workspace = true }
 rayon = { workspace = true }
 xxhash-rust = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

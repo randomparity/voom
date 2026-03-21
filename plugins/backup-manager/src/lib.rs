@@ -3,11 +3,17 @@
 //! Handles file backup before execution, disk space validation, and restore
 //! capability. Creates backups of media files before any modifications are
 //! applied, enabling safe rollback if execution fails.
+//!
+//! Modules:
+//! - [`backup`] — core backup, restore, remove, and cleanup file operations
+//! - [`space`] — disk space validation via `statvfs`
 
 #![allow(clippy::missing_errors_doc)]
 
+pub mod backup;
+pub mod space;
+
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -91,57 +97,16 @@ impl BackupManagerPlugin {
     /// Create a backup of the given file before modification.
     /// Returns the `BackupRecord` on success.
     pub fn backup_file(&self, path: &Path) -> Result<BackupRecord> {
-        // Reject symlinks to prevent following links to unintended targets
-        let symlink_meta = fs::symlink_metadata(path)
-            .map_err(|e| plugin_err(format!("cannot read {}: {e}", path.display())))?;
-        if symlink_meta.is_symlink() {
-            return Err(plugin_err(format!(
-                "refusing to backup symlink: {}",
-                path.display()
-            )));
-        }
-
-        let metadata = fs::metadata(path)
-            .map_err(|e| plugin_err(format!("cannot backup {}: {e}", path.display())))?;
-
-        // Generate UUID once so disk-space check and backup target are consistent
-        let backup_id = Uuid::new_v4();
-
-        // Validate disk space against the actual backup destination
-        let backup_path = self.backup_path_for(path, backup_id);
-        self.validate_disk_space_for(&backup_path, path)?;
-        if let Some(parent) = backup_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        fs::copy(path, &backup_path).map_err(|e| {
-            plugin_err(format!(
-                "failed to copy {} to {}: {e}",
-                path.display(),
-                backup_path.display(),
-            ))
+        let min_free = self.config.min_free_space;
+        let record = backup::backup_file(&self.config, path, |backup_path, source_path| {
+            space::validate_disk_space_for(backup_path, source_path, min_free)
         })?;
-
-        let record = BackupRecord {
-            id: backup_id,
-            original_path: path.to_path_buf(),
-            backup_path,
-            size: metadata.len(),
-            created_at: Utc::now(),
-        };
 
         let mut records = self
             .records
             .lock()
             .map_err(|_| plugin_err("backup records lock poisoned"))?;
         records.insert(path.to_path_buf(), record.clone());
-
-        tracing::info!(
-            path = %path.display(),
-            backup = %record.backup_path.display(),
-            size = record.size,
-            "File backed up"
-        );
 
         Ok(record)
     }
@@ -156,20 +121,7 @@ impl BackupManagerPlugin {
             .get(path)
             .ok_or_else(|| plugin_err(format!("no backup found for {}", path.display())))?;
 
-        fs::copy(&record.backup_path, path).map_err(|e| {
-            plugin_err(format!(
-                "failed to restore {} from {}: {e}",
-                path.display(),
-                record.backup_path.display(),
-            ))
-        })?;
-
-        tracing::info!(
-            path = %path.display(),
-            backup = %record.backup_path.display(),
-            "File restored from backup"
-        );
-
+        backup::restore_file(record)?;
         records.remove(path);
         Ok(())
     }
@@ -184,59 +136,15 @@ impl BackupManagerPlugin {
             .get(path)
             .ok_or_else(|| plugin_err(format!("no backup found for {}", path.display())))?;
 
-        // Delete the backup file
-        fs::remove_file(&record.backup_path).map_err(|e| {
-            plugin_err(format!(
-                "failed to remove backup {}: {e}",
-                record.backup_path.display(),
-            ))
-        })?;
-
-        // Try to clean up the backup directory if empty
-        if let Some(parent) = record.backup_path.parent() {
-            if let Err(e) = fs::remove_dir(parent) {
-                tracing::debug!(path = %parent.display(), error = %e, "could not remove backup parent directory");
-            }
-        }
-
-        tracing::info!(
-            path = %path.display(),
-            "Backup removed"
-        );
-
+        backup::remove_backup(record)?;
         records.remove(path);
         Ok(())
     }
 
     /// Check if sufficient disk space is available for backing up the given file.
     pub fn validate_disk_space(&self, path: &Path) -> Result<()> {
-        let backup_path = self.backup_path_for(path, Uuid::new_v4());
-        self.validate_disk_space_for(&backup_path, path)
-    }
-
-    /// Check disk space using a pre-computed backup path.
-    fn validate_disk_space_for(&self, backup_path: &Path, source_path: &Path) -> Result<()> {
-        let file_size = fs::metadata(source_path).map(|m| m.len()).unwrap_or(0);
-
-        let check_path = backup_path
-            .parent()
-            .unwrap_or(source_path.parent().unwrap_or(Path::new("/")));
-
-        let available = Self::available_space(check_path)?;
-        let required = file_size + self.config.min_free_space;
-
-        if available < required {
-            return Err(plugin_err(format!(
-                "insufficient disk space for backup of {}: need {} bytes (file {} + reserve {}), have {} available",
-                source_path.display(),
-                required,
-                file_size,
-                self.config.min_free_space,
-                available,
-            )));
-        }
-
-        Ok(())
+        let backup_path = backup::backup_path_for(&self.config, path, Uuid::new_v4());
+        space::validate_disk_space_for(&backup_path, path, self.config.min_free_space)
     }
 
     /// Get the backup path for a given original file.
@@ -246,46 +154,32 @@ impl BackupManagerPlugin {
     /// `backup_file` calls to ensure the space check targets the actual
     /// destination path.
     pub fn backup_path_for(&self, path: &Path, unique_id: Uuid) -> PathBuf {
-        let file_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().replace(['/', '\\', '\0'], "_"))
-            .unwrap_or_else(|| "unknown".into());
-
-        if self.config.use_global_dir {
-            if let Some(ref dir) = self.config.backup_dir {
-                return dir.join(format!("{unique_id}_{file_name}"));
-            }
-        }
-
-        // Default: sibling .voom-backup directory
-        let parent = path.parent().unwrap_or(Path::new("."));
-        let timestamp = Utc::now().format("%Y%m%d%H%M%S");
-        parent
-            .join(".voom-backup")
-            .join(format!("{file_name}.{timestamp}.bak"))
+        backup::backup_path_for(&self.config, path, unique_id)
     }
 
     /// Check if a backup exists for the given file.
-    pub fn has_backup(&self, path: &Path) -> bool {
-        self.records
+    pub fn has_backup(&self, path: &Path) -> Result<bool> {
+        let records = self
+            .records
             .lock()
-            .ok()
-            .is_some_and(|r| r.contains_key(path))
+            .map_err(|_| plugin_err("backup records lock poisoned"))?;
+        Ok(records.contains_key(path))
     }
 
     /// Get all active backup records.
-    pub fn active_backups(&self) -> Vec<BackupRecord> {
-        self.records
+    pub fn active_backups(&self) -> Result<Vec<BackupRecord>> {
+        let records = self
+            .records
             .lock()
-            .ok()
-            .map_or_else(Vec::new, |r| r.values().cloned().collect())
+            .map_err(|_| plugin_err("backup records lock poisoned"))?;
+        Ok(records.values().cloned().collect())
     }
 
     /// Clean up all backups (e.g., on successful completion).
     ///
     /// Returns the number of backups removed.
     pub fn cleanup_all(&self) -> Result<u64> {
-        let records: Vec<BackupRecord> = {
+        let all_records: Vec<BackupRecord> = {
             let records = self
                 .records
                 .lock()
@@ -293,24 +187,7 @@ impl BackupManagerPlugin {
             records.values().cloned().collect()
         };
 
-        let mut removed = 0u64;
-        for record in &records {
-            if record.backup_path.exists() {
-                fs::remove_file(&record.backup_path).map_err(|e| {
-                    plugin_err(format!(
-                        "failed to remove backup {}: {e}",
-                        record.backup_path.display(),
-                    ))
-                })?;
-                removed += 1;
-            }
-            // Try to clean up parent directory if empty
-            if let Some(parent) = record.backup_path.parent() {
-                if let Err(e) = fs::remove_dir(parent) {
-                    tracing::debug!(path = %parent.display(), error = %e, "could not remove backup parent directory");
-                }
-            }
-        }
+        let removed = backup::cleanup_all(&all_records)?;
 
         let mut records_map = self
             .records
@@ -318,46 +195,7 @@ impl BackupManagerPlugin {
             .map_err(|_| plugin_err("backup records lock poisoned"))?;
         records_map.clear();
 
-        tracing::info!(count = removed, "All backups cleaned up");
         Ok(removed)
-    }
-
-    /// Get available disk space for a path.
-    /// Walks up to the nearest existing ancestor if the path doesn't exist.
-    #[cfg(unix)]
-    fn available_space(path: &Path) -> Result<u64> {
-        // Find the nearest existing ancestor directory
-        let mut check = path.to_path_buf();
-        while !check.exists() {
-            match check.parent() {
-                Some(p) => check = p.to_path_buf(),
-                None => break,
-            }
-        }
-
-        // Use libc::statvfs directly to avoid depending on df output format
-        use std::ffi::CString;
-        let c_path = CString::new(check.to_string_lossy().as_bytes())
-            .map_err(|e| plugin_err(format!("invalid path for statvfs: {e}")))?;
-
-        // SAFETY: `c_path` is a valid NUL-terminated C string (from CString::new above),
-        // and `stat` is passed as an out-pointer that statvfs will fully initialize on success.
-        unsafe {
-            let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-            if libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) == 0 {
-                let stat = stat.assume_init();
-                // Available space for unprivileged users
-                Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
-            } else {
-                Err(VoomError::Io(std::io::Error::last_os_error()))
-            }
-        }
-    }
-
-    #[cfg(not(unix))]
-    fn available_space(_path: &Path) -> Result<u64> {
-        // On non-Unix platforms, return a large value to avoid blocking.
-        Ok(u64::MAX)
     }
 }
 
@@ -383,7 +221,7 @@ impl Plugin for BackupManagerPlugin {
     fn handles(&self, event_type: &str) -> bool {
         matches!(
             event_type,
-            "plan.executing" | "plan.completed" | "plan.failed"
+            Event::PLAN_EXECUTING | Event::PLAN_COMPLETED | Event::PLAN_FAILED
         )
     }
 
@@ -392,7 +230,7 @@ impl Plugin for BackupManagerPlugin {
             Event::PlanExecuting(evt) => {
                 // Skip if we already have a backup for this file (multiple
                 // phases may fire PlanExecuting for the same path).
-                if self.has_backup(&evt.path) {
+                if self.has_backup(&evt.path)? {
                     tracing::debug!(
                         path = %evt.path.display(),
                         phase = %evt.phase_name,
@@ -421,7 +259,7 @@ impl Plugin for BackupManagerPlugin {
                 }))
             }
             Event::PlanCompleted(evt) => {
-                if self.has_backup(&evt.path) {
+                if self.has_backup(&evt.path)? {
                     tracing::info!(
                         path = %evt.path.display(),
                         phase = %evt.phase_name,
@@ -443,7 +281,7 @@ impl Plugin for BackupManagerPlugin {
                 }
             }
             Event::PlanFailed(evt) => {
-                if self.has_backup(&evt.path) {
+                if self.has_backup(&evt.path)? {
                     tracing::warn!(
                         path = %evt.path.display(),
                         phase = %evt.phase_name,
@@ -478,6 +316,7 @@ impl Plugin for BackupManagerPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
 
@@ -499,11 +338,11 @@ mod tests {
     #[test]
     fn test_handles_plan_executing() {
         let plugin = BackupManagerPlugin::new();
-        assert!(plugin.handles("plan.executing"));
-        assert!(plugin.handles("plan.completed"));
-        assert!(plugin.handles("plan.failed"));
-        assert!(!plugin.handles("file.discovered"));
-        assert!(!plugin.handles("plan.created"));
+        assert!(plugin.handles(Event::PLAN_EXECUTING));
+        assert!(plugin.handles(Event::PLAN_COMPLETED));
+        assert!(plugin.handles(Event::PLAN_FAILED));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
+        assert!(!plugin.handles(Event::PLAN_CREATED));
     }
 
     #[test]
@@ -561,7 +400,7 @@ mod tests {
         assert_eq!(fs::read(&file_path).unwrap(), original_content);
 
         // Record should be removed after restore
-        assert!(!plugin.has_backup(&file_path));
+        assert!(!plugin.has_backup(&file_path).unwrap());
     }
 
     #[test]
@@ -583,7 +422,7 @@ mod tests {
         // Remove backup
         plugin.remove_backup(&file_path).unwrap();
         assert!(!backup_path.exists());
-        assert!(!plugin.has_backup(&file_path));
+        assert!(!plugin.has_backup(&file_path).unwrap());
     }
 
     #[test]
@@ -598,9 +437,9 @@ mod tests {
         };
         let plugin = BackupManagerPlugin::with_config(config);
 
-        assert!(!plugin.has_backup(&file_path));
+        assert!(!plugin.has_backup(&file_path).unwrap());
         plugin.backup_file(&file_path).unwrap();
-        assert!(plugin.has_backup(&file_path));
+        assert!(plugin.has_backup(&file_path).unwrap());
     }
 
     #[test]
@@ -619,7 +458,7 @@ mod tests {
         plugin.backup_file(&file1).unwrap();
         plugin.backup_file(&file2).unwrap();
 
-        let active = plugin.active_backups();
+        let active = plugin.active_backups().unwrap();
         assert_eq!(active.len(), 2);
     }
 
@@ -646,7 +485,7 @@ mod tests {
         assert_eq!(removed, 2);
         assert!(!r1.backup_path.exists());
         assert!(!r2.backup_path.exists());
-        assert!(plugin.active_backups().is_empty());
+        assert!(plugin.active_backups().unwrap().is_empty());
     }
 
     #[test]
@@ -724,7 +563,7 @@ mod tests {
         // Create a backup first
         let record = plugin.backup_file(&file_path).unwrap();
         assert!(record.backup_path.exists());
-        assert!(plugin.has_backup(&file_path));
+        assert!(plugin.has_backup(&file_path).unwrap());
 
         // Simulate plan.completed event
         let event = Event::PlanCompleted(PlanCompletedEvent {
@@ -738,7 +577,7 @@ mod tests {
         assert!(result.is_some());
         let result = result.unwrap();
         assert_eq!(result.plugin_name, "backup-manager");
-        assert!(!plugin.has_backup(&file_path));
+        assert!(!plugin.has_backup(&file_path).unwrap());
         assert!(!record.backup_path.exists());
     }
 
@@ -759,7 +598,7 @@ mod tests {
 
         // Create a backup
         plugin.backup_file(&file_path).unwrap();
-        assert!(plugin.has_backup(&file_path));
+        assert!(plugin.has_backup(&file_path).unwrap());
 
         // Modify the original file (simulating a failed execution)
         fs::write(&file_path, b"corrupted data").unwrap();
@@ -782,7 +621,7 @@ mod tests {
 
         // File should be restored to original content
         assert_eq!(fs::read(&file_path).unwrap(), original_content);
-        assert!(!plugin.has_backup(&file_path));
+        assert!(!plugin.has_backup(&file_path).unwrap());
     }
 
     #[test]

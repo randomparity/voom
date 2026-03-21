@@ -20,6 +20,11 @@ pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;
     fn version(&self) -> &str;
     fn capabilities(&self) -> &[Capability];
+    /// Returns `true` if this plugin wants to receive events of the given type.
+    ///
+    /// Use the constants on [`Event`] (e.g. `Event::FILE_DISCOVERED`,
+    /// `Event::PLAN_CREATED`) rather than string literals to get compile-time
+    /// typo protection. The constants are defined in `voom_domain::events`.
     fn handles(&self, event_type: &str) -> bool;
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>>;
 

@@ -126,9 +126,18 @@ impl PluginDataStore for StorageBackedDataStore {
     fn get(&self, plugin_name: &str, key: &str) -> Option<Vec<u8>> {
         self.store
             .get_plugin_data(plugin_name, key)
+            .map_err(|e| {
+                tracing::warn!(
+                    plugin = %plugin_name,
+                    key = %key,
+                    error = %e,
+                    "storage error in PluginDataStore::get, returning None"
+                );
+                e
+            })
             .ok()
             .flatten()
-            .filter(|v| !v.is_empty()) // Treat empty values as tombstones (deleted keys)
+            .filter(|v: &Vec<u8>| !v.is_empty()) // Treat empty values as tombstones (deleted keys)
     }
 
     fn set(&self, plugin_name: &str, key: &str, value: &[u8]) -> Result<(), String> {
@@ -204,11 +213,11 @@ impl HostState {
     ///
     /// Stores the config as JSON bytes under the `"config"` key in the
     /// in-memory plugin data store. WASM plugins can then retrieve it
-    /// via `get_plugin_data("config")`.
+    /// via `resolve_plugin_data("config")`.
     ///
     /// Note: both `{}` (empty object) and `null` are treated as "no config"
     /// and do **not** seed the store. A plugin that receives no config and one
-    /// that receives `{}` are therefore indistinguishable via `get_plugin_data`.
+    /// that receives `{}` are therefore indistinguishable via `resolve_plugin_data`.
     #[must_use]
     pub fn with_initial_config(mut self, config: serde_json::Value) -> Self {
         if !config.is_null() && config != serde_json::json!({}) {
@@ -233,13 +242,18 @@ impl HostState {
         }
     }
 
-    /// Get plugin-specific persisted data by key.
+    /// Resolve plugin-specific persisted data by key, using a fallback chain.
     ///
-    /// Lookup order: persistent storage (if attached) → in-memory `plugin_data`.
-    /// This means config seeded via `with_initial_config` acts as a default that
-    /// the plugin can override by calling `set_plugin_data` (which writes to storage).
+    /// Lookup order:
+    /// 1. Persistent storage backend (if attached via `with_storage`)
+    /// 2. In-memory `plugin_data` map (seeded by `with_initial_config`)
+    ///
+    /// This fallback chain means config seeded via `with_initial_config` acts as a
+    /// default that the plugin can override by calling `set_plugin_data` (which
+    /// writes to persistent storage). Once overridden, the storage value takes
+    /// precedence on all subsequent reads.
     #[must_use]
-    pub fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
+    pub fn resolve_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
         if let Some(storage) = &self.storage {
             // Check persistent storage first, fall back to in-memory (seeded config).
             storage
@@ -489,13 +503,13 @@ mod tests {
     fn test_plugin_data_in_memory() {
         let mut state = HostState::new("test".into());
 
-        assert!(state.get_plugin_data("key1").is_none());
+        assert!(state.resolve_plugin_data("key1").is_none());
 
         state.set_plugin_data("key1", b"hello world").unwrap();
-        assert_eq!(state.get_plugin_data("key1").unwrap(), b"hello world");
+        assert_eq!(state.resolve_plugin_data("key1").unwrap(), b"hello world");
 
         state.set_plugin_data("key1", b"updated").unwrap();
-        assert_eq!(state.get_plugin_data("key1").unwrap(), b"updated");
+        assert_eq!(state.resolve_plugin_data("key1").unwrap(), b"updated");
     }
 
     #[test]
@@ -504,7 +518,7 @@ mod tests {
         let mut state = HostState::new("test".into()).with_storage(store.clone());
 
         state.set_plugin_data("key1", b"value1").unwrap();
-        assert_eq!(state.get_plugin_data("key1").unwrap(), b"value1");
+        assert_eq!(state.resolve_plugin_data("key1").unwrap(), b"value1");
 
         // Verify data is in the shared store.
         assert_eq!(store.get("test", "key1").unwrap(), b"value1");
@@ -693,7 +707,7 @@ mod tests {
         let config = serde_json::json!({"api_key": "abc123", "url": "http://localhost"});
         let state = HostState::new("test".into()).with_initial_config(config.clone());
         let data = state
-            .get_plugin_data("config")
+            .resolve_plugin_data("config")
             .expect("config should be seeded");
         let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(loaded, config);
@@ -702,13 +716,13 @@ mod tests {
     #[test]
     fn test_with_initial_config_empty_does_not_seed() {
         let state = HostState::new("test".into()).with_initial_config(serde_json::json!({}));
-        assert!(state.get_plugin_data("config").is_none());
+        assert!(state.resolve_plugin_data("config").is_none());
     }
 
     #[test]
     fn test_with_initial_config_null_does_not_seed() {
         let state = HostState::new("test".into()).with_initial_config(serde_json::Value::Null);
-        assert!(state.get_plugin_data("config").is_none());
+        assert!(state.resolve_plugin_data("config").is_none());
     }
 
     #[test]
@@ -720,9 +734,9 @@ mod tests {
             .with_storage(store.clone())
             .with_initial_config(config.clone());
 
-        // get_plugin_data should fall through to in-memory seeded config.
+        // resolve_plugin_data should fall through to in-memory seeded config.
         let data = state
-            .get_plugin_data("config")
+            .resolve_plugin_data("config")
             .expect("seeded config should be accessible with storage attached");
         let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(loaded, config);
@@ -743,7 +757,7 @@ mod tests {
         state.set_plugin_data("config", &override_bytes).unwrap();
 
         // Should get the storage value, not the seeded one.
-        let data = state.get_plugin_data("config").unwrap();
+        let data = state.resolve_plugin_data("config").unwrap();
         let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(loaded, override_config);
     }

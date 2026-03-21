@@ -91,13 +91,11 @@ impl WorkerPool {
         self.token.is_cancelled()
     }
 
-    /// Get the number of completed jobs.
     #[must_use]
     pub fn completed_count(&self) -> u64 {
         self.completed_count.load(Ordering::SeqCst)
     }
 
-    /// Get the number of failed jobs.
     #[must_use]
     pub fn failed_count(&self) -> u64 {
         self.failed_count.load(Ordering::SeqCst)
@@ -332,9 +330,8 @@ impl WorkerPool {
 pub enum ErrorStrategy {
     /// Stop all processing on first error.
     Fail,
-    /// Skip the failed file and continue with remaining.
-    Skip,
-    /// Continue processing, collecting all errors.
+    /// Continue processing remaining items, collecting all errors.
+    /// Failed items are recorded but do not halt the batch.
     Continue,
 }
 
@@ -342,7 +339,7 @@ pub enum ErrorStrategy {
 mod tests {
     use super::*;
     use crate::progress::NoopReporter;
-    use crate::test_helpers::InMemoryStore;
+    use crate::test_support::InMemoryStore;
     use std::sync::atomic::AtomicU32;
     use tokio_util::sync::CancellationToken;
 

@@ -1,10 +1,11 @@
 use anyhow::Result;
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::app;
+use crate::output::print_tool_status;
 
 pub async fn run() -> Result<()> {
-    println!("{}", "VOOM First-Time Setup".bold().underline());
+    println!("{}", style("VOOM First-Time Setup").bold().underlined());
     println!();
 
     let config = app::AppConfig::default();
@@ -18,14 +19,14 @@ pub async fn run() -> Result<()> {
         std::fs::create_dir_all(config_dir)?;
         println!(
             "  {} Created {}",
-            "OK".green(),
-            config_dir.display().to_string().cyan()
+            style("OK").green(),
+            style(config_dir.display()).cyan()
         );
     } else {
         println!(
             "  {} {} already exists",
-            "OK".green(),
-            config_dir.display().to_string().dimmed()
+            style("OK").green(),
+            style(config_dir.display()).dim()
         );
     }
 
@@ -34,14 +35,14 @@ pub async fn run() -> Result<()> {
         std::fs::create_dir_all(&config.data_dir)?;
         println!(
             "  {} Created {}",
-            "OK".green(),
-            config.data_dir.display().to_string().cyan()
+            style("OK").green(),
+            style(config.data_dir.display()).cyan()
         );
     } else {
         println!(
             "  {} {} already exists",
-            "OK".green(),
-            config.data_dir.display().to_string().dimmed()
+            style("OK").green(),
+            style(config.data_dir.display()).dim()
         );
     }
 
@@ -51,8 +52,8 @@ pub async fn run() -> Result<()> {
         std::fs::create_dir_all(&policies_dir)?;
         println!(
             "  {} Created {}",
-            "OK".green(),
-            policies_dir.display().to_string().cyan()
+            style("OK").green(),
+            style(policies_dir.display()).cyan()
         );
     }
 
@@ -61,8 +62,8 @@ pub async fn run() -> Result<()> {
         std::fs::write(&starter_policy, default_policy_contents())?;
         println!(
             "  {} Created {}",
-            "OK".green(),
-            starter_policy.display().to_string().cyan()
+            style("OK").green(),
+            style(starter_policy.display()).cyan()
         );
     }
 
@@ -72,53 +73,34 @@ pub async fn run() -> Result<()> {
         std::fs::write(&config_path, &contents)?;
         println!(
             "  {} Created {}",
-            "OK".green(),
-            config_path.display().to_string().cyan()
+            style("OK").green(),
+            style(config_path.display()).cyan()
         );
     } else {
         println!(
             "  {} {} already exists",
-            "OK".green(),
-            config_path.display().to_string().dimmed()
+            style("OK").green(),
+            style(config_path.display()).dim()
         );
     }
 
     // 5. Initialize database
     print!("  Database ... ");
     match app::bootstrap_kernel(&config) {
-        Ok(_) => println!("{}", "OK".green()),
-        Err(e) => println!("{} {e}", "ERROR".red()),
+        Ok(_) => println!("{}", style("OK").green()),
+        Err(e) => println!("{} {e}", style("ERROR").red()),
     }
 
     // 6. Check tools
     println!();
-    println!("{}", "Checking external tools:".bold());
+    println!("{}", style("Checking external tools:").bold());
     let mut detector = voom_tool_detector::ToolDetectorPlugin::new();
     detector.detect_all();
 
-    let required_tools = ["ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit"];
-    let optional_tools = ["mkvextract", "mediainfo", "HandBrakeCLI"];
-
-    for tool in required_tools {
-        print!("  {tool} ... ");
-        if let Some(t) = detector.get_tool(tool) {
-            println!("{} ({})", "found".green(), t.version.dimmed());
-        } else {
-            println!("{}", "not found".red());
-        }
-    }
-
-    for tool in optional_tools {
-        print!("  {tool} ... ");
-        if let Some(t) = detector.get_tool(tool) {
-            println!("{} ({})", "found".green(), t.version.dimmed());
-        } else {
-            println!("{} (optional)", "not found".yellow());
-        }
-    }
+    let _tool_result = print_tool_status(&detector);
 
     println!();
-    println!("{}", "Setup complete! You can now:".bold().green());
+    println!("{}", style("Setup complete! You can now:").bold().green());
     println!("  voom scan <path>              Scan a media directory");
     println!("  voom inspect <file>           Inspect a media file");
     println!("  voom policy validate <file>   Validate a policy");

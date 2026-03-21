@@ -1,11 +1,12 @@
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::bad_file::{BadFile, BadFileSource};
 use crate::errors::Result;
 use crate::job::{Job, JobStatus, JobUpdate};
-use crate::media::MediaFile;
+use crate::media::{Container, MediaFile};
 use crate::plan::Plan;
 use crate::stats::ProcessingStats;
 
@@ -28,7 +29,7 @@ pub struct BadFileFilters {
 /// Filters for querying files from storage.
 #[derive(Debug, Clone, Default)]
 pub struct FileFilters {
-    pub container: Option<String>,
+    pub container: Option<Container>,
     pub has_codec: Option<String>,
     pub has_language: Option<String>,
     pub path_prefix: Option<String>,
@@ -96,7 +97,7 @@ pub trait StorageTrait: Send + Sync {
 }
 
 /// Status of a stored plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanStatus {
     Pending,

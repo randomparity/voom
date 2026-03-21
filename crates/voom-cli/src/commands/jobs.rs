@@ -1,6 +1,6 @@
 use anyhow::Result;
 use comfy_table::{Cell, Color};
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::cli::JobsCommands;
 use crate::output;
@@ -20,7 +20,18 @@ async fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
     use voom_domain::job::JobStatus;
     use voom_domain::storage::JobFilters;
 
-    let filter_status = status_filter.as_deref().and_then(JobStatus::parse);
+    let filter_status = match status_filter.as_deref() {
+        Some(s) => {
+            let parsed = JobStatus::parse(s);
+            if parsed.is_none() {
+                anyhow::bail!(
+                    "Invalid job status '{s}'. Valid values: pending, running, completed, failed, cancelled"
+                );
+            }
+            parsed
+        }
+        None => None,
+    };
 
     let jobs = store
         .list_jobs(&JobFilters {
@@ -30,7 +41,7 @@ async fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to list jobs: {e}"))?;
 
     if jobs.is_empty() {
-        println!("{} No jobs found.", "INFO".dimmed());
+        println!("{} No jobs found.", style("INFO").dim());
         return Ok(());
     }
 
@@ -88,11 +99,11 @@ async fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
         if shown < total {
             println!(
                 "\n{} {}",
-                format!("Showing {shown} of {total} jobs.").dimmed(),
-                "Use --limit or --status to narrow results.".dimmed(),
+                style(format!("Showing {shown} of {total} jobs.")).dim(),
+                style("Use --limit or --status to narrow results.").dim(),
             );
         }
-        println!("{}", summary.join(" | ").dimmed());
+        println!("{}", style(summary.join(" | ")).dim());
     }
 
     Ok(())
@@ -106,27 +117,27 @@ async fn status(id: String) -> Result<()> {
 
     match store.get_job(&uuid)? {
         Some(job) => {
-            println!("{} {}", "Job:".bold(), job.id.to_string().cyan());
-            println!("{} {}", "Type:".bold(), job.job_type);
+            println!("{} {}", style("Job:").bold(), style(&job.id).cyan());
+            println!("{} {}", style("Type:").bold(), job.job_type);
             if let Some(ref payload) = job.payload {
                 if let Some(path) = payload["path"].as_str() {
-                    println!("{} {}", "File:".bold(), path);
+                    println!("{} {}", style("File:").bold(), path);
                 }
             }
-            println!("{} {}", "Status:".bold(), job.status.as_str());
-            println!("{} {:.1}%", "Progress:".bold(), job.progress * 100.0);
+            println!("{} {}", style("Status:").bold(), job.status.as_str());
+            println!("{} {:.1}%", style("Progress:").bold(), job.progress * 100.0);
             if let Some(ref msg) = job.progress_message {
-                println!("{} {msg}", "Message:".bold());
+                println!("{} {msg}", style("Message:").bold());
             }
             if let Some(ref err) = job.error {
-                println!("{} {err}", "Error:".bold().red());
+                println!("{} {err}", style("Error:").bold().red());
             }
-            println!("{} {}", "Created:".bold(), job.created_at);
+            println!("{} {}", style("Created:").bold(), job.created_at);
             if let Some(ref started) = job.started_at {
-                println!("{} {started}", "Started:".bold());
+                println!("{} {started}", style("Started:").bold());
             }
             if let Some(ref completed) = job.completed_at {
-                println!("{} {completed}", "Completed:".bold());
+                println!("{} {completed}", style("Completed:").bold());
             }
         }
         None => {
@@ -152,7 +163,7 @@ async fn cancel(id: String) -> Result<()> {
         .update_job(&uuid, &update)
         .map_err(|e| anyhow::anyhow!("failed to cancel job: {e}"))?;
 
-    println!("{} Job {id} cancelled.", "OK".bold().green());
+    println!("{} Job {id} cancelled.", style("OK").bold().green());
 
     Ok(())
 }

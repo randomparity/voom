@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::app;
 use crate::cli::PluginCommands;
@@ -46,11 +46,11 @@ async fn list() -> Result<()> {
 
     let total = plugins.len() + disabled_list.len();
     if total == 0 {
-        println!("{}", "No plugins registered.".dimmed());
+        println!("{}", style("No plugins registered.").dim());
     } else {
         println!(
             "{} registered plugins{}:\n",
-            total.to_string().bold(),
+            style(total).bold(),
             if disabled_list.is_empty() {
                 String::new()
             } else {
@@ -60,9 +60,9 @@ async fn list() -> Result<()> {
         output::format_plugin_list(&plugins);
 
         if !disabled_list.is_empty() {
-            println!("\n{}", "Disabled plugins:".dimmed());
+            println!("\n{}", style("Disabled plugins:").dim());
             for name in &disabled_list {
-                println!("  {} {}", "-".dimmed(), name.dimmed());
+                println!("  {} {}", style("-").dim(), style(name).dim());
             }
         }
     }
@@ -77,11 +77,11 @@ async fn info(name: String) -> Result<()> {
     if config.plugins.disabled_plugins.contains(&name)
         && app::KNOWN_PLUGIN_NAMES.contains(&name.as_str())
     {
-        println!("{} {}", "Plugin:".bold(), name.cyan());
-        println!("{} {}", "Status:".bold(), "disabled".yellow());
+        println!("{} {}", style("Plugin:").bold(), style(&name).cyan());
+        println!("{} {}", style("Status:").bold(), style("disabled").yellow());
         println!(
             "\nUse {} to re-enable this plugin.",
-            format!("voom plugin enable {name}").cyan()
+            style(format!("voom plugin enable {name}")).cyan()
         );
         return Ok(());
     }
@@ -90,10 +90,14 @@ async fn info(name: String) -> Result<()> {
 
     match kernel.registry.get(&name) {
         Some(plugin) => {
-            println!("{} {}", "Plugin:".bold(), plugin.name().cyan());
-            println!("{} {}", "Version:".bold(), plugin.version());
-            println!("{} {}", "Status:".bold(), "enabled".green());
-            println!("{}", "Capabilities:".bold());
+            println!(
+                "{} {}",
+                style("Plugin:").bold(),
+                style(plugin.name()).cyan()
+            );
+            println!("{} {}", style("Version:").bold(), plugin.version());
+            println!("{} {}", style("Status:").bold(), style("enabled").green());
+            println!("{}", style("Capabilities:").bold());
             for cap in plugin.capabilities() {
                 println!("  - {}", cap.kind());
             }
@@ -129,8 +133,8 @@ fn set_plugin_enabled(name: String, enabled: bool) -> Result<()> {
     if enabled && !is_disabled {
         println!(
             "Plugin \"{}\" is already {}.",
-            name.cyan(),
-            "enabled".green()
+            style(&name).cyan(),
+            style("enabled").green()
         );
         return Ok(());
     }
@@ -138,8 +142,8 @@ fn set_plugin_enabled(name: String, enabled: bool) -> Result<()> {
     if !enabled && is_disabled {
         println!(
             "Plugin \"{}\" is already {}.",
-            name.cyan(),
-            "disabled".yellow()
+            style(&name).cyan(),
+            style("disabled").yellow()
         );
         return Ok(());
     }
@@ -154,16 +158,16 @@ fn set_plugin_enabled(name: String, enabled: bool) -> Result<()> {
     if enabled {
         println!(
             "{} Plugin \"{}\" has been {}.",
-            "OK".bold().green(),
-            name.cyan(),
-            "enabled".green()
+            style("OK").bold().green(),
+            style(&name).cyan(),
+            style("enabled").green()
         );
     } else {
         println!(
             "{} Plugin \"{}\" has been {}.",
-            "OK".bold().green(),
-            name.cyan(),
-            "disabled".yellow()
+            style("OK").bold().green(),
+            style(&name).cyan(),
+            style("disabled").yellow()
         );
     }
     Ok(())
@@ -251,10 +255,10 @@ async fn install(path: PathBuf) -> Result<()> {
     // 7. Print success
     println!(
         "{} Installed plugin \"{}\" v{} to {}",
-        "OK".bold().green(),
-        manifest.name.cyan(),
+        style("OK").bold().green(),
+        style(&manifest.name).cyan(),
         manifest.version,
-        target_dir.display().to_string().dimmed()
+        style(target_dir.display()).dim()
     );
 
     Ok(())

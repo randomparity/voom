@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::cli::PolicyCommands;
 
@@ -17,11 +17,8 @@ async fn list() -> Result<()> {
     let config_dir = crate::app::voom_config_dir().join("policies");
 
     if !config_dir.exists() {
-        println!("{}", "No policies directory found.".dimmed());
-        println!(
-            "Create policies in: {}",
-            config_dir.display().to_string().cyan()
-        );
+        println!("{}", style("No policies directory found.").dim());
+        println!("Create policies in: {}", style(config_dir.display()).cyan());
         return Ok(());
     }
 
@@ -38,13 +35,13 @@ async fn list() -> Result<()> {
                 Ok(policy) => {
                     println!(
                         "  {} {} ({} phases)",
-                        "OK".green(),
-                        policy.name.bold(),
+                        style("OK").green(),
+                        style(&policy.name).bold(),
                         policy.phases.len()
                     );
                 }
                 Err(e) => {
-                    println!("  {} {} — {e}", "ERR".red(), name.bold());
+                    println!("  {} {} — {e}", style("ERR").red(), style(&name).bold());
                 }
             }
             found = true;
@@ -52,7 +49,7 @@ async fn list() -> Result<()> {
     }
 
     if !found {
-        println!("{}", "No .voom policy files found.".dimmed());
+        println!("{}", style("No .voom policy files found.").dim());
     }
 
     Ok(())
@@ -66,7 +63,7 @@ async fn validate(file: std::path::PathBuf) -> Result<()> {
         Ok(policy) => {
             println!(
                 "{} Policy \"{}\" is valid ({} phases, {} phase order: [{}])",
-                "OK".bold().green(),
+                style("OK").bold().green(),
                 policy.name,
                 policy.phases.len(),
                 policy.phase_order.len(),
@@ -88,11 +85,15 @@ async fn show(file: std::path::PathBuf) -> Result<()> {
     let compiled = voom_dsl::compile(&source)
         .map_err(|e| anyhow::anyhow!("policy compilation failed: {e}"))?;
 
-    println!("{} \"{}\"", "Policy".bold(), compiled.name.cyan());
+    println!(
+        "{} \"{}\"",
+        style("Policy").bold(),
+        style(&compiled.name).cyan()
+    );
     println!();
 
     // Config
-    println!("{}", "Config:".bold());
+    println!("{}", style("Config:").bold());
     println!(
         "  Audio languages: [{}]",
         compiled.config.audio_languages.join(", ")
@@ -107,11 +108,11 @@ async fn show(file: std::path::PathBuf) -> Result<()> {
     // Phases
     println!(
         "{} (order: [{}])",
-        "Phases:".bold(),
+        style("Phases:").bold(),
         compiled.phase_order.join(" → ")
     );
     for phase in &compiled.phases {
-        println!("  {} {}", "▸".cyan(), phase.name.bold());
+        println!("  {} {}", style("▸").cyan(), style(&phase.name).bold());
         if !phase.depends_on.is_empty() {
             println!("    depends_on: [{}]", phase.depends_on.join(", "));
         }
@@ -148,8 +149,8 @@ async fn format(file: std::path::PathBuf) -> Result<()> {
 
     println!(
         "{} Formatted {}",
-        "OK".bold().green(),
-        file.display().to_string().cyan()
+        style("OK").bold().green(),
+        style(file.display()).cyan()
     );
 
     Ok(())

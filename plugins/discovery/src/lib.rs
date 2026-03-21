@@ -137,8 +137,8 @@ mod tests {
     #[test]
     fn test_handles_no_events() {
         let plugin = DiscoveryPlugin::new();
-        assert!(!plugin.handles("file.discovered"));
-        assert!(!plugin.handles("file.introspected"));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
+        assert!(!plugin.handles(Event::FILE_INTROSPECTED));
     }
 
     #[test]

@@ -83,26 +83,20 @@ impl SqliteStore {
 
 // --- Conversion helpers ---
 
-fn str_to_track_type(s: &str) -> TrackType {
+fn str_to_track_type(s: &str) -> Option<TrackType> {
     match s {
-        "video" => TrackType::Video,
-        "audio_main" => TrackType::AudioMain,
-        "audio_alternate" => TrackType::AudioAlternate,
-        "audio_commentary" => TrackType::AudioCommentary,
-        "audio_music" => TrackType::AudioMusic,
-        "audio_sfx" => TrackType::AudioSfx,
-        "audio_non_speech" => TrackType::AudioNonSpeech,
-        "subtitle_main" => TrackType::SubtitleMain,
-        "subtitle_forced" => TrackType::SubtitleForced,
-        "subtitle_commentary" => TrackType::SubtitleCommentary,
-        "attachment" => TrackType::Attachment,
-        other => {
-            tracing::warn!(
-                track_type = other,
-                "Unknown track type in database, defaulting to Video"
-            );
-            TrackType::Video
-        }
+        "video" => Some(TrackType::Video),
+        "audio_main" => Some(TrackType::AudioMain),
+        "audio_alternate" => Some(TrackType::AudioAlternate),
+        "audio_commentary" => Some(TrackType::AudioCommentary),
+        "audio_music" => Some(TrackType::AudioMusic),
+        "audio_sfx" => Some(TrackType::AudioSfx),
+        "audio_non_speech" => Some(TrackType::AudioNonSpeech),
+        "subtitle_main" => Some(TrackType::SubtitleMain),
+        "subtitle_forced" => Some(TrackType::SubtitleForced),
+        "subtitle_commentary" => Some(TrackType::SubtitleCommentary),
+        "attachment" => Some(TrackType::Attachment),
+        _ => None,
     }
 }
 
@@ -185,7 +179,7 @@ impl FileRow {
             content_hash: self.content_hash.clone(),
             container: Container::from_extension(&self.container),
             duration: self.duration.unwrap_or(0.0),
-            bitrate: self.bitrate.map(|b| b as u32),
+            bitrate: self.bitrate.and_then(|b| u32::try_from(b).ok()),
             tracks,
             tags,
             plugin_metadata,
@@ -195,20 +189,38 @@ impl FileRow {
 }
 
 fn row_to_track(row: &Row<'_>) -> rusqlite::Result<Track> {
+    let track_type_str: String = row.get("track_type")?;
+    let track_type = str_to_track_type(&track_type_str).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("unknown track type: {track_type_str}").into(),
+        )
+    })?;
     Ok(Track {
-        index: row.get::<_, i32>("stream_index")? as u32,
-        track_type: str_to_track_type(row.get::<_, String>("track_type")?.as_str()),
+        index: u32::try_from(row.get::<_, i32>("stream_index")?).unwrap_or(0),
+        track_type,
         codec: row.get("codec")?,
         language: row.get("language")?,
         title: row.get("title")?,
         is_default: row.get::<_, i32>("is_default")? != 0,
         is_forced: row.get::<_, i32>("is_forced")? != 0,
-        channels: row.get::<_, Option<i32>>("channels")?.map(|v| v as u32),
+        channels: row
+            .get::<_, Option<i32>>("channels")?
+            .and_then(|v| u32::try_from(v).ok()),
         channel_layout: row.get("channel_layout")?,
-        sample_rate: row.get::<_, Option<i32>>("sample_rate")?.map(|v| v as u32),
-        bit_depth: row.get::<_, Option<i32>>("bit_depth")?.map(|v| v as u32),
-        width: row.get::<_, Option<i32>>("width")?.map(|v| v as u32),
-        height: row.get::<_, Option<i32>>("height")?.map(|v| v as u32),
+        sample_rate: row
+            .get::<_, Option<i32>>("sample_rate")?
+            .and_then(|v| u32::try_from(v).ok()),
+        bit_depth: row
+            .get::<_, Option<i32>>("bit_depth")?
+            .and_then(|v| u32::try_from(v).ok()),
+        width: row
+            .get::<_, Option<i32>>("width")?
+            .and_then(|v| u32::try_from(v).ok()),
+        height: row
+            .get::<_, Option<i32>>("height")?
+            .and_then(|v| u32::try_from(v).ok()),
         frame_rate: row.get("frame_rate")?,
         is_vfr: row.get::<_, i32>("is_vfr")? != 0,
         is_hdr: row.get::<_, i32>("is_hdr")? != 0,
@@ -456,8 +468,8 @@ impl StorageTrait for SqliteStore {
         );
         let mut param_values: Vec<String> = Vec::new();
 
-        if let Some(ref container) = filters.container {
-            param_values.push(container.clone());
+        if let Some(container) = filters.container {
+            param_values.push(container.as_str().to_string());
             sql.push_str(&format!(" AND container = ?{}", param_values.len()));
         }
         if let Some(ref prefix) = filters.path_prefix {
@@ -538,8 +550,8 @@ impl StorageTrait for SqliteStore {
         let mut sql = String::from("SELECT COUNT(*) FROM files WHERE 1=1");
         let mut param_values: Vec<String> = Vec::new();
 
-        if let Some(ref container) = filters.container {
-            param_values.push(container.clone());
+        if let Some(container) = filters.container {
+            param_values.push(container.as_str().to_string());
             sql.push_str(&format!(" AND container = ?{}", param_values.len()));
         }
         if let Some(ref prefix) = filters.path_prefix {
@@ -919,7 +931,7 @@ impl StorageTrait for SqliteStore {
                 stats.file_id.to_string(),
                 stats.policy_name,
                 stats.phase_name,
-                stats.outcome,
+                stats.outcome.as_str(),
                 stats.duration_ms as i64,
                 stats.actions_taken as i32,
                 stats.tracks_modified as i32,
@@ -1174,7 +1186,7 @@ impl StorageTrait for SqliteStore {
                     path: PathBuf::from(row.get::<_, String>("path")?),
                     content_hash: row.get("content_hash")?,
                     container: row.get("container")?,
-                    track_count: row.get::<_, i32>("track_count")? as u32,
+                    track_count: u32::try_from(row.get::<_, i32>("track_count")?).unwrap_or(0),
                     introspected_at: row.get("introspected_at")?,
                     archived_at: row.get("archived_at")?,
                 })
@@ -1299,7 +1311,7 @@ fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
             tracing::warn!(error_source = %error_source_str, "unknown error_source in bad_files table");
             BadFileSource::Introspection
         }),
-        attempt_count: row.get::<_, i64>("attempt_count")? as u32,
+        attempt_count: u32::try_from(row.get::<_, i64>("attempt_count")?).unwrap_or(0),
         first_seen_at: DateTime::parse_from_rfc3339(&first_seen_str)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|e| {
@@ -1488,7 +1500,7 @@ mod tests {
         store.upsert_file(&file2).unwrap();
 
         let filters = FileFilters {
-            container: Some("mkv".into()),
+            container: Some(Container::Mkv),
             ..Default::default()
         };
         let files = store.list_files(&filters).unwrap();
@@ -1730,7 +1742,7 @@ mod tests {
         store.upsert_file(&file).unwrap();
 
         let mut stats = ProcessingStats::new(file.id, "default".into(), "normalize".into());
-        stats.outcome = "completed".into();
+        stats.outcome = voom_domain::stats::ProcessingOutcome::Success;
         stats.duration_ms = 1500;
         stats.actions_taken = 3;
         stats.tracks_modified = 2;
@@ -1862,7 +1874,7 @@ mod tests {
         // Record stats referencing this file
         let mut stats =
             voom_domain::stats::ProcessingStats::new(file.id, "test".into(), "normalize".into());
-        stats.outcome = "success".into();
+        stats.outcome = voom_domain::stats::ProcessingOutcome::Success;
         stats.duration_ms = 1000;
         stats.actions_taken = 1;
         stats.tracks_modified = 1;

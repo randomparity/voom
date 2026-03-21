@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use voom_domain::storage::FileFilters;
 
-use crate::error::{spawn_store_op, WebError};
+use crate::errors::{spawn_store_op, WebError};
 use crate::state::AppState;
 
 use super::jobs::JobStatusCount;

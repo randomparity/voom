@@ -79,7 +79,30 @@ impl JobQueue {
     }
 
     /// Cancel a job. Only pending or running jobs can be cancelled.
+    ///
+    /// Returns an error if the job does not exist or is already in a
+    /// terminal state (Completed, Failed, or Cancelled).
     pub fn cancel(&self, job_id: &Uuid) -> Result<()> {
+        let job =
+            self.store
+                .get_job(job_id)?
+                .ok_or_else(|| voom_domain::errors::VoomError::Plugin {
+                    plugin: "job-manager".into(),
+                    message: format!("job {job_id} not found"),
+                })?;
+
+        match job.status {
+            JobStatus::Pending | JobStatus::Running => {}
+            status => {
+                return Err(voom_domain::errors::VoomError::Plugin {
+                    plugin: "job-manager".into(),
+                    message: format!(
+                        "cannot cancel job {job_id}: already in terminal state '{status:?}'"
+                    ),
+                });
+            }
+        }
+
         let update = JobUpdate {
             status: Some(JobStatus::Cancelled),
             completed_at: Some(Some(Utc::now())),
@@ -115,7 +138,7 @@ impl JobQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::InMemoryStore;
+    use crate::test_support::InMemoryStore;
 
     #[test]
     fn test_enqueue_and_claim() {

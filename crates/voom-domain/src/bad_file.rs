@@ -45,7 +45,7 @@ impl BadFile {
 
 /// The source of a bad file error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum BadFileSource {
     Introspection,
     Io,

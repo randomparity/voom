@@ -14,7 +14,7 @@ pub mod queue;
 pub mod worker;
 
 #[cfg(test)]
-pub(crate) mod test_helpers;
+pub(crate) mod test_support;
 
 use std::sync::Arc;
 
@@ -52,7 +52,6 @@ impl JobManagerPlugin {
         }
     }
 
-    /// Get the job queue, if initialized.
     #[must_use]
     pub fn queue(&self) -> Option<&Arc<JobQueue>> {
         self.queue.as_ref()
@@ -79,7 +78,10 @@ impl Plugin for JobManagerPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        matches!(event_type, "job.started" | "job.progress" | "job.completed")
+        matches!(
+            event_type,
+            Event::JOB_STARTED | Event::JOB_PROGRESS | Event::JOB_COMPLETED
+        )
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
@@ -120,7 +122,7 @@ impl Plugin for JobManagerPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::InMemoryStore;
+    use crate::test_support::InMemoryStore;
     use voom_domain::events::{JobCompletedEvent, JobProgressEvent, JobStartedEvent};
 
     #[test]
@@ -134,10 +136,10 @@ mod tests {
     #[test]
     fn test_plugin_handles_events() {
         let plugin = JobManagerPlugin::new();
-        assert!(plugin.handles("job.started"));
-        assert!(plugin.handles("job.progress"));
-        assert!(plugin.handles("job.completed"));
-        assert!(!plugin.handles("file.discovered"));
+        assert!(plugin.handles(Event::JOB_STARTED));
+        assert!(plugin.handles(Event::JOB_PROGRESS));
+        assert!(plugin.handles(Event::JOB_COMPLETED));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
     }
 
     #[test]

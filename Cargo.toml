@@ -43,7 +43,17 @@ voom-dsl = { path = "crates/voom-dsl" }
 voom-kernel = { path = "crates/voom-kernel" }
 voom-wit = { path = "crates/voom-wit" }
 voom-plugin-sdk = { path = "crates/voom-plugin-sdk" }
+voom-sqlite-store = { path = "plugins/sqlite-store" }
+voom-discovery = { path = "plugins/discovery" }
+voom-ffprobe-introspector = { path = "plugins/ffprobe-introspector" }
+voom-tool-detector = { path = "plugins/tool-detector" }
 voom-policy-evaluator = { path = "plugins/policy-evaluator" }
+voom-phase-orchestrator = { path = "plugins/phase-orchestrator" }
+voom-mkvtoolnix-executor = { path = "plugins/mkvtoolnix-executor" }
+voom-ffmpeg-executor = { path = "plugins/ffmpeg-executor" }
+voom-backup-manager = { path = "plugins/backup-manager" }
+voom-job-manager = { path = "plugins/job-manager" }
+voom-web-server = { path = "plugins/web-server" }
 
 # Async
 tokio = { version = "1", features = ["full"] }

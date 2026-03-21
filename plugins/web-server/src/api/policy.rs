@@ -3,10 +3,22 @@
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::error::WebError;
+use voom_dsl::errors::DslError;
+
+use crate::errors::WebError;
 
 /// Maximum policy source size (1 MiB).
 const MAX_POLICY_SIZE: usize = 1_024 * 1_024;
+
+/// Extract line/column information from a `DslError`, if available.
+fn extract_dsl_error_location(err: &DslError) -> (Option<usize>, Option<usize>) {
+    match err {
+        DslError::Parse { line, col, .. }
+        | DslError::Build { line, col, .. }
+        | DslError::Validation { line, col, .. } => (Some(*line), Some(*col)),
+        DslError::Compile { .. } => (None, None),
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct PolicyInput {
@@ -55,10 +67,13 @@ pub async fn validate_policy(
                     let errors = validation_errors
                         .errors
                         .iter()
-                        .map(|e| PolicyError {
-                            message: e.to_string(),
-                            line: None,
-                            column: None,
+                        .map(|e| {
+                            let (line, column) = extract_dsl_error_location(e);
+                            PolicyError {
+                                message: e.to_string(),
+                                line,
+                                column,
+                            }
                         })
                         .collect();
                     Ok(Json(ValidateResponse {
@@ -68,14 +83,17 @@ pub async fn validate_policy(
                 }
             }
         }
-        Err(e) => Ok(Json(ValidateResponse {
-            valid: false,
-            errors: vec![PolicyError {
-                message: e.to_string(),
-                line: None,
-                column: None,
-            }],
-        })),
+        Err(e) => {
+            let (line, column) = extract_dsl_error_location(&e);
+            Ok(Json(ValidateResponse {
+                valid: false,
+                errors: vec![PolicyError {
+                    message: e.to_string(),
+                    line,
+                    column,
+                }],
+            }))
+        }
     }
 }
 

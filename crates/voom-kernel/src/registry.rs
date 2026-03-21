@@ -30,6 +30,8 @@ impl PluginRegistry {
     }
 
     /// Find all plugins that have a capability of the given kind.
+    // TODO(sprint-13): Wire into capability-based executor selection
+    #[allow(dead_code)]
     pub fn find_by_capability_kind(&self, kind: &str) -> Vec<Arc<dyn Plugin>> {
         let plugins = self.plugins.read();
         plugins
@@ -41,6 +43,8 @@ impl PluginRegistry {
 
     /// Find the best plugin for an operation on a given format.
     /// Returns the first matching plugin (arbitrary if multiple match).
+    // TODO(sprint-13): Wire into capability-based executor selection
+    #[allow(dead_code)]
     pub fn find_for_operation(&self, operation: &str, format: &str) -> Option<Arc<dyn Plugin>> {
         let plugins = self.plugins.read();
         plugins

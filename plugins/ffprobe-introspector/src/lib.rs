@@ -50,7 +50,6 @@ impl FfprobeIntrospectorPlugin {
         self
     }
 
-    /// Get the configured ffprobe path.
     #[must_use]
     pub fn ffprobe_path(&self) -> &str {
         &self.ffprobe_path
@@ -89,7 +88,7 @@ impl Plugin for FfprobeIntrospectorPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "file.discovered"
+        event_type == Event::FILE_DISCOVERED
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
@@ -146,9 +145,9 @@ mod tests {
     #[test]
     fn test_handles_file_discovered() {
         let plugin = FfprobeIntrospectorPlugin::new();
-        assert!(plugin.handles("file.discovered"));
-        assert!(!plugin.handles("file.introspected"));
-        assert!(!plugin.handles("plan.created"));
+        assert!(plugin.handles(Event::FILE_DISCOVERED));
+        assert!(!plugin.handles(Event::FILE_INTROSPECTED));
+        assert!(!plugin.handles(Event::PLAN_CREATED));
     }
 
     #[test]

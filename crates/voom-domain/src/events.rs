@@ -4,7 +4,28 @@ use uuid::Uuid;
 
 use crate::bad_file::BadFileSource;
 use crate::media::MediaFile;
-use crate::plan::Plan;
+use crate::plan::{ActionResult, Plan};
+
+/// String constants for every event type routed through the event bus.
+///
+/// Use these instead of string literals when implementing `Plugin::handles()`
+/// or matching on `Event::event_type()`.
+pub mod event_types {
+    pub const FILE_DISCOVERED: &str = "file.discovered";
+    pub const FILE_INTROSPECTED: &str = "file.introspected";
+    pub const FILE_INTROSPECTION_FAILED: &str = "file.introspection_failed";
+    pub const METADATA_ENRICHED: &str = "metadata.enriched";
+    pub const POLICY_EVALUATE: &str = "policy.evaluate";
+    pub const PLAN_CREATED: &str = "plan.created";
+    pub const PLAN_EXECUTING: &str = "plan.executing";
+    pub const PLAN_COMPLETED: &str = "plan.completed";
+    pub const PLAN_FAILED: &str = "plan.failed";
+    pub const JOB_STARTED: &str = "job.started";
+    pub const JOB_PROGRESS: &str = "job.progress";
+    pub const JOB_COMPLETED: &str = "job.completed";
+    pub const TOOL_DETECTED: &str = "tool.detected";
+    pub const PLUGIN_ERROR: &str = "plugin.error";
+}
 
 /// All event types that flow through the event bus.
 #[non_exhaustive]
@@ -31,24 +52,42 @@ pub enum Event {
 }
 
 impl Event {
+    // ── Event type constants ────────────────────────────────────
+    // Use these instead of string literals in Plugin::handles() implementations
+    // to get compile-time typo protection.
+    pub const FILE_DISCOVERED: &str = event_types::FILE_DISCOVERED;
+    pub const FILE_INTROSPECTED: &str = event_types::FILE_INTROSPECTED;
+    pub const FILE_INTROSPECTION_FAILED: &str = event_types::FILE_INTROSPECTION_FAILED;
+    pub const METADATA_ENRICHED: &str = event_types::METADATA_ENRICHED;
+    pub const POLICY_EVALUATE: &str = event_types::POLICY_EVALUATE;
+    pub const PLAN_CREATED: &str = event_types::PLAN_CREATED;
+    pub const PLAN_EXECUTING: &str = event_types::PLAN_EXECUTING;
+    pub const PLAN_COMPLETED: &str = event_types::PLAN_COMPLETED;
+    pub const PLAN_FAILED: &str = event_types::PLAN_FAILED;
+    pub const JOB_STARTED: &str = event_types::JOB_STARTED;
+    pub const JOB_PROGRESS: &str = event_types::JOB_PROGRESS;
+    pub const JOB_COMPLETED: &str = event_types::JOB_COMPLETED;
+    pub const TOOL_DETECTED: &str = event_types::TOOL_DETECTED;
+    pub const PLUGIN_ERROR: &str = event_types::PLUGIN_ERROR;
+
     /// Returns the event type string used for subscription matching.
     #[must_use]
     pub fn event_type(&self) -> &str {
         match self {
-            Event::FileDiscovered(_) => "file.discovered",
-            Event::FileIntrospected(_) => "file.introspected",
-            Event::FileIntrospectionFailed(_) => "file.introspection_failed",
-            Event::MetadataEnriched(_) => "metadata.enriched",
-            Event::PolicyEvaluate(_) => "policy.evaluate",
-            Event::PlanCreated(_) => "plan.created",
-            Event::PlanExecuting(_) => "plan.executing",
-            Event::PlanCompleted(_) => "plan.completed",
-            Event::PlanFailed(_) => "plan.failed",
-            Event::JobStarted(_) => "job.started",
-            Event::JobProgress(_) => "job.progress",
-            Event::JobCompleted(_) => "job.completed",
-            Event::ToolDetected(_) => "tool.detected",
-            Event::PluginError(_) => "plugin.error",
+            Event::FileDiscovered(_) => Self::FILE_DISCOVERED,
+            Event::FileIntrospected(_) => Self::FILE_INTROSPECTED,
+            Event::FileIntrospectionFailed(_) => Self::FILE_INTROSPECTION_FAILED,
+            Event::MetadataEnriched(_) => Self::METADATA_ENRICHED,
+            Event::PolicyEvaluate(_) => Self::POLICY_EVALUATE,
+            Event::PlanCreated(_) => Self::PLAN_CREATED,
+            Event::PlanExecuting(_) => Self::PLAN_EXECUTING,
+            Event::PlanCompleted(_) => Self::PLAN_COMPLETED,
+            Event::PlanFailed(_) => Self::PLAN_FAILED,
+            Event::JobStarted(_) => Self::JOB_STARTED,
+            Event::JobProgress(_) => Self::JOB_PROGRESS,
+            Event::JobCompleted(_) => Self::JOB_COMPLETED,
+            Event::ToolDetected(_) => Self::TOOL_DETECTED,
+            Event::PluginError(_) => Self::PLUGIN_ERROR,
         }
     }
 }
@@ -91,6 +130,30 @@ impl EventResult {
             produced_events: vec![],
             data: None,
             claimed: true,
+        }
+    }
+
+    /// Wrap the outcome of an executor's plan execution into an `EventResult`.
+    ///
+    /// On success the result carries the action results as JSON data and is
+    /// marked as claimed.  On failure a failed result is returned (callers
+    /// should log the error if needed).
+    pub fn from_plan_execution(
+        plugin_name: &str,
+        outcome: crate::errors::Result<Vec<ActionResult>>,
+    ) -> Option<Self> {
+        match outcome {
+            Ok(results) => {
+                let actions_applied = results.iter().filter(|r| r.success).count();
+                Some(Self::plan_succeeded(
+                    plugin_name,
+                    Some(serde_json::json!({
+                        "actions_applied": actions_applied,
+                        "results": serde_json::to_value(&results).unwrap_or_default(),
+                    })),
+                ))
+            }
+            Err(_) => Some(Self::plan_failed(plugin_name)),
         }
     }
 }

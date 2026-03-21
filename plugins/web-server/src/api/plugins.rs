@@ -3,7 +3,7 @@
 use axum::Json;
 use serde::Serialize;
 
-use crate::error::WebError;
+use crate::errors::WebError;
 
 #[derive(Debug, Serialize)]
 pub struct PluginInfo {

@@ -92,6 +92,28 @@ pub enum OperationType {
 }
 
 impl OperationType {
+    /// The set of operation types that are metadata-only edits (no transcode or remux).
+    ///
+    /// Both the FFmpeg and MKVToolNix executors use this to decide whether a plan
+    /// requires structural changes or can be handled via in-place metadata edits.
+    pub const METADATA_OPS: &[OperationType] = &[
+        OperationType::SetDefault,
+        OperationType::ClearDefault,
+        OperationType::SetForced,
+        OperationType::ClearForced,
+        OperationType::SetTitle,
+        OperationType::SetLanguage,
+        OperationType::SetContainerTag,
+        OperationType::ClearContainerTags,
+        OperationType::DeleteContainerTag,
+    ];
+
+    /// Returns `true` when this operation is a metadata-only edit (no transcode or remux).
+    #[must_use]
+    pub fn is_metadata_op(self) -> bool {
+        Self::METADATA_OPS.contains(&self)
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {

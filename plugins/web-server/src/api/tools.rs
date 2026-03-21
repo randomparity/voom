@@ -4,7 +4,7 @@ use axum::extract::State;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::error::WebError;
+use crate::errors::{spawn_store_op, WebError};
 use crate::state::AppState;
 
 /// Known tool names that the tool-detector plugin reports.
@@ -26,20 +26,19 @@ pub struct ToolListResponse {
 pub async fn list_tools(State(state): State<AppState>) -> Result<Json<ToolListResponse>, WebError> {
     let store = state.store.clone();
 
-    let tools = tokio::task::spawn_blocking(move || {
+    let tools = spawn_store_op(move || {
         let mut tools = Vec::new();
         for &tool_name in KNOWN_TOOLS {
             let key = format!("tool:{tool_name}");
-            if let Ok(Some(data)) = store.get_plugin_data("tool-detector", &key) {
+            if let Some(data) = store.get_plugin_data("tool-detector", &key)? {
                 if let Ok(tool) = serde_json::from_slice::<DetectedTool>(&data) {
                     tools.push(tool);
                 }
             }
         }
-        tools
+        Ok(tools)
     })
-    .await
-    .map_err(|e| WebError::Internal(e.to_string()))?;
+    .await?;
 
     Ok(Json(ToolListResponse { tools }))
 }

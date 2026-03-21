@@ -1,18 +1,16 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use owo_colors::OwoColorize;
 
 use tokio_util::sync::CancellationToken;
 
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::output::{max_filename_len, shrink_filename};
-use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{
-    Event, FileIntrospectionFailedEvent, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent,
-    PlanFailedEvent,
+    Event, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
 };
 use voom_job_manager::progress::ProgressReporter;
 use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
@@ -26,8 +24,12 @@ use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// handling that would be difficult to achieve through the asynchronous pub/sub bus.
 pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let config = app::load_config()?;
-    let kernel = Arc::new(app::bootstrap_kernel(&config)?);
-    let store = app::open_store(&config)?;
+    let (kernel, store) = app::bootstrap_kernel_with_store(&config)?;
+    let kernel = Arc::new(kernel);
+    let store = match store {
+        Some(s) => s,
+        None => app::open_store(&config)?,
+    };
 
     let path = args
         .path
@@ -42,18 +44,18 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     match store.prune_missing_files_under(&path) {
         Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
         Ok(_) => {}
-        Err(e) => eprintln!("{} auto-prune failed: {e}", "Warning:".yellow()),
+        Err(e) => eprintln!("{} auto-prune failed: {e}", style("Warning:").yellow()),
     }
 
     if token.is_cancelled() {
-        println!("{}", "Interrupted before discovery.".yellow());
+        println!("{}", style("Interrupted before discovery.").yellow());
         return Ok(());
     }
 
     // Discover files
     let mut events = discover_files(&path, &args, &kernel)?;
     if events.is_empty() {
-        println!("{}", "No media files found.".yellow());
+        println!("{}", style("No media files found.").yellow());
         return Ok(());
     }
 
@@ -71,29 +73,28 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
             if skipped > 0 {
                 println!(
                     "Skipping {} known-bad files (use {} to re-attempt).",
-                    skipped.to_string().yellow(),
-                    "--force-rescan".bold()
+                    style(skipped).yellow(),
+                    style("--force-rescan").bold()
                 );
             }
         }
     }
 
     if events.is_empty() {
-        println!("{}", "No processable files found.".yellow());
+        println!("{}", style("No processable files found.").yellow());
         return Ok(());
     }
 
     let file_count = events.len();
-    println!("Found {} media files.", file_count.to_string().bold());
+    println!("Found {} media files.", style(file_count).bold());
 
     let on_error = match args.on_error {
         ErrorHandling::Fail => ErrorStrategy::Fail,
-        ErrorHandling::Skip => ErrorStrategy::Skip,
-        ErrorHandling::Continue => ErrorStrategy::Continue,
+        ErrorHandling::Skip | ErrorHandling::Continue => ErrorStrategy::Continue,
     };
 
     if token.is_cancelled() {
-        println!("{}", "Interrupted before processing.".yellow());
+        println!("{}", style("Interrupted before processing.").yellow());
         return Ok(());
     }
 
@@ -142,12 +143,12 @@ fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
     println!(
         "{} policy {} to {}{}",
         if dry_run {
-            "Dry-running".bold()
+            style("Dry-running").bold()
         } else {
-            "Applying".bold()
+            style("Applying").bold()
         },
-        policy_name.cyan(),
-        path.display().to_string().cyan(),
+        style(policy_name).cyan(),
+        style(path.display()).cyan(),
         if dry_run {
             " (no changes will be made)"
         } else {
@@ -157,6 +158,10 @@ fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
 }
 
 /// Walk the filesystem and discover media files, publishing events to the bus.
+///
+/// Creates a standalone `DiscoveryPlugin` for direct API access (scan options,
+/// progress callbacks) that the event-bus path does not support. Events are
+/// still dispatched to the kernel so that subscribers (storage, SSE) receive them.
 fn discover_files(
     path: &std::path::Path,
     args: &ProcessArgs,
@@ -217,22 +222,13 @@ fn create_worker_pool(
 ) -> Result<(WorkerPool, usize)> {
     let queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
 
-    let effective_workers = if args.workers == 0 {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-    } else {
-        args.workers
+    let config = WorkerPoolConfig {
+        max_workers: args.workers,
+        worker_prefix: "voom".to_string(),
     };
+    let effective_workers = config.effective_workers();
 
-    let pool = WorkerPool::new(
-        queue,
-        WorkerPoolConfig {
-            max_workers: effective_workers,
-            worker_prefix: "voom".to_string(),
-        },
-        token,
-    );
+    let pool = WorkerPool::new(queue, config, token);
 
     Ok((pool, effective_workers))
 }
@@ -251,7 +247,8 @@ async fn process_single_file(
 
     let path = std::path::PathBuf::from(&payload.path);
 
-    let file = introspect_file(path, payload.size, payload.content_hash, kernel).await?;
+    let file = crate::introspect::introspect_file(path, payload.size, payload.content_hash, kernel)
+        .await?;
 
     let result = orchestrate_plans(compiled, &file)?;
 
@@ -277,61 +274,6 @@ async fn process_single_file(
         })))
     } else {
         execute_plans(&file, &result, kernel, needs_exec, token)
-    }
-}
-
-/// Run ffprobe introspection on a single file (blocking I/O on a `spawn_blocking` thread).
-async fn introspect_file(
-    path: std::path::PathBuf,
-    file_size: u64,
-    content_hash: String,
-    kernel: &voom_kernel::Kernel,
-) -> std::result::Result<voom_domain::media::MediaFile, String> {
-    let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
-    let path_for_event = path.clone();
-    let hash_for_event = content_hash.clone();
-    let path_display = path.display().to_string();
-    let intro_result = tokio::task::spawn_blocking(move || {
-        introspector.introspect(&path, file_size, &content_hash)
-    })
-    .await;
-
-    match intro_result {
-        Ok(Ok(intro_event)) => {
-            let file = intro_event.file.clone();
-            kernel.dispatch(Event::FileIntrospected(
-                voom_domain::events::FileIntrospectedEvent {
-                    file: intro_event.file,
-                },
-            ));
-            Ok(file)
-        }
-        Ok(Err(e)) => {
-            let error_msg = format!("introspection failed for {path_display}: {e}");
-            kernel.dispatch(Event::FileIntrospectionFailed(
-                FileIntrospectionFailedEvent {
-                    path: path_for_event,
-                    size: file_size,
-                    content_hash: Some(hash_for_event),
-                    error: e.to_string(),
-                    error_source: BadFileSource::Introspection,
-                },
-            ));
-            Err(error_msg)
-        }
-        Err(e) => {
-            let error_msg = format!("task join error: {e}");
-            kernel.dispatch(Event::FileIntrospectionFailed(
-                FileIntrospectionFailedEvent {
-                    path: path_for_event,
-                    size: file_size,
-                    content_hash: Some(hash_for_event),
-                    error: error_msg.clone(),
-                    error_source: BadFileSource::Introspection,
-                },
-            ));
-            Err(error_msg)
-        }
     }
 }
 
@@ -445,7 +387,7 @@ fn print_interrupted_summary(pool: &WorkerPool, file_count: usize) {
     let failed = pool.failed_count();
     println!(
         "\n{} {}/{} processed, {} errors",
-        "Interrupted.".bold().yellow(),
+        style("Interrupted.").bold().yellow(),
         completed,
         file_count,
         failed,
@@ -460,11 +402,11 @@ fn print_summary(pool: &WorkerPool, file_count: usize, effective_workers: usize,
 
     println!(
         "\n{} {} processed, {} skipped, {} errors (workers: {})",
-        "Done.".bold().green(),
-        completed.to_string().green(),
-        skipped.to_string().dimmed(),
+        style("Done.").bold().green(),
+        style(completed).green(),
+        style(skipped).dim(),
         if failed > 0 {
-            failed.to_string().red().to_string()
+            style(failed).red().to_string()
         } else {
             failed.to_string()
         },
@@ -474,7 +416,7 @@ fn print_summary(pool: &WorkerPool, file_count: usize, effective_workers: usize,
     if dry_run {
         println!(
             "\n{}",
-            "This was a dry run. No files were modified.".dimmed()
+            style("This was a dry run. No files were modified.").dim()
         );
     }
 }
@@ -507,7 +449,7 @@ impl ProgressReporter for CliProgressReporter {
     fn on_job_start(&self, job: &voom_domain::job::Job) {
         if let Some(ref payload) = job.payload {
             if let Some(path) = payload["path"].as_str() {
-                // 57 ≈ spinner + space + [bar:40] + space + pos/len + space
+                // 57 = spinner + space + [bar:40] + space + pos/len + space
                 let max_name = max_filename_len(57);
                 let filename = std::path::Path::new(path)
                     .file_name()
@@ -523,7 +465,7 @@ impl ProgressReporter for CliProgressReporter {
     fn on_job_complete(&self, _id: uuid::Uuid, _success: bool, error: Option<&str>) {
         if let Some(err) = error {
             self.overall.suspend(|| {
-                eprintln!("{} {err}", "ERROR:".bold().red());
+                eprintln!("{} {err}", style("ERROR:").bold().red());
             });
         }
         self.overall.inc(1);
@@ -578,11 +520,11 @@ mod tests {
         fn handles(&self, event_type: &str) -> bool {
             matches!(
                 event_type,
-                "file.discovered"
-                    | "file.introspected"
-                    | "plan.created"
-                    | "plan.executing"
-                    | "plan.completed"
+                Event::FILE_DISCOVERED
+                    | Event::FILE_INTROSPECTED
+                    | Event::PLAN_CREATED
+                    | Event::PLAN_EXECUTING
+                    | Event::PLAN_COMPLETED
             )
         }
         fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, ContentArrangement, Table};
-use owo_colors::OwoColorize;
+use console::style;
 use voom_domain::media::{MediaFile, Track};
 use voom_domain::utils::datetime;
 
@@ -92,7 +92,7 @@ pub fn format_scan_results(files: &[(std::path::PathBuf, u64, String)], format: 
 /// Format a media file's metadata as a table.
 pub fn format_file_info(file: &MediaFile, tracks_only: bool) {
     if !tracks_only {
-        println!("{}", "File Information".bold());
+        println!("{}", style("File Information").bold());
         let mut table = new_table();
         table.set_header(vec!["Property", "Value"]);
         table.add_row(vec!["Path", &file.path.display().to_string()]);
@@ -108,7 +108,7 @@ pub fn format_file_info(file: &MediaFile, tracks_only: bool) {
         println!();
     }
 
-    println!("{}", "Tracks".bold());
+    println!("{}", style("Tracks").bold());
     format_tracks(&file.tracks);
 }
 
@@ -196,6 +196,51 @@ pub fn new_table() -> Table {
         .set_content_arrangement(ContentArrangement::Dynamic);
     table
 }
+
+// ---------------------------------------------------------------------------
+// Tool detection helpers (shared by `doctor` and `init` commands)
+// ---------------------------------------------------------------------------
+
+/// Result of checking required and optional external tools.
+pub struct ToolCheckResult {
+    /// Number of required tools that were not found.
+    pub missing_required: u32,
+}
+
+/// Print the status of required and optional external tools using a
+/// `ToolDetectorPlugin`. Returns a summary indicating how many required
+/// tools are missing.
+pub fn print_tool_status(detector: &voom_tool_detector::ToolDetectorPlugin) -> ToolCheckResult {
+    let required_tools = ["ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit"];
+    let optional_tools = ["mkvextract", "mediainfo", "HandBrakeCLI"];
+
+    let mut missing_required = 0u32;
+
+    for tool in required_tools {
+        print!("  {tool} ... ");
+        if let Some(t) = detector.get_tool(tool) {
+            println!("{} ({})", style("OK").green(), style(&t.version).dim());
+        } else {
+            println!("{} (required)", style("NOT FOUND").red());
+            missing_required += 1;
+        }
+    }
+
+    for tool in optional_tools {
+        print!("  {tool} ... ");
+        if let Some(t) = detector.get_tool(tool) {
+            println!("{} ({})", style("OK").green(), style(&t.version).dim());
+        } else {
+            println!("{}", style("not found").yellow());
+        }
+    }
+
+    ToolCheckResult { missing_required }
+}
+
+// ---------------------------------------------------------------------------
+// Data aggregation utilities (used by `report` and other commands)
+// ---------------------------------------------------------------------------
 
 /// Count occurrences of string keys extracted from items, sorted by frequency (descending).
 ///

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::app;
 use crate::cli::ConfigCommands;
@@ -33,19 +33,19 @@ async fn show() -> Result<()> {
             .join("\n");
         println!(
             "{} {}",
-            "Config:".bold(),
-            path.display().to_string().dimmed()
+            style("Config:").bold(),
+            style(path.display()).dim()
         );
         println!();
         println!("{redacted}");
     } else {
         println!(
             "{} No config file found at {}",
-            "INFO".dimmed(),
-            path.display().to_string().cyan()
+            style("INFO").dim(),
+            style(path.display()).cyan()
         );
         println!();
-        println!("{}", "Default configuration:".bold());
+        println!("{}", style("Default configuration:").bold());
         let config = app::AppConfig::default();
         println!(
             "{}",
@@ -80,9 +80,12 @@ async fn edit() -> Result<()> {
 
     // Validate the edited config
     match app::load_config() {
-        Ok(_) => println!("{} Config is valid.", "OK".bold().green()),
+        Ok(_) => println!("{} Config is valid.", style("OK").bold().green()),
         Err(e) => {
-            println!("{} Config has errors: {e}", "WARNING".bold().yellow());
+            println!(
+                "{} Config has errors: {e}",
+                style("WARNING").bold().yellow()
+            );
         }
     }
 

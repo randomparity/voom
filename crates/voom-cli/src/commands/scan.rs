@@ -6,11 +6,9 @@ use crate::app;
 use crate::cli::ScanArgs;
 use crate::output::{self, max_filename_len, shrink_filename};
 use anyhow::{Context, Result};
+use console::style;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
-use owo_colors::OwoColorize;
 use tokio_util::sync::CancellationToken;
-use voom_domain::bad_file::BadFileSource;
-use voom_domain::events::{Event, FileIntrospectionFailedEvent};
 
 /// Fixed-width overhead of the progress bar line (spinner + bar + counters + percent + padding).
 const PROGRESS_FIXED_WIDTH: usize = 77;
@@ -41,7 +39,11 @@ fn format_eta(start: &Instant, current: usize, total: usize) -> String {
 /// so that subscribers (sqlite-store, SSE, WASM plugins) receive them.
 pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     let config = app::load_config()?;
-    let kernel = app::bootstrap_kernel(&config)?;
+    let (kernel, store) = app::bootstrap_kernel_with_store(&config)?;
+    let store = match store {
+        Some(s) => s,
+        None => app::open_store(&config)?,
+    };
 
     let path = args
         .path
@@ -49,17 +51,16 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
         .with_context(|| format!("Path not found: {}", args.path.display()))?;
 
     // Auto-prune stale file entries under the scanned directory
-    let store = app::open_store(&config)?;
     match store.prune_missing_files_under(&path) {
         Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
         Ok(_) => {}
-        Err(e) => eprintln!("{} auto-prune failed: {e}", "Warning:".yellow()),
+        Err(e) => eprintln!("{} auto-prune failed: {e}", style("Warning:").yellow()),
     }
 
     println!(
         "{} {}",
-        "Scanning".bold(),
-        path.display().to_string().cyan()
+        style("Scanning").bold(),
+        style(path.display()).cyan()
     );
 
     let discovery = voom_discovery::DiscoveryPlugin::new();
@@ -135,7 +136,7 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     pb.finish_and_clear();
 
     if events.is_empty() {
-        println!("{}", "No media files found.".yellow());
+        println!("{}", style("No media files found.").yellow());
         return Ok(());
     }
 
@@ -150,14 +151,14 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
         };
         println!(
             "  {} {} files, hashed in {}",
-            "Discovered".dimmed(),
+            style("Discovered").dim(),
             events.len(),
             elapsed_str,
         );
     } else {
         println!(
             "  {} {} files (hashing skipped)",
-            "Discovered".dimmed(),
+            style("Discovered").dim(),
             events.len(),
         );
     }
@@ -196,43 +197,19 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
 
         pb.set_message(format!("Probing {}{}", name, eta));
 
-        let path = event.path.clone();
-        let size = event.size;
-        let hash = event.content_hash.clone();
-        let intro_result = tokio::task::spawn_blocking(move || {
-            let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
-            introspector.introspect(&path, size, &hash)
-        })
-        .await;
-        match intro_result {
-            Ok(Ok(intro_event)) => {
-                kernel.dispatch(Event::FileIntrospected(intro_event));
+        match crate::introspect::introspect_file(
+            event.path.clone(),
+            event.size,
+            event.content_hash.clone(),
+            &kernel,
+        )
+        .await
+        {
+            Ok(_file) => {
                 introspected += 1;
             }
-            Ok(Err(e)) => {
-                tracing::warn!(path = %event.path.display(), error = %e, "introspection failed");
-                kernel.dispatch(Event::FileIntrospectionFailed(
-                    FileIntrospectionFailedEvent {
-                        path: event.path.clone(),
-                        size: event.size,
-                        content_hash: Some(event.content_hash.clone()),
-                        error: e.to_string(),
-                        error_source: BadFileSource::Introspection,
-                    },
-                ));
-                errors += 1;
-            }
             Err(e) => {
-                tracing::warn!(path = %event.path.display(), error = %e, "introspection task panicked");
-                kernel.dispatch(Event::FileIntrospectionFailed(
-                    FileIntrospectionFailedEvent {
-                        path: event.path.clone(),
-                        size: event.size,
-                        content_hash: Some(event.content_hash.clone()),
-                        error: format!("task panicked: {e}"),
-                        error_source: BadFileSource::Introspection,
-                    },
-                ));
+                tracing::warn!(path = %event.path.display(), error = %e, "introspection failed");
                 errors += 1;
             }
         }
@@ -246,12 +223,12 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     if token.is_cancelled() {
         println!(
             "\n{} {} files discovered, {}/{} introspected{} ({})",
-            "Interrupted.".bold().yellow(),
+            style("Interrupted.").bold().yellow(),
             events.len(),
             introspected,
             total,
             if errors > 0 {
-                format!(", {} {}", errors, "errors".red())
+                format!(", {} {}", errors, style("errors").red())
             } else {
                 String::new()
             },
@@ -262,11 +239,11 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
 
     println!(
         "\n{} {} files discovered, {} introspected{} ({})",
-        "Done.".bold().green(),
+        style("Done.").bold().green(),
         events.len(),
         introspected,
         if errors > 0 {
-            format!(", {} {}", errors, "errors".red())
+            format!(", {} {}", errors, style("errors").red())
         } else {
             String::new()
         },
@@ -290,7 +267,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use voom_domain::capabilities::Capability;
-    use voom_domain::events::{EventResult, FileDiscoveredEvent, FileIntrospectedEvent};
+    use voom_domain::events::{Event, EventResult, FileDiscoveredEvent, FileIntrospectedEvent};
     use voom_domain::media::MediaFile;
 
     /// A test plugin that counts received events.
@@ -319,7 +296,10 @@ mod tests {
             &[]
         }
         fn handles(&self, event_type: &str) -> bool {
-            matches!(event_type, "file.discovered" | "file.introspected")
+            matches!(
+                event_type,
+                Event::FILE_DISCOVERED | Event::FILE_INTROSPECTED
+            )
         }
         fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
             match event {

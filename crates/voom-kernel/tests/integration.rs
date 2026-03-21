@@ -22,7 +22,7 @@ impl Plugin for DiscoveryLogger {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "file.discovered"
+        event_type == Event::FILE_DISCOVERED
     }
 
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
@@ -61,7 +61,7 @@ impl Plugin for MockIntrospector {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "file.discovered"
+        event_type == Event::FILE_DISCOVERED
     }
 
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
@@ -101,7 +101,7 @@ impl Plugin for MockExecutor {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "plan.created"
+        event_type == Event::PLAN_CREATED
     }
 
     fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
@@ -152,7 +152,7 @@ fn test_kernel_register_and_dispatch() {
     assert_eq!(results[1].produced_events.len(), 1);
     assert_eq!(
         results[1].produced_events[0].event_type(),
-        "file.introspected"
+        Event::FILE_INTROSPECTED
     );
 }
 
@@ -234,7 +234,7 @@ impl Plugin for MockMkvExecutor {
         &[]
     }
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "plan.created"
+        event_type == Event::PLAN_CREATED
     }
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
         if let Event::PlanCreated(plan_event) = event {
@@ -276,7 +276,7 @@ impl Plugin for MockFfmpegExecutor {
         &[]
     }
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "plan.created"
+        event_type == Event::PLAN_CREATED
     }
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
         if let Event::PlanCreated(_) = event {

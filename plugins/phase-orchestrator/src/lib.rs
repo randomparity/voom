@@ -152,30 +152,15 @@ impl Plugin for PhaseOrchestratorPlugin {
         &self.capabilities
     }
 
-    fn handles(&self, event_type: &str) -> bool {
-        // Claims "policy.evaluate" so the kernel routes these events here, but
-        // on_event currently only logs and returns Ok(None). Actual orchestration
-        // is driven via the direct `orchestrate()` API for deterministic progress
-        // reporting. This claim is reserved for future event-driven orchestration.
-        event_type == "policy.evaluate"
+    fn handles(&self, _event_type: &str) -> bool {
+        // Phase orchestration is triggered via direct API call (orchestrate()),
+        // not through the event bus. The CLI's process command calls orchestrate()
+        // directly for deterministic progress reporting and concurrency control.
+        false
     }
 
-    fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
-        match event {
-            // NOTE: Phase orchestration is triggered via direct API call (orchestrate()),
-            // not through the event bus. The CLI's process command calls orchestrate()
-            // directly for deterministic progress reporting and concurrency control.
-            // This handler is reserved for future event-driven orchestration.
-            Event::PolicyEvaluate(evt) => {
-                tracing::info!(
-                    path = %evt.path.display(),
-                    policy = %evt.policy_name,
-                    "Orchestrating policy evaluation"
-                );
-                Ok(None)
-            }
-            _ => Ok(None),
-        }
+    fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> {
+        Ok(None)
     }
 
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
@@ -376,8 +361,9 @@ mod tests {
     fn test_plugin_trait_impl() {
         let orch = PhaseOrchestratorPlugin::new();
         assert_eq!(orch.name(), "phase-orchestrator");
-        assert!(orch.handles("policy.evaluate"));
-        assert!(!orch.handles("file.discovered"));
+        // Orchestration is driven via direct API, not through event bus
+        assert!(!orch.handles(Event::POLICY_EVALUATE));
+        assert!(!orch.handles(Event::FILE_DISCOVERED));
         assert_eq!(orch.capabilities().len(), 1);
     }
 }

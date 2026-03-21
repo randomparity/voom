@@ -80,6 +80,11 @@ impl StorageTrait for InMemoryStore {
         let mut result: Vec<MediaFile> = files
             .values()
             .filter(|f| {
+                if let Some(container) = filters.container {
+                    if f.container != container {
+                        return false;
+                    }
+                }
                 if let Some(ref prefix) = filters.path_prefix {
                     if !f.path.to_string_lossy().starts_with(prefix.as_str()) {
                         return false;
@@ -104,6 +109,11 @@ impl StorageTrait for InMemoryStore {
         let count = files
             .values()
             .filter(|f| {
+                if let Some(container) = filters.container {
+                    if f.container != container {
+                        return false;
+                    }
+                }
                 if let Some(ref prefix) = filters.path_prefix {
                     if !f.path.to_string_lossy().starts_with(prefix.as_str()) {
                         return false;

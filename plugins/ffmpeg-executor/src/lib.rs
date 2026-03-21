@@ -92,24 +92,34 @@ impl FfmpegExecutorPlugin {
             return true;
         }
 
-        // For metadata-only operations on MKV files, defer to MKVToolNix
-        let is_mkv = plan.file.container == Container::Mkv;
-        let only_metadata = plan.actions.iter().all(is_metadata_op);
+        // MKV-specific structural operations belong to MKVToolNix, not FFmpeg.
+        let has_mkv_structural = plan.actions.iter().any(|a| {
+            matches!(
+                a.operation,
+                OperationType::RemoveTrack | OperationType::ReorderTracks
+            )
+        });
 
-        if is_mkv && only_metadata {
+        let is_mkv = plan.file.container == Container::Mkv;
+
+        if is_mkv && has_mkv_structural {
             return false;
         }
 
-        // Non-MKV files with metadata ops — ffmpeg handles them
-        !plan.actions.is_empty()
+        // For metadata-only operations on MKV files, defer to MKVToolNix
+        let only_metadata = plan.actions.iter().all(|a| a.operation.is_metadata_op());
+
+        // Non-MKV files with metadata ops — ffmpeg handles them;
+        // MKV metadata-only plans are left to MKVToolNix.
+        !(is_mkv && only_metadata)
     }
 
-    /// Execute a plan and return action results.
+    /// Build an `FFmpeg` command from the plan's actions.
     ///
-    /// Builds an `FFmpeg` command from the plan's actions, but does not actually
-    /// run the subprocess (that is left to the caller or the event handler).
+    /// This method constructs the command but does not actually run the
+    /// subprocess -- that is left to the caller or the event handler.
     /// Returns the expected action results.
-    pub fn execute_plan(&self, plan: &Plan) -> Result<Vec<ActionResult>> {
+    pub fn build_plan(&self, plan: &Plan) -> Result<Vec<ActionResult>> {
         if !self.can_handle(plan) {
             return Err(VoomError::Plugin {
                 plugin: "ffmpeg-executor".into(),
@@ -174,22 +184,10 @@ impl FfmpegExecutorPlugin {
             return Ok(None);
         }
 
-        match self.execute_plan(plan) {
-            Ok(results) => {
-                let actions_applied = results.iter().filter(|r| r.success).count();
-                Ok(Some(EventResult::plan_succeeded(
-                    "ffmpeg-executor",
-                    Some(serde_json::json!({
-                        "actions_applied": actions_applied,
-                        "results": serde_json::to_value(&results).unwrap_or_default(),
-                    })),
-                )))
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "ffmpeg plan execution failed");
-                Ok(Some(EventResult::plan_failed("ffmpeg-executor")))
-            }
-        }
+        Ok(EventResult::from_plan_execution(
+            "ffmpeg-executor",
+            self.build_plan(plan),
+        ))
     }
 }
 
@@ -197,22 +195,6 @@ impl Default for FfmpegExecutorPlugin {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Check if an action is a metadata-only operation (no transcode/remux).
-fn is_metadata_op(action: &PlannedAction) -> bool {
-    matches!(
-        action.operation,
-        OperationType::SetDefault
-            | OperationType::ClearDefault
-            | OperationType::SetForced
-            | OperationType::ClearForced
-            | OperationType::SetTitle
-            | OperationType::SetLanguage
-            | OperationType::SetContainerTag
-            | OperationType::ClearContainerTags
-            | OperationType::DeleteContainerTag
-    )
 }
 
 impl Plugin for FfmpegExecutorPlugin {
@@ -229,7 +211,7 @@ impl Plugin for FfmpegExecutorPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "plan.created"
+        event_type == Event::PLAN_CREATED
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
@@ -314,9 +296,9 @@ mod tests {
     #[test]
     fn test_handles_plan_created() {
         let plugin = FfmpegExecutorPlugin::new();
-        assert!(plugin.handles("plan.created"));
-        assert!(!plugin.handles("file.discovered"));
-        assert!(!plugin.handles("plan.completed"));
+        assert!(plugin.handles(Event::PLAN_CREATED));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
+        assert!(!plugin.handles(Event::PLAN_COMPLETED));
     }
 
     #[test]
@@ -444,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_plan_transcode() {
+    fn test_build_plan_transcode() {
         let plugin = FfmpegExecutorPlugin::new();
 
         let plan = plan_with_actions(
@@ -457,14 +439,14 @@ mod tests {
             }],
         );
 
-        let results = plugin.execute_plan(&plan).unwrap();
+        let results = plugin.build_plan(&plan).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].success);
         assert_eq!(results[0].operation, OperationType::TranscodeVideo);
     }
 
     #[test]
-    fn test_execute_plan_not_handleable() {
+    fn test_build_plan_not_handleable() {
         let plugin = FfmpegExecutorPlugin::new();
 
         // MKV + metadata only — cannot handle
@@ -478,7 +460,7 @@ mod tests {
             }],
         );
 
-        assert!(plugin.execute_plan(&plan).is_err());
+        assert!(plugin.build_plan(&plan).is_err());
     }
 
     #[test]

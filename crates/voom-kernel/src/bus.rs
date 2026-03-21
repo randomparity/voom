@@ -146,7 +146,6 @@ impl EventBus {
         results
     }
 
-    /// Returns the number of subscribers.
     pub fn subscriber_count(&self) -> usize {
         self.subscribers.read().len()
     }
@@ -214,9 +213,9 @@ mod tests {
     fn test_publish_dispatches_to_matching_handlers() {
         let bus = EventBus::new();
 
-        let p1 = Arc::new(TestPlugin::new("discovery", &["file.discovered"]));
-        let p2 = Arc::new(TestPlugin::new("introspector", &["file.discovered"]));
-        let p3 = Arc::new(TestPlugin::new("job-manager", &["job.started"]));
+        let p1 = Arc::new(TestPlugin::new("discovery", &[Event::FILE_DISCOVERED]));
+        let p2 = Arc::new(TestPlugin::new("introspector", &[Event::FILE_DISCOVERED]));
+        let p3 = Arc::new(TestPlugin::new("job-manager", &[Event::JOB_STARTED]));
 
         bus.subscribe_plugin(p1, 0);
         bus.subscribe_plugin(p2, 10);
@@ -238,8 +237,8 @@ mod tests {
     fn test_publish_respects_priority_order() {
         let bus = EventBus::new();
 
-        let p1 = Arc::new(TestPlugin::new("low-priority", &["tool.detected"]));
-        let p2 = Arc::new(TestPlugin::new("high-priority", &["tool.detected"]));
+        let p1 = Arc::new(TestPlugin::new("low-priority", &[Event::TOOL_DETECTED]));
+        let p2 = Arc::new(TestPlugin::new("high-priority", &[Event::TOOL_DETECTED]));
 
         bus.subscribe_plugin(p1, 100);
         bus.subscribe_plugin(p2, 1);
@@ -259,7 +258,7 @@ mod tests {
     #[test]
     fn test_no_matching_handlers() {
         let bus = EventBus::new();
-        let p = Arc::new(TestPlugin::new("discovery", &["file.discovered"]));
+        let p = Arc::new(TestPlugin::new("discovery", &[Event::FILE_DISCOVERED]));
         bus.subscribe_plugin(p, 0);
 
         let event = Event::ToolDetected(ToolDetectedEvent {
@@ -306,9 +305,9 @@ mod tests {
 
         let error_plugin = Arc::new(ErrorPlugin {
             name: "error-plugin".into(),
-            handled_types: vec!["file.discovered".into()],
+            handled_types: vec![Event::FILE_DISCOVERED.into()],
         });
-        let normal = Arc::new(TestPlugin::new("good-plugin", &["file.discovered"]));
+        let normal = Arc::new(TestPlugin::new("good-plugin", &[Event::FILE_DISCOVERED]));
 
         bus.subscribe_plugin(error_plugin, 0);
         bus.subscribe_plugin(normal, 10);
@@ -323,7 +322,10 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].plugin_name, "error-plugin");
         assert_eq!(results[0].produced_events.len(), 1);
-        assert_eq!(results[0].produced_events[0].event_type(), "plugin.error");
+        assert_eq!(
+            results[0].produced_events[0].event_type(),
+            Event::PLUGIN_ERROR
+        );
         assert_eq!(results[1].plugin_name, "good-plugin");
     }
 
@@ -366,8 +368,11 @@ mod tests {
         let bus = EventBus::new();
 
         // Register a panicking plugin before a normal one.
-        let panicker = Arc::new(PanickingPlugin::new("bad-plugin", &["file.discovered"]));
-        let normal = Arc::new(TestPlugin::new("good-plugin", &["file.discovered"]));
+        let panicker = Arc::new(PanickingPlugin::new(
+            "bad-plugin",
+            &[Event::FILE_DISCOVERED],
+        ));
+        let normal = Arc::new(TestPlugin::new("good-plugin", &[Event::FILE_DISCOVERED]));
 
         bus.subscribe_plugin(panicker, 0);
         bus.subscribe_plugin(normal, 10);
@@ -383,7 +388,10 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].plugin_name, "bad-plugin");
         assert_eq!(results[0].produced_events.len(), 1);
-        assert_eq!(results[0].produced_events[0].event_type(), "plugin.error");
+        assert_eq!(
+            results[0].produced_events[0].event_type(),
+            Event::PLUGIN_ERROR
+        );
         assert_eq!(results[1].plugin_name, "good-plugin");
     }
 
@@ -439,12 +447,16 @@ mod tests {
         });
         let plugin_a = Arc::new(CascadingPlugin::new(
             "introspector",
-            &["file.discovered"],
+            &[Event::FILE_DISCOVERED],
             Some(introspected_event),
         ));
 
         // Plugin B handles "file.introspected" (no produced events).
-        let plugin_b = Arc::new(CascadingPlugin::new("store", &["file.introspected"], None));
+        let plugin_b = Arc::new(CascadingPlugin::new(
+            "store",
+            &[Event::FILE_INTROSPECTED],
+            None,
+        ));
 
         bus.subscribe_plugin(plugin_a, 0);
         bus.subscribe_plugin(plugin_b, 10);
@@ -482,7 +494,7 @@ mod tests {
                 &[]
             }
             fn handles(&self, event_type: &str) -> bool {
-                event_type == "tool.detected"
+                event_type == Event::TOOL_DETECTED
             }
             fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
                 self.call_count.fetch_add(1, Ordering::SeqCst);
@@ -557,9 +569,9 @@ mod tests {
 
         let claimer = Arc::new(ClaimingPlugin {
             name: "claimer".into(),
-            handled_types: vec!["file.discovered".into()],
+            handled_types: vec![Event::FILE_DISCOVERED.into()],
         });
-        let second = Arc::new(TestPlugin::new("second", &["file.discovered"]));
+        let second = Arc::new(TestPlugin::new("second", &[Event::FILE_DISCOVERED]));
 
         bus.subscribe_plugin(claimer, 0);
         bus.subscribe_plugin(second, 10);
@@ -580,8 +592,8 @@ mod tests {
     fn test_unclaimed_event_continues_dispatch() {
         let bus = EventBus::new();
 
-        let first = Arc::new(TestPlugin::new("first", &["file.discovered"]));
-        let second = Arc::new(TestPlugin::new("second", &["file.discovered"]));
+        let first = Arc::new(TestPlugin::new("first", &[Event::FILE_DISCOVERED]));
+        let second = Arc::new(TestPlugin::new("second", &[Event::FILE_DISCOVERED]));
 
         bus.subscribe_plugin(first, 0);
         bus.subscribe_plugin(second, 10);
@@ -614,7 +626,7 @@ mod tests {
                 &[]
             }
             fn handles(&self, event_type: &str) -> bool {
-                event_type == "file.discovered"
+                event_type == Event::FILE_DISCOVERED
             }
             fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
                 Ok(None)
@@ -626,7 +638,7 @@ mod tests {
         let decliner = Arc::new(DecliningPlugin);
         let claimer = Arc::new(ClaimingPlugin {
             name: "claimer".into(),
-            handled_types: vec!["file.discovered".into()],
+            handled_types: vec![Event::FILE_DISCOVERED.into()],
         });
 
         bus.subscribe_plugin(decliner, 0);

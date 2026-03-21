@@ -1,6 +1,6 @@
 use anyhow::Result;
 use comfy_table::{Cell, Table};
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::app;
 use crate::cli::{DbCommands, OutputFormat};
@@ -25,12 +25,12 @@ async fn prune() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to prune missing files: {e}"))?;
 
     if count == 0 {
-        println!("{}", "No stale entries found.".dimmed());
+        println!("{}", style("No stale entries found.").dim());
     } else {
         println!(
             "{} Pruned {} stale entries.",
-            "OK".bold().green(),
-            count.to_string().bold()
+            style("OK").bold().green(),
+            style(count).bold()
         );
     }
 
@@ -45,7 +45,7 @@ async fn vacuum() -> Result<()> {
         .vacuum()
         .map_err(|e| anyhow::anyhow!("failed to vacuum database: {e}"))?;
 
-    println!("{} Database vacuumed.", "OK".bold().green());
+    println!("{} Database vacuumed.", style("OK").bold().green());
 
     Ok(())
 }
@@ -55,15 +55,15 @@ async fn reset() -> Result<()> {
     let db_path = config.data_dir.join("voom.db");
 
     if !db_path.exists() {
-        println!("{}", "No database file found.".dimmed());
+        println!("{}", style("No database file found.").dim());
         return Ok(());
     }
 
     // Safety prompt via stderr
     eprintln!(
         "{} This will delete all data in {}",
-        "WARNING".bold().red(),
-        db_path.display().to_string().bold()
+        style("WARNING").bold().red(),
+        style(db_path.display()).bold()
     );
     eprintln!("Type 'yes' to confirm:");
 
@@ -74,7 +74,7 @@ async fn reset() -> Result<()> {
     .await??;
 
     if input.trim() != "yes" {
-        println!("{}", "Aborted.".dimmed());
+        println!("{}", style("Aborted.").dim());
         return Ok(());
     }
 
@@ -82,7 +82,7 @@ async fn reset() -> Result<()> {
     // Also remove WAL and SHM companion files to avoid corruption on next open
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    println!("{} Database reset.", "OK".bold().green());
+    println!("{} Database reset.", style("OK").bold().green());
 
     Ok(())
 }
@@ -101,7 +101,7 @@ async fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
 
     if bad_files.is_empty() {
-        println!("{}", "No bad files recorded.".dimmed());
+        println!("{}", style("No bad files recorded.").dim());
         return Ok(());
     }
 
@@ -140,7 +140,7 @@ async fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
                 ]);
             }
             println!("{table}");
-            println!("\n{} bad files total.", bad_files.len().to_string().bold());
+            println!("\n{} bad files total.", style(bad_files.len()).bold());
         }
     }
 
@@ -157,7 +157,7 @@ async fn purge_bad() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
 
     if bad_files.is_empty() {
-        println!("{}", "No bad files recorded.".dimmed());
+        println!("{}", style("No bad files recorded.").dim());
         return Ok(());
     }
 
@@ -170,8 +170,8 @@ async fn purge_bad() -> Result<()> {
 
     println!(
         "{} Purged {} bad file entries from database.",
-        "OK".bold().green(),
-        count.to_string().bold()
+        style("OK").bold().green(),
+        style(count).bold()
     );
 
     Ok(())
@@ -187,7 +187,7 @@ async fn clean_bad(yes: bool) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
 
     if bad_files.is_empty() {
-        println!("{}", "No bad files recorded.".dimmed());
+        println!("{}", style("No bad files recorded.").dim());
         return Ok(());
     }
 
@@ -196,14 +196,14 @@ async fn clean_bad(yes: bool) -> Result<()> {
 
     println!(
         "Found {} bad files ({}).",
-        count.to_string().bold(),
+        style(count).bold(),
         voom_domain::utils::datetime::format_size(total_size)
     );
 
     if !yes {
         eprintln!(
             "{} This will delete {} files from disk.",
-            "WARNING".bold().red(),
+            style("WARNING").bold().red(),
             count
         );
         eprintln!("Type 'yes' to confirm:");
@@ -215,7 +215,7 @@ async fn clean_bad(yes: bool) -> Result<()> {
         .await??;
 
         if input.trim() != "yes" {
-            println!("{}", "Aborted.".dimmed());
+            println!("{}", style("Aborted.").dim());
             return Ok(());
         }
     }
@@ -234,7 +234,7 @@ async fn clean_bad(yes: bool) -> Result<()> {
                 Err(e) => {
                     eprintln!(
                         "{} Failed to delete {}: {e}",
-                        "ERROR".red(),
+                        style("ERROR").red(),
                         bf.path.display()
                     );
                     errors += 1;
@@ -254,11 +254,11 @@ async fn clean_bad(yes: bool) -> Result<()> {
 
     println!(
         "{} {} deleted, {} already missing, {} errors.",
-        "Done.".bold().green(),
-        deleted.to_string().bold(),
-        missing.to_string().dimmed(),
+        style("Done.").bold().green(),
+        style(deleted).bold(),
+        style(missing).dim(),
         if errors > 0 {
-            errors.to_string().red().to_string()
+            style(errors).red().to_string()
         } else {
             errors.to_string()
         }

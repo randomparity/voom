@@ -227,8 +227,8 @@ mod tests {
     #[test]
     fn test_handles_no_events() {
         let plugin = ToolDetectorPlugin::new();
-        assert!(!plugin.handles("file.discovered"));
-        assert!(!plugin.handles("tool.detected"));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
+        assert!(!plugin.handles(Event::TOOL_DETECTED));
     }
 
     #[test]

@@ -15,20 +15,20 @@ name = "voom"
 path = "src/main.rs"
 
 [dependencies]
-voom-domain = { path = "../voom-domain" }
-voom-dsl = { path = "../voom-dsl" }
-voom-kernel = { path = "../voom-kernel" }
-voom-sqlite-store = { path = "../../plugins/sqlite-store" }
-voom-discovery = { path = "../../plugins/discovery" }
-voom-ffprobe-introspector = { path = "../../plugins/ffprobe-introspector" }
-voom-tool-detector = { path = "../../plugins/tool-detector" }
-voom-policy-evaluator = { path = "../../plugins/policy-evaluator" }
-voom-phase-orchestrator = { path = "../../plugins/phase-orchestrator" }
-voom-mkvtoolnix-executor = { path = "../../plugins/mkvtoolnix-executor" }
-voom-ffmpeg-executor = { path = "../../plugins/ffmpeg-executor" }
-voom-backup-manager = { path = "../../plugins/backup-manager" }
-voom-job-manager = { path = "../../plugins/job-manager" }
-voom-web-server = { path = "../../plugins/web-server" }
+voom-domain.workspace = true
+voom-dsl.workspace = true
+voom-kernel.workspace = true
+voom-sqlite-store.workspace = true
+voom-discovery.workspace = true
+voom-ffprobe-introspector.workspace = true
+voom-tool-detector.workspace = true
+voom-policy-evaluator.workspace = true
+voom-phase-orchestrator.workspace = true
+voom-mkvtoolnix-executor.workspace = true
+voom-ffmpeg-executor.workspace = true
+voom-backup-manager.workspace = true
+voom-job-manager.workspace = true
+voom-web-server.workspace = true
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -38,7 +38,6 @@ clap_complete = "4"
 comfy-table = "7"
 console = "0.15"
 indicatif = "0.17"
-owo-colors = "4"
 
 # Async
 tokio.workspace = true

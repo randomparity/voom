@@ -7,7 +7,7 @@ use axum::Router;
 use tower::limit::ConcurrencyLimitLayer;
 
 use crate::api;
-use crate::error::ApiError;
+use crate::errors::ApiError;
 use crate::middleware::{auth_middleware, RequestIdLayer, SecurityHeadersLayer};
 use crate::sse;
 use crate::state::AppState;
