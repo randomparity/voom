@@ -14,7 +14,7 @@ use super::jobs::JobStatusCount;
 #[derive(Debug, Serialize)]
 pub struct DashboardStats {
     pub total_files: usize,
-    pub total_jobs: Vec<JobStatusCount>,
+    pub job_status_counts: Vec<JobStatusCount>,
 }
 
 /// GET /api/stats -- dashboard statistics
@@ -31,7 +31,7 @@ pub async fn get_stats(State(state): State<AppState>) -> Result<Json<DashboardSt
 
     Ok(Json(DashboardStats {
         total_files: total_files as usize,
-        total_jobs: job_counts
+        job_status_counts: job_counts
             .into_iter()
             .map(|(status, count)| JobStatusCount { status, count })
             .collect(),
@@ -47,7 +47,7 @@ mod tests {
     fn dashboard_stats_serialization() {
         let stats = DashboardStats {
             total_files: 42,
-            total_jobs: vec![
+            job_status_counts: vec![
                 JobStatusCount {
                     status: JobStatus::Pending,
                     count: 5,
@@ -60,7 +60,7 @@ mod tests {
         };
         let json = serde_json::to_value(&stats).unwrap();
         assert_eq!(json["total_files"], 42);
-        let jobs = json["total_jobs"].as_array().unwrap();
+        let jobs = json["job_status_counts"].as_array().unwrap();
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0]["status"], "pending");
         assert_eq!(jobs[0]["count"], 5);
@@ -72,11 +72,11 @@ mod tests {
     fn dashboard_stats_empty() {
         let stats = DashboardStats {
             total_files: 0,
-            total_jobs: vec![],
+            job_status_counts: vec![],
         };
         let json = serde_json::to_value(&stats).unwrap();
         assert_eq!(json["total_files"], 0);
-        assert_eq!(json["total_jobs"], serde_json::json!([]));
+        assert_eq!(json["job_status_counts"], serde_json::json!([]));
     }
 
     #[test]

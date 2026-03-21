@@ -1,3 +1,12 @@
+mod bad_file_storage;
+mod file_history_storage;
+mod file_storage;
+mod job_storage;
+mod maintenance_storage;
+mod plan_storage;
+mod plugin_data_storage;
+mod stats_storage;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -9,15 +18,8 @@ use uuid::Uuid;
 
 use voom_domain::bad_file::{BadFile, BadFileSource};
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::job::{Job, JobStatus, JobUpdate};
+use voom_domain::job::{Job, JobStatus};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
-use voom_domain::plan::Plan;
-use voom_domain::stats::ProcessingStats;
-use voom_domain::storage::{
-    BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,
-    JobStorage, MaintenanceStorage, PlanStatus, PlanStorage, PluginDataStorage, StatsStorage,
-    StoredPlan,
-};
 
 use crate::schema;
 
@@ -75,7 +77,7 @@ impl SqliteStore {
         Ok(Self { pool })
     }
 
-    fn conn(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>> {
+    pub(crate) fn conn(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>> {
         self.pool
             .get()
             .map_err(storage_err("failed to get connection"))
@@ -102,16 +104,47 @@ fn str_to_track_type(s: &str) -> Option<TrackType> {
 }
 
 /// Create a `.map_err` closure that wraps the source error in `VoomError::Storage`.
-fn storage_err<E: std::fmt::Display>(msg: &str) -> impl FnOnce(E) -> VoomError + '_ {
+pub(crate) fn storage_err<E: std::fmt::Display>(msg: &str) -> impl FnOnce(E) -> VoomError + '_ {
     move |e| VoomError::Storage(format!("{msg}: {e}"))
 }
 
-fn parse_uuid(s: &str) -> Result<Uuid> {
+/// Lightweight builder for dynamic SQL queries with positional parameters.
+pub(crate) struct SqlQuery {
+    pub(crate) sql: String,
+    params: Vec<String>,
+}
+
+impl SqlQuery {
+    pub(crate) fn new(base: &str) -> Self {
+        Self {
+            sql: base.to_string(),
+            params: Vec::new(),
+        }
+    }
+
+    /// Add a condition with a parameter value. Returns `&mut Self` for chaining.
+    pub(crate) fn condition(&mut self, clause: &str, value: String) -> &mut Self {
+        self.params.push(value);
+        self.sql
+            .push_str(&clause.replace("{}", &format!("?{}", self.params.len())));
+        self
+    }
+
+    /// Build the parameter references for rusqlite.
+    pub(crate) fn param_refs(&self) -> Vec<&dyn rusqlite::types::ToSql> {
+        self.params
+            .iter()
+            .map(|v| v as &dyn rusqlite::types::ToSql)
+            .collect()
+    }
+}
+
+pub(crate) fn parse_uuid(s: &str) -> Result<Uuid> {
     Uuid::parse_str(s).map_err(|e| VoomError::Storage(format!("invalid UUID '{s}': {e}")))
 }
 
 /// Escape LIKE wildcard characters so user-supplied strings match literally.
-fn escape_like(s: &str) -> String {
+pub(crate) fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
@@ -122,11 +155,11 @@ fn parse_datetime(s: &str) -> Result<DateTime<Utc>> {
         .map_err(|e| VoomError::Storage(format!("invalid datetime '{s}': {e}")))
 }
 
-fn format_datetime(dt: &DateTime<Utc>) -> String {
+pub(crate) fn format_datetime(dt: &DateTime<Utc>) -> String {
     voom_domain::utils::datetime::format_iso(dt)
 }
 
-fn row_to_file(row: &Row<'_>) -> rusqlite::Result<FileRow> {
+pub(crate) fn row_to_file(row: &Row<'_>) -> rusqlite::Result<FileRow> {
     Ok(FileRow {
         id: row.get("id")?,
         path: row.get("path")?,
@@ -141,8 +174,8 @@ fn row_to_file(row: &Row<'_>) -> rusqlite::Result<FileRow> {
     })
 }
 
-struct FileRow {
-    id: String,
+pub(crate) struct FileRow {
+    pub(crate) id: String,
     path: String,
     size: i64,
     content_hash: String,
@@ -155,7 +188,7 @@ struct FileRow {
 }
 
 impl FileRow {
-    fn to_media_file(&self, tracks: Vec<Track>) -> Result<MediaFile> {
+    pub(crate) fn to_media_file(&self, tracks: Vec<Track>) -> Result<MediaFile> {
         let tags: HashMap<String, String> = self
             .tags
             .as_deref()
@@ -195,7 +228,7 @@ impl FileRow {
 }
 
 /// Parse a UUID string from a database row, returning a rusqlite error on corruption.
-fn row_uuid(value: &str, table: &str) -> rusqlite::Result<Uuid> {
+pub(crate) fn row_uuid(value: &str, table: &str) -> rusqlite::Result<Uuid> {
     Uuid::parse_str(value).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(
             0,
@@ -246,7 +279,7 @@ fn row_to_track(row: &Row<'_>) -> rusqlite::Result<Track> {
     })
 }
 
-fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
+pub(crate) fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
     let status_str: String = row.get("status")?;
     let created_str: String = row.get("created_at")?;
     let started_str: Option<String> = row.get("started_at")?;
@@ -258,10 +291,13 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
     Ok(Job {
         id: row_uuid(&id_str, "jobs")?,
         job_type: row.get("job_type")?,
-        status: JobStatus::parse(&status_str).unwrap_or_else(|| {
-            tracing::warn!(status = %status_str, "unknown job status in jobs table");
-            JobStatus::Pending
-        }),
+        status: JobStatus::parse(&status_str).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("unknown job status: {status_str}").into(),
+            )
+        })?,
         priority: row.get("priority")?,
         payload: payload_str.and_then(|s| {
             serde_json::from_str(&s)
@@ -277,10 +313,13 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
         }),
         error: row.get("error")?,
         worker_id: row.get("worker_id")?,
-        created_at: created_str.parse().unwrap_or_else(|e| {
-            tracing::warn!(created_at = %created_str, error = %e, "corrupt datetime in jobs table");
-            Utc::now()
-        }),
+        created_at: created_str.parse().map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("corrupt datetime in jobs.created_at: {created_str}: {e}").into(),
+            )
+        })?,
         started_at: started_str.and_then(|s| {
             s.parse()
                 .map_err(|e| {
@@ -298,916 +337,51 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
     })
 }
 
-impl FileStorage for SqliteStore {
-    fn upsert_file(&self, file: &MediaFile) -> Result<()> {
-        let conn = self.conn()?;
-        let now = format_datetime(&Utc::now());
-        let tags_json =
-            serde_json::to_string(&file.tags).map_err(storage_err("failed to serialize tags"))?;
-        let meta_json = serde_json::to_string(&file.plugin_metadata)
-            .map_err(storage_err("failed to serialize metadata"))?;
-        let filename = file
-            .path
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let path_str = file.path.to_string_lossy().to_string();
+pub(crate) fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
+    let id_str: String = row.get("id")?;
+    let path_str: String = row.get("path")?;
+    let error_source_str: String = row.get("error_source")?;
+    let first_seen_str: String = row.get("first_seen_at")?;
+    let last_seen_str: String = row.get("last_seen_at")?;
 
-        // Preserve existing file ID on re-scan to avoid orphaning related records
-        let existing_id: Option<String> = conn
-            .query_row(
-                "SELECT id FROM files WHERE path = ?1",
-                params![&path_str],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(storage_err("failed to query existing file"))?;
-
-        let effective_id = existing_id.clone().unwrap_or_else(|| file.id.to_string());
-
-        // Wrap the delete-insert sequence in a transaction for atomicity
-        conn.execute_batch("BEGIN")
-            .map_err(storage_err("failed to begin transaction"))?;
-
-        let result = (|| -> Result<()> {
-            // Archive old file state to history before updating
-            if existing_id.is_some() {
-                conn.execute(
-                    "INSERT INTO file_history (id, file_id, path, content_hash, container, track_count, introspected_at, archived_at)
-                     SELECT ?1, f.id, f.path, f.content_hash, f.container,
-                            (SELECT COUNT(*) FROM tracks WHERE file_id = f.id),
-                            f.introspected_at, ?2
-                     FROM files f WHERE f.path = ?3",
-                    params![Uuid::new_v4().to_string(), &now, &path_str],
-                )
-                .map_err(storage_err("failed to archive file history"))?;
-            }
-
-            // Delete old tracks before upserting
-            conn.execute(
-                "DELETE FROM tracks WHERE file_id IN (SELECT id FROM files WHERE path = ?1)",
-                params![&path_str],
-            )
-            .map_err(storage_err("failed to delete old tracks"))?;
-
-            conn.execute(
-                "INSERT INTO files (id, path, filename, size, content_hash, container, duration, bitrate, tags, plugin_metadata, introspected_at, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-                 ON CONFLICT(path) DO UPDATE SET
-                    filename = excluded.filename,
-                    size = excluded.size,
-                    content_hash = excluded.content_hash,
-                    container = excluded.container,
-                    duration = excluded.duration,
-                    bitrate = excluded.bitrate,
-                    tags = excluded.tags,
-                    plugin_metadata = excluded.plugin_metadata,
-                    introspected_at = excluded.introspected_at,
-                    updated_at = excluded.updated_at",
-                params![
-                    &effective_id,
-                    &path_str,
-                    filename,
-                    file.size as i64,
-                    file.content_hash,
-                    file.container.as_str(),
-                    file.duration,
-                    file.bitrate.map(|b| b as i32),
-                    tags_json,
-                    meta_json,
-                    format_datetime(&file.introspected_at),
-                    &now,
-                    &now,
-                ],
-            )
-            .map_err(storage_err("failed to upsert file"))?;
-
-            let mut stmt = conn
-                .prepare(
-                    "INSERT INTO tracks (id, file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
-                )
-                .map_err(storage_err("failed to prepare track insert"))?;
-
-            for track in &file.tracks {
-                stmt.execute(params![
-                    Uuid::new_v4().to_string(),
-                    &effective_id,
-                    track.index as i32,
-                    track.track_type.as_str(),
-                    track.codec,
-                    track.language,
-                    track.title,
-                    track.is_default as i32,
-                    track.is_forced as i32,
-                    track.channels.map(|v| v as i32),
-                    track.channel_layout,
-                    track.sample_rate.map(|v| v as i32),
-                    track.bit_depth.map(|v| v as i32),
-                    track.width.map(|v| v as i32),
-                    track.height.map(|v| v as i32),
-                    track.frame_rate,
-                    track.is_vfr as i32,
-                    track.is_hdr as i32,
-                    track.hdr_format,
-                    track.pixel_format,
-                ])
-                .map_err(storage_err("failed to insert track"))?;
-            }
-
-            Ok(())
-        })();
-
-        match result {
-            Ok(()) => {
-                conn.execute_batch("COMMIT")
-                    .map_err(storage_err("failed to commit"))?;
-                Ok(())
-            }
-            Err(e) => {
-                if let Err(rollback_err) = conn.execute_batch("ROLLBACK") {
-                    tracing::error!(error = %rollback_err, "ROLLBACK failed");
-                }
-                Err(e)
-            }
-        }
-    }
-
-    fn get_file(&self, id: &Uuid) -> Result<Option<MediaFile>> {
-        let conn = self.conn()?;
-        let file_row: Option<FileRow> = conn
-            .query_row(
-                "SELECT id, path, size, content_hash, container, duration, bitrate, tags, plugin_metadata, introspected_at FROM files WHERE id = ?1",
-                params![id.to_string()],
-                row_to_file,
-            )
-            .optional()
-            .map_err(storage_err("failed to get file"))?;
-
-        match file_row {
-            Some(fr) => {
-                let tracks = self.load_tracks(&conn, id)?;
-                Ok(Some(fr.to_media_file(tracks)?))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn get_file_by_path(&self, path: &Path) -> Result<Option<MediaFile>> {
-        let conn = self.conn()?;
-        let path_str = path.to_string_lossy().to_string();
-        let file_row: Option<FileRow> = conn
-            .query_row(
-                "SELECT id, path, size, content_hash, container, duration, bitrate, tags, plugin_metadata, introspected_at FROM files WHERE path = ?1",
-                params![path_str],
-                row_to_file,
-            )
-            .optional()
-            .map_err(storage_err("failed to get file by path"))?;
-
-        match file_row {
-            Some(fr) => {
-                let id = parse_uuid(&fr.id)?;
-                let tracks = self.load_tracks(&conn, &id)?;
-                Ok(Some(fr.to_media_file(tracks)?))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn list_files(&self, filters: &FileFilters) -> Result<Vec<MediaFile>> {
-        let conn = self.conn()?;
-        let mut sql = String::from(
-            "SELECT id, path, size, content_hash, container, duration, bitrate, tags, plugin_metadata, introspected_at FROM files WHERE 1=1",
-        );
-        let mut param_values: Vec<String> = Vec::new();
-
-        if let Some(container) = filters.container {
-            param_values.push(container.as_str().to_string());
-            sql.push_str(&format!(" AND container = ?{}", param_values.len()));
-        }
-        if let Some(ref prefix) = filters.path_prefix {
-            param_values.push(format!("{}%", escape_like(prefix)));
-            sql.push_str(&format!(
-                " AND path LIKE ?{} ESCAPE '\\'",
-                param_values.len()
-            ));
-        }
-
-        sql.push_str(" ORDER BY path");
-
-        if let Some(limit) = filters.limit {
-            let clamped = limit.min(10_000);
-            param_values.push(clamped.to_string());
-            sql.push_str(&format!(" LIMIT ?{}", param_values.len()));
-        }
-        if let Some(offset) = filters.offset {
-            let clamped = offset.min(1_000_000);
-            param_values.push(clamped.to_string());
-            sql.push_str(&format!(" OFFSET ?{}", param_values.len()));
-        }
-
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(storage_err("failed to prepare list query"))?;
-
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
-            .iter()
-            .map(|v| v as &dyn rusqlite::types::ToSql)
-            .collect();
-
-        let rows: Vec<FileRow> = stmt
-            .query_map(param_refs.as_slice(), row_to_file)
-            .map_err(storage_err("failed to list files"))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(storage_err("failed to collect files"))?;
-
-        let file_ids: Vec<Uuid> = rows
-            .iter()
-            .map(|fr| parse_uuid(&fr.id))
-            .collect::<Result<Vec<_>>>()?;
-        let tracks_map = self.load_tracks_batch(&conn, &file_ids)?;
-
-        let mut files = Vec::with_capacity(rows.len());
-        for (fr, id) in rows.iter().zip(file_ids.iter()) {
-            let tracks = tracks_map.get(id).cloned().unwrap_or_default();
-            files.push(fr.to_media_file(tracks)?);
-        }
-
-        // Post-filter for codec/language (requires track data)
-        let files = if filters.has_codec.is_some() || filters.has_language.is_some() {
-            files
-                .into_iter()
-                .filter(|f| {
-                    if let Some(ref codec) = filters.has_codec {
-                        if !f.tracks.iter().any(|t| t.codec == *codec) {
-                            return false;
-                        }
-                    }
-                    if let Some(ref lang) = filters.has_language {
-                        if !f.tracks.iter().any(|t| t.language == *lang) {
-                            return false;
-                        }
-                    }
-                    true
-                })
-                .collect()
-        } else {
-            files
-        };
-
-        Ok(files)
-    }
-
-    fn count_files(&self, filters: &FileFilters) -> Result<u64> {
-        let conn = self.conn()?;
-        let mut sql = String::from("SELECT COUNT(*) FROM files WHERE 1=1");
-        let mut param_values: Vec<String> = Vec::new();
-
-        if let Some(container) = filters.container {
-            param_values.push(container.as_str().to_string());
-            sql.push_str(&format!(" AND container = ?{}", param_values.len()));
-        }
-        if let Some(ref prefix) = filters.path_prefix {
-            param_values.push(format!("{}%", escape_like(prefix)));
-            sql.push_str(&format!(
-                " AND path LIKE ?{} ESCAPE '\\'",
-                param_values.len()
-            ));
-        }
-
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
-            .iter()
-            .map(|v| v as &dyn rusqlite::types::ToSql)
-            .collect();
-
-        let count: u64 = conn
-            .query_row(&sql, param_refs.as_slice(), |row| row.get(0))
-            .map_err(storage_err("failed to count files"))?;
-
-        Ok(count)
-    }
-
-    fn delete_file(&self, id: &Uuid) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute("DELETE FROM files WHERE id = ?1", params![id.to_string()])
-            .map_err(storage_err("failed to delete file"))?;
-        Ok(())
-    }
+    Ok(BadFile {
+        id: row_uuid(&id_str, "bad_files")?,
+        path: PathBuf::from(path_str),
+        size: row.get::<_, i64>("size")? as u64,
+        content_hash: row.get("content_hash")?,
+        error: row.get("error")?,
+        error_source: error_source_str.parse::<BadFileSource>().unwrap_or_else(|_| {
+            tracing::warn!(error_source = %error_source_str, "unknown error_source in bad_files table");
+            BadFileSource::Introspection
+        }),
+        attempt_count: u32::try_from(row.get::<_, i64>("attempt_count")?).unwrap_or(0),
+        first_seen_at: DateTime::parse_from_rfc3339(&first_seen_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|e| {
+                tracing::warn!(first_seen_at = %first_seen_str, error = %e, "corrupt datetime in bad_files table");
+                DateTime::default()
+            }),
+        last_seen_at: DateTime::parse_from_rfc3339(&last_seen_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|e| {
+                tracing::warn!(last_seen_at = %last_seen_str, error = %e, "corrupt datetime in bad_files table");
+                DateTime::default()
+            }),
+    })
 }
 
-impl JobStorage for SqliteStore {
-    fn create_job(&self, job: &Job) -> Result<Uuid> {
-        let conn = self.conn()?;
-        let payload_json = job
-            .payload
-            .as_ref()
-            .map(|p| serde_json::to_string(p).unwrap_or_default());
-        let output_json = job
-            .output
-            .as_ref()
-            .map(|o| serde_json::to_string(o).unwrap_or_default());
-
-        conn.execute(
-            "INSERT INTO jobs (id, job_type, status, priority, payload, progress, progress_message, output, error, worker_id, created_at, started_at, completed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            params![
-                job.id.to_string(),
-                job.job_type,
-                job.status.as_str(),
-                job.priority,
-                payload_json,
-                job.progress,
-                job.progress_message,
-                output_json,
-                job.error,
-                job.worker_id,
-                format_datetime(&job.created_at),
-                job.started_at.as_ref().map(format_datetime),
-                job.completed_at.as_ref().map(format_datetime),
-            ],
-        )
-        .map_err(storage_err("failed to create job"))?;
-
-        Ok(job.id)
-    }
-
-    fn get_job(&self, id: &Uuid) -> Result<Option<Job>> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "SELECT * FROM jobs WHERE id = ?1",
-            params![id.to_string()],
-            row_to_job,
-        )
-        .optional()
-        .map_err(storage_err("failed to get job"))
-    }
-
-    fn update_job(&self, id: &Uuid, update: &JobUpdate) -> Result<()> {
-        let conn = self.conn()?;
-        let mut sets = Vec::new();
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(status) = &update.status {
-            param_values.push(Box::new(status.as_str().to_string()));
-            sets.push(format!("status = ?{}", param_values.len()));
-        }
-        if let Some(progress) = &update.progress {
-            param_values.push(Box::new(*progress));
-            sets.push(format!("progress = ?{}", param_values.len()));
-        }
-        if let Some(ref msg) = update.progress_message {
-            param_values.push(Box::new(msg.clone()));
-            sets.push(format!("progress_message = ?{}", param_values.len()));
-        }
-        if let Some(ref output) = update.output {
-            let json = output
-                .as_ref()
-                .map(|o| serde_json::to_string(o).unwrap_or_default());
-            param_values.push(Box::new(json));
-            sets.push(format!("output = ?{}", param_values.len()));
-        }
-        if let Some(ref error) = update.error {
-            param_values.push(Box::new(error.clone()));
-            sets.push(format!("error = ?{}", param_values.len()));
-        }
-        if let Some(ref worker) = update.worker_id {
-            param_values.push(Box::new(worker.clone()));
-            sets.push(format!("worker_id = ?{}", param_values.len()));
-        }
-        if let Some(ref started) = update.started_at {
-            param_values.push(Box::new(started.as_ref().map(format_datetime)));
-            sets.push(format!("started_at = ?{}", param_values.len()));
-        }
-        if let Some(ref completed) = update.completed_at {
-            param_values.push(Box::new(completed.as_ref().map(format_datetime)));
-            sets.push(format!("completed_at = ?{}", param_values.len()));
-        }
-
-        if sets.is_empty() {
-            return Ok(());
-        }
-
-        param_values.push(Box::new(id.to_string()));
-        let sql = format!(
-            "UPDATE jobs SET {} WHERE id = ?{}",
-            sets.join(", "),
-            param_values.len()
-        );
-
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|v| v.as_ref()).collect();
-
-        conn.execute(&sql, param_refs.as_slice())
-            .map_err(storage_err("failed to update job"))?;
-        Ok(())
-    }
-
-    fn claim_next_job(&self, worker_id: &str) -> Result<Option<Job>> {
-        let mut conn = self.conn()?;
-        let now = format_datetime(&Utc::now());
-
-        // Use IMMEDIATE transaction to prevent TOCTOU race between concurrent workers
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(storage_err("failed to begin transaction"))?;
-
-        tx.execute(
-            "UPDATE jobs SET status = 'running', worker_id = ?1, started_at = ?2
-             WHERE id = (SELECT id FROM jobs WHERE status = 'pending' ORDER BY priority ASC, created_at ASC LIMIT 1)",
-            params![worker_id, now],
-        )
-        .map_err(storage_err("failed to claim job"))?;
-
-        let result = tx
-            .query_row(
-                "SELECT * FROM jobs WHERE worker_id = ?1 AND status = 'running' ORDER BY started_at DESC LIMIT 1",
-                params![worker_id],
-                row_to_job,
-            )
-            .optional()
-            .map_err(storage_err("failed to get claimed job"))?;
-
-        tx.commit().map_err(storage_err("failed to commit claim"))?;
-
-        Ok(result)
-    }
-
-    fn claim_job_by_id(&self, job_id: &Uuid, worker_id: &str) -> Result<Option<Job>> {
-        let mut conn = self.conn()?;
-        let now = format_datetime(&Utc::now());
-        let id_str = job_id.to_string();
-
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(storage_err("failed to begin transaction"))?;
-
-        let changed = tx
-            .execute(
-                "UPDATE jobs SET status = 'running', worker_id = ?1, started_at = ?2
-                 WHERE id = ?3 AND status = 'pending'",
-                params![worker_id, now, id_str],
-            )
-            .map_err(storage_err("failed to claim job by id"))?;
-
-        let result = if changed == 0 {
-            None
-        } else {
-            tx.query_row(
-                "SELECT * FROM jobs WHERE id = ?1",
-                params![id_str],
-                row_to_job,
-            )
-            .optional()
-            .map_err(storage_err("failed to get claimed job"))?
-        };
-
-        tx.commit().map_err(storage_err("failed to commit claim"))?;
-
-        Ok(result)
-    }
-
-    fn list_jobs(&self, filters: &JobFilters) -> Result<Vec<Job>> {
-        let conn = self.conn()?;
-        let mut sql = String::from("SELECT * FROM jobs");
-        let mut param_values: Vec<String> = Vec::new();
-
-        if let Some(status) = filters.status {
-            param_values.push(status.as_str().to_string());
-            sql.push_str(&format!(" WHERE status = ?{}", param_values.len()));
-        }
-
-        sql.push_str(" ORDER BY priority ASC, created_at DESC");
-
-        if let Some(limit) = filters.limit {
-            let clamped = limit.min(10_000);
-            param_values.push(clamped.to_string());
-            sql.push_str(&format!(" LIMIT ?{}", param_values.len()));
-        }
-
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(storage_err("failed to prepare list jobs query"))?;
-
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
-            .iter()
-            .map(|v| v as &dyn rusqlite::types::ToSql)
-            .collect();
-
-        let jobs = stmt
-            .query_map(param_refs.as_slice(), row_to_job)
-            .map_err(storage_err("failed to list jobs"))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(storage_err("failed to collect jobs"))?;
-
-        Ok(jobs)
-    }
-
-    fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare("SELECT status, COUNT(*) FROM jobs GROUP BY status")
-            .map_err(storage_err("failed to prepare count query"))?;
-
-        let counts = stmt
-            .query_map([], |row| {
-                let status_str: String = row.get(0)?;
-                let count: i64 = row.get(1)?;
-                Ok((status_str, count as u64))
-            })
-            .map_err(storage_err("failed to count jobs"))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(storage_err("failed to collect counts"))?;
-
-        let result = counts
-            .into_iter()
-            .filter_map(|(s, c)| JobStatus::parse(&s).map(|status| (status, c)))
-            .collect();
-
-        Ok(result)
-    }
+/// Extension trait for `rusqlite::Result<T>` to convert to `Option<T>`.
+pub(crate) trait OptionalExt<T> {
+    fn optional(self) -> rusqlite::Result<Option<T>>;
 }
 
-impl PlanStorage for SqliteStore {
-    fn save_plan(&self, plan: &Plan) -> Result<Uuid> {
-        let conn = self.conn()?;
-        let actions_json = serde_json::to_string(&plan.actions)
-            .map_err(storage_err("failed to serialize actions"))?;
-        let warnings_json = if plan.warnings.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::to_string(&plan.warnings)
-                    .map_err(storage_err("failed to serialize warnings"))?,
-            )
-        };
-
-        // Resolve file_id by path to handle ID preservation in upsert_file.
-        // When a file is re-scanned, upsert_file keeps the original DB ID, but
-        // the Plan's file.id may be a fresh UUID from the new introspection.
-        let path_str = plan.file.path.to_string_lossy().to_string();
-        let effective_file_id: String = conn
-            .query_row(
-                "SELECT id FROM files WHERE path = ?1",
-                params![&path_str],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(storage_err("failed to resolve file id"))?
-            .unwrap_or_else(|| plan.file.id.to_string());
-
-        conn.execute(
-            "INSERT INTO plans (id, file_id, policy_name, phase_name, status, actions, warnings, skip_reason, policy_hash, evaluated_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                plan.id.to_string(),
-                effective_file_id,
-                plan.policy_name,
-                plan.phase_name,
-                "pending",
-                actions_json,
-                warnings_json,
-                plan.skip_reason,
-                plan.policy_hash,
-                format_datetime(&plan.evaluated_at),
-                format_datetime(&Utc::now()),
-            ],
-        )
-        .map_err(storage_err("failed to save plan"))?;
-
-        Ok(plan.id)
-    }
-
-    fn update_plan_status(&self, plan_id: &Uuid, status: PlanStatus) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE plans SET status = ?1, executed_at = ?2 WHERE id = ?3",
-            params![
-                status.as_str(),
-                format_datetime(&Utc::now()),
-                plan_id.to_string()
-            ],
-        )
-        .map_err(storage_err("failed to update plan status"))?;
-        Ok(())
-    }
-
-    fn get_plans_for_file(&self, file_id: &Uuid) -> Result<Vec<StoredPlan>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, file_id, policy_name, phase_name, status, actions, warnings, skip_reason, policy_hash, evaluated_at, created_at, executed_at, result
-                 FROM plans WHERE file_id = ?1 ORDER BY created_at",
-            )
-            .map_err(storage_err("failed to prepare plans query"))?;
-
-        let plans = stmt
-            .query_map(params![file_id.to_string()], |row| {
-                let id_str: String = row.get("id")?;
-                let file_id_str: String = row.get("file_id")?;
-                Ok(StoredPlan {
-                    id: row_uuid(&id_str, "plans")?,
-                    file_id: row_uuid(&file_id_str, "plans")?,
-                    policy_name: row.get("policy_name")?,
-                    phase_name: row.get("phase_name")?,
-                    status: {
-                        let s: String = row.get("status")?;
-                        PlanStatus::parse(&s).unwrap_or(PlanStatus::Pending)
-                    },
-                    actions_json: row.get("actions")?,
-                    warnings: row.get("warnings")?,
-                    skip_reason: row.get("skip_reason")?,
-                    policy_hash: row.get("policy_hash")?,
-                    evaluated_at: row.get("evaluated_at")?,
-                    created_at: row.get("created_at")?,
-                    executed_at: row.get("executed_at")?,
-                    result: row.get("result")?,
-                })
-            })
-            .map_err(storage_err("failed to query plans"))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(storage_err("failed to collect plans"))?;
-
-        Ok(plans)
-    }
-}
-
-impl StatsStorage for SqliteStore {
-    fn record_stats(&self, stats: &ProcessingStats) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO processing_stats (id, file_id, policy_name, phase_name, outcome, duration_ms, actions_taken, tracks_modified, file_size_before, file_size_after, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                stats.id.to_string(),
-                stats.file_id.to_string(),
-                stats.policy_name,
-                stats.phase_name,
-                stats.outcome.as_str(),
-                stats.duration_ms as i64,
-                stats.actions_taken as i32,
-                stats.tracks_modified as i32,
-                stats.file_size_before.map(|v| v as i64),
-                stats.file_size_after.map(|v| v as i64),
-                format_datetime(&stats.created_at),
-            ],
-        )
-        .map_err(storage_err("failed to record stats"))?;
-        Ok(())
-    }
-}
-
-impl PluginDataStorage for SqliteStore {
-    fn get_plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "SELECT value FROM plugin_data WHERE plugin_name = ?1 AND key = ?2",
-            params![plugin, key],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(storage_err("failed to get plugin data"))
-    }
-
-    fn set_plugin_data(&self, plugin: &str, key: &str, value: &[u8]) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO plugin_data (plugin_name, key, value, updated_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(plugin_name, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-            params![plugin, key, value, format_datetime(&Utc::now())],
-        )
-        .map_err(storage_err("failed to set plugin data"))?;
-        Ok(())
-    }
-}
-
-impl BadFileStorage for SqliteStore {
-    /// Insert or update a bad file record.
-    ///
-    /// On conflict (same path), the existing row's `id` is preserved; the
-    /// caller's `bad_file.id` is used only for the initial insert. The
-    /// `attempt_count` is incremented on each subsequent upsert.
-    fn upsert_bad_file(&self, bad_file: &BadFile) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO bad_files (id, path, size, content_hash, error, error_source, attempt_count, first_seen_at, last_seen_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(path) DO UPDATE SET
-                 error = excluded.error,
-                 error_source = excluded.error_source,
-                 size = excluded.size,
-                 content_hash = excluded.content_hash,
-                 attempt_count = attempt_count + 1,
-                 last_seen_at = excluded.last_seen_at",
-            params![
-                bad_file.id.to_string(),
-                bad_file.path.to_string_lossy().to_string(),
-                bad_file.size as i64,
-                bad_file.content_hash,
-                bad_file.error,
-                bad_file.error_source.to_string(),
-                bad_file.attempt_count as i64,
-                bad_file.first_seen_at.to_rfc3339(),
-                bad_file.last_seen_at.to_rfc3339(),
-            ],
-        )
-        .map_err(storage_err("failed to upsert bad file"))?;
-        Ok(())
-    }
-
-    fn get_bad_file_by_path(&self, path: &Path) -> Result<Option<BadFile>> {
-        let conn = self.conn()?;
-        let path_str = path.to_string_lossy().to_string();
-        conn.query_row(
-            "SELECT id, path, size, content_hash, error, error_source, attempt_count, first_seen_at, last_seen_at
-             FROM bad_files WHERE path = ?1",
-            params![path_str],
-            row_to_bad_file,
-        )
-        .optional()
-        .map_err(storage_err("failed to get bad file"))
-    }
-
-    fn list_bad_files(&self, filters: &BadFileFilters) -> Result<Vec<BadFile>> {
-        let conn = self.conn()?;
-        let mut sql = String::from(
-            "SELECT id, path, size, content_hash, error, error_source, attempt_count, first_seen_at, last_seen_at FROM bad_files WHERE 1=1",
-        );
-        let mut param_values: Vec<String> = Vec::new();
-
-        if let Some(ref prefix) = filters.path_prefix {
-            param_values.push(format!("{}%", escape_like(prefix)));
-            sql.push_str(&format!(
-                " AND path LIKE ?{} ESCAPE '\\'",
-                param_values.len()
-            ));
+impl<T> OptionalExt<T> for rusqlite::Result<T> {
+    fn optional(self) -> rusqlite::Result<Option<T>> {
+        match self {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
         }
-        if let Some(ref source) = filters.error_source {
-            param_values.push(source.to_string());
-            sql.push_str(&format!(" AND error_source = ?{}", param_values.len()));
-        }
-
-        sql.push_str(" ORDER BY last_seen_at DESC");
-
-        let limit = filters.limit.unwrap_or(10_000).min(10_000);
-        let offset = filters.offset.unwrap_or(0);
-        param_values.push(limit.to_string());
-        sql.push_str(&format!(" LIMIT ?{}", param_values.len()));
-        param_values.push(offset.to_string());
-        sql.push_str(&format!(" OFFSET ?{}", param_values.len()));
-
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(storage_err("failed to prepare bad files query"))?;
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
-            .iter()
-            .map(|v| v as &dyn rusqlite::types::ToSql)
-            .collect();
-
-        let bad_files = stmt
-            .query_map(param_refs.as_slice(), row_to_bad_file)
-            .map_err(storage_err("failed to query bad files"))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(storage_err("failed to collect bad files"))?;
-
-        Ok(bad_files)
-    }
-
-    fn count_bad_files(&self) -> Result<u64> {
-        let conn = self.conn()?;
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM bad_files", [], |row| row.get(0))
-            .map_err(storage_err("failed to count bad files"))?;
-        Ok(count as u64)
-    }
-
-    fn delete_bad_file(&self, id: &Uuid) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            "DELETE FROM bad_files WHERE id = ?1",
-            params![id.to_string()],
-        )
-        .map_err(storage_err("failed to delete bad file"))?;
-        Ok(())
-    }
-
-    fn delete_bad_file_by_path(&self, path: &Path) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            "DELETE FROM bad_files WHERE path = ?1",
-            params![path.to_string_lossy().to_string()],
-        )
-        .map_err(storage_err("failed to delete bad file by path"))?;
-        Ok(())
-    }
-}
-
-impl MaintenanceStorage for SqliteStore {
-    fn vacuum(&self) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute_batch("VACUUM")
-            .map_err(storage_err("failed to vacuum"))?;
-        Ok(())
-    }
-
-    fn prune_missing_files(&self) -> Result<u64> {
-        self.prune_missing_files_under(Path::new("/"))
-    }
-
-    fn prune_missing_files_under(&self, root: &Path) -> Result<u64> {
-        let root_str = escape_like(&root.to_string_lossy());
-
-        // Also prune bad_files whose paths no longer exist under root
-        {
-            let bad_files: Vec<(String, String)> = {
-                let conn = self.conn()?;
-                let mut stmt = conn
-                    .prepare("SELECT id, path FROM bad_files WHERE path LIKE ?1 || '%' ESCAPE '\\'")
-                    .map_err(storage_err("failed to prepare bad_files prune"))?;
-                let result = stmt
-                    .query_map(params![root_str], |row| Ok((row.get(0)?, row.get(1)?)))
-                    .map_err(storage_err("failed to query bad_files"))?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .map_err(storage_err("failed to collect bad_files"))?;
-                result
-            };
-            let missing_bad_ids: Vec<&str> = bad_files
-                .iter()
-                .filter(|(_, path)| !Path::new(path).exists())
-                .map(|(id, _)| id.as_str())
-                .collect();
-            self.chunked_delete("bad_files", "id", &missing_bad_ids)?;
-        }
-
-        // Phase 1: Query file paths under root (release connection after)
-        let files: Vec<(String, String)> = {
-            let conn = self.conn()?;
-            let mut stmt = conn
-                .prepare("SELECT id, path FROM files WHERE path LIKE ?1 || '%' ESCAPE '\\'")
-                .map_err(storage_err("failed to prepare prune query"))?;
-
-            let result = stmt
-                .query_map(params![root_str], |row| Ok((row.get(0)?, row.get(1)?)))
-                .map_err(storage_err("failed to query files"))?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(storage_err("failed to collect files"))?;
-            result
-        };
-
-        // Phase 2: Check filesystem (no connection held)
-        let missing_ids: Vec<&str> = files
-            .iter()
-            .filter(|(_, path)| !Path::new(path).exists())
-            .map(|(id, _)| id.as_str())
-            .collect();
-
-        if missing_ids.is_empty() {
-            return Ok(0);
-        }
-
-        // Phase 3: Delete dependents then files.
-        // Explicit deletion of plans and processing_stats ensures cleanup works
-        // on existing databases where CASCADE constraints may be missing.
-        self.chunked_delete("plans", "file_id", &missing_ids)?;
-        self.chunked_delete("processing_stats", "file_id", &missing_ids)?;
-        let pruned = self.chunked_delete("files", "id", &missing_ids)?;
-
-        Ok(pruned)
-    }
-}
-
-impl FileHistoryStorage for SqliteStore {
-    fn get_file_history(&self, path: &Path) -> Result<Vec<voom_domain::storage::FileHistoryEntry>> {
-        let conn = self.conn()?;
-        let path_str = path.to_string_lossy().to_string();
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, file_id, path, content_hash, container, track_count, introspected_at, archived_at
-                 FROM file_history WHERE path = ?1 ORDER BY archived_at",
-            )
-            .map_err(storage_err("failed to prepare history query"))?;
-
-        let entries = stmt
-            .query_map(params![path_str], |row| {
-                let id_str: String = row.get("id")?;
-                let file_id_str: String = row.get("file_id")?;
-                Ok(voom_domain::storage::FileHistoryEntry {
-                    id: row_uuid(&id_str, "file_history")?,
-                    file_id: row_uuid(&file_id_str, "file_history")?,
-                    path: PathBuf::from(row.get::<_, String>("path")?),
-                    content_hash: row.get("content_hash")?,
-                    container: row.get("container")?,
-                    track_count: u32::try_from(row.get::<_, i32>("track_count")?).unwrap_or(0),
-                    introspected_at: row.get("introspected_at")?,
-                    archived_at: row.get("archived_at")?,
-                })
-            })
-            .map_err(storage_err("failed to query history"))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(storage_err("failed to collect history"))?;
-
-        Ok(entries)
     }
 }
 
@@ -1215,7 +389,7 @@ impl FileHistoryStorage for SqliteStore {
 impl SqliteStore {
     /// Delete rows from `table` where `column` matches any of `ids`, in chunks of 500.
     /// Returns the total number of rows deleted.
-    fn chunked_delete(&self, table: &str, column: &str, ids: &[&str]) -> Result<u64> {
+    pub(crate) fn chunked_delete(&self, table: &str, column: &str, ids: &[&str]) -> Result<u64> {
         if ids.is_empty() {
             return Ok(0);
         }
@@ -1239,7 +413,7 @@ impl SqliteStore {
         Ok(total)
     }
 
-    fn load_tracks_batch(
+    pub(crate) fn load_tracks_batch(
         &self,
         conn: &rusqlite::Connection,
         file_ids: &[Uuid],
@@ -1285,7 +459,11 @@ impl SqliteStore {
         Ok(result)
     }
 
-    fn load_tracks(&self, conn: &rusqlite::Connection, file_id: &Uuid) -> Result<Vec<Track>> {
+    pub(crate) fn load_tracks(
+        &self,
+        conn: &rusqlite::Connection,
+        file_id: &Uuid,
+    ) -> Result<Vec<Track>> {
         let mut stmt = conn
             .prepare(
                 "SELECT stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format
@@ -1303,59 +481,15 @@ impl SqliteStore {
     }
 }
 
-fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
-    let id_str: String = row.get("id")?;
-    let path_str: String = row.get("path")?;
-    let error_source_str: String = row.get("error_source")?;
-    let first_seen_str: String = row.get("first_seen_at")?;
-    let last_seen_str: String = row.get("last_seen_at")?;
-
-    Ok(BadFile {
-        id: row_uuid(&id_str, "bad_files")?,
-        path: PathBuf::from(path_str),
-        size: row.get::<_, i64>("size")? as u64,
-        content_hash: row.get("content_hash")?,
-        error: row.get("error")?,
-        error_source: error_source_str.parse::<BadFileSource>().unwrap_or_else(|_| {
-            tracing::warn!(error_source = %error_source_str, "unknown error_source in bad_files table");
-            BadFileSource::Introspection
-        }),
-        attempt_count: u32::try_from(row.get::<_, i64>("attempt_count")?).unwrap_or(0),
-        first_seen_at: DateTime::parse_from_rfc3339(&first_seen_str)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|e| {
-                tracing::warn!(first_seen_at = %first_seen_str, error = %e, "corrupt datetime in bad_files table");
-                DateTime::default()
-            }),
-        last_seen_at: DateTime::parse_from_rfc3339(&last_seen_str)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|e| {
-                tracing::warn!(last_seen_at = %last_seen_str, error = %e, "corrupt datetime in bad_files table");
-                DateTime::default()
-            }),
-    })
-}
-
-/// Extension trait for `rusqlite::Result<T>` to convert to `Option<T>`.
-trait OptionalExt<T> {
-    fn optional(self) -> rusqlite::Result<Option<T>>;
-}
-
-impl<T> OptionalExt<T> for rusqlite::Result<T> {
-    fn optional(self) -> rusqlite::Result<Option<T>> {
-        match self {
-            Ok(v) => Ok(Some(v)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use voom_domain::media::{Container, Track, TrackType};
     use voom_domain::plan::{OperationType, PlannedAction};
+    use voom_domain::storage::{
+        BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,
+        JobStorage, MaintenanceStorage, PlanStatus, PlanStorage, PluginDataStorage, StatsStorage,
+    };
 
     fn test_store() -> SqliteStore {
         SqliteStore::in_memory().unwrap()
@@ -1598,7 +732,7 @@ mod tests {
         let job = Job::new("scan".into());
         store.create_job(&job).unwrap();
 
-        let update = JobUpdate {
+        let update = voom_domain::job::JobUpdate {
             status: Some(JobStatus::Running),
             progress: Some(0.5),
             progress_message: Some(Some("Scanning...".into())),
@@ -1715,7 +849,7 @@ mod tests {
         let file = sample_file();
         store.upsert_file(&file).unwrap();
 
-        let plan = Plan {
+        let plan = voom_domain::plan::Plan {
             id: Uuid::new_v4(),
             file: file.clone(),
             policy_name: "default".into(),
@@ -1750,7 +884,8 @@ mod tests {
         let file = sample_file();
         store.upsert_file(&file).unwrap();
 
-        let mut stats = ProcessingStats::new(file.id, "default".into(), "normalize".into());
+        let mut stats =
+            voom_domain::stats::ProcessingStats::new(file.id, "default".into(), "normalize".into());
         stats.outcome = voom_domain::stats::ProcessingOutcome::Success;
         stats.duration_ms = 1500;
         stats.actions_taken = 3;
@@ -2015,7 +1150,7 @@ mod tests {
         let file = sample_file();
         store.upsert_file(&file).unwrap();
 
-        let plan = Plan {
+        let plan = voom_domain::plan::Plan {
             id: Uuid::new_v4(),
             file: file.clone(),
             policy_name: "default".into(),
@@ -2049,7 +1184,7 @@ mod tests {
         let file = sample_file();
         store.upsert_file(&file).unwrap();
 
-        let plan = Plan {
+        let plan = voom_domain::plan::Plan {
             id: Uuid::new_v4(),
             file: file.clone(),
             policy_name: "default".into(),

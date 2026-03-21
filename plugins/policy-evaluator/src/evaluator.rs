@@ -221,18 +221,30 @@ fn emit_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), 
 fn emit_set_container(container: &str, ctx: &mut PhaseContext) {
     let target = Container::from_extension(container);
     if ctx.file.container != target {
-        ctx.plan.actions.push(PlannedAction {
-            operation: OperationType::ConvertContainer,
-            track_index: None,
-            parameters: serde_json::json!({
-                "target": container,
-            }),
-            description: format!(
+        ctx.plan.actions.push(PlannedAction::file_op(
+            OperationType::ConvertContainer,
+            serde_json::json!({ "target": container }),
+            format!(
                 "Convert container from {} to {container}",
                 ctx.file.container.as_str()
             ),
-        });
+        ));
     }
+}
+
+fn emit_remove_track(track: &Track, target: &TrackTarget, reason: &str, ctx: &mut PhaseContext) {
+    ctx.plan.actions.push(PlannedAction::track_op(
+        OperationType::RemoveTrack,
+        track.index,
+        serde_json::json!({ "reason": reason }),
+        format!(
+            "Remove {} track {} ({}, {})",
+            target_str(target),
+            track.index,
+            track.codec,
+            track.language
+        ),
+    ));
 }
 
 fn emit_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
@@ -243,20 +255,7 @@ fn emit_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut Ph
             None => false, // "keep audio" with no filter keeps all
         };
         if should_remove {
-            ctx.plan.actions.push(PlannedAction {
-                operation: OperationType::RemoveTrack,
-                track_index: Some(track.index),
-                parameters: serde_json::json!({
-                    "reason": "does not match keep filter",
-                }),
-                description: format!(
-                    "Remove {} track {} ({}, {})",
-                    target_str(target),
-                    track.index,
-                    track.codec,
-                    track.language
-                ),
-            });
+            emit_remove_track(track, target, "does not match keep filter", ctx);
         }
     }
 }
@@ -269,33 +268,43 @@ fn emit_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut 
             None => true, // "remove audio" with no filter removes all
         };
         if should_remove {
-            ctx.plan.actions.push(PlannedAction {
-                operation: OperationType::RemoveTrack,
-                track_index: Some(track.index),
-                parameters: serde_json::json!({
-                    "reason": "matches remove filter",
-                }),
-                description: format!(
-                    "Remove {} track {} ({}, {})",
-                    target_str(target),
-                    track.index,
-                    track.codec,
-                    track.language
-                ),
-            });
+            emit_remove_track(track, target, "matches remove filter", ctx);
         }
     }
 }
 
 fn emit_reorder(order: &[String], ctx: &mut PhaseContext) {
-    ctx.plan.actions.push(PlannedAction {
-        operation: OperationType::ReorderTracks,
-        track_index: None,
-        parameters: serde_json::json!({
-            "order": order,
-        }),
-        description: format!("Reorder tracks: {}", order.join(", ")),
-    });
+    ctx.plan.actions.push(PlannedAction::file_op(
+        OperationType::ReorderTracks,
+        serde_json::json!({ "order": order }),
+        format!("Reorder tracks: {}", order.join(", ")),
+    ));
+}
+
+fn emit_set_default(target: &TrackTarget, track: &Track, detail: &str, ctx: &mut PhaseContext) {
+    ctx.plan.actions.push(PlannedAction::track_op(
+        OperationType::SetDefault,
+        track.index,
+        serde_json::json!({}),
+        format!(
+            "Set default on {} track {}{detail}",
+            target_str(target),
+            track.index
+        ),
+    ));
+}
+
+fn emit_clear_default(target: &TrackTarget, track: &Track, detail: &str, ctx: &mut PhaseContext) {
+    ctx.plan.actions.push(PlannedAction::track_op(
+        OperationType::ClearDefault,
+        track.index,
+        serde_json::json!({}),
+        format!(
+            "Clear default flag on {} track {}{detail}",
+            target_str(target),
+            track.index
+        ),
+    ));
 }
 
 fn emit_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
@@ -305,45 +314,18 @@ fn emit_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
             DefaultStrategy::None => {
                 for track in &tracks {
                     if track.is_default {
-                        ctx.plan.actions.push(PlannedAction {
-                            operation: OperationType::ClearDefault,
-                            track_index: Some(track.index),
-                            parameters: serde_json::json!({}),
-                            description: format!(
-                                "Clear default flag on {} track {}",
-                                target_str(&default.target),
-                                track.index
-                            ),
-                        });
+                        emit_clear_default(&default.target, track, "", ctx);
                     }
                 }
             }
             DefaultStrategy::First => {
                 if let Some((first_track, rest)) = tracks.split_first() {
                     if !first_track.is_default {
-                        ctx.plan.actions.push(PlannedAction {
-                            operation: OperationType::SetDefault,
-                            track_index: Some(first_track.index),
-                            parameters: serde_json::json!({}),
-                            description: format!(
-                                "Set default on {} track {}",
-                                target_str(&default.target),
-                                first_track.index
-                            ),
-                        });
+                        emit_set_default(&default.target, first_track, "", ctx);
                     }
                     for track in rest {
                         if track.is_default {
-                            ctx.plan.actions.push(PlannedAction {
-                                operation: OperationType::ClearDefault,
-                                track_index: Some(track.index),
-                                parameters: serde_json::json!({}),
-                                description: format!(
-                                    "Clear default flag on {} track {}",
-                                    target_str(&default.target),
-                                    track.index
-                                ),
-                            });
+                            emit_clear_default(&default.target, track, "", ctx);
                         }
                     }
                 }
@@ -353,45 +335,26 @@ fn emit_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
                 for track in &tracks {
                     let is_first = seen_langs.insert(track.language.clone());
                     if is_first && !track.is_default {
-                        ctx.plan.actions.push(PlannedAction {
-                            operation: OperationType::SetDefault,
-                            track_index: Some(track.index),
-                            parameters: serde_json::json!({}),
-                            description: format!(
-                                "Set default on {} track {} (first for lang '{}')",
-                                target_str(&default.target),
-                                track.index,
-                                track.language
-                            ),
-                        });
+                        emit_set_default(
+                            &default.target,
+                            track,
+                            &format!(" (first for lang '{}')", track.language),
+                            ctx,
+                        );
                     } else if !is_first && track.is_default {
-                        ctx.plan.actions.push(PlannedAction {
-                            operation: OperationType::ClearDefault,
-                            track_index: Some(track.index),
-                            parameters: serde_json::json!({}),
-                            description: format!(
-                                "Clear default flag on {} track {} (not first for lang '{}')",
-                                target_str(&default.target),
-                                track.index,
-                                track.language
-                            ),
-                        });
+                        emit_clear_default(
+                            &default.target,
+                            track,
+                            &format!(" (not first for lang '{}')", track.language),
+                            ctx,
+                        );
                     }
                 }
             }
             DefaultStrategy::All => {
                 for track in &tracks {
                     if !track.is_default {
-                        ctx.plan.actions.push(PlannedAction {
-                            operation: OperationType::SetDefault,
-                            track_index: Some(track.index),
-                            parameters: serde_json::json!({}),
-                            description: format!(
-                                "Set default on {} track {}",
-                                target_str(&default.target),
-                                track.index
-                            ),
-                        });
+                        emit_set_default(&default.target, track, "", ctx);
                     }
                 }
             }
@@ -420,40 +383,31 @@ fn emit_clear_actions(
 
     for track in &tracks {
         if clear_default && track.is_default {
-            ctx.plan.actions.push(PlannedAction {
-                operation: OperationType::ClearDefault,
-                track_index: Some(track.index),
-                parameters: serde_json::json!({}),
-                description: format!(
-                    "Clear default flag on {} track {}",
-                    target_str(target),
-                    track.index
-                ),
-            });
+            emit_clear_default(target, track, "", ctx);
         }
         if clear_forced && track.is_forced {
-            ctx.plan.actions.push(PlannedAction {
-                operation: OperationType::ClearForced,
-                track_index: Some(track.index),
-                parameters: serde_json::json!({}),
-                description: format!(
+            ctx.plan.actions.push(PlannedAction::track_op(
+                OperationType::ClearForced,
+                track.index,
+                serde_json::json!({}),
+                format!(
                     "Clear forced flag on {} track {}",
                     target_str(target),
                     track.index
                 ),
-            });
+            ));
         }
         if clear_titles && !track.title.is_empty() {
-            ctx.plan.actions.push(PlannedAction {
-                operation: OperationType::SetTitle,
-                track_index: Some(track.index),
-                parameters: serde_json::json!({"title": ""}),
-                description: format!(
+            ctx.plan.actions.push(PlannedAction::track_op(
+                OperationType::SetTitle,
+                track.index,
+                serde_json::json!({"title": ""}),
+                format!(
                     "Clear title on {} track {}",
                     target_str(target),
                     track.index
                 ),
-            });
+            ));
         }
     }
 }
@@ -495,17 +449,17 @@ fn emit_transcode(
         let mut params = settings.clone();
         params.insert("codec".into(), serde_json::Value::String(codec.into()));
 
-        ctx.plan.actions.push(PlannedAction {
+        ctx.plan.actions.push(PlannedAction::track_op(
             operation,
-            track_index: Some(track.index),
-            parameters: serde_json::json!(params),
-            description: format!(
+            track.index,
+            serde_json::json!(params),
+            format!(
                 "Transcode {} track {} from {} to {codec}",
                 target_str(target),
                 track.index,
                 track.codec
             ),
-        });
+        ));
     }
 }
 
@@ -587,12 +541,11 @@ fn emit_clear_tags(ctx: &mut PhaseContext) {
     }
     let mut tag_keys: Vec<String> = ctx.file.tags.keys().cloned().collect();
     tag_keys.sort();
-    ctx.plan.actions.push(PlannedAction {
-        operation: OperationType::ClearContainerTags,
-        track_index: None,
-        parameters: serde_json::json!({ "tags": tag_keys }),
-        description: format!("Clear all container tags ({})", tag_keys.join(", ")),
-    });
+    ctx.plan.actions.push(PlannedAction::file_op(
+        OperationType::ClearContainerTags,
+        serde_json::json!({ "tags": tag_keys }),
+        format!("Clear all container tags ({})", tag_keys.join(", ")),
+    ));
 }
 
 fn emit_set_tag(
@@ -602,23 +555,21 @@ fn emit_set_tag(
 ) -> Result<(), String> {
     let val = resolve_value_or_field(value, ctx.file)
         .ok_or_else(|| format!("Cannot resolve tag value for '{tag}'"))?;
-    ctx.plan.actions.push(PlannedAction {
-        operation: OperationType::SetContainerTag,
-        track_index: None,
-        parameters: serde_json::json!({ "tag": tag, "value": val }),
-        description: format!("Set container tag '{tag}' = '{val}'"),
-    });
+    ctx.plan.actions.push(PlannedAction::file_op(
+        OperationType::SetContainerTag,
+        serde_json::json!({ "tag": tag, "value": val }),
+        format!("Set container tag '{tag}' = '{val}'"),
+    ));
     Ok(())
 }
 
 fn emit_delete_tag(tag: &str, ctx: &mut PhaseContext) {
     if ctx.file.tags.contains_key(tag) {
-        ctx.plan.actions.push(PlannedAction {
-            operation: OperationType::DeleteContainerTag,
-            track_index: None,
-            parameters: serde_json::json!({ "tag": tag }),
-            description: format!("Delete container tag '{tag}'"),
-        });
+        ctx.plan.actions.push(PlannedAction::file_op(
+            OperationType::DeleteContainerTag,
+            serde_json::json!({ "tag": tag }),
+            format!("Delete container tag '{tag}'"),
+        ));
     } else {
         tracing::debug!(tag, "delete_tag: tag not present in file, skipping");
     }

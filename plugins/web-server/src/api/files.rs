@@ -50,7 +50,10 @@ const MAX_FILTER_STRING_LEN: usize = 256;
 fn truncate_filter(s: Option<String>) -> Option<String> {
     s.map(|v| {
         if v.len() > MAX_FILTER_STRING_LEN {
-            v[..MAX_FILTER_STRING_LEN].to_string()
+            match v.char_indices().nth(MAX_FILTER_STRING_LEN) {
+                Some((idx, _)) => v[..idx].to_string(),
+                None => v,
+            }
         } else {
             v
         }
@@ -104,9 +107,16 @@ pub async fn delete_file(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<DeleteResponse>, WebError> {
+    let store_check = state.store.clone();
     let store = state.store.clone();
-    spawn_store_op(move || store.delete_file(&id)).await?;
 
+    // Verify the file exists before deleting
+    let file = spawn_store_op(move || store_check.get_file(&id)).await?;
+    if file.is_none() {
+        return Ok(Json(DeleteResponse { deleted: false }));
+    }
+
+    spawn_store_op(move || store.delete_file(&id)).await?;
     Ok(Json(DeleteResponse { deleted: true }))
 }
 

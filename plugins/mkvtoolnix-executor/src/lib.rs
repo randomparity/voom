@@ -2,6 +2,9 @@
 
 #![allow(clippy::missing_errors_doc)]
 
+pub mod merge;
+pub mod propedit;
+
 use std::ffi::OsStr;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
@@ -14,8 +17,19 @@ use voom_domain::plan::{ActionResult, OperationType, Plan, PlannedAction};
 use voom_kernel::Plugin;
 use wait_timeout::ChildExt;
 
-pub mod merge;
-pub mod propedit;
+/// Drain stdout and stderr pipes from a child process into buffers.
+fn drain_pipes(child: &mut std::process::Child) -> (Vec<u8>, Vec<u8>) {
+    use std::io::Read;
+    let mut stdout_buf = Vec::new();
+    let mut stderr_buf = Vec::new();
+    if let Some(mut out) = child.stdout.take() {
+        out.read_to_end(&mut stdout_buf).ok();
+    }
+    if let Some(mut err) = child.stderr.take() {
+        err.read_to_end(&mut stderr_buf).ok();
+    }
+    (stdout_buf, stderr_buf)
+}
 
 /// Run a subprocess with a timeout, killing it if it exceeds the deadline.
 fn run_with_timeout(tool: &str, args: &[impl AsRef<OsStr>], timeout: Duration) -> Result<Output> {
@@ -31,35 +45,16 @@ fn run_with_timeout(tool: &str, args: &[impl AsRef<OsStr>], timeout: Duration) -
 
     match child.wait_timeout(timeout) {
         Ok(Some(status)) => {
-            // Process already exited — drain stdout/stderr from the pipes
-            // (cannot use wait_with_output here since the process is already reaped).
-            use std::io::Read;
-            let mut stdout_buf = Vec::new();
-            let mut stderr_buf = Vec::new();
-            if let Some(mut out) = child.stdout.take() {
-                out.read_to_end(&mut stdout_buf).ok();
-            }
-            if let Some(mut err) = child.stderr.take() {
-                err.read_to_end(&mut stderr_buf).ok();
-            }
+            let (stdout, stderr) = drain_pipes(&mut child);
             Ok(Output {
                 status,
-                stdout: stdout_buf,
-                stderr: stderr_buf,
+                stdout,
+                stderr,
             })
         }
         Ok(None) => {
-            // Timed out — kill the process and drain its pipes to avoid zombies.
             child.kill().ok();
-            use std::io::Read;
-            let mut stdout_buf = Vec::new();
-            let mut stderr_buf = Vec::new();
-            if let Some(mut out) = child.stdout.take() {
-                out.read_to_end(&mut stdout_buf).ok();
-            }
-            if let Some(mut err) = child.stderr.take() {
-                err.read_to_end(&mut stderr_buf).ok();
-            }
+            drain_pipes(&mut child);
             child.wait().ok();
             Err(VoomError::ToolExecution {
                 tool: tool.into(),

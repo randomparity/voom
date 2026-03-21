@@ -295,8 +295,9 @@ pub enum OutputFormat {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum ErrorHandling {
-    Skip,
+    /// Continue processing remaining files after an error.
     Continue,
+    /// Stop all processing on the first error.
     Fail,
 }
 
@@ -454,7 +455,7 @@ mod tests {
             "p.voom",
             "--dry-run",
             "--on-error",
-            "skip",
+            "continue",
             "--workers",
             "8",
             "--approve",
@@ -463,7 +464,7 @@ mod tests {
         match cli.command {
             Commands::Process(args) => {
                 assert!(args.dry_run);
-                assert!(matches!(args.on_error, ErrorHandling::Skip));
+                assert!(matches!(args.on_error, ErrorHandling::Continue));
                 assert_eq!(args.workers, 8);
                 assert!(args.approve);
                 assert!(args.no_backup);

@@ -114,12 +114,12 @@ impl FfmpegExecutorPlugin {
         !(is_mkv && only_metadata)
     }
 
-    /// Build an `FFmpeg` command from the plan's actions.
+    /// Execute a plan by building FFmpeg commands from the plan's actions.
     ///
-    /// This method constructs the command but does not actually run the
+    /// This method constructs the commands but does not actually run the
     /// subprocess -- that is left to the caller or the event handler.
     /// Returns the expected action results.
-    pub fn build_plan(&self, plan: &Plan) -> Result<Vec<ActionResult>> {
+    pub fn execute_plan(&self, plan: &Plan) -> Result<Vec<ActionResult>> {
         if !self.can_handle(plan) {
             return Err(VoomError::Plugin {
                 plugin: "ffmpeg-executor".into(),
@@ -186,7 +186,7 @@ impl FfmpegExecutorPlugin {
 
         Ok(Some(EventResult::from_plan_execution(
             "ffmpeg-executor",
-            self.build_plan(plan),
+            self.execute_plan(plan),
         )))
     }
 }
@@ -426,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_plan_transcode() {
+    fn test_execute_plan_transcode() {
         let plugin = FfmpegExecutorPlugin::new();
 
         let plan = plan_with_actions(
@@ -439,14 +439,14 @@ mod tests {
             }],
         );
 
-        let results = plugin.build_plan(&plan).unwrap();
+        let results = plugin.execute_plan(&plan).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].success);
         assert_eq!(results[0].operation, OperationType::TranscodeVideo);
     }
 
     #[test]
-    fn test_build_plan_not_handleable() {
+    fn test_execute_plan_not_handleable() {
         let plugin = FfmpegExecutorPlugin::new();
 
         // MKV + metadata only — cannot handle
@@ -460,7 +460,7 @@ mod tests {
             }],
         );
 
-        assert!(plugin.build_plan(&plan).is_err());
+        assert!(plugin.execute_plan(&plan).is_err());
     }
 
     #[test]

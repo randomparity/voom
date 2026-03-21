@@ -70,6 +70,39 @@ pub struct PlannedAction {
     pub description: String,
 }
 
+impl PlannedAction {
+    /// Create a new planned action for a file-level operation (no track index).
+    #[must_use]
+    pub fn file_op(
+        operation: OperationType,
+        parameters: serde_json::Value,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            operation,
+            track_index: None,
+            parameters,
+            description: description.into(),
+        }
+    }
+
+    /// Create a new planned action targeting a specific track.
+    #[must_use]
+    pub fn track_op(
+        operation: OperationType,
+        track_index: u32,
+        parameters: serde_json::Value,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            operation,
+            track_index: Some(track_index),
+            parameters,
+            description: description.into(),
+        }
+    }
+}
+
 /// The type of operation to perform on a media file.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

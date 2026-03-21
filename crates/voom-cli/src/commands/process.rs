@@ -90,7 +90,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
 
     let on_error = match args.on_error {
         ErrorHandling::Fail => ErrorStrategy::Fail,
-        ErrorHandling::Skip | ErrorHandling::Continue => ErrorStrategy::Continue,
+        ErrorHandling::Continue => ErrorStrategy::Continue,
     };
 
     if token.is_cancelled() {
@@ -402,7 +402,9 @@ fn print_interrupted_summary(pool: &WorkerPool, file_count: usize) {
 fn print_summary(pool: &WorkerPool, file_count: usize, effective_workers: usize, dry_run: bool) {
     let completed = pool.completed_count();
     let failed = pool.failed_count();
-    let skipped = file_count as u64 - completed - failed;
+    let skipped = (file_count as u64)
+        .saturating_sub(completed)
+        .saturating_sub(failed);
 
     println!(
         "\n{} {} processed, {} skipped, {} errors (workers: {})",

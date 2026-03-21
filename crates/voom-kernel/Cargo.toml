@@ -11,7 +11,7 @@ description = "Core kernel for VOOM — event bus, plugin registry, and capabili
 
 [dependencies]
 voom-domain = { workspace = true }
-voom-wit = { path = "../voom-wit" }
+voom-wit = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
