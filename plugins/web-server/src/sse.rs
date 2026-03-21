@@ -8,9 +8,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseAxumEvent, KeepAlive, Sse};
 use axum::response::IntoResponse;
-use futures_core::Stream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 
 use crate::state::AppState;

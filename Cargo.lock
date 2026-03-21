@@ -3320,7 +3320,6 @@ dependencies = [
  "axum",
  "axum-test",
  "chrono",
- "futures-core",
  "serde",
  "serde_json",
  "subtle",

@@ -26,7 +26,6 @@ tera = "1"
 # Async
 tokio.workspace = true
 tokio-stream = { version = "0.1", features = ["sync"] }
-futures-core = "0.3"
 
 # Serialization
 serde.workspace = true

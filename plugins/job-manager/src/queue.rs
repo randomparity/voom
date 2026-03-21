@@ -124,12 +124,17 @@ impl JobQueue {
         self.store.get_job(job_id)
     }
 
-    /// List jobs, optionally filtered by status.
-    pub fn list(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>> {
+    /// List jobs, optionally filtered by status, with limit and offset for pagination.
+    pub fn list(
+        &self,
+        status: Option<JobStatus>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> Result<Vec<Job>> {
         self.store.list_jobs(&JobFilters {
             status,
             limit,
-            ..Default::default()
+            offset,
         })
     }
 
@@ -236,13 +241,13 @@ mod tests {
         queue.enqueue("c", 100, None).unwrap();
         queue.claim("w-1").unwrap(); // claims first by priority/time
 
-        let all = queue.list(None, None).unwrap();
+        let all = queue.list(None, None, None).unwrap();
         assert_eq!(all.len(), 3);
 
-        let pending = queue.list(Some(JobStatus::Pending), None).unwrap();
+        let pending = queue.list(Some(JobStatus::Pending), None, None).unwrap();
         assert_eq!(pending.len(), 2);
 
-        let running = queue.list(Some(JobStatus::Running), None).unwrap();
+        let running = queue.list(Some(JobStatus::Running), None, None).unwrap();
         assert_eq!(running.len(), 1);
     }
 

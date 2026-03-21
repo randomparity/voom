@@ -8,7 +8,15 @@ use crate::errors::{spawn_store_op, WebError};
 use crate::state::AppState;
 
 /// Known tool names that the tool-detector plugin reports.
-const KNOWN_TOOLS: &[&str] = &["ffprobe", "ffmpeg", "mkvpropedit", "mkvmerge", "mediainfo"];
+const KNOWN_TOOLS: &[&str] = &[
+    "ffprobe",
+    "ffmpeg",
+    "mkvmerge",
+    "mkvpropedit",
+    "mkvextract",
+    "mediainfo",
+    "HandBrakeCLI",
+];
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DetectedTool {
@@ -56,8 +64,10 @@ mod tests {
         assert!(KNOWN_TOOLS.contains(&"ffmpeg"));
         assert!(KNOWN_TOOLS.contains(&"mkvpropedit"));
         assert!(KNOWN_TOOLS.contains(&"mkvmerge"));
+        assert!(KNOWN_TOOLS.contains(&"mkvextract"));
         assert!(KNOWN_TOOLS.contains(&"mediainfo"));
-        assert_eq!(KNOWN_TOOLS.len(), 5);
+        assert!(KNOWN_TOOLS.contains(&"HandBrakeCLI"));
+        assert_eq!(KNOWN_TOOLS.len(), 7);
     }
 
     #[test]

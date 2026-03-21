@@ -96,8 +96,10 @@ impl Plugin for PolicyEvaluatorPlugin {
         &self.capabilities
     }
 
-    fn handles(&self, event_type: &str) -> bool {
-        event_type == Event::POLICY_EVALUATE
+    fn handles(&self, _event_type: &str) -> bool {
+        // Policy evaluation is done via direct API call (evaluate() / evaluate_policy()),
+        // not through the event bus. Return false until storage integration is wired up.
+        false
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
@@ -155,9 +157,9 @@ mod tests {
     }
 
     #[test]
-    fn handles_policy_evaluate_event_type() {
+    fn handles_no_events_since_evaluation_is_direct_api() {
         let plugin = PolicyEvaluatorPlugin::new();
-        assert!(plugin.handles(Event::POLICY_EVALUATE));
+        assert!(!plugin.handles(Event::POLICY_EVALUATE));
         assert!(!plugin.handles(Event::FILE_INTROSPECTED));
         assert!(!plugin.handles(Event::PLAN_CREATED));
         assert!(!plugin.handles(""));
