@@ -92,7 +92,13 @@ impl PlanStorage for SqliteStore {
                     phase_name: row.get("phase_name")?,
                     status: {
                         let s: String = row.get("status")?;
-                        PlanStatus::parse(&s).unwrap_or(PlanStatus::Pending)
+                        PlanStatus::parse(&s).ok_or_else(|| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                format!("unknown plan status: {s}").into(),
+                            )
+                        })?
                     },
                     actions_json: row.get("actions")?,
                     warnings: row.get("warnings")?,

@@ -143,6 +143,40 @@ pub(crate) fn parse_uuid(s: &str) -> Result<Uuid> {
     Uuid::parse_str(s).map_err(|e| VoomError::Storage(format!("invalid UUID '{s}': {e}")))
 }
 
+/// Parse an optional datetime string, returning an error for corrupt values.
+fn parse_optional_datetime(
+    s: Option<String>,
+    field: &str,
+) -> rusqlite::Result<Option<DateTime<Utc>>> {
+    s.map(|v| {
+        v.parse().map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("corrupt datetime in {field}: {v}: {e}").into(),
+            )
+        })
+    })
+    .transpose()
+}
+
+/// Parse an optional JSON string, returning an error for corrupt values.
+fn parse_optional_json(
+    s: Option<String>,
+    field: &str,
+) -> rusqlite::Result<Option<serde_json::Value>> {
+    s.map(|v| {
+        serde_json::from_str(&v).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("invalid JSON in {field}: {e}").into(),
+            )
+        })
+    })
+    .transpose()
+}
+
 /// Escape LIKE wildcard characters so user-supplied strings match literally.
 pub(crate) fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
@@ -299,18 +333,10 @@ pub(crate) fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
             )
         })?,
         priority: row.get("priority")?,
-        payload: payload_str.and_then(|s| {
-            serde_json::from_str(&s)
-                .map_err(|e| tracing::warn!(error = %e, "invalid JSON payload in jobs table"))
-                .ok()
-        }),
+        payload: parse_optional_json(payload_str, "jobs.payload")?,
         progress: row.get("progress")?,
         progress_message: row.get("progress_message")?,
-        output: output_str.and_then(|s| {
-            serde_json::from_str(&s)
-                .map_err(|e| tracing::warn!(error = %e, "invalid JSON output in jobs table"))
-                .ok()
-        }),
+        output: parse_optional_json(output_str, "jobs.output")?,
         error: row.get("error")?,
         worker_id: row.get("worker_id")?,
         created_at: created_str.parse().map_err(|e| {
@@ -320,20 +346,8 @@ pub(crate) fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
                 format!("corrupt datetime in jobs.created_at: {created_str}: {e}").into(),
             )
         })?,
-        started_at: started_str.and_then(|s| {
-            s.parse()
-                .map_err(|e| {
-                    tracing::warn!(started_at = %s, error = %e, "corrupt datetime in jobs table");
-                })
-                .ok()
-        }),
-        completed_at: completed_str.and_then(|s| {
-            s.parse()
-                .map_err(|e| {
-                    tracing::warn!(completed_at = %s, error = %e, "corrupt datetime in jobs table");
-                })
-                .ok()
-        }),
+        started_at: parse_optional_datetime(started_str, "jobs.started_at")?,
+        completed_at: parse_optional_datetime(completed_str, "jobs.completed_at")?,
     })
 }
 
@@ -354,19 +368,31 @@ pub(crate) fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
             tracing::warn!(error_source = %error_source_str, "unknown error_source in bad_files table");
             BadFileSource::Introspection
         }),
-        attempt_count: u32::try_from(row.get::<_, i64>("attempt_count")?).unwrap_or(0),
+        attempt_count: u32::try_from(row.get::<_, i64>("attempt_count")?).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Integer,
+                format!("invalid attempt_count in bad_files: {e}").into(),
+            )
+        })?,
         first_seen_at: DateTime::parse_from_rfc3339(&first_seen_str)
             .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|e| {
-                tracing::warn!(first_seen_at = %first_seen_str, error = %e, "corrupt datetime in bad_files table");
-                DateTime::default()
-            }),
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    format!("corrupt datetime in bad_files.first_seen_at: {first_seen_str}: {e}").into(),
+                )
+            })?,
         last_seen_at: DateTime::parse_from_rfc3339(&last_seen_str)
             .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|e| {
-                tracing::warn!(last_seen_at = %last_seen_str, error = %e, "corrupt datetime in bad_files table");
-                DateTime::default()
-            }),
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    format!("corrupt datetime in bad_files.last_seen_at: {last_seen_str}: {e}").into(),
+                )
+            })?,
     })
 }
 
