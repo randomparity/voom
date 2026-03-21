@@ -451,11 +451,11 @@ impl ProgressReporter for CliProgressReporter {
     fn on_batch_start(&self, _total: usize) {}
 
     fn on_job_start(&self, job: &voom_domain::job::Job) {
-        if let Some(ref payload) = job.payload {
-            if let Some(path) = payload["path"].as_str() {
+        if let Some(ref raw) = job.payload {
+            if let Ok(payload) = serde_json::from_value::<ProcessJobPayload>(raw.clone()) {
                 // 57 = spinner + space + [bar:40] + space + pos/len + space
                 let max_name = max_filename_len(57);
-                let filename = std::path::Path::new(path)
+                let filename = std::path::Path::new(&payload.path)
                     .file_name()
                     .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
                     .unwrap_or_default();
