@@ -236,7 +236,13 @@ fn emit_remove_track(track: &Track, target: &TrackTarget, reason: &str, ctx: &mu
     ctx.plan.actions.push(PlannedAction::track_op(
         OperationType::RemoveTrack,
         track.index,
-        serde_json::json!({ "reason": reason }),
+        serde_json::json!({
+            "reason": reason,
+            "track_type": if track.track_type.is_video() { "video" }
+                          else if track.track_type.is_audio() { "audio" }
+                          else if track.track_type.is_subtitle() { "subtitle" }
+                          else { "attachment" },
+        }),
         format!(
             "Remove {} track {} ({}, {})",
             target_str(target),

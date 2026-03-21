@@ -21,13 +21,13 @@ rmp-serde = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 toml = { workspace = true }
-ureq = { workspace = true }
-wait-timeout = { workspace = true }
+ureq = { workspace = true, optional = true }
+wait-timeout = { workspace = true, optional = true }
 wasmtime = { workspace = true, optional = true }
 
 [features]
 default = []
-wasm = ["dep:wasmtime"]
+wasm = ["dep:wasmtime", "dep:ureq", "dep:wait-timeout"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

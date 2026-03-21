@@ -155,13 +155,9 @@ pub fn build_merge_args(
                         .as_str()
                         .unwrap_or("unknown");
                     match track_type {
-                        t if t.starts_with("video") || t == "Video" => video_removes.push(idx),
-                        t if t.starts_with("audio") || t.starts_with("Audio") => {
-                            audio_removes.push(idx)
-                        }
-                        t if t.starts_with("subtitle") || t.starts_with("Subtitle") => {
-                            subtitle_removes.push(idx)
-                        }
+                        "video" => video_removes.push(idx),
+                        "audio" => audio_removes.push(idx),
+                        "subtitle" => subtitle_removes.push(idx),
                         _ => {
                             // If track type is unknown, use a general approach:
                             // add to all removal lists and let mkvmerge ignore non-matching
@@ -247,7 +243,7 @@ mod tests {
         let action = make_action(
             OperationType::RemoveTrack,
             Some(3),
-            serde_json::json!({"track_type": "subtitle_main"}),
+            serde_json::json!({"track_type": "subtitle"}),
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_merge_args(
@@ -317,12 +313,12 @@ mod tests {
         let a1 = make_action(
             OperationType::RemoveTrack,
             Some(2),
-            serde_json::json!({"track_type": "audio_commentary"}),
+            serde_json::json!({"track_type": "audio"}),
         );
         let a2 = make_action(
             OperationType::RemoveTrack,
             Some(4),
-            serde_json::json!({"track_type": "subtitle_commentary"}),
+            serde_json::json!({"track_type": "subtitle"}),
         );
         let actions: Vec<&PlannedAction> = vec![&a1, &a2];
         let args = build_merge_args(
@@ -349,7 +345,7 @@ mod tests {
         let a1 = make_action(
             OperationType::RemoveTrack,
             Some(3),
-            serde_json::json!({"track_type": "audio_commentary"}),
+            serde_json::json!({"track_type": "audio"}),
         );
         let a2 = make_action(
             OperationType::ReorderTracks,

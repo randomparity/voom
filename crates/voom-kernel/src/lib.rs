@@ -3,6 +3,7 @@
 #![allow(clippy::missing_errors_doc)]
 
 pub mod bus;
+#[cfg(feature = "wasm")]
 pub mod host;
 pub mod loader;
 pub mod manifest;
