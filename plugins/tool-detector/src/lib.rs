@@ -142,6 +142,9 @@ impl Plugin for ToolDetectorPlugin {
 /// Detect a tool by running it and parsing the version output.
 fn detect_tool(name: &str, args: &[&str]) -> Option<DetectedTool> {
     let output = Command::new(name).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let version = parse_version(name, &stdout);

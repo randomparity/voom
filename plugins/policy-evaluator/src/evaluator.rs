@@ -223,7 +223,7 @@ fn emit_set_container(container: &str, ctx: &mut PhaseContext) {
     if ctx.file.container != target {
         ctx.plan.actions.push(PlannedAction::file_op(
             OperationType::ConvertContainer,
-            serde_json::json!({ "target": container }),
+            serde_json::json!({ "container": container }),
             format!(
                 "Convert container from {} to {container}",
                 ctx.file.container.as_str()
