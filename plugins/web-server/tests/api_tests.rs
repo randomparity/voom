@@ -158,13 +158,38 @@ async fn test_job_stats() {
 // === Plugin API Tests ===
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_list_plugins() {
+async fn test_list_plugins_empty_by_default() {
     let server = make_server(InMemoryStore::new());
     let resp = server.get("/api/plugins").await;
     resp.assert_status_ok();
     let body: serde_json::Value = resp.json();
     let plugins = body["plugins"].as_array().unwrap();
-    assert!(plugins.len() >= 10);
+    // No plugins registered in test state (populated from kernel at startup)
+    assert_eq!(plugins.len(), 0);
+    assert_eq!(body["total"], 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_plugins_with_data() {
+    let store = Arc::new(InMemoryStore::new());
+    let templates = voom_web_server::server::embedded_templates();
+    let plugin_info = vec![voom_web_server::api::plugins::PluginInfo {
+        name: "test-plugin".into(),
+        version: "0.1.0".into(),
+        capabilities: vec!["test".into()],
+    }];
+    let state =
+        voom_web_server::state::AppState::new(store, templates, None).with_plugin_info(plugin_info);
+    let router = voom_web_server::router::build_router(state);
+    let server = TestServer::new(router).unwrap();
+
+    let resp = server.get("/api/plugins").await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    let plugins = body["plugins"].as_array().unwrap();
+    assert_eq!(plugins.len(), 1);
+    assert_eq!(plugins[0]["name"], "test-plugin");
+    assert_eq!(body["total"], 1);
 }
 
 // === Stats API Tests ===

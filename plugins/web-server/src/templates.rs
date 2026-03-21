@@ -24,22 +24,18 @@ fn render(templates: &tera::Tera, name: &str, ctx: &tera::Context) -> HtmlResult
 
 /// GET / -- Dashboard
 pub async fn dashboard(State(state): State<AppState>) -> HtmlResult {
-    let recent_files_store = state.store.clone();
-    let count_store = state.store.clone();
-    let job_counts_store = state.store.clone();
+    let store = state.store.clone();
 
-    let total_files =
-        spawn_store_op(move || count_store.count_files(&FileFilters::default())).await?;
-
-    let files = spawn_store_op(move || {
-        recent_files_store.list_files(&FileFilters {
+    let (files, total_files, job_counts) = spawn_store_op(move || {
+        let total_files = store.count_files(&FileFilters::default())?;
+        let files = store.list_files(&FileFilters {
             limit: Some(10),
             ..Default::default()
-        })
+        })?;
+        let job_counts = store.count_jobs_by_status()?;
+        Ok((files, total_files, job_counts))
     })
     .await?;
-
-    let job_counts = spawn_store_op(move || job_counts_store.count_jobs_by_status()).await?;
 
     let mut ctx = tera::Context::new();
     ctx.insert("recent_files", &file_views(files));
@@ -97,14 +93,16 @@ pub async fn library(
 
 /// GET /files/:id -- File detail
 pub async fn file_detail(State(state): State<AppState>, Path(id): Path<uuid::Uuid>) -> HtmlResult {
-    let file_store = state.store.clone();
-    let plans_store = state.store.clone();
+    let store = state.store.clone();
 
-    let file = spawn_store_op(move || file_store.get_file(&id)).await?;
+    let (file, plans) = spawn_store_op(move || {
+        let file = store.get_file(&id)?;
+        let plans = store.get_plans_for_file(&id)?;
+        Ok((file, plans))
+    })
+    .await?;
 
     let file = file.ok_or_else(|| WebError::NotFound(format!("File {id} not found")))?;
-
-    let plans = spawn_store_op(move || plans_store.get_plans_for_file(&id)).await?;
 
     // StoredPlan doesn't derive Serialize, so convert to JSON values manually
     let plans_json: Vec<serde_json::Value> = plans

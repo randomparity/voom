@@ -45,6 +45,7 @@ pub struct FormatResponse {
 }
 
 /// POST /api/policy/validate -- validate DSL source
+#[tracing::instrument(skip(input))]
 pub async fn validate_policy(
     Json(input): Json<PolicyInput>,
 ) -> Result<Json<ValidateResponse>, WebError> {
@@ -98,6 +99,7 @@ pub async fn validate_policy(
 }
 
 /// POST /api/policy/format -- format DSL source
+#[tracing::instrument(skip(input))]
 pub async fn format_policy(
     Json(input): Json<PolicyInput>,
 ) -> Result<Json<FormatResponse>, WebError> {

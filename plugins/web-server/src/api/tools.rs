@@ -20,9 +20,11 @@ pub struct DetectedTool {
 #[derive(Debug, Serialize)]
 pub struct ToolListResponse {
     pub tools: Vec<DetectedTool>,
+    pub total: usize,
 }
 
 /// GET /api/tools -- list detected tools from the store.
+#[tracing::instrument(skip(state))]
 pub async fn list_tools(State(state): State<AppState>) -> Result<Json<ToolListResponse>, WebError> {
     let store = state.store.clone();
 
@@ -40,7 +42,8 @@ pub async fn list_tools(State(state): State<AppState>) -> Result<Json<ToolListRe
     })
     .await?;
 
-    Ok(Json(ToolListResponse { tools }))
+    let total = tools.len();
+    Ok(Json(ToolListResponse { tools, total }))
 }
 
 #[cfg(test)]
@@ -87,17 +90,23 @@ mod tests {
                 version: "81.0".into(),
                 path: "/usr/bin/mkvmerge".into(),
             }],
+            total: 1,
         };
         let json = serde_json::to_value(&response).unwrap();
         let tools = json["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["tool_name"], "mkvmerge");
+        assert_eq!(json["total"], 1);
     }
 
     #[test]
     fn tool_list_response_empty() {
-        let response = ToolListResponse { tools: vec![] };
+        let response = ToolListResponse {
+            tools: vec![],
+            total: 0,
+        };
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["tools"], serde_json::json!([]));
+        assert_eq!(json["total"], 0);
     }
 }

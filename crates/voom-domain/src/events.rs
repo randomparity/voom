@@ -6,27 +6,6 @@ use crate::bad_file::BadFileSource;
 use crate::media::MediaFile;
 use crate::plan::{ActionResult, Plan};
 
-/// String constants for every event type routed through the event bus.
-///
-/// Use these instead of string literals when implementing `Plugin::handles()`
-/// or matching on `Event::event_type()`.
-pub mod event_types {
-    pub const FILE_DISCOVERED: &str = "file.discovered";
-    pub const FILE_INTROSPECTED: &str = "file.introspected";
-    pub const FILE_INTROSPECTION_FAILED: &str = "file.introspection_failed";
-    pub const METADATA_ENRICHED: &str = "metadata.enriched";
-    pub const POLICY_EVALUATE: &str = "policy.evaluate";
-    pub const PLAN_CREATED: &str = "plan.created";
-    pub const PLAN_EXECUTING: &str = "plan.executing";
-    pub const PLAN_COMPLETED: &str = "plan.completed";
-    pub const PLAN_FAILED: &str = "plan.failed";
-    pub const JOB_STARTED: &str = "job.started";
-    pub const JOB_PROGRESS: &str = "job.progress";
-    pub const JOB_COMPLETED: &str = "job.completed";
-    pub const TOOL_DETECTED: &str = "tool.detected";
-    pub const PLUGIN_ERROR: &str = "plugin.error";
-}
-
 /// All event types that flow through the event bus.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,20 +34,20 @@ impl Event {
     // ── Event type constants ────────────────────────────────────
     // Use these instead of string literals in Plugin::handles() implementations
     // to get compile-time typo protection.
-    pub const FILE_DISCOVERED: &str = event_types::FILE_DISCOVERED;
-    pub const FILE_INTROSPECTED: &str = event_types::FILE_INTROSPECTED;
-    pub const FILE_INTROSPECTION_FAILED: &str = event_types::FILE_INTROSPECTION_FAILED;
-    pub const METADATA_ENRICHED: &str = event_types::METADATA_ENRICHED;
-    pub const POLICY_EVALUATE: &str = event_types::POLICY_EVALUATE;
-    pub const PLAN_CREATED: &str = event_types::PLAN_CREATED;
-    pub const PLAN_EXECUTING: &str = event_types::PLAN_EXECUTING;
-    pub const PLAN_COMPLETED: &str = event_types::PLAN_COMPLETED;
-    pub const PLAN_FAILED: &str = event_types::PLAN_FAILED;
-    pub const JOB_STARTED: &str = event_types::JOB_STARTED;
-    pub const JOB_PROGRESS: &str = event_types::JOB_PROGRESS;
-    pub const JOB_COMPLETED: &str = event_types::JOB_COMPLETED;
-    pub const TOOL_DETECTED: &str = event_types::TOOL_DETECTED;
-    pub const PLUGIN_ERROR: &str = event_types::PLUGIN_ERROR;
+    pub const FILE_DISCOVERED: &str = "file.discovered";
+    pub const FILE_INTROSPECTED: &str = "file.introspected";
+    pub const FILE_INTROSPECTION_FAILED: &str = "file.introspection_failed";
+    pub const METADATA_ENRICHED: &str = "metadata.enriched";
+    pub const POLICY_EVALUATE: &str = "policy.evaluate";
+    pub const PLAN_CREATED: &str = "plan.created";
+    pub const PLAN_EXECUTING: &str = "plan.executing";
+    pub const PLAN_COMPLETED: &str = "plan.completed";
+    pub const PLAN_FAILED: &str = "plan.failed";
+    pub const JOB_STARTED: &str = "job.started";
+    pub const JOB_PROGRESS: &str = "job.progress";
+    pub const JOB_COMPLETED: &str = "job.completed";
+    pub const TOOL_DETECTED: &str = "tool.detected";
+    pub const PLUGIN_ERROR: &str = "plugin.error";
 
     /// Returns the event type string used for subscription matching.
     #[must_use]

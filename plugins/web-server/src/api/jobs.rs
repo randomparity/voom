@@ -10,6 +10,9 @@ use crate::state::AppState;
 use voom_domain::job::{Job, JobStatus};
 use voom_domain::storage::JobFilters;
 
+/// Maximum allowed limit for job listing queries.
+const MAX_JOB_LIMIT: u32 = 10_000;
+
 #[derive(Debug, Deserialize)]
 pub struct ListJobsParams {
     pub status: Option<String>,
@@ -19,6 +22,7 @@ pub struct ListJobsParams {
 #[derive(Debug, Serialize)]
 pub struct JobListResponse {
     pub jobs: Vec<Job>,
+    pub total: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,12 +44,25 @@ pub async fn list_jobs(
 ) -> Result<Json<JobListResponse>, WebError> {
     let store = state.store.clone();
     let status = params.status.as_deref().and_then(JobStatus::parse);
-    let limit = params.limit;
+    let limit = params.limit.map(|l| l.min(MAX_JOB_LIMIT));
 
     let filters = JobFilters { status, limit };
-    let jobs = spawn_store_op(move || store.list_jobs(&filters)).await?;
+    let (jobs, total) = spawn_store_op(move || {
+        let jobs = store.list_jobs(&filters)?;
+        // Compute true total (independent of limit) using count_jobs_by_status
+        let counts = store.count_jobs_by_status()?;
+        let total = match status {
+            Some(s) => counts
+                .iter()
+                .find(|(st, _)| *st == s)
+                .map_or(0, |(_, c)| *c as usize),
+            None => counts.iter().map(|(_, c)| *c as usize).sum(),
+        };
+        Ok((jobs, total))
+    })
+    .await?;
 
-    Ok(Json(JobListResponse { jobs }))
+    Ok(Json(JobListResponse { jobs, total }))
 }
 
 /// GET /api/jobs/stats -- job counts by status
@@ -96,9 +113,13 @@ mod tests {
 
     #[test]
     fn job_list_response_serialization() {
-        let response = JobListResponse { jobs: vec![] };
+        let response = JobListResponse {
+            jobs: vec![],
+            total: 0,
+        };
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["jobs"], serde_json::json!([]));
+        assert_eq!(json["total"], 0);
     }
 
     #[test]

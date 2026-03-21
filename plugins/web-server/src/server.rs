@@ -17,6 +17,7 @@ pub struct ServerConfig {
     pub port: u16,
     pub template_dir: Option<String>,
     pub auth_token: Option<String>,
+    pub plugin_info: Vec<crate::api::plugins::PluginInfo>,
 }
 
 /// Start the web server.
@@ -28,7 +29,8 @@ pub async fn start_server(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     let templates = load_templates(config.template_dir.as_deref())?;
-    let state = AppState::new(store, templates, config.auth_token);
+    let state =
+        AppState::new(store, templates, config.auth_token).with_plugin_info(config.plugin_info);
     let router = build_router(state).layer(DefaultBodyLimit::max(2 * 1024 * 1024)); // 2 MiB
 
     let addr: SocketAddr = format!("{}:{}", config.host, config.port)
@@ -116,6 +118,7 @@ mod tests {
             port: 8080,
             template_dir: None,
             auth_token: Some("secret".into()),
+            plugin_info: vec![],
         };
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 8080);
@@ -130,6 +133,7 @@ mod tests {
             port: 3000,
             template_dir: Some("/tmp/templates".into()),
             auth_token: None,
+            plugin_info: vec![],
         };
         let cloned = config.clone();
         assert_eq!(cloned.host, "0.0.0.0");

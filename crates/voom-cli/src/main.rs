@@ -8,6 +8,8 @@ mod cli;
 mod commands;
 mod introspect;
 mod output;
+mod stats;
+mod tools;
 
 use cli::{Cli, Commands};
 

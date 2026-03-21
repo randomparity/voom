@@ -15,7 +15,10 @@ mod tests {
     use voom_domain::media::MediaFile;
     use voom_domain::plan::Plan;
     use voom_domain::stats::ProcessingStats;
-    use voom_domain::storage::{FileFilters, JobFilters, StorageTrait};
+    use voom_domain::storage::{
+        BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters, JobStorage,
+        MaintenanceStorage, PlanStorage, PluginDataStorage, StatsStorage,
+    };
 
     fn make_job(job_type: &str, priority: i32) -> Job {
         let mut job = Job::new(job_type.to_string());

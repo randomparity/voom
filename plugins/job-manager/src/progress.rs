@@ -74,15 +74,15 @@ impl ProgressReporter for TracingReporter {
     }
 }
 
-/// Reporter that stores progress in the database via `StorageTrait`.
+/// Reporter that stores progress in the database via `JobStorage`.
 ///
 /// Used in daemon mode where the web UI polls for progress updates.
 pub struct StorageReporter {
-    store: std::sync::Arc<dyn voom_domain::storage::StorageTrait>,
+    store: std::sync::Arc<dyn voom_domain::storage::JobStorage>,
 }
 
 impl StorageReporter {
-    pub fn new(store: std::sync::Arc<dyn voom_domain::storage::StorageTrait>) -> Self {
+    pub fn new(store: std::sync::Arc<dyn voom_domain::storage::JobStorage>) -> Self {
         Self { store }
     }
 }
@@ -190,7 +190,7 @@ mod tests {
 
         reporter.on_job_progress(job_id, 0.75, Some("Processing"));
 
-        use voom_domain::storage::StorageTrait;
+        use voom_domain::storage::JobStorage;
         let loaded = store.get_job(&job_id).unwrap().unwrap();
         assert_eq!(loaded.progress, 0.75);
         assert_eq!(loaded.progress_message.as_deref(), Some("Processing"));

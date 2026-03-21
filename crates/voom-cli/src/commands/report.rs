@@ -5,6 +5,7 @@ use console::style;
 use crate::app;
 use crate::cli::{OutputFormat, ReportArgs};
 use crate::output;
+use crate::stats;
 
 pub async fn run(args: ReportArgs) -> Result<()> {
     let config = app::load_config()?;
@@ -27,7 +28,7 @@ pub async fn run(args: ReportArgs) -> Result<()> {
             let report = serde_json::json!({
                 "total_files": files.len(),
                 "total_size": files.iter().map(|f| f.size).sum::<u64>(),
-                "containers": output::container_counts(&files),
+                "containers": stats::container_counts(&files),
                 "codecs": codec_counts(&files),
             });
             println!(
@@ -55,7 +56,7 @@ pub async fn run(args: ReportArgs) -> Result<()> {
 
             // Container breakdown
             println!("{}", style("Containers:").bold());
-            let containers = output::container_counts(&files);
+            let containers = stats::container_counts(&files);
             let mut table = output::new_table();
             table.set_header(vec!["Container", "Count"]);
             for (container, count) in &containers {
@@ -80,7 +81,7 @@ pub async fn run(args: ReportArgs) -> Result<()> {
 }
 
 fn codec_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
-    output::count_by(files, |f| {
+    stats::count_by(files, |f| {
         f.tracks.iter().map(|t| t.codec.clone()).collect::<Vec<_>>()
     })
 }

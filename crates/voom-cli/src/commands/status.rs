@@ -2,7 +2,7 @@ use anyhow::Result;
 use console::style;
 
 use crate::app;
-use crate::output;
+use crate::stats;
 
 pub async fn run() -> Result<()> {
     let config = app::load_config()?;
@@ -48,7 +48,7 @@ pub async fn run() -> Result<()> {
                     }
 
                     // Container breakdown (top 5)
-                    let sorted = output::container_counts(&files);
+                    let sorted = stats::container_counts(&files);
                     if !sorted.is_empty() {
                         let summary: Vec<String> = sorted
                             .iter()
@@ -95,7 +95,7 @@ mod tests {
             MediaFile::new(std::path::PathBuf::from("/b.mkv")).with_container(Container::Mkv),
             MediaFile::new(std::path::PathBuf::from("/c.mp4")).with_container(Container::Mp4),
         ];
-        let counts = crate::output::container_counts(&files);
+        let counts = crate::stats::container_counts(&files);
         assert_eq!(counts[0], ("mkv".to_string(), 2));
         assert_eq!(counts[1], ("mp4".to_string(), 1));
     }

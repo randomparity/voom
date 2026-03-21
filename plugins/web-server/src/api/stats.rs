@@ -18,13 +18,16 @@ pub struct DashboardStats {
 }
 
 /// GET /api/stats -- dashboard statistics
+#[tracing::instrument(skip(state))]
 pub async fn get_stats(State(state): State<AppState>) -> Result<Json<DashboardStats>, WebError> {
     let store = state.store.clone();
-    let store2 = state.store.clone();
 
-    let total_files = spawn_store_op(move || store.count_files(&FileFilters::default())).await?;
-
-    let job_counts = spawn_store_op(move || store2.count_jobs_by_status()).await?;
+    let (total_files, job_counts) = spawn_store_op(move || {
+        let total_files = store.count_files(&FileFilters::default())?;
+        let job_counts = store.count_jobs_by_status()?;
+        Ok((total_files, job_counts))
+    })
+    .await?;
 
     Ok(Json(DashboardStats {
         total_files: total_files as usize,

@@ -95,6 +95,9 @@ walkdir = "2"
 rayon = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
+# HTTP
+ureq = "2"
+
 # Subprocess & cleanup
 wait-timeout = "0.2"
 scopeguard = "1"

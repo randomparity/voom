@@ -19,10 +19,14 @@ use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::MediaFile;
 use crate::plan::Plan;
 use crate::stats::ProcessingStats;
-use crate::storage::{BadFileFilters, FileFilters, JobFilters, StorageTrait, StoredPlan};
+use crate::storage::{
+    BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,
+    JobStorage, MaintenanceStorage, PlanStorage, PluginDataStorage, StatsStorage, StoredPlan,
+};
 
-/// In-memory storage for testing. Implements the full `StorageTrait` with
-/// working file and job methods. Plan/stats/plugin-data methods are stubs.
+/// In-memory storage for testing. Implements the full `StorageTrait` via
+/// sub-traits with working file and job methods. Plan/stats/plugin-data
+/// methods are stubs.
 pub struct InMemoryStore {
     files: Mutex<HashMap<Uuid, MediaFile>>,
     jobs: Mutex<HashMap<Uuid, Job>>,
@@ -55,7 +59,7 @@ impl Default for InMemoryStore {
     }
 }
 
-impl StorageTrait for InMemoryStore {
+impl FileStorage for InMemoryStore {
     fn upsert_file(&self, file: &MediaFile) -> Result<()> {
         self.files.lock().unwrap().insert(file.id, file.clone());
         Ok(())
@@ -129,7 +133,9 @@ impl StorageTrait for InMemoryStore {
         self.files.lock().unwrap().remove(id);
         Ok(())
     }
+}
 
+impl JobStorage for InMemoryStore {
     fn create_job(&self, job: &Job) -> Result<Uuid> {
         self.jobs.lock().unwrap().insert(job.id, job.clone());
         Ok(job.id)
@@ -232,7 +238,9 @@ impl StorageTrait for InMemoryStore {
         }
         Ok(counts.into_iter().collect())
     }
+}
 
+impl PlanStorage for InMemoryStore {
     fn save_plan(&self, _plan: &Plan) -> Result<Uuid> {
         Ok(Uuid::new_v4())
     }
@@ -248,15 +256,21 @@ impl StorageTrait for InMemoryStore {
     ) -> Result<()> {
         Ok(())
     }
+}
 
+impl FileHistoryStorage for InMemoryStore {
     fn get_file_history(&self, _path: &Path) -> Result<Vec<crate::storage::FileHistoryEntry>> {
         Ok(vec![])
     }
+}
 
+impl StatsStorage for InMemoryStore {
     fn record_stats(&self, _stats: &ProcessingStats) -> Result<()> {
         Ok(())
     }
+}
 
+impl PluginDataStorage for InMemoryStore {
     fn get_plugin_data(&self, _plugin: &str, _key: &str) -> Result<Option<Vec<u8>>> {
         Ok(None)
     }
@@ -264,7 +278,9 @@ impl StorageTrait for InMemoryStore {
     fn set_plugin_data(&self, _plugin: &str, _key: &str, _value: &[u8]) -> Result<()> {
         Ok(())
     }
+}
 
+impl BadFileStorage for InMemoryStore {
     fn upsert_bad_file(&self, _bad_file: &BadFile) -> Result<()> {
         Ok(())
     }
@@ -288,7 +304,9 @@ impl StorageTrait for InMemoryStore {
     fn delete_bad_file_by_path(&self, _path: &Path) -> Result<()> {
         Ok(())
     }
+}
 
+impl MaintenanceStorage for InMemoryStore {
     fn vacuum(&self) -> Result<()> {
         Ok(())
     }

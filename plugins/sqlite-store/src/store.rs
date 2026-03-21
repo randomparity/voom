@@ -14,7 +14,9 @@ use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::Plan;
 use voom_domain::stats::ProcessingStats;
 use voom_domain::storage::{
-    BadFileFilters, FileFilters, JobFilters, PlanStatus, StorageTrait, StoredPlan,
+    BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,
+    JobStorage, MaintenanceStorage, PlanStatus, PlanStorage, PluginDataStorage, StatsStorage,
+    StoredPlan,
 };
 
 use crate::schema;
@@ -188,6 +190,17 @@ impl FileRow {
     }
 }
 
+/// Parse a UUID string from a database row, returning a rusqlite error on corruption.
+fn row_uuid(value: &str, table: &str) -> rusqlite::Result<Uuid> {
+    Uuid::parse_str(value).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("invalid UUID in {table}: {value}: {e}").into(),
+        )
+    })
+}
+
 fn row_to_track(row: &Row<'_>) -> rusqlite::Result<Track> {
     let track_type_str: String = row.get("track_type")?;
     let track_type = str_to_track_type(&track_type_str).ok_or_else(|| {
@@ -239,10 +252,7 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
 
     let id_str: String = row.get("id")?;
     Ok(Job {
-        id: Uuid::parse_str(&id_str).unwrap_or_else(|e| {
-            tracing::warn!(id = %id_str, error = %e, "corrupt UUID in jobs table");
-            Uuid::default()
-        }),
+        id: row_uuid(&id_str, "jobs")?,
         job_type: row.get("job_type")?,
         status: JobStatus::parse(&status_str).unwrap_or_else(|| {
             tracing::warn!(status = %status_str, "unknown job status in jobs table");
@@ -284,7 +294,7 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
     })
 }
 
-impl StorageTrait for SqliteStore {
+impl FileStorage for SqliteStore {
     fn upsert_file(&self, file: &MediaFile) -> Result<()> {
         let conn = self.conn()?;
         let now = format_datetime(&Utc::now());
@@ -580,7 +590,9 @@ impl StorageTrait for SqliteStore {
             .map_err(|e| VoomError::Storage(format!("failed to delete file: {e}")))?;
         Ok(())
     }
+}
 
+impl JobStorage for SqliteStore {
     fn create_job(&self, job: &Job) -> Result<Uuid> {
         let conn = self.conn()?;
         let payload_json = job
@@ -812,7 +824,9 @@ impl StorageTrait for SqliteStore {
 
         Ok(result)
     }
+}
 
+impl PlanStorage for SqliteStore {
     fn save_plan(&self, plan: &Plan) -> Result<Uuid> {
         let conn = self.conn()?;
         let actions_json = serde_json::to_string(&plan.actions)
@@ -890,14 +904,8 @@ impl StorageTrait for SqliteStore {
                 let id_str: String = row.get("id")?;
                 let file_id_str: String = row.get("file_id")?;
                 Ok(StoredPlan {
-                    id: Uuid::parse_str(&id_str).unwrap_or_else(|e| {
-                        tracing::warn!(id = %id_str, error = %e, "corrupt UUID in plans table");
-                        Uuid::default()
-                    }),
-                    file_id: Uuid::parse_str(&file_id_str).unwrap_or_else(|e| {
-                        tracing::warn!(file_id = %file_id_str, error = %e, "corrupt UUID in plans table");
-                        Uuid::default()
-                    }),
+                    id: row_uuid(&id_str, "plans")?,
+                    file_id: row_uuid(&file_id_str, "plans")?,
                     policy_name: row.get("policy_name")?,
                     phase_name: row.get("phase_name")?,
                     status: {
@@ -920,7 +928,9 @@ impl StorageTrait for SqliteStore {
 
         Ok(plans)
     }
+}
 
+impl StatsStorage for SqliteStore {
     fn record_stats(&self, stats: &ProcessingStats) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
@@ -943,7 +953,9 @@ impl StorageTrait for SqliteStore {
         .map_err(|e| VoomError::Storage(format!("failed to record stats: {e}")))?;
         Ok(())
     }
+}
 
+impl PluginDataStorage for SqliteStore {
     fn get_plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>> {
         let conn = self.conn()?;
         conn.query_row(
@@ -966,7 +978,9 @@ impl StorageTrait for SqliteStore {
         .map_err(|e| VoomError::Storage(format!("failed to set plugin data: {e}")))?;
         Ok(())
     }
+}
 
+impl BadFileStorage for SqliteStore {
     /// Insert or update a bad file record.
     ///
     /// On conflict (same path), the existing row's `id` is preserved; the
@@ -1085,7 +1099,9 @@ impl StorageTrait for SqliteStore {
         .map_err(|e| VoomError::Storage(format!("failed to delete bad file by path: {e}")))?;
         Ok(())
     }
+}
 
+impl MaintenanceStorage for SqliteStore {
     fn vacuum(&self) -> Result<()> {
         let conn = self.conn()?;
         conn.execute_batch("VACUUM")
@@ -1159,7 +1175,9 @@ impl StorageTrait for SqliteStore {
 
         Ok(pruned)
     }
+}
 
+impl FileHistoryStorage for SqliteStore {
     fn get_file_history(&self, path: &Path) -> Result<Vec<voom_domain::storage::FileHistoryEntry>> {
         let conn = self.conn()?;
         let path_str = path.to_string_lossy().to_string();
@@ -1175,14 +1193,8 @@ impl StorageTrait for SqliteStore {
                 let id_str: String = row.get("id")?;
                 let file_id_str: String = row.get("file_id")?;
                 Ok(voom_domain::storage::FileHistoryEntry {
-                    id: Uuid::parse_str(&id_str).unwrap_or_else(|e| {
-                        tracing::warn!(id = %id_str, error = %e, "corrupt UUID in file_history table");
-                        Uuid::default()
-                    }),
-                    file_id: Uuid::parse_str(&file_id_str).unwrap_or_else(|e| {
-                        tracing::warn!(file_id = %file_id_str, error = %e, "corrupt UUID in file_history table");
-                        Uuid::default()
-                    }),
+                    id: row_uuid(&id_str, "file_history")?,
+                    file_id: row_uuid(&file_id_str, "file_history")?,
                     path: PathBuf::from(row.get::<_, String>("path")?),
                     content_hash: row.get("content_hash")?,
                     container: row.get("container")?,
@@ -1299,10 +1311,7 @@ fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
     let last_seen_str: String = row.get("last_seen_at")?;
 
     Ok(BadFile {
-        id: Uuid::parse_str(&id_str).unwrap_or_else(|e| {
-            tracing::warn!(id = %id_str, error = %e, "corrupt UUID in bad_files table");
-            Uuid::default()
-        }),
+        id: row_uuid(&id_str, "bad_files")?,
         path: PathBuf::from(path_str),
         size: row.get::<_, i64>("size")? as u64,
         content_hash: row.get("content_hash")?,

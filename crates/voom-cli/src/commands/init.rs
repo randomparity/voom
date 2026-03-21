@@ -2,7 +2,7 @@ use anyhow::Result;
 use console::style;
 
 use crate::app;
-use crate::output::print_tool_status;
+use crate::tools::print_tool_status;
 
 pub async fn run() -> Result<()> {
     println!("{}", style("VOOM First-Time Setup").bold().underlined());

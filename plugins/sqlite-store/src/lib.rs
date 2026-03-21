@@ -10,7 +10,7 @@ use std::sync::Arc;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
-use voom_domain::storage::StorageTrait;
+use voom_domain::storage::{BadFileStorage, FileStorage, PlanStorage, PluginDataStorage};
 use voom_kernel::{Plugin, PluginContext};
 
 use crate::store::SqliteStore;
@@ -297,7 +297,7 @@ mod tests {
 
         // Verify bad file was stored
         let store = plugin.store().unwrap();
-        use voom_domain::storage::StorageTrait;
+        use voom_domain::storage::{BadFileStorage, PluginDataStorage};
         let bf = store
             .get_bad_file_by_path(std::path::Path::new("/media/corrupt.mkv"))
             .unwrap();
@@ -335,7 +335,7 @@ mod tests {
 
         // Bad file entry should be cleared
         let store = plugin.store().unwrap();
-        use voom_domain::storage::StorageTrait;
+        use voom_domain::storage::{BadFileStorage, PluginDataStorage};
         let bf = store
             .get_bad_file_by_path(std::path::Path::new("/media/recovered.mkv"))
             .unwrap();

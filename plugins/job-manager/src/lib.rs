@@ -1,7 +1,7 @@
 //! Job Manager Plugin for VOOM.
 //!
 //! Provides background job processing with:
-//! - Priority-based job queue backed by `StorageTrait`
+//! - Priority-based job queue backed by `JobStorage`
 //! - Configurable concurrent worker pool (tokio tasks)
 //! - Job lifecycle management: enqueue, claim, progress, complete, fail, cancel
 //! - Pluggable progress reporting (CLI, database, custom)
@@ -21,7 +21,7 @@ use std::sync::Arc;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
-use voom_domain::storage::StorageTrait;
+use voom_domain::storage::JobStorage;
 use voom_kernel::{Plugin, PluginContext};
 
 use crate::queue::JobQueue;
@@ -29,7 +29,7 @@ use crate::queue::JobQueue;
 /// The job manager plugin.
 ///
 /// Manages background job processing with a priority queue and worker pool.
-/// Jobs are persisted via `StorageTrait`, enabling recovery after crashes.
+/// Jobs are persisted via `JobStorage`, enabling recovery after crashes.
 pub struct JobManagerPlugin {
     queue: Option<Arc<JobQueue>>,
     capabilities: Vec<Capability>,
@@ -45,7 +45,7 @@ impl JobManagerPlugin {
     }
 
     /// Initialize with a storage backend.
-    pub fn with_store(store: Arc<dyn StorageTrait>) -> Self {
+    pub fn with_store(store: Arc<dyn JobStorage>) -> Self {
         Self {
             queue: Some(Arc::new(JobQueue::new(store))),
             capabilities: vec![Capability::ManageJobs],

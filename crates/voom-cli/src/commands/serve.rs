@@ -7,11 +7,32 @@ use crate::cli::ServeArgs;
 
 pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     let config = crate::app::load_config()?;
-    let (_kernel, store) = crate::app::bootstrap_kernel_with_store(&config)?;
+    let (kernel, store) = crate::app::bootstrap_kernel_with_store(&config)?;
     let store = match store {
         Some(s) => s,
         None => crate::app::open_store(&config)?,
     };
+
+    // Snapshot plugin info from the kernel registry
+    let plugin_info: Vec<voom_web_server::api::plugins::PluginInfo> = kernel
+        .registry
+        .plugin_names()
+        .iter()
+        .filter_map(|name| {
+            kernel
+                .registry
+                .get(name)
+                .map(|p| voom_web_server::api::plugins::PluginInfo {
+                    name: p.name().to_string(),
+                    version: p.version().to_string(),
+                    capabilities: p
+                        .capabilities()
+                        .iter()
+                        .map(|c| c.kind().to_string())
+                        .collect(),
+                })
+        })
+        .collect();
 
     println!(
         "{} Starting VOOM web server on {}:{}",
@@ -26,6 +47,7 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
         port: args.port,
         template_dir: None,
         auth_token: config.auth_token,
+        plugin_info,
     };
 
     let shutdown = async move { token.cancelled().await };
@@ -51,6 +73,7 @@ mod tests {
             port: args.port,
             template_dir: None,
             auth_token: None,
+            plugin_info: vec![],
         };
         assert_eq!(server_config.port, 8080);
         assert_eq!(server_config.host, "127.0.0.1");
@@ -70,6 +93,7 @@ mod tests {
             port: 3000,
             template_dir: None,
             auth_token: config.auth_token.clone(),
+            plugin_info: vec![],
         };
         assert_eq!(server_config.auth_token.as_deref(), Some("secret"));
         assert_eq!(server_config.port, 3000);

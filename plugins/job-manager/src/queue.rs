@@ -1,4 +1,4 @@
-//! Job queue backed by `StorageTrait`, with priority ordering and status management.
+//! Job queue backed by `JobStorage`, with priority ordering and status management.
 
 use std::sync::Arc;
 
@@ -6,18 +6,18 @@ use chrono::Utc;
 use uuid::Uuid;
 use voom_domain::errors::Result;
 use voom_domain::job::{Job, JobStatus, JobUpdate};
-use voom_domain::storage::{JobFilters, StorageTrait};
+use voom_domain::storage::{JobFilters, JobStorage};
 
 /// Job queue backed by a storage implementation.
 ///
 /// Provides high-level operations for managing the job lifecycle:
 /// enqueue, claim, progress, complete, fail, cancel.
 pub struct JobQueue {
-    store: Arc<dyn StorageTrait>,
+    store: Arc<dyn JobStorage>,
 }
 
 impl JobQueue {
-    pub fn new(store: Arc<dyn StorageTrait>) -> Self {
+    pub fn new(store: Arc<dyn JobStorage>) -> Self {
         Self { store }
     }
 

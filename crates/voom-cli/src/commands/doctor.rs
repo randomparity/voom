@@ -4,7 +4,7 @@ use anyhow::Result;
 use console::style;
 
 use crate::app;
-use crate::output::print_tool_status;
+use crate::tools::print_tool_status;
 
 /// Run the doctor command.
 ///

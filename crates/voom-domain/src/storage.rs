@@ -37,17 +37,11 @@ pub struct FileFilters {
     pub offset: Option<u32>,
 }
 
-/// Abstract storage interface. Implemented by storage plugins (e.g., `SQLite`).
-///
-/// All methods are synchronous (blocking) since rusqlite is synchronous.
-/// Callers should use `tokio::task::spawn_blocking` for async contexts.
-///
-/// # Errors
-///
-/// All methods return [`VoomError::Storage`](crate::errors::VoomError::Storage) on database or I/O failures.
+// --- Focused sub-traits ---
+
+/// File CRUD operations.
 #[allow(clippy::missing_errors_doc)]
-pub trait StorageTrait: Send + Sync {
-    // Files
+pub trait FileStorage: Send + Sync {
     fn upsert_file(&self, file: &MediaFile) -> Result<()>;
     fn get_file(&self, id: &Uuid) -> Result<Option<MediaFile>>;
     fn get_file_by_path(&self, path: &Path) -> Result<Option<MediaFile>>;
@@ -55,8 +49,11 @@ pub trait StorageTrait: Send + Sync {
     /// Count total files matching the given filters (ignoring limit/offset).
     fn count_files(&self, filters: &FileFilters) -> Result<u64>;
     fn delete_file(&self, id: &Uuid) -> Result<()>;
+}
 
-    // Jobs
+/// Job queue operations.
+#[allow(clippy::missing_errors_doc)]
+pub trait JobStorage: Send + Sync {
     fn create_job(&self, job: &Job) -> Result<Uuid>;
     fn get_job(&self, id: &Uuid) -> Result<Option<Job>>;
     fn update_job(&self, id: &Uuid, update: &JobUpdate) -> Result<()>;
@@ -66,34 +63,85 @@ pub trait StorageTrait: Send + Sync {
     fn claim_job_by_id(&self, job_id: &Uuid, worker_id: &str) -> Result<Option<Job>>;
     fn list_jobs(&self, filters: &JobFilters) -> Result<Vec<Job>>;
     fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>>;
+}
 
-    // Plans
+/// Plan persistence operations.
+#[allow(clippy::missing_errors_doc)]
+pub trait PlanStorage: Send + Sync {
     fn save_plan(&self, plan: &Plan) -> Result<Uuid>;
     fn get_plans_for_file(&self, file_id: &Uuid) -> Result<Vec<StoredPlan>>;
     fn update_plan_status(&self, plan_id: &Uuid, status: PlanStatus) -> Result<()>;
+}
 
-    // File history
+/// File history snapshots.
+#[allow(clippy::missing_errors_doc)]
+pub trait FileHistoryStorage: Send + Sync {
     fn get_file_history(&self, path: &Path) -> Result<Vec<FileHistoryEntry>>;
+}
 
-    // Stats
+/// Processing statistics recording.
+#[allow(clippy::missing_errors_doc)]
+pub trait StatsStorage: Send + Sync {
     fn record_stats(&self, stats: &ProcessingStats) -> Result<()>;
+}
 
-    // Plugin data (key-value)
+/// Plugin key-value data storage.
+#[allow(clippy::missing_errors_doc)]
+pub trait PluginDataStorage: Send + Sync {
     fn get_plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>>;
     fn set_plugin_data(&self, plugin: &str, key: &str, value: &[u8]) -> Result<()>;
+}
 
-    // Bad files
+/// Bad file tracking operations.
+#[allow(clippy::missing_errors_doc)]
+pub trait BadFileStorage: Send + Sync {
     fn upsert_bad_file(&self, bad_file: &BadFile) -> Result<()>;
     fn get_bad_file_by_path(&self, path: &Path) -> Result<Option<BadFile>>;
     fn list_bad_files(&self, filters: &BadFileFilters) -> Result<Vec<BadFile>>;
     fn count_bad_files(&self) -> Result<u64>;
     fn delete_bad_file(&self, id: &Uuid) -> Result<()>;
     fn delete_bad_file_by_path(&self, path: &Path) -> Result<()>;
+}
 
-    // Maintenance
+/// Database maintenance operations.
+#[allow(clippy::missing_errors_doc)]
+pub trait MaintenanceStorage: Send + Sync {
     fn vacuum(&self) -> Result<()>;
     fn prune_missing_files(&self) -> Result<u64>;
     fn prune_missing_files_under(&self, root: &Path) -> Result<u64>;
+}
+
+/// Composed storage interface encompassing all sub-traits.
+///
+/// All methods are synchronous (blocking) since rusqlite is synchronous.
+/// Callers should use `tokio::task::spawn_blocking` for async contexts.
+///
+/// # Errors
+///
+/// All methods return [`VoomError::Storage`](crate::errors::VoomError::Storage) on database or I/O failures.
+pub trait StorageTrait:
+    FileStorage
+    + JobStorage
+    + PlanStorage
+    + FileHistoryStorage
+    + StatsStorage
+    + PluginDataStorage
+    + BadFileStorage
+    + MaintenanceStorage
+{
+}
+
+/// Blanket impl: any type implementing all sub-traits automatically implements `StorageTrait`.
+impl<T> StorageTrait for T where
+    T: FileStorage
+        + JobStorage
+        + PlanStorage
+        + FileHistoryStorage
+        + StatsStorage
+        + PluginDataStorage
+        + BadFileStorage
+        + MaintenanceStorage
+{
 }
 
 /// Status of a stored plan.
