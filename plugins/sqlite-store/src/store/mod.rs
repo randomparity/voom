@@ -377,26 +377,20 @@ pub(crate) fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
                 format!("invalid attempt_count in bad_files: {e}").into(),
             )
         })?,
-        first_seen_at: DateTime::parse_from_rfc3339(&first_seen_str)
-            .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    format!("corrupt datetime in bad_files.first_seen_at: {first_seen_str}: {e}")
-                        .into(),
-                )
-            })?,
-        last_seen_at: DateTime::parse_from_rfc3339(&last_seen_str)
-            .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    format!("corrupt datetime in bad_files.last_seen_at: {last_seen_str}: {e}")
-                        .into(),
-                )
-            })?,
+        first_seen_at: parse_datetime(&first_seen_str).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                e.to_string().into(),
+            )
+        })?,
+        last_seen_at: parse_datetime(&last_seen_str).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                e.to_string().into(),
+            )
+        })?,
     })
 }
 

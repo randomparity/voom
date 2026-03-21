@@ -128,7 +128,7 @@ fn test_kernel_register_and_dispatch() {
     kernel.register_plugin(introspector, 10);
 
     assert_eq!(kernel.registry.len(), 2);
-    assert_eq!(kernel.bus.subscriber_count(), 2);
+    assert_eq!(kernel.subscriber_count(), 2);
 
     // Dispatch a FileDiscovered event.
     let event = Event::FileDiscovered(FileDiscoveredEvent {

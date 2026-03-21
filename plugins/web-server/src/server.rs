@@ -28,6 +28,10 @@ pub async fn start_server(
     store: Arc<dyn StorageTrait>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
+    if config.auth_token.is_none() {
+        tracing::warn!("Web server starting without authentication — all requests will be allowed");
+    }
+
     let templates = load_templates(config.template_dir.as_deref())?;
     let state =
         AppState::new(store, templates, config.auth_token).with_plugin_info(config.plugin_info);

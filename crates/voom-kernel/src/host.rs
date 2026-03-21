@@ -206,8 +206,16 @@ impl HostState {
     #[must_use]
     pub fn with_initial_config(mut self, config: serde_json::Value) -> Self {
         if !config.is_null() && config != serde_json::json!({}) {
-            if let Ok(bytes) = serde_json::to_vec(&config) {
-                self.plugin_data.insert("config".to_string(), bytes);
+            match serde_json::to_vec(&config) {
+                Ok(bytes) => {
+                    self.plugin_data.insert("config".to_string(), bytes);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        plugin = %self.plugin_name,
+                        "Failed to serialize initial config: {e}"
+                    );
+                }
             }
         }
         self

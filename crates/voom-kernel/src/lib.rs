@@ -48,7 +48,7 @@ pub struct PluginContext {
 /// The kernel that manages plugins and event dispatch.
 pub struct Kernel {
     pub registry: registry::PluginRegistry,
-    pub bus: bus::EventBus,
+    pub(crate) bus: bus::EventBus,
     shutdown_called: AtomicBool,
 }
 
@@ -106,6 +106,11 @@ impl Kernel {
     /// Dispatch an event through the bus to all matching subscribers.
     pub fn dispatch(&self, event: Event) -> Vec<EventResult> {
         self.bus.publish(event)
+    }
+
+    /// Returns the number of subscribers registered on the event bus.
+    pub fn subscriber_count(&self) -> usize {
+        self.bus.subscriber_count()
     }
 
     /// Gracefully shut down all plugins in reverse priority order.
@@ -200,7 +205,7 @@ mod tests {
 
         assert!(init_called.load(Ordering::SeqCst));
         assert_eq!(kernel.registry.len(), 1);
-        assert_eq!(kernel.bus.subscriber_count(), 1);
+        assert_eq!(kernel.subscriber_count(), 1);
     }
 
     #[test]
