@@ -227,22 +227,21 @@ impl FileRow {
             .tags
             .as_deref()
             .map(|s| {
-                serde_json::from_str(s).unwrap_or_else(|e| {
-                    tracing::warn!(field = "tags", error = %e, "JSON parse failed, using empty default");
-                    HashMap::new()
-                })
+                serde_json::from_str(s)
+                    .map_err(|e| VoomError::Storage(format!("corrupt JSON in files.tags: {e}")))
             })
+            .transpose()?
             .unwrap_or_default();
 
         let plugin_metadata: HashMap<String, serde_json::Value> = self
             .plugin_metadata
             .as_deref()
             .map(|s| {
-                serde_json::from_str(s).unwrap_or_else(|e| {
-                    tracing::warn!(field = "plugin_metadata", error = %e, "JSON parse failed, using empty default");
-                    HashMap::new()
+                serde_json::from_str(s).map_err(|e| {
+                    VoomError::Storage(format!("corrupt JSON in files.plugin_metadata: {e}"))
                 })
             })
+            .transpose()?
             .unwrap_or_default();
 
         Ok(MediaFile {
@@ -364,10 +363,13 @@ pub(crate) fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
         size: row.get::<_, i64>("size")? as u64,
         content_hash: row.get("content_hash")?,
         error: row.get("error")?,
-        error_source: error_source_str.parse::<BadFileSource>().unwrap_or_else(|_| {
-            tracing::warn!(error_source = %error_source_str, "unknown error_source in bad_files table");
-            BadFileSource::Introspection
-        }),
+        error_source: error_source_str.parse::<BadFileSource>().map_err(|_| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("unknown error_source in bad_files: {error_source_str}").into(),
+            )
+        })?,
         attempt_count: u32::try_from(row.get::<_, i64>("attempt_count")?).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(
                 0,
@@ -381,7 +383,8 @@ pub(crate) fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
                 rusqlite::Error::FromSqlConversionFailure(
                     0,
                     rusqlite::types::Type::Text,
-                    format!("corrupt datetime in bad_files.first_seen_at: {first_seen_str}: {e}").into(),
+                    format!("corrupt datetime in bad_files.first_seen_at: {first_seen_str}: {e}")
+                        .into(),
                 )
             })?,
         last_seen_at: DateTime::parse_from_rfc3339(&last_seen_str)
@@ -390,7 +393,8 @@ pub(crate) fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
                 rusqlite::Error::FromSqlConversionFailure(
                     0,
                     rusqlite::types::Type::Text,
-                    format!("corrupt datetime in bad_files.last_seen_at: {last_seen_str}: {e}").into(),
+                    format!("corrupt datetime in bad_files.last_seen_at: {last_seen_str}: {e}")
+                        .into(),
                 )
             })?,
     })

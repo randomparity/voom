@@ -224,7 +224,13 @@ impl JobStorage for SqliteStore {
 
         let result = counts
             .into_iter()
-            .filter_map(|(s, c)| JobStatus::parse(&s).map(|status| (status, c)))
+            .filter_map(|(s, c)| match JobStatus::parse(&s) {
+                Some(status) => Some((status, c)),
+                None => {
+                    tracing::error!(status = %s, count = c, "unknown job status in database — data integrity issue");
+                    None
+                }
+            })
             .collect();
 
         Ok(result)
