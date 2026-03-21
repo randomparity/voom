@@ -260,10 +260,10 @@ impl Plugin for MkvtoolnixExecutorPlugin {
                     return Ok(None);
                 }
 
-                Ok(EventResult::from_plan_execution(
+                Ok(Some(EventResult::from_plan_execution(
                     self.name(),
                     self.execute_plan(plan),
-                ))
+                )))
             }
             _ => Ok(None),
         }

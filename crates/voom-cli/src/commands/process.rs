@@ -198,7 +198,7 @@ struct ProcessJobPayload {
 /// Build work items from discovery events for the worker pool.
 fn build_work_items(
     events: &[voom_domain::events::FileDiscoveredEvent],
-) -> Vec<(String, i32, Option<serde_json::Value>)> {
+) -> Vec<voom_job_manager::worker::WorkItem> {
     events
         .iter()
         .map(|evt| {
@@ -209,7 +209,11 @@ fn build_work_items(
             };
             let value =
                 serde_json::to_value(&payload).expect("ProcessJobPayload is always serializable");
-            ("process".to_string(), 100, Some(value))
+            voom_job_manager::worker::WorkItem {
+                job_type: "process".to_string(),
+                priority: 100,
+                payload: Some(value),
+            }
         })
         .collect()
 }

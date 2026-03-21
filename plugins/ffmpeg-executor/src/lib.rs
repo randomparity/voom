@@ -184,10 +184,10 @@ impl FfmpegExecutorPlugin {
             return Ok(None);
         }
 
-        Ok(EventResult::from_plan_execution(
+        Ok(Some(EventResult::from_plan_execution(
             "ffmpeg-executor",
             self.build_plan(plan),
-        ))
+        )))
     }
 }
 

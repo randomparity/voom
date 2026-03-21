@@ -44,13 +44,13 @@ async fn main() -> Result<()> {
         Commands::Policy(sub) => commands::policy::run(sub).await,
         Commands::Plugin(sub) => commands::plugin::run(sub).await,
         Commands::Jobs(sub) => commands::jobs::run(sub).await,
-        Commands::Report(args) => commands::report::run(args).await,
-        Commands::Doctor => commands::doctor::run().await,
+        Commands::Report(args) => commands::report::run(args),
+        Commands::Doctor => commands::doctor::run(),
         Commands::Serve(args) => commands::serve::run(args, token).await,
         Commands::Db(sub) => commands::db::run(sub).await,
         Commands::Config(sub) => commands::config::run(sub).await,
-        Commands::Init => commands::init::run().await,
-        Commands::Status => commands::status::run().await,
+        Commands::Init => commands::init::run(),
+        Commands::Status => commands::status::run(),
         Commands::Completions(args) => commands::completions::run(args),
     }
 }

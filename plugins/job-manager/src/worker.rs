@@ -11,6 +11,14 @@ use uuid::Uuid;
 use crate::progress::ProgressReporter;
 use crate::queue::JobQueue;
 
+/// A unit of work to be enqueued and processed by the worker pool.
+#[derive(Debug, Clone)]
+pub struct WorkItem {
+    pub job_type: String,
+    pub priority: i32,
+    pub payload: Option<serde_json::Value>,
+}
+
 /// Configuration for the worker pool.
 #[derive(Debug, Clone)]
 pub struct WorkerPoolConfig {
@@ -103,7 +111,7 @@ impl WorkerPool {
 
     /// Process a batch of work items concurrently.
     ///
-    /// `items` is a list of (`job_type`, priority, payload) tuples to enqueue.
+    /// `items` is a list of work items to enqueue.
     /// `processor` is called for each claimed job and should return Ok(output) or Err(error).
     /// `on_error` controls behavior when a job fails.
     /// `reporter` is notified of progress updates.
@@ -112,7 +120,7 @@ impl WorkerPool {
     #[tracing::instrument(skip(self, processor, reporter))]
     pub async fn process_batch<F, Fut>(
         &self,
-        items: Vec<(String, i32, Option<serde_json::Value>)>,
+        items: Vec<WorkItem>,
         processor: F,
         on_error: ErrorStrategy,
         reporter: Arc<dyn ProgressReporter>,
@@ -134,8 +142,11 @@ impl WorkerPool {
         );
 
         let mut job_ids = Vec::with_capacity(items.len());
-        for (job_type, priority, payload) in items {
-            match self.queue.enqueue(&job_type, priority, payload) {
+        for item in items {
+            match self
+                .queue
+                .enqueue(&item.job_type, item.priority, item.payload)
+            {
                 Ok(id) => job_ids.push(id),
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to enqueue job");
@@ -363,7 +374,13 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
 
-        let items: Vec<_> = (0..5).map(|i| (format!("task-{i}"), 100, None)).collect();
+        let items: Vec<_> = (0..5)
+            .map(|i| WorkItem {
+                job_type: format!("task-{i}"),
+                priority: 100,
+                payload: None,
+            })
+            .collect();
 
         pool.process_batch(
             items,
@@ -397,7 +414,11 @@ mod tests {
         );
 
         let items: Vec<_> = (0..4)
-            .map(|i| (format!("task-{i}"), 100, Some(serde_json::json!({"i": i}))))
+            .map(|i| WorkItem {
+                job_type: format!("task-{i}"),
+                priority: 100,
+                payload: Some(serde_json::json!({"i": i})),
+            })
             .collect();
 
         pool.process_batch(
@@ -433,8 +454,16 @@ mod tests {
         );
 
         let items = vec![
-            ("fail".into(), 50, None), // will be claimed first (lower priority)
-            ("ok".into(), 100, None),
+            WorkItem {
+                job_type: "fail".into(),
+                priority: 50,
+                payload: None,
+            }, // claimed first (lower priority)
+            WorkItem {
+                job_type: "ok".into(),
+                priority: 100,
+                payload: None,
+            },
         ];
 
         pool.process_batch(

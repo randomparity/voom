@@ -43,7 +43,14 @@ pub async fn list_jobs(
     Query(params): Query<ListJobsParams>,
 ) -> Result<Json<JobListResponse>, WebError> {
     let store = state.store.clone();
-    let status = params.status.as_deref().and_then(JobStatus::parse);
+    let status = match params.status.as_deref() {
+        Some(s) => Some(JobStatus::parse(s).ok_or_else(|| {
+            WebError::BadRequest(format!(
+                "invalid status '{s}': expected one of pending, running, completed, failed, cancelled"
+            ))
+        })?),
+        None => None,
+    };
     let limit = params.limit.map(|l| l.min(MAX_JOB_LIMIT));
 
     let filters = JobFilters { status, limit };

@@ -7,7 +7,7 @@ use crate::cli::{OutputFormat, ReportArgs};
 use crate::output;
 use crate::stats;
 
-pub async fn run(args: ReportArgs) -> Result<()> {
+pub fn run(args: ReportArgs) -> Result<()> {
     let config = app::load_config()?;
     let store = app::open_store(&config)?;
 

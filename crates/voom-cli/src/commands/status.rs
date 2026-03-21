@@ -4,7 +4,7 @@ use console::style;
 use crate::app;
 use crate::stats;
 
-pub async fn run() -> Result<()> {
+pub fn run() -> Result<()> {
     let config = app::load_config()?;
 
     println!("{}", style("VOOM Status").bold().underlined());

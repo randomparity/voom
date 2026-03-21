@@ -62,7 +62,7 @@ pub struct HostState {
 /// Trait for persistent plugin data storage.
 /// Implemented by the sqlite-store plugin or in-memory for testing.
 pub trait PluginDataStore: Send + Sync {
-    fn get(&self, plugin_name: &str, key: &str) -> Option<Vec<u8>>;
+    fn get(&self, plugin_name: &str, key: &str) -> Result<Option<Vec<u8>>, String>;
     fn set(&self, plugin_name: &str, key: &str, value: &[u8]) -> Result<(), String>;
     fn delete(&self, plugin_name: &str, key: &str) -> Result<(), String>;
 }
@@ -88,9 +88,9 @@ impl Default for InMemoryDataStore {
 }
 
 impl PluginDataStore for InMemoryDataStore {
-    fn get(&self, plugin_name: &str, key: &str) -> Option<Vec<u8>> {
+    fn get(&self, plugin_name: &str, key: &str) -> Result<Option<Vec<u8>>, String> {
         let data = self.data.lock().unwrap_or_else(|e| e.into_inner());
-        data.get(plugin_name).and_then(|m| m.get(key)).cloned()
+        Ok(data.get(plugin_name).and_then(|m| m.get(key)).cloned())
     }
 
     fn set(&self, plugin_name: &str, key: &str, value: &[u8]) -> Result<(), String> {
@@ -123,21 +123,11 @@ impl StorageBackedDataStore {
 }
 
 impl PluginDataStore for StorageBackedDataStore {
-    fn get(&self, plugin_name: &str, key: &str) -> Option<Vec<u8>> {
+    fn get(&self, plugin_name: &str, key: &str) -> Result<Option<Vec<u8>>, String> {
         self.store
             .get_plugin_data(plugin_name, key)
-            .map_err(|e| {
-                tracing::warn!(
-                    plugin = %plugin_name,
-                    key = %key,
-                    error = %e,
-                    "storage error in PluginDataStore::get, returning None"
-                );
-                e
-            })
-            .ok()
-            .flatten()
-            .filter(|v: &Vec<u8>| !v.is_empty()) // Treat empty values as tombstones (deleted keys)
+            .map(|opt| opt.filter(|v| !v.is_empty())) // Treat empty values as tombstones (deleted keys)
+            .map_err(|e| e.to_string())
     }
 
     fn set(&self, plugin_name: &str, key: &str, value: &[u8]) -> Result<(), String> {
@@ -256,9 +246,19 @@ impl HostState {
     pub fn resolve_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
         if let Some(storage) = &self.storage {
             // Check persistent storage first, fall back to in-memory (seeded config).
-            storage
-                .get(&self.plugin_name, key)
-                .or_else(|| self.plugin_data.get(key).cloned())
+            match storage.get(&self.plugin_name, key) {
+                Ok(Some(data)) => Some(data),
+                Ok(None) => self.plugin_data.get(key).cloned(),
+                Err(e) => {
+                    tracing::warn!(
+                        plugin = %self.plugin_name,
+                        key = %key,
+                        error = %e,
+                        "storage error in resolve_plugin_data, falling back to in-memory"
+                    );
+                    self.plugin_data.get(key).cloned()
+                }
+            }
         } else {
             self.plugin_data.get(key).cloned()
         }
@@ -521,7 +521,7 @@ mod tests {
         assert_eq!(state.resolve_plugin_data("key1").unwrap(), b"value1");
 
         // Verify data is in the shared store.
-        assert_eq!(store.get("test", "key1").unwrap(), b"value1");
+        assert_eq!(store.get("test", "key1").unwrap().unwrap(), b"value1");
     }
 
     #[test]
@@ -630,13 +630,13 @@ mod tests {
     fn test_in_memory_data_store() {
         let store = InMemoryDataStore::new();
 
-        assert!(store.get("plugin1", "key1").is_none());
+        assert!(store.get("plugin1", "key1").unwrap().is_none());
 
         store.set("plugin1", "key1", b"data").unwrap();
-        assert_eq!(store.get("plugin1", "key1").unwrap(), b"data");
+        assert_eq!(store.get("plugin1", "key1").unwrap().unwrap(), b"data");
 
         store.delete("plugin1", "key1").unwrap();
-        assert!(store.get("plugin1", "key1").is_none());
+        assert!(store.get("plugin1", "key1").unwrap().is_none());
 
         // Deleting non-existent key is fine.
         store.delete("plugin1", "nonexistent").unwrap();

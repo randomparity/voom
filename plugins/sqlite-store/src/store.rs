@@ -64,14 +64,13 @@ impl SqliteStore {
             .max_size(pool_size)
             .min_idle(Some(0))
             .build(manager)
-            .map_err(|e| VoomError::Storage(format!("failed to create connection pool: {e}")))?;
+            .map_err(storage_err("failed to create connection pool"))?;
 
         // Initialize schema on the first connection
         let conn = pool
             .get()
-            .map_err(|e| VoomError::Storage(format!("failed to get connection: {e}")))?;
-        schema::create_schema(&conn)
-            .map_err(|e| VoomError::Storage(format!("failed to create schema: {e}")))?;
+            .map_err(storage_err("failed to get connection"))?;
+        schema::create_schema(&conn).map_err(storage_err("failed to create schema"))?;
 
         Ok(Self { pool })
     }
@@ -79,7 +78,7 @@ impl SqliteStore {
     fn conn(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>> {
         self.pool
             .get()
-            .map_err(|e| VoomError::Storage(format!("failed to get connection: {e}")))
+            .map_err(storage_err("failed to get connection"))
     }
 }
 
@@ -100,6 +99,11 @@ fn str_to_track_type(s: &str) -> Option<TrackType> {
         "attachment" => Some(TrackType::Attachment),
         _ => None,
     }
+}
+
+/// Create a `.map_err` closure that wraps the source error in `VoomError::Storage`.
+fn storage_err<E: std::fmt::Display>(msg: &str) -> impl FnOnce(E) -> VoomError + '_ {
+    move |e| VoomError::Storage(format!("{msg}: {e}"))
 }
 
 fn parse_uuid(s: &str) -> Result<Uuid> {
@@ -298,10 +302,10 @@ impl FileStorage for SqliteStore {
     fn upsert_file(&self, file: &MediaFile) -> Result<()> {
         let conn = self.conn()?;
         let now = format_datetime(&Utc::now());
-        let tags_json = serde_json::to_string(&file.tags)
-            .map_err(|e| VoomError::Storage(format!("failed to serialize tags: {e}")))?;
+        let tags_json =
+            serde_json::to_string(&file.tags).map_err(storage_err("failed to serialize tags"))?;
         let meta_json = serde_json::to_string(&file.plugin_metadata)
-            .map_err(|e| VoomError::Storage(format!("failed to serialize metadata: {e}")))?;
+            .map_err(storage_err("failed to serialize metadata"))?;
         let filename = file
             .path
             .file_name()
@@ -317,13 +321,13 @@ impl FileStorage for SqliteStore {
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|e| VoomError::Storage(format!("failed to query existing file: {e}")))?;
+            .map_err(storage_err("failed to query existing file"))?;
 
         let effective_id = existing_id.clone().unwrap_or_else(|| file.id.to_string());
 
         // Wrap the delete-insert sequence in a transaction for atomicity
         conn.execute_batch("BEGIN")
-            .map_err(|e| VoomError::Storage(format!("failed to begin transaction: {e}")))?;
+            .map_err(storage_err("failed to begin transaction"))?;
 
         let result = (|| -> Result<()> {
             // Archive old file state to history before updating
@@ -336,7 +340,7 @@ impl FileStorage for SqliteStore {
                      FROM files f WHERE f.path = ?3",
                     params![Uuid::new_v4().to_string(), &now, &path_str],
                 )
-                .map_err(|e| VoomError::Storage(format!("failed to archive file history: {e}")))?;
+                .map_err(storage_err("failed to archive file history"))?;
             }
 
             // Delete old tracks before upserting
@@ -344,7 +348,7 @@ impl FileStorage for SqliteStore {
                 "DELETE FROM tracks WHERE file_id IN (SELECT id FROM files WHERE path = ?1)",
                 params![&path_str],
             )
-            .map_err(|e| VoomError::Storage(format!("failed to delete old tracks: {e}")))?;
+            .map_err(storage_err("failed to delete old tracks"))?;
 
             conn.execute(
                 "INSERT INTO files (id, path, filename, size, content_hash, container, duration, bitrate, tags, plugin_metadata, introspected_at, created_at, updated_at)
@@ -376,14 +380,14 @@ impl FileStorage for SqliteStore {
                     &now,
                 ],
             )
-            .map_err(|e| VoomError::Storage(format!("failed to upsert file: {e}")))?;
+            .map_err(storage_err("failed to upsert file"))?;
 
             let mut stmt = conn
                 .prepare(
                     "INSERT INTO tracks (id, file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
                 )
-                .map_err(|e| VoomError::Storage(format!("failed to prepare track insert: {e}")))?;
+                .map_err(storage_err("failed to prepare track insert"))?;
 
             for track in &file.tracks {
                 stmt.execute(params![
@@ -408,7 +412,7 @@ impl FileStorage for SqliteStore {
                     track.hdr_format,
                     track.pixel_format,
                 ])
-                .map_err(|e| VoomError::Storage(format!("failed to insert track: {e}")))?;
+                .map_err(storage_err("failed to insert track"))?;
             }
 
             Ok(())
@@ -417,7 +421,7 @@ impl FileStorage for SqliteStore {
         match result {
             Ok(()) => {
                 conn.execute_batch("COMMIT")
-                    .map_err(|e| VoomError::Storage(format!("failed to commit: {e}")))?;
+                    .map_err(storage_err("failed to commit"))?;
                 Ok(())
             }
             Err(e) => {
@@ -438,7 +442,7 @@ impl FileStorage for SqliteStore {
                 row_to_file,
             )
             .optional()
-            .map_err(|e| VoomError::Storage(format!("failed to get file: {e}")))?;
+            .map_err(storage_err("failed to get file"))?;
 
         match file_row {
             Some(fr) => {
@@ -459,7 +463,7 @@ impl FileStorage for SqliteStore {
                 row_to_file,
             )
             .optional()
-            .map_err(|e| VoomError::Storage(format!("failed to get file by path: {e}")))?;
+            .map_err(storage_err("failed to get file by path"))?;
 
         match file_row {
             Some(fr) => {
@@ -505,7 +509,7 @@ impl FileStorage for SqliteStore {
 
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| VoomError::Storage(format!("failed to prepare list query: {e}")))?;
+            .map_err(storage_err("failed to prepare list query"))?;
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
             .iter()
@@ -514,9 +518,9 @@ impl FileStorage for SqliteStore {
 
         let rows: Vec<FileRow> = stmt
             .query_map(param_refs.as_slice(), row_to_file)
-            .map_err(|e| VoomError::Storage(format!("failed to list files: {e}")))?
+            .map_err(storage_err("failed to list files"))?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| VoomError::Storage(format!("failed to collect files: {e}")))?;
+            .map_err(storage_err("failed to collect files"))?;
 
         let file_ids: Vec<Uuid> = rows
             .iter()
@@ -579,7 +583,7 @@ impl FileStorage for SqliteStore {
 
         let count: u64 = conn
             .query_row(&sql, param_refs.as_slice(), |row| row.get(0))
-            .map_err(|e| VoomError::Storage(format!("failed to count files: {e}")))?;
+            .map_err(storage_err("failed to count files"))?;
 
         Ok(count)
     }
@@ -587,7 +591,7 @@ impl FileStorage for SqliteStore {
     fn delete_file(&self, id: &Uuid) -> Result<()> {
         let conn = self.conn()?;
         conn.execute("DELETE FROM files WHERE id = ?1", params![id.to_string()])
-            .map_err(|e| VoomError::Storage(format!("failed to delete file: {e}")))?;
+            .map_err(storage_err("failed to delete file"))?;
         Ok(())
     }
 }
@@ -623,7 +627,7 @@ impl JobStorage for SqliteStore {
                 job.completed_at.as_ref().map(format_datetime),
             ],
         )
-        .map_err(|e| VoomError::Storage(format!("failed to create job: {e}")))?;
+        .map_err(storage_err("failed to create job"))?;
 
         Ok(job.id)
     }
@@ -636,7 +640,7 @@ impl JobStorage for SqliteStore {
             row_to_job,
         )
         .optional()
-        .map_err(|e| VoomError::Storage(format!("failed to get job: {e}")))
+        .map_err(storage_err("failed to get job"))
     }
 
     fn update_job(&self, id: &Uuid, update: &JobUpdate) -> Result<()> {
@@ -695,7 +699,7 @@ impl JobStorage for SqliteStore {
             param_values.iter().map(|v| v.as_ref()).collect();
 
         conn.execute(&sql, param_refs.as_slice())
-            .map_err(|e| VoomError::Storage(format!("failed to update job: {e}")))?;
+            .map_err(storage_err("failed to update job"))?;
         Ok(())
     }
 
@@ -706,14 +710,14 @@ impl JobStorage for SqliteStore {
         // Use IMMEDIATE transaction to prevent TOCTOU race between concurrent workers
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(|e| VoomError::Storage(format!("failed to begin transaction: {e}")))?;
+            .map_err(storage_err("failed to begin transaction"))?;
 
         tx.execute(
             "UPDATE jobs SET status = 'running', worker_id = ?1, started_at = ?2
              WHERE id = (SELECT id FROM jobs WHERE status = 'pending' ORDER BY priority ASC, created_at ASC LIMIT 1)",
             params![worker_id, now],
         )
-        .map_err(|e| VoomError::Storage(format!("failed to claim job: {e}")))?;
+        .map_err(storage_err("failed to claim job"))?;
 
         let result = tx
             .query_row(
@@ -722,10 +726,9 @@ impl JobStorage for SqliteStore {
                 row_to_job,
             )
             .optional()
-            .map_err(|e| VoomError::Storage(format!("failed to get claimed job: {e}")))?;
+            .map_err(storage_err("failed to get claimed job"))?;
 
-        tx.commit()
-            .map_err(|e| VoomError::Storage(format!("failed to commit claim: {e}")))?;
+        tx.commit().map_err(storage_err("failed to commit claim"))?;
 
         Ok(result)
     }
@@ -737,7 +740,7 @@ impl JobStorage for SqliteStore {
 
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(|e| VoomError::Storage(format!("failed to begin transaction: {e}")))?;
+            .map_err(storage_err("failed to begin transaction"))?;
 
         let changed = tx
             .execute(
@@ -745,7 +748,7 @@ impl JobStorage for SqliteStore {
                  WHERE id = ?3 AND status = 'pending'",
                 params![worker_id, now, id_str],
             )
-            .map_err(|e| VoomError::Storage(format!("failed to claim job by id: {e}")))?;
+            .map_err(storage_err("failed to claim job by id"))?;
 
         let result = if changed == 0 {
             None
@@ -756,11 +759,10 @@ impl JobStorage for SqliteStore {
                 row_to_job,
             )
             .optional()
-            .map_err(|e| VoomError::Storage(format!("failed to get claimed job: {e}")))?
+            .map_err(storage_err("failed to get claimed job"))?
         };
 
-        tx.commit()
-            .map_err(|e| VoomError::Storage(format!("failed to commit claim: {e}")))?;
+        tx.commit().map_err(storage_err("failed to commit claim"))?;
 
         Ok(result)
     }
@@ -785,7 +787,7 @@ impl JobStorage for SqliteStore {
 
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| VoomError::Storage(format!("failed to prepare list jobs query: {e}")))?;
+            .map_err(storage_err("failed to prepare list jobs query"))?;
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
             .iter()
@@ -794,9 +796,9 @@ impl JobStorage for SqliteStore {
 
         let jobs = stmt
             .query_map(param_refs.as_slice(), row_to_job)
-            .map_err(|e| VoomError::Storage(format!("failed to list jobs: {e}")))?
+            .map_err(storage_err("failed to list jobs"))?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| VoomError::Storage(format!("failed to collect jobs: {e}")))?;
+            .map_err(storage_err("failed to collect jobs"))?;
 
         Ok(jobs)
     }
@@ -805,7 +807,7 @@ impl JobStorage for SqliteStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare("SELECT status, COUNT(*) FROM jobs GROUP BY status")
-            .map_err(|e| VoomError::Storage(format!("failed to prepare count query: {e}")))?;
+            .map_err(storage_err("failed to prepare count query"))?;
 
         let counts = stmt
             .query_map([], |row| {
@@ -813,9 +815,9 @@ impl JobStorage for SqliteStore {
                 let count: i64 = row.get(1)?;
                 Ok((status_str, count as u64))
             })
-            .map_err(|e| VoomError::Storage(format!("failed to count jobs: {e}")))?
+            .map_err(storage_err("failed to count jobs"))?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| VoomError::Storage(format!("failed to collect counts: {e}")))?;
+            .map_err(storage_err("failed to collect counts"))?;
 
         let result = counts
             .into_iter()
@@ -830,15 +832,15 @@ impl PlanStorage for SqliteStore {
     fn save_plan(&self, plan: &Plan) -> Result<Uuid> {
         let conn = self.conn()?;
         let actions_json = serde_json::to_string(&plan.actions)
-            .map_err(|e| VoomError::Storage(format!("failed to serialize actions: {e}")))?;
-        let warnings_json =
-            if plan.warnings.is_empty() {
-                None
-            } else {
-                Some(serde_json::to_string(&plan.warnings).map_err(|e| {
-                    VoomError::Storage(format!("failed to serialize warnings: {e}"))
-                })?)
-            };
+            .map_err(storage_err("failed to serialize actions"))?;
+        let warnings_json = if plan.warnings.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::to_string(&plan.warnings)
+                    .map_err(storage_err("failed to serialize warnings"))?,
+            )
+        };
 
         // Resolve file_id by path to handle ID preservation in upsert_file.
         // When a file is re-scanned, upsert_file keeps the original DB ID, but
@@ -851,7 +853,7 @@ impl PlanStorage for SqliteStore {
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|e| VoomError::Storage(format!("failed to resolve file id: {e}")))?
+            .map_err(storage_err("failed to resolve file id"))?
             .unwrap_or_else(|| plan.file.id.to_string());
 
         conn.execute(
@@ -871,7 +873,7 @@ impl PlanStorage for SqliteStore {
                 format_datetime(&Utc::now()),
             ],
         )
-        .map_err(|e| VoomError::Storage(format!("failed to save plan: {e}")))?;
+        .map_err(storage_err("failed to save plan"))?;
 
         Ok(plan.id)
     }
@@ -886,7 +888,7 @@ impl PlanStorage for SqliteStore {
                 plan_id.to_string()
             ],
         )
-        .map_err(|e| VoomError::Storage(format!("failed to update plan status: {e}")))?;
+        .map_err(storage_err("failed to update plan status"))?;
         Ok(())
     }
 
@@ -897,7 +899,7 @@ impl PlanStorage for SqliteStore {
                 "SELECT id, file_id, policy_name, phase_name, status, actions, warnings, skip_reason, policy_hash, evaluated_at, created_at, executed_at, result
                  FROM plans WHERE file_id = ?1 ORDER BY created_at",
             )
-            .map_err(|e| VoomError::Storage(format!("failed to prepare plans query: {e}")))?;
+            .map_err(storage_err("failed to prepare plans query"))?;
 
         let plans = stmt
             .query_map(params![file_id.to_string()], |row| {
@@ -922,9 +924,9 @@ impl PlanStorage for SqliteStore {
                     result: row.get("result")?,
                 })
             })
-            .map_err(|e| VoomError::Storage(format!("failed to query plans: {e}")))?
+            .map_err(storage_err("failed to query plans"))?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| VoomError::Storage(format!("failed to collect plans: {e}")))?;
+            .map_err(storage_err("failed to collect plans"))?;
 
         Ok(plans)
     }
@@ -950,7 +952,7 @@ impl StatsStorage for SqliteStore {
                 format_datetime(&stats.created_at),
             ],
         )
-        .map_err(|e| VoomError::Storage(format!("failed to record stats: {e}")))?;
+        .map_err(storage_err("failed to record stats"))?;
         Ok(())
     }
 }
@@ -964,7 +966,7 @@ impl PluginDataStorage for SqliteStore {
             |row| row.get(0),
         )
         .optional()
-        .map_err(|e| VoomError::Storage(format!("failed to get plugin data: {e}")))
+        .map_err(storage_err("failed to get plugin data"))
     }
 
     fn set_plugin_data(&self, plugin: &str, key: &str, value: &[u8]) -> Result<()> {
@@ -975,7 +977,7 @@ impl PluginDataStorage for SqliteStore {
              ON CONFLICT(plugin_name, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
             params![plugin, key, value, format_datetime(&Utc::now())],
         )
-        .map_err(|e| VoomError::Storage(format!("failed to set plugin data: {e}")))?;
+        .map_err(storage_err("failed to set plugin data"))?;
         Ok(())
     }
 }
@@ -1010,7 +1012,7 @@ impl BadFileStorage for SqliteStore {
                 bad_file.last_seen_at.to_rfc3339(),
             ],
         )
-        .map_err(|e| VoomError::Storage(format!("failed to upsert bad file: {e}")))?;
+        .map_err(storage_err("failed to upsert bad file"))?;
         Ok(())
     }
 
@@ -1024,7 +1026,7 @@ impl BadFileStorage for SqliteStore {
             row_to_bad_file,
         )
         .optional()
-        .map_err(|e| VoomError::Storage(format!("failed to get bad file: {e}")))
+        .map_err(storage_err("failed to get bad file"))
     }
 
     fn list_bad_files(&self, filters: &BadFileFilters) -> Result<Vec<BadFile>> {
@@ -1057,7 +1059,7 @@ impl BadFileStorage for SqliteStore {
 
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| VoomError::Storage(format!("failed to prepare bad files query: {e}")))?;
+            .map_err(storage_err("failed to prepare bad files query"))?;
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
             .iter()
             .map(|v| v as &dyn rusqlite::types::ToSql)
@@ -1065,9 +1067,9 @@ impl BadFileStorage for SqliteStore {
 
         let bad_files = stmt
             .query_map(param_refs.as_slice(), row_to_bad_file)
-            .map_err(|e| VoomError::Storage(format!("failed to query bad files: {e}")))?
+            .map_err(storage_err("failed to query bad files"))?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| VoomError::Storage(format!("failed to collect bad files: {e}")))?;
+            .map_err(storage_err("failed to collect bad files"))?;
 
         Ok(bad_files)
     }
@@ -1076,7 +1078,7 @@ impl BadFileStorage for SqliteStore {
         let conn = self.conn()?;
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM bad_files", [], |row| row.get(0))
-            .map_err(|e| VoomError::Storage(format!("failed to count bad files: {e}")))?;
+            .map_err(storage_err("failed to count bad files"))?;
         Ok(count as u64)
     }
 
@@ -1086,7 +1088,7 @@ impl BadFileStorage for SqliteStore {
             "DELETE FROM bad_files WHERE id = ?1",
             params![id.to_string()],
         )
-        .map_err(|e| VoomError::Storage(format!("failed to delete bad file: {e}")))?;
+        .map_err(storage_err("failed to delete bad file"))?;
         Ok(())
     }
 
@@ -1096,7 +1098,7 @@ impl BadFileStorage for SqliteStore {
             "DELETE FROM bad_files WHERE path = ?1",
             params![path.to_string_lossy().to_string()],
         )
-        .map_err(|e| VoomError::Storage(format!("failed to delete bad file by path: {e}")))?;
+        .map_err(storage_err("failed to delete bad file by path"))?;
         Ok(())
     }
 }
@@ -1105,7 +1107,7 @@ impl MaintenanceStorage for SqliteStore {
     fn vacuum(&self) -> Result<()> {
         let conn = self.conn()?;
         conn.execute_batch("VACUUM")
-            .map_err(|e| VoomError::Storage(format!("failed to vacuum: {e}")))?;
+            .map_err(storage_err("failed to vacuum"))?;
         Ok(())
     }
 
@@ -1122,14 +1124,12 @@ impl MaintenanceStorage for SqliteStore {
                 let conn = self.conn()?;
                 let mut stmt = conn
                     .prepare("SELECT id, path FROM bad_files WHERE path LIKE ?1 || '%' ESCAPE '\\'")
-                    .map_err(|e| {
-                        VoomError::Storage(format!("failed to prepare bad_files prune: {e}"))
-                    })?;
+                    .map_err(storage_err("failed to prepare bad_files prune"))?;
                 let result = stmt
                     .query_map(params![root_str], |row| Ok((row.get(0)?, row.get(1)?)))
-                    .map_err(|e| VoomError::Storage(format!("failed to query bad_files: {e}")))?
+                    .map_err(storage_err("failed to query bad_files"))?
                     .collect::<rusqlite::Result<Vec<_>>>()
-                    .map_err(|e| VoomError::Storage(format!("failed to collect bad_files: {e}")))?;
+                    .map_err(storage_err("failed to collect bad_files"))?;
                 result
             };
             let missing_bad_ids: Vec<&str> = bad_files
@@ -1145,13 +1145,13 @@ impl MaintenanceStorage for SqliteStore {
             let conn = self.conn()?;
             let mut stmt = conn
                 .prepare("SELECT id, path FROM files WHERE path LIKE ?1 || '%' ESCAPE '\\'")
-                .map_err(|e| VoomError::Storage(format!("failed to prepare prune query: {e}")))?;
+                .map_err(storage_err("failed to prepare prune query"))?;
 
             let result = stmt
                 .query_map(params![root_str], |row| Ok((row.get(0)?, row.get(1)?)))
-                .map_err(|e| VoomError::Storage(format!("failed to query files: {e}")))?
+                .map_err(storage_err("failed to query files"))?
                 .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(|e| VoomError::Storage(format!("failed to collect files: {e}")))?;
+                .map_err(storage_err("failed to collect files"))?;
             result
         };
 
@@ -1186,7 +1186,7 @@ impl FileHistoryStorage for SqliteStore {
                 "SELECT id, file_id, path, content_hash, container, track_count, introspected_at, archived_at
                  FROM file_history WHERE path = ?1 ORDER BY archived_at",
             )
-            .map_err(|e| VoomError::Storage(format!("failed to prepare history query: {e}")))?;
+            .map_err(storage_err("failed to prepare history query"))?;
 
         let entries = stmt
             .query_map(params![path_str], |row| {
@@ -1203,9 +1203,9 @@ impl FileHistoryStorage for SqliteStore {
                     archived_at: row.get("archived_at")?,
                 })
             })
-            .map_err(|e| VoomError::Storage(format!("failed to query history: {e}")))?
+            .map_err(storage_err("failed to query history"))?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| VoomError::Storage(format!("failed to collect history: {e}")))?;
+            .map_err(storage_err("failed to collect history"))?;
 
         Ok(entries)
     }
@@ -1262,9 +1262,9 @@ impl SqliteStore {
                 .map(|v| v as &dyn rusqlite::types::ToSql)
                 .collect();
 
-            let mut stmt = conn.prepare(&sql).map_err(|e| {
-                VoomError::Storage(format!("failed to prepare batch track query: {e}"))
-            })?;
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(storage_err("failed to prepare batch track query"))?;
 
             let rows = stmt
                 .query_map(param_refs.as_slice(), |row| {
@@ -1272,11 +1272,11 @@ impl SqliteStore {
                     let track = row_to_track(row)?;
                     Ok((file_id_str, track))
                 })
-                .map_err(|e| VoomError::Storage(format!("failed to batch query tracks: {e}")))?;
+                .map_err(storage_err("failed to batch query tracks"))?;
 
             for row_result in rows {
-                let (file_id_str, track) = row_result
-                    .map_err(|e| VoomError::Storage(format!("failed to read track row: {e}")))?;
+                let (file_id_str, track) =
+                    row_result.map_err(storage_err("failed to read track row"))?;
                 let file_id = parse_uuid(&file_id_str)?;
                 result.entry(file_id).or_default().push(track);
             }
@@ -1291,13 +1291,13 @@ impl SqliteStore {
                 "SELECT stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format
                  FROM tracks WHERE file_id = ?1 ORDER BY stream_index",
             )
-            .map_err(|e| VoomError::Storage(format!("failed to prepare track query: {e}")))?;
+            .map_err(storage_err("failed to prepare track query"))?;
 
         let tracks = stmt
             .query_map(params![file_id.to_string()], row_to_track)
-            .map_err(|e| VoomError::Storage(format!("failed to query tracks: {e}")))?
+            .map_err(storage_err("failed to query tracks"))?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| VoomError::Storage(format!("failed to collect tracks: {e}")))?;
+            .map_err(storage_err("failed to collect tracks"))?;
 
         Ok(tracks)
     }

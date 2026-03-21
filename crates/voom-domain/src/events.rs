@@ -120,19 +120,24 @@ impl EventResult {
     pub fn from_plan_execution(
         plugin_name: &str,
         outcome: crate::errors::Result<Vec<ActionResult>>,
-    ) -> Option<Self> {
+    ) -> Self {
         match outcome {
             Ok(results) => {
                 let actions_applied = results.iter().filter(|r| r.success).count();
-                Some(Self::plan_succeeded(
+                Self::plan_succeeded(
                     plugin_name,
                     Some(serde_json::json!({
                         "actions_applied": actions_applied,
                         "results": serde_json::to_value(&results).unwrap_or_default(),
                     })),
-                ))
+                )
             }
-            Err(_) => Some(Self::plan_failed(plugin_name)),
+            Err(e) => Self {
+                plugin_name: plugin_name.into(),
+                produced_events: vec![],
+                data: Some(serde_json::json!({ "error": e.to_string() })),
+                claimed: true,
+            },
         }
     }
 }

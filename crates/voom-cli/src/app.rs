@@ -234,25 +234,28 @@ pub fn bootstrap_kernel_with_store(
 
     let disabled = &config.plugins.disabled_plugins;
 
+    // Resolve per-plugin config as JSON, with a fallback to empty object.
+    let plugin_json = |name: &str| -> serde_json::Value {
+        config
+            .plugin
+            .get(name)
+            .map(|t| match serde_json::to_value(t) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(plugin = name, error = %e,
+                        "failed to convert plugin config to JSON; using empty config");
+                    serde_json::json!({})
+                }
+            })
+            .unwrap_or_else(|| serde_json::json!({}))
+    };
+
     // Helper macro to conditionally register a plugin (skips if disabled).
-    // Looks up per-plugin config from config.plugin by name.
     macro_rules! register_if_enabled {
         ($name:expr, $plugin:expr, $priority:expr, $label:expr) => {
             if !disabled.iter().any(|d| d == $name) {
-                let plugin_config = config
-                    .plugin
-                    .get($name)
-                    .map(|t| match serde_json::to_value(t) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            tracing::warn!(plugin = $name, error = %e,
-                                "failed to convert plugin config to JSON; using empty config");
-                            serde_json::json!({})
-                        }
-                    })
-                    .unwrap_or_else(|| serde_json::json!({}));
                 let ctx = voom_kernel::PluginContext {
-                    config: plugin_config,
+                    config: plugin_json($name),
                     data_dir: data_dir.clone(),
                 };
                 kernel
@@ -268,20 +271,8 @@ pub fn bootstrap_kernel_with_store(
     let mut store_handle: Option<Arc<dyn voom_domain::storage::StorageTrait>> = None;
     if !disabled.iter().any(|d| d == "sqlite-store") {
         let mut plugin = voom_sqlite_store::SqliteStorePlugin::new();
-        let plugin_config = config
-            .plugin
-            .get("sqlite-store")
-            .map(|t| match serde_json::to_value(t) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(plugin = "sqlite-store", error = %e,
-                        "failed to convert plugin config to JSON; using empty config");
-                    serde_json::json!({})
-                }
-            })
-            .unwrap_or_else(|| serde_json::json!({}));
         let ctx = voom_kernel::PluginContext {
-            config: plugin_config,
+            config: plugin_json("sqlite-store"),
             data_dir: data_dir.clone(),
         };
         plugin

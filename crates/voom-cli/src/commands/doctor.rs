@@ -14,7 +14,7 @@ use crate::tools::print_tool_status;
 /// bootstrap (e.g. missing database directory). The standalone instance does
 /// not receive per-plugin configuration from config.toml, but tool-detector
 /// currently has no configurable settings.
-pub async fn run() -> Result<()> {
+pub fn run() -> Result<()> {
     println!("{}", style("VOOM System Health Check").bold().underlined());
     println!();
 
