@@ -304,16 +304,16 @@ mod tests {
                 content_hash: "hash".into(),
             }),
             Event::JobStarted(JobStartedEvent {
-                job_id: "j1".into(),
+                job_id: uuid::Uuid::new_v4(),
                 description: "test job".into(),
             }),
             Event::JobProgress(JobProgressEvent {
-                job_id: "j1".into(),
+                job_id: uuid::Uuid::new_v4(),
                 progress: 0.5,
                 message: None,
             }),
             Event::JobCompleted(JobCompletedEvent {
-                job_id: "j1".into(),
+                job_id: uuid::Uuid::new_v4(),
                 success: true,
                 message: Some("done".into()),
             }),

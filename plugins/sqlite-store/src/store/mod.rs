@@ -819,6 +819,7 @@ mod tests {
             .list_jobs(&JobFilters {
                 status: Some(JobStatus::Pending),
                 limit: None,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(pending.len(), 1);
@@ -827,6 +828,7 @@ mod tests {
             .list_jobs(&JobFilters {
                 status: Some(JobStatus::Running),
                 limit: None,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(running.len(), 1);
@@ -835,6 +837,7 @@ mod tests {
             .list_jobs(&JobFilters {
                 status: None,
                 limit: Some(1),
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(limited.len(), 1);
@@ -1167,6 +1170,7 @@ mod tests {
             .list_jobs(&JobFilters {
                 status: None,
                 limit: Some(20_000),
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(jobs.len(), 3);

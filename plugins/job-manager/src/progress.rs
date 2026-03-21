@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_storage_reporter() {
-        let store = Arc::new(crate::test_support::InMemoryStore::new());
+        let store = Arc::new(voom_domain::test_support::InMemoryStore::new());
         let reporter = StorageReporter::new(store.clone());
 
         // Create a job first

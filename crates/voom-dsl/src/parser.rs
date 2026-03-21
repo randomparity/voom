@@ -135,6 +135,11 @@ fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
     })
 }
 
+/// Push a spanned operation with a pre-captured span.
+fn emit_op(ops: &mut Vec<SpannedOperation>, span: Span, node: OperationNode) {
+    ops.push(SpannedOperation { span, node });
+}
+
 fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
     let span = span_from_pair(&pair);
     let mut inner = pair.into_inner();
@@ -181,101 +186,81 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
                 on_error = Some(ident.as_str().to_string());
             }
             Rule::container_op => {
-                let op_span = span_from_pair(&child);
+                let span = span_from_pair(&child);
                 let ident = child.into_inner().next().unwrap();
-                operations.push(SpannedOperation {
-                    span: op_span,
-                    node: OperationNode::Container(ident.as_str().to_string()),
-                });
+                emit_op(
+                    &mut operations,
+                    span,
+                    OperationNode::Container(ident.as_str().to_string()),
+                );
             }
             Rule::keep_op => {
-                let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation {
-                    span: op_span,
-                    node: build_keep_remove(child, true)?,
-                });
+                let span = span_from_pair(&child);
+                emit_op(&mut operations, span, build_keep_remove(child, true)?);
             }
             Rule::remove_op => {
-                let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation {
-                    span: op_span,
-                    node: build_keep_remove(child, false)?,
-                });
+                let span = span_from_pair(&child);
+                emit_op(&mut operations, span, build_keep_remove(child, false)?);
             }
             Rule::order_op => {
-                let op_span = span_from_pair(&child);
+                let span = span_from_pair(&child);
                 let list = child.into_inner().next().unwrap();
-                operations.push(SpannedOperation {
-                    span: op_span,
-                    node: OperationNode::Order(build_list(list)),
-                });
+                emit_op(
+                    &mut operations,
+                    span,
+                    OperationNode::Order(build_list(list)),
+                );
             }
             Rule::defaults_op => {
-                let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation {
-                    span: op_span,
-                    node: build_defaults(child)?,
-                });
+                let span = span_from_pair(&child);
+                emit_op(&mut operations, span, build_defaults(child)?);
             }
             Rule::actions_op => {
-                let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation {
-                    span: op_span,
-                    node: build_actions(child)?,
-                });
+                let span = span_from_pair(&child);
+                emit_op(&mut operations, span, build_actions(child)?);
             }
             Rule::transcode_op => {
-                let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation {
-                    span: op_span,
-                    node: build_transcode(child)?,
-                });
+                let span = span_from_pair(&child);
+                emit_op(&mut operations, span, build_transcode(child)?);
             }
             Rule::synthesize_op => {
-                let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation {
-                    span: op_span,
-                    node: build_synthesize(child)?,
-                });
+                let span = span_from_pair(&child);
+                emit_op(&mut operations, span, build_synthesize(child)?);
             }
             Rule::clear_tags_op => {
-                let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation {
-                    span: op_span,
-                    node: OperationNode::ClearTags,
-                });
+                emit_op(
+                    &mut operations,
+                    span_from_pair(&child),
+                    OperationNode::ClearTags,
+                );
             }
             Rule::set_tag_op => {
-                let op_span = span_from_pair(&child);
+                let span = span_from_pair(&child);
                 let mut tag_inner = child.into_inner();
                 let tag = parse_string_value(&tag_inner.next().unwrap());
                 let val = parse_set_tag_value(tag_inner.next().unwrap());
-                operations.push(SpannedOperation {
-                    span: op_span,
-                    node: OperationNode::SetTag { tag, value: val },
-                });
+                emit_op(
+                    &mut operations,
+                    span,
+                    OperationNode::SetTag { tag, value: val },
+                );
             }
             Rule::delete_tag_op => {
-                let op_span = span_from_pair(&child);
+                let span = span_from_pair(&child);
                 let tag = parse_string_value(&child.into_inner().next().unwrap());
-                operations.push(SpannedOperation {
-                    span: op_span,
-                    node: OperationNode::DeleteTag(tag),
-                });
+                emit_op(&mut operations, span, OperationNode::DeleteTag(tag));
             }
             Rule::when_block => {
-                let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation {
-                    span: op_span,
-                    node: OperationNode::When(build_when(child)?),
-                });
+                let span = span_from_pair(&child);
+                emit_op(
+                    &mut operations,
+                    span,
+                    OperationNode::When(build_when(child)?),
+                );
             }
             Rule::rules_block => {
-                let op_span = span_from_pair(&child);
-                operations.push(SpannedOperation {
-                    span: op_span,
-                    node: build_rules(child)?,
-                });
+                let span = span_from_pair(&child);
+                emit_op(&mut operations, span, build_rules(child)?);
             }
             other => {
                 let (line, col) = child.as_span().start_pos().line_col();

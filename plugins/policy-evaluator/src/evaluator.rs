@@ -659,12 +659,11 @@ fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), St
         CompiledAction::SetTag { tag, value } => {
             let val = resolve_value_or_field(value, ctx.file)
                 .ok_or_else(|| format!("Cannot resolve tag value for '{tag}'"))?;
-            ctx.plan.actions.push(PlannedAction {
-                operation: OperationType::SetContainerTag,
-                track_index: None,
-                parameters: serde_json::json!({ "tag": tag, "value": val }),
-                description: format!("Set container tag '{tag}' = '{val}'"),
-            });
+            ctx.plan.actions.push(PlannedAction::file_op(
+                OperationType::SetContainerTag,
+                serde_json::json!({ "tag": tag, "value": val }),
+                format!("Set container tag '{tag}' = '{val}'"),
+            ));
         }
     }
     Ok(())

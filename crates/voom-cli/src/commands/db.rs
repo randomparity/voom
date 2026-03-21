@@ -7,16 +7,16 @@ use crate::cli::{DbCommands, OutputFormat};
 
 pub async fn run(cmd: DbCommands) -> Result<()> {
     match cmd {
-        DbCommands::Prune => prune().await,
-        DbCommands::Vacuum => vacuum().await,
+        DbCommands::Prune => prune(),
+        DbCommands::Vacuum => vacuum(),
         DbCommands::Reset => reset().await,
-        DbCommands::ListBad { path, format } => list_bad(path, format).await,
-        DbCommands::PurgeBad => purge_bad().await,
+        DbCommands::ListBad { path, format } => list_bad(path, format),
+        DbCommands::PurgeBad => purge_bad(),
         DbCommands::CleanBad { yes } => clean_bad(yes).await,
     }
 }
 
-async fn prune() -> Result<()> {
+fn prune() -> Result<()> {
     let config = app::load_config()?;
     let store = app::open_store(&config)?;
 
@@ -37,7 +37,7 @@ async fn prune() -> Result<()> {
     Ok(())
 }
 
-async fn vacuum() -> Result<()> {
+fn vacuum() -> Result<()> {
     let config = app::load_config()?;
     let store = app::open_store(&config)?;
 
@@ -87,7 +87,7 @@ async fn reset() -> Result<()> {
     Ok(())
 }
 
-async fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
+fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
     let config = app::load_config()?;
     let store = app::open_store(&config)?;
 
@@ -147,7 +147,7 @@ async fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-async fn purge_bad() -> Result<()> {
+fn purge_bad() -> Result<()> {
     let config = app::load_config()?;
     let store = app::open_store(&config)?;
 

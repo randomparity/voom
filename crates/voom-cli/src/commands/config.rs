@@ -4,14 +4,14 @@ use console::style;
 use crate::app;
 use crate::cli::ConfigCommands;
 
-pub async fn run(cmd: ConfigCommands) -> Result<()> {
+pub fn run(cmd: ConfigCommands) -> Result<()> {
     match cmd {
-        ConfigCommands::Show => show().await,
-        ConfigCommands::Edit => edit().await,
+        ConfigCommands::Show => show(),
+        ConfigCommands::Edit => edit(),
     }
 }
 
-async fn show() -> Result<()> {
+fn show() -> Result<()> {
     let path = app::config_path();
 
     if path.exists() {
@@ -56,7 +56,7 @@ async fn show() -> Result<()> {
     Ok(())
 }
 
-async fn edit() -> Result<()> {
+fn edit() -> Result<()> {
     let path = app::config_path();
 
     // Ensure directory exists

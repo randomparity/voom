@@ -16,6 +16,7 @@ use crate::stats::ProcessingStats;
 pub struct JobFilters {
     pub status: Option<JobStatus>,
     pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 /// Filters for querying bad files from storage.

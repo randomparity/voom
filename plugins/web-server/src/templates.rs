@@ -167,6 +167,7 @@ pub async fn jobs_page(
         let jobs = store.list_jobs(&JobFilters {
             status: filter_status,
             limit: None,
+            ..Default::default()
         })?;
         let counts = store.count_jobs_by_status()?;
         Ok((jobs, counts))

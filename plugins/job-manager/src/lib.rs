@@ -13,9 +13,6 @@ pub mod progress;
 pub mod queue;
 pub mod worker;
 
-#[cfg(test)]
-pub(crate) mod test_support;
-
 use std::sync::Arc;
 
 use voom_domain::capabilities::Capability;
@@ -45,7 +42,7 @@ impl JobManagerPlugin {
     }
 
     /// Initialize with a storage backend.
-    pub fn with_store(store: Arc<dyn JobStorage>) -> Self {
+    pub fn from_store(store: Arc<dyn JobStorage>) -> Self {
         Self {
             queue: Some(Arc::new(JobQueue::new(store))),
             capabilities: vec![Capability::ManageJobs],
@@ -122,8 +119,8 @@ impl Plugin for JobManagerPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::InMemoryStore;
     use voom_domain::events::{JobCompletedEvent, JobProgressEvent, JobStartedEvent};
+    use voom_domain::test_support::InMemoryStore;
 
     #[test]
     fn test_plugin_metadata() {
@@ -143,9 +140,9 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_with_store() {
+    fn test_plugin_from_store() {
         let store = Arc::new(InMemoryStore::new());
-        let plugin = JobManagerPlugin::with_store(store);
+        let plugin = JobManagerPlugin::from_store(store);
         assert!(plugin.queue().is_some());
     }
 
@@ -153,7 +150,7 @@ mod tests {
     fn test_on_event_job_started() {
         let plugin = JobManagerPlugin::new();
         let event = Event::JobStarted(JobStartedEvent {
-            job_id: "test-1".into(),
+            job_id: uuid::Uuid::new_v4(),
             description: "Processing file".into(),
         });
         let result = plugin.on_event(&event).unwrap();
@@ -164,7 +161,7 @@ mod tests {
     fn test_on_event_job_progress() {
         let plugin = JobManagerPlugin::new();
         let event = Event::JobProgress(JobProgressEvent {
-            job_id: "test-1".into(),
+            job_id: uuid::Uuid::new_v4(),
             progress: 0.5,
             message: Some("Halfway".into()),
         });
@@ -177,14 +174,14 @@ mod tests {
         let plugin = JobManagerPlugin::new();
 
         let event = Event::JobCompleted(JobCompletedEvent {
-            job_id: "test-1".into(),
+            job_id: uuid::Uuid::new_v4(),
             success: true,
             message: None,
         });
         assert!(plugin.on_event(&event).unwrap().is_none());
 
         let event = Event::JobCompleted(JobCompletedEvent {
-            job_id: "test-2".into(),
+            job_id: uuid::Uuid::new_v4(),
             success: false,
             message: Some("Encoder error".into()),
         });

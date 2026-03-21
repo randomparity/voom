@@ -5,15 +5,15 @@ use console::style;
 use crate::cli::JobsCommands;
 use crate::output;
 
-pub async fn run(cmd: JobsCommands) -> Result<()> {
+pub fn run(cmd: JobsCommands) -> Result<()> {
     match cmd {
-        JobsCommands::List { status, limit } => list(status, limit).await,
-        JobsCommands::Status { id } => status(id).await,
-        JobsCommands::Cancel { id } => cancel(id).await,
+        JobsCommands::List { status, limit } => list(status, limit),
+        JobsCommands::Status { id } => status(id),
+        JobsCommands::Cancel { id } => cancel(id),
     }
 }
 
-async fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
+fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
     let config = crate::app::load_config()?;
     let store = crate::app::open_store(&config)?;
 
@@ -37,6 +37,7 @@ async fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
         .list_jobs(&JobFilters {
             status: filter_status,
             limit: Some(limit),
+            ..Default::default()
         })
         .map_err(|e| anyhow::anyhow!("failed to list jobs: {e}"))?;
 
@@ -109,7 +110,7 @@ async fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
     Ok(())
 }
 
-async fn status(id: String) -> Result<()> {
+fn status(id: String) -> Result<()> {
     let config = crate::app::load_config()?;
     let store = crate::app::open_store(&config)?;
 
@@ -148,7 +149,7 @@ async fn status(id: String) -> Result<()> {
     Ok(())
 }
 
-async fn cancel(id: String) -> Result<()> {
+fn cancel(id: String) -> Result<()> {
     let config = crate::app::load_config()?;
     let store = crate::app::open_store(&config)?;
 

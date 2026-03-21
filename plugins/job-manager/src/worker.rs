@@ -350,9 +350,9 @@ pub enum ErrorStrategy {
 mod tests {
     use super::*;
     use crate::progress::NoopReporter;
-    use crate::test_support::InMemoryStore;
     use std::sync::atomic::AtomicU32;
     use tokio_util::sync::CancellationToken;
+    use voom_domain::test_support::InMemoryStore;
 
     fn test_queue() -> Arc<JobQueue> {
         let store = Arc::new(InMemoryStore::new());

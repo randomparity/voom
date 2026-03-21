@@ -7,17 +7,17 @@ use crate::app;
 use crate::cli::PluginCommands;
 use crate::output;
 
-pub async fn run(cmd: PluginCommands) -> Result<()> {
+pub fn run(cmd: PluginCommands) -> Result<()> {
     match cmd {
-        PluginCommands::List => list().await,
-        PluginCommands::Info { name } => info(name).await,
-        PluginCommands::Enable { name } => enable(name).await,
-        PluginCommands::Disable { name } => disable(name).await,
-        PluginCommands::Install { path } => install(path).await,
+        PluginCommands::List => list(),
+        PluginCommands::Info { name } => info(name),
+        PluginCommands::Enable { name } => enable(name),
+        PluginCommands::Disable { name } => disable(name),
+        PluginCommands::Install { path } => install(path),
     }
 }
 
-async fn list() -> Result<()> {
+fn list() -> Result<()> {
     let config = app::load_config()?;
     let disabled = &config.plugins.disabled_plugins;
     let kernel = app::bootstrap_kernel(&config)?;
@@ -70,7 +70,7 @@ async fn list() -> Result<()> {
     Ok(())
 }
 
-async fn info(name: String) -> Result<()> {
+fn info(name: String) -> Result<()> {
     let config = app::load_config()?;
 
     // Check if it's a known but disabled plugin
@@ -111,11 +111,11 @@ async fn info(name: String) -> Result<()> {
     Ok(())
 }
 
-async fn enable(name: String) -> Result<()> {
+fn enable(name: String) -> Result<()> {
     set_plugin_enabled(name, true)
 }
 
-async fn disable(name: String) -> Result<()> {
+fn disable(name: String) -> Result<()> {
     set_plugin_enabled(name, false)
 }
 
@@ -173,7 +173,7 @@ fn set_plugin_enabled(name: String, enabled: bool) -> Result<()> {
     Ok(())
 }
 
-async fn install(path: PathBuf) -> Result<()> {
+fn install(path: PathBuf) -> Result<()> {
     // 1. Check the path exists and has .wasm extension
     if !path.exists() {
         bail!("File not found: {}", path.display());
@@ -268,9 +268,9 @@ async fn install(path: PathBuf) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn install_nonexistent_file_fails() {
-        let result = install(PathBuf::from("/nonexistent/plugin.wasm")).await;
+    #[test]
+    fn install_nonexistent_file_fails() {
+        let result = install(PathBuf::from("/nonexistent/plugin.wasm"));
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("not found"),
@@ -278,13 +278,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn install_non_wasm_extension_fails() {
+    #[test]
+    fn install_non_wasm_extension_fails() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("plugin.txt");
         std::fs::write(&file, "not a wasm file").unwrap();
 
-        let result = install(file).await;
+        let result = install(file);
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains(".wasm"),
@@ -292,13 +292,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn install_wasm_without_manifest_fails() {
+    #[test]
+    fn install_wasm_without_manifest_fails() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("plugin.wasm");
         std::fs::write(&file, b"\0asm").unwrap();
 
-        let result = install(file).await;
+        let result = install(file);
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("Manifest"),

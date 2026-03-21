@@ -26,19 +26,16 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Returns true if this plan has no actions to execute.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.actions.is_empty()
     }
 
-    /// Returns true if this plan was skipped.
     #[must_use]
     pub fn is_skipped(&self) -> bool {
         self.skip_reason.is_some()
     }
 
-    /// Returns a new Plan with the given skip reason set.
     #[must_use]
     pub fn with_skip_reason(mut self, reason: impl Into<String>) -> Self {
         self.skip_reason = Some(reason.into());
@@ -46,14 +43,12 @@ impl Plan {
         self
     }
 
-    /// Returns a new Plan with an additional warning.
     #[must_use]
     pub fn with_warning(mut self, warning: impl Into<String>) -> Self {
         self.warnings.push(warning.into());
         self
     }
 
-    /// Returns a new Plan with an additional action.
     #[must_use]
     pub fn with_action(mut self, action: PlannedAction) -> Self {
         self.actions.push(action);

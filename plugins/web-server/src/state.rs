@@ -101,7 +101,7 @@ impl AppState {
     /// Returns true if no auth is configured (allow all) or if the Bearer token matches.
     /// Uses constant-time comparison to prevent timing side-channel attacks.
     #[must_use]
-    pub fn validate_auth(&self, header: Option<&str>) -> bool {
+    pub fn is_authorized(&self, header: Option<&str>) -> bool {
         use subtle::ConstantTimeEq;
         match &self.auth_token {
             None => true, // no auth configured, allow all
@@ -151,34 +151,34 @@ mod tests {
     }
 
     #[test]
-    fn validate_auth_no_token_configured_allows_all() {
+    fn is_authorized_no_token_configured_allows_all() {
         let state = make_state(None);
-        assert!(state.validate_auth(None));
-        assert!(state.validate_auth(Some("Bearer anything")));
-        assert!(state.validate_auth(Some("garbage")));
+        assert!(state.is_authorized(None));
+        assert!(state.is_authorized(Some("Bearer anything")));
+        assert!(state.is_authorized(Some("garbage")));
     }
 
     #[test]
-    fn validate_auth_with_token_requires_bearer_prefix() {
+    fn is_authorized_with_token_requires_bearer_prefix() {
         let state = make_state(Some("secret123".into()));
-        assert!(state.validate_auth(Some("Bearer secret123")));
-        assert!(!state.validate_auth(Some("secret123")));
-        assert!(!state.validate_auth(Some("bearer secret123")));
-        assert!(!state.validate_auth(Some("Token secret123")));
+        assert!(state.is_authorized(Some("Bearer secret123")));
+        assert!(!state.is_authorized(Some("secret123")));
+        assert!(!state.is_authorized(Some("bearer secret123")));
+        assert!(!state.is_authorized(Some("Token secret123")));
     }
 
     #[test]
-    fn validate_auth_with_token_rejects_none() {
+    fn is_authorized_with_token_rejects_none() {
         let state = make_state(Some("secret123".into()));
-        assert!(!state.validate_auth(None));
+        assert!(!state.is_authorized(None));
     }
 
     #[test]
-    fn validate_auth_with_token_rejects_wrong_token() {
+    fn is_authorized_with_token_rejects_wrong_token() {
         let state = make_state(Some("secret123".into()));
-        assert!(!state.validate_auth(Some("Bearer wrong")));
-        assert!(!state.validate_auth(Some("Bearer secret1234")));
-        assert!(!state.validate_auth(Some("Bearer ")));
+        assert!(!state.is_authorized(Some("Bearer wrong")));
+        assert!(!state.is_authorized(Some("Bearer secret1234")));
+        assert!(!state.is_authorized(Some("Bearer ")));
     }
 
     #[test]

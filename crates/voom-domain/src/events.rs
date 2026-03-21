@@ -217,13 +217,13 @@ pub struct PlanFailedEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobStartedEvent {
-    pub job_id: String,
+    pub job_id: Uuid,
     pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobProgressEvent {
-    pub job_id: String,
+    pub job_id: Uuid,
     pub progress: f64,
     #[serde(default)]
     pub message: Option<String>,
@@ -231,7 +231,7 @@ pub struct JobProgressEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobCompletedEvent {
-    pub job_id: String,
+    pub job_id: Uuid,
     pub success: bool,
     #[serde(default)]
     pub message: Option<String>,
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn test_event_msgpack_roundtrip() {
         let event = Event::JobProgress(JobProgressEvent {
-            job_id: "job-1".into(),
+            job_id: Uuid::new_v4(),
             progress: 0.75,
             message: Some("Processing...".into()),
         });
@@ -299,9 +299,10 @@ mod tests {
     #[test]
     fn test_job_progress_missing_optional_fields() {
         // Simulate deserializing from a payload that omits the optional `message` field.
-        let json = r#"{"job_id":"j1","progress":0.5}"#;
-        let event: JobProgressEvent = serde_json::from_str(json).unwrap();
-        assert_eq!(event.job_id, "j1");
+        let id = Uuid::new_v4();
+        let json = format!(r#"{{"job_id":"{}","progress":0.5}}"#, id);
+        let event: JobProgressEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event.job_id, id);
         assert!(event.message.is_none());
     }
 
@@ -361,9 +362,10 @@ mod tests {
 
     #[test]
     fn test_job_completed_missing_optional_fields() {
-        let json = r#"{"job_id":"j2","success":true}"#;
-        let event: JobCompletedEvent = serde_json::from_str(json).unwrap();
-        assert_eq!(event.job_id, "j2");
+        let id = Uuid::new_v4();
+        let json = format!(r#"{{"job_id":"{}","success":true}}"#, id);
+        let event: JobCompletedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event.job_id, id);
         assert!(event.success);
         assert!(event.message.is_none());
     }

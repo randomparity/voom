@@ -125,7 +125,9 @@ impl PhaseOrchestratorPlugin {
             .iter()
             .find(|p| p.name == phase_name)
             .map(|p| p.on_error)
-            .unwrap_or(policy.config.on_error)
+            // The compiler always sets an explicit on_error per phase, so this
+            // is only reachable if called with a phase name not in the policy.
+            .unwrap_or(ErrorStrategy::Abort)
     }
 }
 

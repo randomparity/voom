@@ -98,7 +98,7 @@ mod tests {
     fn test_plugin_on_event_returns_none() {
         let plugin = WebServerPlugin::new();
         let event = Event::JobStarted(voom_domain::events::JobStartedEvent {
-            job_id: "test-1".into(),
+            job_id: uuid::Uuid::new_v4(),
             description: "test".into(),
         });
         assert!(plugin.on_event(&event).unwrap().is_none());

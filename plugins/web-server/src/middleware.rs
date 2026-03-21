@@ -130,7 +130,7 @@ pub async fn auth_middleware(
         .get("Authorization")
         .and_then(|v| v.to_str().ok());
 
-    if !state.validate_auth(auth_header) {
+    if !state.is_authorized(auth_header) {
         tracing::warn!(
             uri = %request.uri(),
             method = %request.method(),

@@ -17,6 +17,7 @@ const MAX_JOB_LIMIT: u32 = 10_000;
 pub struct ListJobsParams {
     pub status: Option<String>,
     pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,7 +54,11 @@ pub async fn list_jobs(
     };
     let limit = params.limit.map(|l| l.min(MAX_JOB_LIMIT));
 
-    let filters = JobFilters { status, limit };
+    let filters = JobFilters {
+        status,
+        limit,
+        offset: params.offset,
+    };
     let (jobs, total) = spawn_store_op(move || {
         let jobs = store.list_jobs(&filters)?;
         // Compute true total (independent of limit) using count_jobs_by_status

@@ -126,7 +126,11 @@ impl JobQueue {
 
     /// List jobs, optionally filtered by status.
     pub fn list(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>> {
-        self.store.list_jobs(&JobFilters { status, limit })
+        self.store.list_jobs(&JobFilters {
+            status,
+            limit,
+            ..Default::default()
+        })
     }
 
     /// Get job counts grouped by status.
@@ -138,7 +142,7 @@ impl JobQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::InMemoryStore;
+    use voom_domain::test_support::InMemoryStore;
 
     #[test]
     fn test_enqueue_and_claim() {
