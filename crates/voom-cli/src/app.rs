@@ -516,6 +516,28 @@ mod tests {
     }
 
     #[test]
+    fn known_plugin_names_matches_bootstrap_registration() {
+        // Bootstrap with all plugins enabled, then verify every registered
+        // plugin name appears in KNOWN_PLUGIN_NAMES and vice versa.
+        let config = AppConfig::default();
+        let (kernel, _store) =
+            bootstrap_kernel_with_store(&config).expect("bootstrap should succeed with defaults");
+        let registered = kernel.registry.plugin_names();
+        for name in KNOWN_PLUGIN_NAMES {
+            assert!(
+                registered.iter().any(|n| n == name),
+                "KNOWN_PLUGIN_NAMES contains '{name}' but it was not registered in bootstrap"
+            );
+        }
+        for name in &registered {
+            assert!(
+                KNOWN_PLUGIN_NAMES.contains(&name.as_str()),
+                "Plugin '{name}' is registered in bootstrap but missing from KNOWN_PLUGIN_NAMES"
+            );
+        }
+    }
+
+    #[test]
     fn known_plugin_names_has_no_duplicates() {
         let mut seen = std::collections::HashSet::new();
         for name in KNOWN_PLUGIN_NAMES {

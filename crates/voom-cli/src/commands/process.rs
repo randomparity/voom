@@ -376,14 +376,35 @@ fn execute_plans(
         let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
 
         let claimed = results.iter().any(|r| r.claimed);
+        let exec_error = results.iter().find_map(|r| {
+            r.data
+                .as_ref()
+                .and_then(|d| d.get("error"))
+                .and_then(|e| e.as_str())
+                .map(String::from)
+        });
 
-        if claimed {
-            // An executor plugin claimed the plan — treat as successful
+        if claimed && exec_error.is_none() {
+            // An executor plugin claimed and successfully executed the plan
             kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
                 plan_id: plan.id,
                 path: file.path.clone(),
                 phase_name: plan.phase_name.clone(),
                 actions_applied: plan.actions.len(),
+            }));
+        } else if let Some(error) = exec_error {
+            // An executor claimed the plan but failed
+            kernel.dispatch(Event::PlanFailed(PlanFailedEvent {
+                plan_id: plan.id,
+                path: file.path.clone(),
+                phase_name: plan.phase_name.clone(),
+                error,
+                error_code: None,
+                plugin_name: results
+                    .iter()
+                    .find(|r| r.claimed)
+                    .map(|r| r.plugin_name.clone()),
+                error_chain: vec![],
             }));
         } else {
             // No executor claimed the plan — emit PlanFailed

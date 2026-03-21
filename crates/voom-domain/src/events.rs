@@ -133,12 +133,11 @@ impl EventResult {
                     })),
                 )
             }
-            Err(e) => Self {
-                plugin_name: plugin_name.into(),
-                produced_events: vec![],
-                data: Some(serde_json::json!({ "error": e.to_string() })),
-                claimed: true,
-            },
+            Err(e) => {
+                let mut result = Self::plan_failed(plugin_name);
+                result.data = Some(serde_json::json!({ "error": e.to_string() }));
+                result
+            }
         }
     }
 }
