@@ -1,26 +1,16 @@
-use std::sync::Arc;
-
-use crate::Plugin;
-
 /// WIT result type for HTTP responses crossing the WASM boundary.
 #[cfg(feature = "wasm")]
 type WitHttpResult = Result<(u16, Vec<(String, String)>, Vec<u8>), String>;
-
-/// Wrap any native `Plugin` implementation into an `Arc<dyn Plugin>`.
-///
-/// This is the recommended way to create plugin trait objects for registration
-/// with the kernel. For WASM plugins, use `WasmPluginLoader` instead.
-pub fn load_native<P: Plugin + 'static>(plugin: P) -> Arc<dyn Plugin> {
-    Arc::new(plugin)
-}
 
 /// WASM plugin loader using wasmtime's component model.
 /// Only available with the `wasm` feature.
 #[cfg(feature = "wasm")]
 pub mod wasm {
-    use super::*;
+    use std::sync::Arc;
+
     use crate::host::HostState;
     use crate::manifest::PluginManifest;
+    use crate::Plugin;
     use std::path::Path;
     use std::sync::Mutex;
     use voom_domain::capabilities::Capability;
@@ -711,7 +701,10 @@ pub mod wasm {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::Plugin;
     use voom_domain::capabilities::Capability;
     use voom_domain::events::{Event, EventResult};
 

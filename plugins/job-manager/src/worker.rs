@@ -88,12 +88,10 @@ impl WorkerPool {
         }
     }
 
-    /// Signal cancellation to all workers.
     pub fn cancel(&self) {
         self.token.cancel();
     }
 
-    /// Check if cancellation was requested.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.token.is_cancelled()
