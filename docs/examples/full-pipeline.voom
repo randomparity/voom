@@ -63,9 +63,9 @@ policy "full-pipeline" {
   }
 
   // ── Phase 3: Track selection ──────────────────────────────────
-  // Exercises: depends_on, all track targets (audio, subtitle/subtitles, video),
-  //            where clauses with lang in, and, not, or, forced, default filter,
-  //            parenthesized filter groups
+  // Exercises: depends_on, all track targets (audio, subtitle/subtitles, video,
+  //            attachments), where clauses with lang in, and, not, or, forced,
+  //            default filter, font filter, title contains, parenthesized groups
   // Plugins:   mkvtoolnix-executor (mkvmerge for track removal)
   phase track-selection {
     depends_on: [tag-management]
@@ -78,6 +78,9 @@ policy "full-pipeline" {
 
     // Keep video — no filter (keep all)
     keep video
+
+    // Keep: attachments with compound filter (font OR title contains)
+    keep attachments where font or title contains "cover"
   }
 
   // ── Phase 4: Track removal ──────────────────────────────────────
@@ -88,7 +91,7 @@ policy "full-pipeline" {
   phase track-removal {
     depends_on: [track-selection]
 
-    // Remove: not font
+    // Remove: not font (strip non-font attachments like cover art)
     remove attachments where not font
 
     // Remove: title matches (regex)
@@ -343,6 +346,12 @@ policy "full-pipeline" {
       rule "attachment-count" {
         when count(attachments where font) > 50 {
           warn "Excessive font attachments in {filename}"
+        }
+      }
+
+      rule "image-attachments" {
+        when exists(attachments where not font) {
+          warn "Non-font attachments (cover art/images) in {filename}"
         }
       }
     }

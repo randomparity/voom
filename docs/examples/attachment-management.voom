@@ -1,0 +1,64 @@
+// Attachment management policy.
+//
+// Demonstrates attachment-related DSL operations. Covers:
+// - Removing non-font attachments (cover art, thumbnails, etc.)
+// - Keeping font + specific image attachments with compound filters
+// - Counting and checking attachments with rules
+// - Title-based attachment detection
+//
+// Common use case: anime fansubs often embed dozens of font files plus
+// cover art images. This policy strips image attachments while keeping
+// fonts, then validates the result.
+//
+// Designed for use with: discovery, ffprobe-introspector, sqlite-store,
+// policy-evaluator, phase-orchestrator, mkvtoolnix-executor
+
+policy "attachment-management" {
+  config {
+    on_error: continue
+  }
+
+  // ── Phase 1: Ensure MKV container ──────────────────────────────
+  // Attachments are only supported in MKV.
+  phase containerize {
+    container mkv
+  }
+
+  // ── Phase 2: Strip non-font attachments ────────────────────────
+  // Remove cover art, poster images, thumbnails — keep only fonts
+  // and any attachment whose title contains "cover".
+  phase strip-images {
+    depends_on: [containerize]
+
+    // Remove non-font attachments, but spare cover art
+    remove attachments where not font and not title contains "cover"
+  }
+
+  // ── Phase 3: Validate attachment state ─────────────────────────
+  phase attachment-checks {
+    depends_on: [strip-images]
+
+    rules all {
+      // Anime fansubs can embed 100+ font files — warn if excessive
+      rule "excessive-fonts" {
+        when count(attachments where font) > 50 {
+          warn "Excessive font attachments in {filename}"
+        }
+      }
+
+      // Detect image attachments that survived cleanup
+      rule "leftover-images" {
+        when exists(attachments where not font) {
+          warn "Non-font attachments still present in {filename}"
+        }
+      }
+
+      // Check for cover art by title
+      rule "cover-art-check" {
+        when exists(attachments where title contains "cover") {
+          warn "Cover art attachment found in {filename}"
+        }
+      }
+    }
+  }
+}

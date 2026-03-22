@@ -294,6 +294,14 @@ fn example_strict_archive_parses() {
 }
 
 #[test]
+fn example_attachment_management_parses() {
+    let input = include_str!("../../../docs/examples/attachment-management.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "attachment-management");
+    assert_eq!(ast.phases.len(), 3);
+}
+
+#[test]
 fn example_full_pipeline_parses_and_validates() {
     let input = include_str!("../../../docs/examples/full-pipeline.voom");
     let ast = parse_policy(input).unwrap();

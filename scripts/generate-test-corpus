@@ -146,6 +146,14 @@ def build_manifest():
             "special": ["attachment"],
         },
         {
+            "stem": "cover-art",
+            "ext": "mkv",
+            "video": {"codec": "libx264", "size": "1920x1080", "fps": 24},
+            "audio": [{"codec": "aac", "channels": 2}],
+            "subs": [],
+            "special": ["cover_art"],
+        },
+        {
             "stem": "av1-opus",
             "ext": "mp4",
             "video": {"codec": "libsvtav1", "size": "1280x720", "fps": 24},
@@ -240,6 +248,62 @@ SUB_WRITERS = {
     "ass": write_ass,
     "webvtt": write_vtt,
 }
+
+
+# ---------------------------------------------------------------------------
+# Image attachment helpers
+# ---------------------------------------------------------------------------
+
+def write_minimal_jpeg(path):
+    """Write a minimal valid 1x1 white JPEG file (~125 bytes)."""
+    # SOI + JFIF APP0 + quantization table + SOF0 + DHT + SOS + data + EOI
+    path.write_bytes(bytes([
+        # SOI
+        0xFF, 0xD8,
+        # APP0 (JFIF marker)
+        0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00,
+        0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+        # DQT (quantization table, all ones)
+        0xFF, 0xDB, 0x00, 0x43, 0x00,
+        *([0x01] * 64),
+        # SOF0 (1x1, 8-bit, 1 component)
+        0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01,
+        0x01, 0x01, 0x11, 0x00,
+        # DHT (Huffman table)
+        0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00, 0x01, 0x05, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
+        0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+        # SOS + compressed data
+        0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F,
+        0x00, 0x7B, 0x40,
+        # EOI
+        0xFF, 0xD9,
+    ]))
+
+
+def write_minimal_png(path):
+    """Write a minimal valid 1x1 white PNG file."""
+    import struct
+    import zlib
+
+    sig = b'\x89PNG\r\n\x1a\n'
+
+    # IHDR: 1x1, 8-bit grayscale
+    ihdr_data = struct.pack('>IIBBBBB', 1, 1, 8, 0, 0, 0, 0)
+    ihdr = struct.pack('>I', 13) + b'IHDR' + ihdr_data
+    ihdr += struct.pack('>I', zlib.crc32(b'IHDR' + ihdr_data) & 0xFFFFFFFF)
+
+    # IDAT: filter byte 0 + single white pixel 0xFF
+    raw = zlib.compress(b'\x00\xFF')
+    idat = struct.pack('>I', len(raw)) + b'IDAT' + raw
+    idat += struct.pack('>I', zlib.crc32(b'IDAT' + raw) & 0xFFFFFFFF)
+
+    # IEND
+    iend = struct.pack('>I', 0) + b'IEND'
+    iend += struct.pack('>I', zlib.crc32(b'IEND') & 0xFFFFFFFF)
+
+    path.write_bytes(sig + ihdr + idat + iend)
 
 
 # ---------------------------------------------------------------------------
@@ -449,14 +513,34 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
         elif i == 0:
             cmd += [f"-disposition:s:{i}", "default"]
 
-    # --- Attachment ---
+    # --- Attachments ---
     if "attachment" in specials:
+        # Font attachment
         font_path = Path(tmpdir) / "DummyFont.ttf"
         # Create a minimal dummy file (not a real font, but ffmpeg accepts it)
         font_path.write_bytes(b"\x00\x01\x00\x00" + b"\x00" * 28)
         cmd += ["-attach", str(font_path),
                 "-metadata:s:t:0", "mimetype=font/sfnt",
                 "-metadata:s:t:0", "filename=DummyFont.ttf"]
+        # JPEG cover image
+        cover_path = Path(tmpdir) / "cover.jpg"
+        write_minimal_jpeg(cover_path)
+        cmd += ["-attach", str(cover_path),
+                "-metadata:s:t:1", "mimetype=image/jpeg",
+                "-metadata:s:t:1", "filename=cover.jpg"]
+        # PNG poster image
+        poster_path = Path(tmpdir) / "poster.png"
+        write_minimal_png(poster_path)
+        cmd += ["-attach", str(poster_path),
+                "-metadata:s:t:2", "mimetype=image/png",
+                "-metadata:s:t:2", "filename=poster.png"]
+
+    if "cover_art" in specials:
+        cover_path = Path(tmpdir) / "cover.jpg"
+        write_minimal_jpeg(cover_path)
+        cmd += ["-attach", str(cover_path),
+                "-metadata:s:t:0", "mimetype=image/jpeg",
+                "-metadata:s:t:0", "filename=cover.jpg"]
 
     # --- Duration limit ---
     cmd += ["-t", str(duration)]
