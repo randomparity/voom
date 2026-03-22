@@ -269,7 +269,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn install_nonexistent_file_fails() {
+    fn test_install_nonexistent_file_fails() {
         let result = install(PathBuf::from("/nonexistent/plugin.wasm"));
         assert!(result.is_err());
         assert!(
@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn install_non_wasm_extension_fails() {
+    fn test_install_non_wasm_extension_fails() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("plugin.txt");
         std::fs::write(&file, "not a wasm file").unwrap();
@@ -293,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn install_wasm_without_manifest_fails() {
+    fn test_install_wasm_without_manifest_fails() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("plugin.wasm");
         std::fs::write(&file, b"\0asm").unwrap();
@@ -307,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn known_plugins_enable_disable_validation() {
+    fn test_known_plugins_enable_disable_validation() {
         // Verify that enable/disable check against KNOWN_PLUGIN_NAMES
         assert!(app::KNOWN_PLUGIN_NAMES.contains(&"sqlite-store"));
         assert!(!app::KNOWN_PLUGIN_NAMES.contains(&"nonexistent-plugin"));

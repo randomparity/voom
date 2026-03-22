@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn new_creates_state_with_broadcast_channel() {
+    fn test_new_creates_state_with_broadcast_channel() {
         let state = make_state(None);
         // sse_tx should be usable: subscribing should succeed
         let _rx = state.sse_tx.subscribe();
@@ -140,13 +140,13 @@ mod tests {
     }
 
     #[test]
-    fn new_with_auth_token() {
+    fn test_new_with_auth_token() {
         let state = make_state(Some("my-secret".into()));
         assert_eq!(state.auth_token, Some("my-secret".to_string()));
     }
 
     #[test]
-    fn sse_client_count_starts_at_zero() {
+    fn test_sse_client_count_starts_at_zero() {
         let state = make_state(None);
         assert_eq!(
             state
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn is_authorized_no_token_configured_allows_all() {
+    fn test_is_authorized_no_token_configured_allows_all() {
         let state = make_state(None);
         assert!(state.is_authorized(None));
         assert!(state.is_authorized(Some("Bearer anything")));
@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn is_authorized_with_token_requires_bearer_prefix() {
+    fn test_is_authorized_with_token_requires_bearer_prefix() {
         let state = make_state(Some("secret123".into()));
         assert!(state.is_authorized(Some("Bearer secret123")));
         assert!(!state.is_authorized(Some("secret123")));
@@ -174,13 +174,13 @@ mod tests {
     }
 
     #[test]
-    fn is_authorized_with_token_rejects_none() {
+    fn test_is_authorized_with_token_rejects_none() {
         let state = make_state(Some("secret123".into()));
         assert!(!state.is_authorized(None));
     }
 
     #[test]
-    fn is_authorized_with_token_rejects_wrong_token() {
+    fn test_is_authorized_with_token_rejects_wrong_token() {
         let state = make_state(Some("secret123".into()));
         assert!(!state.is_authorized(Some("Bearer wrong")));
         assert!(!state.is_authorized(Some("Bearer secret1234")));
@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn state_is_clone() {
+    fn test_state_is_clone() {
         let state = make_state(Some("tok".into()));
         let cloned = state.clone();
         assert_eq!(cloned.auth_token, Some("tok".to_string()));
@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn sse_broadcast_delivers_events() {
+    fn test_sse_broadcast_delivers_events() {
         let state = make_state(None);
         let mut rx = state.sse_tx.subscribe();
         let event = SseEvent::FileIntrospected {
@@ -216,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn sse_event_serialization_tagged() {
+    fn test_sse_event_serialization_tagged() {
         let event = SseEvent::JobStarted {
             job_id: "j1".into(),
             description: "test job".into(),
@@ -228,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn sse_event_scan_progress_serialization() {
+    fn test_sse_event_scan_progress_serialization() {
         let event = SseEvent::ScanProgress {
             files_found: 42,
             files_processed: 10,
@@ -240,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn sse_event_job_completed_serialization() {
+    fn test_sse_event_job_completed_serialization() {
         let event = SseEvent::JobCompleted {
             job_id: "j2".into(),
             success: true,

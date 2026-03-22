@@ -89,7 +89,7 @@ mod tests {
     use voom_domain::media::{Container, MediaFile};
 
     #[test]
-    fn container_counts_from_output_module() {
+    fn test_container_counts_from_output_module() {
         let files = vec![
             MediaFile::new(std::path::PathBuf::from("/a.mkv")).with_container(Container::Mkv),
             MediaFile::new(std::path::PathBuf::from("/b.mkv")).with_container(Container::Mkv),
@@ -101,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn status_paths_display() {
+    fn test_status_paths_display() {
         let config = app::AppConfig::default();
         let config_path = app::config_path();
         // Both paths should be displayable without panic

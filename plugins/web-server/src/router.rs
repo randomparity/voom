@@ -78,14 +78,14 @@ mod tests {
     }
 
     #[test]
-    fn build_router_returns_valid_router() {
+    fn test_build_router_returns_valid_router() {
         let state = make_state(None);
         // Should not panic — validates that all routes wire up correctly
         let _router = build_router(state);
     }
 
     #[test]
-    fn build_router_with_auth_token() {
+    fn test_build_router_with_auth_token() {
         let state = make_state(Some("test-token".into()));
         let _router = build_router(state);
     }

@@ -205,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn render_success_returns_html() {
+    fn test_render_success_returns_html() {
         let tera = make_tera();
         let ctx = tera::Context::new();
         let result = render(&tera, "policies.html", &ctx);
@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn render_missing_template_returns_500() {
+    fn test_render_missing_template_returns_500() {
         let tera = make_tera();
         let ctx = tera::Context::new();
         let result = render(&tera, "nonexistent.html", &ctx);
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn render_settings_page() {
+    fn test_render_settings_page() {
         let tera = make_tera();
         let ctx = tera::Context::new();
         let result = render(&tera, "settings.html", &ctx);
@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn render_plugins_page() {
+    fn test_render_plugins_page() {
         let tera = make_tera();
         let ctx = tera::Context::new();
         let result = render(&tera, "plugins.html", &ctx);
@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn render_policy_editor_with_name() {
+    fn test_render_policy_editor_with_name() {
         let tera = make_tera();
         let mut ctx = tera::Context::new();
         ctx.insert("policy_name", "my-policy");
@@ -250,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn library_params_defaults() {
+    fn test_library_params_defaults() {
         // Verify LibraryParams can deserialize with all optional fields absent
         let params: LibraryParams = serde_json::from_str("{}").unwrap();
         assert!(params.filters.container.is_none());
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn library_params_with_values() {
+    fn test_library_params_with_values() {
         let params: LibraryParams =
             serde_json::from_str(r#"{"container":"mkv","codec":"hevc","page":3}"#).unwrap();
         assert_eq!(params.filters.container, Some("mkv".to_string()));

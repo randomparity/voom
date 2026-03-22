@@ -70,7 +70,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn verbosity_mapping() {
+    fn test_verbosity_mapping() {
         assert_eq!(verbosity_filter(0), "warn");
         assert_eq!(verbosity_filter(1), "info");
         assert_eq!(verbosity_filter(2), "debug");
@@ -79,7 +79,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_verify_command() {
+    fn test_cli_verify_command() {
         // clap provides a debug_assert that validates the CLI definition
         use clap::CommandFactory;
         Cli::command().debug_assert();

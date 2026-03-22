@@ -272,7 +272,7 @@ mod tests {
     use crate::app;
 
     #[test]
-    fn db_path_uses_data_dir() {
+    fn test_db_path_uses_data_dir() {
         let config = app::AppConfig {
             data_dir: std::path::PathBuf::from("/tmp/test-voom"),
             plugins: app::PluginsConfig::default(),
@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn open_store_in_temp_dir() {
+    fn test_open_store_in_temp_dir() {
         let dir = tempfile::tempdir().unwrap();
         let config = app::AppConfig {
             data_dir: dir.path().to_path_buf(),

@@ -125,24 +125,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn truncate_filter_none_returns_none() {
+    fn test_truncate_filter_none_returns_none() {
         assert_eq!(truncate_filter(None), None);
     }
 
     #[test]
-    fn truncate_filter_short_string_unchanged() {
+    fn test_truncate_filter_short_string_unchanged() {
         let input = Some("mkv".to_string());
         assert_eq!(truncate_filter(input), Some("mkv".to_string()));
     }
 
     #[test]
-    fn truncate_filter_at_max_length_unchanged() {
+    fn test_truncate_filter_at_max_length_unchanged() {
         let s = "a".repeat(MAX_FILTER_STRING_LEN);
         assert_eq!(truncate_filter(Some(s.clone())), Some(s));
     }
 
     #[test]
-    fn truncate_filter_over_max_is_truncated() {
+    fn test_truncate_filter_over_max_is_truncated() {
         let s = "b".repeat(MAX_FILTER_STRING_LEN + 100);
         let result = truncate_filter(Some(s));
         let expected = "b".repeat(MAX_FILTER_STRING_LEN);
@@ -150,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn list_files_params_deserialize_defaults() {
+    fn test_list_files_params_deserialize_defaults() {
         let params: ListFilesParams = serde_json::from_str("{}").unwrap();
         assert!(params.filters.container.is_none());
         assert!(params.filters.codec.is_none());
@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn list_files_params_deserialize_with_values() {
+    fn test_list_files_params_deserialize_with_values() {
         let params: ListFilesParams =
             serde_json::from_str(r#"{"container":"mkv","codec":"hevc","limit":50,"offset":10}"#)
                 .unwrap();
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn file_list_response_serialization() {
+    fn test_file_list_response_serialization() {
         let response = FileListResponse {
             files: vec![],
             total: 0,

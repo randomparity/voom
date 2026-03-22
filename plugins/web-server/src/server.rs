@@ -116,7 +116,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn server_config_fields() {
+    fn test_server_config_fields() {
         let config = ServerConfig {
             host: "127.0.0.1".into(),
             port: 8080,
@@ -131,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn server_config_clone() {
+    fn test_server_config_clone() {
         let config = ServerConfig {
             host: "0.0.0.0".into(),
             port: 3000,
@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn embedded_templates_contains_all_expected_templates() {
+    fn test_embedded_templates_contains_all_expected_templates() {
         let tera = embedded_templates();
         let names: Vec<&str> = tera.get_template_names().collect();
         let expected = [
@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn embedded_templates_returns_same_as_direct_call() {
+    fn test_embedded_templates_returns_same_as_direct_call() {
         let tera = embedded_templates();
         let names: Vec<&str> = tera.get_template_names().collect();
         assert!(names.contains(&"dashboard.html"));
@@ -175,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn load_templates_falls_back_to_embedded_when_dir_missing() {
+    fn test_load_templates_falls_back_to_embedded_when_dir_missing() {
         // Using a non-existent directory should fall back to embedded
         let result = load_templates(Some("/nonexistent/path/that/does/not/exist"));
         assert!(result.is_ok());
@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn load_templates_none_falls_back_to_embedded() {
+    fn test_load_templates_none_falls_back_to_embedded() {
         // With None, it tries "web/templates" which likely doesn't exist in test CWD
         let result = load_templates(None);
         assert!(result.is_ok());

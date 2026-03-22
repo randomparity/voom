@@ -109,7 +109,7 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn tool_detector_creation() {
+    fn test_tool_detector_creation() {
         let detector = voom_tool_detector::ToolDetectorPlugin::new();
         // Should be able to create without panic
         assert!(detector.get_tool("nonexistent-tool").is_none());

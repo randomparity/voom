@@ -57,14 +57,14 @@ mod tests {
     use voom_domain::media::{Container, Track, TrackType};
 
     #[test]
-    fn file_view_extracts_filename() {
+    fn test_file_view_extracts_filename() {
         let file = MediaFile::new(PathBuf::from("/media/movies/Test Movie.mkv"));
         let view = FileView::from_media_file(file);
         assert_eq!(view.filename, "Test Movie.mkv");
     }
 
     #[test]
-    fn file_view_computes_size_human() {
+    fn test_file_view_computes_size_human() {
         let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
         file.size = 2_500_000_000;
         let view = FileView::from_media_file(file);
@@ -72,7 +72,7 @@ mod tests {
     }
 
     #[test]
-    fn file_view_computes_track_count() {
+    fn test_file_view_computes_track_count() {
         let file = MediaFile::new(PathBuf::from("/test.mkv")).with_tracks(vec![
             Track::new(0, TrackType::Video, "hevc".into()),
             Track::new(1, TrackType::AudioMain, "aac".into()),
@@ -82,14 +82,14 @@ mod tests {
     }
 
     #[test]
-    fn file_view_computes_duration_human() {
+    fn test_file_view_computes_duration_human() {
         let file = MediaFile::new(PathBuf::from("/test.mkv")).with_duration(5432.0);
         let view = FileView::from_media_file(file);
         assert_eq!(view.duration_human, "1h 30m 32s");
     }
 
     #[test]
-    fn file_views_converts_vec() {
+    fn test_file_views_converts_vec() {
         let files = vec![
             MediaFile::new(PathBuf::from("/a.mkv")),
             MediaFile::new(PathBuf::from("/b.mp4")),
@@ -101,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn file_view_serializes_with_flattened_fields() {
+    fn test_file_view_serializes_with_flattened_fields() {
         let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
         file.container = Container::Mkv;
         file.size = 1024;

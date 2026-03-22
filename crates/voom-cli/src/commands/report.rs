@@ -102,13 +102,13 @@ mod tests {
     }
 
     #[test]
-    fn codec_counts_empty_files() {
+    fn test_codec_counts_empty_files() {
         let result = codec_counts(&[]);
         assert!(result.is_empty());
     }
 
     #[test]
-    fn codec_counts_single_file() {
+    fn test_codec_counts_single_file() {
         let files = vec![make_file(&["hevc", "aac", "aac"])];
         let counts = codec_counts(&files);
         assert_eq!(counts[0], ("aac".to_string(), 2));
@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn codec_counts_multiple_files() {
+    fn test_codec_counts_multiple_files() {
         let files = vec![
             make_file(&["hevc", "aac"]),
             make_file(&["hevc", "opus", "srt"]),
@@ -129,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn codec_counts_sorted_descending() {
+    fn test_codec_counts_sorted_descending() {
         let files = vec![make_file(&["a", "b", "b", "b", "c", "c"])];
         let counts = codec_counts(&files);
         assert_eq!(counts[0], ("b".to_string(), 3));

@@ -406,7 +406,7 @@ mod tests {
     // ── Default config ───────────────────────────────────────
 
     #[test]
-    fn default_config_has_expected_fields() {
+    fn test_default_config_has_expected_fields() {
         let config = AppConfig::default();
         assert!(config.auth_token.is_none());
         assert!(config.plugins.wasm_dir.is_none());
@@ -414,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn default_data_dir_ends_with_voom() {
+    fn test_default_data_dir_ends_with_voom() {
         let config = AppConfig::default();
         assert!(
             config.data_dir.ends_with("voom"),
@@ -426,14 +426,14 @@ mod tests {
     // ── Config paths ─────────────────────────────────────────
 
     #[test]
-    fn config_path_ends_with_config_toml() {
+    fn test_config_path_ends_with_config_toml() {
         let path = config_path();
         assert_eq!(path.file_name().unwrap(), "config.toml");
         assert!(path.parent().unwrap().ends_with("voom"));
     }
 
     #[test]
-    fn voom_config_dir_ends_with_voom() {
+    fn test_voom_config_dir_ends_with_voom() {
         let dir = voom_config_dir();
         assert!(
             dir.ends_with("voom"),
@@ -445,7 +445,7 @@ mod tests {
     // ── TOML serialization round-trip ────────────────────────
 
     #[test]
-    fn config_toml_round_trip() {
+    fn test_config_toml_round_trip() {
         let mut plugin_config = HashMap::new();
         let mut table = toml::Table::new();
         table.insert(
@@ -483,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_toml_gives_defaults() {
+    fn test_empty_toml_gives_defaults() {
         let config: AppConfig = toml::from_str("").expect("empty TOML should parse");
         assert!(config.auth_token.is_none());
         assert!(config.plugins.disabled_plugins.is_empty());
@@ -492,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_toml_fills_defaults() {
+    fn test_partial_toml_fills_defaults() {
         let config: AppConfig =
             toml::from_str("auth_token = \"tok123\"").expect("partial TOML should parse");
         assert_eq!(config.auth_token.as_deref(), Some("tok123"));
@@ -502,7 +502,7 @@ mod tests {
     // ── KNOWN_PLUGIN_NAMES ───────────────────────────────────
 
     #[test]
-    fn known_plugin_names_contains_expected() {
+    fn test_known_plugin_names_contains_expected() {
         assert!(KNOWN_PLUGIN_NAMES.contains(&"sqlite-store"));
         assert!(KNOWN_PLUGIN_NAMES.contains(&"ffmpeg-executor"));
         assert!(KNOWN_PLUGIN_NAMES.contains(&"web-server"));
@@ -511,12 +511,12 @@ mod tests {
     }
 
     #[test]
-    fn known_plugin_names_count() {
+    fn test_known_plugin_names_count() {
         assert_eq!(KNOWN_PLUGIN_NAMES.len(), 11);
     }
 
     #[test]
-    fn known_plugin_names_matches_bootstrap_registration() {
+    fn test_known_plugin_names_matches_bootstrap_registration() {
         // Bootstrap with all plugins enabled, then verify every registered
         // plugin name appears in KNOWN_PLUGIN_NAMES and vice versa.
         let config = AppConfig::default();
@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn known_plugin_names_has_no_duplicates() {
+    fn test_known_plugin_names_has_no_duplicates() {
         let mut seen = std::collections::HashSet::new();
         for name in KNOWN_PLUGIN_NAMES {
             assert!(seen.insert(name), "duplicate plugin name: {name}");
@@ -548,7 +548,7 @@ mod tests {
     // ── default_config_contents ───────────────────────────────
 
     #[test]
-    fn default_config_contents_is_valid_toml() {
+    fn test_default_config_contents_is_valid_toml() {
         let contents = default_config_contents();
         // All options are commented out, so parsing should yield defaults
         let config: AppConfig =
@@ -559,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn default_config_contents_documents_all_fields() {
+    fn test_default_config_contents_documents_all_fields() {
         let contents = default_config_contents();
         assert!(contents.contains("# data_dir"), "should document data_dir");
         assert!(
@@ -584,7 +584,7 @@ mod tests {
     // ── load_config with temp files ──────────────────────────
 
     #[test]
-    fn load_config_from_valid_toml_file() {
+    fn test_load_config_from_valid_toml_file() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("config.toml");
         std::fs::write(&file, "auth_token = \"test\"\n").unwrap();
@@ -595,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn load_config_from_invalid_toml_is_error() {
+    fn test_load_config_from_invalid_toml_is_error() {
         let result: Result<AppConfig, _> = toml::from_str("not valid {{{{ toml");
         assert!(result.is_err());
     }
@@ -603,7 +603,7 @@ mod tests {
     // ── save_config ──────────────────────────────────────────
 
     #[test]
-    fn save_and_reload_config() {
+    fn test_save_and_reload_config() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("config.toml");
 
@@ -669,7 +669,7 @@ mod tests {
     // ── plugin config ──────────────────────────────────────────
 
     #[test]
-    fn plugin_config_toml_roundtrip() {
+    fn test_plugin_config_toml_roundtrip() {
         let toml_str = r#"
 [plugin.tvdb-metadata]
 api_key = "abc123"
@@ -698,13 +698,13 @@ api_key = "xyz789"
     }
 
     #[test]
-    fn plugin_config_empty_by_default() {
+    fn test_plugin_config_empty_by_default() {
         let config: AppConfig = toml::from_str("").expect("parse");
         assert!(config.plugin.is_empty());
     }
 
     #[test]
-    fn plugin_config_partial() {
+    fn test_plugin_config_partial() {
         let toml_str = r#"
 [plugin.tvdb-metadata]
 api_key = "abc123"
@@ -725,7 +725,7 @@ api_key = "abc123"
     // ── open_store ───────────────────────────────────────────
 
     #[test]
-    fn open_store_creates_db_in_data_dir() {
+    fn test_open_store_creates_db_in_data_dir() {
         let dir = tempfile::tempdir().unwrap();
         let config = AppConfig {
             data_dir: dir.path().to_path_buf(),

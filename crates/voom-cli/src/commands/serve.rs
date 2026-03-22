@@ -63,7 +63,7 @@ mod tests {
     use crate::cli::ServeArgs;
 
     #[test]
-    fn server_config_from_default_args() {
+    fn test_server_config_from_default_args() {
         let args = ServeArgs {
             port: 8080,
             host: "127.0.0.1".to_string(),
@@ -81,7 +81,7 @@ mod tests {
     }
 
     #[test]
-    fn server_config_with_auth_token() {
+    fn test_server_config_with_auth_token() {
         let config = crate::app::AppConfig {
             data_dir: std::path::PathBuf::from("/tmp"),
             plugins: crate::app::PluginsConfig::default(),

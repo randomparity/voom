@@ -175,7 +175,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_creates_plugin_with_store_capability() {
+    fn test_new_creates_plugin_with_store_capability() {
         let plugin = SqliteStorePlugin::new();
         assert_eq!(
             plugin.capabilities(),
@@ -186,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn default_creates_same_as_new() {
+    fn test_default_creates_same_as_new() {
         let plugin = SqliteStorePlugin::default();
         assert_eq!(plugin.name(), "sqlite-store");
         assert_eq!(
@@ -198,20 +198,20 @@ mod tests {
     }
 
     #[test]
-    fn plugin_name_and_version() {
+    fn test_plugin_name_and_version() {
         let plugin = SqliteStorePlugin::new();
         assert_eq!(plugin.name(), "sqlite-store");
         assert!(!plugin.version().is_empty());
     }
 
     #[test]
-    fn store_is_none_before_init() {
+    fn test_store_is_none_before_init() {
         let plugin = SqliteStorePlugin::new();
         assert!(plugin.store().is_none());
     }
 
     #[test]
-    fn handles_expected_event_types() {
+    fn test_handles_expected_event_types() {
         let plugin = SqliteStorePlugin::new();
         assert!(plugin.handles(Event::FILE_INTROSPECTED));
         assert!(plugin.handles(Event::FILE_INTROSPECTION_FAILED));
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn does_not_handle_unrelated_event_types() {
+    fn test_does_not_handle_unrelated_event_types() {
         let plugin = SqliteStorePlugin::new();
         assert!(!plugin.handles(Event::FILE_DISCOVERED));
         assert!(!plugin.handles(Event::JOB_STARTED));
@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn on_event_returns_none_when_store_not_initialized() {
+    fn test_on_event_returns_none_when_store_not_initialized() {
         let plugin = SqliteStorePlugin::new();
         // Even for a handled event type, returns None if store is not init'd
         let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent {
@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn init_creates_store() {
+    fn test_init_creates_store() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
         let ctx = PluginContext {
@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn init_creates_data_dir_if_missing() {
+    fn test_init_creates_data_dir_if_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let nested = tmp.path().join("nested").join("dir");
         let mut plugin = SqliteStorePlugin::new();
@@ -269,13 +269,13 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_succeeds() {
+    fn test_shutdown_succeeds() {
         let plugin = SqliteStorePlugin::new();
         assert!(plugin.shutdown().is_ok());
     }
 
     #[test]
-    fn on_event_handles_introspection_failed() {
+    fn test_on_event_handles_introspection_failed() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
         let ctx = PluginContext {
@@ -305,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn on_event_introspected_clears_bad_file() {
+    fn test_on_event_introspected_clears_bad_file() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
         let ctx = PluginContext {
@@ -342,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn on_event_with_initialized_store_handles_tool_detected() {
+    fn test_on_event_with_initialized_store_handles_tool_detected() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
         let ctx = PluginContext {

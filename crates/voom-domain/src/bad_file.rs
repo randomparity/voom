@@ -80,7 +80,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_creates_bad_file_with_defaults() {
+    fn test_new_creates_bad_file_with_defaults() {
         let bf = BadFile::new(
             PathBuf::from("/test/bad.mkv"),
             1024,
@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn json_roundtrip() {
+    fn test_json_roundtrip() {
         let bf = BadFile::new(
             PathBuf::from("/test/bad.mkv"),
             2048,
@@ -114,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn msgpack_roundtrip() {
+    fn test_msgpack_roundtrip() {
         let bf = BadFile::new(
             PathBuf::from("/test/bad.avi"),
             512,
@@ -129,14 +129,14 @@ mod tests {
     }
 
     #[test]
-    fn bad_file_source_display() {
+    fn test_bad_file_source_display() {
         assert_eq!(BadFileSource::Introspection.to_string(), "introspection");
         assert_eq!(BadFileSource::Io.to_string(), "io");
         assert_eq!(BadFileSource::Parse.to_string(), "parse");
     }
 
     #[test]
-    fn bad_file_source_from_str() {
+    fn test_bad_file_source_from_str() {
         assert_eq!(
             "introspection".parse::<BadFileSource>().unwrap(),
             BadFileSource::Introspection

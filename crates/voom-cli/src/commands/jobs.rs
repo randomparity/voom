@@ -187,7 +187,7 @@ mod tests {
     use voom_domain::job::JobStatus;
 
     #[test]
-    fn job_status_parse_valid_values() {
+    fn test_job_status_parse_valid_values() {
         assert_eq!(JobStatus::parse("pending"), Some(JobStatus::Pending));
         assert_eq!(JobStatus::parse("running"), Some(JobStatus::Running));
         assert_eq!(JobStatus::parse("completed"), Some(JobStatus::Completed));
@@ -196,13 +196,13 @@ mod tests {
     }
 
     #[test]
-    fn job_status_parse_invalid_returns_none() {
+    fn test_job_status_parse_invalid_returns_none() {
         assert_eq!(JobStatus::parse("unknown"), None);
         assert_eq!(JobStatus::parse(""), None);
     }
 
     #[test]
-    fn job_status_as_str_roundtrip() {
+    fn test_job_status_as_str_roundtrip() {
         let statuses = [
             JobStatus::Pending,
             JobStatus::Running,
@@ -217,13 +217,13 @@ mod tests {
     }
 
     #[test]
-    fn uuid_parse_valid() {
+    fn test_uuid_parse_valid() {
         let valid = "550e8400-e29b-41d4-a716-446655440000";
         assert!(uuid::Uuid::parse_str(valid).is_ok());
     }
 
     #[test]
-    fn uuid_parse_invalid() {
+    fn test_uuid_parse_invalid() {
         assert!(uuid::Uuid::parse_str("not-a-uuid").is_err());
     }
 }

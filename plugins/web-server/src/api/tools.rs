@@ -59,7 +59,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn known_tools_contains_expected_names() {
+    fn test_known_tools_contains_expected_names() {
         assert!(KNOWN_TOOLS.contains(&"ffprobe"));
         assert!(KNOWN_TOOLS.contains(&"ffmpeg"));
         assert!(KNOWN_TOOLS.contains(&"mkvpropedit"));
@@ -71,7 +71,7 @@ mod tests {
     }
 
     #[test]
-    fn detected_tool_serialization() {
+    fn test_detected_tool_serialization() {
         let tool = DetectedTool {
             name: "ffprobe".into(),
             version: "6.1".into(),
@@ -84,7 +84,7 @@ mod tests {
     }
 
     #[test]
-    fn detected_tool_deserialization() {
+    fn test_detected_tool_deserialization() {
         let json = r#"{"name":"ffmpeg","version":"7.0","path":"/usr/local/bin/ffmpeg"}"#;
         let tool: DetectedTool = serde_json::from_str(json).unwrap();
         assert_eq!(tool.name, "ffmpeg");
@@ -93,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_list_response_serialization() {
+    fn test_tool_list_response_serialization() {
         let response = ToolListResponse {
             tools: vec![DetectedTool {
                 name: "mkvmerge".into(),
@@ -110,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_list_response_empty() {
+    fn test_tool_list_response_empty() {
         let response = ToolListResponse {
             tools: vec![],
             total: 0,

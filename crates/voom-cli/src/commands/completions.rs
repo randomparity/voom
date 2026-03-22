@@ -15,7 +15,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generate_bash_completions_succeeds() {
+    fn test_generate_bash_completions_succeeds() {
         let args = CompletionsArgs {
             shell: clap_complete::Shell::Bash,
         };
@@ -30,7 +30,7 @@ mod tests {
     }
 
     #[test]
-    fn generate_zsh_completions_succeeds() {
+    fn test_generate_zsh_completions_succeeds() {
         let args = CompletionsArgs {
             shell: clap_complete::Shell::Zsh,
         };
@@ -42,7 +42,7 @@ mod tests {
     }
 
     #[test]
-    fn generate_fish_completions_succeeds() {
+    fn test_generate_fish_completions_succeeds() {
         let args = CompletionsArgs {
             shell: clap_complete::Shell::Fish,
         };

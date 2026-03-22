@@ -97,7 +97,7 @@ mod tests {
     use crate::app;
 
     #[test]
-    fn default_config_serializes_to_valid_toml() {
+    fn test_default_config_serializes_to_valid_toml() {
         let config = app::AppConfig::default();
         let toml_str =
             toml::to_string_pretty(&config).expect("default config should serialize to TOML");
@@ -107,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn config_path_is_in_voom_dir() {
+    fn test_config_path_is_in_voom_dir() {
         let path = app::config_path();
         let dir = app::voom_config_dir();
         assert_eq!(path.parent().unwrap(), dir);

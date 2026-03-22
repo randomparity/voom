@@ -166,7 +166,7 @@ mod tests {
     use crate::app;
 
     #[test]
-    fn default_config_dirs_are_consistent() {
+    fn test_default_config_dirs_are_consistent() {
         let config = app::AppConfig::default();
         let config_path = app::config_path();
         let config_dir = config_path.parent().unwrap();
@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn init_creates_directories_in_temp() {
+    fn test_init_creates_directories_in_temp() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path().join("voom");
         let policies_dir = config_dir.join("policies");
@@ -194,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn starter_policy_is_valid() {
+    fn test_starter_policy_is_valid() {
         let contents = super::default_policy_contents();
         // Verify it parses successfully
         let ast = voom_dsl::parse_policy(contents).expect("starter policy should parse");
@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn init_creates_default_config_file() {
+    fn test_init_creates_default_config_file() {
         let dir = tempfile::tempdir().unwrap();
         let config_file = dir.path().join("config.toml");
 

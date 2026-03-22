@@ -145,7 +145,7 @@ mod tests {
 }"#;
 
     #[tokio::test]
-    async fn validate_valid_policy_returns_valid_true() {
+    async fn test_validate_valid_policy_returns_valid_true() {
         let input = PolicyInput {
             source: VALID_POLICY.to_string(),
         };
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validate_invalid_policy_returns_errors() {
+    async fn test_validate_invalid_policy_returns_errors() {
         let input = PolicyInput {
             source: "this is not valid DSL".to_string(),
         };
@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validate_oversized_policy_returns_bad_request() {
+    async fn test_validate_oversized_policy_returns_bad_request() {
         let input = PolicyInput {
             source: "x".repeat(MAX_POLICY_SIZE + 1),
         };
@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn format_valid_policy_returns_formatted() {
+    async fn test_format_valid_policy_returns_formatted() {
         let input = PolicyInput {
             source: VALID_POLICY.to_string(),
         };
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn format_invalid_policy_returns_errors_in_body() {
+    async fn test_format_invalid_policy_returns_errors_in_body() {
         let input = PolicyInput {
             source: "not valid".to_string(),
         };
@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn format_oversized_policy_returns_bad_request() {
+    async fn test_format_oversized_policy_returns_bad_request() {
         let input = PolicyInput {
             source: "x".repeat(MAX_POLICY_SIZE + 1),
         };
@@ -213,13 +213,13 @@ mod tests {
     }
 
     #[test]
-    fn policy_input_deserialize() {
+    fn test_policy_input_deserialize() {
         let input: PolicyInput = serde_json::from_str(r#"{"source":"policy \"x\" {}"}"#).unwrap();
         assert_eq!(input.source, r#"policy "x" {}"#);
     }
 
     #[test]
-    fn validate_response_serialization_valid() {
+    fn test_validate_response_serialization_valid() {
         let response = ValidateResponse {
             valid: true,
             errors: vec![],
@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_response_serialization_with_errors() {
+    fn test_validate_response_serialization_with_errors() {
         let response = ValidateResponse {
             valid: false,
             errors: vec![PolicyError {
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn format_response_serialization() {
+    fn test_format_response_serialization() {
         let response = FormatResponse {
             formatted: "policy \"x\" {}".into(),
             errors: vec![],
@@ -258,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn max_policy_size_is_1mib() {
+    fn test_max_policy_size_is_1mib() {
         assert_eq!(MAX_POLICY_SIZE, 1_024 * 1_024);
     }
 }

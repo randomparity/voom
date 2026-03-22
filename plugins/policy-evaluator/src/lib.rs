@@ -107,27 +107,27 @@ mod tests {
     use voom_domain::events::Event;
 
     #[test]
-    fn new_creates_plugin_with_no_capabilities() {
+    fn test_new_creates_plugin_with_no_capabilities() {
         let plugin = PolicyEvaluatorPlugin::new();
         assert!(plugin.capabilities().is_empty());
     }
 
     #[test]
-    fn default_creates_same_as_new() {
+    fn test_default_creates_same_as_new() {
         let plugin = PolicyEvaluatorPlugin::default();
         assert!(plugin.capabilities().is_empty());
         assert_eq!(plugin.name(), "policy-evaluator");
     }
 
     #[test]
-    fn plugin_name_and_version() {
+    fn test_plugin_name_and_version() {
         let plugin = PolicyEvaluatorPlugin::new();
         assert_eq!(plugin.name(), "policy-evaluator");
         assert!(!plugin.version().is_empty());
     }
 
     #[test]
-    fn handles_no_events_since_evaluation_is_direct_api() {
+    fn test_handles_no_events_since_evaluation_is_direct_api() {
         let plugin = PolicyEvaluatorPlugin::new();
         assert!(!plugin.handles(Event::FILE_INTROSPECTED));
         assert!(!plugin.handles(Event::PLAN_CREATED));
@@ -135,7 +135,7 @@ mod tests {
     }
 
     #[test]
-    fn register_and_evaluate_unknown_policy_errors() {
+    fn test_register_and_evaluate_unknown_policy_errors() {
         let plugin = PolicyEvaluatorPlugin::new();
         let file = MediaFile::new(PathBuf::from("/test/video.mkv"));
         let result = plugin.evaluate("nonexistent", &file);
@@ -145,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn on_event_returns_none_for_unhandled_event() {
+    fn test_on_event_returns_none_for_unhandled_event() {
         let plugin = PolicyEvaluatorPlugin::new();
         let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent {
             tool_name: "ffprobe".into(),
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn init_succeeds() {
+    fn test_init_succeeds() {
         let mut plugin = PolicyEvaluatorPlugin::new();
         let ctx = PluginContext {
             config: serde_json::Value::Null,
@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn policies_mutex_starts_empty() {
+    fn test_policies_mutex_starts_empty() {
         let plugin = PolicyEvaluatorPlugin::new();
         let policies = plugin.policies.lock().unwrap();
         assert!(policies.is_empty());

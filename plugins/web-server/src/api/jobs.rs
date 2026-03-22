@@ -111,14 +111,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn list_jobs_params_deserialize_defaults() {
+    fn test_list_jobs_params_deserialize_defaults() {
         let params: ListJobsParams = serde_json::from_str("{}").unwrap();
         assert!(params.status.is_none());
         assert!(params.limit.is_none());
     }
 
     #[test]
-    fn list_jobs_params_deserialize_with_values() {
+    fn test_list_jobs_params_deserialize_with_values() {
         let params: ListJobsParams =
             serde_json::from_str(r#"{"status":"running","limit":25}"#).unwrap();
         assert_eq!(params.status, Some("running".to_string()));
@@ -126,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn job_list_response_serialization() {
+    fn test_job_list_response_serialization() {
         let response = JobListResponse {
             jobs: vec![],
             total: 0,
@@ -137,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn job_stats_response_serialization() {
+    fn test_job_stats_response_serialization() {
         let response = JobStatsResponse {
             counts: vec![
                 JobStatusCount {
@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn job_status_count_serialization() {
+    fn test_job_status_count_serialization() {
         let count = JobStatusCount {
             status: JobStatus::Completed,
             count: 42,

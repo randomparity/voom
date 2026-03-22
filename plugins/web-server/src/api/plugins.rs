@@ -35,7 +35,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plugin_info_clone() {
+    fn test_plugin_info_clone() {
         let info = PluginInfo {
             name: "test".into(),
             version: "1.0.0".into(),
@@ -46,7 +46,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_list_response_from_empty_state() {
+    fn test_plugin_list_response_from_empty_state() {
         let plugins: Vec<PluginInfo> = vec![];
         let total = plugins.len();
         let response = PluginListResponse { plugins, total };
@@ -55,7 +55,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_list_response_from_populated_state() {
+    fn test_plugin_list_response_from_populated_state() {
         let plugins = vec![
             PluginInfo {
                 name: "sqlite-store".into(),
@@ -75,7 +75,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_info_serialization() {
+    fn test_plugin_info_serialization() {
         let info = PluginInfo {
             name: "test-plugin".into(),
             version: "1.0.0".into(),
@@ -88,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_list_response_serialization() {
+    fn test_plugin_list_response_serialization() {
         let response = PluginListResponse {
             plugins: vec![],
             total: 0,

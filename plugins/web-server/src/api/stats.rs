@@ -44,7 +44,7 @@ mod tests {
     use voom_domain::job::JobStatus;
 
     #[test]
-    fn dashboard_stats_serialization() {
+    fn test_dashboard_stats_serialization() {
         let stats = DashboardStats {
             total_files: 42,
             job_status_counts: vec![
@@ -69,7 +69,7 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_stats_empty() {
+    fn test_dashboard_stats_empty() {
         let stats = DashboardStats {
             total_files: 0,
             job_status_counts: vec![],
@@ -80,7 +80,7 @@ mod tests {
     }
 
     #[test]
-    fn job_count_serialization() {
+    fn test_job_count_serialization() {
         let count = JobStatusCount {
             status: JobStatus::Running,
             count: 3,
