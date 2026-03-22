@@ -50,6 +50,10 @@ const FFMPEG_OPS: &[OperationType] = &[
 ];
 
 /// Drain stdout and stderr pipes from a child process into buffers.
+///
+/// **Precondition**: The child process must have exited or been killed before
+/// calling this. Calling it on a live process will deadlock if either pipe
+/// fills its OS buffer.
 fn drain_pipes(child: &mut std::process::Child) -> (Vec<u8>, Vec<u8>) {
     use std::io::Read;
     let mut stdout_buf = Vec::new();
@@ -93,10 +97,15 @@ fn run_with_timeout(tool: &str, args: &[impl AsRef<OsStr>], timeout: Duration) -
                 message: format!("{tool} timed out after {}s", timeout.as_secs()),
             })
         }
-        Err(e) => Err(VoomError::ToolExecution {
-            tool: tool.into(),
-            message: format!("error waiting for {tool}: {e}"),
-        }),
+        Err(e) => {
+            child.kill().ok();
+            drain_pipes(&mut child);
+            child.wait().ok();
+            Err(VoomError::ToolExecution {
+                tool: tool.into(),
+                message: format!("error waiting for {tool}: {e}"),
+            })
+        }
     }
 }
 
@@ -207,7 +216,7 @@ impl FfmpegExecutorPlugin {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("output");
-        let output_path = parent.join(format!("{stem}.voom_tmp.{ext}"));
+        let output_path = parent.join(format!("{stem}.voom_tmp_{}.{ext}", plan.id));
 
         let hw_accel = self.hw_accel.enabled().then_some(&self.hw_accel);
         let ffmpeg_args = build_ffmpeg_command(&plan.file, &actions, &output_path, hw_accel)?;

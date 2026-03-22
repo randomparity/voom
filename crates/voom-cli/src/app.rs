@@ -194,8 +194,8 @@ pub fn bootstrap_kernel_with_store(
                                     continue;
                                 }
                                 // WASM plugins are already initialized during load,
-                                // register directly with priority 70 (after storage,
-                                // before policy evaluation).
+                                // register directly with priority 70 (between
+                                // discovery at 80 and orchestrator at 50).
                                 kernel.register_plugin(plugin, 70);
                                 tracing::info!(plugin = %name, "WASM plugin loaded");
                             }

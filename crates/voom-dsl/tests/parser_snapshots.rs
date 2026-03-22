@@ -274,10 +274,17 @@ fn example_strict_archive_parses() {
 }
 
 #[test]
-fn example_full_pipeline_parses() {
+fn example_full_pipeline_parses_and_validates() {
     let input = include_str!("../../../docs/examples/full-pipeline.voom");
     let ast = parse_policy(input).unwrap();
     assert_eq!(ast.name, "full-pipeline");
     assert_eq!(ast.phases.len(), 12);
     assert!(ast.config.is_some());
+    // Validate semantics (codecs, languages, phase refs, etc.)
+    let result = voom_dsl::validate(&ast);
+    assert!(
+        result.is_ok(),
+        "validation errors: {:?}",
+        result.unwrap_err().errors
+    );
 }

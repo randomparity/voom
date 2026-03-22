@@ -73,8 +73,8 @@ policy "full-pipeline" {
     // Keep: lang in [...], and, not
     keep audio where lang in [eng, jpn, und] and not commentary
 
-    // Keep: lang in [...], or, forced; "default" filter atom
-    keep subtitle where (lang in [eng, jpn] and not commentary) or forced or default
+    // Keep: lang in [...], or, forced; "default" filter atom; "subtitles" plural target
+    keep subtitles where (lang in [eng, jpn] and not commentary) or forced or default
 
     // Keep video — no filter (keep all)
     keep video
@@ -101,7 +101,7 @@ policy "full-pipeline" {
     remove subtitle where codec == vobsub
   }
 
-  // ── Phase 4: Metadata cleanup ──────────────────────────────────
+  // ── Phase 5: Metadata cleanup ──────────────────────────────────
   // Exercises: actions_op for all three targets (video, audio, subtitle)
   // Plugins:   mkvtoolnix-executor (mkvpropedit for in-place metadata)
   phase metadata-cleanup {
@@ -123,7 +123,7 @@ policy "full-pipeline" {
     }
   }
 
-  // ── Phase 5: Track ordering and defaults ───────────────────────
+  // ── Phase 6: Track ordering and defaults ───────────────────────
   // Exercises: order_op, defaults_op
   // Plugins:   mkvtoolnix-executor (mkvmerge for reorder)
   phase organize {
@@ -141,7 +141,7 @@ policy "full-pipeline" {
     }
   }
 
-  // ── Phase 6: Video transcode ───────────────────────────────────
+  // ── Phase 7: Video transcode ───────────────────────────────────
   // Exercises: skip when (field access + in), transcode video with full settings
   // Plugins:   ffmpeg-executor (video encoding with HW accel),
   //            backup-manager (pre-transcode backup)
@@ -163,7 +163,7 @@ policy "full-pipeline" {
     }
   }
 
-  // ── Phase 7: Audio transcode ───────────────────────────────────
+  // ── Phase 8: Audio transcode ───────────────────────────────────
   // Exercises: transcode audio with preserve list
   // Plugins:   ffmpeg-executor (audio encoding)
   phase transcode-audio {
@@ -175,7 +175,7 @@ policy "full-pipeline" {
     }
   }
 
-  // ── Phase 8: Audio synthesis ───────────────────────────────────
+  // ── Phase 9: Audio synthesis ───────────────────────────────────
   // Exercises: synthesize_op with ALL synth settings:
   //   codec, channels, source (prefer), bitrate, skip_if_exists,
   //   create_if, title, language (inherit), position
@@ -209,7 +209,7 @@ policy "full-pipeline" {
     }
   }
 
-  // ── Phase 9: Conditional logic ─────────────────────────────────
+  // ── Phase 10: Conditional logic ────────────────────────────────
   // Exercises: when/else, exists(), count(), all comparison operators,
   //            audio_is_multi_language, is_dubbed, is_original,
   //            field comparison, field exists, skip (bare), skip <phase>,
@@ -258,6 +258,11 @@ policy "full-pipeline" {
       warn "Excessive track count in {filename}"
     }
 
+    // Strict less-than operator
+    when video.height < 480 {
+      warn "Very low resolution in {filename}"
+    }
+
     // Bare skip action — skip this phase's remaining actions
     when not exists(audio) {
       skip
@@ -292,7 +297,7 @@ policy "full-pipeline" {
     }
   }
 
-  // ── Phase 10: Rules blocks ─────────────────────────────────────
+  // ── Phase 11: Rules blocks ─────────────────────────────────────
   // Exercises: rules "first" (stop at first match),
   //            rules "all" (evaluate all), named rules,
   //            fail action
@@ -343,7 +348,7 @@ policy "full-pipeline" {
     }
   }
 
-  // ── Phase 11: Plugin metadata enrichment ───────────────────────
+  // ── Phase 12: Plugin metadata enrichment ───────────────────────
   // Exercises: field_access for plugin data, set_language with field,
   //            set_tag with field and literal values
   // Plugins:   radarr-metadata, sonarr-metadata (WASM)

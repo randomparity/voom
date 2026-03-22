@@ -204,10 +204,10 @@ fn test_empty_plan_not_claimed() {
     let event = Event::PlanCreated(PlanCreatedEvent { plan });
     let results = kernel.dispatch(event);
 
-    // Neither executor claims an empty plan
+    // Neither executor claims an empty plan — both return Ok(None)
     assert!(
-        results.is_empty() || results.iter().all(|r| !r.claimed),
-        "empty plan should not be claimed"
+        results.is_empty(),
+        "empty plan should produce no EventResult, got {results:?}"
     );
 }
 
@@ -231,7 +231,7 @@ fn test_skipped_plan_not_claimed() {
     let results = kernel.dispatch(event);
 
     assert!(
-        results.is_empty() || results.iter().all(|r| !r.claimed),
-        "skipped plan should not be claimed"
+        results.is_empty(),
+        "skipped plan should produce no EventResult, got {results:?}"
     );
 }
