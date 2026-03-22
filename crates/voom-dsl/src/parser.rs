@@ -97,33 +97,41 @@ fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
         }
         let text = item.as_str().trim();
 
-        if text.starts_with("languages") {
-            // pest silently consumes the "audio"|"subtitle" keyword as part of the
-            // alternation but doesn't produce a named child for it. We detect it from text.
-            let is_audio = text.contains("audio");
-            // Find the list child
-            let list_pair = item
-                .into_inner()
-                .find(|p| p.as_rule() == Rule::list)
-                .unwrap();
-            let values = build_list(list_pair);
-            if is_audio {
-                audio_languages = values;
-            } else {
-                subtitle_languages = values;
+        // pest silently consumes keyword alternations, so we dispatch on the
+        // leading keyword extracted from the raw text (stripping trailing colon).
+        let keyword = text
+            .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
+            .next()
+            .unwrap_or("");
+        match keyword {
+            "languages" => {
+                let is_audio = text.contains("audio");
+                let list_pair = item
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::list)
+                    .unwrap();
+                let values = build_list(list_pair);
+                if is_audio {
+                    audio_languages = values;
+                } else {
+                    subtitle_languages = values;
+                }
             }
-        } else if text.starts_with("on_error") {
-            let ident_pair = item
-                .into_inner()
-                .find(|p| p.as_rule() == Rule::ident)
-                .unwrap();
-            on_error = Some(ident_pair.as_str().to_string());
-        } else if text.starts_with("commentary_patterns") {
-            let list_pair = item
-                .into_inner()
-                .find(|p| p.as_rule() == Rule::list)
-                .unwrap();
-            commentary_patterns = build_list(list_pair);
+            "on_error" => {
+                let ident_pair = item
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::ident)
+                    .unwrap();
+                on_error = Some(ident_pair.as_str().to_string());
+            }
+            "commentary_patterns" => {
+                let list_pair = item
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::list)
+                    .unwrap();
+                commentary_patterns = build_list(list_pair);
+            }
+            _ => {}
         }
     }
 
@@ -306,10 +314,13 @@ fn build_defaults(pair: Pair<'_, Rule>) -> Result<OperationNode> {
     for child in pair.into_inner() {
         if child.as_rule() == Rule::default_item {
             let text = child.as_str().trim();
-            let kind = if text.starts_with("audio") {
-                "audio".to_string()
-            } else {
-                "subtitle".to_string()
+            let keyword = text
+                .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
+                .next()
+                .unwrap_or("");
+            let kind = match keyword {
+                "audio" => "audio".to_string(),
+                _ => "subtitle".to_string(),
             };
             // Only the trailing ident is a named child
             let value = child.into_inner().next().unwrap().as_str().to_string();
@@ -378,34 +389,51 @@ fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {
         let text = child.as_str().trim();
         let mut parts = child.into_inner();
 
-        if text.starts_with("codec") {
-            let val = parts.next().unwrap().as_str().to_string();
-            settings.push(SynthSetting::Codec(val));
-        } else if text.starts_with("channels") {
-            let val = build_value(parts.next().unwrap());
-            settings.push(SynthSetting::Channels(val));
-        } else if text.starts_with("source") {
-            let source_pair = parts.next().unwrap();
-            let filter = source_pair.into_inner().next().unwrap();
-            settings.push(SynthSetting::Source(build_filter(filter)?));
-        } else if text.starts_with("bitrate") {
-            let val = parse_string_value(&parts.next().unwrap());
-            settings.push(SynthSetting::Bitrate(val));
-        } else if text.starts_with("skip_if_exists") {
-            let filter = parts.next().unwrap();
-            settings.push(SynthSetting::SkipIfExists(build_filter(filter)?));
-        } else if text.starts_with("create_if") {
-            let cond = parts.next().unwrap();
-            settings.push(SynthSetting::CreateIf(build_condition(cond)?));
-        } else if text.starts_with("title") {
-            let val = parse_string_value(&parts.next().unwrap());
-            settings.push(SynthSetting::Title(val));
-        } else if text.starts_with("language") {
-            let val = parts.next().unwrap().as_str().to_string();
-            settings.push(SynthSetting::Language(val));
-        } else if text.starts_with("position") {
-            let val = build_value(parts.next().unwrap());
-            settings.push(SynthSetting::Position(val));
+        // pest silently consumes keyword alternations, so we dispatch on the
+        // leading keyword extracted from the raw text.
+        let keyword = text
+            .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
+            .next()
+            .unwrap_or("");
+        match keyword {
+            "codec" => {
+                let val = parts.next().unwrap().as_str().to_string();
+                settings.push(SynthSetting::Codec(val));
+            }
+            "channels" => {
+                let val = build_value(parts.next().unwrap());
+                settings.push(SynthSetting::Channels(val));
+            }
+            "source" => {
+                let source_pair = parts.next().unwrap();
+                let filter = source_pair.into_inner().next().unwrap();
+                settings.push(SynthSetting::Source(build_filter(filter)?));
+            }
+            "bitrate" => {
+                let val = parse_string_value(&parts.next().unwrap());
+                settings.push(SynthSetting::Bitrate(val));
+            }
+            "skip_if_exists" => {
+                let filter = parts.next().unwrap();
+                settings.push(SynthSetting::SkipIfExists(build_filter(filter)?));
+            }
+            "create_if" => {
+                let cond = parts.next().unwrap();
+                settings.push(SynthSetting::CreateIf(build_condition(cond)?));
+            }
+            "title" => {
+                let val = parse_string_value(&parts.next().unwrap());
+                settings.push(SynthSetting::Title(val));
+            }
+            "language" => {
+                let val = parts.next().unwrap().as_str().to_string();
+                settings.push(SynthSetting::Language(val));
+            }
+            "position" => {
+                let val = build_value(parts.next().unwrap());
+                settings.push(SynthSetting::Position(val));
+            }
+            _ => {} // unknown synth setting — grammar guarantees this won't happen
         }
     }
 
@@ -496,8 +524,12 @@ fn build_condition_and(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionNo
 
 fn build_condition_not(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionNode> {
     let text = pair.as_str().trim();
+    let keyword = text
+        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
+        .next()
+        .unwrap_or("");
     let inner = pair.into_inner().next().unwrap();
-    if text.starts_with("not") {
+    if keyword == "not" {
         Ok(ConditionNode::Not(Box::new(build_condition_atom(
             inner, depth,
         )?)))
@@ -512,24 +544,27 @@ fn build_condition_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionN
     let (pair_line, pair_col) = pair_span.start_pos().line_col();
     let mut inner = pair.into_inner();
 
-    if text.starts_with("audio_is_multi_language") {
-        return Ok(ConditionNode::AudioIsMultiLanguage);
-    }
-    if text.starts_with("is_dubbed") {
-        return Ok(ConditionNode::IsDubbed);
-    }
-    if text.starts_with("is_original") {
-        return Ok(ConditionNode::IsOriginal);
-    }
-    if text.starts_with("exists") {
-        let query = inner.next().unwrap();
-        return Ok(ConditionNode::Exists(build_track_query(query)?));
-    }
-    if text.starts_with("count") {
-        let query = inner.next().unwrap();
-        let op = build_compare_op(inner.next().unwrap());
-        let num = parse_number_f64(inner.next().unwrap());
-        return Ok(ConditionNode::Count(build_track_query(query)?, op, num));
+    // pest silently consumes keyword alternations, so we dispatch on the
+    // leading keyword extracted from the raw text.
+    let keyword = text
+        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
+        .next()
+        .unwrap_or("");
+    match keyword {
+        "audio_is_multi_language" => return Ok(ConditionNode::AudioIsMultiLanguage),
+        "is_dubbed" => return Ok(ConditionNode::IsDubbed),
+        "is_original" => return Ok(ConditionNode::IsOriginal),
+        "exists" => {
+            let query = inner.next().unwrap();
+            return Ok(ConditionNode::Exists(build_track_query(query)?));
+        }
+        "count" => {
+            let query = inner.next().unwrap();
+            let op = build_compare_op(inner.next().unwrap());
+            let num = parse_number_f64(inner.next().unwrap());
+            return Ok(ConditionNode::Count(build_track_query(query)?, op, num));
+        }
+        _ => {}
     }
     if text.starts_with('(') {
         let new_depth = depth + 1;
@@ -630,8 +665,12 @@ fn build_filter_and(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
 
 fn build_filter_not(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
     let text = pair.as_str().trim();
+    let keyword = text
+        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
+        .next()
+        .unwrap_or("");
     let inner = pair.into_inner().next().unwrap();
-    if text.starts_with("not") {
+    if keyword == "not" {
         Ok(FilterNode::Not(Box::new(build_filter_atom(inner, depth)?)))
     } else {
         build_filter_atom(inner, depth)
@@ -680,44 +719,45 @@ fn build_filter_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
     let span = pair.as_span();
     let mut inner = pair.into_inner();
 
-    if text.starts_with("lang") {
-        return match build_list_or_compare_filter(&mut inner, span, "lang")? {
-            ListOrCompare::InList(v) => Ok(FilterNode::LangIn(v)),
-            ListOrCompare::Compare(op, v) => Ok(FilterNode::LangCompare(op, v)),
-        };
-    }
-    if text.starts_with("codec") {
-        return match build_list_or_compare_filter(&mut inner, span, "codec")? {
-            ListOrCompare::InList(v) => Ok(FilterNode::CodecIn(v)),
-            ListOrCompare::Compare(op, v) => Ok(FilterNode::CodecCompare(op, v)),
-        };
-    }
-    if text.starts_with("channels") {
-        let op = build_compare_op(inner.next().unwrap());
-        let num = parse_number_f64(inner.next().unwrap());
-        return Ok(FilterNode::Channels(op, num));
-    }
-    if text == "commentary" {
-        return Ok(FilterNode::Commentary);
-    }
-    if text == "forced" {
-        return Ok(FilterNode::Forced);
-    }
-    if text == "default" {
-        return Ok(FilterNode::Default);
-    }
-    if text == "font" {
-        return Ok(FilterNode::Font);
-    }
-    if text.starts_with("title") {
-        let has_contains = text.contains("contains");
-        let str_pair = inner.next().unwrap();
-        let s = parse_string_value(&str_pair);
-        return if has_contains {
-            Ok(FilterNode::TitleContains(s))
-        } else {
-            Ok(FilterNode::TitleMatches(s))
-        };
+    // pest silently consumes keyword alternations, so we dispatch on the
+    // leading keyword extracted from the raw text.
+    let keyword = text
+        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
+        .next()
+        .unwrap_or("");
+    match keyword {
+        "lang" => {
+            return match build_list_or_compare_filter(&mut inner, span, "lang")? {
+                ListOrCompare::InList(v) => Ok(FilterNode::LangIn(v)),
+                ListOrCompare::Compare(op, v) => Ok(FilterNode::LangCompare(op, v)),
+            };
+        }
+        "codec" => {
+            return match build_list_or_compare_filter(&mut inner, span, "codec")? {
+                ListOrCompare::InList(v) => Ok(FilterNode::CodecIn(v)),
+                ListOrCompare::Compare(op, v) => Ok(FilterNode::CodecCompare(op, v)),
+            };
+        }
+        "channels" => {
+            let op = build_compare_op(inner.next().unwrap());
+            let num = parse_number_f64(inner.next().unwrap());
+            return Ok(FilterNode::Channels(op, num));
+        }
+        "commentary" => return Ok(FilterNode::Commentary),
+        "forced" => return Ok(FilterNode::Forced),
+        "default" => return Ok(FilterNode::Default),
+        "font" => return Ok(FilterNode::Font),
+        "title" | "title_contains" => {
+            let has_contains = text.contains("contains");
+            let str_pair = inner.next().unwrap();
+            let s = parse_string_value(&str_pair);
+            return if has_contains {
+                Ok(FilterNode::TitleContains(s))
+            } else {
+                Ok(FilterNode::TitleMatches(s))
+            };
+        }
+        _ => {}
     }
     if text.starts_with('(') {
         let new_depth = depth + 1;
@@ -746,48 +786,57 @@ fn build_action(pair: Pair<'_, Rule>) -> Result<ActionNode> {
     let span = pair.as_span();
     let mut inner = pair.into_inner();
 
-    if text.starts_with("skip") {
-        let phase = inner.next().map(|p| p.as_str().to_string());
-        return Ok(ActionNode::Skip(phase));
+    // pest silently consumes keyword alternations, so we dispatch on the
+    // leading keyword extracted from the raw text.
+    let keyword = text
+        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
+        .next()
+        .unwrap_or("");
+    match keyword {
+        "skip" => {
+            let phase = inner.next().map(|p| p.as_str().to_string());
+            Ok(ActionNode::Skip(phase))
+        }
+        "warn" => {
+            let s = parse_string_value(&inner.next().unwrap());
+            Ok(ActionNode::Warn(s))
+        }
+        "fail" => {
+            let s = parse_string_value(&inner.next().unwrap());
+            Ok(ActionNode::Fail(s))
+        }
+        "set_default" => {
+            let track = build_track_ref(inner.next().unwrap())?;
+            Ok(ActionNode::SetDefault(track))
+        }
+        "set_forced" => {
+            let track = build_track_ref(inner.next().unwrap())?;
+            Ok(ActionNode::SetForced(track))
+        }
+        "set_language" => {
+            let track = build_track_ref(inner.next().unwrap())?;
+            let val_pair = inner.next().unwrap();
+            let val = if val_pair.as_rule() == Rule::field_access {
+                ValueOrField::Field(build_field_access(&val_pair))
+            } else {
+                ValueOrField::Value(Value::String(parse_string_value(&val_pair)))
+            };
+            Ok(ActionNode::SetLanguage(track, val))
+        }
+        "set_tag" => {
+            let tag = parse_string_value(&inner.next().unwrap());
+            let val = parse_set_tag_value(inner.next().unwrap());
+            Ok(ActionNode::SetTag(tag, val))
+        }
+        _ => {
+            let (line, col) = span.start_pos().line_col();
+            Err(DslError::build(
+                line,
+                col,
+                format!("unexpected action: {text}"),
+            ))
+        }
     }
-    if text.starts_with("warn") {
-        let s = parse_string_value(&inner.next().unwrap());
-        return Ok(ActionNode::Warn(s));
-    }
-    if text.starts_with("fail") {
-        let s = parse_string_value(&inner.next().unwrap());
-        return Ok(ActionNode::Fail(s));
-    }
-    if text.starts_with("set_default") {
-        let track = build_track_ref(inner.next().unwrap())?;
-        return Ok(ActionNode::SetDefault(track));
-    }
-    if text.starts_with("set_forced") {
-        let track = build_track_ref(inner.next().unwrap())?;
-        return Ok(ActionNode::SetForced(track));
-    }
-    if text.starts_with("set_language") {
-        let track = build_track_ref(inner.next().unwrap())?;
-        let val_pair = inner.next().unwrap();
-        let val = if val_pair.as_rule() == Rule::field_access {
-            ValueOrField::Field(build_field_access(&val_pair))
-        } else {
-            ValueOrField::Value(Value::String(parse_string_value(&val_pair)))
-        };
-        return Ok(ActionNode::SetLanguage(track, val));
-    }
-    if text.starts_with("set_tag") {
-        let tag = parse_string_value(&inner.next().unwrap());
-        let val = parse_set_tag_value(inner.next().unwrap());
-        return Ok(ActionNode::SetTag(tag, val));
-    }
-
-    let (line, col) = span.start_pos().line_col();
-    Err(DslError::build(
-        line,
-        col,
-        format!("unexpected action: {text}"),
-    ))
 }
 
 fn build_track_ref(pair: Pair<'_, Rule>) -> Result<TrackRefNode> {
