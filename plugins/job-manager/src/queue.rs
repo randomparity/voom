@@ -9,10 +9,7 @@ use voom_domain::job::{Job, JobStatus, JobType, JobUpdate};
 use voom_domain::storage::{JobFilters, JobStorage};
 
 fn plugin_err(message: impl Into<String>) -> VoomError {
-    VoomError::Plugin {
-        plugin: "job-manager".into(),
-        message: message.into(),
-    }
+    VoomError::plugin("job-manager", message)
 }
 
 /// Job queue backed by a storage implementation.

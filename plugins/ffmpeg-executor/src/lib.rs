@@ -16,10 +16,7 @@ use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{Event, EventResult, PlanCreatedEvent};
 
 fn plugin_err(message: impl Into<String>) -> VoomError {
-    VoomError::Plugin {
-        plugin: "ffmpeg-executor".into(),
-        message: message.into(),
-    }
+    VoomError::plugin("ffmpeg-executor", message)
 }
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionResult, OperationType, Plan, PlannedAction};

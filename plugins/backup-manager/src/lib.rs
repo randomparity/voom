@@ -26,10 +26,7 @@ use voom_kernel::Plugin;
 
 /// Create a `VoomError::Plugin` for the backup-manager plugin.
 pub(crate) fn plugin_err(message: impl Into<String>) -> VoomError {
-    VoomError::Plugin {
-        plugin: "backup-manager".into(),
-        message: message.into(),
-    }
+    VoomError::plugin("backup-manager", message)
 }
 
 /// A record of a backed-up file.

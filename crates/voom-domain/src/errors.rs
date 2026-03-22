@@ -43,6 +43,16 @@ pub enum VoomError {
     Other(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
+impl VoomError {
+    /// Create a plugin error with the given plugin name and message.
+    pub fn plugin(plugin: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Plugin {
+            plugin: plugin.into(),
+            message: message.into(),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, VoomError>;
 
 #[cfg(test)]

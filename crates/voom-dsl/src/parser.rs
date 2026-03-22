@@ -73,7 +73,7 @@ fn build_policy(pair: Pair<'_, Rule>) -> Result<PolicyAst> {
             Rule::config => config = Some(build_config(item)?),
             Rule::phase => phases.push(build_phase(item)?),
             Rule::EOI => {}
-            _ => {}
+            _ => {} // grammar-guaranteed: policy only contains config, phase, EOI
         }
     }
 
@@ -131,7 +131,7 @@ fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
                     .unwrap();
                 commentary_patterns = build_list(list_pair);
             }
-            _ => {}
+            _ => {} // grammar-guaranteed: config_item is languages|on_error|commentary_patterns
         }
     }
 
@@ -433,7 +433,7 @@ fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {
                 let val = build_value(parts.next().unwrap());
                 settings.push(SynthSetting::Position(val));
             }
-            _ => {} // unknown synth setting — grammar guarantees this won't happen
+            _ => {} // grammar-guaranteed unreachable: pest validates synth_item keywords
         }
     }
 
@@ -458,7 +458,7 @@ fn build_when(pair: Pair<'_, Rule>) -> Result<WhenNode> {
                     }
                 }
             }
-            _ => {}
+            _ => {} // grammar-guaranteed: when block contains condition, actions, optional else_block
         }
     }
 
@@ -564,7 +564,7 @@ fn build_condition_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionN
             let num = parse_number_f64(inner.next().unwrap());
             return Ok(ConditionNode::Count(build_track_query(query)?, op, num));
         }
-        _ => {}
+        _ => {} // fall through to parenthesized/field_access parsing below
     }
     if text.starts_with('(') {
         let new_depth = depth + 1;
@@ -757,7 +757,7 @@ fn build_filter_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
                 Ok(FilterNode::TitleMatches(s))
             };
         }
-        _ => {}
+        _ => {} // fall through to parenthesized/field_access parsing below
     }
     if text.starts_with('(') {
         let new_depth = depth + 1;
