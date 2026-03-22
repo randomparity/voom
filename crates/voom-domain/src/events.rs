@@ -16,7 +16,6 @@ pub enum Event {
     /// Emitted by WASM metadata plugins. Consumed by the sqlite-store plugin
     /// to persist enriched metadata as plugin data keyed by file path.
     MetadataEnriched(MetadataEnrichedEvent),
-    PolicyEvaluate(PolicyEvaluateEvent),
     PlanCreated(PlanCreatedEvent),
     PlanExecuting(PlanExecutingEvent),
     PlanCompleted(PlanCompletedEvent),
@@ -38,7 +37,6 @@ impl Event {
     pub const FILE_INTROSPECTED: &str = "file.introspected";
     pub const FILE_INTROSPECTION_FAILED: &str = "file.introspection_failed";
     pub const METADATA_ENRICHED: &str = "metadata.enriched";
-    pub const POLICY_EVALUATE: &str = "policy.evaluate";
     pub const PLAN_CREATED: &str = "plan.created";
     pub const PLAN_EXECUTING: &str = "plan.executing";
     pub const PLAN_COMPLETED: &str = "plan.completed";
@@ -57,7 +55,6 @@ impl Event {
             Event::FileIntrospected(_) => Self::FILE_INTROSPECTED,
             Event::FileIntrospectionFailed(_) => Self::FILE_INTROSPECTION_FAILED,
             Event::MetadataEnriched(_) => Self::METADATA_ENRICHED,
-            Event::PolicyEvaluate(_) => Self::POLICY_EVALUATE,
             Event::PlanCreated(_) => Self::PLAN_CREATED,
             Event::PlanExecuting(_) => Self::PLAN_EXECUTING,
             Event::PlanCompleted(_) => Self::PLAN_COMPLETED,
@@ -170,12 +167,6 @@ pub struct MetadataEnrichedEvent {
     pub path: PathBuf,
     pub source: String,
     pub metadata: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PolicyEvaluateEvent {
-    pub path: PathBuf,
-    pub policy_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

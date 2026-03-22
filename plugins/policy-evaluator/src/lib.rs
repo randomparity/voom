@@ -23,10 +23,9 @@ use voom_kernel::{Plugin, PluginContext};
 
 /// The policy evaluator plugin.
 ///
-/// Handles `policy.evaluate` events by evaluating a compiled policy against
-/// a media file and emitting `plan.created` events for each phase.
+/// Evaluates compiled policies against media files and produces `Plan` structs.
+/// Evaluation is done via direct API call, not through the event bus.
 pub struct PolicyEvaluatorPlugin {
-    capabilities: Vec<Capability>,
     policies: Mutex<HashMap<String, CompiledPolicy>>,
 }
 
@@ -34,7 +33,6 @@ impl PolicyEvaluatorPlugin {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            capabilities: vec![Capability::Evaluate],
             policies: Mutex::new(HashMap::new()),
         }
     }
@@ -93,7 +91,9 @@ impl Plugin for PolicyEvaluatorPlugin {
     }
 
     fn capabilities(&self) -> &[Capability] {
-        &self.capabilities
+        // Policy evaluation is done via direct API call (evaluate() / evaluate_policy()),
+        // not through the event bus, so no capabilities are advertised.
+        &[]
     }
 
     fn handles(&self, _event_type: &str) -> bool {
@@ -102,27 +102,8 @@ impl Plugin for PolicyEvaluatorPlugin {
         false
     }
 
-    fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
-        match event {
-            // NOTE: Policy evaluation is triggered via direct API call (evaluator::evaluate()),
-            // not through the event bus. This handler is reserved for future event-driven
-            // evaluation once storage integration is wired up.
-            Event::PolicyEvaluate(evt) => {
-                tracing::info!(
-                    path = %evt.path.display(),
-                    policy = %evt.policy_name,
-                    "Evaluating policy"
-                );
-
-                tracing::warn!(
-                    "PolicyEvaluate event received but file lookup requires storage integration. \
-                     Use evaluate() or evaluate_policy() directly."
-                );
-
-                Ok(None)
-            }
-            _ => Ok(None),
-        }
+    fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> {
+        Ok(None)
     }
 
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
@@ -134,18 +115,17 @@ impl Plugin for PolicyEvaluatorPlugin {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use voom_domain::events::PolicyEvaluateEvent;
 
     #[test]
-    fn new_creates_plugin_with_evaluate_capability() {
+    fn new_creates_plugin_with_no_capabilities() {
         let plugin = PolicyEvaluatorPlugin::new();
-        assert_eq!(plugin.capabilities(), &[Capability::Evaluate]);
+        assert!(plugin.capabilities().is_empty());
     }
 
     #[test]
     fn default_creates_same_as_new() {
         let plugin = PolicyEvaluatorPlugin::default();
-        assert_eq!(plugin.capabilities(), &[Capability::Evaluate]);
+        assert!(plugin.capabilities().is_empty());
         assert_eq!(plugin.name(), "policy-evaluator");
     }
 
@@ -159,7 +139,6 @@ mod tests {
     #[test]
     fn handles_no_events_since_evaluation_is_direct_api() {
         let plugin = PolicyEvaluatorPlugin::new();
-        assert!(!plugin.handles(Event::POLICY_EVALUATE));
         assert!(!plugin.handles(Event::FILE_INTROSPECTED));
         assert!(!plugin.handles(Event::PLAN_CREATED));
         assert!(!plugin.handles(""));
@@ -183,18 +162,6 @@ mod tests {
             version: "6.0".into(),
             path: PathBuf::from("/usr/bin/ffprobe"),
         });
-        let result = plugin.on_event(&event).unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn on_event_handles_policy_evaluate_event() {
-        let plugin = PolicyEvaluatorPlugin::new();
-        let event = Event::PolicyEvaluate(PolicyEvaluateEvent {
-            path: PathBuf::from("/test/video.mkv"),
-            policy_name: "test-policy".into(),
-        });
-        // Should return Ok(None) — logs a warning but doesn't fail
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
     }

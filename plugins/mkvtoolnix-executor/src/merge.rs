@@ -125,76 +125,51 @@ pub fn build_merge_args(
 ) -> Vec<String> {
     let mut args = vec!["-o".into(), output_path.to_string_lossy().into_owned()];
 
-    // Collect track removal indices
-    let remove_indices: Vec<u32> = actions
-        .iter()
-        .filter(|a| a.operation == OperationType::RemoveTrack)
-        .filter_map(|a| a.track_index)
-        .collect();
+    // Group track removals by type in a single pass using the "track_type" parameter.
+    // mkvmerge supports negation with `!` prefix:
+    // `--video-tracks !3` means "all video tracks except TID 3"
+    let mut video_removes: Vec<u32> = Vec::new();
+    let mut audio_removes: Vec<u32> = Vec::new();
+    let mut subtitle_removes: Vec<u32> = Vec::new();
 
-    // Build track removal flags if needed.
-    // mkvmerge's track selection flags accept comma-separated track IDs to INCLUDE.
-    // We use negation: `--video-tracks !id1,id2` is NOT supported.
-    // Instead, we use `--track-order` combined with explicit track type selection.
-    //
-    // The simplest reliable approach: use `-d TID` (video), `-a TID` (audio), `-s TID` (subtitle)
-    // flags which accept track IDs to include. But we need to know track types.
-    //
-    // Since PlannedAction includes parameters with track type info, we classify removals.
-    // For the general case, we group removed tracks by type from their parameters.
-    if !remove_indices.is_empty() {
-        // Group removals by track type using the "track_type" parameter
-        let mut video_removes: Vec<u32> = Vec::new();
-        let mut audio_removes: Vec<u32> = Vec::new();
-        let mut subtitle_removes: Vec<u32> = Vec::new();
-
-        for action in actions.iter() {
-            if action.operation == OperationType::RemoveTrack {
-                if let Some(idx) = action.track_index {
-                    let track_type = action.parameters["track_type"]
-                        .as_str()
-                        .unwrap_or("unknown");
-                    match track_type {
-                        "video" => video_removes.push(idx),
-                        "audio" => audio_removes.push(idx),
-                        "subtitle" => subtitle_removes.push(idx),
-                        _ => {
-                            // If track type is unknown, use a general approach:
-                            // add to all removal lists and let mkvmerge ignore non-matching
-                            video_removes.push(idx);
-                            audio_removes.push(idx);
-                            subtitle_removes.push(idx);
-                        }
+    for action in actions.iter() {
+        if action.operation == OperationType::RemoveTrack {
+            if let Some(idx) = action.track_index {
+                let track_type = action.parameters["track_type"]
+                    .as_str()
+                    .unwrap_or("unknown");
+                match track_type {
+                    "video" => video_removes.push(idx),
+                    "audio" => audio_removes.push(idx),
+                    "subtitle" => subtitle_removes.push(idx),
+                    _ => {
+                        // If track type is unknown, use a general approach:
+                        // add to all removal lists and let mkvmerge ignore non-matching
+                        video_removes.push(idx);
+                        audio_removes.push(idx);
+                        subtitle_removes.push(idx);
                     }
                 }
             }
         }
+    }
 
-        // Build exclusion args using mkvmerge's `--no-*` or specific track lists.
-        // For each type with removals, we output the track IDs NOT to include.
-        // mkvmerge uses `--video-tracks TID1,TID2` to include only those tracks.
-        // But since we only know which to remove, we specify the "inverted" list
-        // by telling mkvmerge to skip specific TIDs.
-        //
-        // Actually, mkvmerge DOES support negation with `!` prefix:
-        // `--video-tracks !3` means "all video tracks except TID 3"
-        if !video_removes.is_empty() {
-            let ids: Vec<String> = video_removes.iter().map(|i| i.to_string()).collect();
-            args.push("--video-tracks".into());
-            args.push(format!("!{}", ids.join(",")));
-        }
+    if !video_removes.is_empty() {
+        let ids: Vec<String> = video_removes.iter().map(|i| i.to_string()).collect();
+        args.push("--video-tracks".into());
+        args.push(format!("!{}", ids.join(",")));
+    }
 
-        if !audio_removes.is_empty() {
-            let ids: Vec<String> = audio_removes.iter().map(|i| i.to_string()).collect();
-            args.push("--audio-tracks".into());
-            args.push(format!("!{}", ids.join(",")));
-        }
+    if !audio_removes.is_empty() {
+        let ids: Vec<String> = audio_removes.iter().map(|i| i.to_string()).collect();
+        args.push("--audio-tracks".into());
+        args.push(format!("!{}", ids.join(",")));
+    }
 
-        if !subtitle_removes.is_empty() {
-            let ids: Vec<String> = subtitle_removes.iter().map(|i| i.to_string()).collect();
-            args.push("--subtitle-tracks".into());
-            args.push(format!("!{}", ids.join(",")));
-        }
+    if !subtitle_removes.is_empty() {
+        let ids: Vec<String> = subtitle_removes.iter().map(|i| i.to_string()).collect();
+        args.push("--subtitle-tracks".into());
+        args.push(format!("!{}", ids.join(",")));
     }
 
     // Handle track reordering

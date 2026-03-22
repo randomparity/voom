@@ -226,7 +226,6 @@ mod tests {
     fn does_not_handle_unrelated_event_types() {
         let plugin = SqliteStorePlugin::new();
         assert!(!plugin.handles(Event::FILE_DISCOVERED));
-        assert!(!plugin.handles(Event::POLICY_EVALUATE));
         assert!(!plugin.handles(Event::JOB_STARTED));
         assert!(!plugin.handles(""));
     }

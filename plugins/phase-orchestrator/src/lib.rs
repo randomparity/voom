@@ -364,7 +364,6 @@ mod tests {
         let orch = PhaseOrchestratorPlugin::new();
         assert_eq!(orch.name(), "phase-orchestrator");
         // Orchestration is driven via direct API, not through event bus
-        assert!(!orch.handles(Event::POLICY_EVALUATE));
         assert!(!orch.handles(Event::FILE_DISCOVERED));
         assert_eq!(orch.capabilities().len(), 1);
     }

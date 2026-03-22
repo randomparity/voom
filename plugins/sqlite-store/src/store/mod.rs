@@ -130,6 +130,16 @@ impl SqlQuery {
         self
     }
 
+    /// Append LIMIT and OFFSET clauses with clamped values.
+    pub(crate) fn paginate(&mut self, limit: Option<u32>, offset: Option<u32>) {
+        if let Some(limit) = limit {
+            self.condition(" LIMIT {}", limit.min(10_000).to_string());
+        }
+        if let Some(offset) = offset {
+            self.condition(" OFFSET {}", offset.min(1_000_000).to_string());
+        }
+    }
+
     /// Build the parameter references for rusqlite.
     pub(crate) fn param_refs(&self) -> Vec<&dyn rusqlite::types::ToSql> {
         self.params
@@ -141,6 +151,17 @@ impl SqlQuery {
 
 pub(crate) fn parse_uuid(s: &str) -> Result<Uuid> {
     Uuid::parse_str(s).map_err(|e| VoomError::Storage(format!("invalid UUID '{s}': {e}")))
+}
+
+/// Parse a required datetime string, returning a `FromSqlConversionFailure` on corrupt values.
+pub(crate) fn parse_required_datetime(s: String, field: &str) -> rusqlite::Result<DateTime<Utc>> {
+    s.parse().map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("corrupt datetime in {field}: {s}: {e}").into(),
+        )
+    })
 }
 
 /// Parse an optional datetime string, returning an error for corrupt values.
@@ -338,13 +359,7 @@ pub(crate) fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
         output: parse_optional_json(output_str, "jobs.output")?,
         error: row.get("error")?,
         worker_id: row.get("worker_id")?,
-        created_at: created_str.parse().map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                format!("corrupt datetime in jobs.created_at: {created_str}: {e}").into(),
-            )
-        })?,
+        created_at: parse_required_datetime(created_str, "jobs.created_at")?,
         started_at: parse_optional_datetime(started_str, "jobs.started_at")?,
         completed_at: parse_optional_datetime(completed_str, "jobs.completed_at")?,
     })
@@ -377,20 +392,8 @@ pub(crate) fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
                 format!("invalid attempt_count in bad_files: {e}").into(),
             )
         })?,
-        first_seen_at: parse_datetime(&first_seen_str).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                e.to_string().into(),
-            )
-        })?,
-        last_seen_at: parse_datetime(&last_seen_str).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                e.to_string().into(),
-            )
-        })?,
+        first_seen_at: parse_required_datetime(first_seen_str, "bad_files.first_seen_at")?,
+        last_seen_at: parse_required_datetime(last_seen_str, "bad_files.last_seen_at")?,
     })
 }
 

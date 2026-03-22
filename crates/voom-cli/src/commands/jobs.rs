@@ -155,8 +155,21 @@ fn cancel(id: String) -> Result<()> {
 
     let uuid = uuid::Uuid::parse_str(&id).map_err(|_| anyhow::anyhow!("Invalid job ID: {id}"))?;
 
+    // Check that the job exists and is not already in a terminal state
+    let job = store
+        .get_job(&uuid)?
+        .ok_or_else(|| anyhow::anyhow!("Job {id} not found"))?;
+
+    if job.is_terminal() {
+        anyhow::bail!(
+            "Cannot cancel job {id}: already in terminal state '{}'",
+            job.status.as_str()
+        );
+    }
+
     let update = voom_domain::JobUpdate {
         status: Some(voom_domain::JobStatus::Cancelled),
+        completed_at: Some(Some(chrono::Utc::now())),
         ..Default::default()
     };
 

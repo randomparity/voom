@@ -221,12 +221,7 @@ impl FileStorage for SqliteStore {
 
         q.sql.push_str(&format!(" ORDER BY {col_prefix}path"));
 
-        if let Some(limit) = filters.limit {
-            q.condition(" LIMIT {}", limit.min(10_000).to_string());
-        }
-        if let Some(offset) = filters.offset {
-            q.condition(" OFFSET {}", offset.min(1_000_000).to_string());
-        }
+        q.paginate(filters.limit, filters.offset);
 
         let mut stmt = conn
             .prepare(&q.sql)

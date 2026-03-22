@@ -42,6 +42,8 @@ pub struct PolicyError {
 #[derive(Debug, Serialize)]
 pub struct FormatResponse {
     pub formatted: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<PolicyError>,
 }
 
 /// POST /api/policy/validate -- validate DSL source
@@ -110,11 +112,26 @@ pub async fn format_policy(
         )));
     }
 
-    let ast = voom_dsl::parse_policy(&input.source)
-        .map_err(|e| WebError::BadRequest(format!("Parse error: {e}")))?;
-
-    let formatted = voom_dsl::format_policy(&ast);
-    Ok(Json(FormatResponse { formatted }))
+    match voom_dsl::parse_policy(&input.source) {
+        Ok(ast) => {
+            let formatted = voom_dsl::format_policy(&ast);
+            Ok(Json(FormatResponse {
+                formatted,
+                errors: vec![],
+            }))
+        }
+        Err(e) => {
+            let (line, column) = extract_dsl_error_location(&e);
+            Ok(Json(FormatResponse {
+                formatted: String::new(),
+                errors: vec![PolicyError {
+                    message: e.to_string(),
+                    line,
+                    column,
+                }],
+            }))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -175,14 +192,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn format_invalid_policy_returns_error() {
+    async fn format_invalid_policy_returns_errors_in_body() {
         let input = PolicyInput {
             source: "not valid".to_string(),
         };
         let result = format_policy(Json(input)).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, WebError::BadRequest(_)));
+        assert!(result.is_ok());
+        let response = result.unwrap().0;
+        assert!(response.formatted.is_empty());
+        assert!(!response.errors.is_empty());
     }
 
     #[tokio::test]
@@ -233,6 +251,7 @@ mod tests {
     fn format_response_serialization() {
         let response = FormatResponse {
             formatted: "policy \"x\" {}".into(),
+            errors: vec![],
         };
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["formatted"], "policy \"x\" {}");

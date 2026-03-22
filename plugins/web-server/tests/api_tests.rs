@@ -249,7 +249,10 @@ async fn test_format_invalid_policy() {
         .post("/api/policy/format")
         .json(&json!({ "source": "not valid" }))
         .await;
-    resp.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert!(body["formatted"].as_str().unwrap().is_empty());
+    assert!(!body["errors"].as_array().unwrap().is_empty());
 }
 
 // === Page Tests (HTML) ===
