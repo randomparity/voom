@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 VOOM (Video Orchestration Operations Manager) is a policy-driven video library manager being built in Rust. It is a from-scratch rewrite of VPO (Video Policy Orchestrator) with a WASM plugin architecture and a custom block-based DSL for policy configuration.
 
-**Status:** Early development. The design document is at `docs/INITIAL_DESIGN.md`. No code has been written yet.
+**Status:** Active development (Sprints 1–12 complete, Sprint 13 next). All core crates, 11 native plugins, CLI, web UI, and WASM plugin SDK are implemented. ~800+ tests. See `docs/INITIAL_DESIGN.md` for the original design and `docs/architecture.md` for current architecture.
 
 ## Build & Development Commands
 
