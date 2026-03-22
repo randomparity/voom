@@ -223,7 +223,7 @@ fn build_work_items(
             let value =
                 serde_json::to_value(&payload).expect("ProcessJobPayload is always serializable");
             voom_job_manager::worker::WorkItem {
-                job_type: "process".to_string(),
+                job_type: voom_domain::job::JobType::Process,
                 priority: 100,
                 payload: Some(value),
             }

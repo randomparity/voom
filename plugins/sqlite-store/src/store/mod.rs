@@ -344,7 +344,7 @@ pub(crate) fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
     let id_str: String = row.get("id")?;
     Ok(Job {
         id: row_uuid(&id_str, "jobs")?,
-        job_type: row.get("job_type")?,
+        job_type: voom_domain::job::JobType::parse(&row.get::<_, String>("job_type")?),
         status: JobStatus::parse(&status_str).ok_or_else(|| {
             rusqlite::Error::FromSqlConversionFailure(
                 0,
@@ -740,7 +740,7 @@ mod tests {
     #[test]
     fn test_create_and_get_job() {
         let store = test_store();
-        let mut job = Job::new("transcode".into());
+        let mut job = Job::new(voom_domain::job::JobType::Transcode);
         job.priority = 50;
         job.payload = Some(serde_json::json!({"file": "/test.mkv"}));
 
@@ -748,7 +748,7 @@ mod tests {
         assert_eq!(id, job.id);
 
         let loaded = store.get_job(&id).unwrap().unwrap();
-        assert_eq!(loaded.job_type, "transcode");
+        assert_eq!(loaded.job_type, voom_domain::job::JobType::Transcode);
         assert_eq!(loaded.priority, 50);
         assert_eq!(loaded.status, JobStatus::Pending);
     }
@@ -756,7 +756,7 @@ mod tests {
     #[test]
     fn test_update_job() {
         let store = test_store();
-        let job = Job::new("scan".into());
+        let job = Job::new(voom_domain::job::JobType::Scan);
         store.create_job(&job).unwrap();
 
         let update = voom_domain::job::JobUpdate {
@@ -781,16 +781,19 @@ mod tests {
     fn test_claim_next_job() {
         let store = test_store();
 
-        let mut job1 = Job::new("task1".into());
+        let mut job1 = Job::new(voom_domain::job::JobType::Custom("task1".into()));
         job1.priority = 200;
         store.create_job(&job1).unwrap();
 
-        let mut job2 = Job::new("task2".into());
+        let mut job2 = Job::new(voom_domain::job::JobType::Custom("task2".into()));
         job2.priority = 50; // higher priority (lower number)
         store.create_job(&job2).unwrap();
 
         let claimed = store.claim_next_job("worker-1").unwrap().unwrap();
-        assert_eq!(claimed.job_type, "task2"); // lower priority number = claimed first
+        assert_eq!(
+            claimed.job_type,
+            voom_domain::job::JobType::Custom("task2".into())
+        ); // lower priority number = claimed first
         assert_eq!(claimed.status, JobStatus::Running);
         assert_eq!(claimed.worker_id.as_deref(), Some("worker-1"));
     }
@@ -798,11 +801,11 @@ mod tests {
     #[test]
     fn test_list_jobs() {
         let store = test_store();
-        let mut job1 = Job::new("task1".into());
+        let mut job1 = Job::new(voom_domain::job::JobType::Custom("task1".into()));
         job1.priority = 100;
         store.create_job(&job1).unwrap();
 
-        let mut job2 = Job::new("task2".into());
+        let mut job2 = Job::new(voom_domain::job::JobType::Custom("task2".into()));
         job2.priority = 50;
         store.create_job(&job2).unwrap();
 
@@ -844,7 +847,7 @@ mod tests {
     fn test_count_jobs_by_status() {
         let store = test_store();
         for i in 0..3 {
-            let job = Job::new(format!("task{i}"));
+            let job = Job::new(voom_domain::job::JobType::Custom(format!("task{i}")));
             store.create_job(&job).unwrap();
         }
         store.claim_next_job("w-1").unwrap();
@@ -1158,7 +1161,7 @@ mod tests {
     fn test_list_jobs_limit_clamped() {
         let store = test_store();
         for i in 0..3 {
-            let job = Job::new(format!("clamp_task{i}"));
+            let job = Job::new(voom_domain::job::JobType::Custom(format!("clamp_task{i}")));
             store.create_job(&job).unwrap();
         }
 
@@ -1316,7 +1319,7 @@ mod tests {
     #[test]
     fn test_claim_job_by_id_pending() {
         let store = test_store();
-        let job = Job::new("test-task".to_string());
+        let job = Job::new(voom_domain::job::JobType::Custom("test-task".into()));
         let id = store.create_job(&job).unwrap();
 
         let claimed = store.claim_job_by_id(&id, "worker-1").unwrap();
@@ -1330,7 +1333,7 @@ mod tests {
     #[test]
     fn test_claim_job_by_id_non_pending_returns_none() {
         let store = test_store();
-        let job = Job::new("test-task".to_string());
+        let job = Job::new(voom_domain::job::JobType::Custom("test-task".into()));
         let id = store.create_job(&job).unwrap();
 
         // Claim it first

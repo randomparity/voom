@@ -6,7 +6,7 @@ use axum_test::TestServer;
 use serde_json::json;
 use uuid::Uuid;
 
-use voom_domain::job::Job;
+use voom_domain::job::{Job, JobType};
 use voom_domain::media::{Container, MediaFile};
 use voom_domain::test_support::InMemoryStore;
 
@@ -110,7 +110,7 @@ async fn test_list_jobs_empty() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_list_jobs_with_data() {
-    let job = Job::new("transcode".into());
+    let job = Job::new(JobType::Transcode);
     let store = InMemoryStore::new().with_job(job);
     let server = make_server(store);
 
@@ -123,7 +123,7 @@ async fn test_list_jobs_with_data() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_job_by_id() {
-    let job = Job::new("scan".into());
+    let job = Job::new(JobType::Scan);
     let id = job.id;
     let store = InMemoryStore::new().with_job(job);
     let server = make_server(store);
@@ -143,8 +143,8 @@ async fn test_get_job_not_found() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_job_stats() {
-    let job1 = Job::new("scan".into());
-    let mut job2 = Job::new("transcode".into());
+    let job1 = Job::new(JobType::Scan);
+    let mut job2 = Job::new(JobType::Transcode);
     job2.status = voom_domain::job::JobStatus::Completed;
     let store = InMemoryStore::new().with_job(job1).with_job(job2);
     let server = make_server(store);

@@ -19,7 +19,6 @@ pub mod views;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
-use voom_domain::events::{Event, EventResult};
 use voom_kernel::{Plugin, PluginContext};
 
 /// The web server plugin.
@@ -61,14 +60,6 @@ impl Plugin for WebServerPlugin {
         &self.capabilities
     }
 
-    fn handles(&self, _event_type: &str) -> bool {
-        false // Web server doesn't handle events — it only reads data
-    }
-
-    fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> {
-        Ok(None)
-    }
-
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
         Ok(())
     }
@@ -77,6 +68,7 @@ impl Plugin for WebServerPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use voom_domain::events::Event;
 
     #[test]
     fn test_plugin_metadata() {

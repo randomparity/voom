@@ -126,7 +126,6 @@ impl PluginDataStore for StorageBackedDataStore {
     fn get(&self, plugin_name: &str, key: &str) -> Result<Option<Vec<u8>>, String> {
         self.store
             .get_plugin_data(plugin_name, key)
-            .map(|opt| opt.filter(|v| !v.is_empty())) // Treat empty values as tombstones (deleted keys)
             .map_err(|e| e.to_string())
     }
 
@@ -137,11 +136,8 @@ impl PluginDataStore for StorageBackedDataStore {
     }
 
     fn delete(&self, plugin_name: &str, key: &str) -> Result<(), String> {
-        // StorageTrait doesn't have a dedicated delete_plugin_data method,
-        // so we write an empty value as a tombstone. The get() implementation
-        // filters out empty values, making this indistinguishable from a true delete.
         self.store
-            .set_plugin_data(plugin_name, key, &[])
+            .delete_plugin_data(plugin_name, key)
             .map_err(|e| e.to_string())
     }
 }

@@ -23,7 +23,7 @@ impl JobStorage for SqliteStore {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 job.id.to_string(),
-                job.job_type,
+                job.job_type.as_str(),
                 job.status.as_str(),
                 job.priority,
                 payload_json,

@@ -154,7 +154,9 @@ mod tests {
     fn test_noop_reporter() {
         let r = NoopReporter;
         r.on_batch_start(10);
-        r.on_job_start(&voom_domain::job::Job::new("test".into()));
+        r.on_job_start(&voom_domain::job::Job::new(
+            voom_domain::job::JobType::Custom("test".into()),
+        ));
         r.on_job_progress(Uuid::new_v4(), 0.5, Some("halfway"));
         r.on_job_complete(Uuid::new_v4(), true, None);
         r.on_batch_complete(10, 0);
@@ -166,7 +168,7 @@ mod tests {
         r.on_batch_start(3);
         assert_eq!(r.batch_starts.load(Ordering::SeqCst), 1);
 
-        let job = voom_domain::job::Job::new("test".into());
+        let job = voom_domain::job::Job::new(voom_domain::job::JobType::Custom("test".into()));
         r.on_job_start(&job);
         r.on_job_start(&job);
         assert_eq!(r.job_starts.load(Ordering::SeqCst), 2);
@@ -185,7 +187,7 @@ mod tests {
         let reporter = StorageReporter::new(store.clone());
 
         // Create a job first
-        let job = voom_domain::job::Job::new("test".into());
+        let job = voom_domain::job::Job::new(voom_domain::job::JobType::Custom("test".into()));
         let job_id = store.create_job(&job).unwrap();
 
         reporter.on_job_progress(job_id, 0.75, Some("Processing"));

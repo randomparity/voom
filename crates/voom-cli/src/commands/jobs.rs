@@ -75,7 +75,7 @@ fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
 
         table.add_row(vec![
             Cell::new(&job.id.to_string()[..8]),
-            Cell::new(&job.job_type),
+            Cell::new(job.job_type.as_str()),
             Cell::new(&file_name),
             status_cell,
             Cell::new(format!("{:.0}%", job.progress * 100.0)),

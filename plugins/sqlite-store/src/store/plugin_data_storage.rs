@@ -29,4 +29,14 @@ impl PluginDataStorage for SqliteStore {
         .map_err(storage_err("failed to set plugin data"))?;
         Ok(())
     }
+
+    fn delete_plugin_data(&self, plugin: &str, key: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM plugin_data WHERE plugin_name = ?1 AND key = ?2",
+            params![plugin, key],
+        )
+        .map_err(storage_err("failed to delete plugin data"))?;
+        Ok(())
+    }
 }

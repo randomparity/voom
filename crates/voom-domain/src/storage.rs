@@ -92,6 +92,7 @@ pub trait StatsStorage: Send + Sync {
 pub trait PluginDataStorage: Send + Sync {
     fn get_plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>>;
     fn set_plugin_data(&self, plugin: &str, key: &str, value: &[u8]) -> Result<()>;
+    fn delete_plugin_data(&self, plugin: &str, key: &str) -> Result<()>;
 }
 
 /// Bad file tracking operations.

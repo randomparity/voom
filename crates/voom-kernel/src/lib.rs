@@ -26,8 +26,20 @@ pub trait Plugin: Send + Sync {
     /// Use the constants on [`Event`] (e.g. `Event::FILE_DISCOVERED`,
     /// `Event::PLAN_CREATED`) rather than string literals to get compile-time
     /// typo protection. The constants are defined in `voom_domain::events`.
-    fn handles(&self, event_type: &str) -> bool;
-    fn on_event(&self, event: &Event) -> Result<Option<EventResult>>;
+    ///
+    /// Default: returns `false` for all event types. Plugins that participate
+    /// in event-driven coordination must override this.
+    fn handles(&self, _event_type: &str) -> bool {
+        false
+    }
+
+    /// Process an incoming event. Only called for event types where
+    /// [`handles`](Self::handles) returns `true`.
+    ///
+    /// Default: returns `Ok(None)` (no result produced).
+    fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> {
+        Ok(None)
+    }
 
     /// Called once after the plugin is loaded.
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {

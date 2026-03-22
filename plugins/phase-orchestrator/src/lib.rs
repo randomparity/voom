@@ -8,7 +8,6 @@
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
-use voom_domain::events::{Event, EventResult};
 use voom_domain::plan::{PhaseOutcome, PhaseResult, Plan};
 use voom_dsl::compiler::{CompiledPolicy, ErrorStrategy};
 use voom_kernel::{Plugin, PluginContext};
@@ -150,17 +149,6 @@ impl Plugin for PhaseOrchestratorPlugin {
         &self.capabilities
     }
 
-    fn handles(&self, _event_type: &str) -> bool {
-        // Phase orchestration is triggered via direct API call (orchestrate()),
-        // not through the event bus. The CLI's process command calls orchestrate()
-        // directly for deterministic progress reporting and concurrency control.
-        false
-    }
-
-    fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> {
-        Ok(None)
-    }
-
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
         Ok(())
     }
@@ -170,6 +158,7 @@ impl Plugin for PhaseOrchestratorPlugin {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use voom_domain::events::Event;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
 
     fn eval(policy: &CompiledPolicy, file: &MediaFile) -> Vec<Plan> {

@@ -15,7 +15,6 @@ use std::sync::Mutex;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::events::{Event, EventResult};
 use voom_domain::media::MediaFile;
 use voom_domain::plan::Plan;
 use voom_dsl::compiler::CompiledPolicy;
@@ -96,16 +95,6 @@ impl Plugin for PolicyEvaluatorPlugin {
         &[]
     }
 
-    fn handles(&self, _event_type: &str) -> bool {
-        // Policy evaluation is done via direct API call (evaluate() / evaluate_policy()),
-        // not through the event bus. Return false until storage integration is wired up.
-        false
-    }
-
-    fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> {
-        Ok(None)
-    }
-
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
         Ok(())
     }
@@ -115,6 +104,7 @@ impl Plugin for PolicyEvaluatorPlugin {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use voom_domain::events::Event;
 
     #[test]
     fn new_creates_plugin_with_no_capabilities() {

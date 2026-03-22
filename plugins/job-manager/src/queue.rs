@@ -5,7 +5,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use uuid::Uuid;
 use voom_domain::errors::Result;
-use voom_domain::job::{Job, JobStatus, JobUpdate};
+use voom_domain::job::{Job, JobStatus, JobType, JobUpdate};
 use voom_domain::storage::{JobFilters, JobStorage};
 
 /// Job queue backed by a storage implementation.
@@ -25,11 +25,11 @@ impl JobQueue {
     /// Lower priority numbers are processed first.
     pub fn enqueue(
         &self,
-        job_type: &str,
+        job_type: JobType,
         priority: i32,
         payload: Option<serde_json::Value>,
     ) -> Result<Uuid> {
-        let mut job = Job::new(job_type.to_string());
+        let mut job = Job::new(job_type);
         job.priority = priority;
         job.payload = payload;
         self.store.create_job(&job)
@@ -154,7 +154,7 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        let id = queue.enqueue("transcode", 100, None).unwrap();
+        let id = queue.enqueue(JobType::Transcode, 100, None).unwrap();
         let claimed = queue.claim("worker-1").unwrap().unwrap();
         assert_eq!(claimed.id, id);
         assert_eq!(claimed.status, JobStatus::Running);
@@ -165,8 +165,12 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        let _low = queue.enqueue("task-low", 200, None).unwrap();
-        let high = queue.enqueue("task-high", 50, None).unwrap();
+        let _low = queue
+            .enqueue(JobType::Custom("task-low".into()), 200, None)
+            .unwrap();
+        let high = queue
+            .enqueue(JobType::Custom("task-high".into()), 50, None)
+            .unwrap();
 
         let claimed = queue.claim("w-1").unwrap().unwrap();
         assert_eq!(claimed.id, high);
@@ -177,7 +181,7 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        let id = queue.enqueue("scan", 100, None).unwrap();
+        let id = queue.enqueue(JobType::Scan, 100, None).unwrap();
         queue.claim("w-1").unwrap();
         queue
             .report_progress(&id, 0.5, Some("Halfway".into()))
@@ -193,7 +197,7 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        let id = queue.enqueue("process", 100, None).unwrap();
+        let id = queue.enqueue(JobType::Process, 100, None).unwrap();
         queue.claim("w-1").unwrap();
         queue
             .complete(&id, Some(serde_json::json!({"files": 10})))
@@ -210,7 +214,7 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        let id = queue.enqueue("process", 100, None).unwrap();
+        let id = queue.enqueue(JobType::Process, 100, None).unwrap();
         queue.claim("w-1").unwrap();
         queue.fail(&id, "ffmpeg crashed".into()).unwrap();
 
@@ -224,7 +228,7 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        let id = queue.enqueue("process", 100, None).unwrap();
+        let id = queue.enqueue(JobType::Process, 100, None).unwrap();
         queue.cancel(&id).unwrap();
 
         let job = queue.get(&id).unwrap().unwrap();
@@ -236,9 +240,15 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        queue.enqueue("a", 100, None).unwrap();
-        queue.enqueue("b", 100, None).unwrap();
-        queue.enqueue("c", 100, None).unwrap();
+        queue
+            .enqueue(JobType::Custom("a".into()), 100, None)
+            .unwrap();
+        queue
+            .enqueue(JobType::Custom("b".into()), 100, None)
+            .unwrap();
+        queue
+            .enqueue(JobType::Custom("c".into()), 100, None)
+            .unwrap();
         queue.claim("w-1").unwrap(); // claims first by priority/time
 
         let all = queue.list(None, None, None).unwrap();
@@ -256,9 +266,15 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        queue.enqueue("a", 100, None).unwrap();
-        queue.enqueue("b", 100, None).unwrap();
-        queue.enqueue("c", 100, None).unwrap();
+        queue
+            .enqueue(JobType::Custom("a".into()), 100, None)
+            .unwrap();
+        queue
+            .enqueue(JobType::Custom("b".into()), 100, None)
+            .unwrap();
+        queue
+            .enqueue(JobType::Custom("c".into()), 100, None)
+            .unwrap();
         queue.claim("w-1").unwrap();
 
         let counts = queue.counts().unwrap();
@@ -281,7 +297,7 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        let id = queue.enqueue("scan", 100, None).unwrap();
+        let id = queue.enqueue(JobType::Scan, 100, None).unwrap();
         queue.claim("w-1").unwrap();
         queue.report_progress(&id, 1.5, None).unwrap();
 

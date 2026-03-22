@@ -278,6 +278,10 @@ impl PluginDataStorage for InMemoryStore {
     fn set_plugin_data(&self, _plugin: &str, _key: &str, _value: &[u8]) -> Result<()> {
         Ok(())
     }
+
+    fn delete_plugin_data(&self, _plugin: &str, _key: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl BadFileStorage for InMemoryStore {

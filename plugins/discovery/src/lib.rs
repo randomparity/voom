@@ -8,7 +8,7 @@ pub use scanner::hash_file;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
-use voom_domain::events::{Event, EventResult, FileDiscoveredEvent};
+use voom_domain::events::FileDiscoveredEvent;
 use voom_kernel::{Plugin, PluginContext};
 
 /// Progress update during a scan.
@@ -108,15 +108,6 @@ impl Plugin for DiscoveryPlugin {
         &self.capabilities
     }
 
-    fn handles(&self, _event_type: &str) -> bool {
-        // Discovery is a source plugin — it produces events but doesn't subscribe to any.
-        false
-    }
-
-    fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> {
-        Ok(None)
-    }
-
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
         Ok(())
     }
@@ -125,6 +116,7 @@ impl Plugin for DiscoveryPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use voom_domain::events::Event;
 
     #[test]
     fn test_plugin_metadata() {

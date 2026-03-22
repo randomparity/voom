@@ -14,7 +14,7 @@ use crate::queue::JobQueue;
 /// A unit of work to be enqueued and processed by the worker pool.
 #[derive(Debug, Clone)]
 pub struct WorkItem {
-    pub job_type: String,
+    pub job_type: voom_domain::job::JobType,
     pub priority: i32,
     pub payload: Option<serde_json::Value>,
 }
@@ -143,7 +143,7 @@ impl WorkerPool {
         for item in items {
             match self
                 .queue
-                .enqueue(&item.job_type, item.priority, item.payload)
+                .enqueue(item.job_type, item.priority, item.payload)
             {
                 Ok(id) => job_ids.push(id),
                 Err(e) => {
@@ -392,7 +392,7 @@ mod tests {
 
         let items: Vec<_> = (0..5)
             .map(|i| WorkItem {
-                job_type: format!("task-{i}"),
+                job_type: voom_domain::job::JobType::Custom(format!("task-{i}")),
                 priority: 100,
                 payload: None,
             })
@@ -431,7 +431,7 @@ mod tests {
 
         let items: Vec<_> = (0..4)
             .map(|i| WorkItem {
-                job_type: format!("task-{i}"),
+                job_type: voom_domain::job::JobType::Custom(format!("task-{i}")),
                 priority: 100,
                 payload: Some(serde_json::json!({"i": i})),
             })
@@ -471,12 +471,12 @@ mod tests {
 
         let items = vec![
             WorkItem {
-                job_type: "fail".into(),
+                job_type: voom_domain::job::JobType::Custom("fail".into()),
                 priority: 50,
                 payload: None,
             }, // claimed first (lower priority)
             WorkItem {
-                job_type: "ok".into(),
+                job_type: voom_domain::job::JobType::Custom("ok".into()),
                 priority: 100,
                 payload: None,
             },
@@ -485,7 +485,7 @@ mod tests {
         pool.process_batch(
             items,
             |job| async move {
-                if job.job_type == "fail" {
+                if job.job_type == voom_domain::job::JobType::Custom("fail".into()) {
                     Err("boom".into())
                 } else {
                     Ok(None)

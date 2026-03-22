@@ -8,7 +8,7 @@ use std::process::Command;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::events::{Event, EventResult, ToolDetectedEvent};
+use voom_domain::events::ToolDetectedEvent;
 use voom_kernel::{Plugin, PluginContext};
 
 /// A detected external tool with its path and version.
@@ -120,14 +120,6 @@ impl Plugin for ToolDetectorPlugin {
         &self.capabilities
     }
 
-    fn handles(&self, _event_type: &str) -> bool {
-        false
-    }
-
-    fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> {
-        Ok(None)
-    }
-
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
         let events = self.detect_all();
         tracing::info!(
@@ -219,6 +211,7 @@ fn find_tool_path(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use voom_domain::events::Event;
 
     #[test]
     fn test_plugin_metadata() {
