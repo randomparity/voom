@@ -73,7 +73,7 @@ fn build_policy(pair: Pair<'_, Rule>) -> Result<PolicyAst> {
             Rule::config => config = Some(build_config(item)?),
             Rule::phase => phases.push(build_phase(item)?),
             Rule::EOI => {}
-            _ => {} // grammar-guaranteed: policy only contains config, phase, EOI
+            other => debug_assert!(false, "unexpected rule in policy: {other:?}"),
         }
     }
 
@@ -131,7 +131,7 @@ fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
                     .unwrap();
                 commentary_patterns = build_list(list_pair);
             }
-            _ => {} // grammar-guaranteed: config_item is languages|on_error|commentary_patterns
+            other => debug_assert!(false, "unexpected config keyword: {other}"),
         }
     }
 
@@ -433,7 +433,7 @@ fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {
                 let val = build_value(parts.next().unwrap());
                 settings.push(SynthSetting::Position(val));
             }
-            _ => {} // grammar-guaranteed unreachable: pest validates synth_item keywords
+            other => debug_assert!(false, "unexpected synth keyword: {other}"),
         }
     }
 
@@ -458,7 +458,7 @@ fn build_when(pair: Pair<'_, Rule>) -> Result<WhenNode> {
                     }
                 }
             }
-            _ => {} // grammar-guaranteed: when block contains condition, actions, optional else_block
+            other => debug_assert!(false, "unexpected rule in when block: {other:?}"),
         }
     }
 

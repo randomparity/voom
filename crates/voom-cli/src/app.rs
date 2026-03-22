@@ -64,10 +64,7 @@ pub fn bootstrap_kernel_with_store(
     macro_rules! register_if_enabled {
         ($name:expr, $plugin:expr, $priority:expr, $label:expr) => {
             if !disabled.iter().any(|d| d == $name) {
-                let ctx = voom_kernel::PluginContext {
-                    config: plugin_json($name),
-                    data_dir: data_dir.clone(),
-                };
+                let ctx = voom_kernel::PluginContext::new(plugin_json($name), data_dir.clone());
                 kernel
                     .init_and_register(Arc::new($plugin), $priority, &ctx)
                     .with_context(|| format!("Failed to initialize {}", $label))?;
@@ -82,10 +79,8 @@ pub fn bootstrap_kernel_with_store(
     let store: Arc<dyn voom_domain::storage::StorageTrait> =
         if !disabled.iter().any(|d| d == "sqlite-store") {
             let mut plugin = voom_sqlite_store::SqliteStorePlugin::new();
-            let ctx = voom_kernel::PluginContext {
-                config: plugin_json("sqlite-store"),
-                data_dir: data_dir.clone(),
-            };
+            let ctx =
+                voom_kernel::PluginContext::new(plugin_json("sqlite-store"), data_dir.clone());
             plugin.init(&ctx).context("Failed to initialize storage")?;
 
             // Capture the store handle before moving the plugin into an Arc.

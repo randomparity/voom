@@ -125,10 +125,7 @@ mod tests {
     #[test]
     fn test_init_succeeds() {
         let mut plugin = PolicyEvaluatorPlugin::new();
-        let ctx = PluginContext {
-            config: serde_json::Value::Null,
-            data_dir: PathBuf::from("/tmp/voom-test"),
-        };
+        let ctx = PluginContext::new(serde_json::Value::Null, PathBuf::from("/tmp/voom-test"));
         assert!(plugin.init(&ctx).is_ok());
     }
 }

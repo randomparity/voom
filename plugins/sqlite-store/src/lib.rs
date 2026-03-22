@@ -248,10 +248,7 @@ mod tests {
     fn test_init_creates_store() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
-        let ctx = PluginContext {
-            config: serde_json::Value::Null,
-            data_dir: tmp.path().to_path_buf(),
-        };
+        let ctx = PluginContext::new(serde_json::Value::Null, tmp.path().to_path_buf());
         plugin.init(&ctx).unwrap();
         assert!(plugin.store().is_some());
     }
@@ -261,10 +258,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let nested = tmp.path().join("nested").join("dir");
         let mut plugin = SqliteStorePlugin::new();
-        let ctx = PluginContext {
-            config: serde_json::Value::Null,
-            data_dir: nested,
-        };
+        let ctx = PluginContext::new(serde_json::Value::Null, nested);
         plugin.init(&ctx).unwrap();
         assert!(plugin.store().is_some());
     }
@@ -279,10 +273,7 @@ mod tests {
     fn test_on_event_handles_introspection_failed() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
-        let ctx = PluginContext {
-            config: serde_json::Value::Null,
-            data_dir: tmp.path().to_path_buf(),
-        };
+        let ctx = PluginContext::new(serde_json::Value::Null, tmp.path().to_path_buf());
         plugin.init(&ctx).unwrap();
 
         let event =
@@ -309,10 +300,7 @@ mod tests {
     fn test_on_event_introspected_clears_bad_file() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
-        let ctx = PluginContext {
-            config: serde_json::Value::Null,
-            data_dir: tmp.path().to_path_buf(),
-        };
+        let ctx = PluginContext::new(serde_json::Value::Null, tmp.path().to_path_buf());
         plugin.init(&ctx).unwrap();
 
         // First mark file as bad
@@ -346,10 +334,7 @@ mod tests {
     fn test_on_event_with_initialized_store_handles_tool_detected() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
-        let ctx = PluginContext {
-            config: serde_json::Value::Null,
-            data_dir: tmp.path().to_path_buf(),
-        };
+        let ctx = PluginContext::new(serde_json::Value::Null, tmp.path().to_path_buf());
         plugin.init(&ctx).unwrap();
 
         let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent::new(

@@ -54,12 +54,21 @@ pub trait Plugin: Send + Sync {
 }
 
 /// Configuration and resources provided to a plugin during initialization.
+///
+/// Plugin config is stored as JSON internally for WASM compatibility.
+/// Use [`parse_config`](Self::parse_config) for typed access.
 pub struct PluginContext {
-    pub config: serde_json::Value,
+    config: serde_json::Value,
     pub data_dir: PathBuf,
 }
 
 impl PluginContext {
+    /// Create a new plugin context with the given config and data directory.
+    #[must_use]
+    pub fn new(config: serde_json::Value, data_dir: PathBuf) -> Self {
+        Self { config, data_dir }
+    }
+
     /// Deserialize the config into a typed struct, falling back to defaults on error.
     pub fn parse_config<T: serde::de::DeserializeOwned + Default>(&self) -> T {
         serde_json::from_value(self.config.clone()).unwrap_or_default()
@@ -218,10 +227,7 @@ mod tests {
             shutdown_called: shutdown_called.clone(),
         });
 
-        let ctx = PluginContext {
-            config: serde_json::json!({}),
-            data_dir: PathBuf::from("/tmp"),
-        };
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
 
         let mut kernel = Kernel::new();
         kernel.init_and_register(plugin, 50, &ctx).unwrap();
@@ -263,10 +269,7 @@ mod tests {
             shutdown_called: shutdown_called.clone(),
         });
 
-        let ctx = PluginContext {
-            config: serde_json::json!({}),
-            data_dir: PathBuf::from("/tmp"),
-        };
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
 
         let mut kernel = Kernel::new();
         kernel.init_and_register(plugin, 50, &ctx).unwrap();
