@@ -4,6 +4,8 @@
 
 pub mod merge;
 pub mod propedit;
+#[cfg(test)]
+pub(crate) mod test_helpers;
 
 use std::ffi::OsStr;
 use std::process::{Command, Output, Stdio};
@@ -330,18 +332,7 @@ mod tests {
         }
     }
 
-    fn make_action(
-        op: OperationType,
-        track_index: Option<u32>,
-        params: serde_json::Value,
-    ) -> PlannedAction {
-        PlannedAction {
-            operation: op,
-            track_index,
-            parameters: params,
-            description: format!("{:?} action", op),
-        }
-    }
+    use crate::test_helpers::make_action;
 
     #[test]
     fn test_plugin_metadata() {

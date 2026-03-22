@@ -183,18 +183,7 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    fn make_action(
-        op: OperationType,
-        track_index: Option<u32>,
-        params: serde_json::Value,
-    ) -> PlannedAction {
-        PlannedAction {
-            operation: op,
-            track_index,
-            parameters: params,
-            description: format!("{:?} action", op),
-        }
-    }
+    use crate::test_helpers::make_action;
 
     #[test]
     fn test_build_propedit_args_set_default() {
