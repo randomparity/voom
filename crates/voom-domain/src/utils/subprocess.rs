@@ -74,3 +74,41 @@ pub fn run_with_timeout(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_echo_succeeds() {
+        let output = run_with_timeout("echo", &["hello"], Duration::from_secs(5)).unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hello");
+    }
+
+    #[test]
+    fn run_nonexistent_tool_returns_error() {
+        let err =
+            run_with_timeout("nonexistent_tool_xyz", &["-v"], Duration::from_secs(5)).unwrap_err();
+        match &err {
+            VoomError::ToolExecution { tool, message } => {
+                assert_eq!(tool, "nonexistent_tool_xyz");
+                assert!(message.contains("failed to spawn"));
+            }
+            other => panic!("expected ToolExecution, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn run_with_timeout_kills_slow_process() {
+        // sleep 60 with a 1-second timeout should be killed
+        let err = run_with_timeout("sleep", &["60"], Duration::from_secs(1)).unwrap_err();
+        match &err {
+            VoomError::ToolExecution { tool, message } => {
+                assert_eq!(tool, "sleep");
+                assert!(message.contains("timed out"));
+            }
+            other => panic!("expected ToolExecution timeout, got: {other}"),
+        }
+    }
+}

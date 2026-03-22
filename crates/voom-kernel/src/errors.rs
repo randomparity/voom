@@ -63,3 +63,45 @@ pub enum WasmLoadError {
     #[error("WASM plugin manifest '{path}' is world-writable (mode {mode:o}), refusing to load")]
     ManifestWorldWritable { path: String, mode: u32 },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_too_large_display() {
+        let err = WasmLoadError::FileTooLarge {
+            path: "/tmp/big.wasm".into(),
+            size: 20_000_000,
+            max: 10_000_000,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("big.wasm"));
+        assert!(msg.contains("20000000"));
+        assert!(msg.contains("10000000"));
+    }
+
+    #[test]
+    fn manifest_world_writable_octal_mode() {
+        let err = WasmLoadError::ManifestWorldWritable {
+            path: "/etc/plugin.toml".into(),
+            mode: 0o777,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("777"));
+        assert!(msg.contains("world-writable"));
+    }
+
+    #[test]
+    fn read_file_error_has_source() {
+        use std::error::Error;
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "no access");
+        let err = WasmLoadError::ReadFile {
+            path: "/tmp/test.wasm".into(),
+            source: io_err,
+        };
+        assert!(err.to_string().contains("test.wasm"));
+        // Verify #[source] is wired up
+        assert!(err.source().is_some());
+    }
+}
