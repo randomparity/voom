@@ -9,6 +9,7 @@ fn epoch() -> DateTime<Utc> {
 }
 
 /// A plan produced by the policy evaluator for a single file in a single phase.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
     #[serde(default = "Uuid::new_v4")]
@@ -26,6 +27,26 @@ pub struct Plan {
 }
 
 impl Plan {
+    /// Create a new `Plan` for the given file and phase.
+    #[must_use]
+    pub fn new(
+        file: MediaFile,
+        policy_name: impl Into<String>,
+        phase_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            file,
+            policy_name: policy_name.into(),
+            phase_name: phase_name.into(),
+            actions: Vec::new(),
+            warnings: Vec::new(),
+            skip_reason: None,
+            policy_hash: None,
+            evaluated_at: Utc::now(),
+        }
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.actions.is_empty()
@@ -57,6 +78,7 @@ impl Plan {
 }
 
 /// A single action within a plan.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannedAction {
     pub operation: OperationType,
@@ -252,6 +274,7 @@ impl OperationType {
 }
 
 /// The result of executing a single phase.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhaseResult {
     pub phase_name: String,
@@ -260,6 +283,21 @@ pub struct PhaseResult {
     pub file_modified: bool,
     pub skip_reason: Option<String>,
     pub duration_ms: u64,
+}
+
+impl PhaseResult {
+    /// Create a new `PhaseResult` with the given phase name and outcome.
+    #[must_use]
+    pub fn new(phase_name: impl Into<String>, outcome: PhaseOutcome) -> Self {
+        Self {
+            phase_name: phase_name.into(),
+            outcome,
+            actions: Vec::new(),
+            file_modified: false,
+            skip_reason: None,
+            duration_ms: 0,
+        }
+    }
 }
 
 /// The outcome of a phase execution.
@@ -272,12 +310,41 @@ pub enum PhaseOutcome {
 }
 
 /// The result of executing a single action within a phase.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionResult {
     pub operation: OperationType,
     pub success: bool,
     pub description: String,
     pub error: Option<String>,
+}
+
+impl ActionResult {
+    /// Create a successful `ActionResult`.
+    #[must_use]
+    pub fn success(operation: OperationType, description: impl Into<String>) -> Self {
+        Self {
+            operation,
+            success: true,
+            description: description.into(),
+            error: None,
+        }
+    }
+
+    /// Create a failed `ActionResult`.
+    #[must_use]
+    pub fn failure(
+        operation: OperationType,
+        description: impl Into<String>,
+        error: impl Into<String>,
+    ) -> Self {
+        Self {
+            operation,
+            success: false,
+            description: description.into(),
+            error: Some(error.into()),
+        }
+    }
 }
 
 #[cfg(test)]

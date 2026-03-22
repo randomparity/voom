@@ -297,19 +297,18 @@ impl FileRow {
             .transpose()?
             .unwrap_or_default();
 
-        Ok(MediaFile {
-            id: parse_uuid(&self.id)?,
-            path: PathBuf::from(&self.path),
-            size: self.size as u64,
-            content_hash: self.content_hash.clone(),
-            container: Container::from_extension(&self.container),
-            duration: self.duration.unwrap_or(0.0),
-            bitrate: self.bitrate.and_then(|b| u32::try_from(b).ok()),
-            tracks,
-            tags,
-            plugin_metadata,
-            introspected_at: parse_datetime(&self.introspected_at)?,
-        })
+        let mut mf = MediaFile::new(PathBuf::from(&self.path));
+        mf.id = parse_uuid(&self.id)?;
+        mf.size = self.size as u64;
+        mf.content_hash = self.content_hash.clone();
+        mf.container = Container::from_extension(&self.container);
+        mf.duration = self.duration.unwrap_or(0.0);
+        mf.bitrate = self.bitrate.and_then(|b| u32::try_from(b).ok());
+        mf.tracks = tracks;
+        mf.tags = tags;
+        mf.plugin_metadata = plugin_metadata;
+        mf.introspected_at = parse_datetime(&self.introspected_at)?;
+        Ok(mf)
     }
 }
 
@@ -333,36 +332,37 @@ fn row_to_track(row: &Row<'_>) -> rusqlite::Result<Track> {
             format!("unknown track type: {track_type_str}").into(),
         )
     })?;
-    Ok(Track {
-        index: u32::try_from(row.get::<_, i32>("stream_index")?).unwrap_or(0),
+    let mut t = Track::new(
+        u32::try_from(row.get::<_, i32>("stream_index")?).unwrap_or(0),
         track_type,
-        codec: row.get("codec")?,
-        language: row.get("language")?,
-        title: row.get("title")?,
-        is_default: row.get::<_, i32>("is_default")? != 0,
-        is_forced: row.get::<_, i32>("is_forced")? != 0,
-        channels: row
-            .get::<_, Option<i32>>("channels")?
-            .and_then(|v| u32::try_from(v).ok()),
-        channel_layout: row.get("channel_layout")?,
-        sample_rate: row
-            .get::<_, Option<i32>>("sample_rate")?
-            .and_then(|v| u32::try_from(v).ok()),
-        bit_depth: row
-            .get::<_, Option<i32>>("bit_depth")?
-            .and_then(|v| u32::try_from(v).ok()),
-        width: row
-            .get::<_, Option<i32>>("width")?
-            .and_then(|v| u32::try_from(v).ok()),
-        height: row
-            .get::<_, Option<i32>>("height")?
-            .and_then(|v| u32::try_from(v).ok()),
-        frame_rate: row.get("frame_rate")?,
-        is_vfr: row.get::<_, i32>("is_vfr")? != 0,
-        is_hdr: row.get::<_, i32>("is_hdr")? != 0,
-        hdr_format: row.get("hdr_format")?,
-        pixel_format: row.get("pixel_format")?,
-    })
+        row.get("codec")?,
+    );
+    t.language = row.get("language")?;
+    t.title = row.get("title")?;
+    t.is_default = row.get::<_, i32>("is_default")? != 0;
+    t.is_forced = row.get::<_, i32>("is_forced")? != 0;
+    t.channels = row
+        .get::<_, Option<i32>>("channels")?
+        .and_then(|v| u32::try_from(v).ok());
+    t.channel_layout = row.get("channel_layout")?;
+    t.sample_rate = row
+        .get::<_, Option<i32>>("sample_rate")?
+        .and_then(|v| u32::try_from(v).ok());
+    t.bit_depth = row
+        .get::<_, Option<i32>>("bit_depth")?
+        .and_then(|v| u32::try_from(v).ok());
+    t.width = row
+        .get::<_, Option<i32>>("width")?
+        .and_then(|v| u32::try_from(v).ok());
+    t.height = row
+        .get::<_, Option<i32>>("height")?
+        .and_then(|v| u32::try_from(v).ok());
+    t.frame_rate = row.get("frame_rate")?;
+    t.is_vfr = row.get::<_, i32>("is_vfr")? != 0;
+    t.is_hdr = row.get::<_, i32>("is_hdr")? != 0;
+    t.hdr_format = row.get("hdr_format")?;
+    t.pixel_format = row.get("pixel_format")?;
+    Ok(t)
 }
 
 pub(crate) fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
@@ -374,27 +374,27 @@ pub(crate) fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
     let output_str: Option<String> = row.get("output")?;
 
     let id_str: String = row.get("id")?;
-    Ok(Job {
-        id: row_uuid(&id_str, "jobs")?,
-        job_type: voom_domain::job::JobType::parse(&row.get::<_, String>("job_type")?),
-        status: JobStatus::parse(&status_str).ok_or_else(|| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                format!("unknown job status: {status_str}").into(),
-            )
-        })?,
-        priority: row.get("priority")?,
-        payload: parse_optional_json(payload_str, "jobs.payload")?,
-        progress: row.get("progress")?,
-        progress_message: row.get("progress_message")?,
-        output: parse_optional_json(output_str, "jobs.output")?,
-        error: row.get("error")?,
-        worker_id: row.get("worker_id")?,
-        created_at: parse_required_datetime(created_str, "jobs.created_at")?,
-        started_at: parse_optional_datetime(started_str, "jobs.started_at")?,
-        completed_at: parse_optional_datetime(completed_str, "jobs.completed_at")?,
-    })
+    let job_type = voom_domain::job::JobType::parse(&row.get::<_, String>("job_type")?);
+    let mut j = Job::new(job_type);
+    j.id = row_uuid(&id_str, "jobs")?;
+    j.status = JobStatus::parse(&status_str).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("unknown job status: {status_str}").into(),
+        )
+    })?;
+    j.priority = row.get("priority")?;
+    j.payload = parse_optional_json(payload_str, "jobs.payload")?;
+    j.progress = row.get("progress")?;
+    j.progress_message = row.get("progress_message")?;
+    j.output = parse_optional_json(output_str, "jobs.output")?;
+    j.error = row.get("error")?;
+    j.worker_id = row.get("worker_id")?;
+    j.created_at = parse_required_datetime(created_str, "jobs.created_at")?;
+    j.started_at = parse_optional_datetime(started_str, "jobs.started_at")?;
+    j.completed_at = parse_optional_datetime(completed_str, "jobs.completed_at")?;
+    Ok(j)
 }
 
 pub(crate) fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
@@ -404,29 +404,31 @@ pub(crate) fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
     let first_seen_str: String = row.get("first_seen_at")?;
     let last_seen_str: String = row.get("last_seen_at")?;
 
-    Ok(BadFile {
-        id: row_uuid(&id_str, "bad_files")?,
-        path: PathBuf::from(path_str),
-        size: row.get::<_, i64>("size")? as u64,
-        content_hash: row.get("content_hash")?,
-        error: row.get("error")?,
-        error_source: error_source_str.parse::<BadFileSource>().map_err(|_| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                format!("unknown error_source in bad_files: {error_source_str}").into(),
-            )
-        })?,
-        attempt_count: u32::try_from(row.get::<_, i64>("attempt_count")?).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Integer,
-                format!("invalid attempt_count in bad_files: {e}").into(),
-            )
-        })?,
-        first_seen_at: parse_required_datetime(first_seen_str, "bad_files.first_seen_at")?,
-        last_seen_at: parse_required_datetime(last_seen_str, "bad_files.last_seen_at")?,
-    })
+    let error_source = error_source_str.parse::<BadFileSource>().map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("unknown error_source in bad_files: {error_source_str}").into(),
+        )
+    })?;
+    let mut bf = BadFile::new(
+        PathBuf::from(path_str),
+        row.get::<_, i64>("size")? as u64,
+        row.get("content_hash")?,
+        row.get("error")?,
+        error_source,
+    );
+    bf.id = row_uuid(&id_str, "bad_files")?;
+    bf.attempt_count = u32::try_from(row.get::<_, i64>("attempt_count")?).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Integer,
+            format!("invalid attempt_count in bad_files: {e}").into(),
+        )
+    })?;
+    bf.first_seen_at = parse_required_datetime(first_seen_str, "bad_files.first_seen_at")?;
+    bf.last_seen_at = parse_required_datetime(last_seen_str, "bad_files.last_seen_at")?;
+    Ok(bf)
 }
 
 /// Extension trait for `rusqlite::Result<T>` to convert to `Option<T>`.
@@ -701,9 +703,10 @@ mod tests {
         file2.content_hash = "xyz".into();
         store.upsert_file(&file2).unwrap();
 
-        let filters = FileFilters {
-            container: Some(Container::Mkv),
-            ..Default::default()
+        let filters = {
+            let mut f = FileFilters::default();
+            f.container = Some(Container::Mkv);
+            f
         };
         let files = store.list_files(&filters).unwrap();
         assert_eq!(files.len(), 1);
@@ -720,9 +723,10 @@ mod tests {
         file2.content_hash = "xyz".into();
         store.upsert_file(&file2).unwrap();
 
-        let filters = FileFilters {
-            path_prefix: Some("/media".into()),
-            ..Default::default()
+        let filters = {
+            let mut f = FileFilters::default();
+            f.path_prefix = Some("/media".into());
+            f
         };
         let files = store.list_files(&filters).unwrap();
         assert_eq!(files.len(), 1);
@@ -734,16 +738,18 @@ mod tests {
         let file = sample_file();
         store.upsert_file(&file).unwrap();
 
-        let filters = FileFilters {
-            has_codec: Some("hevc".into()),
-            ..Default::default()
+        let filters = {
+            let mut f = FileFilters::default();
+            f.has_codec = Some("hevc".into());
+            f
         };
         let files = store.list_files(&filters).unwrap();
         assert_eq!(files.len(), 1);
 
-        let filters = FileFilters {
-            has_codec: Some("av1".into()),
-            ..Default::default()
+        let filters = {
+            let mut f = FileFilters::default();
+            f.has_codec = Some("av1".into());
+            f
         };
         let files = store.list_files(&filters).unwrap();
         assert_eq!(files.len(), 0);
@@ -758,10 +764,11 @@ mod tests {
             store.upsert_file(&file).unwrap();
         }
 
-        let filters = FileFilters {
-            limit: Some(2),
-            offset: Some(1),
-            ..Default::default()
+        let filters = {
+            let mut f = FileFilters::default();
+            f.limit = Some(2);
+            f.offset = Some(1);
+            f
         };
         let files = store.list_files(&filters).unwrap();
         assert_eq!(files.len(), 2);
@@ -791,14 +798,12 @@ mod tests {
         let job = Job::new(voom_domain::job::JobType::Scan);
         store.create_job(&job).unwrap();
 
-        let update = voom_domain::job::JobUpdate {
-            status: Some(JobStatus::Running),
-            progress: Some(0.5),
-            progress_message: Some(Some("Scanning...".into())),
-            worker_id: Some(Some("worker-1".into())),
-            started_at: Some(Some(Utc::now())),
-            ..Default::default()
-        };
+        let mut update = voom_domain::job::JobUpdate::default();
+        update.status = Some(JobStatus::Running);
+        update.progress = Some(0.5);
+        update.progress_message = Some(Some("Scanning...".into()));
+        update.worker_id = Some(Some("worker-1".into()));
+        update.started_at = Some(Some(Utc::now()));
         store.update_job(&job.id, &update).unwrap();
 
         let loaded = store.job(&job.id).unwrap().unwrap();
@@ -848,28 +853,31 @@ mod tests {
         assert_eq!(all.len(), 2);
 
         let pending = store
-            .list_jobs(&JobFilters {
-                status: Some(JobStatus::Pending),
-                limit: None,
-                ..Default::default()
+            .list_jobs(&{
+                let mut f = JobFilters::default();
+                f.status = Some(JobStatus::Pending);
+                f.limit = None;
+                f
             })
             .unwrap();
         assert_eq!(pending.len(), 1);
 
         let running = store
-            .list_jobs(&JobFilters {
-                status: Some(JobStatus::Running),
-                limit: None,
-                ..Default::default()
+            .list_jobs(&{
+                let mut f = JobFilters::default();
+                f.status = Some(JobStatus::Running);
+                f.limit = None;
+                f
             })
             .unwrap();
         assert_eq!(running.len(), 1);
 
         let limited = store
-            .list_jobs(&JobFilters {
-                status: None,
-                limit: Some(1),
-                ..Default::default()
+            .list_jobs(&{
+                let mut f = JobFilters::default();
+                f.status = None;
+                f.limit = Some(1);
+                f
             })
             .unwrap();
         assert_eq!(limited.len(), 1);
@@ -914,22 +922,15 @@ mod tests {
         let file = sample_file();
         store.upsert_file(&file).unwrap();
 
-        let plan = voom_domain::plan::Plan {
-            id: Uuid::new_v4(),
-            file: file.clone(),
-            policy_name: "default".into(),
-            phase_name: "normalize".into(),
-            actions: vec![PlannedAction {
-                operation: OperationType::SetDefault,
-                track_index: Some(1),
-                parameters: voom_domain::plan::ActionParams::Empty,
-                description: "Set default audio".into(),
-            }],
-            warnings: vec!["test warning".into()],
-            skip_reason: None,
-            policy_hash: Some("abc123".into()),
-            evaluated_at: Utc::now(),
-        };
+        let mut plan = voom_domain::plan::Plan::new(file.clone(), "default", "normalize");
+        plan.actions = vec![PlannedAction::track_op(
+            OperationType::SetDefault,
+            1,
+            voom_domain::plan::ActionParams::Empty,
+            "Set default audio",
+        )];
+        plan.warnings = vec!["test warning".into()];
+        plan.policy_hash = Some("abc123".into());
 
         let plan_id = store.save_plan(&plan).unwrap();
         assert_eq!(plan_id, plan.id);
@@ -1062,22 +1063,13 @@ mod tests {
         store.upsert_file(&file).unwrap();
 
         // Save a plan referencing this file
-        let plan = voom_domain::plan::Plan {
-            id: uuid::Uuid::new_v4(),
-            file: file.clone(),
-            policy_name: "test".into(),
-            phase_name: "normalize".into(),
-            actions: vec![PlannedAction {
-                operation: OperationType::SetDefault,
-                track_index: Some(0),
-                parameters: voom_domain::plan::ActionParams::Empty,
-                description: "set default".into(),
-            }],
-            warnings: vec![],
-            skip_reason: None,
-            policy_hash: None,
-            evaluated_at: chrono::Utc::now(),
-        };
+        let mut plan = voom_domain::plan::Plan::new(file.clone(), "test", "normalize");
+        plan.actions = vec![PlannedAction::track_op(
+            OperationType::SetDefault,
+            0,
+            voom_domain::plan::ActionParams::Empty,
+            "set default",
+        )];
         let _plan_id = store.save_plan(&plan).unwrap();
 
         // Record stats referencing this file
@@ -1161,9 +1153,10 @@ mod tests {
         }
 
         // Requesting limit > 10_000 should be clamped and still work
-        let filters = FileFilters {
-            limit: Some(20_000),
-            ..Default::default()
+        let filters = {
+            let mut f = FileFilters::default();
+            f.limit = Some(20_000);
+            f
         };
         let files = store.list_files(&filters).unwrap();
         assert_eq!(files.len(), 5); // all 5 returned (clamped to 10_000 which is > 5)
@@ -1178,10 +1171,11 @@ mod tests {
             store.upsert_file(&file).unwrap();
         }
 
-        let filters = FileFilters {
-            limit: Some(3),
-            offset: Some(2),
-            ..Default::default()
+        let filters = {
+            let mut f = FileFilters::default();
+            f.limit = Some(3);
+            f.offset = Some(2);
+            f
         };
         let files = store.list_files(&filters).unwrap();
         assert_eq!(files.len(), 3);
@@ -1199,10 +1193,11 @@ mod tests {
 
         // Requesting limit > 10_000 should be clamped and still work
         let jobs = store
-            .list_jobs(&JobFilters {
-                status: None,
-                limit: Some(20_000),
-                ..Default::default()
+            .list_jobs(&{
+                let mut f = JobFilters::default();
+                f.status = None;
+                f.limit = Some(20_000);
+                f
             })
             .unwrap();
         assert_eq!(jobs.len(), 3);
@@ -1216,22 +1211,13 @@ mod tests {
         let file = sample_file();
         store.upsert_file(&file).unwrap();
 
-        let plan = voom_domain::plan::Plan {
-            id: Uuid::new_v4(),
-            file: file.clone(),
-            policy_name: "default".into(),
-            phase_name: "normalize".into(),
-            actions: vec![PlannedAction {
-                operation: OperationType::SetDefault,
-                track_index: Some(1),
-                parameters: voom_domain::plan::ActionParams::Empty,
-                description: "Set default audio".into(),
-            }],
-            warnings: vec![],
-            skip_reason: None,
-            policy_hash: None,
-            evaluated_at: Utc::now(),
-        };
+        let mut plan = voom_domain::plan::Plan::new(file.clone(), "default", "normalize");
+        plan.actions = vec![PlannedAction::track_op(
+            OperationType::SetDefault,
+            1,
+            voom_domain::plan::ActionParams::Empty,
+            "Set default audio",
+        )];
         let plan_id = store.save_plan(&plan).unwrap();
 
         store
@@ -1250,28 +1236,19 @@ mod tests {
         let file = sample_file();
         store.upsert_file(&file).unwrap();
 
-        let plan = voom_domain::plan::Plan {
-            id: Uuid::new_v4(),
-            file: file.clone(),
-            policy_name: "default".into(),
-            phase_name: "transcode".into(),
-            actions: vec![PlannedAction {
-                operation: OperationType::TranscodeVideo,
-                track_index: Some(0),
-                parameters: voom_domain::plan::ActionParams::Transcode {
-                    codec: "hevc".into(),
-                    crf: None,
-                    preset: None,
-                    bitrate: None,
-                    channels: None,
-                },
-                description: "Transcode video".into(),
-            }],
-            warnings: vec![],
-            skip_reason: None,
-            policy_hash: None,
-            evaluated_at: Utc::now(),
-        };
+        let mut plan = voom_domain::plan::Plan::new(file.clone(), "default", "transcode");
+        plan.actions = vec![PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            voom_domain::plan::ActionParams::Transcode {
+                codec: "hevc".into(),
+                crf: None,
+                preset: None,
+                bitrate: None,
+                channels: None,
+            },
+            "Transcode video",
+        )];
         let plan_id = store.save_plan(&plan).unwrap();
 
         store
@@ -1476,9 +1453,10 @@ mod tests {
         );
         store.upsert_bad_file(&bf2).unwrap();
 
-        let filters = BadFileFilters {
-            path_prefix: Some("/media".into()),
-            ..Default::default()
+        let filters = {
+            let mut f = BadFileFilters::default();
+            f.path_prefix = Some("/media".into());
+            f
         };
         let files = store.list_bad_files(&filters).unwrap();
         assert_eq!(files.len(), 1);
@@ -1500,10 +1478,8 @@ mod tests {
         );
         store.upsert_bad_file(&bf2).unwrap();
 
-        let filters = BadFileFilters {
-            error_source: Some(BadFileSource::Io),
-            ..Default::default()
-        };
+        let mut filters = BadFileFilters::default();
+        filters.error_source = Some(BadFileSource::Io);
         let files = store.list_bad_files(&filters).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].error_source, BadFileSource::Io);
@@ -1582,18 +1558,20 @@ mod tests {
         store.upsert_file(&file3).unwrap();
 
         // path_prefix with % in it should only match literal %
-        let filters = FileFilters {
-            path_prefix: Some("/media/50%".into()),
-            ..Default::default()
+        let filters = {
+            let mut f = FileFilters::default();
+            f.path_prefix = Some("/media/50%".into());
+            f
         };
         let files = store.list_files(&filters).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, PathBuf::from("/media/50%_done/video.mkv"));
 
         // path_prefix with _ should only match literal _
-        let filters = FileFilters {
-            path_prefix: Some("/media/my_".into()),
-            ..Default::default()
+        let filters = {
+            let mut f = FileFilters::default();
+            f.path_prefix = Some("/media/my_".into());
+            f
         };
         let files = store.list_files(&filters).unwrap();
         assert_eq!(files.len(), 1);
@@ -1622,9 +1600,10 @@ mod tests {
         );
         store.upsert_bad_file(&bf2).unwrap();
 
-        let filters = BadFileFilters {
-            path_prefix: Some("/media/50%".into()),
-            ..Default::default()
+        let filters = {
+            let mut f = BadFileFilters::default();
+            f.path_prefix = Some("/media/50%".into());
+            f
         };
         let files = store.list_bad_files(&filters).unwrap();
         assert_eq!(files.len(), 1);

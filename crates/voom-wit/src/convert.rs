@@ -41,13 +41,10 @@ pub fn event_result_from_wasm(
         .transpose()
         .map_err(|e| VoomError::Wasm(format!("failed to deserialize JSON: {e}")))?;
 
-    Ok(EventResult {
-        plugin_name,
-        produced_events: events,
-        data: json_data,
-        claimed: false,
-        execution_error: None,
-    })
+    let mut result = EventResult::new(plugin_name);
+    result.produced_events = events;
+    result.data = json_data;
+    Ok(result)
 }
 
 /// Serialized form of an `EventResult` for the WASM boundary.
@@ -185,11 +182,11 @@ mod tests {
 
     #[test]
     fn test_event_roundtrip_msgpack() {
-        let event = Event::FileDiscovered(FileDiscoveredEvent {
-            path: PathBuf::from("/media/movies/test.mkv"),
-            size: 1_500_000_000,
-            content_hash: "abc123def456".into(),
-        });
+        let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+            PathBuf::from("/media/movies/test.mkv"),
+            1_500_000_000,
+            "abc123def456".into(),
+        ));
 
         let (event_type, payload) = event_to_wasm(&event).unwrap();
         assert_eq!(event_type, "file.discovered");
@@ -201,17 +198,13 @@ mod tests {
 
     #[test]
     fn test_event_result_roundtrip() {
-        let result = EventResult {
-            plugin_name: "test-plugin".into(),
-            produced_events: vec![Event::ToolDetected(ToolDetectedEvent {
-                tool_name: "ffprobe".into(),
-                version: "6.1".into(),
-                path: PathBuf::from("/usr/bin/ffprobe"),
-            })],
-            data: Some(serde_json::json!({"status": "ok"})),
-            claimed: false,
-            execution_error: None,
-        };
+        let mut result = EventResult::new("test-plugin");
+        result.produced_events = vec![Event::ToolDetected(ToolDetectedEvent::new(
+            "ffprobe",
+            "6.1",
+            PathBuf::from("/usr/bin/ffprobe"),
+        ))];
+        result.data = Some(serde_json::json!({"status": "ok"}));
 
         let (name, produced, data) = event_result_to_wasm(&result).unwrap();
         assert_eq!(name, "test-plugin");
@@ -310,44 +303,31 @@ mod tests {
     fn test_event_to_wasm_all_event_types() {
         use voom_domain::plan::{OperationType, Plan, PlannedAction};
 
+        let mut plan = Plan::new(
+            voom_domain::media::MediaFile::new(PathBuf::from("/test.mkv")),
+            "test",
+            "normalize",
+        );
+        plan.actions = vec![PlannedAction::track_op(
+            OperationType::SetDefault,
+            0,
+            voom_domain::plan::ActionParams::Empty,
+            "set default",
+        )];
         let events = vec![
-            Event::FileDiscovered(FileDiscoveredEvent {
-                path: PathBuf::from("/test.mkv"),
-                size: 100,
-                content_hash: "hash".into(),
+            Event::FileDiscovered(FileDiscoveredEvent::new(
+                PathBuf::from("/test.mkv"),
+                100,
+                "hash".into(),
+            )),
+            Event::JobStarted(JobStartedEvent::new(uuid::Uuid::new_v4(), "test job")),
+            Event::JobProgress(JobProgressEvent::new(uuid::Uuid::new_v4(), 0.5)),
+            Event::JobCompleted({
+                let mut e = JobCompletedEvent::new(uuid::Uuid::new_v4(), true);
+                e.message = Some("done".into());
+                e
             }),
-            Event::JobStarted(JobStartedEvent {
-                job_id: uuid::Uuid::new_v4(),
-                description: "test job".into(),
-            }),
-            Event::JobProgress(JobProgressEvent {
-                job_id: uuid::Uuid::new_v4(),
-                progress: 0.5,
-                message: None,
-            }),
-            Event::JobCompleted(JobCompletedEvent {
-                job_id: uuid::Uuid::new_v4(),
-                success: true,
-                message: Some("done".into()),
-            }),
-            Event::PlanCreated(PlanCreatedEvent {
-                plan: Plan {
-                    id: uuid::Uuid::new_v4(),
-                    file: voom_domain::media::MediaFile::new(PathBuf::from("/test.mkv")),
-                    policy_name: "test".into(),
-                    phase_name: "normalize".into(),
-                    actions: vec![PlannedAction {
-                        operation: OperationType::SetDefault,
-                        track_index: Some(0),
-                        parameters: voom_domain::plan::ActionParams::Empty,
-                        description: "set default".into(),
-                    }],
-                    warnings: vec![],
-                    skip_reason: None,
-                    policy_hash: None,
-                    evaluated_at: chrono::Utc::now(),
-                },
-            }),
+            Event::PlanCreated(PlanCreatedEvent::new(plan)),
         ];
 
         for event in &events {

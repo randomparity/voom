@@ -433,14 +433,13 @@ mod tests {
     #[test]
     fn test_build_command_convert_container() {
         let file = sample_avi_file();
-        let action = PlannedAction {
-            operation: OperationType::ConvertContainer,
-            track_index: None,
-            parameters: ActionParams::Container {
+        let action = PlannedAction::file_op(
+            OperationType::ConvertContainer,
+            ActionParams::Container {
                 container: Container::Mp4,
             },
-            description: "Convert AVI to MP4".into(),
-        };
+            "Convert AVI to MP4",
+        );
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 
@@ -460,18 +459,18 @@ mod tests {
     #[test]
     fn test_build_command_transcode_video_crf() {
         let file = sample_mp4_file();
-        let action = PlannedAction {
-            operation: OperationType::TranscodeVideo,
-            track_index: Some(0),
-            parameters: ActionParams::Transcode {
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
                 codec: "hevc".into(),
                 crf: Some(23),
                 preset: Some("medium".into()),
                 bitrate: None,
                 channels: None,
             },
-            description: "Transcode video to HEVC CRF 23".into(),
-        };
+            "Transcode video to HEVC CRF 23",
+        );
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 
@@ -488,18 +487,18 @@ mod tests {
     #[test]
     fn test_build_command_transcode_video_bitrate() {
         let file = sample_mp4_file();
-        let action = PlannedAction {
-            operation: OperationType::TranscodeVideo,
-            track_index: Some(0),
-            parameters: ActionParams::Transcode {
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
                 codec: "h264".into(),
                 crf: None,
                 preset: None,
                 bitrate: Some("5M".into()),
                 channels: None,
             },
-            description: "Transcode video to H.264 at 5M".into(),
-        };
+            "Transcode video to H.264 at 5M",
+        );
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 
@@ -514,18 +513,18 @@ mod tests {
     #[test]
     fn test_build_command_transcode_audio() {
         let file = sample_mp4_file();
-        let action = PlannedAction {
-            operation: OperationType::TranscodeAudio,
-            track_index: Some(1),
-            parameters: ActionParams::Transcode {
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeAudio,
+            1,
+            ActionParams::Transcode {
                 codec: "opus".into(),
                 crf: None,
                 preset: None,
                 bitrate: Some("128k".into()),
                 channels: Some(2),
             },
-            description: "Transcode audio to Opus".into(),
-        };
+            "Transcode audio to Opus",
+        );
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 
@@ -543,22 +542,22 @@ mod tests {
     fn test_build_command_set_metadata() {
         let file = sample_mp4_file();
         let actions_owned = vec![
-            PlannedAction {
-                operation: OperationType::SetTitle,
-                track_index: Some(1),
-                parameters: ActionParams::Title {
+            PlannedAction::track_op(
+                OperationType::SetTitle,
+                1,
+                ActionParams::Title {
                     title: "English Stereo".into(),
                 },
-                description: "Set track title".into(),
-            },
-            PlannedAction {
-                operation: OperationType::SetLanguage,
-                track_index: Some(1),
-                parameters: ActionParams::Language {
+                "Set track title",
+            ),
+            PlannedAction::track_op(
+                OperationType::SetLanguage,
+                1,
+                ActionParams::Language {
                     language: "eng".into(),
                 },
-                description: "Set track language".into(),
-            },
+                "Set track language",
+            ),
         ];
         let actions: Vec<&PlannedAction> = actions_owned.iter().collect();
         let output = Path::new("/tmp/output.mp4");
@@ -574,18 +573,18 @@ mod tests {
     fn test_build_command_set_default() {
         let file = sample_mp4_file();
         let actions_owned = vec![
-            PlannedAction {
-                operation: OperationType::SetDefault,
-                track_index: Some(1),
-                parameters: ActionParams::Empty,
-                description: "Set track 1 as default".into(),
-            },
-            PlannedAction {
-                operation: OperationType::ClearDefault,
-                track_index: Some(2),
-                parameters: ActionParams::Empty,
-                description: "Clear default on track 2".into(),
-            },
+            PlannedAction::track_op(
+                OperationType::SetDefault,
+                1,
+                ActionParams::Empty,
+                "Set track 1 as default",
+            ),
+            PlannedAction::track_op(
+                OperationType::ClearDefault,
+                2,
+                ActionParams::Empty,
+                "Clear default on track 2",
+            ),
         ];
         let actions: Vec<&PlannedAction> = actions_owned.iter().collect();
         let output = Path::new("/tmp/output.mp4");
@@ -604,18 +603,18 @@ mod tests {
     fn test_build_command_set_forced() {
         let file = sample_mp4_file();
         let actions_owned = vec![
-            PlannedAction {
-                operation: OperationType::SetForced,
-                track_index: Some(2),
-                parameters: ActionParams::Empty,
-                description: "Set track 2 as forced".into(),
-            },
-            PlannedAction {
-                operation: OperationType::ClearForced,
-                track_index: Some(1),
-                parameters: ActionParams::Empty,
-                description: "Clear forced on track 1".into(),
-            },
+            PlannedAction::track_op(
+                OperationType::SetForced,
+                2,
+                ActionParams::Empty,
+                "Set track 2 as forced",
+            ),
+            PlannedAction::track_op(
+                OperationType::ClearForced,
+                1,
+                ActionParams::Empty,
+                "Clear forced on track 1",
+            ),
         ];
         let actions: Vec<&PlannedAction> = actions_owned.iter().collect();
         let output = Path::new("/tmp/output.mp4");
@@ -634,26 +633,26 @@ mod tests {
     fn test_build_command_combined() {
         let file = sample_mp4_file();
         let actions_owned = vec![
-            PlannedAction {
-                operation: OperationType::TranscodeVideo,
-                track_index: Some(0),
-                parameters: ActionParams::Transcode {
+            PlannedAction::track_op(
+                OperationType::TranscodeVideo,
+                0,
+                ActionParams::Transcode {
                     codec: "hevc".into(),
                     crf: Some(20),
                     preset: None,
                     bitrate: None,
                     channels: None,
                 },
-                description: "Transcode to HEVC".into(),
-            },
-            PlannedAction {
-                operation: OperationType::SetLanguage,
-                track_index: Some(1),
-                parameters: ActionParams::Language {
+                "Transcode to HEVC",
+            ),
+            PlannedAction::track_op(
+                OperationType::SetLanguage,
+                1,
+                ActionParams::Language {
                     language: "eng".into(),
                 },
-                description: "Set audio language".into(),
-            },
+                "Set audio language",
+            ),
         ];
         let actions: Vec<&PlannedAction> = actions_owned.iter().collect();
         let output = Path::new("/tmp/output.mp4");
@@ -717,14 +716,13 @@ mod tests {
         assert_eq!(output_extension(&file, &no_actions), "mp4");
 
         // Convert container action
-        let convert = PlannedAction {
-            operation: OperationType::ConvertContainer,
-            track_index: None,
-            parameters: ActionParams::Container {
+        let convert = PlannedAction::file_op(
+            OperationType::ConvertContainer,
+            ActionParams::Container {
                 container: Container::Mkv,
             },
-            description: "Convert to MKV".into(),
-        };
+            "Convert to MKV",
+        );
         let actions: Vec<&PlannedAction> = vec![&convert];
         assert_eq!(output_extension(&file, &actions), "mkv");
 
@@ -740,14 +738,13 @@ mod tests {
         let no_actions: Vec<&PlannedAction> = vec![];
         assert_eq!(output_extension(&file, &no_actions), "webm");
 
-        let convert = PlannedAction {
-            operation: OperationType::ConvertContainer,
-            track_index: None,
-            parameters: ActionParams::Container {
+        let convert = PlannedAction::file_op(
+            OperationType::ConvertContainer,
+            ActionParams::Container {
                 container: Container::Mp4,
             },
-            description: "Convert to MP4".into(),
-        };
+            "Convert to MP4",
+        );
         let actions: Vec<&PlannedAction> = vec![&convert];
         assert_eq!(output_extension(&file, &actions), "mp4");
     }
@@ -755,18 +752,18 @@ mod tests {
     #[test]
     fn test_build_command_with_hw_accel() {
         let file = sample_mp4_file();
-        let action = PlannedAction {
-            operation: OperationType::TranscodeVideo,
-            track_index: Some(0),
-            parameters: ActionParams::Transcode {
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
                 codec: "hevc".into(),
                 crf: Some(23),
                 preset: None,
                 bitrate: None,
                 channels: None,
             },
-            description: "Transcode with NVENC".into(),
-        };
+            "Transcode with NVENC",
+        );
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 
@@ -783,14 +780,14 @@ mod tests {
     #[test]
     fn test_build_command_rejects_control_chars_in_title() {
         let file = sample_mp4_file();
-        let action = PlannedAction {
-            operation: OperationType::SetTitle,
-            track_index: Some(1),
-            parameters: ActionParams::Title {
+        let action = PlannedAction::track_op(
+            OperationType::SetTitle,
+            1,
+            ActionParams::Title {
                 title: "Bad\x00Title".into(),
             },
-            description: "Set track title".into(),
-        };
+            "Set track title",
+        );
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 
@@ -801,14 +798,14 @@ mod tests {
     #[test]
     fn test_build_command_rejects_control_chars_in_language() {
         let file = sample_mp4_file();
-        let action = PlannedAction {
-            operation: OperationType::SetLanguage,
-            track_index: Some(1),
-            parameters: ActionParams::Language {
+        let action = PlannedAction::track_op(
+            OperationType::SetLanguage,
+            1,
+            ActionParams::Language {
                 language: "en\x01g".into(),
             },
-            description: "Set track language".into(),
-        };
+            "Set track language",
+        );
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 
@@ -819,15 +816,14 @@ mod tests {
     #[test]
     fn test_build_command_set_container_tag() {
         let file = sample_mp4_file();
-        let action = PlannedAction {
-            operation: OperationType::SetContainerTag,
-            track_index: None,
-            parameters: ActionParams::SetTag {
+        let action = PlannedAction::file_op(
+            OperationType::SetContainerTag,
+            ActionParams::SetTag {
                 tag: "title".into(),
                 value: "My Movie".into(),
             },
-            description: "Set container tag".into(),
-        };
+            "Set container tag",
+        );
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 
@@ -839,14 +835,13 @@ mod tests {
     #[test]
     fn test_build_command_clear_container_tags() {
         let file = sample_mp4_file();
-        let action = PlannedAction {
-            operation: OperationType::ClearContainerTags,
-            track_index: None,
-            parameters: ActionParams::ClearTags {
+        let action = PlannedAction::file_op(
+            OperationType::ClearContainerTags,
+            ActionParams::ClearTags {
                 tags: vec!["title".into(), "encoder".into()],
             },
-            description: "Clear all tags".into(),
-        };
+            "Clear all tags",
+        );
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 
@@ -858,14 +853,13 @@ mod tests {
     #[test]
     fn test_build_command_delete_container_tag() {
         let file = sample_mp4_file();
-        let action = PlannedAction {
-            operation: OperationType::DeleteContainerTag,
-            track_index: None,
-            parameters: ActionParams::DeleteTag {
+        let action = PlannedAction::file_op(
+            OperationType::DeleteContainerTag,
+            ActionParams::DeleteTag {
                 tag: "encoder".into(),
             },
-            description: "Delete container tag".into(),
-        };
+            "Delete container tag",
+        );
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 

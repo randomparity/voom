@@ -192,13 +192,9 @@ impl Default for BackupManagerPlugin {
 
 /// Construct a successful `EventResult` for the backup-manager plugin.
 fn backup_result(data: serde_json::Value) -> EventResult {
-    EventResult {
-        plugin_name: "backup-manager".into(),
-        produced_events: vec![],
-        data: Some(data),
-        claimed: false,
-        execution_error: None,
-    }
+    let mut result = EventResult::new("backup-manager");
+    result.data = Some(data);
+    result
 }
 
 impl Plugin for BackupManagerPlugin {
@@ -543,12 +539,12 @@ mod tests {
         assert!(plugin.has_backup(&file_path).unwrap());
 
         // Simulate plan.completed event
-        let event = Event::PlanCompleted(PlanCompletedEvent {
-            plan_id: uuid::Uuid::new_v4(),
-            path: file_path.clone(),
-            phase_name: "normalize".into(),
-            actions_applied: 3,
-        });
+        let event = Event::PlanCompleted(PlanCompletedEvent::new(
+            uuid::Uuid::new_v4(),
+            file_path.clone(),
+            "normalize",
+            3,
+        ));
 
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_some());
@@ -581,15 +577,12 @@ mod tests {
         fs::write(&file_path, b"corrupted data").unwrap();
 
         // Simulate plan.failed event
-        let event = Event::PlanFailed(PlanFailedEvent {
-            plan_id: uuid::Uuid::new_v4(),
-            path: file_path.clone(),
-            phase_name: "normalize".into(),
-            error: "ffmpeg crashed".into(),
-            error_code: None,
-            plugin_name: None,
-            error_chain: vec![],
-        });
+        let event = Event::PlanFailed(PlanFailedEvent::new(
+            uuid::Uuid::new_v4(),
+            file_path.clone(),
+            "normalize",
+            "ffmpeg crashed",
+        ));
 
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_some());

@@ -268,3 +268,38 @@ fn test_serve_accepts_args() {
     // We just verify it doesn't crash immediately with bad args.
     // It may fail due to no DB or succeed if one exists.
 }
+
+// === Success-path tests ===
+
+#[test]
+fn test_doctor_runs_to_completion() {
+    voom()
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Health Check"));
+}
+
+#[test]
+fn test_config_show_runs_to_completion() {
+    voom().args(["config", "show"]).assert().success();
+}
+
+#[test]
+fn test_scan_empty_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    voom()
+        .args(["scan", dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0"));
+}
+
+#[test]
+fn test_plugin_list_shows_registered_plugins() {
+    voom()
+        .args(["plugin", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("plugin"));
+}

@@ -26,6 +26,7 @@ pub mod compiler;
 pub mod errors;
 pub mod formatter;
 pub mod parser;
+pub mod service;
 pub mod validator;
 
 pub use ast::{

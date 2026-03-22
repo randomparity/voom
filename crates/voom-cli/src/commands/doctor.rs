@@ -40,10 +40,9 @@ pub fn run() -> Result<()> {
     let kernel_result = app::bootstrap_kernel_with_store(&config);
     match &kernel_result {
         Ok((_kernel, store)) => {
-            match store.list_files(&voom_domain::FileFilters {
-                limit: Some(1),
-                ..Default::default()
-            }) {
+            let mut doctor_filters = voom_domain::FileFilters::default();
+            doctor_filters.limit = Some(1);
+            match store.list_files(&doctor_filters) {
                 Ok(_) => println!("{}", style("OK").green()),
                 Err(e) => {
                     println!("{} {e}", style("ERROR").red());

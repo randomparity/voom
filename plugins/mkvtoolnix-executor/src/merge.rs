@@ -5,6 +5,7 @@ use std::time::Duration;
 use scopeguard::ScopeGuard;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::plan::{ActionParams, ActionResult, OperationType, PlannedAction};
+use voom_domain::utils::subprocess::run_with_timeout;
 
 /// Execute mkvmerge operations (remux, track removal, reorder).
 ///
@@ -45,7 +46,7 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
     );
     tracing::debug!(args = ?args, "mkvmerge arguments");
 
-    let output = crate::run_with_timeout("mkvmerge", &args, Duration::from_secs(1800))?;
+    let output = run_with_timeout("mkvmerge", &args, Duration::from_secs(1800))?;
 
     // mkvmerge returns 0 for success, 1 for warnings (still successful), 2 for errors
     if output.status.code().unwrap_or(2) <= 1 {
@@ -75,12 +76,7 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
 
         Ok(actions
             .iter()
-            .map(|a| ActionResult {
-                operation: a.operation,
-                success: true,
-                description: a.description.clone(),
-                error: None,
-            })
+            .map(|a| ActionResult::success(a.operation, a.description.clone()))
             .collect())
     } else {
         // Guard will clean up temp file when it drops

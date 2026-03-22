@@ -145,10 +145,10 @@ mod tests {
     #[test]
     fn test_on_event_job_started() {
         let plugin = JobManagerPlugin::new();
-        let event = Event::JobStarted(JobStartedEvent {
-            job_id: uuid::Uuid::new_v4(),
-            description: "Processing file".into(),
-        });
+        let event = Event::JobStarted(JobStartedEvent::new(
+            uuid::Uuid::new_v4(),
+            "Processing file",
+        ));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
     }
@@ -156,10 +156,10 @@ mod tests {
     #[test]
     fn test_on_event_job_progress() {
         let plugin = JobManagerPlugin::new();
-        let event = Event::JobProgress(JobProgressEvent {
-            job_id: uuid::Uuid::new_v4(),
-            progress: 0.5,
-            message: Some("Halfway".into()),
+        let event = Event::JobProgress({
+            let mut e = JobProgressEvent::new(uuid::Uuid::new_v4(), 0.5);
+            e.message = Some("Halfway".into());
+            e
         });
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
@@ -169,17 +169,17 @@ mod tests {
     fn test_on_event_job_completed() {
         let plugin = JobManagerPlugin::new();
 
-        let event = Event::JobCompleted(JobCompletedEvent {
-            job_id: uuid::Uuid::new_v4(),
-            success: true,
-            message: None,
+        let event = Event::JobCompleted({
+            let mut e = JobCompletedEvent::new(uuid::Uuid::new_v4(), true);
+            e.message = None;
+            e
         });
         assert!(plugin.on_event(&event).unwrap().is_none());
 
-        let event = Event::JobCompleted(JobCompletedEvent {
-            job_id: uuid::Uuid::new_v4(),
-            success: false,
-            message: Some("Encoder error".into()),
+        let event = Event::JobCompleted({
+            let mut e = JobCompletedEvent::new(uuid::Uuid::new_v4(), false);
+            e.message = Some("Encoder error".into());
+            e
         });
         assert!(plugin.on_event(&event).unwrap().is_none());
     }
@@ -187,11 +187,11 @@ mod tests {
     #[test]
     fn test_on_event_unhandled() {
         let plugin = JobManagerPlugin::new();
-        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent {
-            tool_name: "ffmpeg".into(),
-            version: "6.1".into(),
-            path: std::path::PathBuf::from("/usr/bin/ffmpeg"),
-        });
+        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent::new(
+            "ffmpeg",
+            "6.1",
+            std::path::PathBuf::from("/usr/bin/ffmpeg"),
+        ));
         assert!(plugin.on_event(&event).unwrap().is_none());
     }
 }

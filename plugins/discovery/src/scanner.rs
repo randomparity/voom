@@ -198,11 +198,11 @@ fn build_event(path: &Path, compute_hash: bool) -> Result<FileDiscoveredEvent> {
 
     tracing::debug!(path = %path.display(), size, "file discovered");
 
-    Ok(FileDiscoveredEvent {
-        path: path.to_path_buf(),
+    Ok(FileDiscoveredEvent::new(
+        path.to_path_buf(),
         size,
         content_hash,
-    })
+    ))
 }
 
 #[cfg(test)]

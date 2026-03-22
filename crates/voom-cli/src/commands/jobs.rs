@@ -34,10 +34,11 @@ fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
     };
 
     let jobs = store
-        .list_jobs(&JobFilters {
-            status: filter_status,
-            limit: Some(limit),
-            ..Default::default()
+        .list_jobs(&{
+            let mut f = JobFilters::default();
+            f.status = filter_status;
+            f.limit = Some(limit);
+            f
         })
         .map_err(|e| anyhow::anyhow!("failed to list jobs: {e}"))?;
 
@@ -167,11 +168,9 @@ fn cancel(id: String) -> Result<()> {
         );
     }
 
-    let update = voom_domain::JobUpdate {
-        status: Some(voom_domain::JobStatus::Cancelled),
-        completed_at: Some(Some(chrono::Utc::now())),
-        ..Default::default()
-    };
+    let mut update = voom_domain::JobUpdate::default();
+    update.status = Some(voom_domain::JobStatus::Cancelled);
+    update.completed_at = Some(Some(chrono::Utc::now()));
 
     store
         .update_job(&uuid, &update)

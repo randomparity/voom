@@ -113,11 +113,11 @@ mod tests {
     #[test]
     fn test_on_event_returns_none_for_unhandled_event() {
         let plugin = PolicyEvaluatorPlugin::new();
-        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent {
-            tool_name: "ffprobe".into(),
-            version: "6.0".into(),
-            path: PathBuf::from("/usr/bin/ffprobe"),
-        });
+        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent::new(
+            "ffprobe",
+            "6.0",
+            PathBuf::from("/usr/bin/ffprobe"),
+        ));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
     }

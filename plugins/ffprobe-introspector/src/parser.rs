@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use chrono::Utc;
-use uuid::Uuid;
-
 use voom_domain::errors::Result;
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::utils::codecs::normalize_codec;
@@ -35,19 +32,15 @@ pub fn parse_ffprobe_output(
 
     let tracks = parse_streams(streams);
 
-    Ok(MediaFile {
-        id: Uuid::new_v4(),
-        path: path.to_path_buf(),
-        size,
-        content_hash: content_hash.to_string(),
-        container,
-        duration,
-        bitrate,
-        tracks,
-        tags,
-        plugin_metadata: HashMap::new(),
-        introspected_at: Utc::now(),
-    })
+    let mut mf = MediaFile::new(path.to_path_buf());
+    mf.size = size;
+    mf.content_hash = content_hash.to_string();
+    mf.container = container;
+    mf.duration = duration;
+    mf.bitrate = bitrate;
+    mf.tracks = tracks;
+    mf.tags = tags;
+    Ok(mf)
 }
 
 fn parse_duration(format: &serde_json::Value) -> f64 {
@@ -126,24 +119,18 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
     let is_commentary = disp_flag("comment");
 
     // Common fields shared across all track types
-    let common = Track {
-        index,
-        codec,
-        language,
-        title,
-        is_default,
-        is_forced,
-        ..Track::default()
-    };
+    let mut common = Track::new(index, TrackType::Video, codec);
+    common.language = language;
+    common.title = title;
+    common.is_default = is_default;
+    common.is_forced = is_forced;
 
     match codec_type {
         "video" => {
             // Skip attached pictures (album art)
             if disp_flag("attached_pic") {
-                return Some(Track {
-                    track_type: TrackType::Attachment,
-                    ..common
-                });
+                common.track_type = TrackType::Attachment;
+                return Some(common);
             }
 
             let width = stream
@@ -162,17 +149,15 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
                 .and_then(|p| p.as_str())
                 .map(|s| s.to_string());
 
-            Some(Track {
-                track_type: TrackType::Video,
-                width,
-                height,
-                frame_rate,
-                is_vfr,
-                is_hdr,
-                hdr_format,
-                pixel_format,
-                ..common
-            })
+            common.track_type = TrackType::Video;
+            common.width = width;
+            common.height = height;
+            common.frame_rate = frame_rate;
+            common.is_vfr = is_vfr;
+            common.is_hdr = is_hdr;
+            common.hdr_format = hdr_format;
+            common.pixel_format = pixel_format;
+            Some(common)
         }
         "audio" => {
             let channels = stream
@@ -195,30 +180,26 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
             let track_type =
                 classify_audio_track(&common.title, is_default, is_commentary, is_forced);
 
-            Some(Track {
-                track_type,
-                channels,
-                channel_layout,
-                sample_rate,
-                bit_depth,
-                ..common
-            })
+            common.track_type = track_type;
+            common.channels = channels;
+            common.channel_layout = channel_layout;
+            common.sample_rate = sample_rate;
+            common.bit_depth = bit_depth;
+            Some(common)
         }
         "subtitle" => {
             let track_type =
                 classify_subtitle_track(&common.title, is_default, is_commentary, is_forced);
 
-            Some(Track {
-                track_type,
-                ..common
-            })
+            common.track_type = track_type;
+            Some(common)
         }
-        "attachment" => Some(Track {
-            track_type: TrackType::Attachment,
-            is_default: false,
-            is_forced: false,
-            ..common
-        }),
+        "attachment" => {
+            common.track_type = TrackType::Attachment;
+            common.is_default = false;
+            common.is_forced = false;
+            Some(common)
+        }
         _ => None,
     }
 }

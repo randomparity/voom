@@ -383,50 +383,42 @@ fn execute_single_plan(
     file: &voom_domain::media::MediaFile,
     kernel: &voom_kernel::Kernel,
 ) {
-    kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
-        path: file.path.clone(),
-        phase_name: plan.phase_name.clone(),
-        action_count: plan.actions.len(),
-    }));
+    kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent::new(
+        file.path.clone(),
+        plan.phase_name.clone(),
+        plan.actions.len(),
+    )));
 
-    let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
+    let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
 
     let claimed = results.iter().any(|r| r.claimed);
     let exec_error = results.iter().find_map(|r| r.execution_error.clone());
 
     if claimed && exec_error.is_none() {
         // An executor plugin claimed and successfully executed the plan
-        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
-            plan_id: plan.id,
-            path: file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            actions_applied: plan.actions.len(),
-        }));
+        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
+            plan.id,
+            file.path.clone(),
+            plan.phase_name.clone(),
+            plan.actions.len(),
+        )));
     } else if let Some(error) = exec_error {
         // An executor claimed the plan but failed
-        kernel.dispatch(Event::PlanFailed(PlanFailedEvent {
-            plan_id: plan.id,
-            path: file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            error,
-            error_code: None,
-            plugin_name: results
-                .iter()
-                .find(|r| r.claimed)
-                .map(|r| r.plugin_name.clone()),
-            error_chain: vec![],
-        }));
+        let mut failed =
+            PlanFailedEvent::new(plan.id, file.path.clone(), plan.phase_name.clone(), error);
+        failed.plugin_name = results
+            .iter()
+            .find(|r| r.claimed)
+            .map(|r| r.plugin_name.clone());
+        kernel.dispatch(Event::PlanFailed(failed));
     } else {
         // No executor claimed the plan — emit PlanFailed
-        kernel.dispatch(Event::PlanFailed(PlanFailedEvent {
-            plan_id: plan.id,
-            path: file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            error: "no executor available for plan".into(),
-            error_code: None,
-            plugin_name: None,
-            error_chain: vec![],
-        }));
+        kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
+            plan.id,
+            file.path.clone(),
+            plan.phase_name.clone(),
+            "no executor available for plan",
+        )));
     }
 }
 
@@ -602,26 +594,21 @@ mod tests {
     }
 
     fn test_plan(phase: &str, skipped: bool) -> Plan {
-        Plan {
-            id: uuid::Uuid::new_v4(),
-            file: MediaFile::new(PathBuf::from("/tmp/test.mkv")),
-            policy_name: "test-policy".into(),
-            phase_name: phase.into(),
-            actions: vec![PlannedAction {
-                operation: OperationType::SetDefault,
-                track_index: Some(0),
-                parameters: ActionParams::Empty,
-                description: "test action".into(),
-            }],
-            warnings: vec![],
-            skip_reason: if skipped {
-                Some("skipped".into())
-            } else {
-                None
-            },
-            policy_hash: None,
-            evaluated_at: chrono::Utc::now(),
+        let mut plan = Plan::new(
+            MediaFile::new(PathBuf::from("/tmp/test.mkv")),
+            "test-policy",
+            phase,
+        );
+        plan.actions = vec![PlannedAction::track_op(
+            OperationType::SetDefault,
+            0,
+            ActionParams::Empty,
+            "test action",
+        )];
+        if skipped {
+            plan.skip_reason = Some("skipped".into());
         }
+        plan
     }
 
     #[tokio::test]
@@ -634,18 +621,18 @@ mod tests {
 
         // Simulate: PlanExecuting + PlanCreated + PlanCompleted for non-skipped plan
         let plan = test_plan("normalize", false);
-        kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
-            path: file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            action_count: plan.actions.len(),
-        }));
-        kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
-        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
-            plan_id: plan.id,
-            path: file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            actions_applied: plan.actions.len(),
-        }));
+        kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent::new(
+            file.path.clone(),
+            plan.phase_name.clone(),
+            plan.actions.len(),
+        )));
+        kernel.dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
+        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
+            plan.id,
+            file.path.clone(),
+            plan.phase_name.clone(),
+            plan.actions.len(),
+        )));
 
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
@@ -664,7 +651,7 @@ mod tests {
 
         // Simulate the process.rs logic: skip if plan.is_skipped()
         if !plan.is_skipped() {
-            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
+            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
         }
 
         assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
@@ -684,18 +671,18 @@ mod tests {
 
         // Simulate the process.rs logic: in dry_run mode, no events are dispatched
         if !dry_run {
-            kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
-                path: file.path.clone(),
-                phase_name: plan.phase_name.clone(),
-                action_count: plan.actions.len(),
-            }));
-            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
-            kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
-                plan_id: plan.id,
-                path: file.path.clone(),
-                phase_name: plan.phase_name.clone(),
-                actions_applied: plan.actions.len(),
-            }));
+            kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent::new(
+                file.path.clone(),
+                plan.phase_name.clone(),
+                plan.actions.len(),
+            )));
+            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
+            kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
+                plan.id,
+                file.path.clone(),
+                plan.phase_name.clone(),
+                plan.actions.len(),
+            )));
         }
 
         // No events in dry_run
@@ -711,16 +698,12 @@ mod tests {
         kernel.register_plugin(recorder.clone(), 50);
 
         // Simulate discovery events
-        let discovered = FileDiscoveredEvent {
-            path: PathBuf::from("/tmp/a.mkv"),
-            size: 1024,
-            content_hash: "abc".into(),
-        };
+        let discovered = FileDiscoveredEvent::new(PathBuf::from("/tmp/a.mkv"), 1024, "abc".into());
         kernel.dispatch(Event::FileDiscovered(discovered));
 
         // Simulate introspection event
         let file = MediaFile::new(PathBuf::from("/tmp/a.mkv"));
-        kernel.dispatch(Event::FileIntrospected(FileIntrospectedEvent { file }));
+        kernel.dispatch(Event::FileIntrospected(FileIntrospectedEvent::new(file)));
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.introspected_count.load(Ordering::SeqCst), 1);

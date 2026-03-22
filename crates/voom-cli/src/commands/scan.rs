@@ -327,18 +327,15 @@ mod tests {
         kernel.register_plugin(recorder.clone(), 50);
 
         // Simulate discovery event
-        let discovered = FileDiscoveredEvent {
-            path: PathBuf::from("/tmp/test.mkv"),
-            size: 1024,
-            content_hash: "abc123".into(),
-        };
+        let discovered =
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/test.mkv"), 1024, "abc123".into());
         kernel.dispatch(Event::FileDiscovered(discovered));
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 1);
 
         // Simulate introspection event
         let file = test_media_file("/tmp/test.mkv");
-        kernel.dispatch(Event::FileIntrospected(FileIntrospectedEvent { file }));
+        kernel.dispatch(Event::FileIntrospected(FileIntrospectedEvent::new(file)));
 
         assert_eq!(recorder.introspected_count.load(Ordering::SeqCst), 1);
     }
@@ -368,21 +365,9 @@ mod tests {
         kernel.register_plugin(recorder.clone(), 50);
 
         let events = vec![
-            FileDiscoveredEvent {
-                path: PathBuf::from("/tmp/a.mkv"),
-                size: 100,
-                content_hash: "aaa".into(),
-            },
-            FileDiscoveredEvent {
-                path: PathBuf::from("/tmp/b.mp4"),
-                size: 200,
-                content_hash: "bbb".into(),
-            },
-            FileDiscoveredEvent {
-                path: PathBuf::from("/tmp/c.avi"),
-                size: 300,
-                content_hash: "ccc".into(),
-            },
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/a.mkv"), 100, "aaa".into()),
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/b.mp4"), 200, "bbb".into()),
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/c.avi"), 300, "ccc".into()),
         ];
 
         for event in &events {

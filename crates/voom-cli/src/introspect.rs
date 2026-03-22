@@ -12,13 +12,13 @@ pub fn dispatch_introspection_failure(
     error: &str,
 ) {
     kernel.dispatch(Event::FileIntrospectionFailed(
-        FileIntrospectionFailedEvent {
+        FileIntrospectionFailedEvent::new(
             path,
             size,
-            content_hash: Some(content_hash),
-            error: error.to_string(),
-            error_source: BadFileSource::Introspection,
-        },
+            Some(content_hash),
+            error.to_string(),
+            BadFileSource::Introspection,
+        ),
     ));
 }
 
@@ -52,9 +52,7 @@ pub async fn introspect_file(
         Ok(Ok(intro_event)) => {
             let file = intro_event.file.clone();
             kernel.dispatch(Event::FileIntrospected(
-                voom_domain::events::FileIntrospectedEvent {
-                    file: intro_event.file,
-                },
+                voom_domain::events::FileIntrospectedEvent::new(intro_event.file),
             ));
             Ok(file)
         }

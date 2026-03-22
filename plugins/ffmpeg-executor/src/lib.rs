@@ -9,8 +9,6 @@ pub mod command;
 pub mod hwaccel;
 pub mod progress;
 
-use std::ffi::OsStr;
-use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
@@ -18,8 +16,8 @@ use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{Event, EventResult, PlanCreatedEvent};
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionResult, OperationType, Plan, PlannedAction};
+use voom_domain::utils::subprocess::run_with_timeout;
 use voom_kernel::Plugin;
-use wait_timeout::ChildExt;
 
 use crate::command::{build_ffmpeg_command, output_extension};
 use crate::hwaccel::HwAccelConfig;
@@ -48,66 +46,6 @@ const FFMPEG_OPS: &[OperationType] = &[
     OperationType::ClearContainerTags,
     OperationType::DeleteContainerTag,
 ];
-
-/// Drain stdout and stderr pipes from a child process into buffers.
-///
-/// **Precondition**: The child process must have exited or been killed before
-/// calling this. Calling it on a live process will deadlock if either pipe
-/// fills its OS buffer.
-fn drain_pipes(child: &mut std::process::Child) -> (Vec<u8>, Vec<u8>) {
-    use std::io::Read;
-    let mut stdout_buf = Vec::new();
-    let mut stderr_buf = Vec::new();
-    if let Some(mut out) = child.stdout.take() {
-        out.read_to_end(&mut stdout_buf).ok();
-    }
-    if let Some(mut err) = child.stderr.take() {
-        err.read_to_end(&mut stderr_buf).ok();
-    }
-    (stdout_buf, stderr_buf)
-}
-
-/// Run a subprocess with a timeout, killing it if it exceeds the deadline.
-fn run_with_timeout(tool: &str, args: &[impl AsRef<OsStr>], timeout: Duration) -> Result<Output> {
-    let mut child = Command::new(tool)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| VoomError::ToolExecution {
-            tool: tool.into(),
-            message: format!("failed to spawn {tool}: {e}"),
-        })?;
-
-    match child.wait_timeout(timeout) {
-        Ok(Some(status)) => {
-            let (stdout, stderr) = drain_pipes(&mut child);
-            Ok(Output {
-                status,
-                stdout,
-                stderr,
-            })
-        }
-        Ok(None) => {
-            child.kill().ok();
-            drain_pipes(&mut child);
-            child.wait().ok();
-            Err(VoomError::ToolExecution {
-                tool: tool.into(),
-                message: format!("{tool} timed out after {}s", timeout.as_secs()),
-            })
-        }
-        Err(e) => {
-            child.kill().ok();
-            drain_pipes(&mut child);
-            child.wait().ok();
-            Err(VoomError::ToolExecution {
-                tool: tool.into(),
-                message: format!("error waiting for {tool}: {e}"),
-            })
-        }
-    }
-}
 
 /// `FFmpeg` executor plugin.
 ///
@@ -282,12 +220,7 @@ impl FfmpegExecutorPlugin {
 
                 Ok(actions
                     .iter()
-                    .map(|a| ActionResult {
-                        operation: a.operation,
-                        success: true,
-                        description: a.description.clone(),
-                        error: None,
-                    })
+                    .map(|a| ActionResult::success(a.operation, a.description.clone()))
                     .collect())
             }
             Ok(output) => {
@@ -396,17 +329,9 @@ mod tests {
     }
 
     fn plan_with_actions(file: MediaFile, actions: Vec<PlannedAction>) -> Plan {
-        Plan {
-            id: uuid::Uuid::new_v4(),
-            file,
-            policy_name: "test".into(),
-            phase_name: "process".into(),
-            actions,
-            warnings: vec![],
-            skip_reason: None,
-            policy_hash: None,
-            evaluated_at: chrono::Utc::now(),
-        }
+        let mut plan = Plan::new(file, "test", "process");
+        plan.actions = actions;
+        plan
     }
 
     #[test]
@@ -451,18 +376,18 @@ mod tests {
         let plugin = FfmpegExecutorPlugin::new();
         let plan = plan_with_actions(
             sample_mp4_file(),
-            vec![PlannedAction {
-                operation: OperationType::TranscodeVideo,
-                track_index: Some(0),
-                parameters: ActionParams::Transcode {
+            vec![PlannedAction::track_op(
+                OperationType::TranscodeVideo,
+                0,
+                ActionParams::Transcode {
                     codec: "hevc".into(),
                     crf: None,
                     preset: None,
                     bitrate: None,
                     channels: None,
                 },
-                description: "Transcode to HEVC".into(),
-            }],
+                "Transcode to HEVC",
+            )],
         );
         assert!(plugin.can_handle(&plan));
     }
@@ -472,18 +397,18 @@ mod tests {
         let plugin = FfmpegExecutorPlugin::new();
         let plan = plan_with_actions(
             sample_mp4_file(),
-            vec![PlannedAction {
-                operation: OperationType::TranscodeAudio,
-                track_index: Some(1),
-                parameters: ActionParams::Transcode {
+            vec![PlannedAction::track_op(
+                OperationType::TranscodeAudio,
+                1,
+                ActionParams::Transcode {
                     codec: "opus".into(),
                     crf: None,
                     preset: None,
                     bitrate: None,
                     channels: None,
                 },
-                description: "Transcode to Opus".into(),
-            }],
+                "Transcode to Opus",
+            )],
         );
         assert!(plugin.can_handle(&plan));
     }
@@ -493,10 +418,10 @@ mod tests {
         let plugin = FfmpegExecutorPlugin::new();
         let plan = plan_with_actions(
             sample_mp4_file(),
-            vec![PlannedAction {
-                operation: OperationType::SynthesizeAudio,
-                track_index: Some(1),
-                parameters: ActionParams::Synthesize {
+            vec![PlannedAction::track_op(
+                OperationType::SynthesizeAudio,
+                1,
+                ActionParams::Synthesize {
                     name: "stereo".into(),
                     codec: Some("aac".into()),
                     language: None,
@@ -507,8 +432,8 @@ mod tests {
                     position: None,
                     source_track: None,
                 },
-                description: "Synthesize audio".into(),
-            }],
+                "Synthesize audio",
+            )],
         );
         assert!(plugin.can_handle(&plan));
     }
@@ -518,14 +443,13 @@ mod tests {
         let plugin = FfmpegExecutorPlugin::new();
         let plan = plan_with_actions(
             sample_mp4_file(),
-            vec![PlannedAction {
-                operation: OperationType::ConvertContainer,
-                track_index: None,
-                parameters: ActionParams::Container {
+            vec![PlannedAction::file_op(
+                OperationType::ConvertContainer,
+                ActionParams::Container {
                     container: Container::Mkv,
                 },
-                description: "Convert to MKV".into(),
-            }],
+                "Convert to MKV",
+            )],
         );
         assert!(plugin.can_handle(&plan));
     }
@@ -536,12 +460,12 @@ mod tests {
         // MP4 file with metadata ops — FFmpeg handles non-MKV metadata
         let plan = plan_with_actions(
             sample_mp4_file(),
-            vec![PlannedAction {
-                operation: OperationType::SetDefault,
-                track_index: Some(1),
-                parameters: ActionParams::Empty,
-                description: "Set default".into(),
-            }],
+            vec![PlannedAction::track_op(
+                OperationType::SetDefault,
+                1,
+                ActionParams::Empty,
+                "Set default",
+            )],
         );
         assert!(plugin.can_handle(&plan));
     }
@@ -553,24 +477,24 @@ mod tests {
         let plan = plan_with_actions(
             sample_mkv_file(),
             vec![
-                PlannedAction {
-                    operation: OperationType::TranscodeVideo,
-                    track_index: Some(0),
-                    parameters: ActionParams::Transcode {
+                PlannedAction::track_op(
+                    OperationType::TranscodeVideo,
+                    0,
+                    ActionParams::Transcode {
                         codec: "h264".into(),
                         crf: None,
                         preset: None,
                         bitrate: None,
                         channels: None,
                     },
-                    description: "Transcode to H.264".into(),
-                },
-                PlannedAction {
-                    operation: OperationType::SetDefault,
-                    track_index: Some(1),
-                    parameters: ActionParams::Empty,
-                    description: "Set default".into(),
-                },
+                    "Transcode to H.264",
+                ),
+                PlannedAction::track_op(
+                    OperationType::SetDefault,
+                    1,
+                    ActionParams::Empty,
+                    "Set default",
+                ),
             ],
         );
         assert!(plugin.can_handle(&plan));
@@ -585,20 +509,20 @@ mod tests {
         let plan = plan_with_actions(
             sample_mkv_file(),
             vec![
-                PlannedAction {
-                    operation: OperationType::SetDefault,
-                    track_index: Some(1),
-                    parameters: ActionParams::Empty,
-                    description: "Set default".into(),
-                },
-                PlannedAction {
-                    operation: OperationType::SetTitle,
-                    track_index: Some(1),
-                    parameters: ActionParams::Title {
+                PlannedAction::track_op(
+                    OperationType::SetDefault,
+                    1,
+                    ActionParams::Empty,
+                    "Set default",
+                ),
+                PlannedAction::track_op(
+                    OperationType::SetTitle,
+                    1,
+                    ActionParams::Title {
                         title: "English".into(),
                     },
-                    description: "Set title".into(),
-                },
+                    "Set title",
+                ),
             ],
         );
         assert!(!plugin.can_handle(&plan));
@@ -616,18 +540,18 @@ mod tests {
         let plugin = FfmpegExecutorPlugin::new();
         let mut plan = plan_with_actions(
             sample_mp4_file(),
-            vec![PlannedAction {
-                operation: OperationType::TranscodeVideo,
-                track_index: Some(0),
-                parameters: ActionParams::Transcode {
+            vec![PlannedAction::track_op(
+                OperationType::TranscodeVideo,
+                0,
+                ActionParams::Transcode {
                     codec: "hevc".into(),
                     crf: None,
                     preset: None,
                     bitrate: None,
                     channels: None,
                 },
-                description: "Transcode".into(),
-            }],
+                "Transcode",
+            )],
         );
         plan.skip_reason = Some("Already processed".into());
         assert!(!plugin.can_handle(&plan));
@@ -641,12 +565,12 @@ mod tests {
         // MKV + metadata only — cannot handle
         let plan = plan_with_actions(
             sample_mkv_file(),
-            vec![PlannedAction {
-                operation: OperationType::SetDefault,
-                track_index: Some(1),
-                parameters: ActionParams::Empty,
-                description: "Set default".into(),
-            }],
+            vec![PlannedAction::track_op(
+                OperationType::SetDefault,
+                1,
+                ActionParams::Empty,
+                "Set default",
+            )],
         );
         assert!(plugin.execute_plan(&plan).is_err());
     }
@@ -656,18 +580,18 @@ mod tests {
         let plugin = FfmpegExecutorPlugin::new();
         let plan = plan_with_actions(
             sample_mp4_file(), // /media/video.mp4 does not exist
-            vec![PlannedAction {
-                operation: OperationType::TranscodeVideo,
-                track_index: Some(0),
-                parameters: ActionParams::Transcode {
+            vec![PlannedAction::track_op(
+                OperationType::TranscodeVideo,
+                0,
+                ActionParams::Transcode {
                     codec: "hevc".into(),
                     crf: Some(23),
                     preset: None,
                     bitrate: None,
                     channels: None,
                 },
-                description: "Transcode to HEVC".into(),
-            }],
+                "Transcode to HEVC",
+            )],
         );
 
         let result = plugin.execute_plan(&plan);
@@ -683,21 +607,21 @@ mod tests {
         let plugin = FfmpegExecutorPlugin::new();
         let plan = plan_with_actions(
             sample_mp4_file(),
-            vec![PlannedAction {
-                operation: OperationType::TranscodeVideo,
-                track_index: Some(0),
-                parameters: ActionParams::Transcode {
+            vec![PlannedAction::track_op(
+                OperationType::TranscodeVideo,
+                0,
+                ActionParams::Transcode {
                     codec: "hevc".into(),
                     crf: None,
                     preset: None,
                     bitrate: None,
                     channels: None,
                 },
-                description: "Transcode to HEVC".into(),
-            }],
+                "Transcode to HEVC",
+            )],
         );
 
-        let event = Event::PlanCreated(PlanCreatedEvent { plan });
+        let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
         let result = plugin.on_event(&event).unwrap();
         // Plan is claimed (file doesn't exist so execution fails, but it IS claimed)
         assert!(result.is_some(), "plugin should claim transcode plans");
@@ -709,15 +633,15 @@ mod tests {
         let plugin = FfmpegExecutorPlugin::new();
         let plan = plan_with_actions(
             sample_mkv_file(),
-            vec![PlannedAction {
-                operation: OperationType::SetDefault,
-                track_index: Some(1),
-                parameters: ActionParams::Empty,
-                description: "Set default".into(),
-            }],
+            vec![PlannedAction::track_op(
+                OperationType::SetDefault,
+                1,
+                ActionParams::Empty,
+                "Set default",
+            )],
         );
 
-        let event = Event::PlanCreated(PlanCreatedEvent { plan });
+        let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
     }
@@ -725,11 +649,11 @@ mod tests {
     #[test]
     fn test_on_event_ignores_other_events() {
         let plugin = FfmpegExecutorPlugin::new();
-        let event = Event::PlanExecuting(PlanExecutingEvent {
-            path: PathBuf::from("/test.mp4"),
-            phase_name: "process".into(),
-            action_count: 1,
-        });
+        let event = Event::PlanExecuting(PlanExecutingEvent::new(
+            PathBuf::from("/test.mp4"),
+            "process",
+            1,
+        ));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
     }
@@ -738,7 +662,7 @@ mod tests {
     fn test_on_event_skips_empty_plan() {
         let plugin = FfmpegExecutorPlugin::new();
         let plan = plan_with_actions(sample_mp4_file(), vec![]);
-        let event = Event::PlanCreated(PlanCreatedEvent { plan });
+        let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
     }
@@ -748,21 +672,21 @@ mod tests {
         let plugin = FfmpegExecutorPlugin::new();
         let mut plan = plan_with_actions(
             sample_mp4_file(),
-            vec![PlannedAction {
-                operation: OperationType::TranscodeVideo,
-                track_index: Some(0),
-                parameters: ActionParams::Transcode {
+            vec![PlannedAction::track_op(
+                OperationType::TranscodeVideo,
+                0,
+                ActionParams::Transcode {
                     codec: "hevc".into(),
                     crf: None,
                     preset: None,
                     bitrate: None,
                     channels: None,
                 },
-                description: "Transcode".into(),
-            }],
+                "Transcode",
+            )],
         );
         plan.skip_reason = Some("Already processed".into());
-        let event = Event::PlanCreated(PlanCreatedEvent { plan });
+        let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
     }

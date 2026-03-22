@@ -114,7 +114,6 @@ pub mod wasm {
 
             let mut state = host_state.unwrap_or_else(|| HostState::new(plugin_name.clone()));
 
-            // Populate allowed capabilities from manifest (always overwrites).
             if let Some(ref manifest) = manifest {
                 state.allowed_capabilities = manifest
                     .capabilities
@@ -215,7 +214,6 @@ pub mod wasm {
                 })
                 .filter_map(|entry| {
                     let wasm_path = entry.path();
-                    // Read manifest once — used for both name lookup and load_with_manifest.
                     let manifest = match load_manifest(&wasm_path) {
                         Ok(m) => m,
                         Err(e) => return Some(Err(e)),
@@ -232,13 +230,11 @@ pub mod wasm {
                                 .to_string()
                         });
 
-                    // Skip disabled plugins before compilation.
                     if skip_plugins.contains(&plugin_name) {
                         tracing::info!(plugin = %plugin_name, "WASM plugin disabled, skipping load");
                         return None;
                     }
 
-                    // Build HostState with config seeded if present.
                     let host_state = plugin_configs.get(&plugin_name).map(|table| {
                         let config_value = match serde_json::to_value(table) {
                             Ok(v) => v,
@@ -369,15 +365,13 @@ pub mod wasm {
 
         let instance = inner.instance.as_ref().unwrap();
 
-        // Look up the on-event export from the plugin interface.
-        // The fully-qualified export name depends on whether the component uses
-        // a default export or a named interface export.
+        // Try the namespaced interface first, then fall back to a bare export
+        // for simpler single-interface components.
         let on_event = instance
             .get_export(&mut inner.store, None, "voom:plugin/plugin@0.1.0")
             .and_then(|idx| instance.get_export(&mut inner.store, Some(&idx), "on-event"))
             .and_then(|idx| instance.get_func(&mut inner.store, idx))
             .or_else(|| {
-                // Fallback: try as a top-level export (for simpler components).
                 let idx = instance.get_export(&mut inner.store, None, "on-event")?;
                 instance.get_func(&mut inner.store, idx)
             });
@@ -417,6 +411,51 @@ pub mod wasm {
         }
     }
 
+    /// Extract a String from a Val, returning empty string for non-string values.
+    fn val_to_string(val: &wasmtime::component::Val) -> String {
+        if let wasmtime::component::Val::String(s) = val {
+            s.to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// Extract bytes from a Val::List of Val::U8 values.
+    fn val_to_bytes(val: &wasmtime::component::Val) -> Vec<u8> {
+        if let wasmtime::component::Val::List(items) = val {
+            items
+                .iter()
+                .filter_map(|v| {
+                    if let wasmtime::component::Val::U8(b) = v {
+                        Some(*b)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Parse a Val::Record representing an event-data into (event_type, payload).
+    fn parse_event_data(val: &wasmtime::component::Val) -> Option<(String, Vec<u8>)> {
+        if let wasmtime::component::Val::Record(fields) = val {
+            let mut evt_type = String::new();
+            let mut payload = Vec::new();
+            for (name, field_val) in fields {
+                match name.as_str() {
+                    "event-type" => evt_type = val_to_string(field_val),
+                    "payload" => payload = val_to_bytes(field_val),
+                    _ => {}
+                }
+            }
+            Some((evt_type, payload))
+        } else {
+            None
+        }
+    }
+
     /// Parse a Val representing an event-result record into the tuple form
     /// expected by `event_result_from_wasm`.
     fn parse_event_result(
@@ -440,67 +479,15 @@ pub mod wasm {
 
         for (name, field_val) in fields {
             match name.as_str() {
-                "plugin-name" => {
-                    if let Val::String(s) = field_val {
-                        plugin_name = s.to_string();
-                    }
-                }
+                "plugin-name" => plugin_name = val_to_string(field_val),
                 "produced-events" => {
                     if let Val::List(items) = field_val {
-                        for item in items {
-                            if let Val::Record(event_fields) = item {
-                                let mut evt_type = String::new();
-                                let mut evt_payload = Vec::new();
-                                for (ename, eval) in event_fields {
-                                    match ename.as_str() {
-                                        "event-type" => {
-                                            if let Val::String(s) = eval {
-                                                evt_type = s.to_string();
-                                            }
-                                        }
-                                        "payload" => {
-                                            if let Val::List(bytes) = eval {
-                                                evt_payload = bytes
-                                                    .iter()
-                                                    .filter_map(|v| {
-                                                        if let Val::U8(b) = v {
-                                                            Some(*b)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    })
-                                                    .collect();
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                produced_events.push((evt_type, evt_payload));
-                            }
-                        }
+                        produced_events = items.iter().filter_map(parse_event_data).collect();
                     }
                 }
                 "data" => match field_val {
-                    Val::Option(Some(boxed)) => {
-                        if let Val::List(bytes) = boxed.as_ref() {
-                            data =
-                                Some(
-                                    bytes
-                                        .iter()
-                                        .filter_map(|v| {
-                                            if let Val::U8(b) = v {
-                                                Some(*b)
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .collect(),
-                                );
-                        }
-                    }
-                    Val::Option(None) => {
-                        data = None;
-                    }
+                    Val::Option(Some(boxed)) => data = Some(val_to_bytes(boxed.as_ref())),
+                    Val::Option(None) => data = None,
                     _ => {}
                 },
                 _ => {}
@@ -780,13 +767,11 @@ mod tests {
             true
         }
         fn on_event(&self, _: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
-            Ok(Some(EventResult {
-                plugin_name: self.name.clone(),
-                produced_events: vec![],
-                data: Some(serde_json::json!({"loaded": true})),
-                claimed: false,
-                execution_error: None,
-            }))
+            {
+                let mut result = EventResult::new(self.name.clone());
+                result.data = Some(serde_json::json!({"loaded": true}));
+                Ok(Some(result))
+            }
         }
     }
 

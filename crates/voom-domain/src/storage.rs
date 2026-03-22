@@ -12,6 +12,7 @@ use crate::plan::Plan;
 use crate::stats::ProcessingStats;
 
 /// Filters for querying jobs from storage.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub struct JobFilters {
     pub status: Option<JobStatus>,
@@ -20,6 +21,7 @@ pub struct JobFilters {
 }
 
 /// Filters for querying bad files from storage.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub struct BadFileFilters {
     pub path_prefix: Option<String>,
@@ -29,6 +31,7 @@ pub struct BadFileFilters {
 }
 
 /// Filters for querying files from storage.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub struct FileFilters {
     pub container: Option<Container>,
@@ -190,6 +193,7 @@ impl std::fmt::Display for PlanStatus {
 }
 
 /// A plan as stored in the database, with its own ID and status tracking.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct StoredPlan {
     pub id: Uuid,
@@ -207,7 +211,37 @@ pub struct StoredPlan {
     pub result: Option<String>,
 }
 
+impl StoredPlan {
+    /// Create a new `StoredPlan` with the given identifiers and status.
+    #[must_use]
+    pub fn new(
+        id: Uuid,
+        file_id: Uuid,
+        policy_name: impl Into<String>,
+        phase_name: impl Into<String>,
+        status: PlanStatus,
+        actions_json: impl Into<String>,
+    ) -> Self {
+        Self {
+            id,
+            file_id,
+            policy_name: policy_name.into(),
+            phase_name: phase_name.into(),
+            status,
+            actions_json: actions_json.into(),
+            warnings: None,
+            skip_reason: None,
+            policy_hash: None,
+            evaluated_at: None,
+            created_at: Utc::now(),
+            executed_at: None,
+            result: None,
+        }
+    }
+}
+
 /// A historical snapshot of a file's state before it was updated.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct FileHistoryEntry {
     pub id: Uuid,
@@ -218,4 +252,31 @@ pub struct FileHistoryEntry {
     pub track_count: u32,
     pub introspected_at: DateTime<Utc>,
     pub archived_at: DateTime<Utc>,
+}
+
+impl FileHistoryEntry {
+    /// Create a new `FileHistoryEntry`.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: Uuid,
+        file_id: Uuid,
+        path: PathBuf,
+        content_hash: String,
+        container: Container,
+        track_count: u32,
+        introspected_at: DateTime<Utc>,
+        archived_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            id,
+            file_id,
+            path,
+            content_hash,
+            container,
+            track_count,
+            introspected_at,
+            archived_at,
+        }
+    }
 }

@@ -62,6 +62,7 @@ impl std::fmt::Display for JobType {
 }
 
 /// A background job tracked by the system.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: Uuid,
@@ -146,6 +147,7 @@ impl JobStatus {
 }
 
 /// Partial update to apply to a job.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub struct JobUpdate {
     pub status: Option<JobStatus>,

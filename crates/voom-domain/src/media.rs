@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// A media file with full introspection metadata.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaFile {
     pub id: Uuid,
@@ -99,6 +100,7 @@ impl MediaFile {
 }
 
 /// A single track within a media file.
+#[non_exhaustive]
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {

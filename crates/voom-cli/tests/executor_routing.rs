@@ -49,17 +49,9 @@ fn mp4_file() -> MediaFile {
 }
 
 fn make_plan(file: MediaFile, actions: Vec<PlannedAction>) -> Plan {
-    Plan {
-        id: uuid::Uuid::new_v4(),
-        file,
-        policy_name: "test".into(),
-        phase_name: "process".into(),
-        actions,
-        warnings: vec![],
-        skip_reason: None,
-        policy_hash: None,
-        evaluated_at: chrono::Utc::now(),
-    }
+    let mut plan = Plan::new(file, "test", "process");
+    plan.actions = actions;
+    plan
 }
 
 /// Transcode plans should be routed to ffmpeg-executor (mkvtoolnix cannot transcode).
@@ -69,21 +61,21 @@ fn test_transcode_routes_to_ffmpeg() {
 
     let plan = make_plan(
         mp4_file(),
-        vec![PlannedAction {
-            operation: OperationType::TranscodeVideo,
-            track_index: Some(0),
-            parameters: ActionParams::Transcode {
+        vec![PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
                 codec: "hevc".into(),
                 crf: Some(23),
                 preset: None,
                 bitrate: None,
                 channels: None,
             },
-            description: "Transcode to HEVC".into(),
-        }],
+            "Transcode to HEVC",
+        )],
     );
 
-    let event = Event::PlanCreated(PlanCreatedEvent { plan });
+    let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
     let results = kernel.dispatch(event);
 
     // Should be claimed by ffmpeg-executor (file doesn't exist so execution
@@ -100,15 +92,15 @@ fn test_mkv_metadata_routes_to_mkvtoolnix() {
 
     let plan = make_plan(
         mkv_file(),
-        vec![PlannedAction {
-            operation: OperationType::SetDefault,
-            track_index: Some(1),
-            parameters: ActionParams::Empty,
-            description: "Set default audio".into(),
-        }],
+        vec![PlannedAction::track_op(
+            OperationType::SetDefault,
+            1,
+            ActionParams::Empty,
+            "Set default audio",
+        )],
     );
 
-    let event = Event::PlanCreated(PlanCreatedEvent { plan });
+    let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
     let results = kernel.dispatch(event);
 
     assert_eq!(results.len(), 1);
@@ -123,15 +115,15 @@ fn test_non_mkv_metadata_routes_to_ffmpeg() {
 
     let plan = make_plan(
         mp4_file(),
-        vec![PlannedAction {
-            operation: OperationType::SetDefault,
-            track_index: Some(1),
-            parameters: ActionParams::Empty,
-            description: "Set default audio".into(),
-        }],
+        vec![PlannedAction::track_op(
+            OperationType::SetDefault,
+            1,
+            ActionParams::Empty,
+            "Set default audio",
+        )],
     );
 
-    let event = Event::PlanCreated(PlanCreatedEvent { plan });
+    let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
     let results = kernel.dispatch(event);
 
     assert_eq!(results.len(), 1);
@@ -146,17 +138,16 @@ fn test_convert_to_mkv_routes_to_mkvtoolnix() {
 
     let plan = make_plan(
         mp4_file(),
-        vec![PlannedAction {
-            operation: OperationType::ConvertContainer,
-            track_index: None,
-            parameters: ActionParams::Container {
+        vec![PlannedAction::file_op(
+            OperationType::ConvertContainer,
+            ActionParams::Container {
                 container: Container::Mkv,
             },
-            description: "Convert to MKV".into(),
-        }],
+            "Convert to MKV",
+        )],
     );
 
-    let event = Event::PlanCreated(PlanCreatedEvent { plan });
+    let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
     let results = kernel.dispatch(event);
 
     // mkvtoolnix handles convert-to-MKV at priority 39 (before ffmpeg at 40)
@@ -172,21 +163,21 @@ fn test_mkv_transcode_routes_to_ffmpeg() {
 
     let plan = make_plan(
         mkv_file(),
-        vec![PlannedAction {
-            operation: OperationType::TranscodeVideo,
-            track_index: Some(0),
-            parameters: ActionParams::Transcode {
+        vec![PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
                 codec: "h264".into(),
                 crf: None,
                 preset: None,
                 bitrate: None,
                 channels: None,
             },
-            description: "Transcode MKV to H.264".into(),
-        }],
+            "Transcode MKV to H.264",
+        )],
     );
 
-    let event = Event::PlanCreated(PlanCreatedEvent { plan });
+    let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
     let results = kernel.dispatch(event);
 
     assert_eq!(results.len(), 1);
@@ -201,7 +192,7 @@ fn test_empty_plan_not_claimed() {
 
     let plan = make_plan(mkv_file(), vec![]);
 
-    let event = Event::PlanCreated(PlanCreatedEvent { plan });
+    let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
     let results = kernel.dispatch(event);
 
     // Neither executor claims an empty plan — both return Ok(None)
@@ -218,16 +209,16 @@ fn test_skipped_plan_not_claimed() {
 
     let mut plan = make_plan(
         mkv_file(),
-        vec![PlannedAction {
-            operation: OperationType::SetDefault,
-            track_index: Some(1),
-            parameters: ActionParams::Empty,
-            description: "Set default".into(),
-        }],
+        vec![PlannedAction::track_op(
+            OperationType::SetDefault,
+            1,
+            ActionParams::Empty,
+            "Set default",
+        )],
     );
     plan.skip_reason = Some("Already correct".into());
 
-    let event = Event::PlanCreated(PlanCreatedEvent { plan });
+    let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
     let results = kernel.dispatch(event);
 
     assert!(

@@ -56,11 +56,10 @@ pub async fn list_jobs(
     };
     let limit = params.limit.map(|l| l.min(MAX_JOB_LIMIT));
 
-    let filters = JobFilters {
-        status,
-        limit,
-        offset: params.offset.map(|o| o.min(MAX_OFFSET)),
-    };
+    let mut filters = JobFilters::default();
+    filters.status = status;
+    filters.limit = limit;
+    filters.offset = params.offset.map(|o| o.min(MAX_OFFSET));
     let (jobs, total) = spawn_store_op(move || {
         let jobs = store.list_jobs(&filters)?;
         // Compute true total (independent of limit) using count_jobs_by_status
@@ -81,7 +80,9 @@ pub async fn list_jobs(
 
 /// GET /api/jobs/stats -- job counts by status
 #[tracing::instrument(skip(state))]
-pub async fn job_stats(State(state): State<AppState>) -> Result<Json<JobStatsResponse>, WebError> {
+pub async fn get_job_stats(
+    State(state): State<AppState>,
+) -> Result<Json<JobStatsResponse>, WebError> {
     let store = state.store.clone();
     let counts = spawn_store_op(move || store.count_jobs_by_status()).await?;
 

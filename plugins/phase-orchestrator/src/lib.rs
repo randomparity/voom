@@ -62,14 +62,10 @@ impl PhaseOrchestratorPlugin {
                 PhaseOutcome::Pending // Would be Completed after execution
             };
 
-            phase_results.push(PhaseResult {
-                phase_name: plan.phase_name.clone(),
-                outcome,
-                actions: Vec::new(), // Populated after execution
-                file_modified: !plan.actions.is_empty(),
-                skip_reason: plan.skip_reason.clone(),
-                duration_ms: 0,
-            });
+            let mut phase_result = PhaseResult::new(plan.phase_name.clone(), outcome);
+            phase_result.file_modified = !plan.actions.is_empty();
+            phase_result.skip_reason = plan.skip_reason.clone();
+            phase_results.push(phase_result);
         }
 
         Ok(OrchestrationResult {

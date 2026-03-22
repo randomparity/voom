@@ -41,6 +41,7 @@ impl std::fmt::Display for ProcessingOutcome {
 }
 
 /// Statistics recorded after processing a file through a policy phase.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessingStats {
     pub id: Uuid,

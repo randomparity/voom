@@ -17,17 +17,13 @@ struct Subscriber {
 
 /// Create an error `EventResult` for a plugin failure (error or panic).
 fn make_error_result(plugin_name: String, event_type: &str, error: String) -> EventResult {
-    EventResult {
-        plugin_name: plugin_name.clone(),
-        produced_events: vec![Event::PluginError(PluginErrorEvent {
-            plugin_name,
-            event_type: event_type.to_string(),
-            error,
-        })],
-        data: None,
-        claimed: false,
-        execution_error: None,
-    }
+    let mut result = EventResult::new(plugin_name.clone());
+    result.produced_events = vec![Event::PluginError(PluginErrorEvent::new(
+        plugin_name,
+        event_type,
+        error,
+    ))];
+    result
 }
 
 /// Event bus that dispatches events to subscribed plugins, ordered by priority.
@@ -201,13 +197,7 @@ mod tests {
             self.handled_types.iter().any(|t| t == event_type)
         }
         fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
-            Ok(Some(EventResult {
-                plugin_name: self.name.clone(),
-                produced_events: vec![],
-                data: None,
-                claimed: false,
-                execution_error: None,
-            }))
+            Ok(Some(EventResult::new(self.name.clone())))
         }
     }
 
@@ -223,11 +213,11 @@ mod tests {
         bus.subscribe_plugin(p2, 10);
         bus.subscribe_plugin(p3, 0);
 
-        let event = Event::FileDiscovered(FileDiscoveredEvent {
-            path: "/test.mkv".into(),
-            size: 1024,
-            content_hash: "abc123".to_string(),
-        });
+        let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+            "/test.mkv".into(),
+            1024,
+            "abc123".to_string(),
+        ));
 
         let results = bus.publish(event);
         assert_eq!(results.len(), 2);
@@ -245,11 +235,11 @@ mod tests {
         bus.subscribe_plugin(p1, 100);
         bus.subscribe_plugin(p2, 1);
 
-        let event = Event::ToolDetected(ToolDetectedEvent {
-            tool_name: "ffprobe".into(),
-            version: "6.0".into(),
-            path: "/usr/bin/ffprobe".into(),
-        });
+        let event = Event::ToolDetected(ToolDetectedEvent::new(
+            "ffprobe",
+            "6.0",
+            "/usr/bin/ffprobe".into(),
+        ));
 
         let results = bus.publish(event);
         assert_eq!(results.len(), 2);
@@ -263,11 +253,11 @@ mod tests {
         let p = Arc::new(TestPlugin::new("discovery", &[Event::FILE_DISCOVERED]));
         bus.subscribe_plugin(p, 0);
 
-        let event = Event::ToolDetected(ToolDetectedEvent {
-            tool_name: "ffprobe".into(),
-            version: "6.0".into(),
-            path: "/usr/bin/ffprobe".into(),
-        });
+        let event = Event::ToolDetected(ToolDetectedEvent::new(
+            "ffprobe",
+            "6.0",
+            "/usr/bin/ffprobe".into(),
+        ));
 
         let results = bus.publish(event);
         assert!(results.is_empty());
@@ -314,11 +304,11 @@ mod tests {
         bus.subscribe_plugin(error_plugin, 0);
         bus.subscribe_plugin(normal, 10);
 
-        let event = Event::FileDiscovered(FileDiscoveredEvent {
-            path: "/test.mkv".into(),
-            size: 1024,
-            content_hash: "abc123".to_string(),
-        });
+        let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+            "/test.mkv".into(),
+            1024,
+            "abc123".to_string(),
+        ));
 
         let results = bus.publish(event);
         assert_eq!(results.len(), 2);
@@ -379,11 +369,11 @@ mod tests {
         bus.subscribe_plugin(panicker, 0);
         bus.subscribe_plugin(normal, 10);
 
-        let event = Event::FileDiscovered(FileDiscoveredEvent {
-            path: "/test.mkv".into(),
-            size: 1024,
-            content_hash: "abc123".to_string(),
-        });
+        let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+            "/test.mkv".into(),
+            1024,
+            "abc123".to_string(),
+        ));
 
         let results = bus.publish(event);
         // The panicking plugin produces a PluginError result; the normal plugin produces its result.
@@ -430,13 +420,11 @@ mod tests {
             self.handled_types.iter().any(|t| t == event_type)
         }
         fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
-            Ok(Some(EventResult {
-                plugin_name: self.name.clone(),
-                produced_events: self.produced_event.iter().cloned().collect(),
-                data: None,
-                claimed: false,
-                execution_error: None,
-            }))
+            {
+                let mut result = EventResult::new(self.name.clone());
+                result.produced_events = self.produced_event.iter().cloned().collect();
+                Ok(Some(result))
+            }
         }
     }
 
@@ -445,9 +433,9 @@ mod tests {
         let bus = EventBus::new();
 
         // Plugin A handles "file.discovered" and produces "file.introspected".
-        let introspected_event = Event::FileIntrospected(FileIntrospectedEvent {
-            file: MediaFile::new("/test.mkv".into()),
-        });
+        let introspected_event = Event::FileIntrospected(FileIntrospectedEvent::new(
+            MediaFile::new("/test.mkv".into()),
+        ));
         let plugin_a = Arc::new(CascadingPlugin::new(
             "introspector",
             &[Event::FILE_DISCOVERED],
@@ -464,11 +452,11 @@ mod tests {
         bus.subscribe_plugin(plugin_a, 0);
         bus.subscribe_plugin(plugin_b, 10);
 
-        let event = Event::FileDiscovered(FileDiscoveredEvent {
-            path: "/test.mkv".into(),
-            size: 1024,
-            content_hash: "abc123".to_string(),
-        });
+        let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+            "/test.mkv".into(),
+            1024,
+            "abc123".to_string(),
+        ));
 
         let results = bus.publish(event);
         // Should have 2 results: introspector (from original) + store (from cascaded).
@@ -501,17 +489,15 @@ mod tests {
             }
             fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
                 self.call_count.fetch_add(1, Ordering::SeqCst);
-                Ok(Some(EventResult {
-                    plugin_name: "loop-plugin".to_string(),
-                    produced_events: vec![Event::ToolDetected(ToolDetectedEvent {
-                        tool_name: "ffprobe".into(),
-                        version: "6.0".into(),
-                        path: "/usr/bin/ffprobe".into(),
-                    })],
-                    data: None,
-                    claimed: false,
-                    execution_error: None,
-                }))
+                {
+                    let mut result = EventResult::new("loop-plugin");
+                    result.produced_events = vec![Event::ToolDetected(ToolDetectedEvent::new(
+                        "ffprobe",
+                        "6.0",
+                        "/usr/bin/ffprobe".into(),
+                    ))];
+                    Ok(Some(result))
+                }
             }
         }
 
@@ -522,11 +508,11 @@ mod tests {
         let plugin_ref = plugin.clone();
         bus.subscribe_plugin(plugin, 0);
 
-        let event = Event::ToolDetected(ToolDetectedEvent {
-            tool_name: "ffprobe".into(),
-            version: "6.0".into(),
-            path: "/usr/bin/ffprobe".into(),
-        });
+        let event = Event::ToolDetected(ToolDetectedEvent::new(
+            "ffprobe",
+            "6.0",
+            "/usr/bin/ffprobe".into(),
+        ));
 
         let results = bus.publish(event);
 
@@ -558,13 +544,11 @@ mod tests {
             self.handled_types.iter().any(|t| t == event_type)
         }
         fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
-            Ok(Some(EventResult {
-                plugin_name: self.name.clone(),
-                produced_events: vec![],
-                data: None,
-                claimed: true,
-                execution_error: None,
-            }))
+            {
+                let mut result = EventResult::new(self.name.clone());
+                result.claimed = true;
+                Ok(Some(result))
+            }
         }
     }
 
@@ -581,11 +565,11 @@ mod tests {
         bus.subscribe_plugin(claimer, 0);
         bus.subscribe_plugin(second, 10);
 
-        let event = Event::FileDiscovered(FileDiscoveredEvent {
-            path: "/test.mkv".into(),
-            size: 1024,
-            content_hash: "abc".into(),
-        });
+        let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+            "/test.mkv".into(),
+            1024,
+            "abc".into(),
+        ));
 
         let results = bus.publish(event);
         assert_eq!(results.len(), 1);
@@ -603,11 +587,11 @@ mod tests {
         bus.subscribe_plugin(first, 0);
         bus.subscribe_plugin(second, 10);
 
-        let event = Event::FileDiscovered(FileDiscoveredEvent {
-            path: "/test.mkv".into(),
-            size: 1024,
-            content_hash: "abc".into(),
-        });
+        let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+            "/test.mkv".into(),
+            1024,
+            "abc".into(),
+        ));
 
         let results = bus.publish(event);
         assert_eq!(results.len(), 2);
@@ -649,11 +633,11 @@ mod tests {
         bus.subscribe_plugin(decliner, 0);
         bus.subscribe_plugin(claimer, 10);
 
-        let event = Event::FileDiscovered(FileDiscoveredEvent {
-            path: "/test.mkv".into(),
-            size: 1024,
-            content_hash: "abc".into(),
-        });
+        let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+            "/test.mkv".into(),
+            1024,
+            "abc".into(),
+        ));
 
         let results = bus.publish(event);
         assert_eq!(results.len(), 1);

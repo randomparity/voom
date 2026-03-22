@@ -69,6 +69,7 @@ impl Event {
 }
 
 /// Result returned by a plugin after processing an event.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventResult {
     pub plugin_name: String,
@@ -83,6 +84,20 @@ pub struct EventResult {
     /// without parsing the `data` JSON.
     #[serde(default)]
     pub execution_error: Option<String>,
+}
+
+impl EventResult {
+    /// Create a new `EventResult` with the given plugin name and defaults.
+    #[must_use]
+    pub fn new(plugin_name: impl Into<String>) -> Self {
+        Self {
+            plugin_name: plugin_name.into(),
+            produced_events: vec![],
+            data: None,
+            claimed: false,
+            execution_error: None,
+        }
+    }
 }
 
 impl EventResult {
@@ -144,6 +159,7 @@ impl EventResult {
 
 // --- Event payload structs ---
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileDiscoveredEvent {
     pub path: PathBuf,
@@ -151,11 +167,31 @@ pub struct FileDiscoveredEvent {
     pub content_hash: String,
 }
 
+impl FileDiscoveredEvent {
+    #[must_use]
+    pub fn new(path: PathBuf, size: u64, content_hash: String) -> Self {
+        Self {
+            path,
+            size,
+            content_hash,
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileIntrospectedEvent {
     pub file: MediaFile,
 }
 
+impl FileIntrospectedEvent {
+    #[must_use]
+    pub fn new(file: MediaFile) -> Self {
+        Self { file }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileIntrospectionFailedEvent {
     pub path: PathBuf,
@@ -165,6 +201,26 @@ pub struct FileIntrospectionFailedEvent {
     pub error_source: BadFileSource,
 }
 
+impl FileIntrospectionFailedEvent {
+    #[must_use]
+    pub fn new(
+        path: PathBuf,
+        size: u64,
+        content_hash: Option<String>,
+        error: String,
+        error_source: BadFileSource,
+    ) -> Self {
+        Self {
+            path,
+            size,
+            content_hash,
+            error,
+            error_source,
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetadataEnrichedEvent {
     pub path: PathBuf,
@@ -172,11 +228,31 @@ pub struct MetadataEnrichedEvent {
     pub metadata: serde_json::Value,
 }
 
+impl MetadataEnrichedEvent {
+    #[must_use]
+    pub fn new(path: PathBuf, source: String, metadata: serde_json::Value) -> Self {
+        Self {
+            path,
+            source,
+            metadata,
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanCreatedEvent {
     pub plan: Plan,
 }
 
+impl PlanCreatedEvent {
+    #[must_use]
+    pub fn new(plan: Plan) -> Self {
+        Self { plan }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanExecutingEvent {
     pub path: PathBuf,
@@ -184,6 +260,18 @@ pub struct PlanExecutingEvent {
     pub action_count: usize,
 }
 
+impl PlanExecutingEvent {
+    #[must_use]
+    pub fn new(path: PathBuf, phase_name: impl Into<String>, action_count: usize) -> Self {
+        Self {
+            path,
+            phase_name: phase_name.into(),
+            action_count,
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanCompletedEvent {
     pub plan_id: Uuid,
@@ -192,6 +280,24 @@ pub struct PlanCompletedEvent {
     pub actions_applied: usize,
 }
 
+impl PlanCompletedEvent {
+    #[must_use]
+    pub fn new(
+        plan_id: Uuid,
+        path: PathBuf,
+        phase_name: impl Into<String>,
+        actions_applied: usize,
+    ) -> Self {
+        Self {
+            plan_id,
+            path,
+            phase_name: phase_name.into(),
+            actions_applied,
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanFailedEvent {
     pub plan_id: Uuid,
@@ -208,12 +314,44 @@ pub struct PlanFailedEvent {
     pub error_chain: Vec<String>,
 }
 
+impl PlanFailedEvent {
+    #[must_use]
+    pub fn new(
+        plan_id: Uuid,
+        path: PathBuf,
+        phase_name: impl Into<String>,
+        error: impl Into<String>,
+    ) -> Self {
+        Self {
+            plan_id,
+            path,
+            phase_name: phase_name.into(),
+            error: error.into(),
+            error_code: None,
+            plugin_name: None,
+            error_chain: Vec::new(),
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobStartedEvent {
     pub job_id: Uuid,
     pub description: String,
 }
 
+impl JobStartedEvent {
+    #[must_use]
+    pub fn new(job_id: Uuid, description: impl Into<String>) -> Self {
+        Self {
+            job_id,
+            description: description.into(),
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobProgressEvent {
     pub job_id: Uuid,
@@ -222,6 +360,18 @@ pub struct JobProgressEvent {
     pub message: Option<String>,
 }
 
+impl JobProgressEvent {
+    #[must_use]
+    pub fn new(job_id: Uuid, progress: f64) -> Self {
+        Self {
+            job_id,
+            progress,
+            message: None,
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobCompletedEvent {
     pub job_id: Uuid,
@@ -230,6 +380,18 @@ pub struct JobCompletedEvent {
     pub message: Option<String>,
 }
 
+impl JobCompletedEvent {
+    #[must_use]
+    pub fn new(job_id: Uuid, success: bool) -> Self {
+        Self {
+            job_id,
+            success,
+            message: None,
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDetectedEvent {
     pub tool_name: String,
@@ -237,11 +399,38 @@ pub struct ToolDetectedEvent {
     pub path: PathBuf,
 }
 
+impl ToolDetectedEvent {
+    #[must_use]
+    pub fn new(tool_name: impl Into<String>, version: impl Into<String>, path: PathBuf) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            version: version.into(),
+            path,
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginErrorEvent {
     pub plugin_name: String,
     pub event_type: String,
     pub error: String,
+}
+
+impl PluginErrorEvent {
+    #[must_use]
+    pub fn new(
+        plugin_name: impl Into<String>,
+        event_type: impl Into<String>,
+        error: impl Into<String>,
+    ) -> Self {
+        Self {
+            plugin_name: plugin_name.into(),
+            event_type: event_type.into(),
+            error: error.into(),
+        }
+    }
 }
 
 #[cfg(test)]

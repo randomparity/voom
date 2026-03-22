@@ -93,10 +93,8 @@ fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
     let store = app::open_store(&config)?;
 
     use voom_domain::storage::BadFileFilters;
-    let filters = BadFileFilters {
-        path_prefix: path,
-        ..Default::default()
-    };
+    let mut filters = BadFileFilters::default();
+    filters.path_prefix = path;
     let bad_files = store
         .list_bad_files(&filters)
         .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;

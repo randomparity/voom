@@ -9,7 +9,7 @@ VOOM uses a two-tier plugin model around a thin kernel with zero media knowledge
 - **Native plugins** (compiled into the binary) handle discovery, introspection (ffprobe), policy evaluation, execution (FFmpeg/MKVToolNix), storage (SQLite), backup, job management, and a web UI.
 - **WASM plugins** (loaded at runtime via wasmtime) extend functionality in a sandboxed, language-agnostic way.
 
-All inter-plugin communication flows through a synchronous, priority-ordered **event bus**. The kernel routes work via **capability matching**, not hardcoded types.
+All inter-plugin communication flows through a synchronous, priority-ordered **event bus**. Executor selection currently uses event-bus priority ordering; capability-based routing is planned.
 
 See [`docs/INITIAL_DESIGN.md`](docs/INITIAL_DESIGN.md) for the full design document and [`CLAUDE.md`](CLAUDE.md) for development conventions.
 
@@ -42,7 +42,7 @@ policy "normalize" {
 | Crate | Purpose |
 |-------|---------|
 | `voom-cli` | CLI binary with 14 subcommands |
-| `voom-kernel` | Event bus, plugin registry, capability routing |
+| `voom-kernel` | Event bus, plugin registry, plugin loader |
 | `voom-domain` | Shared types: `MediaFile`, `Track`, `Plan`, `Event` |
 | `voom-dsl` | PEG parser, AST, compiler, validator, formatter |
 | `voom-wit` | WIT interface definitions for WASM plugins |

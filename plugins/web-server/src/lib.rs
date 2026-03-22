@@ -60,6 +60,8 @@ impl Plugin for WebServerPlugin {
         &self.capabilities
     }
 
+    /// No-op: the web server lifecycle is managed by the `serve` CLI command
+    /// via [`start_server()`], not through the plugin init/event system.
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
         Ok(())
     }
@@ -89,10 +91,10 @@ mod tests {
     #[test]
     fn test_plugin_on_event_returns_none() {
         let plugin = WebServerPlugin::new();
-        let event = Event::JobStarted(voom_domain::events::JobStartedEvent {
-            job_id: uuid::Uuid::new_v4(),
-            description: "test".into(),
-        });
+        let event = Event::JobStarted(voom_domain::events::JobStartedEvent::new(
+            uuid::Uuid::new_v4(),
+            "test",
+        ));
         assert!(plugin.on_event(&event).unwrap().is_none());
     }
 }

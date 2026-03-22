@@ -64,7 +64,7 @@ impl FfprobeIntrospectorPlugin {
     ) -> Result<FileIntrospectedEvent> {
         let json = ffprobe::run_ffprobe(&self.ffprobe_path, path, self.timeout)?;
         let file = parser::parse_ffprobe_output(&json, path, size, content_hash)?;
-        Ok(FileIntrospectedEvent { file })
+        Ok(FileIntrospectedEvent::new(file))
     }
 }
 
@@ -100,13 +100,9 @@ impl Plugin for FfprobeIntrospectorPlugin {
                         tracks = introspected.file.tracks.len(),
                         "file introspected"
                     );
-                    Ok(Some(EventResult {
-                        plugin_name: self.name().to_string(),
-                        produced_events: vec![Event::FileIntrospected(introspected)],
-                        data: None,
-                        claimed: false,
-                        execution_error: None,
-                    }))
+                    let mut result = EventResult::new(self.name());
+                    result.produced_events = vec![Event::FileIntrospected(introspected)];
+                    Ok(Some(result))
                 }
                 Err(err) => {
                     tracing::warn!(
@@ -160,11 +156,11 @@ mod tests {
     #[test]
     fn test_ignores_non_discovered_events() {
         let plugin = FfprobeIntrospectorPlugin::new();
-        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent {
-            tool_name: "ffprobe".into(),
-            version: "6.1".into(),
-            path: std::path::PathBuf::from("/usr/bin/ffprobe"),
-        });
+        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent::new(
+            "ffprobe",
+            "6.1",
+            std::path::PathBuf::from("/usr/bin/ffprobe"),
+        ));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
     }

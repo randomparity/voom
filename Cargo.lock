@@ -3128,6 +3128,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "uuid",
+ "wait-timeout",
 ]
 
 [[package]]
@@ -3158,7 +3159,6 @@ dependencies = [
  "uuid",
  "voom-domain",
  "voom-kernel",
- "wait-timeout",
 ]
 
 [[package]]
@@ -3231,7 +3231,6 @@ dependencies = [
  "uuid",
  "voom-domain",
  "voom-kernel",
- "wait-timeout",
 ]
 
 [[package]]
