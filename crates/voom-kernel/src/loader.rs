@@ -730,9 +730,6 @@ pub mod wasm {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use super::*;
     use crate::Plugin;
     use voom_domain::capabilities::Capability;
     use voom_domain::events::{Event, EventResult};
