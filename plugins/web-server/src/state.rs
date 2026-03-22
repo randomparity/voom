@@ -33,35 +33,6 @@ pub enum SseEvent {
     },
 }
 
-impl SseEvent {
-    /// Try to convert a domain Event into an `SseEvent`.
-    /// Returns None for event types that don't have SSE representations.
-    #[must_use]
-    pub fn from_domain(event: &voom_domain::events::Event) -> Option<Self> {
-        use voom_domain::events::Event;
-        match event {
-            Event::JobStarted(e) => Some(SseEvent::JobStarted {
-                job_id: e.job_id.to_string(),
-                description: e.description.clone(),
-            }),
-            Event::JobProgress(e) => Some(SseEvent::JobProgress {
-                job_id: e.job_id.to_string(),
-                progress: e.progress,
-                message: e.message.clone(),
-            }),
-            Event::JobCompleted(e) => Some(SseEvent::JobCompleted {
-                job_id: e.job_id.to_string(),
-                success: e.success,
-                message: e.message.clone(),
-            }),
-            Event::FileIntrospected(e) => Some(SseEvent::FileIntrospected {
-                path: e.file.path.display().to_string(),
-            }),
-            _ => None,
-        }
-    }
-}
-
 /// Application state shared across all handlers.
 #[derive(Clone)]
 pub struct AppState {

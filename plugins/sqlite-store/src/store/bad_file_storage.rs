@@ -43,7 +43,7 @@ impl BadFileStorage for SqliteStore {
         Ok(())
     }
 
-    fn get_bad_file_by_path(&self, path: &Path) -> Result<Option<BadFile>> {
+    fn bad_file_by_path(&self, path: &Path) -> Result<Option<BadFile>> {
         let conn = self.conn()?;
         let path_str = path.to_string_lossy().to_string();
         conn.query_row(

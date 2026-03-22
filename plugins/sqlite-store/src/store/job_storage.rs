@@ -42,7 +42,7 @@ impl JobStorage for SqliteStore {
         Ok(job.id)
     }
 
-    fn get_job(&self, id: &Uuid) -> Result<Option<Job>> {
+    fn job(&self, id: &Uuid) -> Result<Option<Job>> {
         let conn = self.conn()?;
         conn.query_row(
             "SELECT * FROM jobs WHERE id = ?1",

@@ -95,7 +95,7 @@ pub async fn get_file(
     Path(id): Path<Uuid>,
 ) -> Result<Json<MediaFile>, WebError> {
     let store = state.store.clone();
-    let file = spawn_store_op(move || store.get_file(&id)).await?;
+    let file = spawn_store_op(move || store.file(&id)).await?;
 
     file.map(Json)
         .ok_or_else(|| WebError::NotFound(format!("File {id} not found")))
@@ -111,7 +111,7 @@ pub async fn delete_file(
     let store = state.store.clone();
 
     // Verify the file exists before deleting
-    let file = spawn_store_op(move || store_check.get_file(&id)).await?;
+    let file = spawn_store_op(move || store_check.file(&id)).await?;
     if file.is_none() {
         return Err(WebError::NotFound(format!("File {id} not found")));
     }

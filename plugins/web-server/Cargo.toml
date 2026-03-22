@@ -40,7 +40,6 @@ subtle = "2"
 
 # Errors & logging
 thiserror.workspace = true
-anyhow.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

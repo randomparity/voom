@@ -45,8 +45,8 @@ pub struct FileFilters {
 #[allow(clippy::missing_errors_doc)]
 pub trait FileStorage: Send + Sync {
     fn upsert_file(&self, file: &MediaFile) -> Result<()>;
-    fn get_file(&self, id: &Uuid) -> Result<Option<MediaFile>>;
-    fn get_file_by_path(&self, path: &Path) -> Result<Option<MediaFile>>;
+    fn file(&self, id: &Uuid) -> Result<Option<MediaFile>>;
+    fn file_by_path(&self, path: &Path) -> Result<Option<MediaFile>>;
     fn list_files(&self, filters: &FileFilters) -> Result<Vec<MediaFile>>;
     /// Count total files matching the given filters (ignoring limit/offset).
     fn count_files(&self, filters: &FileFilters) -> Result<u64>;
@@ -57,7 +57,7 @@ pub trait FileStorage: Send + Sync {
 #[allow(clippy::missing_errors_doc)]
 pub trait JobStorage: Send + Sync {
     fn create_job(&self, job: &Job) -> Result<Uuid>;
-    fn get_job(&self, id: &Uuid) -> Result<Option<Job>>;
+    fn job(&self, id: &Uuid) -> Result<Option<Job>>;
     fn update_job(&self, id: &Uuid, update: &JobUpdate) -> Result<()>;
     fn claim_next_job(&self, worker_id: &str) -> Result<Option<Job>>;
     /// Atomically claim a specific job by ID, only if it is still pending.
@@ -71,14 +71,14 @@ pub trait JobStorage: Send + Sync {
 #[allow(clippy::missing_errors_doc)]
 pub trait PlanStorage: Send + Sync {
     fn save_plan(&self, plan: &Plan) -> Result<Uuid>;
-    fn get_plans_for_file(&self, file_id: &Uuid) -> Result<Vec<StoredPlan>>;
+    fn plans_for_file(&self, file_id: &Uuid) -> Result<Vec<StoredPlan>>;
     fn update_plan_status(&self, plan_id: &Uuid, status: PlanStatus) -> Result<()>;
 }
 
 /// File history snapshots.
 #[allow(clippy::missing_errors_doc)]
 pub trait FileHistoryStorage: Send + Sync {
-    fn get_file_history(&self, path: &Path) -> Result<Vec<FileHistoryEntry>>;
+    fn file_history(&self, path: &Path) -> Result<Vec<FileHistoryEntry>>;
 }
 
 /// Processing statistics recording.
@@ -90,7 +90,7 @@ pub trait StatsStorage: Send + Sync {
 /// Plugin key-value data storage.
 #[allow(clippy::missing_errors_doc)]
 pub trait PluginDataStorage: Send + Sync {
-    fn get_plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>>;
+    fn plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>>;
     fn set_plugin_data(&self, plugin: &str, key: &str, value: &[u8]) -> Result<()>;
     fn delete_plugin_data(&self, plugin: &str, key: &str) -> Result<()>;
 }
@@ -99,7 +99,7 @@ pub trait PluginDataStorage: Send + Sync {
 #[allow(clippy::missing_errors_doc)]
 pub trait BadFileStorage: Send + Sync {
     fn upsert_bad_file(&self, bad_file: &BadFile) -> Result<()>;
-    fn get_bad_file_by_path(&self, path: &Path) -> Result<Option<BadFile>>;
+    fn bad_file_by_path(&self, path: &Path) -> Result<Option<BadFile>>;
     fn list_bad_files(&self, filters: &BadFileFilters) -> Result<Vec<BadFile>>;
     fn count_bad_files(&self) -> Result<u64>;
     fn delete_bad_file(&self, id: &Uuid) -> Result<()>;

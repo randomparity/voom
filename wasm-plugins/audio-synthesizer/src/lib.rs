@@ -30,8 +30,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, Event, HostFunctions, OnEventResult,
-    OperationType, PluginInfoData, ToolOutput,
+    deserialize_event, load_plugin_config, serialize_event, ActionParams, Event, HostFunctions,
+    OnEventResult, OperationType, PluginInfoData, ToolOutput,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -87,11 +87,15 @@ pub fn on_event(
 
     let mut results = Vec::new();
     for action in &synth_actions {
-        // Extract synthesis parameters from the action.
-        let params = &action.parameters;
-        let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
-        let language = params.get("language").and_then(|v| v.as_str()).unwrap_or("en");
-        let output_codec = params.get("codec").and_then(|v| v.as_str()).unwrap_or("aac");
+        // Extract synthesis parameters from the ActionParams::Synthesize variant.
+        let (text, language, output_codec) = match &action.parameters {
+            ActionParams::Synthesize { text, language, codec, .. } => (
+                text.as_deref().unwrap_or(""),
+                language.as_deref().unwrap_or("en"),
+                codec.as_deref().unwrap_or("aac"),
+            ),
+            _ => ("", "en", "aac"),
+        };
 
         if text.is_empty() {
             host.log("warn", "synthesis action has no text, skipping");
@@ -261,11 +265,17 @@ mod tests {
             actions: vec![PlannedAction {
                 operation: OperationType::SynthesizeAudio,
                 track_index: None,
-                parameters: serde_json::json!({
-                    "text": "This is a synthesized audio track.",
-                    "language": "en",
-                    "codec": "aac",
-                }),
+                parameters: ActionParams::Synthesize {
+                    name: "audio-description".to_string(),
+                    text: Some("This is a synthesized audio track.".to_string()),
+                    language: Some("en".to_string()),
+                    codec: Some("aac".to_string()),
+                    bitrate: None,
+                    channels: None,
+                    title: None,
+                    position: None,
+                    source_track: None,
+                },
                 description: "Synthesize English audio description".to_string(),
             }],
             warnings: vec![],
@@ -320,7 +330,7 @@ mod tests {
             actions: vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(0),
-                parameters: serde_json::json!({}),
+                parameters: ActionParams::Empty,
                 description: "Set default track".to_string(),
             }],
             warnings: vec![],
@@ -348,7 +358,17 @@ mod tests {
             actions: vec![PlannedAction {
                 operation: OperationType::SynthesizeAudio,
                 track_index: None,
-                parameters: serde_json::json!({"text": "", "language": "en"}),
+                parameters: ActionParams::Synthesize {
+                    name: "empty".to_string(),
+                    text: Some("".to_string()),
+                    language: Some("en".to_string()),
+                    codec: None,
+                    bitrate: None,
+                    channels: None,
+                    title: None,
+                    position: None,
+                    source_track: None,
+                },
                 description: "empty synth".to_string(),
             }],
             warnings: vec![],

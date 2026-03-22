@@ -76,7 +76,7 @@ impl StorageBackedPluginStore {
 impl WasmPluginStore for StorageBackedPluginStore {
     fn get(&self, plugin_name: &str, key: &str) -> Result<Option<Vec<u8>>, String> {
         self.store
-            .get_plugin_data(plugin_name, key)
+            .plugin_data(plugin_name, key)
             .map_err(|e| e.to_string())
     }
 

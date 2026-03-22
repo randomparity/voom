@@ -100,7 +100,7 @@ pub async fn get_job(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Job>, WebError> {
     let store = state.store.clone();
-    let job = spawn_store_op(move || store.get_job(&id)).await?;
+    let job = spawn_store_op(move || store.job(&id)).await?;
 
     job.map(Json)
         .ok_or_else(|| WebError::NotFound(format!("Job {id} not found")))

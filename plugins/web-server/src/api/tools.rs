@@ -40,7 +40,7 @@ pub async fn list_tools(State(state): State<AppState>) -> Result<Json<ToolListRe
         let mut tools = Vec::new();
         for &tool_name in KNOWN_TOOLS {
             let key = format!("tool:{tool_name}");
-            if let Some(data) = store.get_plugin_data("tool-detector", &key)? {
+            if let Some(data) = store.plugin_data("tool-detector", &key)? {
                 if let Ok(tool) = serde_json::from_slice::<DetectedTool>(&data) {
                     tools.push(tool);
                 }

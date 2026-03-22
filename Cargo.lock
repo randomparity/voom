@@ -3197,7 +3197,6 @@ dependencies = [
 name = "voom-kernel"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
  "parking_lot",
  "rmp-serde",
@@ -3304,7 +3303,6 @@ dependencies = [
 name = "voom-web-server"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "axum",
  "axum-test",
  "chrono",

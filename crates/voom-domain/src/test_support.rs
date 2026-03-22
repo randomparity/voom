@@ -65,11 +65,11 @@ impl FileStorage for InMemoryStore {
         Ok(())
     }
 
-    fn get_file(&self, id: &Uuid) -> Result<Option<MediaFile>> {
+    fn file(&self, id: &Uuid) -> Result<Option<MediaFile>> {
         Ok(self.files.lock().unwrap().get(id).cloned())
     }
 
-    fn get_file_by_path(&self, path: &Path) -> Result<Option<MediaFile>> {
+    fn file_by_path(&self, path: &Path) -> Result<Option<MediaFile>> {
         Ok(self
             .files
             .lock()
@@ -141,7 +141,7 @@ impl JobStorage for InMemoryStore {
         Ok(job.id)
     }
 
-    fn get_job(&self, id: &Uuid) -> Result<Option<Job>> {
+    fn job(&self, id: &Uuid) -> Result<Option<Job>> {
         Ok(self.jobs.lock().unwrap().get(id).cloned())
     }
 
@@ -246,7 +246,7 @@ impl PlanStorage for InMemoryStore {
         Ok(Uuid::new_v4())
     }
 
-    fn get_plans_for_file(&self, _file_id: &Uuid) -> Result<Vec<StoredPlan>> {
+    fn plans_for_file(&self, _file_id: &Uuid) -> Result<Vec<StoredPlan>> {
         Ok(Vec::new())
     }
 
@@ -260,7 +260,7 @@ impl PlanStorage for InMemoryStore {
 }
 
 impl FileHistoryStorage for InMemoryStore {
-    fn get_file_history(&self, _path: &Path) -> Result<Vec<crate::storage::FileHistoryEntry>> {
+    fn file_history(&self, _path: &Path) -> Result<Vec<crate::storage::FileHistoryEntry>> {
         Ok(vec![])
     }
 }
@@ -272,7 +272,7 @@ impl StatsStorage for InMemoryStore {
 }
 
 impl PluginDataStorage for InMemoryStore {
-    fn get_plugin_data(&self, _plugin: &str, _key: &str) -> Result<Option<Vec<u8>>> {
+    fn plugin_data(&self, _plugin: &str, _key: &str) -> Result<Option<Vec<u8>>> {
         Ok(None)
     }
 
@@ -290,7 +290,7 @@ impl BadFileStorage for InMemoryStore {
         Ok(())
     }
 
-    fn get_bad_file_by_path(&self, _path: &Path) -> Result<Option<BadFile>> {
+    fn bad_file_by_path(&self, _path: &Path) -> Result<Option<BadFile>> {
         Ok(None)
     }
 

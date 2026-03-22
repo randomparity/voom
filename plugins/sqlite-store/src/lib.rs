@@ -297,9 +297,9 @@ mod tests {
 
         // Verify bad file was stored
         let store = plugin.store().unwrap();
-        use voom_domain::storage::{BadFileStorage, PluginDataStorage};
+        use voom_domain::storage::BadFileStorage;
         let bf = store
-            .get_bad_file_by_path(std::path::Path::new("/media/corrupt.mkv"))
+            .bad_file_by_path(std::path::Path::new("/media/corrupt.mkv"))
             .unwrap();
         assert!(bf.is_some());
         assert_eq!(bf.unwrap().error, "ffprobe failed");
@@ -335,9 +335,9 @@ mod tests {
 
         // Bad file entry should be cleared
         let store = plugin.store().unwrap();
-        use voom_domain::storage::{BadFileStorage, PluginDataStorage};
+        use voom_domain::storage::BadFileStorage;
         let bf = store
-            .get_bad_file_by_path(std::path::Path::new("/media/recovered.mkv"))
+            .bad_file_by_path(std::path::Path::new("/media/recovered.mkv"))
             .unwrap();
         assert!(bf.is_none());
     }
@@ -362,9 +362,7 @@ mod tests {
 
         // Verify data was stored
         let store = plugin.store().unwrap();
-        let data = store
-            .get_plugin_data("tool-detector", "tool:ffprobe")
-            .unwrap();
+        let data = store.plugin_data("tool-detector", "tool:ffprobe").unwrap();
         assert!(data.is_some());
         let value: serde_json::Value = serde_json::from_slice(&data.unwrap()).unwrap();
         assert_eq!(value["tool_name"], "ffprobe");

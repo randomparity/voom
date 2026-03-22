@@ -9,7 +9,7 @@ use voom_domain::storage::FileHistoryStorage;
 use super::{parse_optional_datetime, row_uuid, storage_err, SqliteStore};
 
 impl FileHistoryStorage for SqliteStore {
-    fn get_file_history(&self, path: &Path) -> Result<Vec<voom_domain::storage::FileHistoryEntry>> {
+    fn file_history(&self, path: &Path) -> Result<Vec<voom_domain::storage::FileHistoryEntry>> {
         let conn = self.conn()?;
         let path_str = path.to_string_lossy().to_string();
         let mut stmt = conn

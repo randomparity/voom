@@ -1,8 +1,46 @@
 //! Error types for the web server.
+//!
+//! This module contains two distinct error categories:
+//!
+//! - [`ServerError`] — typed errors returned by [`crate::server::start_server`] and
+//!   related startup functions. These are library-level errors suitable for callers
+//!   who want to handle individual failure modes programmatically.
+//! - [`WebError`] / [`ApiError`] — HTTP-layer errors used inside axum handlers.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
+
+/// Errors that can occur while starting or running the web server.
+#[derive(Debug, thiserror::Error)]
+pub enum ServerError {
+    /// The bind address string is not a valid [`std::net::SocketAddr`].
+    #[error("invalid bind address '{address}': {source}")]
+    InvalidBindAddress {
+        address: String,
+        #[source]
+        source: std::net::AddrParseError,
+    },
+
+    /// The TCP listener could not bind to the requested address/port.
+    #[error("failed to bind to {address}: {source}")]
+    BindFailed {
+        address: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The HTTP server returned an error while serving requests.
+    #[error("server error: {source}")]
+    Serve {
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Template loading or compilation failed.
+    #[error("template error: {0}")]
+    Template(String),
+}
 
 /// API error response.
 #[derive(Debug, Serialize)]

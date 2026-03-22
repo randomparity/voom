@@ -96,8 +96,8 @@ pub async fn file_detail(State(state): State<AppState>, Path(id): Path<uuid::Uui
     let store = state.store.clone();
 
     let (file, plans) = spawn_store_op(move || {
-        let file = store.get_file(&id)?;
-        let plans = store.get_plans_for_file(&id)?;
+        let file = store.file(&id)?;
+        let plans = store.plans_for_file(&id)?;
         Ok((file, plans))
     })
     .await?;

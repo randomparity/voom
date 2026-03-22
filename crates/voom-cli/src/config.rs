@@ -121,14 +121,11 @@ pub const KNOWN_PLUGIN_NAMES: &[&str] = &[
     "sqlite-store",
     "tool-detector",
     "discovery",
-    "ffprobe-introspector",
     "policy-evaluator",
     "phase-orchestrator",
     "mkvtoolnix-executor",
-    "ffmpeg-executor",
     "backup-manager",
     "job-manager",
-    "web-server",
 ];
 
 /// Generate a default config.toml with all options commented out and documented.
@@ -154,10 +151,10 @@ pub fn default_config_contents() -> String {
 # wasm_dir = "{data_dir_str}/plugins/wasm"
 
 # List of plugin names to disable at startup.
-# Valid names: sqlite-store, tool-detector, discovery, ffprobe-introspector,
-#   policy-evaluator, phase-orchestrator, mkvtoolnix-executor, ffmpeg-executor,
-#   backup-manager, job-manager, web-server
-# disabled_plugins = ["web-server"]
+# Valid names: sqlite-store, tool-detector, discovery,
+#   policy-evaluator, phase-orchestrator, mkvtoolnix-executor,
+#   backup-manager, job-manager
+# disabled_plugins = ["mkvtoolnix-executor"]
 
 # Per-plugin configuration. Use [plugin.<name>] sections to pass
 # settings to specific plugins. The section name must match the plugin name.
@@ -313,15 +310,17 @@ mod tests {
     #[test]
     fn test_known_plugin_names_contains_expected() {
         assert!(KNOWN_PLUGIN_NAMES.contains(&"sqlite-store"));
-        assert!(KNOWN_PLUGIN_NAMES.contains(&"ffmpeg-executor"));
-        assert!(KNOWN_PLUGIN_NAMES.contains(&"web-server"));
+        assert!(KNOWN_PLUGIN_NAMES.contains(&"mkvtoolnix-executor"));
         assert!(KNOWN_PLUGIN_NAMES.contains(&"discovery"));
         assert!(KNOWN_PLUGIN_NAMES.contains(&"job-manager"));
+        assert!(!KNOWN_PLUGIN_NAMES.contains(&"ffmpeg-executor"));
+        assert!(!KNOWN_PLUGIN_NAMES.contains(&"web-server"));
+        assert!(!KNOWN_PLUGIN_NAMES.contains(&"ffprobe-introspector"));
     }
 
     #[test]
     fn test_known_plugin_names_count() {
-        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 11);
+        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 8);
     }
 
     #[test]

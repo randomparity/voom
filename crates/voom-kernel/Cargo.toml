@@ -18,7 +18,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 rmp-serde = { workspace = true }
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 toml = { workspace = true }
 ureq = { workspace = true, optional = true }
 wait-timeout = { workspace = true, optional = true }

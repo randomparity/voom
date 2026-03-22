@@ -193,7 +193,7 @@ mod tests {
         reporter.on_job_progress(job_id, 0.75, Some("Processing"));
 
         use voom_domain::storage::JobStorage;
-        let loaded = store.get_job(&job_id).unwrap().unwrap();
+        let loaded = store.job(&job_id).unwrap().unwrap();
         assert_eq!(loaded.progress, 0.75);
         assert_eq!(loaded.progress_message.as_deref(), Some("Processing"));
     }

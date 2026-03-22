@@ -41,10 +41,6 @@ fn format_eta(elapsed: Duration, current: usize, total: usize) -> String {
 pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     let config = config::load_config()?;
     let (kernel, store) = app::bootstrap_kernel_with_store(&config)?;
-    let store = match store {
-        Some(s) => s,
-        None => app::open_store(&config)?,
-    };
 
     let path = args
         .path

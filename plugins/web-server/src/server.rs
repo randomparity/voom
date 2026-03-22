@@ -3,10 +3,10 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
 use axum::extract::DefaultBodyLimit;
 use voom_domain::storage::StorageTrait;
 
+use crate::errors::ServerError;
 use crate::router::build_router;
 use crate::state::AppState;
 
@@ -27,7 +27,7 @@ pub async fn start_server(
     config: ServerConfig,
     store: Arc<dyn StorageTrait>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
-) -> Result<()> {
+) -> Result<(), ServerError> {
     if config.auth_token.is_none() {
         tracing::warn!("Web server starting without authentication — all requests will be allowed");
     }
@@ -37,25 +37,33 @@ pub async fn start_server(
         AppState::new(store, templates, config.auth_token).with_plugin_info(config.plugin_info);
     let router = build_router(state).layer(DefaultBodyLimit::max(2 * 1024 * 1024)); // 2 MiB
 
-    let addr: SocketAddr = format!("{}:{}", config.host, config.port)
+    let address = format!("{}:{}", config.host, config.port);
+    let addr: SocketAddr = address
         .parse()
-        .context("Invalid bind address")?;
+        .map_err(|e| ServerError::InvalidBindAddress {
+            address: address.clone(),
+            source: e,
+        })?;
 
     tracing::info!("Web server listening on http://{}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .context("Failed to bind address")?;
+    let listener =
+        tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(|e| ServerError::BindFailed {
+                address: address.clone(),
+                source: e,
+            })?;
 
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown)
         .await
-        .context("Server error")?;
+        .map_err(|e| ServerError::Serve { source: e })?;
 
     Ok(())
 }
 
-fn load_templates(template_dir: Option<&str>) -> Result<tera::Tera> {
+fn load_templates(template_dir: Option<&str>) -> Result<tera::Tera, ServerError> {
     let dir = template_dir.unwrap_or("web/templates");
 
     // Try to load from disk first

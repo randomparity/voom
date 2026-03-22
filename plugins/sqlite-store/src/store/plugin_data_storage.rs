@@ -7,7 +7,7 @@ use voom_domain::storage::PluginDataStorage;
 use super::{format_datetime, storage_err, OptionalExt, SqliteStore};
 
 impl PluginDataStorage for SqliteStore {
-    fn get_plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>> {
+    fn plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>> {
         let conn = self.conn()?;
         conn.query_row(
             "SELECT value FROM plugin_data WHERE plugin_name = ?1 AND key = ?2",

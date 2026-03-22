@@ -8,10 +8,6 @@ use crate::cli::ServeArgs;
 pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     let config = crate::config::load_config()?;
     let (kernel, store) = crate::app::bootstrap_kernel_with_store(&config)?;
-    let store = match store {
-        Some(s) => s,
-        None => crate::app::open_store(&config)?,
-    };
 
     // Snapshot plugin info from the kernel registry
     let plugin_info: Vec<voom_web_server::api::plugins::PluginInfo> = kernel

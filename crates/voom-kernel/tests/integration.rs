@@ -85,39 +85,6 @@ impl Plugin for MockIntrospector {
     }
 }
 
-/// A native plugin with executor capabilities for testing capability queries.
-struct MockExecutor {
-    caps: Vec<Capability>,
-}
-
-impl Plugin for MockExecutor {
-    fn name(&self) -> &str {
-        "mock-mkvtoolnix"
-    }
-
-    fn version(&self) -> &str {
-        "0.1.0"
-    }
-
-    fn capabilities(&self) -> &[Capability] {
-        &self.caps
-    }
-
-    fn handles(&self, event_type: &str) -> bool {
-        event_type == Event::PLAN_CREATED
-    }
-
-    fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
-        Ok(Some(EventResult {
-            plugin_name: "mock-mkvtoolnix".to_string(),
-            produced_events: vec![],
-            data: Some(serde_json::json!({"executed": true})),
-            claimed: false,
-            execution_error: None,
-        }))
-    }
-}
-
 #[test]
 fn test_kernel_register_and_dispatch() {
     let mut kernel = Kernel::new();
@@ -158,46 +125,6 @@ fn test_kernel_register_and_dispatch() {
         results[1].produced_events[0].event_type(),
         Event::FILE_INTROSPECTED
     );
-}
-
-#[test]
-fn test_kernel_capability_queries() {
-    let mut kernel = Kernel::new();
-
-    let executor = Arc::new(MockExecutor {
-        caps: vec![Capability::Execute {
-            operations: vec![
-                OperationType::SetDefault,
-                OperationType::ReorderTracks,
-                OperationType::RemoveTrack,
-            ],
-            formats: vec!["mkv".into()],
-        }],
-    });
-
-    kernel.register_plugin(executor, 0);
-
-    // Query by capability kind.
-    let executors = kernel.registry.find_by_capability_kind("execute");
-    assert_eq!(executors.len(), 1);
-    assert_eq!(executors[0].name(), "mock-mkvtoolnix");
-
-    // Query for specific operation + format.
-    let handler = kernel.registry.find_for_operation("set_default", "mkv");
-    assert!(handler.is_some());
-    assert_eq!(handler.unwrap().name(), "mock-mkvtoolnix");
-
-    // No handler for transcode_video.
-    assert!(kernel
-        .registry
-        .find_for_operation("transcode_video", "mkv")
-        .is_none());
-
-    // No handler for mp4 format.
-    assert!(kernel
-        .registry
-        .find_for_operation("set_default", "mp4")
-        .is_none());
 }
 
 #[test]

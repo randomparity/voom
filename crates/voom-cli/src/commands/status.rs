@@ -13,55 +13,44 @@ pub fn run() -> Result<()> {
 
     // Database stats
     match app::bootstrap_kernel_with_store(&config) {
-        Ok((kernel, store_opt)) => {
-            let store = match store_opt {
-                Some(s) => Ok(s),
-                None => app::open_store(&config),
-            };
-            match store {
-                Ok(store) => {
-                    let files = store
-                        .list_files(&voom_domain::FileFilters::default())
-                        .map_err(|e| anyhow::anyhow!("failed to list files from database: {e}"))?;
+        Ok((kernel, store)) => {
+            let files = store
+                .list_files(&voom_domain::FileFilters::default())
+                .map_err(|e| anyhow::anyhow!("failed to list files from database: {e}"))?;
 
-                    let total_size: u64 = files.iter().map(|f| f.size).sum();
+            let total_size: u64 = files.iter().map(|f| f.size).sum();
 
-                    println!("{}", style("Library:").bold());
+            println!("{}", style("Library:").bold());
+            println!(
+                "  {} files, {}",
+                style(files.len()).cyan(),
+                style(voom_domain::utils::datetime::format_size(total_size)).cyan()
+            );
+
+            // Bad file count
+            match store.count_bad_files() {
+                Ok(0) => {}
+                Ok(n) => {
                     println!(
-                        "  {} files, {}",
-                        style(files.len()).cyan(),
-                        style(voom_domain::utils::datetime::format_size(total_size)).cyan()
+                        "  {} bad files (run {} to see details)",
+                        style(n).red(),
+                        style("voom db list-bad").bold()
                     );
-
-                    // Bad file count
-                    match store.count_bad_files() {
-                        Ok(0) => {}
-                        Ok(n) => {
-                            println!(
-                                "  {} bad files (run {} to see details)",
-                                style(n).red(),
-                                style("voom db list-bad").bold()
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!("failed to count bad files: {e}");
-                        }
-                    }
-
-                    // Container breakdown (top 5)
-                    let sorted = stats::container_counts(&files);
-                    if !sorted.is_empty() {
-                        let summary: Vec<String> = sorted
-                            .iter()
-                            .take(5)
-                            .map(|(c, n)| format!("{c}: {n}"))
-                            .collect();
-                        println!("  Containers: {}", summary.join(", "));
-                    }
                 }
                 Err(e) => {
-                    println!("{} Cannot access database: {e}", style("WARNING").yellow());
+                    tracing::warn!("failed to count bad files: {e}");
                 }
+            }
+
+            // Container breakdown (top 5)
+            let sorted = stats::container_counts(&files);
+            if !sorted.is_empty() {
+                let summary: Vec<String> = sorted
+                    .iter()
+                    .take(5)
+                    .map(|(c, n)| format!("{c}: {n}"))
+                    .collect();
+                println!("  Containers: {}", summary.join(", "));
             }
 
             // Plugin count

@@ -10,13 +10,9 @@ pub mod condition;
 pub mod evaluator;
 pub mod filter;
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-
 use voom_domain::capabilities::Capability;
-use voom_domain::errors::{Result, VoomError};
+use voom_domain::errors::Result;
 use voom_domain::media::MediaFile;
-use voom_domain::plan::Plan;
 use voom_dsl::compiler::CompiledPolicy;
 use voom_kernel::{Plugin, PluginContext};
 
@@ -24,48 +20,17 @@ use voom_kernel::{Plugin, PluginContext};
 ///
 /// Evaluates compiled policies against media files and produces `Plan` structs.
 /// Evaluation is done via direct API call, not through the event bus.
-pub struct PolicyEvaluatorPlugin {
-    policies: Mutex<HashMap<String, CompiledPolicy>>,
-}
+pub struct PolicyEvaluatorPlugin;
 
 impl PolicyEvaluatorPlugin {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            policies: Mutex::new(HashMap::new()),
-        }
+        Self
     }
 
-    /// Register a compiled policy by name.
-    pub fn register_policy(&self, policy: CompiledPolicy) -> Result<()> {
-        let name = policy.name.clone();
-        self.policies
-            .lock()
-            .map_err(|_| VoomError::Plugin {
-                plugin: "policy-evaluator".into(),
-                message: "policies lock poisoned".into(),
-            })?
-            .insert(name, policy);
-        Ok(())
-    }
-
-    /// Evaluate a policy against a file, returning plans for all phases.
-    pub fn evaluate(&self, policy_name: &str, file: &MediaFile) -> Result<Vec<Plan>> {
-        let policies = self.policies.lock().map_err(|_| VoomError::Plugin {
-            plugin: "policy-evaluator".into(),
-            message: "policies lock poisoned".into(),
-        })?;
-        let policy = policies.get(policy_name).ok_or_else(|| VoomError::Plugin {
-            plugin: "policy-evaluator".into(),
-            message: format!("Unknown policy: {policy_name}"),
-        })?;
-
-        let result = evaluator::evaluate(policy, file);
-        Ok(result.plans)
-    }
-
-    /// Evaluate a policy directly (without registering it first).
-    pub fn evaluate_policy(
+    /// Evaluate a compiled policy against a media file, producing an [`evaluator::EvaluationResult`]
+    /// with plans for all phases and per-phase outcomes.
+    pub fn evaluate(
         &self,
         policy: &CompiledPolicy,
         file: &MediaFile,
@@ -90,7 +55,7 @@ impl Plugin for PolicyEvaluatorPlugin {
     }
 
     fn capabilities(&self) -> &[Capability] {
-        // Policy evaluation is done via direct API call (evaluate() / evaluate_policy()),
+        // Policy evaluation is done via direct API call (evaluate()),
         // not through the event bus, so no capabilities are advertised.
         &[]
     }
@@ -135,13 +100,14 @@ mod tests {
     }
 
     #[test]
-    fn test_register_and_evaluate_unknown_policy_errors() {
+    fn test_evaluate_returns_result_with_plans() {
         let plugin = PolicyEvaluatorPlugin::new();
+        let policy =
+            voom_dsl::compile_policy(r#"policy "test" { phase init { container mkv } }"#).unwrap();
         let file = MediaFile::new(PathBuf::from("/test/video.mkv"));
-        let result = plugin.evaluate("nonexistent", &file);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("Unknown policy: nonexistent"));
+        let result = plugin.evaluate(&policy, &file);
+        assert_eq!(result.plans.len(), 1);
+        assert_eq!(result.phase_outcomes.len(), 1);
     }
 
     #[test]
@@ -164,12 +130,5 @@ mod tests {
             data_dir: PathBuf::from("/tmp/voom-test"),
         };
         assert!(plugin.init(&ctx).is_ok());
-    }
-
-    #[test]
-    fn test_policies_mutex_starts_empty() {
-        let plugin = PolicyEvaluatorPlugin::new();
-        let policies = plugin.policies.lock().unwrap();
-        assert!(policies.is_empty());
     }
 }

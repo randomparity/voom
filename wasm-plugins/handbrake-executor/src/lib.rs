@@ -30,8 +30,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, Event, HostFunctions, OnEventResult,
-    OperationType, PluginInfoData, ToolOutput,
+    deserialize_event, load_plugin_config, serialize_event, ActionParams, Event, HostFunctions,
+    OnEventResult, OperationType, PluginInfoData, ToolOutput,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -90,7 +90,11 @@ pub fn on_event(
         .iter()
         .find_map(|a| {
             if a.operation == OperationType::ConvertContainer {
-                a.parameters.get("container").and_then(|v| v.as_str())
+                if let ActionParams::Container { container } = &a.parameters {
+                    Some(container.as_str())
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -187,35 +191,47 @@ fn build_handbrake_args(
 
     // Apply per-action parameters.
     for action in actions {
-        let params = &action.parameters;
-
         match action.operation {
             OperationType::TranscodeVideo => {
-                if let Some(encoder) = params.get("encoder").and_then(|v| v.as_str()) {
+                if let ActionParams::Transcode { codec, crf, preset, bitrate, .. } = &action.parameters {
                     args.push("--encoder".to_string());
-                    args.push(encoder.to_string());
-                }
-                if let Some(quality) = params.get("quality").and_then(|v| v.as_f64()) {
-                    args.push("--quality".to_string());
-                    args.push(quality.to_string());
-                }
-                if let Some(bitrate) = params.get("bitrate").and_then(|v| v.as_u64()) {
-                    args.push("--vb".to_string());
-                    args.push(bitrate.to_string());
+                    args.push(codec.clone());
+                    if let Some(q) = crf {
+                        args.push("--quality".to_string());
+                        args.push(q.to_string());
+                    }
+                    if let Some(p) = preset {
+                        // Only push preset from action params if not already set by config
+                        if config.as_ref().and_then(|c| c.preset.as_deref()).is_none() {
+                            args.push("--preset".to_string());
+                            args.push(p.clone());
+                        }
+                    }
+                    if let Some(b) = bitrate {
+                        args.push("--vb".to_string());
+                        args.push(b.clone());
+                    }
                 }
             }
             OperationType::TranscodeAudio => {
-                if let Some(encoder) = params.get("encoder").and_then(|v| v.as_str()) {
+                if let ActionParams::Transcode { codec, bitrate, channels, .. } = &action.parameters {
                     args.push("--aencoder".to_string());
-                    args.push(encoder.to_string());
-                }
-                if let Some(bitrate) = params.get("bitrate").and_then(|v| v.as_u64()) {
-                    args.push("--ab".to_string());
-                    args.push(bitrate.to_string());
-                }
-                if let Some(mixdown) = params.get("mixdown").and_then(|v| v.as_str()) {
-                    args.push("--mixdown".to_string());
-                    args.push(mixdown.to_string());
+                    args.push(codec.clone());
+                    if let Some(b) = bitrate {
+                        args.push("--ab".to_string());
+                        args.push(b.clone());
+                    }
+                    if let Some(ch) = channels {
+                        // Map channel count to HandBrake mixdown name
+                        let mixdown = match ch {
+                            1 => "mono",
+                            2 => "stereo",
+                            6 => "5point1",
+                            _ => "stereo",
+                        };
+                        args.push("--mixdown".to_string());
+                        args.push(mixdown.to_string());
+                    }
                 }
             }
             _ => {}
@@ -316,19 +332,25 @@ mod tests {
                 PlannedAction {
                     operation: OperationType::TranscodeVideo,
                     track_index: Some(0),
-                    parameters: serde_json::json!({
-                        "encoder": "x265",
-                        "quality": 22.0,
-                    }),
+                    parameters: ActionParams::Transcode {
+                        codec: "x265".to_string(),
+                        crf: Some(22),
+                        preset: None,
+                        bitrate: None,
+                        channels: None,
+                    },
                     description: "Transcode video to HEVC CRF 22".to_string(),
                 },
                 PlannedAction {
                     operation: OperationType::TranscodeAudio,
                     track_index: Some(1),
-                    parameters: serde_json::json!({
-                        "encoder": "opus",
-                        "bitrate": 128,
-                    }),
+                    parameters: ActionParams::Transcode {
+                        codec: "opus".to_string(),
+                        crf: None,
+                        preset: None,
+                        bitrate: Some("128k".to_string()),
+                        channels: None,
+                    },
                     description: "Transcode audio to Opus 128k".to_string(),
                 },
             ],
@@ -399,7 +421,7 @@ mod tests {
             actions: vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(0),
-                parameters: serde_json::json!({}),
+                parameters: ActionParams::Empty,
                 description: "set default".to_string(),
             }],
             warnings: vec![],
@@ -429,7 +451,13 @@ mod tests {
         let action = PlannedAction {
             operation: OperationType::TranscodeVideo,
             track_index: Some(0),
-            parameters: serde_json::json!({"encoder": "x265", "quality": 20.0}),
+            parameters: ActionParams::Transcode {
+                codec: "x265".to_string(),
+                crf: Some(20),
+                preset: None,
+                bitrate: None,
+                channels: None,
+            },
             description: "transcode".to_string(),
         };
         let args = build_handbrake_args("/input.mkv", "/output.mkv", &[&action], &None);
@@ -457,14 +485,20 @@ mod tests {
         let action = PlannedAction {
             operation: OperationType::TranscodeAudio,
             track_index: Some(1),
-            parameters: serde_json::json!({"encoder": "opus", "bitrate": 128, "mixdown": "stereo"}),
+            parameters: ActionParams::Transcode {
+                codec: "opus".to_string(),
+                crf: None,
+                preset: None,
+                bitrate: Some("128k".to_string()),
+                channels: Some(2),
+            },
             description: "transcode audio".to_string(),
         };
         let args = build_handbrake_args("/input.mkv", "/output.mkv", &[&action], &None);
         assert!(args.contains(&"--aencoder".to_string()));
         assert!(args.contains(&"opus".to_string()));
         assert!(args.contains(&"--ab".to_string()));
-        assert!(args.contains(&"128".to_string()));
+        assert!(args.contains(&"128k".to_string()));
         assert!(args.contains(&"--mixdown".to_string()));
         assert!(args.contains(&"stereo".to_string()));
     }

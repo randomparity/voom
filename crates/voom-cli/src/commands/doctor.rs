@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use anyhow::Result;
 use console::style;
 
@@ -41,24 +39,12 @@ pub fn run() -> Result<()> {
     let config = config::load_config().unwrap_or_default();
     let kernel_result = app::bootstrap_kernel_with_store(&config);
     match &kernel_result {
-        Ok((_kernel, store_opt)) => {
-            let store = match store_opt {
-                Some(s) => Ok(Arc::clone(s)),
-                None => app::open_store(&config),
-            };
-            match store {
-                Ok(store) => {
-                    match store.list_files(&voom_domain::FileFilters {
-                        limit: Some(1),
-                        ..Default::default()
-                    }) {
-                        Ok(_) => println!("{}", style("OK").green()),
-                        Err(e) => {
-                            println!("{} {e}", style("ERROR").red());
-                            issues += 1;
-                        }
-                    }
-                }
+        Ok((_kernel, store)) => {
+            match store.list_files(&voom_domain::FileFilters {
+                limit: Some(1),
+                ..Default::default()
+            }) {
+                Ok(_) => println!("{}", style("OK").green()),
                 Err(e) => {
                     println!("{} {e}", style("ERROR").red());
                     issues += 1;

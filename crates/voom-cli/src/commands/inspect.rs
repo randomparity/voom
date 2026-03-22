@@ -24,7 +24,7 @@ pub fn run(args: InspectArgs) -> Result<()> {
     let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
-    if let Ok(Some(file)) = store.get_file_by_path(&path) {
+    if let Ok(Some(file)) = store.file_by_path(&path) {
         match args.format {
             OutputFormat::Json => output::format_file_json(&file),
             OutputFormat::Table => output::format_file_info(&file, args.tracks_only),

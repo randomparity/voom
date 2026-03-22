@@ -75,7 +75,7 @@ impl PlanStorage for SqliteStore {
         Ok(())
     }
 
-    fn get_plans_for_file(&self, file_id: &Uuid) -> Result<Vec<StoredPlan>> {
+    fn plans_for_file(&self, file_id: &Uuid) -> Result<Vec<StoredPlan>> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(

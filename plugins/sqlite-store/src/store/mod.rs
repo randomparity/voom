@@ -589,7 +589,7 @@ mod tests {
         let file = sample_file();
         store.upsert_file(&file).unwrap();
 
-        let loaded = store.get_file(&file.id).unwrap().unwrap();
+        let loaded = store.file(&file.id).unwrap().unwrap();
         assert_eq!(loaded.id, file.id);
         assert_eq!(loaded.path, file.path);
         assert_eq!(loaded.size, file.size);
@@ -605,7 +605,7 @@ mod tests {
         let file = sample_file();
         store.upsert_file(&file).unwrap();
 
-        let loaded = store.get_file(&file.id).unwrap().unwrap();
+        let loaded = store.file(&file.id).unwrap().unwrap();
         let audio = &loaded.tracks[1];
         assert_eq!(audio.codec, "aac");
         assert_eq!(audio.language, "eng");
@@ -622,7 +622,7 @@ mod tests {
         store.upsert_file(&file).unwrap();
 
         let loaded = store
-            .get_file_by_path(Path::new("/media/movies/test.mkv"))
+            .file_by_path(Path::new("/media/movies/test.mkv"))
             .unwrap()
             .unwrap();
         assert_eq!(loaded.id, file.id);
@@ -631,7 +631,7 @@ mod tests {
     #[test]
     fn test_get_nonexistent_file() {
         let store = test_store();
-        let result = store.get_file(&Uuid::new_v4()).unwrap();
+        let result = store.file(&Uuid::new_v4()).unwrap();
         assert!(result.is_none());
     }
 
@@ -646,7 +646,7 @@ mod tests {
             .push(Track::new(3, TrackType::AudioCommentary, "aac".into()));
         store.upsert_file(&file).unwrap();
 
-        let loaded = store.get_file(&file.id).unwrap().unwrap();
+        let loaded = store.file(&file.id).unwrap().unwrap();
         assert_eq!(loaded.size, 2_000_000_000);
         assert_eq!(loaded.tracks.len(), 4);
     }
@@ -657,7 +657,7 @@ mod tests {
         let file = sample_file();
         store.upsert_file(&file).unwrap();
         store.delete_file(&file.id).unwrap();
-        assert!(store.get_file(&file.id).unwrap().is_none());
+        assert!(store.file(&file.id).unwrap().is_none());
     }
 
     #[test]
@@ -779,7 +779,7 @@ mod tests {
         let id = store.create_job(&job).unwrap();
         assert_eq!(id, job.id);
 
-        let loaded = store.get_job(&id).unwrap().unwrap();
+        let loaded = store.job(&id).unwrap().unwrap();
         assert_eq!(loaded.job_type, voom_domain::job::JobType::Transcode);
         assert_eq!(loaded.priority, 50);
         assert_eq!(loaded.status, JobStatus::Pending);
@@ -801,7 +801,7 @@ mod tests {
         };
         store.update_job(&job.id, &update).unwrap();
 
-        let loaded = store.get_job(&job.id).unwrap().unwrap();
+        let loaded = store.job(&job.id).unwrap().unwrap();
         assert_eq!(loaded.status, JobStatus::Running);
         assert_eq!(loaded.progress, 0.5);
         assert_eq!(loaded.progress_message.as_deref(), Some("Scanning..."));
@@ -933,7 +933,7 @@ mod tests {
 
         let plan_id = store.save_plan(&plan).unwrap();
         assert_eq!(plan_id, plan.id);
-        let plans = store.get_plans_for_file(&file.id).unwrap();
+        let plans = store.plans_for_file(&file.id).unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].id, plan_id);
         assert_eq!(plans[0].policy_name, "default");
@@ -981,7 +981,7 @@ mod tests {
             .set_plugin_data("ffprobe", "version", b"6.1.0")
             .unwrap();
 
-        let data = store.get_plugin_data("ffprobe", "version").unwrap();
+        let data = store.plugin_data("ffprobe", "version").unwrap();
         assert_eq!(data, Some(b"6.1.0".to_vec()));
     }
 
@@ -995,14 +995,14 @@ mod tests {
             .set_plugin_data("ffprobe", "version", b"6.1.0")
             .unwrap();
 
-        let data = store.get_plugin_data("ffprobe", "version").unwrap();
+        let data = store.plugin_data("ffprobe", "version").unwrap();
         assert_eq!(data, Some(b"6.1.0".to_vec()));
     }
 
     #[test]
     fn test_plugin_data_missing() {
         let store = test_store();
-        let data = store.get_plugin_data("unknown", "key").unwrap();
+        let data = store.plugin_data("unknown", "key").unwrap();
         assert!(data.is_none());
     }
 
@@ -1026,7 +1026,7 @@ mod tests {
         assert_eq!(pruned, 1);
 
         // File should be gone
-        assert!(store.get_file(&file.id).unwrap().is_none());
+        assert!(store.file(&file.id).unwrap().is_none());
     }
 
     #[test]
@@ -1049,8 +1049,8 @@ mod tests {
         assert_eq!(pruned, 1);
 
         // file_a should be gone, file_b should remain
-        assert!(store.get_file(&file_a.id).unwrap().is_none());
-        assert!(store.get_file(&file_b.id).unwrap().is_some());
+        assert!(store.file(&file_a.id).unwrap().is_none());
+        assert!(store.file(&file_b.id).unwrap().is_some());
     }
 
     #[test]
@@ -1098,8 +1098,8 @@ mod tests {
         assert_eq!(pruned, 1);
 
         // File, plans, and stats should all be gone
-        assert!(store.get_file(&file.id).unwrap().is_none());
-        assert!(store.get_plans_for_file(&file.id).unwrap().is_empty());
+        assert!(store.file(&file.id).unwrap().is_none());
+        assert!(store.plans_for_file(&file.id).unwrap().is_empty());
     }
 
     #[test]
@@ -1116,7 +1116,7 @@ mod tests {
             .unwrap();
         assert_eq!(pruned, 0);
 
-        assert!(store.get_file(&file.id).unwrap().is_some());
+        assert!(store.file(&file.id).unwrap().is_some());
     }
 
     // --- Concurrency ---
@@ -1136,7 +1136,7 @@ mod tests {
                 let mut file = MediaFile::new(PathBuf::from(format!("/media/concurrent{i}.mkv")));
                 file.content_hash = format!("hash{i}");
                 store.upsert_file(&file).unwrap();
-                let loaded = store.get_file(&file.id).unwrap().unwrap();
+                let loaded = store.file(&file.id).unwrap().unwrap();
                 assert_eq!(loaded.path, file.path);
             }));
         }
@@ -1238,7 +1238,7 @@ mod tests {
             .update_plan_status(&plan_id, PlanStatus::Completed)
             .unwrap();
 
-        let plans = store.get_plans_for_file(&file.id).unwrap();
+        let plans = store.plans_for_file(&file.id).unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].status, PlanStatus::Completed);
         assert!(plans[0].executed_at.is_some());
@@ -1278,7 +1278,7 @@ mod tests {
             .update_plan_status(&plan_id, PlanStatus::Failed)
             .unwrap();
 
-        let plans = store.get_plans_for_file(&file.id).unwrap();
+        let plans = store.plans_for_file(&file.id).unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].status, PlanStatus::Failed);
     }
@@ -1293,7 +1293,7 @@ mod tests {
         store.upsert_file(&file).unwrap();
 
         let original_id = store
-            .get_file_by_path(Path::new("/media/preserve_id.mkv"))
+            .file_by_path(Path::new("/media/preserve_id.mkv"))
             .unwrap()
             .unwrap()
             .id;
@@ -1307,7 +1307,7 @@ mod tests {
 
         // The stored file should retain the original ID
         let stored = store
-            .get_file_by_path(Path::new("/media/preserve_id.mkv"))
+            .file_by_path(Path::new("/media/preserve_id.mkv"))
             .unwrap()
             .unwrap();
         assert_eq!(stored.id, original_id);
@@ -1324,7 +1324,7 @@ mod tests {
 
         // No history yet for first insert
         let history = store
-            .get_file_history(Path::new("/media/history_test.mkv"))
+            .file_history(Path::new("/media/history_test.mkv"))
             .unwrap();
         assert!(history.is_empty());
 
@@ -1336,7 +1336,7 @@ mod tests {
 
         // Now should have one history entry
         let history = store
-            .get_file_history(Path::new("/media/history_test.mkv"))
+            .file_history(Path::new("/media/history_test.mkv"))
             .unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].content_hash, "hash_v1");
@@ -1346,9 +1346,7 @@ mod tests {
     #[test]
     fn test_get_file_history_empty() {
         let store = test_store();
-        let history = store
-            .get_file_history(Path::new("/nonexistent.mkv"))
-            .unwrap();
+        let history = store.file_history(Path::new("/nonexistent.mkv")).unwrap();
         assert!(history.is_empty());
     }
 
@@ -1411,7 +1409,7 @@ mod tests {
         store.upsert_bad_file(&bf).unwrap();
 
         let loaded = store
-            .get_bad_file_by_path(Path::new("/media/movies/corrupt.mkv"))
+            .bad_file_by_path(Path::new("/media/movies/corrupt.mkv"))
             .unwrap()
             .unwrap();
         assert_eq!(loaded.path, bf.path);
@@ -1437,7 +1435,7 @@ mod tests {
         store.upsert_bad_file(&bf2).unwrap();
 
         let loaded = store
-            .get_bad_file_by_path(Path::new("/media/movies/corrupt.mkv"))
+            .bad_file_by_path(Path::new("/media/movies/corrupt.mkv"))
             .unwrap()
             .unwrap();
         assert_eq!(loaded.attempt_count, 2);
@@ -1448,7 +1446,7 @@ mod tests {
     fn test_get_bad_file_by_path_not_found() {
         let store = test_store();
         let result = store
-            .get_bad_file_by_path(Path::new("/nonexistent.mkv"))
+            .bad_file_by_path(Path::new("/nonexistent.mkv"))
             .unwrap();
         assert!(result.is_none());
     }
@@ -1527,7 +1525,7 @@ mod tests {
         store.upsert_bad_file(&bf).unwrap();
 
         store.delete_bad_file(&bf.id).unwrap();
-        assert!(store.get_bad_file_by_path(&bf.path).unwrap().is_none());
+        assert!(store.bad_file_by_path(&bf.path).unwrap().is_none());
     }
 
     #[test]
@@ -1550,7 +1548,7 @@ mod tests {
 
         // The original ID should be preserved
         let loaded = store
-            .get_bad_file_by_path(Path::new("/media/movies/corrupt.mkv"))
+            .bad_file_by_path(Path::new("/media/movies/corrupt.mkv"))
             .unwrap()
             .unwrap();
         assert_eq!(loaded.id, original_id);
@@ -1563,7 +1561,7 @@ mod tests {
         store.upsert_bad_file(&bf).unwrap();
 
         store.delete_bad_file_by_path(&bf.path).unwrap();
-        assert!(store.get_bad_file_by_path(&bf.path).unwrap().is_none());
+        assert!(store.bad_file_by_path(&bf.path).unwrap().is_none());
     }
 
     #[test]

@@ -148,7 +148,7 @@ impl FileStorage for SqliteStore {
         }
     }
 
-    fn get_file(&self, id: &Uuid) -> Result<Option<MediaFile>> {
+    fn file(&self, id: &Uuid) -> Result<Option<MediaFile>> {
         let conn = self.conn()?;
         let file_row: Option<FileRow> = conn
             .query_row(
@@ -168,7 +168,7 @@ impl FileStorage for SqliteStore {
         }
     }
 
-    fn get_file_by_path(&self, path: &Path) -> Result<Option<MediaFile>> {
+    fn file_by_path(&self, path: &Path) -> Result<Option<MediaFile>> {
         let conn = self.conn()?;
         let path_str = path.to_string_lossy().to_string();
         let file_row: Option<FileRow> = conn

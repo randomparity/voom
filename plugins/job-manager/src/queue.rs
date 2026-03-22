@@ -85,7 +85,7 @@ impl JobQueue {
     pub fn cancel(&self, job_id: &Uuid) -> Result<()> {
         let job =
             self.store
-                .get_job(job_id)?
+                .job(job_id)?
                 .ok_or_else(|| voom_domain::errors::VoomError::Plugin {
                     plugin: "job-manager".into(),
                     message: format!("job {job_id} not found"),
@@ -120,7 +120,7 @@ impl JobQueue {
     }
 
     pub fn job(&self, job_id: &Uuid) -> Result<Option<Job>> {
-        self.store.get_job(job_id)
+        self.store.job(job_id)
     }
 
     /// List jobs filtered by the given [`JobFilters`].

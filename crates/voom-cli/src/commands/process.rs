@@ -27,10 +27,6 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let config = config::load_config()?;
     let (kernel, store) = app::bootstrap_kernel_with_store(&config)?;
     let kernel = Arc::new(kernel);
-    let store = match store {
-        Some(s) => s,
-        None => app::open_store(&config)?,
-    };
 
     let path = args
         .path

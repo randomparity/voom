@@ -1,5 +1,6 @@
 //! Application bootstrap: plugin initialization and kernel wiring.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -15,28 +16,26 @@ use crate::config::AppConfig;
 // 100 = storage (must initialize first to be available for other plugins)
 // 90  = tool detector
 // 80  = discovery
-// 70  = introspector (ffprobe)
 // 60  = policy evaluator
 // 50  = phase orchestrator
-// 40  = ffmpeg executor (fallback for all plans, claims on handle)
-// 39  = mkvtoolnix executor (runs before ffmpeg — first shot at MKV plans)
+// 39  = mkvtoolnix executor
 // 30  = backup manager
 // 20  = job manager
-// 10  = web server (last, depends on all other plugins being registered)
 pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
     let (kernel, _store) = bootstrap_kernel_with_store(config)?;
     Ok(kernel)
 }
 
-/// Bootstrap result containing the kernel and, when the sqlite-store plugin
-/// is enabled, the store handle it created during initialization.
+/// Bootstrap the kernel with all native plugins and return both the kernel
+/// and the storage handle.
 ///
-/// Using the returned store avoids opening a second SQLite connection (see
-/// [`open_store`]), keeping all CLI commands and the event bus on the same
-/// connection pool.
+/// The store is always returned (not `Option`): if the sqlite-store plugin is
+/// enabled its handle is reused so there is no second pool; if the plugin is
+/// disabled a standalone pool is opened via [`open_store_in`] — the same
+/// helper used by store-only commands.
 pub fn bootstrap_kernel_with_store(
     config: &AppConfig,
-) -> Result<(Kernel, Option<Arc<dyn voom_domain::storage::StorageTrait>>)> {
+) -> Result<(Kernel, Arc<dyn voom_domain::storage::StorageTrait>)> {
     let mut kernel = Kernel::new();
     let data_dir = &config.data_dir;
 
@@ -75,26 +74,36 @@ pub fn bootstrap_kernel_with_store(
 
     // Storage plugin (highest priority — stores everything).
     // Initialized manually (not via the macro) so we can capture the store
-    // handle and return it to callers, avoiding a second SQLite connection.
-    let mut store_handle: Option<Arc<dyn voom_domain::storage::StorageTrait>> = None;
-    if !disabled.iter().any(|d| d == "sqlite-store") {
-        let mut plugin = voom_sqlite_store::SqliteStorePlugin::new();
-        let ctx = voom_kernel::PluginContext {
-            config: plugin_json("sqlite-store"),
-            data_dir: data_dir.clone(),
+    // handle and return it to callers, keeping all CLI commands and the event
+    // bus on the same connection pool.
+    let store: Arc<dyn voom_domain::storage::StorageTrait> =
+        if !disabled.iter().any(|d| d == "sqlite-store") {
+            let mut plugin = voom_sqlite_store::SqliteStorePlugin::new();
+            let ctx = voom_kernel::PluginContext {
+                config: plugin_json("sqlite-store"),
+                data_dir: data_dir.clone(),
+            };
+            plugin
+                .init(&ctx)
+                .map_err(|e| anyhow::anyhow!("Failed to initialize storage: {e}"))?;
+
+            // Capture the store handle before moving the plugin into an Arc.
+            // `plugin.store()` is always Some after a successful init().
+            let handle = plugin
+                .store()
+                .map(|s| Arc::clone(s) as Arc<dyn voom_domain::storage::StorageTrait>)
+                .expect("store is Some after successful init");
+
+            let plugin_arc: Arc<dyn voom_kernel::Plugin> = Arc::new(plugin);
+            kernel.register_plugin(plugin_arc, 100);
+
+            handle
+        } else {
+            // sqlite-store disabled: open a standalone pool so callers always
+            // get a usable handle.  No plugin is registered, so events will
+            // not be persisted, but read-only CLI commands still work.
+            open_store_in(data_dir).map_err(|e| anyhow::anyhow!("Failed to open storage: {e}"))?
         };
-        plugin
-            .init(&ctx)
-            .map_err(|e| anyhow::anyhow!("Failed to initialize storage: {e}"))?;
-
-        // Capture the store handle before moving the plugin into an Arc
-        store_handle = plugin
-            .store()
-            .map(|s| Arc::clone(s) as Arc<dyn voom_domain::storage::StorageTrait>);
-
-        let plugin_arc: Arc<dyn voom_kernel::Plugin> = Arc::new(plugin);
-        kernel.register_plugin(plugin_arc, 100);
-    }
 
     // Tool detector
     register_if_enabled!(
@@ -110,14 +119,6 @@ pub fn bootstrap_kernel_with_store(
         voom_discovery::DiscoveryPlugin::new(),
         80,
         "discovery"
-    );
-
-    // Introspector (reads ffprobe_path from ctx.config during init)
-    register_if_enabled!(
-        "ffprobe-introspector",
-        voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new(),
-        70,
-        "introspector"
     );
 
     // Policy evaluator
@@ -136,19 +137,12 @@ pub fn bootstrap_kernel_with_store(
         "phase orchestrator"
     );
 
-    // Executors — mkvtoolnix at 39 gets first shot at MKV plans
+    // Executor — mkvtoolnix (ffmpeg-executor re-added when Sprint 13 wires execution)
     register_if_enabled!(
         "mkvtoolnix-executor",
         voom_mkvtoolnix_executor::MkvtoolnixExecutorPlugin::new(),
         39,
         "mkvtoolnix executor"
-    );
-
-    register_if_enabled!(
-        "ffmpeg-executor",
-        voom_ffmpeg_executor::FfmpegExecutorPlugin::new(),
-        40,
-        "ffmpeg executor"
     );
 
     // Backup manager
@@ -167,30 +161,34 @@ pub fn bootstrap_kernel_with_store(
         "job manager"
     );
 
-    // Web server
-    register_if_enabled!(
-        "web-server",
-        voom_web_server::WebServerPlugin::new(),
-        10,
-        "web server"
-    );
-
     // TODO: load WASM plugins here using loader.load_dir_with_config()
     // once WASM plugin integration is wired up (Sprint 13).
 
-    Ok((kernel, store_handle))
+    Ok((kernel, store))
 }
 
-/// Open a standalone storage handle using the configured data directory.
+/// Open a standalone storage handle for commands that need only storage,
+/// not a full kernel (e.g. `db prune`, `jobs list`, `report`).
 ///
-/// This creates an independent SQLite connection. When a kernel is also in use,
-/// prefer [`bootstrap_kernel_with_store`] to reuse the store that the
-/// sqlite-store plugin already opened, avoiding a second connection pool.
-///
-/// This function is still useful for commands that need storage but not the
-/// full kernel (e.g. `db prune`, `jobs list`).
+/// Delegates to [`open_store_in`] with the configured data directory.
 pub fn open_store(config: &AppConfig) -> Result<Arc<dyn voom_domain::storage::StorageTrait>> {
-    let db_path = config.data_dir.join("voom.db");
+    open_store_in(&config.data_dir)
+}
+
+/// Open a SQLite store rooted at `data_dir`, creating the directory if needed.
+///
+/// This is the single authoritative place that calls
+/// [`voom_sqlite_store::store::SqliteStore::open`].  Both
+/// [`bootstrap_kernel_with_store`] (disabled-plugin fallback) and
+/// [`open_store`] (store-only commands) go through here so there is never
+/// more than one code path for pool creation.
+pub(crate) fn open_store_in(
+    data_dir: &Path,
+) -> Result<Arc<dyn voom_domain::storage::StorageTrait>> {
+    // Ensure the directory exists (mirrors what the plugin's init() does).
+    std::fs::create_dir_all(data_dir)
+        .map_err(|e| anyhow::anyhow!("Failed to create data dir {}: {e}", data_dir.display()))?;
+    let db_path = data_dir.join("voom.db");
     let store = voom_sqlite_store::store::SqliteStore::open(&db_path)
         .map_err(|e| anyhow::anyhow!("Failed to open store: {e}"))?;
     Ok(Arc::new(store))
@@ -223,8 +221,6 @@ mod tests {
         }
     }
 
-    // ── open_store ───────────────────────────────────────────
-
     #[test]
     fn test_open_store_creates_db_in_data_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -236,5 +232,20 @@ mod tests {
         let store = open_store(&config);
         assert!(store.is_ok());
         assert!(dir.path().join("voom.db").exists());
+    }
+
+    #[test]
+    fn test_bootstrap_kernel_with_store_always_returns_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = AppConfig {
+            data_dir: dir.path().to_path_buf(),
+            ..AppConfig::default()
+        };
+        let (_kernel, store) =
+            bootstrap_kernel_with_store(&config).expect("bootstrap should succeed");
+        // Verify the store is functional
+        assert!(store
+            .list_files(&voom_domain::FileFilters::default())
+            .is_ok());
     }
 }
