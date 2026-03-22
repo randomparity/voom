@@ -1,7 +1,7 @@
 //! Policy Evaluator Plugin.
 //!
 //! Evaluates compiled policies against introspected media files to produce
-//! [`Plan`] structs describing the operations needed. Pure logic plugin with
+//! [`Plan`](voom_domain::plan::Plan) structs describing the operations needed. Pure logic plugin with
 //! no external dependencies.
 
 #![allow(clippy::missing_errors_doc)]
@@ -11,9 +11,9 @@ pub mod evaluator;
 pub mod filter;
 
 use voom_domain::capabilities::Capability;
+use voom_domain::compiled::CompiledPolicy;
 use voom_domain::errors::Result;
 use voom_domain::media::MediaFile;
-use voom_dsl::compiler::CompiledPolicy;
 use voom_kernel::{Plugin, PluginContext};
 
 /// The policy evaluator plugin.

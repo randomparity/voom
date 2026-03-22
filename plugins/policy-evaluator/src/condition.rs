@@ -2,8 +2,8 @@
 
 use std::collections::HashSet;
 
+use voom_domain::compiled::{CompiledCompareOp, CompiledCondition};
 use voom_domain::media::MediaFile;
-use voom_dsl::compiler::{CompiledCompareOp, CompiledCondition};
 
 use crate::filter::{compare_f64, track_matches, tracks_for_target};
 
@@ -210,15 +210,15 @@ fn json_values_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
 /// Resolve a `CompiledValueOrField` to a concrete string value.
 #[must_use]
 pub fn resolve_value_or_field(
-    vof: &voom_dsl::compiler::CompiledValueOrField,
+    vof: &voom_domain::compiled::CompiledValueOrField,
     file: &MediaFile,
 ) -> Option<String> {
     match vof {
-        voom_dsl::compiler::CompiledValueOrField::Value(v) => match v {
+        voom_domain::compiled::CompiledValueOrField::Value(v) => match v {
             serde_json::Value::String(s) => Some(s.clone()),
             other => Some(other.to_string()),
         },
-        voom_dsl::compiler::CompiledValueOrField::Field(path) => {
+        voom_domain::compiled::CompiledValueOrField::Field(path) => {
             resolve_field(file, path).map(|v| match v {
                 serde_json::Value::String(s) => s,
                 other => other.to_string(),
@@ -231,8 +231,8 @@ pub fn resolve_value_or_field(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use voom_domain::compiled::TrackTarget;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
-    use voom_dsl::compiler::TrackTarget;
 
     fn test_file() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/test/movie.mkv"));
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn test_exists_with_filter() {
         let file = test_file();
-        use voom_dsl::compiler::CompiledFilter;
+        use voom_domain::compiled::CompiledFilter;
         assert!(evaluate_condition(
             &CompiledCondition::Exists {
                 target: TrackTarget::Audio,
@@ -413,13 +413,13 @@ mod tests {
         let cond = CompiledCondition::And(vec![
             CompiledCondition::Exists {
                 target: TrackTarget::Audio,
-                filter: Some(voom_dsl::compiler::CompiledFilter::LangIn(vec![
+                filter: Some(voom_domain::compiled::CompiledFilter::LangIn(vec![
                     "eng".into()
                 ])),
             },
             CompiledCondition::Exists {
                 target: TrackTarget::Audio,
-                filter: Some(voom_dsl::compiler::CompiledFilter::LangIn(vec![
+                filter: Some(voom_domain::compiled::CompiledFilter::LangIn(vec![
                     "jpn".into()
                 ])),
             },
@@ -429,7 +429,7 @@ mod tests {
         // NOT has french audio
         let not_cond = CompiledCondition::Not(Box::new(CompiledCondition::Exists {
             target: TrackTarget::Audio,
-            filter: Some(voom_dsl::compiler::CompiledFilter::LangIn(vec![
+            filter: Some(voom_domain::compiled::CompiledFilter::LangIn(vec![
                 "fre".into()
             ])),
         }));
@@ -445,7 +445,7 @@ mod tests {
         );
 
         let val = resolve_value_or_field(
-            &voom_dsl::compiler::CompiledValueOrField::Field(vec![
+            &voom_domain::compiled::CompiledValueOrField::Field(vec![
                 "plugin".into(),
                 "radarr".into(),
                 "title".into(),
@@ -459,7 +459,7 @@ mod tests {
     fn test_resolve_value() {
         let file = test_file();
         let val = resolve_value_or_field(
-            &voom_dsl::compiler::CompiledValueOrField::Value(serde_json::Value::String(
+            &voom_domain::compiled::CompiledValueOrField::Value(serde_json::Value::String(
                 "literal".into(),
             )),
             &file,

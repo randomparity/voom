@@ -1,8 +1,7 @@
 //! Track filtering: evaluates `CompiledFilter` against tracks.
 
+use voom_domain::compiled::{CompiledCompareOp, CompiledFilter, TrackTarget};
 use voom_domain::media::{MediaFile, Track, TrackType};
-use voom_dsl::compiler::CompiledCompareOp;
-use voom_dsl::compiler::{CompiledFilter, TrackTarget};
 
 /// Returns true if the track matches the filter.
 #[must_use]

@@ -2,6 +2,7 @@
 
 pub mod bad_file;
 pub mod capabilities;
+pub mod compiled;
 pub mod errors;
 pub mod events;
 pub mod job;

@@ -34,16 +34,16 @@ pub use ast::{
     PolicyAst, RuleNode, RunIfNode, Span, SpannedOperation, SynthSetting, TrackQueryNode,
     TrackRefNode, Value, ValueOrField, WhenNode,
 };
-pub use compiler::CompiledPolicy;
 pub use errors::{DslError, DslPipelineError, ValidationErrors};
 pub use formatter::format_policy;
 pub use parser::parse_policy;
 pub use validator::validate;
+pub use voom_domain::compiled::CompiledPolicy;
 
 /// Run the full parse → validate → compile pipeline in one call.
 ///
 /// This is a convenience wrapper around [`parse_policy`], [`validate`], and
-/// [`compiler::compile_ast`] that returns a single [`DslPipelineError`] so
+/// compilation that returns a single [`DslPipelineError`] so
 /// callers do not need to handle three different error types.
 ///
 /// # Errors

@@ -182,7 +182,7 @@ pub mod wasm {
                 .collect()
         }
 
-        /// Like [`load_dir_with_config`] but skips plugins in the `skip_plugins` set
+        /// Like [`WasmPluginLoader::load_dir_with_config`] but skips plugins in the `skip_plugins` set
         /// before compilation, and returns `(plugin, priority)` tuples where
         /// priority comes from the manifest (default: 70).
         pub fn load_dir_with_config_skip(
