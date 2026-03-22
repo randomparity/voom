@@ -346,6 +346,30 @@ mod tests {
         assert_eq!(recorder.introspected_count.load(Ordering::SeqCst), 1);
     }
 
+    #[test]
+    fn test_format_eta_zero_current_returns_empty() {
+        let start = Instant::now();
+        assert_eq!(format_eta(&start, 0, 100), "");
+    }
+
+    #[test]
+    fn test_format_eta_complete_returns_empty() {
+        let start = Instant::now();
+        // When current == total, remaining == 0 so empty string
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert_eq!(format_eta(&start, 100, 100), "");
+    }
+
+    #[test]
+    fn test_format_eta_in_progress_returns_nonempty() {
+        let start = Instant::now();
+        // Sleep a tiny bit so elapsed > 0
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let eta = format_eta(&start, 1, 100);
+        // Should produce something like ", ETA 1s" or similar
+        assert!(eta.starts_with(", ETA "), "expected ETA prefix, got: {eta}");
+    }
+
     #[tokio::test]
     async fn test_multiple_discovery_events_dispatched() {
         let mut kernel = voom_kernel::Kernel::new();

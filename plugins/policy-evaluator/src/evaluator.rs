@@ -1357,4 +1357,22 @@ mod tests {
         assert_eq!(plan.actions[1].operation, OperationType::SetContainerTag);
         assert_eq!(plan.actions[2].operation, OperationType::DeleteContainerTag);
     }
+
+    #[test]
+    fn test_convert_container_parameter_key_is_container() {
+        let mut file = test_file();
+        file.container = Container::Mkv;
+        let policy = test_policy(r#"policy "test" { phase init { container mp4 } }"#);
+        let result = evaluate(&policy, &file);
+        assert_eq!(result.plans.len(), 1);
+        assert_eq!(result.plans[0].actions.len(), 1);
+        let action = &result.plans[0].actions[0];
+        assert_eq!(action.operation, OperationType::ConvertContainer);
+        // Verify the parameter key is "container", not "target" (regression guard)
+        assert_eq!(
+            action.parameters["container"].as_str(),
+            Some("mp4"),
+            "ConvertContainer action must use 'container' as the parameter key"
+        );
+    }
 }

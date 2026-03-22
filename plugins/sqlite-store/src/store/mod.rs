@@ -1623,4 +1623,33 @@ mod tests {
             "LIKE with escaped underscore should match only exact underscore"
         );
     }
+
+    #[test]
+    fn test_sql_query_paginate_limit_and_offset() {
+        let mut q = SqlQuery::new("SELECT * FROM files");
+        q.paginate(Some(100), Some(50));
+        assert!(q.sql.contains("LIMIT"), "expected LIMIT clause");
+        assert!(q.sql.contains("OFFSET"), "expected OFFSET clause");
+        let refs = q.param_refs();
+        assert_eq!(refs.len(), 2);
+    }
+
+    #[test]
+    fn test_sql_query_paginate_none() {
+        let mut q = SqlQuery::new("SELECT * FROM files");
+        q.paginate(None, None);
+        assert!(!q.sql.contains("LIMIT"), "expected no LIMIT clause");
+        assert!(!q.sql.contains("OFFSET"), "expected no OFFSET clause");
+        let refs = q.param_refs();
+        assert_eq!(refs.len(), 0);
+    }
+
+    #[test]
+    fn test_sql_query_paginate_clamps_limit() {
+        let mut q = SqlQuery::new("SELECT * FROM files");
+        q.paginate(Some(99999), None);
+        assert!(q.sql.contains("LIMIT"), "expected LIMIT clause");
+        assert_eq!(q.params.len(), 1);
+        assert_eq!(q.params[0], "10000", "limit should be clamped to 10000");
+    }
 }
