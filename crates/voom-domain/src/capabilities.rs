@@ -2,17 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::plan::OperationType;
 
-/// Returns true if the list is empty (wildcard) or contains the given value.
-fn list_contains_str(list: &[String], value: &str) -> bool {
-    list.is_empty() || list.iter().any(|item| item == value)
-}
-
-/// Returns true if the list is empty (wildcard) or contains an operation whose
-/// canonical string matches `value`.
-fn operations_contain(list: &[OperationType], value: &str) -> bool {
-    list.is_empty() || list.iter().any(|op| op.as_str() == value)
-}
-
 /// Describes what a plugin can do. The kernel uses these for capability-based routing.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -61,34 +50,6 @@ impl Capability {
             Capability::EnrichMetadata { .. } => "enrich_metadata",
             Capability::Transcribe => "transcribe",
             Capability::Synthesize => "synthesize",
-        }
-    }
-
-    /// Check if this capability can handle the given operation.
-    ///
-    /// An empty `operations` `Vec` in the [`Capability::Execute`] variant acts
-    /// as a wildcard and matches all operations.
-    #[must_use]
-    pub fn supports_operation(&self, operation: &str) -> bool {
-        match self {
-            Capability::Execute { operations, .. } => operations_contain(operations, operation),
-            _ => false,
-        }
-    }
-
-    /// Check if this capability can handle the given format.
-    ///
-    /// An empty `formats` (or `schemes`) `Vec` in the capability variant acts
-    /// as a wildcard and matches all formats.
-    #[must_use]
-    pub fn supports_format(&self, format: &str) -> bool {
-        match self {
-            Capability::Introspect { formats } | Capability::Execute { formats, .. } => {
-                list_contains_str(formats, format)
-            }
-            Capability::Discover { schemes } => list_contains_str(schemes, format),
-            // Capabilities without a format concept don't match any format.
-            _ => false,
         }
     }
 }

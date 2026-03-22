@@ -472,22 +472,4 @@ mod tests {
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
     }
-
-    #[test]
-    fn test_capability_operations() {
-        let plugin = MkvtoolnixExecutorPlugin::new();
-        let cap = &plugin.capabilities()[0];
-        assert!(cap.supports_operation("set_default"));
-        assert!(cap.supports_operation("remove_track"));
-        assert!(cap.supports_operation("convert_container"));
-        assert!(!cap.supports_operation("transcode_video"));
-    }
-
-    #[test]
-    fn test_capability_format() {
-        let plugin = MkvtoolnixExecutorPlugin::new();
-        let cap = &plugin.capabilities()[0];
-        assert!(cap.supports_format("mkv"));
-        assert!(!cap.supports_format("mp4"));
-    }
 }

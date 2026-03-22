@@ -129,6 +129,7 @@ impl From<voom_domain::errors::VoomError> for WebError {
             voom_domain::errors::VoomError::Validation(_) => WebError::BadRequest(err.to_string()),
             voom_domain::errors::VoomError::Storage { kind, .. } => match kind {
                 StorageErrorKind::ConstraintViolation => WebError::Conflict(err.to_string()),
+                StorageErrorKind::NotFound => WebError::NotFound(err.to_string()),
                 _ => WebError::Storage(err.to_string()),
             },
             _ => WebError::Internal(err.to_string()),

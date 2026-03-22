@@ -275,26 +275,19 @@ pub fn build_ffmpeg_command(
                 }
             }
             OperationType::SynthesizeAudio => {
-                let (codec_str, bitrate, channels) = match &action.parameters {
-                    ActionParams::Synthesize {
-                        codec,
-                        bitrate,
-                        channels,
-                        ..
-                    } => (
-                        codec.as_deref().unwrap_or("aac"),
-                        bitrate.as_deref(),
-                        *channels,
-                    ),
-                    ActionParams::Transcode {
-                        codec,
-                        bitrate,
-                        channels,
-                        ..
-                    } => (codec.as_str(), bitrate.as_deref(), *channels),
-                    _ => ("aac", None, None),
+                let ActionParams::Synthesize {
+                    codec,
+                    bitrate,
+                    channels,
+                    ..
+                } = &action.parameters
+                else {
+                    continue;
                 };
 
+                let codec_str = codec.as_deref().unwrap_or("aac");
+                let bitrate = bitrate.as_deref();
+                let channels = *channels;
                 let encoder = hwaccel::software_encoder(codec_str).to_string();
 
                 if let Some(stream) = action.track_index {
