@@ -61,6 +61,7 @@ toml = { workspace = true }
 [features]
 default = ["wasm"]
 wasm = ["voom-kernel/wasm"]
+functional = []
 
 [dev-dependencies]
 assert_cmd = "2"

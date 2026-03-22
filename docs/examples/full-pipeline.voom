@@ -7,14 +7,18 @@
 // DSL features exercised:
 //   Config: languages audio/subtitle, on_error, commentary_patterns
 //   Phase control: depends_on, skip when, run_if (modified + completed), on_error
+//   Phase-level ops: clear_tags, set_tag (literal + field), delete_tag
 //   Operations: container, keep, remove, order tracks, defaults, actions, transcode, synthesize
 //   Track targets: audio, subtitle, subtitles, video, attachments
+//   Track query: generic "track" target (in count/exists)
 //   Filter atoms: lang in, lang ==, codec in, codec ==, channels op, commentary,
 //                 forced, default, font, title contains, title matches
 //   Filter logic: and, or, not, parenthesized groups
 //   Conditions: exists(), count(), audio_is_multi_language, is_dubbed, is_original,
-//               field compare (all operators), field exists
-//   Actions: skip, skip <phase>, warn, fail, set_default, set_forced, set_language, set_tag
+//               field compare (all operators), field exists,
+//               parenthesized conditions, condition-level or/not
+//   Actions: skip (bare), skip <phase>, warn, fail,
+//            set_default, set_forced, set_language (field + string literal), set_tag
 //   Blocks: when/else, rules first, rules all
 //   Values: strings, numbers (with suffixes), booleans, identifiers, lists
 //   Comments: line comments
@@ -42,42 +46,66 @@ policy "full-pipeline" {
     container mkv
   }
 
-  // ── Phase 2: Track cleanup ─────────────────────────────────────
-  // Exercises: depends_on, all track targets, where clauses with
-  //            lang in/==, codec in/==, channels op, commentary,
-  //            forced, default, font, title contains, title matches,
-  //            and/or/not/parenthesized filters
-  // Plugins:   mkvtoolnix-executor (mkvmerge for track removal)
-  phase cleanup {
+  // ── Phase 2: Tag management ────────────────────────────────────
+  // Exercises: clear_tags_op, delete_tag_op, set_tag_op (literal value)
+  // Plugins:   mkvtoolnix-executor (mkvpropedit)
+  phase tag-management {
     depends_on: [containerize]
+
+    // clear_tags — remove all container-level metadata
+    clear_tags
+
+    // set_tag with a string literal value
+    set_tag "managed_by" "voom"
+
+    // delete_tag — remove a specific key
+    delete_tag "encoder"
+  }
+
+  // ── Phase 3: Track selection ──────────────────────────────────
+  // Exercises: depends_on, all track targets (audio, subtitle/subtitles, video),
+  //            where clauses with lang in, and, not, or, forced, default filter,
+  //            parenthesized filter groups
+  // Plugins:   mkvtoolnix-executor (mkvmerge for track removal)
+  phase track-selection {
+    depends_on: [tag-management]
 
     // Keep: lang in [...], and, not
     keep audio where lang in [eng, jpn, und] and not commentary
 
-    // Keep: lang in [...], or, forced
-    keep subtitle where (lang in [eng, jpn] and not commentary) or forced
-
-    // Remove: not font
-    remove attachments where not font
-
-    // Remove: title matches (regex)
-    remove audio where title matches "sample|promo|preview"
-
-    // Remove: title contains (substring) and channels op
-    remove audio where title contains "commentary" and channels <= 1
-
-    // Remove: codec == (exact match)
-    remove subtitle where codec == vobsub
+    // Keep: lang in [...], or, forced; "default" filter atom
+    keep subtitle where (lang in [eng, jpn] and not commentary) or forced or default
 
     // Keep video — no filter (keep all)
     keep video
   }
 
-  // ── Phase 3: Metadata cleanup ──────────────────────────────────
+  // ── Phase 4: Track removal ──────────────────────────────────────
+  // Exercises: remove with attachments target, title matches (regex),
+  //            title contains (substring), channels op, codec == (exact),
+  //            font filter atom
+  // Plugins:   mkvtoolnix-executor (mkvmerge for track removal)
+  phase track-removal {
+    depends_on: [track-selection]
+
+    // Remove: not font
+    remove attachments where not font
+
+    // Remove: title matches (regex)
+    remove video where title matches "sample|promo|preview"
+
+    // Remove: title contains (substring) and channels op
+    remove audio where title contains "test" and channels <= 1
+
+    // Remove: codec == (exact match)
+    remove subtitle where codec == vobsub
+  }
+
+  // ── Phase 4: Metadata cleanup ──────────────────────────────────
   // Exercises: actions_op for all three targets (video, audio, subtitle)
   // Plugins:   mkvtoolnix-executor (mkvpropedit for in-place metadata)
   phase metadata-cleanup {
-    depends_on: [cleanup]
+    depends_on: [track-removal]
 
     video actions {
       clear_all_titles: true
@@ -95,7 +123,7 @@ policy "full-pipeline" {
     }
   }
 
-  // ── Phase 4: Track ordering and defaults ───────────────────────
+  // ── Phase 5: Track ordering and defaults ───────────────────────
   // Exercises: order_op, defaults_op
   // Plugins:   mkvtoolnix-executor (mkvmerge for reorder)
   phase organize {
@@ -113,7 +141,7 @@ policy "full-pipeline" {
     }
   }
 
-  // ── Phase 5: Video transcode ───────────────────────────────────
+  // ── Phase 6: Video transcode ───────────────────────────────────
   // Exercises: skip when (field access + in), transcode video with full settings
   // Plugins:   ffmpeg-executor (video encoding with HW accel),
   //            backup-manager (pre-transcode backup)
@@ -135,7 +163,7 @@ policy "full-pipeline" {
     }
   }
 
-  // ── Phase 6: Audio transcode ───────────────────────────────────
+  // ── Phase 7: Audio transcode ───────────────────────────────────
   // Exercises: transcode audio with preserve list
   // Plugins:   ffmpeg-executor (audio encoding)
   phase transcode-audio {
@@ -147,7 +175,7 @@ policy "full-pipeline" {
     }
   }
 
-  // ── Phase 7: Audio synthesis ───────────────────────────────────
+  // ── Phase 8: Audio synthesis ───────────────────────────────────
   // Exercises: synthesize_op with ALL synth settings:
   //   codec, channels, source (prefer), bitrate, skip_if_exists,
   //   create_if, title, language (inherit), position
@@ -181,10 +209,13 @@ policy "full-pipeline" {
     }
   }
 
-  // ── Phase 8: Conditional logic ─────────────────────────────────
+  // ── Phase 9: Conditional logic ─────────────────────────────────
   // Exercises: when/else, exists(), count(), all comparison operators,
   //            audio_is_multi_language, is_dubbed, is_original,
-  //            field comparison, field exists
+  //            field comparison, field exists, skip (bare), skip <phase>,
+  //            set_language with string literal, default filter atom,
+  //            parenthesized conditions, condition-level or/not,
+  //            generic "track" query target
   // Plugins:   policy-evaluator (condition evaluation)
   phase conditional-checks {
     depends_on: [stereo-compat, transcode-video]
@@ -196,6 +227,11 @@ policy "full-pipeline" {
       set_forced subtitle where lang == eng and forced
     } else {
       set_default audio where lang == eng
+    }
+
+    // set_language with a string literal (not field_access)
+    when exists(audio where lang == und) {
+      set_language audio where lang == und "eng"
     }
 
     // Field comparison with various operators
@@ -217,6 +253,31 @@ policy "full-pipeline" {
       warn "Many subtitle tracks in {filename}"
     }
 
+    // Generic "track" target in count (exercises track_query with "track")
+    when count(track) > 20 {
+      warn "Excessive track count in {filename}"
+    }
+
+    // Bare skip action — skip this phase's remaining actions
+    when not exists(audio) {
+      skip
+    }
+
+    // Skip with phase name — skip a different phase
+    when video.codec == av1 {
+      skip transcode-video
+    }
+
+    // Parenthesized condition + condition-level "or"
+    when (exists(audio where lang == jpn) or exists(audio where lang == kor)) {
+      set_tag "asian_audio" "true"
+    }
+
+    // Condition-level "not"
+    when not exists(subtitle where lang == eng) {
+      warn "No English subtitles in {filename}"
+    }
+
     // Built-in predicates
     when audio_is_multi_language {
       warn "Multi-language audio in {filename}"
@@ -231,10 +292,10 @@ policy "full-pipeline" {
     }
   }
 
-  // ── Phase 9: Rules blocks ──────────────────────────────────────
+  // ── Phase 10: Rules blocks ─────────────────────────────────────
   // Exercises: rules "first" (stop at first match),
   //            rules "all" (evaluate all), named rules,
-  //            skip with phase name, fail action
+  //            fail action
   // Plugins:   policy-evaluator
   phase rule-checks {
     depends_on: [conditional-checks]
@@ -269,7 +330,7 @@ policy "full-pipeline" {
       }
 
       rule "pgs-subtitle-check" {
-        when exists(subtitle where codec in [hdmv_pgs, pgs]) {
+        when exists(subtitle where codec in [hdmv_pgs_subtitle]) {
           warn "Image-based PGS subtitles in {filename} — not searchable"
         }
       }
@@ -282,7 +343,7 @@ policy "full-pipeline" {
     }
   }
 
-  // ── Phase 10: Plugin metadata enrichment ───────────────────────
+  // ── Phase 11: Plugin metadata enrichment ───────────────────────
   // Exercises: field_access for plugin data, set_language with field,
   //            set_tag with field and literal values
   // Plugins:   radarr-metadata, sonarr-metadata (WASM)

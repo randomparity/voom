@@ -278,6 +278,6 @@ fn example_full_pipeline_parses() {
     let input = include_str!("../../../docs/examples/full-pipeline.voom");
     let ast = parse_policy(input).unwrap();
     assert_eq!(ast.name, "full-pipeline");
-    assert_eq!(ast.phases.len(), 10);
+    assert_eq!(ast.phases.len(), 12);
     assert!(ast.config.is_some());
 }
