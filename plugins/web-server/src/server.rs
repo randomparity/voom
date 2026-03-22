@@ -11,6 +11,7 @@ use crate::router::build_router;
 use crate::state::AppState;
 
 /// Configuration for the web server.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub host: String,
@@ -18,6 +19,19 @@ pub struct ServerConfig {
     pub template_dir: Option<String>,
     pub auth_token: Option<String>,
     pub plugin_info: Vec<crate::api::plugins::PluginInfo>,
+}
+
+impl ServerConfig {
+    #[must_use]
+    pub fn new(host: String, port: u16) -> Self {
+        Self {
+            host,
+            port,
+            template_dir: None,
+            auth_token: None,
+            plugin_info: Vec::new(),
+        }
+    }
 }
 
 /// Start the web server.
