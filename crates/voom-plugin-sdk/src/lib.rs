@@ -74,8 +74,6 @@ pub use event::{
 };
 
 /// `PluginInfoData` mirrors the WIT `plugin-info` record (name, version, capabilities).
-/// For the builder pattern in non-WIT contexts, use `types::PluginInfo` directly.
-/// The builder is not re-exported here to avoid collision with WIT-generated `PluginInfo`.
 pub use types::{OnEventResult, PluginInfoData};
 
 // Re-export host abstractions for WASM plugins.
