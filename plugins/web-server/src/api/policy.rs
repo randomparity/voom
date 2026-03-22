@@ -19,14 +19,7 @@ pub struct PolicyInput {
 pub struct ValidateResponse {
     pub valid: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub errors: Vec<PolicyError>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PolicyError {
-    pub message: String,
-    pub line: Option<usize>,
-    pub column: Option<usize>,
+    pub errors: Vec<service::ErrorInfo>,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,17 +27,7 @@ pub struct FormatResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formatted: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub errors: Vec<PolicyError>,
-}
-
-impl From<service::ErrorInfo> for PolicyError {
-    fn from(e: service::ErrorInfo) -> Self {
-        PolicyError {
-            message: e.message,
-            line: e.line,
-            column: e.column,
-        }
-    }
+    pub errors: Vec<service::ErrorInfo>,
 }
 
 /// POST /api/policy/validate -- validate DSL source
@@ -62,7 +45,7 @@ pub async fn validate_policy(
     let result = service::validate_source(&input.source);
     Ok(Json(ValidateResponse {
         valid: result.valid,
-        errors: result.errors.into_iter().map(PolicyError::from).collect(),
+        errors: result.errors,
     }))
 }
 
@@ -81,7 +64,7 @@ pub async fn format_policy(
     let result = service::format_source(&input.source);
     Ok(Json(FormatResponse {
         formatted: result.formatted,
-        errors: result.errors.into_iter().map(PolicyError::from).collect(),
+        errors: result.errors,
     }))
 }
 
@@ -186,11 +169,7 @@ mod tests {
     fn test_validate_response_serialization_with_errors() {
         let response = ValidateResponse {
             valid: false,
-            errors: vec![PolicyError {
-                message: "bad syntax".into(),
-                line: Some(1),
-                column: Some(5),
-            }],
+            errors: vec![service::ErrorInfo::new("bad syntax", Some(1), Some(5))],
         };
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["valid"], false);

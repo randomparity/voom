@@ -288,7 +288,7 @@ impl BadFileStorage for InMemoryStore {
         Ok(Vec::new())
     }
 
-    fn count_bad_files(&self) -> Result<u64> {
+    fn count_bad_files(&self, _filters: &BadFileFilters) -> Result<u64> {
         Ok(0)
     }
 

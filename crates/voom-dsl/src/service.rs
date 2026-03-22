@@ -4,16 +4,29 @@
 //! downstream consumers (e.g. web servers) do not need to depend on the DSL's
 //! internal AST, error types, or parser API.
 
+use serde::Serialize;
+
 use crate::errors::DslError;
 use crate::{format_policy, parse_policy, validate};
 
 /// Location information for a policy error.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct ErrorInfo {
     pub message: String,
     pub line: Option<usize>,
     pub column: Option<usize>,
+}
+
+impl ErrorInfo {
+    /// Create a new `ErrorInfo`.
+    pub fn new(message: impl Into<String>, line: Option<usize>, column: Option<usize>) -> Self {
+        Self {
+            message: message.into(),
+            line,
+            column,
+        }
+    }
 }
 
 /// Result of validating a policy source string.

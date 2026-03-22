@@ -28,7 +28,7 @@ pub fn run() -> Result<()> {
             );
 
             // Bad file count
-            match store.count_bad_files() {
+            match store.count_bad_files(&voom_domain::storage::BadFileFilters::default()) {
                 Ok(0) => {}
                 Ok(n) => {
                     println!(

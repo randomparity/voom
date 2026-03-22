@@ -1475,10 +1475,11 @@ mod tests {
     #[test]
     fn test_count_bad_files() {
         let store = test_store();
-        assert_eq!(store.count_bad_files().unwrap(), 0);
+        let no_filter = BadFileFilters::default();
+        assert_eq!(store.count_bad_files(&no_filter).unwrap(), 0);
 
         store.upsert_bad_file(&sample_bad_file()).unwrap();
-        assert_eq!(store.count_bad_files().unwrap(), 1);
+        assert_eq!(store.count_bad_files(&no_filter).unwrap(), 1);
     }
 
     #[test]

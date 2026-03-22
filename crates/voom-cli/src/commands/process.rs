@@ -41,7 +41,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     match store.prune_missing_files_under(&path) {
         Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
         Ok(_) => {}
-        Err(e) => eprintln!("{} auto-prune failed: {e}", style("Warning:").yellow()),
+        Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
     }
 
     if token.is_cancelled() {
@@ -245,6 +245,14 @@ fn create_worker_pool(
     Ok((pool, effective_workers))
 }
 
+/// Extract and deserialize the job payload from a process job.
+fn parse_job_payload(
+    job: &voom_domain::job::Job,
+) -> std::result::Result<ProcessJobPayload, String> {
+    let raw_payload = job.payload.as_ref().ok_or("missing payload")?;
+    serde_json::from_value(raw_payload.clone()).map_err(|e| format!("invalid payload: {e}"))
+}
+
 /// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
 async fn process_single_file(
     job: voom_domain::job::Job,
@@ -254,9 +262,7 @@ async fn process_single_file(
     token: &CancellationToken,
     ffprobe_path: Option<&str>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
-    let raw_payload = job.payload.as_ref().ok_or("missing payload")?;
-    let payload: ProcessJobPayload =
-        serde_json::from_value(raw_payload.clone()).map_err(|e| format!("invalid payload: {e}"))?;
+    let payload = parse_job_payload(&job)?;
 
     let path = std::path::PathBuf::from(&payload.path);
 

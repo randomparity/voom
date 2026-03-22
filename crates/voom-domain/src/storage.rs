@@ -104,7 +104,7 @@ pub trait BadFileStorage: Send + Sync {
     fn upsert_bad_file(&self, bad_file: &BadFile) -> Result<()>;
     fn bad_file_by_path(&self, path: &Path) -> Result<Option<BadFile>>;
     fn list_bad_files(&self, filters: &BadFileFilters) -> Result<Vec<BadFile>>;
-    fn count_bad_files(&self) -> Result<u64>;
+    fn count_bad_files(&self, filters: &BadFileFilters) -> Result<u64>;
     fn delete_bad_file(&self, id: &Uuid) -> Result<()>;
     fn delete_bad_file_by_path(&self, path: &Path) -> Result<()>;
 }

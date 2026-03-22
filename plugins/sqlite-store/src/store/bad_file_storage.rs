@@ -92,10 +92,22 @@ impl BadFileStorage for SqliteStore {
         Ok(bad_files)
     }
 
-    fn count_bad_files(&self) -> Result<u64> {
+    fn count_bad_files(&self, filters: &BadFileFilters) -> Result<u64> {
         let conn = self.conn()?;
+        let mut q = SqlQuery::new("SELECT COUNT(*) FROM bad_files WHERE 1=1");
+
+        if let Some(ref prefix) = filters.path_prefix {
+            q.condition(
+                " AND path LIKE {} ESCAPE '\\'",
+                format!("{}%", escape_like(prefix)),
+            );
+        }
+        if let Some(ref source) = filters.error_source {
+            q.condition(" AND error_source = {}", source.to_string());
+        }
+
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM bad_files", [], |row| row.get(0))
+            .query_row(&q.sql, q.param_refs().as_slice(), |row| row.get(0))
             .map_err(storage_err("failed to count bad files"))?;
         Ok(count as u64)
     }
