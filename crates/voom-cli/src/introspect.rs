@@ -1,4 +1,20 @@
 //! Shared introspection helpers used by both `scan` and `process` commands.
+//!
+//! # Dual-dispatch pattern (direct-call + event-publish)
+//!
+//! CLI commands call plugin APIs directly (e.g. `FfprobeIntrospectorPlugin::introspect`)
+//! rather than dispatching a `FileDiscovered` event and letting the kernel route it to
+//! the introspector. Direct calls give the CLI deterministic control over ordering,
+//! concurrency, and progress reporting — things the fire-and-forget event bus cannot
+//! provide.
+//!
+//! After the direct call completes, the result is published as a `FileIntrospected`
+//! event through the kernel so that downstream subscribers (sqlite-store, SSE, WASM
+//! plugins) still receive it. This is the "direct-call + event-publish" pattern used
+//! throughout the CLI layer.
+//!
+//! A fresh `FfprobeIntrospectorPlugin` is created per call because each invocation
+//! runs on a separate `spawn_blocking` thread and the plugin type is not `Clone`.
 
 use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{Event, FileIntrospectionFailedEvent};

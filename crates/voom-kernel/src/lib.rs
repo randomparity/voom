@@ -59,6 +59,13 @@ pub struct PluginContext {
     pub data_dir: PathBuf,
 }
 
+impl PluginContext {
+    /// Deserialize the config into a typed struct, falling back to defaults on error.
+    pub fn parse_config<T: serde::de::DeserializeOwned + Default>(&self) -> T {
+        serde_json::from_value(self.config.clone()).unwrap_or_default()
+    }
+}
+
 /// The kernel that manages plugins and event dispatch.
 pub struct Kernel {
     pub registry: registry::PluginRegistry,

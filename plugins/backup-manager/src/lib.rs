@@ -195,6 +195,10 @@ fn backup_result(data: serde_json::Value) -> EventResult {
 }
 
 impl Plugin for BackupManagerPlugin {
+    // NOTE: When config options are added to the plugin context for backup-manager,
+    // `ctx.parse_config::<BackupConfig>()` can be used in `init()` to ergonomically
+    // deserialize them (add Deserialize derive to BackupConfig first).
+
     fn name(&self) -> &str {
         "backup-manager"
     }

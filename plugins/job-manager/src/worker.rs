@@ -12,11 +12,16 @@ use crate::progress::ProgressReporter;
 use crate::queue::JobQueue;
 
 /// A unit of work to be enqueued and processed by the worker pool.
+///
+/// The payload type `P` defaults to `()` for convenience in tests and callers
+/// that don't need a payload.  When `P` implements `Serialize`, the worker pool
+/// converts it to `serde_json::Value` at enqueue time, keeping the caller's
+/// side free of manual serialization.
 #[derive(Debug, Clone)]
-pub struct WorkItem {
+pub struct WorkItem<P = ()> {
     pub job_type: voom_domain::job::JobType,
     pub priority: i32,
-    pub payload: Option<serde_json::Value>,
+    pub payload: Option<P>,
 }
 
 /// Configuration for the worker pool.
@@ -115,15 +120,16 @@ impl WorkerPool {
     /// `reporter` is notified of progress updates.
     ///
     /// Returns a list of job results.
-    #[tracing::instrument(skip(self, processor, reporter))]
-    pub async fn process_batch<F, Fut>(
+    #[tracing::instrument(skip(self, items, processor, reporter))]
+    pub async fn process_batch<P, F, Fut>(
         &self,
-        items: Vec<WorkItem>,
+        items: Vec<WorkItem<P>>,
         processor: F,
         on_error: ErrorStrategy,
         reporter: Arc<dyn ProgressReporter>,
     ) -> Vec<JobResult>
     where
+        P: serde::Serialize,
         F: Fn(voom_domain::job::Job) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = std::result::Result<Option<serde_json::Value>, String>>
             + Send
@@ -141,9 +147,12 @@ impl WorkerPool {
 
         let mut job_ids = Vec::with_capacity(items.len());
         for item in items {
+            let json_payload = item
+                .payload
+                .map(|p| serde_json::to_value(p).expect("WorkItem payload must be serializable"));
             match self
                 .queue
-                .enqueue(item.job_type, item.priority, item.payload)
+                .enqueue(item.job_type, item.priority, json_payload)
             {
                 Ok(id) => job_ids.push(id),
                 Err(e) => {
@@ -393,7 +402,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
 
-        let items: Vec<_> = (0..5)
+        let items: Vec<WorkItem> = (0..5)
             .map(|i| WorkItem {
                 job_type: voom_domain::job::JobType::Custom(format!("task-{i}")),
                 priority: 100,
@@ -472,7 +481,7 @@ mod tests {
             CancellationToken::new(),
         );
 
-        let items = vec![
+        let items: Vec<WorkItem> = vec![
             WorkItem {
                 job_type: voom_domain::job::JobType::Custom("fail".into()),
                 priority: 50,
@@ -661,7 +670,7 @@ mod tests {
         let active_count_clone = active_count.clone();
         let total_processed_clone = total_processed.clone();
 
-        let items: Vec<_> = (0..8)
+        let items: Vec<WorkItem> = (0..8)
             .map(|i| WorkItem {
                 job_type: voom_domain::job::JobType::Custom(format!("concurrent-{i}")),
                 priority: 100,

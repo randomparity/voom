@@ -7,10 +7,18 @@ pub mod parser;
 
 use std::time::Duration;
 
+use serde::Deserialize;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult, FileIntrospectedEvent};
 use voom_kernel::{Plugin, PluginContext};
+
+/// Typed configuration for the ffprobe introspector plugin.
+#[derive(Debug, Default, Deserialize)]
+struct FfprobeConfig {
+    /// Custom path to the ffprobe binary.
+    ffprobe_path: Option<String>,
+}
 
 /// `FFprobe` introspector plugin: extracts media metadata using ffprobe.
 ///
@@ -118,9 +126,9 @@ impl Plugin for FfprobeIntrospectorPlugin {
     }
 
     fn init(&mut self, ctx: &PluginContext) -> Result<()> {
-        // Check for custom ffprobe path in config
-        if let Some(path) = ctx.config.get("ffprobe_path").and_then(|v| v.as_str()) {
-            self.ffprobe_path = path.to_string();
+        let config = ctx.parse_config::<FfprobeConfig>();
+        if let Some(path) = config.ffprobe_path {
+            self.ffprobe_path = path;
         }
         tracing::info!(ffprobe = %self.ffprobe_path, "ffprobe introspector initialized");
         Ok(())

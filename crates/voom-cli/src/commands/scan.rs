@@ -158,11 +158,18 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
         );
     }
 
-    // Introspect each discovered file
-    // Note: FileDiscovered events are NOT dispatched through the kernel because
-    // the scan command drives introspection directly (for progress reporting).
-    // The ffprobe-introspector plugin also handles "file.discovered" events,
-    // which would cause every file to be introspected twice.
+    // Introspect each discovered file using the dual-dispatch pattern:
+    //
+    // 1. Direct call — introspect_file() calls FfprobeIntrospectorPlugin::introspect
+    //    directly so scan can drive the progress bar deterministically.
+    // 2. Event publish — introspect_file() dispatches the resulting FileIntrospected
+    //    event through the kernel for persistence (sqlite-store) and other subscribers.
+    //
+    // FileDiscovered events are intentionally NOT dispatched here. The
+    // ffprobe-introspector plugin's on_event handler also listens for
+    // "file.discovered", so dispatching it would trigger a second introspection
+    // of every file. The scan command owns the full discovery→introspection
+    // pipeline directly; only the results are published.
     let pb = ProgressBar::new(events.len() as u64);
     pb.set_style(
         ProgressStyle::with_template(

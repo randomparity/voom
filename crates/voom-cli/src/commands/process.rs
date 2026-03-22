@@ -18,11 +18,26 @@ use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 
 /// Run the process command.
 ///
-/// This function calls the discovery, introspector, policy evaluator, and phase
-/// orchestrator plugins directly rather than routing through the event bus. This
-/// direct-call pattern is intentional for CLI commands: it enables deterministic
-/// progress reporting, worker-pool concurrency control, and structured error
-/// handling that would be difficult to achieve through the asynchronous pub/sub bus.
+/// Uses the dual-dispatch pattern (direct-call + event-publish) throughout:
+///
+/// - **Discovery** — called directly for progress/filtering control, then each
+///   `FileDiscovered` event IS dispatched so sqlite-store tracks the file.
+///   (Unlike `scan`, process can safely dispatch these because it does not
+///   register the ffprobe-introspector as a kernel plugin listening for
+///   discovery events.)
+/// - **Introspection** — called directly via `introspect_file()` for
+///   deterministic worker-pool concurrency. The result `FileIntrospected`
+///   event is dispatched for persistence.
+/// - **Policy evaluation & orchestration** — called directly to produce `Plan`
+///   structs. No events dispatched at this stage (avoids triggering executors
+///   during dry-run).
+/// - **Plan execution** — `PlanExecuting` and `PlanCreated` events ARE
+///   dispatched through the kernel so that backup-manager and executor plugins
+///   handle them via the event bus.
+///
+/// This split gives the CLI full control over ordering, concurrency, and
+/// progress reporting while still letting kernel-registered plugins react to
+/// the events they care about.
 pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let config = config::load_config()?;
     let (kernel, store) = app::bootstrap_kernel_with_store(&config)?;
@@ -167,11 +182,14 @@ fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
     );
 }
 
-/// Walk the filesystem and discover media files, publishing events to the bus.
+/// Walk the filesystem and discover media files (dual-dispatch: direct + event-publish).
 ///
 /// Creates a standalone `DiscoveryPlugin` for direct API access (scan options,
-/// progress callbacks) that the event-bus path does not support. Events are
-/// still dispatched to the kernel so that subscribers (storage, SSE) receive them.
+/// progress callbacks) that the event-bus path does not support. `FileDiscovered`
+/// events are dispatched to the kernel so that subscribers (storage, SSE) track
+/// the files. This is safe here because process does not register an introspector
+/// plugin that would react to discovery events — introspection is driven
+/// separately by `process_single_file`.
 fn discover_files(
     path: &std::path::Path,
     args: &ProcessArgs,
@@ -206,22 +224,17 @@ struct ProcessJobPayload {
 /// Build work items from discovery events for the worker pool.
 fn build_work_items(
     events: &[voom_domain::events::FileDiscoveredEvent],
-) -> Vec<voom_job_manager::worker::WorkItem> {
+) -> Vec<voom_job_manager::worker::WorkItem<ProcessJobPayload>> {
     events
         .iter()
-        .map(|evt| {
-            let payload = ProcessJobPayload {
+        .map(|evt| voom_job_manager::worker::WorkItem {
+            job_type: voom_domain::job::JobType::Process,
+            priority: 100,
+            payload: Some(ProcessJobPayload {
                 path: evt.path.to_string_lossy().into_owned(),
                 size: evt.size,
                 content_hash: evt.content_hash.clone(),
-            };
-            let value =
-                serde_json::to_value(&payload).expect("ProcessJobPayload is always serializable");
-            voom_job_manager::worker::WorkItem {
-                job_type: voom_domain::job::JobType::Process,
-                priority: 100,
-                payload: Some(value),
-            }
+            }),
         })
         .collect()
 }
