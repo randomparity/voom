@@ -118,6 +118,8 @@ impl Kernel {
 
     /// Dispatch an event through the bus to all matching subscribers.
     pub fn dispatch(&self, event: Event) -> Vec<EventResult> {
+        let event_type = event.event_type().to_string();
+        let _span = tracing::debug_span!("dispatch", event = %event_type).entered();
         self.bus.publish(event)
     }
 
