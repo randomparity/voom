@@ -68,7 +68,7 @@ pub struct AppState {
     pub store: Arc<dyn StorageTrait>,
     pub sse_tx: broadcast::Sender<SseEvent>,
     pub templates: Arc<tera::Tera>,
-    pub auth_token: Option<String>,
+    auth_token: Option<String>,
     pub sse_client_count: Arc<AtomicU32>,
     pub plugin_info: Arc<Vec<crate::api::plugins::PluginInfo>>,
 }
@@ -95,6 +95,12 @@ impl AppState {
     pub fn with_plugin_info(mut self, info: Vec<crate::api::plugins::PluginInfo>) -> Self {
         self.plugin_info = Arc::new(info);
         self
+    }
+
+    /// Returns true if an auth token is configured.
+    #[must_use]
+    pub fn has_auth(&self) -> bool {
+        self.auth_token.is_some()
     }
 
     /// Validate an Authorization header value against the configured auth token.
@@ -136,13 +142,13 @@ mod tests {
         let state = make_state(None);
         // sse_tx should be usable: subscribing should succeed
         let _rx = state.sse_tx.subscribe();
-        assert!(state.auth_token.is_none());
+        assert!(!state.has_auth());
     }
 
     #[test]
     fn test_new_with_auth_token() {
         let state = make_state(Some("my-secret".into()));
-        assert_eq!(state.auth_token, Some("my-secret".to_string()));
+        assert!(state.has_auth());
     }
 
     #[test]
@@ -191,7 +197,7 @@ mod tests {
     fn test_state_is_clone() {
         let state = make_state(Some("tok".into()));
         let cloned = state.clone();
-        assert_eq!(cloned.auth_token, Some("tok".to_string()));
+        assert!(cloned.has_auth());
         // Cloned state shares the same Arc references
         assert!(Arc::ptr_eq(&state.templates, &cloned.templates));
         assert!(Arc::ptr_eq(

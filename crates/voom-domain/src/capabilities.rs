@@ -57,6 +57,9 @@ impl Capability {
     }
 
     /// Check if this capability can handle the given operation.
+    ///
+    /// An empty `operations` `Vec` in the [`Capability::Execute`] variant acts
+    /// as a wildcard and matches all operations.
     #[must_use]
     pub fn supports_operation(&self, operation: &str) -> bool {
         match self {
@@ -66,6 +69,9 @@ impl Capability {
     }
 
     /// Check if this capability can handle the given format.
+    ///
+    /// An empty `formats` (or `schemes`) `Vec` in the capability variant acts
+    /// as a wildcard and matches all formats.
     #[must_use]
     pub fn supports_format(&self, format: &str) -> bool {
         match self {

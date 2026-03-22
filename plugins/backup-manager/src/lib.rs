@@ -25,7 +25,7 @@ use voom_domain::events::{Event, EventResult};
 use voom_kernel::Plugin;
 
 /// Create a `VoomError::Plugin` for the backup-manager plugin.
-fn plugin_err(message: impl Into<String>) -> VoomError {
+pub(crate) fn plugin_err(message: impl Into<String>) -> VoomError {
     VoomError::Plugin {
         plugin: "backup-manager".into(),
         message: message.into(),

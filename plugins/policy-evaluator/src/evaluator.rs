@@ -485,9 +485,10 @@ fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
         }
     }
 
+    let audio_tracks = ctx.file.audio_tracks();
+
     // Check skip_if_exists
     if let Some(ref skip_filter) = synth.skip_if_exists {
-        let audio_tracks = ctx.file.audio_tracks();
         if audio_tracks.iter().any(|t| track_matches(t, skip_filter)) {
             return;
         }
@@ -495,13 +496,12 @@ fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
 
     // Find source track
     let source_index = if let Some(ref source_filter) = synth.source {
-        ctx.file
-            .audio_tracks()
+        audio_tracks
             .iter()
             .find(|t| track_matches(t, source_filter))
             .map(|t| t.index)
     } else {
-        ctx.file.audio_tracks().first().map(|t| t.index)
+        audio_tracks.first().map(|t| t.index)
     };
 
     let mut params = serde_json::Map::new();
@@ -671,13 +671,7 @@ fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), St
             }
         }
         CompiledAction::SetTag { tag, value } => {
-            let val = resolve_value_or_field(value, ctx.file)
-                .ok_or_else(|| format!("Cannot resolve tag value for '{tag}'"))?;
-            ctx.plan.actions.push(PlannedAction::file_op(
-                OperationType::SetContainerTag,
-                serde_json::json!({ "tag": tag, "value": val }),
-                format!("Set container tag '{tag}' = '{val}'"),
-            ));
+            emit_set_tag(tag, value, ctx)?;
         }
     }
     Ok(())
