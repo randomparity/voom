@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use voom_domain::capabilities::Capability;
 use voom_domain::events::*;
-use voom_domain::plan::OperationType;
 use voom_kernel::{Kernel, Plugin};
 
 /// A native plugin that logs file discovery events.
