@@ -124,6 +124,7 @@ pub const KNOWN_PLUGIN_NAMES: &[&str] = &[
     "policy-evaluator",
     "phase-orchestrator",
     "mkvtoolnix-executor",
+    "ffmpeg-executor",
     "backup-manager",
     "job-manager",
 ];
@@ -153,7 +154,7 @@ pub fn default_config_contents() -> String {
 # List of plugin names to disable at startup.
 # Valid names: sqlite-store, tool-detector, discovery,
 #   policy-evaluator, phase-orchestrator, mkvtoolnix-executor,
-#   backup-manager, job-manager
+#   ffmpeg-executor, backup-manager, job-manager
 # disabled_plugins = ["mkvtoolnix-executor"]
 
 # Per-plugin configuration. Use [plugin.<name>] sections to pass
@@ -313,14 +314,14 @@ mod tests {
         assert!(KNOWN_PLUGIN_NAMES.contains(&"mkvtoolnix-executor"));
         assert!(KNOWN_PLUGIN_NAMES.contains(&"discovery"));
         assert!(KNOWN_PLUGIN_NAMES.contains(&"job-manager"));
-        assert!(!KNOWN_PLUGIN_NAMES.contains(&"ffmpeg-executor"));
+        assert!(KNOWN_PLUGIN_NAMES.contains(&"ffmpeg-executor"));
         assert!(!KNOWN_PLUGIN_NAMES.contains(&"web-server"));
         assert!(!KNOWN_PLUGIN_NAMES.contains(&"ffprobe-introspector"));
     }
 
     #[test]
     fn test_known_plugin_names_count() {
-        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 8);
+        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 9);
     }
 
     #[test]

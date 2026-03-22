@@ -152,6 +152,14 @@ run *args:
 insta-review:
     cargo insta review
 
+# Run functional tests (requires python3, ffmpeg, ffprobe on PATH)
+functional-test:
+    cargo test -p voom-cli --features functional -- --test-threads=4
+
+# Run functional tests that don't need external media tools (fast)
+functional-test-quick:
+    cargo test -p voom-cli --features functional -- --test-threads=4 test_init test_doctor test_policy test_config test_status test_jobs test_plugin
+
 # Clean build artifacts
 clean:
     cargo clean

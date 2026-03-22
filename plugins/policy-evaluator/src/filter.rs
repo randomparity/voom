@@ -190,6 +190,48 @@ mod tests {
     }
 
     #[test]
+    fn test_image_attachment_not_font() {
+        // JPEG image attachment — should NOT match font filter
+        let jpeg = Track::new(0, TrackType::Attachment, "mjpeg".into());
+        assert!(!track_matches(&jpeg, &CompiledFilter::Font));
+        assert!(track_matches(
+            &jpeg,
+            &CompiledFilter::Not(Box::new(CompiledFilter::Font)),
+        ));
+
+        // PNG image attachment — should NOT match font filter
+        let mut png = Track::new(1, TrackType::Attachment, "png".into());
+        png.title = "poster.png".into();
+        assert!(!track_matches(&png, &CompiledFilter::Font));
+        assert!(track_matches(
+            &png,
+            &CompiledFilter::Not(Box::new(CompiledFilter::Font)),
+        ));
+
+        // Non-attachment track with image codec — font filter ignores it
+        let video = Track::new(2, TrackType::Video, "mjpeg".into());
+        assert!(!track_matches(&video, &CompiledFilter::Font));
+    }
+
+    #[test]
+    fn test_title_contains_cover_attachment() {
+        let mut track = Track::new(0, TrackType::Attachment, "mjpeg".into());
+        track.title = "cover.jpg".into();
+        assert!(track_matches(
+            &track,
+            &CompiledFilter::TitleContains("cover".into()),
+        ));
+        assert!(!track_matches(&track, &CompiledFilter::Font));
+
+        // Compound filter: font OR title contains "cover"
+        let compound = CompiledFilter::Or(vec![
+            CompiledFilter::Font,
+            CompiledFilter::TitleContains("cover".into()),
+        ]);
+        assert!(track_matches(&track, &compound));
+    }
+
+    #[test]
     fn test_title_contains_filter() {
         let mut track = audio_track("eng", "aac", 2);
         track.title = "Director's Commentary".into();

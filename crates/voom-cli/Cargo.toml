@@ -25,6 +25,7 @@ voom-tool-detector.workspace = true
 voom-policy-evaluator.workspace = true
 voom-phase-orchestrator.workspace = true
 voom-mkvtoolnix-executor.workspace = true
+voom-ffmpeg-executor.workspace = true
 voom-backup-manager.workspace = true
 voom-job-manager.workspace = true
 voom-web-server.workspace = true
@@ -56,6 +57,11 @@ uuid.workspace = true
 chrono.workspace = true
 dirs = "5"
 toml = { workspace = true }
+
+[features]
+default = ["wasm"]
+wasm = ["voom-kernel/wasm"]
+functional = []
 
 [dev-dependencies]
 assert_cmd = "2"

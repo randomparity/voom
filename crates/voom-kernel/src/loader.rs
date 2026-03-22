@@ -18,6 +18,9 @@ pub mod wasm {
     use voom_domain::errors::VoomError;
     use voom_domain::events::{Event, EventResult};
 
+    /// A loaded plugin paired with its manifest-declared priority.
+    pub type PluginWithPriority = (Arc<dyn Plugin>, i32);
+
     /// Loads WASM component plugins from `.wasm` files.
     ///
     /// The loader compiles WASM components and instantiates them with host
@@ -169,14 +172,26 @@ pub mod wasm {
         ///
         /// The `plugin_configs` keys should match plugin names (from their
         /// manifest `.toml` file or the `.wasm` filename stem).
-        ///
-        /// This method is wired for use when WASM plugin loading is added to
-        /// `bootstrap_kernel` (Sprint 13 integration work).
         pub fn load_dir_with_config(
             &self,
             dir: &Path,
             plugin_configs: &std::collections::HashMap<String, toml::Table>,
         ) -> Vec<Result<Arc<dyn Plugin>, WasmLoadError>> {
+            self.load_dir_with_config_skip(dir, plugin_configs, &std::collections::HashSet::new())
+                .into_iter()
+                .map(|r| r.map(|(plugin, _priority)| plugin))
+                .collect()
+        }
+
+        /// Like [`load_dir_with_config`] but skips plugins in the `skip_plugins` set
+        /// before compilation, and returns `(plugin, priority)` tuples where
+        /// priority comes from the manifest (default: 70).
+        pub fn load_dir_with_config_skip(
+            &self,
+            dir: &Path,
+            plugin_configs: &std::collections::HashMap<String, toml::Table>,
+            skip_plugins: &std::collections::HashSet<String>,
+        ) -> Vec<Result<PluginWithPriority, WasmLoadError>> {
             let entries = match std::fs::read_dir(dir) {
                 Ok(entries) => entries,
                 Err(e) => {
@@ -198,10 +213,13 @@ pub mod wasm {
                         .map(|ext| ext == "wasm")
                         .unwrap_or(false)
                 })
-                .map(|entry| {
+                .filter_map(|entry| {
                     let wasm_path = entry.path();
                     // Read manifest once — used for both name lookup and load_with_manifest.
-                    let manifest = load_manifest(&wasm_path)?;
+                    let manifest = match load_manifest(&wasm_path) {
+                        Ok(m) => m,
+                        Err(e) => return Some(Err(e)),
+                    };
 
                     let plugin_name = manifest
                         .as_ref()
@@ -213,6 +231,12 @@ pub mod wasm {
                                 .unwrap_or("unknown")
                                 .to_string()
                         });
+
+                    // Skip disabled plugins before compilation.
+                    if skip_plugins.contains(&plugin_name) {
+                        tracing::info!(plugin = %plugin_name, "WASM plugin disabled, skipping load");
+                        return None;
+                    }
 
                     // Build HostState with config seeded if present.
                     let host_state = plugin_configs.get(&plugin_name).map(|table| {
@@ -227,7 +251,11 @@ pub mod wasm {
                         HostState::new(plugin_name.clone()).with_initial_config(config_value)
                     });
 
-                    self.load_with_manifest(&wasm_path, manifest, host_state)
+                    let priority = manifest.as_ref().map(|m| m.priority).unwrap_or(70);
+                    Some(
+                        self.load_with_manifest(&wasm_path, manifest, host_state)
+                            .map(|plugin| (plugin, priority)),
+                    )
                 })
                 .collect()
         }

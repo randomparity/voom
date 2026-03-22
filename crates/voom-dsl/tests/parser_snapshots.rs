@@ -221,6 +221,26 @@ fn snapshot_container_metadata() {
     assert_yaml_snapshot!(ast);
 }
 
+// === Escape sequence test ===
+
+#[test]
+fn test_escape_sequences_in_strings() {
+    let input = r#"policy "test \"escapes\"" {
+        phase clean {
+            set_tag "path" "C:\\Media\\Movies"
+            set_tag "note" "contains \"quotes\""
+        }
+    }"#;
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, r#"test "escapes""#);
+
+    // Verify round-trip through formatter preserves escapes
+    let formatted = voom_dsl::format_policy(&ast);
+    let ast2 = parse_policy(&formatted).unwrap();
+    assert_eq!(ast2.name, ast.name);
+    assert_eq!(ast2.phases.len(), ast.phases.len());
+}
+
 // === Example policy parsing tests ===
 // Verify all sample policies in docs/examples/ are syntactically valid.
 
@@ -274,10 +294,25 @@ fn example_strict_archive_parses() {
 }
 
 #[test]
-fn example_full_pipeline_parses() {
+fn example_attachment_management_parses() {
+    let input = include_str!("../../../docs/examples/attachment-management.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "attachment-management");
+    assert_eq!(ast.phases.len(), 3);
+}
+
+#[test]
+fn example_full_pipeline_parses_and_validates() {
     let input = include_str!("../../../docs/examples/full-pipeline.voom");
     let ast = parse_policy(input).unwrap();
     assert_eq!(ast.name, "full-pipeline");
-    assert_eq!(ast.phases.len(), 10);
+    assert_eq!(ast.phases.len(), 12);
     assert!(ast.config.is_some());
+    // Validate semantics (codecs, languages, phase refs, etc.)
+    let result = voom_dsl::validate(&ast);
+    assert!(
+        result.is_ok(),
+        "validation errors: {:?}",
+        result.unwrap_err().errors
+    );
 }

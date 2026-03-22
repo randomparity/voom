@@ -27,6 +27,11 @@ External metadata enrichment using WASM plugin data. `field exists` conditions, 
 
 **Plugins used:** radarr-metadata, sonarr-metadata (WASM), mkvtoolnix-executor
 
+### [attachment-management.voom](attachment-management.voom)
+Attachment management for font and image attachments. Demonstrates `remove attachments where not font`, `keep attachments where` with compound filters, `count(attachments)` and `exists(attachments)` conditions, `title contains` for cover art detection. Common use case: anime fansub font cleanup.
+
+**Plugins used:** discovery, ffprobe-introspector, sqlite-store, policy-evaluator, phase-orchestrator, mkvtoolnix-executor
+
 ### [strict-archive.voom](strict-archive.voom)
 Strict archival policy with aggressive validation. `fail` action (halts processing), all comparison operators, `count()` with various operators, `title matches` (regex patterns), `on_error: abort`, exhaustive track filtering with complex boolean logic.
 
@@ -47,7 +52,7 @@ Comprehensive reference exercising **every DSL construct**. Not intended for pro
 | `run_if` (modified/completed) | anime, transcode, strict, full |
 | `on_error` | movie-library, transcode, strict, full |
 | `container` | minimal, movie-library, anime, transcode, full |
-| `keep` / `remove` | movie-library, anime, strict, full |
+| `keep` / `remove` | movie-library, anime, attachment, strict, full |
 | `order tracks` | movie-library, anime, strict, full |
 | `defaults` | movie-library, anime, strict, full |
 | `actions` (video/audio/subtitle) | movie-library, anime, strict, full |
@@ -56,8 +61,8 @@ Comprehensive reference exercising **every DSL construct**. Not intended for pro
 | `when` / `else` | anime, metadata, full |
 | `rules first` | metadata, full |
 | `rules all` | anime, full |
-| `exists()` | anime, transcode, full |
-| `count()` | movie-library, anime, strict, full |
+| `exists()` | anime, attachment, transcode, full |
+| `count()` | movie-library, anime, attachment, strict, full |
 | `audio_is_multi_language` | anime, full |
 | `is_dubbed` / `is_original` | anime, metadata, full |
 | `field exists` | metadata, full |
@@ -66,8 +71,8 @@ Comprehensive reference exercising **every DSL construct**. Not intended for pro
 | `set_language` (field) | metadata, full |
 | `set_tag` | metadata, full |
 | `skip` / `fail` / `warn` | movie-library, anime, strict, metadata, full |
-| `title contains` / `matches` | anime, strict, full |
+| `title contains` / `matches` | anime, attachment, strict, full |
 | `lang ==` / `codec ==` | anime, strict, full |
 | `channels` comparison | anime, strict, full |
-| `commentary` / `forced` / `default` / `font` | movie-library, anime, strict, full |
+| `commentary` / `forced` / `default` / `font` | movie-library, anime, attachment, strict, full |
 | Boolean logic (and/or/not/parens) | all except minimal |

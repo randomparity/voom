@@ -5,7 +5,7 @@ use std::path::Path;
 use voom_domain::errors::Result;
 use voom_domain::media::{Container, MediaFile};
 use voom_domain::plan::{ActionParams, OperationType, PlannedAction};
-use voom_domain::utils::sanitize::validate_metadata_value;
+use voom_domain::utils::sanitize::{validate_metadata_key, validate_metadata_value};
 
 use crate::hwaccel::{self, HwAccelConfig};
 
@@ -314,6 +314,16 @@ pub fn build_ffmpeg_command(
                     cmd = cmd.disposition(stream, "0");
                 }
             }
+            OperationType::SetForced => {
+                if let Some(stream) = action.track_index {
+                    cmd = cmd.disposition(stream, "forced");
+                }
+            }
+            OperationType::ClearForced => {
+                if let Some(stream) = action.track_index {
+                    cmd = cmd.disposition(stream, "0");
+                }
+            }
             OperationType::SetTitle => {
                 if let Some(stream) = action.track_index {
                     if let ActionParams::Title { title } = &action.parameters {
@@ -332,7 +342,7 @@ pub fn build_ffmpeg_command(
             }
             OperationType::SetContainerTag => {
                 if let ActionParams::SetTag { tag, value } = &action.parameters {
-                    validate_metadata_value(tag)?;
+                    validate_metadata_key(tag)?;
                     validate_metadata_value(value)?;
                     cmd = cmd.metadata(None, tag, value);
                 }
@@ -340,14 +350,14 @@ pub fn build_ffmpeg_command(
             OperationType::ClearContainerTags => {
                 if let ActionParams::ClearTags { tags } = &action.parameters {
                     for tag in tags {
-                        validate_metadata_value(tag)?;
+                        validate_metadata_key(tag)?;
                         cmd = cmd.clear_metadata(tag);
                     }
                 }
             }
             OperationType::DeleteContainerTag => {
                 if let ActionParams::DeleteTag { tag } = &action.parameters {
-                    validate_metadata_value(tag)?;
+                    validate_metadata_key(tag)?;
                     cmd = cmd.clear_metadata(tag);
                 }
             }
@@ -588,6 +598,36 @@ mod tests {
         // Check that "0" is present for clearing
         let disp2_pos = args.iter().position(|a| a == "-disposition:2").unwrap();
         assert_eq!(args[disp2_pos + 1], "0");
+    }
+
+    #[test]
+    fn test_build_command_set_forced() {
+        let file = sample_mp4_file();
+        let actions_owned = vec![
+            PlannedAction {
+                operation: OperationType::SetForced,
+                track_index: Some(2),
+                parameters: ActionParams::Empty,
+                description: "Set track 2 as forced".into(),
+            },
+            PlannedAction {
+                operation: OperationType::ClearForced,
+                track_index: Some(1),
+                parameters: ActionParams::Empty,
+                description: "Clear forced on track 1".into(),
+            },
+        ];
+        let actions: Vec<&PlannedAction> = actions_owned.iter().collect();
+        let output = Path::new("/tmp/output.mp4");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+
+        assert!(args.contains(&"-disposition:2".to_string()));
+        assert!(args.contains(&"forced".to_string()));
+        assert!(args.contains(&"-disposition:1".to_string()));
+        // Check that "0" is present for clearing
+        let disp1_pos = args.iter().position(|a| a == "-disposition:1").unwrap();
+        assert_eq!(args[disp1_pos + 1], "0");
     }
 
     #[test]

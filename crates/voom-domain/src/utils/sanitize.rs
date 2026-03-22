@@ -20,6 +20,30 @@ pub fn validate_metadata_value(value: &str) -> Result<&str, VoomError> {
     Ok(value)
 }
 
+/// Validates a metadata key (tag name) for safe use in command-line arguments.
+///
+/// Rejects control characters (like [`validate_metadata_value`]) and additionally
+/// rejects `=` which would confuse FFmpeg's `key=value` metadata argument parsing.
+///
+/// # Errors
+///
+/// Returns [`VoomError::Validation`] if the key is empty, contains control characters,
+/// or contains `=`.
+pub fn validate_metadata_key(key: &str) -> Result<&str, VoomError> {
+    if key.is_empty() {
+        return Err(VoomError::Validation(
+            "metadata key cannot be empty".to_string(),
+        ));
+    }
+    validate_metadata_value(key)?;
+    if key.contains('=') {
+        return Err(VoomError::Validation(format!(
+            "metadata key contains '=' which would corrupt key=value parsing: {key:?}"
+        )));
+    }
+    Ok(key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,5 +93,31 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("byte 3"), "error should report byte 3: {err}");
+    }
+
+    // ── validate_metadata_key ─────────────────────────────────────
+
+    #[test]
+    fn test_key_normal_passes() {
+        assert!(validate_metadata_key("title").is_ok());
+        assert!(validate_metadata_key("ENCODER").is_ok());
+    }
+
+    #[test]
+    fn test_key_empty_fails() {
+        assert!(validate_metadata_key("").is_err());
+    }
+
+    #[test]
+    fn test_key_with_equals_fails() {
+        let result = validate_metadata_key("key=value");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("="), "error should mention '=': {err}");
+    }
+
+    #[test]
+    fn test_key_with_control_char_fails() {
+        assert!(validate_metadata_key("bad\x00key").is_err());
     }
 }
