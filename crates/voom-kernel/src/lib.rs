@@ -1,7 +1,10 @@
 //! VOOM kernel: event bus, plugin registry, capability routing, and plugin loaders.
 
+#![allow(clippy::missing_errors_doc)]
+
 pub mod bus;
-pub mod capabilities;
+pub mod errors;
+#[cfg(feature = "wasm")]
 pub mod host;
 pub mod loader;
 pub mod manifest;
@@ -19,8 +22,25 @@ pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;
     fn version(&self) -> &str;
     fn capabilities(&self) -> &[Capability];
-    fn handles(&self, event_type: &str) -> bool;
-    fn on_event(&self, event: &Event) -> Result<Option<EventResult>>;
+    /// Returns `true` if this plugin wants to receive events of the given type.
+    ///
+    /// Use the constants on [`Event`] (e.g. `Event::FILE_DISCOVERED`,
+    /// `Event::PLAN_CREATED`) rather than string literals to get compile-time
+    /// typo protection. The constants are defined in `voom_domain::events`.
+    ///
+    /// Default: returns `false` for all event types. Plugins that participate
+    /// in event-driven coordination must override this.
+    fn handles(&self, _event_type: &str) -> bool {
+        false
+    }
+
+    /// Process an incoming event. Only called for event types where
+    /// [`handles`](Self::handles) returns `true`.
+    ///
+    /// Default: returns `Ok(None)` (no result produced).
+    fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> {
+        Ok(None)
+    }
 
     /// Called once after the plugin is loaded.
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
@@ -42,7 +62,7 @@ pub struct PluginContext {
 /// The kernel that manages plugins and event dispatch.
 pub struct Kernel {
     pub registry: registry::PluginRegistry,
-    pub bus: bus::EventBus,
+    pub(crate) bus: bus::EventBus,
     shutdown_called: AtomicBool,
 }
 
@@ -67,9 +87,9 @@ impl Kernel {
     /// Initialize a plugin via `init()`, then register it with the given priority.
     ///
     /// This is the safe-by-default path that ensures every plugin is initialized
-    /// before being registered. Prefer this over manually calling `init` + `register_plugin`.
+    /// before being registered. Prefer this over manually calling `init` + [`register_plugin`](Self::register_plugin).
     ///
-    /// Accepts `Arc<dyn Plugin>` for consistency with [`register_plugin`]. The caller
+    /// Accepts `Arc<dyn Plugin>` for consistency with [`register_plugin`](Self::register_plugin). The caller
     /// must pass a freshly created `Arc` (refcount == 1) so that `Arc::get_mut` can
     /// obtain the `&mut` reference needed to call `Plugin::init`.
     pub fn init_and_register(
@@ -99,7 +119,14 @@ impl Kernel {
 
     /// Dispatch an event through the bus to all matching subscribers.
     pub fn dispatch(&self, event: Event) -> Vec<EventResult> {
+        let event_type = event.event_type().to_string();
+        let _span = tracing::debug_span!("dispatch", event = %event_type).entered();
         self.bus.publish(event)
+    }
+
+    /// Returns the number of subscribers registered on the event bus.
+    pub fn subscriber_count(&self) -> usize {
+        self.bus.subscriber_count()
     }
 
     /// Gracefully shut down all plugins in reverse priority order.
@@ -194,7 +221,7 @@ mod tests {
 
         assert!(init_called.load(Ordering::SeqCst));
         assert_eq!(kernel.registry.len(), 1);
-        assert_eq!(kernel.bus.subscriber_count(), 1);
+        assert_eq!(kernel.subscriber_count(), 1);
     }
 
     #[test]

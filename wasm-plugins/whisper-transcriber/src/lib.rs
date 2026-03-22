@@ -30,7 +30,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, Event, OnEventResult, PluginInfoData,
+    deserialize_event, load_plugin_config, serialize_event, Event, HostFunctions, OnEventResult,
+    PluginInfoData, ToolOutput,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -171,7 +172,7 @@ fn build_result(
     });
 
     let enriched_event = Event::MetadataEnriched(
-        voom_plugin_sdk::voom_domain::events::MetadataEnrichedEvent {
+        voom_plugin_sdk::MetadataEnrichedEvent {
             path: file.path.clone(),
             source: "whisper-transcriber".to_string(),
             metadata,
@@ -185,21 +186,6 @@ fn build_result(
         produced_events: vec![(enriched_event.event_type().to_string(), produced_payload)],
         data: None,
     })
-}
-
-// --- Host function abstraction ---
-
-pub trait HostFunctions {
-    fn run_tool(&self, tool: &str, args: &[String], timeout_ms: u64) -> Result<ToolOutput, String>;
-    fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>>;
-    fn set_plugin_data(&self, key: &str, value: &[u8]) -> Result<(), String>;
-    fn log(&self, level: &str, message: &str);
-}
-
-pub struct ToolOutput {
-    pub exit_code: i32,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
 }
 
 // --- Config ---
@@ -361,7 +347,7 @@ mod tests {
         let host = MockHost::new();
         let file = make_audio_file();
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent { file },
+            voom_plugin_sdk::FileIntrospectedEvent { file },
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -389,7 +375,7 @@ mod tests {
         let host = MockHost::new();
         let file = MediaFile::new(PathBuf::from("/media/test.mkv")); // no tracks
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent { file },
+            voom_plugin_sdk::FileIntrospectedEvent { file },
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -402,7 +388,7 @@ mod tests {
         let host = MockHost::with_failing_ffmpeg();
         let file = make_audio_file();
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent { file },
+            voom_plugin_sdk::FileIntrospectedEvent { file },
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -425,7 +411,7 @@ mod tests {
 
         let file = make_audio_file();
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent { file },
+            voom_plugin_sdk::FileIntrospectedEvent { file },
         );
         let payload = serialize_event(&event).unwrap();
 

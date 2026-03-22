@@ -1,16 +1,17 @@
 use anyhow::Result;
 use comfy_table::Cell;
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::app;
 use crate::cli::{OutputFormat, ReportArgs};
+use crate::config;
 use crate::output;
+use crate::stats;
 
-pub async fn run(args: ReportArgs) -> Result<()> {
-    let config = app::load_config()?;
+pub fn run(args: ReportArgs) -> Result<()> {
+    let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::StorageTrait;
     let files = store
         .list_files(&voom_domain::FileFilters::default())
         .map_err(|e| anyhow::anyhow!("failed to list files from database: {e}"))?;
@@ -18,7 +19,7 @@ pub async fn run(args: ReportArgs) -> Result<()> {
     if files.is_empty() {
         println!(
             "{}",
-            "No files in database. Run 'voom scan' first.".yellow()
+            style("No files in database. Run 'voom scan' first.").yellow()
         );
         return Ok(());
     }
@@ -28,7 +29,7 @@ pub async fn run(args: ReportArgs) -> Result<()> {
             let report = serde_json::json!({
                 "total_files": files.len(),
                 "total_size": files.iter().map(|f| f.size).sum::<u64>(),
-                "containers": output::container_counts(&files),
+                "containers": stats::container_counts(&files),
                 "codecs": codec_counts(&files),
             });
             println!(
@@ -37,7 +38,7 @@ pub async fn run(args: ReportArgs) -> Result<()> {
             );
         }
         OutputFormat::Table => {
-            println!("{}", "Library Report".bold().underline());
+            println!("{}", style("Library Report").bold().underlined());
             println!();
 
             let total_size: u64 = files.iter().map(|f| f.size).sum();
@@ -45,15 +46,18 @@ pub async fn run(args: ReportArgs) -> Result<()> {
 
             println!(
                 "  {} files, {}, {}",
-                files.len().to_string().bold(),
-                voom_domain::utils::datetime::format_size(total_size).cyan(),
-                voom_domain::utils::datetime::format_duration(total_duration).dimmed(),
+                style(files.len()).bold(),
+                style(voom_domain::utils::datetime::format_size(total_size)).cyan(),
+                style(voom_domain::utils::datetime::format_duration(
+                    total_duration
+                ))
+                .dim(),
             );
             println!();
 
             // Container breakdown
-            println!("{}", "Containers:".bold());
-            let containers = output::container_counts(&files);
+            println!("{}", style("Containers:").bold());
+            let containers = stats::container_counts(&files);
             let mut table = output::new_table();
             table.set_header(vec!["Container", "Count"]);
             for (container, count) in &containers {
@@ -63,7 +67,7 @@ pub async fn run(args: ReportArgs) -> Result<()> {
             println!();
 
             // Codec breakdown
-            println!("{}", "Codecs:".bold());
+            println!("{}", style("Codecs:").bold());
             let codecs = codec_counts(&files);
             let mut table = output::new_table();
             table.set_header(vec!["Codec", "Count"]);
@@ -78,15 +82,9 @@ pub async fn run(args: ReportArgs) -> Result<()> {
 }
 
 fn codec_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
-    let mut counts = std::collections::HashMap::new();
-    for file in files {
-        for track in &file.tracks {
-            *counts.entry(track.codec.clone()).or_insert(0) += 1;
-        }
-    }
-    let mut sorted: Vec<_> = counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
-    sorted
+    stats::count_by(files, |f| {
+        f.tracks.iter().map(|t| t.codec.clone()).collect::<Vec<_>>()
+    })
 }
 
 #[cfg(test)]
@@ -105,13 +103,13 @@ mod tests {
     }
 
     #[test]
-    fn codec_counts_empty_files() {
+    fn test_codec_counts_empty_files() {
         let result = codec_counts(&[]);
         assert!(result.is_empty());
     }
 
     #[test]
-    fn codec_counts_single_file() {
+    fn test_codec_counts_single_file() {
         let files = vec![make_file(&["hevc", "aac", "aac"])];
         let counts = codec_counts(&files);
         assert_eq!(counts[0], ("aac".to_string(), 2));
@@ -119,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn codec_counts_multiple_files() {
+    fn test_codec_counts_multiple_files() {
         let files = vec![
             make_file(&["hevc", "aac"]),
             make_file(&["hevc", "opus", "srt"]),
@@ -132,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn codec_counts_sorted_descending() {
+    fn test_codec_counts_sorted_descending() {
         let files = vec![make_file(&["a", "b", "b", "b", "c", "c"])];
         let counts = codec_counts(&files);
         assert_eq!(counts[0], ("b".to_string(), 3));

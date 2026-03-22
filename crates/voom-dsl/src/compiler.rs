@@ -8,13 +8,65 @@
 #![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;
+use std::fmt;
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use voom_domain::utils::codecs;
 
 use crate::ast::*;
-use crate::errors::{DslError, ValidationErrors};
-use crate::validator;
+use crate::errors::DslError;
+
+/// A pre-compiled regex that supports `Clone`, `Debug`, `Serialize`, and `Deserialize`.
+///
+/// Serialized as the pattern string; deserialization re-compiles the regex.
+#[derive(Clone)]
+pub struct CompiledRegex {
+    pattern: String,
+    regex: Regex,
+}
+
+impl CompiledRegex {
+    /// Compile a new regex from the given pattern.
+    pub fn new(pattern: &str) -> Result<Self, regex::Error> {
+        let regex = Regex::new(pattern)?;
+        Ok(Self {
+            pattern: pattern.to_string(),
+            regex,
+        })
+    }
+
+    /// Returns the underlying compiled `Regex`.
+    #[must_use]
+    pub fn regex(&self) -> &Regex {
+        &self.regex
+    }
+
+    /// Returns the original pattern string.
+    #[must_use]
+    pub fn pattern(&self) -> &str {
+        &self.pattern
+    }
+}
+
+impl fmt::Debug for CompiledRegex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("CompiledRegex").field(&self.pattern).finish()
+    }
+}
+
+impl Serialize for CompiledRegex {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.pattern.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for CompiledRegex {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let pattern = String::deserialize(deserializer)?;
+        CompiledRegex::new(&pattern).map_err(serde::de::Error::custom)
+    }
+}
 
 /// A compiled policy ready for evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,14 +139,14 @@ pub enum CompiledOperation {
     SetDefaults(Vec<CompiledDefault>),
     ClearActions {
         target: TrackTarget,
-        settings: HashMap<String, serde_json::Value>,
+        settings: ClearActionsSettings,
     },
     Transcode {
         target: TrackTarget,
         codec: String,
-        settings: HashMap<String, serde_json::Value>,
+        settings: CompiledTranscodeSettings,
     },
-    Synthesize(CompiledSynthesize),
+    Synthesize(Box<CompiledSynthesize>),
     ClearTags,
     SetTag {
         tag: String,
@@ -134,19 +186,57 @@ pub enum DefaultStrategy {
     All,
 }
 
+/// Settings for the `ClearActions` operation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClearActionsSettings {
+    pub clear_all_default: bool,
+    pub clear_all_forced: bool,
+    pub clear_all_titles: bool,
+}
+
+/// Settings for the `Transcode` operation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CompiledTranscodeSettings {
+    pub preserve: Vec<String>,
+    pub crf: Option<u32>,
+    pub preset: Option<String>,
+    pub bitrate: Option<String>,
+    pub channels: Option<u32>,
+}
+
+/// Channel count for a synthesize operation — either a named preset or an explicit count.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum SynthChannels {
+    /// Named preset, e.g. `stereo`, `mono`, `5.1`.
+    Named(String),
+    /// Explicit channel count, e.g. `2`, `6`.
+    Count(u32),
+}
+
+/// Position hint for a synthesize operation — either a named position or a numeric index.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum SynthPosition {
+    /// Named position, e.g. `after_source`, `last`.
+    Named(String),
+    /// Zero-based track index.
+    Index(u32),
+}
+
 /// Synthesize operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledSynthesize {
     pub name: String,
     pub codec: Option<String>,
-    pub channels: Option<serde_json::Value>,
+    pub channels: Option<SynthChannels>,
     pub source: Option<CompiledFilter>,
     pub bitrate: Option<String>,
     pub skip_if_exists: Option<CompiledFilter>,
     pub create_if: Option<CompiledCondition>,
     pub title: Option<String>,
     pub language: Option<SynthLanguage>,
-    pub position: Option<serde_json::Value>,
+    pub position: Option<SynthPosition>,
 }
 
 /// Language setting for synthesize.
@@ -232,7 +322,7 @@ pub enum CompiledFilter {
     Default,
     Font,
     TitleContains(String),
-    TitleMatches(String),
+    TitleMatches(CompiledRegex),
     And(Vec<CompiledFilter>),
     Or(Vec<CompiledFilter>),
     Not(Box<CompiledFilter>),
@@ -270,19 +360,8 @@ pub enum CompiledValueOrField {
     Field(Vec<String>),
 }
 
-/// Compile a policy source string into a [`CompiledPolicy`].
-///
-/// Parses, validates, then compiles. Returns all validation errors at once.
-pub fn compile(source: &str) -> std::result::Result<CompiledPolicy, CompileError> {
-    let ast = crate::parser::parse_policy(source).map_err(CompileError::Parse)?;
-    validator::validate(&ast).map_err(CompileError::Validation)?;
-    let mut policy = compile_ast(&ast).map_err(CompileError::Compile)?;
-    policy.source_hash = format!("{:016x}", xxhash_rust::xxh3::xxh3_64(source.as_bytes()));
-    Ok(policy)
-}
-
 /// Compile a pre-parsed and validated AST into a [`CompiledPolicy`].
-pub fn compile_ast(ast: &PolicyAst) -> std::result::Result<CompiledPolicy, DslError> {
+pub(crate) fn compile_ast(ast: &PolicyAst) -> std::result::Result<CompiledPolicy, DslError> {
     let config = compile_config(ast.config.as_ref());
     let phases: Vec<CompiledPhase> = ast
         .phases
@@ -299,26 +378,6 @@ pub fn compile_ast(ast: &PolicyAst) -> std::result::Result<CompiledPolicy, DslEr
         source_hash: String::new(),
     })
 }
-
-/// Errors from the compile pipeline.
-#[derive(Debug)]
-pub enum CompileError {
-    Parse(DslError),
-    Validation(ValidationErrors),
-    Compile(DslError),
-}
-
-impl std::fmt::Display for CompileError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CompileError::Parse(e) => write!(f, "{e}"),
-            CompileError::Validation(e) => write!(f, "{e}"),
-            CompileError::Compile(e) => write!(f, "{e}"),
-        }
-    }
-}
-
-impl std::error::Error for CompileError {}
 
 fn compile_config(config: Option<&ConfigNode>) -> CompiledConfig {
     match config {
@@ -422,13 +481,26 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
             Ok(CompiledOperation::SetDefaults(defaults))
         }
         OperationNode::Actions { target, settings } => {
-            let map = settings
-                .iter()
-                .map(|(k, v)| (k.clone(), value_to_json(v)))
-                .collect();
+            let bool_setting = |key: &str| -> bool {
+                settings
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .and_then(|(_, v)| {
+                        if let Value::Bool(b) = v {
+                            Some(*b)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false)
+            };
             Ok(CompiledOperation::ClearActions {
                 target: parse_track_target(target),
-                settings: map,
+                settings: ClearActionsSettings {
+                    clear_all_default: bool_setting("clear_all_default"),
+                    clear_all_forced: bool_setting("clear_all_forced"),
+                    clear_all_titles: bool_setting("clear_all_titles"),
+                },
             })
         }
         OperationNode::Transcode {
@@ -439,18 +511,63 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
             let canonical = codecs::normalize_codec(codec)
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| codec.clone());
-            let map = settings
-                .iter()
-                .map(|(k, v)| (k.clone(), value_to_json(v)))
-                .collect();
+            let get = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v);
+            let preserve = get("preserve")
+                .and_then(|v| {
+                    if let Value::List(items) = v {
+                        Some(
+                            items
+                                .iter()
+                                .map(|item| match item {
+                                    Value::String(s) | Value::Ident(s) => s.clone(),
+                                    Value::Number(_, s) => s.clone(),
+                                    _ => String::new(),
+                                })
+                                .filter(|s| !s.is_empty())
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+            let crf = get("crf").and_then(|v| {
+                if let Value::Number(n, _) = v {
+                    Some(*n as u32)
+                } else {
+                    None
+                }
+            });
+            let preset = get("preset").and_then(|v| match v {
+                Value::String(s) | Value::Ident(s) => Some(s.clone()),
+                _ => None,
+            });
+            let bitrate = get("bitrate").and_then(|v| match v {
+                Value::String(s) | Value::Ident(s) => Some(s.clone()),
+                Value::Number(_, s) => Some(s.clone()),
+                _ => None,
+            });
+            let channels = get("channels").and_then(|v| {
+                if let Value::Number(n, _) = v {
+                    Some(*n as u32)
+                } else {
+                    None
+                }
+            });
             Ok(CompiledOperation::Transcode {
                 target: parse_track_target(target),
                 codec: canonical,
-                settings: map,
+                settings: CompiledTranscodeSettings {
+                    preserve,
+                    crf,
+                    preset,
+                    bitrate,
+                    channels,
+                },
             })
         }
         OperationNode::Synthesize { name, settings } => Ok(CompiledOperation::Synthesize(
-            compile_synthesize(name, settings)?,
+            Box::new(compile_synthesize(name, settings)?),
         )),
         OperationNode::ClearTags => Ok(CompiledOperation::ClearTags),
         OperationNode::SetTag { tag, value } => Ok(CompiledOperation::SetTag {
@@ -506,7 +623,13 @@ fn compile_synthesize(
                         .unwrap_or_else(|| c.clone()),
                 );
             }
-            SynthSetting::Channels(v) => synth.channels = Some(value_to_json(v)),
+            SynthSetting::Channels(v) => {
+                synth.channels = Some(match v {
+                    Value::Number(n, _) => SynthChannels::Count(*n as u32),
+                    Value::Ident(s) => SynthChannels::Named(s.clone()),
+                    _ => SynthChannels::Named(format!("{v:?}")),
+                });
+            }
             SynthSetting::Source(f) => synth.source = Some(compile_filter(f)?),
             SynthSetting::Bitrate(b) => synth.bitrate = Some(b.clone()),
             SynthSetting::SkipIfExists(f) => synth.skip_if_exists = Some(compile_filter(f)?),
@@ -519,7 +642,13 @@ fn compile_synthesize(
                     SynthLanguage::Fixed(l.clone())
                 });
             }
-            SynthSetting::Position(v) => synth.position = Some(value_to_json(v)),
+            SynthSetting::Position(v) => {
+                synth.position = Some(match v {
+                    Value::Number(n, _) => SynthPosition::Index(*n as u32),
+                    Value::Ident(s) => SynthPosition::Named(s.clone()),
+                    _ => SynthPosition::Named(format!("{v:?}")),
+                });
+            }
         }
     }
 
@@ -622,7 +751,11 @@ fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, Ds
         FilterNode::Default => Ok(CompiledFilter::Default),
         FilterNode::Font => Ok(CompiledFilter::Font),
         FilterNode::TitleContains(s) => Ok(CompiledFilter::TitleContains(s.clone())),
-        FilterNode::TitleMatches(s) => Ok(CompiledFilter::TitleMatches(s.clone())),
+        FilterNode::TitleMatches(s) => {
+            let compiled = CompiledRegex::new(s)
+                .map_err(|e| DslError::compile(format!("invalid regex pattern '{}': {}", s, e)))?;
+            Ok(CompiledFilter::TitleMatches(compiled))
+        }
         FilterNode::And(items) => {
             let compiled: Vec<CompiledFilter> = items
                 .iter()
@@ -760,6 +893,13 @@ fn topological_sort(ast: &PolicyAst) -> std::result::Result<Vec<String>, DslErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test helper: run the full parse → validate → compile pipeline.
+    fn compile(
+        source: &str,
+    ) -> std::result::Result<CompiledPolicy, crate::errors::DslPipelineError> {
+        crate::compile_policy(source)
+    }
 
     #[test]
     fn test_compile_minimal() {

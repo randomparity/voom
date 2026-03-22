@@ -4,6 +4,8 @@
 //! and the serialized forms used at the WASM component model boundary.
 //! Event payloads cross the WASM boundary as MessagePack-encoded bytes.
 
+#![allow(clippy::missing_errors_doc)]
+
 pub mod convert;
 
 pub use convert::{

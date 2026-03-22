@@ -1,5 +1,7 @@
 //! `SQLite` storage plugin: persistent storage for files, tracks, jobs, plans, and plugin data.
 
+#![allow(clippy::missing_errors_doc)]
+
 pub mod schema;
 pub mod store;
 
@@ -8,7 +10,7 @@ use std::sync::Arc;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
-use voom_domain::storage::StorageTrait;
+use voom_domain::storage::{BadFileStorage, FileStorage, PlanStorage, PluginDataStorage};
 use voom_kernel::{Plugin, PluginContext};
 
 use crate::store::SqliteStore;
@@ -59,13 +61,13 @@ impl Plugin for SqliteStorePlugin {
     fn handles(&self, event_type: &str) -> bool {
         matches!(
             event_type,
-            "file.introspected"
-                | "file.introspection_failed"
-                | "plan.created"
-                | "plan.completed"
-                | "plan.failed"
-                | "metadata.enriched"
-                | "tool.detected"
+            Event::FILE_INTROSPECTED
+                | Event::FILE_INTROSPECTION_FAILED
+                | Event::PLAN_CREATED
+                | Event::PLAN_COMPLETED
+                | Event::PLAN_FAILED
+                | Event::METADATA_ENRICHED
+                | Event::TOOL_DETECTED
         )
     }
 
@@ -99,18 +101,20 @@ impl Plugin for SqliteStorePlugin {
             }
             Event::PlanCompleted(e) => {
                 tracing::info!(path = %e.path.display(), phase = %e.phase_name, "plan completed");
-                store.update_plan_status(&e.plan_id, "completed")?;
+                store
+                    .update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Completed)?;
             }
             Event::PlanFailed(e) => {
                 tracing::info!(path = %e.path.display(), phase = %e.phase_name, error = %e.error, "plan failed");
-                store.update_plan_status(&e.plan_id, "failed")?;
+                store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Failed)?;
             }
             Event::MetadataEnriched(e) => {
                 let key = format!("metadata:{}", e.path.display());
                 let value = serde_json::to_vec(&e.metadata).map_err(|err| {
-                    voom_domain::VoomError::Storage(format!(
-                        "failed to serialize enriched metadata: {err}"
-                    ))
+                    voom_domain::VoomError::Storage {
+                        kind: voom_domain::errors::StorageErrorKind::Other,
+                        message: format!("failed to serialize enriched metadata: {err}"),
+                    }
                 })?;
                 store.set_plugin_data(&e.source, &key, &value)?;
                 tracing::info!(
@@ -126,9 +130,11 @@ impl Plugin for SqliteStorePlugin {
                     "version": e.version,
                     "path": e.path,
                 });
-                let bytes = serde_json::to_vec(&value).map_err(|err| {
-                    voom_domain::VoomError::Storage(format!("failed to serialize tool info: {err}"))
-                })?;
+                let bytes =
+                    serde_json::to_vec(&value).map_err(|err| voom_domain::VoomError::Storage {
+                        kind: voom_domain::errors::StorageErrorKind::Other,
+                        message: format!("failed to serialize tool info: {err}"),
+                    })?;
                 store.set_plugin_data("tool-detector", &key, &bytes)?;
                 tracing::info!(
                     tool = %e.tool_name,
@@ -147,11 +153,9 @@ impl Plugin for SqliteStorePlugin {
 
         // Ensure data directory exists
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                voom_domain::VoomError::Storage(format!(
-                    "failed to create data dir {}: {e}",
-                    parent.display()
-                ))
+            std::fs::create_dir_all(parent).map_err(|e| voom_domain::VoomError::Storage {
+                kind: voom_domain::errors::StorageErrorKind::Other,
+                message: format!("failed to create data dir {}: {e}", parent.display()),
             })?;
         }
 
@@ -172,7 +176,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_creates_plugin_with_store_capability() {
+    fn test_new_creates_plugin_with_store_capability() {
         let plugin = SqliteStorePlugin::new();
         assert_eq!(
             plugin.capabilities(),
@@ -183,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn default_creates_same_as_new() {
+    fn test_default_creates_same_as_new() {
         let plugin = SqliteStorePlugin::default();
         assert_eq!(plugin.name(), "sqlite-store");
         assert_eq!(
@@ -195,41 +199,40 @@ mod tests {
     }
 
     #[test]
-    fn plugin_name_and_version() {
+    fn test_plugin_name_and_version() {
         let plugin = SqliteStorePlugin::new();
         assert_eq!(plugin.name(), "sqlite-store");
         assert!(!plugin.version().is_empty());
     }
 
     #[test]
-    fn store_is_none_before_init() {
+    fn test_store_is_none_before_init() {
         let plugin = SqliteStorePlugin::new();
         assert!(plugin.store().is_none());
     }
 
     #[test]
-    fn handles_expected_event_types() {
+    fn test_handles_expected_event_types() {
         let plugin = SqliteStorePlugin::new();
-        assert!(plugin.handles("file.introspected"));
-        assert!(plugin.handles("file.introspection_failed"));
-        assert!(plugin.handles("plan.created"));
-        assert!(plugin.handles("plan.completed"));
-        assert!(plugin.handles("plan.failed"));
-        assert!(plugin.handles("metadata.enriched"));
-        assert!(plugin.handles("tool.detected"));
+        assert!(plugin.handles(Event::FILE_INTROSPECTED));
+        assert!(plugin.handles(Event::FILE_INTROSPECTION_FAILED));
+        assert!(plugin.handles(Event::PLAN_CREATED));
+        assert!(plugin.handles(Event::PLAN_COMPLETED));
+        assert!(plugin.handles(Event::PLAN_FAILED));
+        assert!(plugin.handles(Event::METADATA_ENRICHED));
+        assert!(plugin.handles(Event::TOOL_DETECTED));
     }
 
     #[test]
-    fn does_not_handle_unrelated_event_types() {
+    fn test_does_not_handle_unrelated_event_types() {
         let plugin = SqliteStorePlugin::new();
-        assert!(!plugin.handles("file.discovered"));
-        assert!(!plugin.handles("policy.evaluate"));
-        assert!(!plugin.handles("job.started"));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
+        assert!(!plugin.handles(Event::JOB_STARTED));
         assert!(!plugin.handles(""));
     }
 
     #[test]
-    fn on_event_returns_none_when_store_not_initialized() {
+    fn test_on_event_returns_none_when_store_not_initialized() {
         let plugin = SqliteStorePlugin::new();
         // Even for a handled event type, returns None if store is not init'd
         let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent {
@@ -242,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn init_creates_store() {
+    fn test_init_creates_store() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
         let ctx = PluginContext {
@@ -254,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn init_creates_data_dir_if_missing() {
+    fn test_init_creates_data_dir_if_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let nested = tmp.path().join("nested").join("dir");
         let mut plugin = SqliteStorePlugin::new();
@@ -267,13 +270,13 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_succeeds() {
+    fn test_shutdown_succeeds() {
         let plugin = SqliteStorePlugin::new();
         assert!(plugin.shutdown().is_ok());
     }
 
     #[test]
-    fn on_event_handles_introspection_failed() {
+    fn test_on_event_handles_introspection_failed() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
         let ctx = PluginContext {
@@ -294,16 +297,16 @@ mod tests {
 
         // Verify bad file was stored
         let store = plugin.store().unwrap();
-        use voom_domain::storage::StorageTrait;
+        use voom_domain::storage::BadFileStorage;
         let bf = store
-            .get_bad_file_by_path(std::path::Path::new("/media/corrupt.mkv"))
+            .bad_file_by_path(std::path::Path::new("/media/corrupt.mkv"))
             .unwrap();
         assert!(bf.is_some());
         assert_eq!(bf.unwrap().error, "ffprobe failed");
     }
 
     #[test]
-    fn on_event_introspected_clears_bad_file() {
+    fn test_on_event_introspected_clears_bad_file() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
         let ctx = PluginContext {
@@ -332,15 +335,15 @@ mod tests {
 
         // Bad file entry should be cleared
         let store = plugin.store().unwrap();
-        use voom_domain::storage::StorageTrait;
+        use voom_domain::storage::BadFileStorage;
         let bf = store
-            .get_bad_file_by_path(std::path::Path::new("/media/recovered.mkv"))
+            .bad_file_by_path(std::path::Path::new("/media/recovered.mkv"))
             .unwrap();
         assert!(bf.is_none());
     }
 
     #[test]
-    fn on_event_with_initialized_store_handles_tool_detected() {
+    fn test_on_event_with_initialized_store_handles_tool_detected() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
         let ctx = PluginContext {
@@ -359,9 +362,7 @@ mod tests {
 
         // Verify data was stored
         let store = plugin.store().unwrap();
-        let data = store
-            .get_plugin_data("tool-detector", "tool:ffprobe")
-            .unwrap();
+        let data = store.plugin_data("tool-detector", "tool:ffprobe").unwrap();
         assert!(data.is_some());
         let value: serde_json::Value = serde_json::from_slice(&data.unwrap()).unwrap();
         assert_eq!(value["tool_name"], "ffprobe");

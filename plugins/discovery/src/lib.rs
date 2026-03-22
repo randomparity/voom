@@ -1,13 +1,15 @@
 //! Filesystem discovery plugin: parallel directory walking with content hashing.
 
+#![allow(clippy::missing_errors_doc)]
+
 pub mod scanner;
 
 pub use scanner::hash_file;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
-use voom_domain::events::{Event, EventResult, FileDiscoveredEvent};
-use voom_kernel::{Plugin, PluginContext};
+use voom_domain::events::FileDiscoveredEvent;
+use voom_kernel::Plugin;
 
 /// Progress update during a scan.
 #[derive(Debug, Clone)]
@@ -105,25 +107,12 @@ impl Plugin for DiscoveryPlugin {
     fn capabilities(&self) -> &[Capability] {
         &self.capabilities
     }
-
-    fn handles(&self, _event_type: &str) -> bool {
-        // Discovery is a source plugin — it produces events but doesn't subscribe to any.
-        false
-    }
-
-    fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> {
-        Ok(None)
-    }
-
-    fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        tracing::info!("discovery plugin initialized");
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use voom_domain::events::Event;
 
     #[test]
     fn test_plugin_metadata() {
@@ -136,8 +125,8 @@ mod tests {
     #[test]
     fn test_handles_no_events() {
         let plugin = DiscoveryPlugin::new();
-        assert!(!plugin.handles("file.discovered"));
-        assert!(!plugin.handles("file.introspected"));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
+        assert!(!plugin.handles(Event::FILE_INTROSPECTED));
     }
 
     #[test]

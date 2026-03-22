@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use scopeguard::ScopeGuard;
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::plan::{ActionResult, OperationType, PlannedAction};
+use voom_domain::plan::{ActionParams, ActionResult, OperationType, PlannedAction};
 
 /// Execute mkvmerge operations (remux, track removal, reorder).
 ///
@@ -125,89 +125,60 @@ pub fn build_merge_args(
 ) -> Vec<String> {
     let mut args = vec!["-o".into(), output_path.to_string_lossy().into_owned()];
 
-    // Collect track removal indices
-    let remove_indices: Vec<u32> = actions
-        .iter()
-        .filter(|a| a.operation == OperationType::RemoveTrack)
-        .filter_map(|a| a.track_index)
-        .collect();
+    // Group track removals by type in a single pass using the "track_type" parameter.
+    // mkvmerge supports negation with `!` prefix:
+    // `--video-tracks !3` means "all video tracks except TID 3"
+    let mut video_removes: Vec<u32> = Vec::new();
+    let mut audio_removes: Vec<u32> = Vec::new();
+    let mut subtitle_removes: Vec<u32> = Vec::new();
 
-    // Build track removal flags if needed.
-    // mkvmerge's track selection flags accept comma-separated track IDs to INCLUDE.
-    // We use negation: `--video-tracks !id1,id2` is NOT supported.
-    // Instead, we use `--track-order` combined with explicit track type selection.
-    //
-    // The simplest reliable approach: use `-d TID` (video), `-a TID` (audio), `-s TID` (subtitle)
-    // flags which accept track IDs to include. But we need to know track types.
-    //
-    // Since PlannedAction includes parameters with track type info, we classify removals.
-    // For the general case, we group removed tracks by type from their parameters.
-    if !remove_indices.is_empty() {
-        // Group removals by track type using the "track_type" parameter
-        let mut video_removes: Vec<u32> = Vec::new();
-        let mut audio_removes: Vec<u32> = Vec::new();
-        let mut subtitle_removes: Vec<u32> = Vec::new();
-
-        for action in actions.iter() {
-            if action.operation == OperationType::RemoveTrack {
-                if let Some(idx) = action.track_index {
-                    let track_type = action.parameters["track_type"]
-                        .as_str()
-                        .unwrap_or("unknown");
-                    match track_type {
-                        t if t.starts_with("video") || t == "Video" => video_removes.push(idx),
-                        t if t.starts_with("audio") || t.starts_with("Audio") => {
-                            audio_removes.push(idx)
-                        }
-                        t if t.starts_with("subtitle") || t.starts_with("Subtitle") => {
-                            subtitle_removes.push(idx)
-                        }
-                        _ => {
-                            // If track type is unknown, use a general approach:
-                            // add to all removal lists and let mkvmerge ignore non-matching
-                            video_removes.push(idx);
-                            audio_removes.push(idx);
-                            subtitle_removes.push(idx);
-                        }
+    for action in actions.iter() {
+        if action.operation == OperationType::RemoveTrack {
+            if let Some(idx) = action.track_index {
+                let track_type = match &action.parameters {
+                    ActionParams::RemoveTrack { track_type, .. } => *track_type,
+                    _ => continue,
+                };
+                match track_type.track_category() {
+                    "video" => video_removes.push(idx),
+                    "audio" => audio_removes.push(idx),
+                    "subtitle" => subtitle_removes.push(idx),
+                    _ => {
+                        // Attachment or unknown — add to all removal lists and let mkvmerge ignore non-matching
+                        video_removes.push(idx);
+                        audio_removes.push(idx);
+                        subtitle_removes.push(idx);
                     }
                 }
             }
         }
+    }
 
-        // Build exclusion args using mkvmerge's `--no-*` or specific track lists.
-        // For each type with removals, we output the track IDs NOT to include.
-        // mkvmerge uses `--video-tracks TID1,TID2` to include only those tracks.
-        // But since we only know which to remove, we specify the "inverted" list
-        // by telling mkvmerge to skip specific TIDs.
-        //
-        // Actually, mkvmerge DOES support negation with `!` prefix:
-        // `--video-tracks !3` means "all video tracks except TID 3"
-        if !video_removes.is_empty() {
-            let ids: Vec<String> = video_removes.iter().map(|i| i.to_string()).collect();
-            args.push("--video-tracks".into());
-            args.push(format!("!{}", ids.join(",")));
-        }
+    if !video_removes.is_empty() {
+        let ids: Vec<String> = video_removes.iter().map(|i| i.to_string()).collect();
+        args.push("--video-tracks".into());
+        args.push(format!("!{}", ids.join(",")));
+    }
 
-        if !audio_removes.is_empty() {
-            let ids: Vec<String> = audio_removes.iter().map(|i| i.to_string()).collect();
-            args.push("--audio-tracks".into());
-            args.push(format!("!{}", ids.join(",")));
-        }
+    if !audio_removes.is_empty() {
+        let ids: Vec<String> = audio_removes.iter().map(|i| i.to_string()).collect();
+        args.push("--audio-tracks".into());
+        args.push(format!("!{}", ids.join(",")));
+    }
 
-        if !subtitle_removes.is_empty() {
-            let ids: Vec<String> = subtitle_removes.iter().map(|i| i.to_string()).collect();
-            args.push("--subtitle-tracks".into());
-            args.push(format!("!{}", ids.join(",")));
-        }
+    if !subtitle_removes.is_empty() {
+        let ids: Vec<String> = subtitle_removes.iter().map(|i| i.to_string()).collect();
+        args.push("--subtitle-tracks".into());
+        args.push(format!("!{}", ids.join(",")));
     }
 
     // Handle track reordering
     for action in actions.iter() {
         if action.operation == OperationType::ReorderTracks {
-            if let Some(order) = action.parameters["order"].as_array() {
+            if let ActionParams::ReorderTracks { order } = &action.parameters {
                 let track_order: Vec<String> = order
                     .iter()
-                    .filter_map(|v| v.as_u64())
+                    .filter_map(|v| v.parse::<u64>().ok())
                     .map(|idx| format!("0:{}", idx))
                     .collect();
                 if !track_order.is_empty() {
@@ -229,25 +200,18 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    fn make_action(
-        op: OperationType,
-        track_index: Option<u32>,
-        params: serde_json::Value,
-    ) -> PlannedAction {
-        PlannedAction {
-            operation: op,
-            track_index,
-            parameters: params,
-            description: format!("{:?} action", op),
-        }
-    }
+    use crate::test_helpers::make_action;
+    use voom_domain::media::{Container, TrackType};
 
     #[test]
     fn test_build_merge_args_remove_track() {
         let action = make_action(
             OperationType::RemoveTrack,
             Some(3),
-            serde_json::json!({"track_type": "subtitle_main"}),
+            ActionParams::RemoveTrack {
+                reason: "test".into(),
+                track_type: TrackType::SubtitleMain,
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_merge_args(
@@ -272,7 +236,9 @@ mod tests {
         let action = make_action(
             OperationType::ReorderTracks,
             None,
-            serde_json::json!({"order": [0, 2, 1, 3]}),
+            ActionParams::ReorderTracks {
+                order: vec!["0".into(), "2".into(), "1".into(), "3".into()],
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_merge_args(
@@ -297,7 +263,9 @@ mod tests {
         let action = make_action(
             OperationType::ConvertContainer,
             None,
-            serde_json::json!({"target": "mkv"}),
+            ActionParams::Container {
+                container: Container::Mkv,
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_merge_args(
@@ -317,12 +285,18 @@ mod tests {
         let a1 = make_action(
             OperationType::RemoveTrack,
             Some(2),
-            serde_json::json!({"track_type": "audio_commentary"}),
+            ActionParams::RemoveTrack {
+                reason: "test".into(),
+                track_type: TrackType::AudioMain,
+            },
         );
         let a2 = make_action(
             OperationType::RemoveTrack,
             Some(4),
-            serde_json::json!({"track_type": "subtitle_commentary"}),
+            ActionParams::RemoveTrack {
+                reason: "test".into(),
+                track_type: TrackType::SubtitleMain,
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&a1, &a2];
         let args = build_merge_args(
@@ -349,12 +323,17 @@ mod tests {
         let a1 = make_action(
             OperationType::RemoveTrack,
             Some(3),
-            serde_json::json!({"track_type": "audio_commentary"}),
+            ActionParams::RemoveTrack {
+                reason: "test".into(),
+                track_type: TrackType::AudioMain,
+            },
         );
         let a2 = make_action(
             OperationType::ReorderTracks,
             None,
-            serde_json::json!({"order": [0, 1, 2, 4]}),
+            ActionParams::ReorderTracks {
+                order: vec!["0".into(), "1".into(), "2".into(), "4".into()],
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&a1, &a2];
         let args = build_merge_args(

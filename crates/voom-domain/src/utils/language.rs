@@ -136,7 +136,7 @@ pub fn language_name(code: &str) -> Option<&'static str> {
 /// All known canonical 3-letter language codes (cached, sorted).
 static ALL_LANGUAGE_CODES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut codes: Vec<&str> = LANGUAGE_NAMES.keys().copied().collect();
-    codes.sort();
+    codes.sort_unstable();
     codes
 });
 

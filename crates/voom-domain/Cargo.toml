@@ -12,7 +12,6 @@ description = "Domain types and utilities for VOOM — Video Orchestration Opera
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-rmp-serde = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
@@ -22,3 +21,4 @@ testing = []
 
 [dev-dependencies]
 insta = { workspace = true }
+rmp-serde = { workspace = true }

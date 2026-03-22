@@ -113,3 +113,74 @@ impl std::fmt::Display for ValidationErrors {
 impl std::error::Error for ValidationErrors {}
 
 pub type Result<T> = std::result::Result<T, DslError>;
+
+/// A unified error for the full parse → validate → compile pipeline.
+///
+/// Use this with [`crate::compile_policy`] to run the entire DSL pipeline with a
+/// single error type, while still being able to distinguish which stage failed.
+///
+/// # Example
+///
+/// ```
+/// use voom_dsl::{compile_policy, errors::DslPipelineError};
+///
+/// match compile_policy("not valid DSL") {
+///     Ok(policy) => println!("compiled: {}", policy.name),
+///     Err(DslPipelineError::Parse(e)) => eprintln!("parse error: {e}"),
+///     Err(DslPipelineError::Validation(e)) => eprintln!("validation errors: {e}"),
+///     Err(DslPipelineError::Compile(e)) => eprintln!("compile error: {e}"),
+/// }
+/// ```
+#[derive(Debug)]
+pub enum DslPipelineError {
+    /// The source could not be parsed into an AST.
+    Parse(DslError),
+    /// The AST failed semantic validation (may contain multiple errors).
+    Validation(ValidationErrors),
+    /// The validated AST could not be compiled to a [`crate::compiler::CompiledPolicy`].
+    Compile(DslError),
+}
+
+impl std::fmt::Display for DslPipelineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DslPipelineError::Parse(e) => write!(f, "parse error: {e}"),
+            DslPipelineError::Validation(e) => write!(f, "validation failed: {e}"),
+            DslPipelineError::Compile(e) => write!(f, "compile error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for DslPipelineError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            DslPipelineError::Parse(e) => Some(e),
+            DslPipelineError::Validation(e) => Some(e),
+            DslPipelineError::Compile(e) => Some(e),
+        }
+    }
+}
+
+impl From<DslError> for DslPipelineError {
+    /// Converts a [`DslError`] into the appropriate pipeline variant.
+    ///
+    /// `DslError::Parse` and `DslError::Build` map to `DslPipelineError::Parse`;
+    /// `DslError::Validation` maps to `DslPipelineError::Validation` (wrapping a
+    /// single-element [`ValidationErrors`]); `DslError::Compile` maps to
+    /// `DslPipelineError::Compile`.
+    fn from(e: DslError) -> Self {
+        match e {
+            DslError::Parse { .. } | DslError::Build { .. } => DslPipelineError::Parse(e),
+            DslError::Validation { .. } => {
+                DslPipelineError::Validation(ValidationErrors { errors: vec![e] })
+            }
+            DslError::Compile { .. } => DslPipelineError::Compile(e),
+        }
+    }
+}
+
+impl From<ValidationErrors> for DslPipelineError {
+    fn from(e: ValidationErrors) -> Self {
+        DslPipelineError::Validation(e)
+    }
+}

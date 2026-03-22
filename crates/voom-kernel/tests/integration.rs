@@ -22,7 +22,7 @@ impl Plugin for DiscoveryLogger {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "file.discovered"
+        event_type == Event::FILE_DISCOVERED
     }
 
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
@@ -35,6 +35,7 @@ impl Plugin for DiscoveryLogger {
                     "size": discovered.size,
                 })),
                 claimed: false,
+                execution_error: None,
             }))
         } else {
             Ok(None)
@@ -61,7 +62,7 @@ impl Plugin for MockIntrospector {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "file.discovered"
+        event_type == Event::FILE_DISCOVERED
     }
 
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
@@ -75,42 +76,11 @@ impl Plugin for MockIntrospector {
                 produced_events: vec![introspected],
                 data: None,
                 claimed: false,
+                execution_error: None,
             }))
         } else {
             Ok(None)
         }
-    }
-}
-
-/// A native plugin with executor capabilities for testing capability queries.
-struct MockExecutor {
-    caps: Vec<Capability>,
-}
-
-impl Plugin for MockExecutor {
-    fn name(&self) -> &str {
-        "mock-mkvtoolnix"
-    }
-
-    fn version(&self) -> &str {
-        "0.1.0"
-    }
-
-    fn capabilities(&self) -> &[Capability] {
-        &self.caps
-    }
-
-    fn handles(&self, event_type: &str) -> bool {
-        event_type == "plan.created"
-    }
-
-    fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
-        Ok(Some(EventResult {
-            plugin_name: "mock-mkvtoolnix".to_string(),
-            produced_events: vec![],
-            data: Some(serde_json::json!({"executed": true})),
-            claimed: false,
-        }))
     }
 }
 
@@ -128,7 +98,7 @@ fn test_kernel_register_and_dispatch() {
     kernel.register_plugin(introspector, 10);
 
     assert_eq!(kernel.registry.len(), 2);
-    assert_eq!(kernel.bus.subscriber_count(), 2);
+    assert_eq!(kernel.subscriber_count(), 2);
 
     // Dispatch a FileDiscovered event.
     let event = Event::FileDiscovered(FileDiscoveredEvent {
@@ -152,44 +122,8 @@ fn test_kernel_register_and_dispatch() {
     assert_eq!(results[1].produced_events.len(), 1);
     assert_eq!(
         results[1].produced_events[0].event_type(),
-        "file.introspected"
+        Event::FILE_INTROSPECTED
     );
-}
-
-#[test]
-fn test_kernel_capability_queries() {
-    let mut kernel = Kernel::new();
-
-    let executor = Arc::new(MockExecutor {
-        caps: vec![Capability::Execute {
-            operations: vec!["metadata".into(), "reorder".into(), "remux".into()],
-            formats: vec!["mkv".into()],
-        }],
-    });
-
-    kernel.register_plugin(executor, 0);
-
-    // Query by capability kind.
-    let executors = kernel.registry.find_by_capability_kind("execute");
-    assert_eq!(executors.len(), 1);
-    assert_eq!(executors[0].name(), "mock-mkvtoolnix");
-
-    // Query for specific operation + format.
-    let handler = kernel.registry.find_for_operation("metadata", "mkv");
-    assert!(handler.is_some());
-    assert_eq!(handler.unwrap().name(), "mock-mkvtoolnix");
-
-    // No handler for transcode.
-    assert!(kernel
-        .registry
-        .find_for_operation("transcode", "mkv")
-        .is_none());
-
-    // No handler for mp4 format.
-    assert!(kernel
-        .registry
-        .find_for_operation("metadata", "mp4")
-        .is_none());
 }
 
 #[test]
@@ -234,7 +168,7 @@ impl Plugin for MockMkvExecutor {
         &[]
     }
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "plan.created"
+        event_type == Event::PLAN_CREATED
     }
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
         if let Event::PlanCreated(plan_event) = event {
@@ -255,6 +189,7 @@ impl Plugin for MockMkvExecutor {
                     produced_events: vec![],
                     data: Some(serde_json::json!({"handler": "mkvtoolnix"})),
                     claimed: true,
+                    execution_error: None,
                 }));
             }
         }
@@ -276,7 +211,7 @@ impl Plugin for MockFfmpegExecutor {
         &[]
     }
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "plan.created"
+        event_type == Event::PLAN_CREATED
     }
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
         if let Event::PlanCreated(_) = event {
@@ -285,6 +220,7 @@ impl Plugin for MockFfmpegExecutor {
                 produced_events: vec![],
                 data: Some(serde_json::json!({"handler": "ffmpeg"})),
                 claimed: true,
+                execution_error: None,
             }))
         } else {
             Ok(None)
@@ -329,7 +265,7 @@ fn test_executor_claimed_mkv_metadata_goes_to_mkvtoolnix() {
         vec![PlannedAction {
             operation: OperationType::SetDefault,
             track_index: Some(1),
-            parameters: serde_json::json!({}),
+            parameters: voom_domain::plan::ActionParams::Empty,
             description: "Set default".into(),
         }],
     );
@@ -345,7 +281,7 @@ fn test_executor_claimed_mkv_metadata_goes_to_mkvtoolnix() {
 
 #[test]
 fn test_executor_claimed_mp4_goes_to_ffmpeg() {
-    use voom_domain::plan::{OperationType, PlannedAction};
+    use voom_domain::plan::{ActionParams, OperationType, PlannedAction};
 
     let mut kernel = Kernel::new();
 
@@ -358,7 +294,13 @@ fn test_executor_claimed_mp4_goes_to_ffmpeg() {
         vec![PlannedAction {
             operation: OperationType::TranscodeVideo,
             track_index: Some(0),
-            parameters: serde_json::json!({"codec": "hevc"}),
+            parameters: ActionParams::Transcode {
+                codec: "hevc".into(),
+                crf: None,
+                preset: None,
+                bitrate: None,
+                channels: None,
+            },
             description: "Transcode".into(),
         }],
     );
@@ -372,7 +314,7 @@ fn test_executor_claimed_mp4_goes_to_ffmpeg() {
 
 #[test]
 fn test_executor_mkv_transcode_falls_through_to_ffmpeg() {
-    use voom_domain::plan::{OperationType, PlannedAction};
+    use voom_domain::plan::{ActionParams, OperationType, PlannedAction};
 
     let mut kernel = Kernel::new();
 
@@ -385,7 +327,13 @@ fn test_executor_mkv_transcode_falls_through_to_ffmpeg() {
         vec![PlannedAction {
             operation: OperationType::TranscodeVideo,
             track_index: Some(0),
-            parameters: serde_json::json!({"codec": "h264"}),
+            parameters: ActionParams::Transcode {
+                codec: "h264".into(),
+                crf: None,
+                preset: None,
+                bitrate: None,
+                channels: None,
+            },
             description: "Transcode to H.264".into(),
         }],
     );

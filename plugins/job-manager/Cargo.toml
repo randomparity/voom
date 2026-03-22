@@ -11,8 +11,8 @@ categories.workspace = true
 description = "Job manager plugin for VOOM — background job queue with concurrent workers"
 
 [dependencies]
-voom-domain = { path = "../../crates/voom-domain" }
-voom-kernel = { path = "../../crates/voom-kernel" }
+voom-domain.workspace = true
+voom-kernel.workspace = true
 
 # Async
 tokio.workspace = true
@@ -31,6 +31,6 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-voom-domain = { path = "../../crates/voom-domain", features = ["testing"] }
+voom-domain = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

@@ -31,7 +31,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, Event, OnEventResult, PluginInfoData,
+    deserialize_event, load_plugin_config, serialize_event, Event, HostFunctions, HttpResponse,
+    OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -80,7 +81,7 @@ pub fn on_event(
     });
 
     let enriched_event = Event::MetadataEnriched(
-        voom_plugin_sdk::voom_domain::events::MetadataEnrichedEvent {
+        voom_plugin_sdk::MetadataEnrichedEvent {
             path: file.path.clone(),
             source: "sonarr".to_string(),
             metadata,
@@ -94,20 +95,6 @@ pub fn on_event(
         produced_events: vec![(enriched_event.event_type().to_string(), produced_payload)],
         data: None,
     })
-}
-
-// --- Host function abstraction ---
-
-pub trait HostFunctions {
-    fn http_get(&self, url: &str, headers: &[(String, String)]) -> Result<HttpResponse, String>;
-    fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>>;
-    fn set_plugin_data(&self, key: &str, value: &[u8]) -> Result<(), String>;
-    fn log(&self, level: &str, message: &str);
-}
-
-pub struct HttpResponse {
-    pub status: u16,
-    pub body: Vec<u8>,
 }
 
 // --- Sonarr data types ---
@@ -301,7 +288,7 @@ mod tests {
             "/media/tv/Breaking Bad/Season 01/Breaking.Bad.S01E01.1080p.mkv",
         );
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent { file },
+            voom_plugin_sdk::FileIntrospectedEvent { file },
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -329,7 +316,7 @@ mod tests {
         let host = MockHost::new();
         let file = make_test_file("/media/tv/Unknown Show/S01E01.mkv");
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent { file },
+            voom_plugin_sdk::FileIntrospectedEvent { file },
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -342,7 +329,7 @@ mod tests {
         let host = MockHost::without_config();
         let file = make_test_file("/media/tv/test.mkv");
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent { file },
+            voom_plugin_sdk::FileIntrospectedEvent { file },
         );
         let payload = serialize_event(&event).unwrap();
 

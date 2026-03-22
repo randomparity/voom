@@ -39,7 +39,13 @@ pub fn load_plugin_config<T: DeserializeOwned>(
     get_data: impl FnOnce(&str) -> Option<Vec<u8>>,
 ) -> Option<T> {
     let data = get_data("config")?;
-    serde_json::from_slice(&data).ok()
+    match serde_json::from_slice(&data) {
+        Ok(config) => Some(config),
+        Err(e) => {
+            tracing::warn!("Failed to deserialize plugin config: {e}");
+            None
+        }
+    }
 }
 
 #[cfg(test)]

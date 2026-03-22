@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::bad_file::BadFileSource;
 use crate::media::MediaFile;
-use crate::plan::Plan;
+use crate::plan::{ActionResult, Plan};
 
 /// All event types that flow through the event bus.
 #[non_exhaustive]
@@ -16,7 +16,6 @@ pub enum Event {
     /// Emitted by WASM metadata plugins. Consumed by the sqlite-store plugin
     /// to persist enriched metadata as plugin data keyed by file path.
     MetadataEnriched(MetadataEnrichedEvent),
-    PolicyEvaluate(PolicyEvaluateEvent),
     PlanCreated(PlanCreatedEvent),
     PlanExecuting(PlanExecutingEvent),
     PlanCompleted(PlanCompletedEvent),
@@ -31,24 +30,40 @@ pub enum Event {
 }
 
 impl Event {
+    // ── Event type constants ────────────────────────────────────
+    // Use these instead of string literals in Plugin::handles() implementations
+    // to get compile-time typo protection.
+    pub const FILE_DISCOVERED: &str = "file.discovered";
+    pub const FILE_INTROSPECTED: &str = "file.introspected";
+    pub const FILE_INTROSPECTION_FAILED: &str = "file.introspection_failed";
+    pub const METADATA_ENRICHED: &str = "metadata.enriched";
+    pub const PLAN_CREATED: &str = "plan.created";
+    pub const PLAN_EXECUTING: &str = "plan.executing";
+    pub const PLAN_COMPLETED: &str = "plan.completed";
+    pub const PLAN_FAILED: &str = "plan.failed";
+    pub const JOB_STARTED: &str = "job.started";
+    pub const JOB_PROGRESS: &str = "job.progress";
+    pub const JOB_COMPLETED: &str = "job.completed";
+    pub const TOOL_DETECTED: &str = "tool.detected";
+    pub const PLUGIN_ERROR: &str = "plugin.error";
+
     /// Returns the event type string used for subscription matching.
     #[must_use]
     pub fn event_type(&self) -> &str {
         match self {
-            Event::FileDiscovered(_) => "file.discovered",
-            Event::FileIntrospected(_) => "file.introspected",
-            Event::FileIntrospectionFailed(_) => "file.introspection_failed",
-            Event::MetadataEnriched(_) => "metadata.enriched",
-            Event::PolicyEvaluate(_) => "policy.evaluate",
-            Event::PlanCreated(_) => "plan.created",
-            Event::PlanExecuting(_) => "plan.executing",
-            Event::PlanCompleted(_) => "plan.completed",
-            Event::PlanFailed(_) => "plan.failed",
-            Event::JobStarted(_) => "job.started",
-            Event::JobProgress(_) => "job.progress",
-            Event::JobCompleted(_) => "job.completed",
-            Event::ToolDetected(_) => "tool.detected",
-            Event::PluginError(_) => "plugin.error",
+            Event::FileDiscovered(_) => Self::FILE_DISCOVERED,
+            Event::FileIntrospected(_) => Self::FILE_INTROSPECTED,
+            Event::FileIntrospectionFailed(_) => Self::FILE_INTROSPECTION_FAILED,
+            Event::MetadataEnriched(_) => Self::METADATA_ENRICHED,
+            Event::PlanCreated(_) => Self::PLAN_CREATED,
+            Event::PlanExecuting(_) => Self::PLAN_EXECUTING,
+            Event::PlanCompleted(_) => Self::PLAN_COMPLETED,
+            Event::PlanFailed(_) => Self::PLAN_FAILED,
+            Event::JobStarted(_) => Self::JOB_STARTED,
+            Event::JobProgress(_) => Self::JOB_PROGRESS,
+            Event::JobCompleted(_) => Self::JOB_COMPLETED,
+            Event::ToolDetected(_) => Self::TOOL_DETECTED,
+            Event::PluginError(_) => Self::PLUGIN_ERROR,
         }
     }
 }
@@ -63,6 +78,11 @@ pub struct EventResult {
     /// handlers. Produced events from the claiming result still cascade normally.
     #[serde(default)]
     pub claimed: bool,
+    /// Set when an executor claims a plan but fails to execute it.
+    /// Allows callers to distinguish claimed+succeeded from claimed+failed
+    /// without parsing the `data` JSON.
+    #[serde(default)]
+    pub execution_error: Option<String>,
 }
 
 impl EventResult {
@@ -71,17 +91,13 @@ impl EventResult {
     /// Lifecycle events (`PlanExecuting`, `PlanCompleted`) are dispatched by the
     /// orchestrator in `process.rs`, not produced by executors, to avoid
     /// duplicate dispatches.
-    pub fn plan_succeeded(
-        plugin_name: impl Into<String>,
-        _plan: &crate::plan::Plan,
-        _actions_applied: usize,
-        data: Option<serde_json::Value>,
-    ) -> Self {
+    pub fn plan_succeeded(plugin_name: impl Into<String>, data: Option<serde_json::Value>) -> Self {
         Self {
             plugin_name: plugin_name.into(),
             produced_events: vec![],
             data,
             claimed: true,
+            execution_error: None,
         }
     }
 
@@ -90,16 +106,38 @@ impl EventResult {
     /// Lifecycle events (`PlanExecuting`, `PlanFailed`) are dispatched by the
     /// orchestrator in `process.rs`, not produced by executors, to avoid
     /// duplicate dispatches.
-    pub fn plan_failed(
-        plugin_name: impl Into<String>,
-        _plan: &crate::plan::Plan,
-        _error: String,
-    ) -> Self {
+    pub fn plan_failed(plugin_name: impl Into<String>, error: impl Into<String>) -> Self {
         Self {
             plugin_name: plugin_name.into(),
             produced_events: vec![],
             data: None,
             claimed: true,
+            execution_error: Some(error.into()),
+        }
+    }
+
+    /// Wrap the outcome of an executor's plan execution into an `EventResult`.
+    ///
+    /// On success the result carries the action results as JSON data and is
+    /// marked as claimed.  On failure a failed result is returned (callers
+    /// should log the error if needed).
+    #[must_use]
+    pub fn from_plan_execution(
+        plugin_name: &str,
+        outcome: crate::errors::Result<Vec<ActionResult>>,
+    ) -> Self {
+        match outcome {
+            Ok(results) => {
+                let actions_applied = results.iter().filter(|r| r.success).count();
+                Self::plan_succeeded(
+                    plugin_name,
+                    Some(serde_json::json!({
+                        "actions_applied": actions_applied,
+                        "results": serde_json::to_value(&results).unwrap_or_default(),
+                    })),
+                )
+            }
+            Err(e) => Self::plan_failed(plugin_name, e.to_string()),
         }
     }
 }
@@ -132,12 +170,6 @@ pub struct MetadataEnrichedEvent {
     pub path: PathBuf,
     pub source: String,
     pub metadata: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PolicyEvaluateEvent {
-    pub path: PathBuf,
-    pub policy_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,13 +210,13 @@ pub struct PlanFailedEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobStartedEvent {
-    pub job_id: String,
+    pub job_id: Uuid,
     pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobProgressEvent {
-    pub job_id: String,
+    pub job_id: Uuid,
     pub progress: f64,
     #[serde(default)]
     pub message: Option<String>,
@@ -192,7 +224,7 @@ pub struct JobProgressEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobCompletedEvent {
-    pub job_id: String,
+    pub job_id: Uuid,
     pub success: bool,
     #[serde(default)]
     pub message: Option<String>,
@@ -248,7 +280,7 @@ mod tests {
     #[test]
     fn test_event_msgpack_roundtrip() {
         let event = Event::JobProgress(JobProgressEvent {
-            job_id: "job-1".into(),
+            job_id: Uuid::new_v4(),
             progress: 0.75,
             message: Some("Processing...".into()),
         });
@@ -260,9 +292,10 @@ mod tests {
     #[test]
     fn test_job_progress_missing_optional_fields() {
         // Simulate deserializing from a payload that omits the optional `message` field.
-        let json = r#"{"job_id":"j1","progress":0.5}"#;
-        let event: JobProgressEvent = serde_json::from_str(json).unwrap();
-        assert_eq!(event.job_id, "j1");
+        let id = Uuid::new_v4();
+        let json = format!(r#"{{"job_id":"{}","progress":0.5}}"#, id);
+        let event: JobProgressEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event.job_id, id);
         assert!(event.message.is_none());
     }
 
@@ -322,9 +355,10 @@ mod tests {
 
     #[test]
     fn test_job_completed_missing_optional_fields() {
-        let json = r#"{"job_id":"j2","success":true}"#;
-        let event: JobCompletedEvent = serde_json::from_str(json).unwrap();
-        assert_eq!(event.job_id, "j2");
+        let id = Uuid::new_v4();
+        let json = format!(r#"{{"job_id":"{}","success":true}}"#, id);
+        let event: JobCompletedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event.job_id, id);
         assert!(event.success);
         assert!(event.message.is_none());
     }

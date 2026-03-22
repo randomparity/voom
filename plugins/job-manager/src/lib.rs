@@ -1,33 +1,32 @@
 //! Job Manager Plugin for VOOM.
 //!
 //! Provides background job processing with:
-//! - Priority-based job queue backed by `StorageTrait`
+//! - Priority-based job queue backed by `JobStorage`
 //! - Configurable concurrent worker pool (tokio tasks)
 //! - Job lifecycle management: enqueue, claim, progress, complete, fail, cancel
 //! - Pluggable progress reporting (CLI, database, custom)
 //! - Batch processing with error handling strategies
 
+#![allow(clippy::missing_errors_doc)]
+
 pub mod progress;
 pub mod queue;
 pub mod worker;
-
-#[cfg(test)]
-pub(crate) mod test_helpers;
 
 use std::sync::Arc;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
-use voom_domain::storage::StorageTrait;
-use voom_kernel::{Plugin, PluginContext};
+use voom_domain::storage::JobStorage;
+use voom_kernel::Plugin;
 
 use crate::queue::JobQueue;
 
 /// The job manager plugin.
 ///
 /// Manages background job processing with a priority queue and worker pool.
-/// Jobs are persisted via `StorageTrait`, enabling recovery after crashes.
+/// Jobs are persisted via `JobStorage`, enabling recovery after crashes.
 pub struct JobManagerPlugin {
     queue: Option<Arc<JobQueue>>,
     capabilities: Vec<Capability>,
@@ -43,14 +42,13 @@ impl JobManagerPlugin {
     }
 
     /// Initialize with a storage backend.
-    pub fn with_store(store: Arc<dyn StorageTrait>) -> Self {
+    pub fn from_store(store: Arc<dyn JobStorage>) -> Self {
         Self {
             queue: Some(Arc::new(JobQueue::new(store))),
             capabilities: vec![Capability::ManageJobs],
         }
     }
 
-    /// Get the job queue, if initialized.
     #[must_use]
     pub fn queue(&self) -> Option<&Arc<JobQueue>> {
         self.queue.as_ref()
@@ -77,7 +75,10 @@ impl Plugin for JobManagerPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        matches!(event_type, "job.started" | "job.progress" | "job.completed")
+        matches!(
+            event_type,
+            Event::JOB_STARTED | Event::JOB_PROGRESS | Event::JOB_COMPLETED
+        )
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
@@ -109,18 +110,13 @@ impl Plugin for JobManagerPlugin {
             _ => Ok(None),
         }
     }
-
-    fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        tracing::info!("Job manager plugin initialized");
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::InMemoryStore;
     use voom_domain::events::{JobCompletedEvent, JobProgressEvent, JobStartedEvent};
+    use voom_domain::test_support::InMemoryStore;
 
     #[test]
     fn test_plugin_metadata() {
@@ -133,16 +129,16 @@ mod tests {
     #[test]
     fn test_plugin_handles_events() {
         let plugin = JobManagerPlugin::new();
-        assert!(plugin.handles("job.started"));
-        assert!(plugin.handles("job.progress"));
-        assert!(plugin.handles("job.completed"));
-        assert!(!plugin.handles("file.discovered"));
+        assert!(plugin.handles(Event::JOB_STARTED));
+        assert!(plugin.handles(Event::JOB_PROGRESS));
+        assert!(plugin.handles(Event::JOB_COMPLETED));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
     }
 
     #[test]
-    fn test_plugin_with_store() {
+    fn test_plugin_from_store() {
         let store = Arc::new(InMemoryStore::new());
-        let plugin = JobManagerPlugin::with_store(store);
+        let plugin = JobManagerPlugin::from_store(store);
         assert!(plugin.queue().is_some());
     }
 
@@ -150,7 +146,7 @@ mod tests {
     fn test_on_event_job_started() {
         let plugin = JobManagerPlugin::new();
         let event = Event::JobStarted(JobStartedEvent {
-            job_id: "test-1".into(),
+            job_id: uuid::Uuid::new_v4(),
             description: "Processing file".into(),
         });
         let result = plugin.on_event(&event).unwrap();
@@ -161,7 +157,7 @@ mod tests {
     fn test_on_event_job_progress() {
         let plugin = JobManagerPlugin::new();
         let event = Event::JobProgress(JobProgressEvent {
-            job_id: "test-1".into(),
+            job_id: uuid::Uuid::new_v4(),
             progress: 0.5,
             message: Some("Halfway".into()),
         });
@@ -174,14 +170,14 @@ mod tests {
         let plugin = JobManagerPlugin::new();
 
         let event = Event::JobCompleted(JobCompletedEvent {
-            job_id: "test-1".into(),
+            job_id: uuid::Uuid::new_v4(),
             success: true,
             message: None,
         });
         assert!(plugin.on_event(&event).unwrap().is_none());
 
         let event = Event::JobCompleted(JobCompletedEvent {
-            job_id: "test-2".into(),
+            job_id: uuid::Uuid::new_v4(),
             success: false,
             message: Some("Encoder error".into()),
         });

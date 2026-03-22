@@ -1,4 +1,4 @@
-//! Shared in-memory StorageTrait implementation for testing.
+//! Shared in-memory `StorageTrait` implementation for testing.
 //!
 //! Gated behind the `testing` feature. Enable in your crate's
 //! `[dev-dependencies]` with:
@@ -14,15 +14,19 @@ use std::sync::Mutex;
 use uuid::Uuid;
 
 use crate::bad_file::BadFile;
-use crate::errors::{Result, VoomError};
+use crate::errors::{Result, StorageErrorKind, VoomError};
 use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::MediaFile;
 use crate::plan::Plan;
 use crate::stats::ProcessingStats;
-use crate::storage::{BadFileFilters, FileFilters, StorageTrait, StoredPlan};
+use crate::storage::{
+    BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,
+    JobStorage, MaintenanceStorage, PlanStorage, PluginDataStorage, StatsStorage, StoredPlan,
+};
 
-/// In-memory storage for testing. Implements the full `StorageTrait` with
-/// working file and job methods. Plan/stats/plugin-data methods are stubs.
+/// In-memory storage for testing. Implements the full `StorageTrait` via
+/// sub-traits with working file and job methods. Plan/stats/plugin-data
+/// methods are stubs.
 pub struct InMemoryStore {
     files: Mutex<HashMap<Uuid, MediaFile>>,
     jobs: Mutex<HashMap<Uuid, Job>>,
@@ -55,17 +59,17 @@ impl Default for InMemoryStore {
     }
 }
 
-impl StorageTrait for InMemoryStore {
+impl FileStorage for InMemoryStore {
     fn upsert_file(&self, file: &MediaFile) -> Result<()> {
         self.files.lock().unwrap().insert(file.id, file.clone());
         Ok(())
     }
 
-    fn get_file(&self, id: &Uuid) -> Result<Option<MediaFile>> {
+    fn file(&self, id: &Uuid) -> Result<Option<MediaFile>> {
         Ok(self.files.lock().unwrap().get(id).cloned())
     }
 
-    fn get_file_by_path(&self, path: &Path) -> Result<Option<MediaFile>> {
+    fn file_by_path(&self, path: &Path) -> Result<Option<MediaFile>> {
         Ok(self
             .files
             .lock()
@@ -80,6 +84,11 @@ impl StorageTrait for InMemoryStore {
         let mut result: Vec<MediaFile> = files
             .values()
             .filter(|f| {
+                if let Some(container) = filters.container {
+                    if f.container != container {
+                        return false;
+                    }
+                }
                 if let Some(ref prefix) = filters.path_prefix {
                     if !f.path.to_string_lossy().starts_with(prefix.as_str()) {
                         return false;
@@ -104,6 +113,11 @@ impl StorageTrait for InMemoryStore {
         let count = files
             .values()
             .filter(|f| {
+                if let Some(container) = filters.container {
+                    if f.container != container {
+                        return false;
+                    }
+                }
                 if let Some(ref prefix) = filters.path_prefix {
                     if !f.path.to_string_lossy().starts_with(prefix.as_str()) {
                         return false;
@@ -119,21 +133,24 @@ impl StorageTrait for InMemoryStore {
         self.files.lock().unwrap().remove(id);
         Ok(())
     }
+}
 
+impl JobStorage for InMemoryStore {
     fn create_job(&self, job: &Job) -> Result<Uuid> {
         self.jobs.lock().unwrap().insert(job.id, job.clone());
         Ok(job.id)
     }
 
-    fn get_job(&self, id: &Uuid) -> Result<Option<Job>> {
+    fn job(&self, id: &Uuid) -> Result<Option<Job>> {
         Ok(self.jobs.lock().unwrap().get(id).cloned())
     }
 
     fn update_job(&self, id: &Uuid, update: &JobUpdate) -> Result<()> {
         let mut jobs = self.jobs.lock().unwrap();
-        let job = jobs
-            .get_mut(id)
-            .ok_or_else(|| VoomError::Storage(format!("job {id} not found")))?;
+        let job = jobs.get_mut(id).ok_or_else(|| VoomError::Storage {
+            kind: StorageErrorKind::NotFound,
+            message: format!("job {id} not found"),
+        })?;
 
         if let Some(status) = update.status {
             job.status = status;
@@ -142,16 +159,16 @@ impl StorageTrait for InMemoryStore {
             job.progress = progress;
         }
         if let Some(ref msg) = update.progress_message {
-            job.progress_message = msg.clone();
+            job.progress_message.clone_from(msg);
         }
         if let Some(ref output) = update.output {
-            job.output = output.clone();
+            job.output.clone_from(output);
         }
         if let Some(ref error) = update.error {
-            job.error = error.clone();
+            job.error.clone_from(error);
         }
         if let Some(ref worker) = update.worker_id {
-            job.worker_id = worker.clone();
+            job.worker_id.clone_from(worker);
         }
         if let Some(ref started) = update.started_at {
             job.started_at = *started;
@@ -196,11 +213,11 @@ impl StorageTrait for InMemoryStore {
         Ok(None)
     }
 
-    fn list_jobs(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>> {
+    fn list_jobs(&self, filters: &JobFilters) -> Result<Vec<Job>> {
         let jobs = self.jobs.lock().unwrap();
         let mut result: Vec<Job> = jobs
             .values()
-            .filter(|j| status.map_or(true, |s| j.status == s))
+            .filter(|j| filters.status.is_none_or(|s| j.status == s))
             .cloned()
             .collect();
         result.sort_by(|a, b| {
@@ -208,7 +225,7 @@ impl StorageTrait for InMemoryStore {
                 .cmp(&b.priority)
                 .then(b.created_at.cmp(&a.created_at))
         });
-        if let Some(limit) = limit {
+        if let Some(limit) = filters.limit {
             result.truncate(limit as usize);
         }
         Ok(result)
@@ -222,28 +239,40 @@ impl StorageTrait for InMemoryStore {
         }
         Ok(counts.into_iter().collect())
     }
+}
 
+impl PlanStorage for InMemoryStore {
     fn save_plan(&self, _plan: &Plan) -> Result<Uuid> {
         Ok(Uuid::new_v4())
     }
 
-    fn get_plans_for_file(&self, _file_id: &Uuid) -> Result<Vec<StoredPlan>> {
+    fn plans_for_file(&self, _file_id: &Uuid) -> Result<Vec<StoredPlan>> {
         Ok(Vec::new())
     }
 
-    fn update_plan_status(&self, _plan_id: &Uuid, _status: &str) -> Result<()> {
+    fn update_plan_status(
+        &self,
+        _plan_id: &Uuid,
+        _status: crate::storage::PlanStatus,
+    ) -> Result<()> {
         Ok(())
     }
+}
 
-    fn get_file_history(&self, _path: &Path) -> Result<Vec<crate::storage::FileHistoryEntry>> {
+impl FileHistoryStorage for InMemoryStore {
+    fn file_history(&self, _path: &Path) -> Result<Vec<crate::storage::FileHistoryEntry>> {
         Ok(vec![])
     }
+}
 
+impl StatsStorage for InMemoryStore {
     fn record_stats(&self, _stats: &ProcessingStats) -> Result<()> {
         Ok(())
     }
+}
 
-    fn get_plugin_data(&self, _plugin: &str, _key: &str) -> Result<Option<Vec<u8>>> {
+impl PluginDataStorage for InMemoryStore {
+    fn plugin_data(&self, _plugin: &str, _key: &str) -> Result<Option<Vec<u8>>> {
         Ok(None)
     }
 
@@ -251,11 +280,17 @@ impl StorageTrait for InMemoryStore {
         Ok(())
     }
 
+    fn delete_plugin_data(&self, _plugin: &str, _key: &str) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl BadFileStorage for InMemoryStore {
     fn upsert_bad_file(&self, _bad_file: &BadFile) -> Result<()> {
         Ok(())
     }
 
-    fn get_bad_file_by_path(&self, _path: &Path) -> Result<Option<BadFile>> {
+    fn bad_file_by_path(&self, _path: &Path) -> Result<Option<BadFile>> {
         Ok(None)
     }
 
@@ -274,7 +309,9 @@ impl StorageTrait for InMemoryStore {
     fn delete_bad_file_by_path(&self, _path: &Path) -> Result<()> {
         Ok(())
     }
+}
 
+impl MaintenanceStorage for InMemoryStore {
     fn vacuum(&self) -> Result<()> {
         Ok(())
     }

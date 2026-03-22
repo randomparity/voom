@@ -6,7 +6,11 @@ use tracing_subscriber::EnvFilter;
 mod app;
 mod cli;
 mod commands;
+mod config;
+mod introspect;
 mod output;
+mod stats;
+mod tools;
 
 use cli::{Cli, Commands};
 
@@ -36,18 +40,18 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Scan(args) => commands::scan::run(args, token).await,
-        Commands::Inspect(args) => commands::inspect::run(args).await,
+        Commands::Inspect(args) => commands::inspect::run(args),
         Commands::Process(args) => commands::process::run(args, token).await,
-        Commands::Policy(sub) => commands::policy::run(sub).await,
-        Commands::Plugin(sub) => commands::plugin::run(sub).await,
-        Commands::Jobs(sub) => commands::jobs::run(sub).await,
-        Commands::Report(args) => commands::report::run(args).await,
-        Commands::Doctor => commands::doctor::run().await,
+        Commands::Policy(sub) => commands::policy::run(sub),
+        Commands::Plugin(sub) => commands::plugin::run(sub),
+        Commands::Jobs(sub) => commands::jobs::run(sub),
+        Commands::Report(args) => commands::report::run(args),
+        Commands::Doctor => commands::doctor::run(),
         Commands::Serve(args) => commands::serve::run(args, token).await,
         Commands::Db(sub) => commands::db::run(sub).await,
-        Commands::Config(sub) => commands::config::run(sub).await,
-        Commands::Init => commands::init::run().await,
-        Commands::Status => commands::status::run().await,
+        Commands::Config(sub) => commands::config::run(sub),
+        Commands::Init => commands::init::run(),
+        Commands::Status => commands::status::run(),
         Commands::Completions(args) => commands::completions::run(args),
     }
 }
@@ -67,7 +71,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn verbosity_mapping() {
+    fn test_verbosity_mapping() {
         assert_eq!(verbosity_filter(0), "warn");
         assert_eq!(verbosity_filter(1), "info");
         assert_eq!(verbosity_filter(2), "debug");
@@ -76,7 +80,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_verify_command() {
+    fn test_cli_verify_command() {
         // clap provides a debug_assert that validates the CLI definition
         use clap::CommandFactory;
         Cli::command().debug_assert();

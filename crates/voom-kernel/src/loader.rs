@@ -1,26 +1,17 @@
-use std::sync::Arc;
-
-use crate::Plugin;
-
 /// WIT result type for HTTP responses crossing the WASM boundary.
 #[cfg(feature = "wasm")]
 type WitHttpResult = Result<(u16, Vec<(String, String)>, Vec<u8>), String>;
-
-/// Wrap any native `Plugin` implementation into an `Arc<dyn Plugin>`.
-///
-/// This is the recommended way to create plugin trait objects for registration
-/// with the kernel. For WASM plugins, use `WasmPluginLoader` instead.
-pub fn load_native<P: Plugin + 'static>(plugin: P) -> Arc<dyn Plugin> {
-    Arc::new(plugin)
-}
 
 /// WASM plugin loader using wasmtime's component model.
 /// Only available with the `wasm` feature.
 #[cfg(feature = "wasm")]
 pub mod wasm {
-    use super::*;
+    use std::sync::Arc;
+
+    use crate::errors::WasmLoadError;
     use crate::host::HostState;
     use crate::manifest::PluginManifest;
+    use crate::Plugin;
     use std::path::Path;
     use std::sync::Mutex;
     use voom_domain::capabilities::Capability;
@@ -37,13 +28,13 @@ pub mod wasm {
 
     impl WasmPluginLoader {
         /// Create a new WASM plugin loader with component model support enabled.
-        pub fn new() -> Result<Self, VoomError> {
+        pub fn new() -> Result<Self, WasmLoadError> {
             let mut config = wasmtime::Config::new();
             config.wasm_component_model(true);
             config.max_wasm_stack(1024 * 1024); // 1 MiB stack limit
             config.epoch_interruption(true);
             let engine = wasmtime::Engine::new(&config)
-                .map_err(|e| VoomError::Wasm(format!("failed to create engine: {e}")))?;
+                .map_err(|e| WasmLoadError::EngineCreation(e.to_string()))?;
             Ok(Self { engine })
         }
 
@@ -51,7 +42,7 @@ pub mod wasm {
         ///
         /// The manifest file should be at the same path as the `.wasm` file but
         /// with a `.toml` extension (e.g., `my-plugin.wasm` + `my-plugin.toml`).
-        pub fn load(&self, wasm_path: &Path) -> Result<Arc<dyn Plugin>, VoomError> {
+        pub fn load(&self, wasm_path: &Path) -> Result<Arc<dyn Plugin>, WasmLoadError> {
             self.load_with_host_state(wasm_path, None)
         }
 
@@ -60,7 +51,7 @@ pub mod wasm {
             &self,
             wasm_path: &Path,
             host_state: Option<HostState>,
-        ) -> Result<Arc<dyn Plugin>, VoomError> {
+        ) -> Result<Arc<dyn Plugin>, WasmLoadError> {
             let manifest = load_manifest(wasm_path)?;
             self.load_with_manifest(wasm_path, manifest, host_state)
         }
@@ -79,30 +70,33 @@ pub mod wasm {
             wasm_path: &Path,
             manifest: Option<PluginManifest>,
             host_state: Option<HostState>,
-        ) -> Result<Arc<dyn Plugin>, VoomError> {
-            let wasm_bytes = std::fs::read(wasm_path).map_err(|e| {
-                VoomError::Wasm(format!("failed to read {}: {e}", wasm_path.display()))
+        ) -> Result<Arc<dyn Plugin>, WasmLoadError> {
+            let path_str = wasm_path.display().to_string();
+
+            let wasm_bytes = std::fs::read(wasm_path).map_err(|e| WasmLoadError::ReadFile {
+                path: path_str.clone(),
+                source: e,
             })?;
 
             const MAX_WASM_SIZE: usize = 256 * 1024 * 1024; // 256 MiB
             if wasm_bytes.len() > MAX_WASM_SIZE {
-                return Err(VoomError::Wasm(format!(
-                    "WASM module {} exceeds size limit ({} bytes, max {})",
-                    wasm_path.display(),
-                    wasm_bytes.len(),
-                    MAX_WASM_SIZE
-                )));
+                return Err(WasmLoadError::FileTooLarge {
+                    path: path_str.clone(),
+                    size: wasm_bytes.len(),
+                    max: MAX_WASM_SIZE,
+                });
             }
 
-            // Compile the WASM component.
             let component = wasmtime::component::Component::new(&self.engine, &wasm_bytes)
-                .map_err(|e| VoomError::Wasm(format!("failed to compile component: {e}")))?;
+                .map_err(|e| WasmLoadError::ComponentCompilation {
+                    path: path_str.clone(),
+                    message: e.to_string(),
+                })?;
 
-            // Set up the linker with host function imports.
             let mut linker: wasmtime::component::Linker<HostState> =
                 wasmtime::component::Linker::new(&self.engine);
             register_host_functions(&mut linker)
-                .map_err(|e| VoomError::Wasm(format!("failed to register host functions: {e}")))?;
+                .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
             let plugin_name = manifest
                 .as_ref()
@@ -115,7 +109,6 @@ pub mod wasm {
                         .to_string()
                 });
 
-            // Create the store with host state and resource limits.
             let mut state = host_state.unwrap_or_else(|| HostState::new(plugin_name.clone()));
 
             // Populate allowed capabilities from manifest (always overwrites).
@@ -139,7 +132,6 @@ pub mod wasm {
             store.limiter(|s| &mut s.store_limits);
             store.set_epoch_deadline(store.data().wasm_limits.epoch_deadline_ticks);
 
-            // Extract info from manifest or use defaults.
             let version = manifest
                 .as_ref()
                 .map(|m| m.version.clone())
@@ -168,7 +160,7 @@ pub mod wasm {
         }
 
         /// Load all `.wasm` plugins from a directory.
-        pub fn load_dir(&self, dir: &Path) -> Vec<Result<Arc<dyn Plugin>, VoomError>> {
+        pub fn load_dir(&self, dir: &Path) -> Vec<Result<Arc<dyn Plugin>, WasmLoadError>> {
             self.load_dir_with_config(dir, &std::collections::HashMap::new())
         }
 
@@ -184,7 +176,7 @@ pub mod wasm {
             &self,
             dir: &Path,
             plugin_configs: &std::collections::HashMap<String, toml::Table>,
-        ) -> Vec<Result<Arc<dyn Plugin>, VoomError>> {
+        ) -> Vec<Result<Arc<dyn Plugin>, WasmLoadError>> {
             let entries = match std::fs::read_dir(dir) {
                 Ok(entries) => entries,
                 Err(e) => {
@@ -301,8 +293,6 @@ pub mod wasm {
 
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
-            // Try to find and call the on-event export.
-            // The component is lazily instantiated on first call.
             match call_on_event(&mut inner, &event_type, &payload) {
                 Ok(Some((plugin_name, produced, data))) => {
                     let result = voom_wit::event_result_from_wasm(plugin_name, produced, data)
@@ -338,14 +328,14 @@ pub mod wasm {
         inner: &mut WasmPluginInner,
         event_type: &str,
         payload: &[u8],
-    ) -> Result<Option<voom_wit::WasmEventResult>, anyhow::Error> {
+    ) -> Result<Option<voom_wit::WasmEventResult>, WasmLoadError> {
         use wasmtime::component::Val;
 
-        // Lazily instantiate the component.
         if inner.instance.is_none() {
             let instance = inner
                 .linker
-                .instantiate(&mut inner.store, &inner.component)?;
+                .instantiate(&mut inner.store, &inner.component)
+                .map_err(|e| WasmLoadError::Instantiation(e.to_string()))?;
             inner.instance = Some(instance);
         }
 
@@ -372,7 +362,6 @@ pub mod wasm {
             }
         };
 
-        // Build the event-data record as a Val::Record.
         let event_data = Val::Record(vec![
             ("event-type".into(), Val::String(event_type.into())),
             (
@@ -381,20 +370,22 @@ pub mod wasm {
             ),
         ]);
 
-        // Prepare the result slot. The return type is option<event-result>.
         let mut results = vec![Val::Option(None)];
 
-        on_event.call(&mut inner.store, &[event_data], &mut results)?;
-        on_event.post_return(&mut inner.store)?;
+        on_event
+            .call(&mut inner.store, &[event_data], &mut results)
+            .map_err(|e| WasmLoadError::ComponentCall(e.to_string()))?;
+        on_event
+            .post_return(&mut inner.store)
+            .map_err(|e| WasmLoadError::ComponentCall(e.to_string()))?;
 
-        // Parse the option<event-result> return value.
         match &results[0] {
             Val::Option(None) => Ok(None),
             Val::Option(Some(boxed_val)) => parse_event_result(boxed_val).map(Some),
-            other => anyhow::bail!(
-                "unexpected return type from on-event: expected Option, got {:?}",
+            other => Err(WasmLoadError::UnexpectedValue(format!(
+                "expected Option return from on-event, got {:?}",
                 std::mem::discriminant(other)
-            ),
+            ))),
         }
     }
 
@@ -402,15 +393,17 @@ pub mod wasm {
     /// expected by `event_result_from_wasm`.
     fn parse_event_result(
         val: &wasmtime::component::Val,
-    ) -> Result<voom_wit::WasmEventResult, anyhow::Error> {
+    ) -> Result<voom_wit::WasmEventResult, WasmLoadError> {
         use wasmtime::component::Val;
 
         let fields = match val {
             Val::Record(fields) => fields,
-            other => anyhow::bail!(
-                "expected Record for event-result, got {:?}",
-                std::mem::discriminant(other)
-            ),
+            other => {
+                return Err(WasmLoadError::UnexpectedValue(format!(
+                    "expected Record for event-result, got {:?}",
+                    std::mem::discriminant(other)
+                )))
+            }
         };
 
         let mut plugin_name = String::new();
@@ -494,189 +487,201 @@ pub mod wasm {
     /// These are the functions that WASM plugins can call back into the host.
     fn register_host_functions(
         linker: &mut wasmtime::component::Linker<HostState>,
-    ) -> Result<(), anyhow::Error> {
-        // Register the host interface functions.
+    ) -> Result<(), WasmLoadError> {
         // The interface name in WIT is "host" in package "voom:plugin".
         let mut root = linker.root();
-        let mut host_instance = root.instance("voom:plugin/host@0.1.0")?;
+        let mut host_instance = root
+            .instance("voom:plugin/host@0.1.0")
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-        // log: func(level: log-level, message: string)
-        host_instance.func_wrap(
-            "log",
-            |ctx: wasmtime::StoreContextMut<'_, HostState>, (level, message): (u32, String)| {
-                let level_str = match level {
-                    0 => "trace",
-                    1 => "debug",
-                    2 => "info",
-                    3 => "warn",
-                    4 => "error",
-                    _ => "info",
-                };
-                ctx.data().log(level_str, &message);
-                Ok(())
-            },
-        )?;
+        host_instance
+            .func_wrap(
+                "log",
+                |ctx: wasmtime::StoreContextMut<'_, HostState>, (level, message): (u32, String)| {
+                    let level_str = match level {
+                        0 => "trace",
+                        1 => "debug",
+                        2 => "info",
+                        3 => "warn",
+                        4 => "error",
+                        _ => "info",
+                    };
+                    ctx.data().log(level_str, &message);
+                    Ok(())
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-        // get-plugin-data: func(key: string) -> option<list<u8>>
-        host_instance.func_wrap(
-            "get-plugin-data",
-            |ctx: wasmtime::StoreContextMut<'_, HostState>, (key,): (String,)| {
-                let result = ctx.data().get_plugin_data(&key);
-                Ok((result,))
-            },
-        )?;
+        host_instance
+            .func_wrap(
+                "get-plugin-data",
+                |ctx: wasmtime::StoreContextMut<'_, HostState>, (key,): (String,)| {
+                    let result = ctx.data().resolve_plugin_data(&key);
+                    Ok((result,))
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-        // set-plugin-data: func(key: string, value: list<u8>) -> result<_, string>
-        host_instance.func_wrap(
-            "set-plugin-data",
-            |mut ctx: wasmtime::StoreContextMut<'_, HostState>, (key, value): (String, Vec<u8>)| {
-                let result = ctx.data_mut().set_plugin_data(&key, &value);
-                Ok((result.map_err(|e| e.to_string()),))
-            },
-        )?;
+        host_instance
+            .func_wrap(
+                "set-plugin-data",
+                |mut ctx: wasmtime::StoreContextMut<'_, HostState>,
+                 (key, value): (String, Vec<u8>)| {
+                    let result = ctx.data_mut().set_plugin_data(&key, &value);
+                    Ok((result.map_err(|e| e.to_string()),))
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-        // run-tool: func(tool: string, args: list<string>, timeout-ms: u64) -> result<tool-output, string>
-        host_instance.func_wrap(
-            "run-tool",
-            |ctx: wasmtime::StoreContextMut<'_, HostState>,
-             (tool, args, timeout_ms): (String, Vec<String>, u64)| {
-                let result = ctx.data().run_tool(&tool, &args, timeout_ms);
-                let wit_result: Result<(i32, Vec<u8>, Vec<u8>), String> = match result {
-                    Ok(output) => Ok((output.exit_code, output.stdout, output.stderr)),
-                    Err(e) => Err(e),
-                };
-                Ok((wit_result,))
-            },
-        )?;
+        host_instance
+            .func_wrap(
+                "run-tool",
+                |ctx: wasmtime::StoreContextMut<'_, HostState>,
+                 (tool, args, timeout_ms): (String, Vec<String>, u64)| {
+                    let result = ctx.data().run_tool(&tool, &args, timeout_ms);
+                    let wit_result: Result<(i32, Vec<u8>, Vec<u8>), String> = match result {
+                        Ok(output) => Ok((output.exit_code, output.stdout, output.stderr)),
+                        Err(e) => Err(e),
+                    };
+                    Ok((wit_result,))
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-        // http-get: func(url: string, headers: list<tuple<string, string>>) -> result<http-response, string>
-        host_instance.func_wrap(
-            "http-get",
-            |ctx: wasmtime::StoreContextMut<'_, HostState>,
-             (url, headers): (String, Vec<(String, String)>)| {
-                let result = ctx.data().http_get(&url, &headers);
-                let wit_result: WitHttpResult = match result {
-                    Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
-                    Err(e) => Err(e),
-                };
-                Ok((wit_result,))
-            },
-        )?;
+        host_instance
+            .func_wrap(
+                "http-get",
+                |ctx: wasmtime::StoreContextMut<'_, HostState>,
+                 (url, headers): (String, Vec<(String, String)>)| {
+                    let result = ctx.data().http_get(&url, &headers);
+                    let wit_result: super::WitHttpResult = match result {
+                        Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
+                        Err(e) => Err(e),
+                    };
+                    Ok((wit_result,))
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-        // http-post: func(url: string, headers: list<tuple<string, string>>, body: list<u8>) -> result<http-response, string>
-        host_instance.func_wrap(
-            "http-post",
-            |ctx: wasmtime::StoreContextMut<'_, HostState>,
-             (url, headers, body): (String, Vec<(String, String)>, Vec<u8>)| {
-                let result = ctx.data().http_post(&url, &headers, &body);
-                let wit_result: WitHttpResult = match result {
-                    Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
-                    Err(e) => Err(e),
-                };
-                Ok((wit_result,))
-            },
-        )?;
+        host_instance
+            .func_wrap(
+                "http-post",
+                |ctx: wasmtime::StoreContextMut<'_, HostState>,
+                 (url, headers, body): (String, Vec<(String, String)>, Vec<u8>)| {
+                    let result = ctx.data().http_post(&url, &headers, &body);
+                    let wit_result: super::WitHttpResult = match result {
+                        Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
+                        Err(e) => Err(e),
+                    };
+                    Ok((wit_result,))
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-        // read-file-metadata: func(path: string) -> result<list<u8>, string>
-        host_instance.func_wrap(
-            "read-file-metadata",
-            |ctx: wasmtime::StoreContextMut<'_, HostState>,
-             (path,): (String,)|
-             -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
-                let file_path = std::path::Path::new(&path);
+        host_instance
+            .func_wrap(
+                "read-file-metadata",
+                |ctx: wasmtime::StoreContextMut<'_, HostState>,
+                 (path,): (String,)|
+                 -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
+                    let file_path = std::path::Path::new(&path);
 
-                // Security: check path is within allowed directories.
-                if !ctx.data().allowed_paths.is_empty() {
-                    let allowed = ctx
-                        .data()
-                        .allowed_paths
-                        .iter()
-                        .any(|p| file_path.starts_with(p));
-                    if !allowed {
-                        return Ok((Err(format!(
-                            "path '{}' is not within allowed directories",
-                            path
-                        )),));
+                    // Security: check path is within allowed directories.
+                    if !ctx.data().allowed_paths.is_empty() {
+                        let allowed = ctx
+                            .data()
+                            .allowed_paths
+                            .iter()
+                            .any(|p| file_path.starts_with(p));
+                        if !allowed {
+                            return Ok((Err(format!(
+                                "path '{}' is not within allowed directories",
+                                path
+                            )),));
+                        }
                     }
-                }
 
-                match std::fs::metadata(file_path) {
-                    Ok(meta) => {
-                        let info = serde_json::json!({
-                            "size": meta.len(),
-                            "is_file": meta.is_file(),
-                            "is_dir": meta.is_dir(),
-                            "readonly": meta.permissions().readonly(),
-                            "modified": meta.modified().ok().map(|t| {
-                                t.duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs()
-                            }),
-                        });
-                        let bytes = rmp_serde::to_vec(&info)
-                            .map_err(|e| format!("failed to serialize metadata: {e}"));
-                        Ok((bytes,))
+                    match std::fs::metadata(file_path) {
+                        Ok(meta) => {
+                            let info = serde_json::json!({
+                                "size": meta.len(),
+                                "is_file": meta.is_file(),
+                                "is_dir": meta.is_dir(),
+                                "readonly": meta.permissions().readonly(),
+                                "modified": meta.modified().ok().map(|t| {
+                                    t.duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs()
+                                }),
+                            });
+                            let bytes = rmp_serde::to_vec(&info)
+                                .map_err(|e| format!("failed to serialize metadata: {e}"));
+                            Ok((bytes,))
+                        }
+                        Err(e) => Ok((Err(format!(
+                            "failed to read metadata for '{}': {}",
+                            path, e
+                        )),)),
                     }
-                    Err(e) => Ok((Err(format!(
-                        "failed to read metadata for '{}': {}",
-                        path, e
-                    )),)),
-                }
-            },
-        )?;
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-        // list-files: func(dir: string, pattern: string) -> result<list<string>, string>
-        host_instance.func_wrap(
-            "list-files",
-            |ctx: wasmtime::StoreContextMut<'_, HostState>,
-             (dir, pattern): (String, String)|
-             -> Result<(Result<Vec<String>, String>,), wasmtime::Error> {
-                let dir_path = std::path::Path::new(&dir);
+        host_instance
+            .func_wrap(
+                "list-files",
+                |ctx: wasmtime::StoreContextMut<'_, HostState>,
+                 (dir, pattern): (String, String)|
+                 -> Result<(Result<Vec<String>, String>,), wasmtime::Error> {
+                    let dir_path = std::path::Path::new(&dir);
 
-                // Security: check directory is within allowed paths.
-                if !ctx.data().allowed_paths.is_empty() {
-                    let allowed = ctx
-                        .data()
-                        .allowed_paths
-                        .iter()
-                        .any(|p| dir_path.starts_with(p));
-                    if !allowed {
-                        return Ok((Err(format!(
-                            "directory '{}' is not within allowed directories",
-                            dir
-                        )),));
+                    // Security: check directory is within allowed paths.
+                    if !ctx.data().allowed_paths.is_empty() {
+                        let allowed = ctx
+                            .data()
+                            .allowed_paths
+                            .iter()
+                            .any(|p| dir_path.starts_with(p));
+                        if !allowed {
+                            return Ok((Err(format!(
+                                "directory '{}' is not within allowed directories",
+                                dir
+                            )),));
+                        }
                     }
-                }
 
-                match std::fs::read_dir(dir_path) {
-                    Ok(entries) => {
-                        let files: Vec<String> = entries
-                            .filter_map(|e| e.ok())
-                            .filter(|e| {
-                                if pattern.is_empty() {
-                                    true
-                                } else {
-                                    e.file_name().to_string_lossy().contains(&pattern)
-                                }
-                            })
-                            .map(|e| e.file_name().to_string_lossy().to_string())
-                            .collect();
-                        Ok((Ok(files),))
+                    match std::fs::read_dir(dir_path) {
+                        Ok(entries) => {
+                            let files: Vec<String> = entries
+                                .filter_map(|e| e.ok())
+                                .filter(|e| {
+                                    if pattern.is_empty() {
+                                        true
+                                    } else {
+                                        e.file_name().to_string_lossy().contains(&pattern)
+                                    }
+                                })
+                                .map(|e| e.file_name().to_string_lossy().to_string())
+                                .collect();
+                            Ok((Ok(files),))
+                        }
+                        Err(e) => Ok((Err(format!("failed to list directory '{}': {}", dir, e)),)),
                     }
-                    Err(e) => Ok((Err(format!("failed to list directory '{}': {}", dir, e)),)),
-                }
-            },
-        )?;
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
         Ok(())
     }
 
     /// Try to load a plugin manifest from a `.toml` file next to the `.wasm` file.
-    pub(crate) fn load_manifest(wasm_path: &Path) -> Result<Option<PluginManifest>, VoomError> {
+    pub(crate) fn load_manifest(wasm_path: &Path) -> Result<Option<PluginManifest>, WasmLoadError> {
         let manifest_path = wasm_path.with_extension("toml");
         if !manifest_path.exists() {
             return Ok(None);
         }
+
+        let manifest_str = manifest_path.display().to_string();
 
         #[cfg(unix)]
         {
@@ -684,34 +689,48 @@ pub mod wasm {
             if let Ok(metadata) = std::fs::metadata(&manifest_path) {
                 let mode = metadata.permissions().mode();
                 if mode & 0o002 != 0 {
-                    return Err(VoomError::Wasm(format!(
-                        "WASM plugin manifest {:?} is world-writable (mode {:o}), refusing to load",
-                        manifest_path, mode
-                    )));
+                    return Err(WasmLoadError::ManifestWorldWritable {
+                        path: manifest_str.clone(),
+                        mode,
+                    });
                 }
             }
         }
 
-        let contents = std::fs::read_to_string(&manifest_path)
-            .map_err(|e| VoomError::Wasm(format!("failed to read manifest: {e}")))?;
+        let contents =
+            std::fs::read_to_string(&manifest_path).map_err(|e| WasmLoadError::ManifestRead {
+                path: manifest_str.clone(),
+                source: e,
+            })?;
 
-        let manifest: PluginManifest = toml::from_str(&contents)
-            .map_err(|e| VoomError::Wasm(format!("failed to parse manifest: {e}")))?;
+        let manifest: PluginManifest =
+            toml::from_str(&contents).map_err(|e| WasmLoadError::ManifestParse {
+                path: manifest_str.clone(),
+                message: e.to_string(),
+            })?;
 
         if let Err(errors) = manifest.validate() {
-            return Err(VoomError::Wasm(format!(
-                "invalid manifest: {}",
-                errors.join(", ")
-            )));
+            return Err(WasmLoadError::ManifestInvalid {
+                path: manifest_str,
+                message: errors.join(", "),
+            });
         }
 
         Ok(Some(manifest))
+    }
+
+    /// Convert a `WasmLoadError` into a `VoomError` for use in event handlers
+    /// where the `Plugin::on_event` return type requires `VoomError`.
+    impl From<WasmLoadError> for VoomError {
+        fn from(e: WasmLoadError) -> Self {
+            VoomError::Wasm(e.to_string())
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::Plugin;
     use voom_domain::capabilities::Capability;
     use voom_domain::events::{Event, EventResult};
 
@@ -738,6 +757,7 @@ mod tests {
                 produced_events: vec![],
                 data: Some(serde_json::json!({"loaded": true})),
                 claimed: false,
+                execution_error: None,
             }))
         }
     }

@@ -124,14 +124,12 @@ pub struct Track {
     pub pixel_format: Option<String>,
 }
 
-impl Track {
-    /// Create a new track with minimal required fields.
-    #[must_use]
-    pub fn new(index: u32, track_type: TrackType, codec: String) -> Self {
+impl Default for Track {
+    fn default() -> Self {
         Self {
-            index,
-            track_type,
-            codec,
+            index: 0,
+            track_type: TrackType::Video,
+            codec: String::new(),
             language: "und".to_string(),
             title: String::new(),
             is_default: false,
@@ -147,6 +145,19 @@ impl Track {
             is_hdr: false,
             hdr_format: None,
             pixel_format: None,
+        }
+    }
+}
+
+impl Track {
+    /// Create a new track with minimal required fields.
+    #[must_use]
+    pub fn new(index: u32, track_type: TrackType, codec: String) -> Self {
+        Self {
+            index,
+            track_type,
+            codec,
+            ..Default::default()
         }
     }
 }
@@ -193,6 +204,20 @@ impl TrackType {
     #[must_use]
     pub fn is_video(&self) -> bool {
         matches!(self, TrackType::Video)
+    }
+
+    /// Returns the broad category of this track type: "video", "audio", "subtitle", or "attachment".
+    #[must_use]
+    pub fn track_category(&self) -> &'static str {
+        if self.is_video() {
+            "video"
+        } else if self.is_audio() {
+            "audio"
+        } else if self.is_subtitle() {
+            "subtitle"
+        } else {
+            "attachment"
+        }
     }
 
     #[must_use]

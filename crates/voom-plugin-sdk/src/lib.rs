@@ -51,19 +51,22 @@
 //! export!(MyPlugin);
 //! ```
 
+#![allow(clippy::missing_errors_doc)]
+
 pub mod event;
+pub mod host;
 pub mod types;
 
 // Re-export domain types commonly used by plugins.
 pub use voom_domain::capabilities::Capability;
-pub use voom_domain::events::{Event, EventResult};
+pub use voom_domain::events::{
+    Event, EventResult, FileIntrospectedEvent, MetadataEnrichedEvent, PlanCompletedEvent,
+    PlanCreatedEvent,
+};
 pub use voom_domain::media::{Container, MediaFile, Track, TrackType};
 pub use voom_domain::plan::{
-    ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction,
+    ActionParams, ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction,
 };
-
-// Re-export the domain crate for direct access by plugins.
-pub use voom_domain;
 
 // Re-export helpers.
 pub use event::{
@@ -71,6 +74,7 @@ pub use event::{
 };
 
 /// `PluginInfoData` mirrors the WIT `plugin-info` record (name, version, capabilities).
-/// For the builder pattern in non-WIT contexts, use `types::PluginInfo` directly.
-/// The builder is not re-exported here to avoid collision with WIT-generated `PluginInfo`.
 pub use types::{OnEventResult, PluginInfoData};
+
+// Re-export host abstractions for WASM plugins.
+pub use host::{HostFunctions, HttpResponse, ToolOutput};

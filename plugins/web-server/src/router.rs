@@ -7,7 +7,7 @@ use axum::Router;
 use tower::limit::ConcurrencyLimitLayer;
 
 use crate::api;
-use crate::error::ApiError;
+use crate::errors::ApiError;
 use crate::middleware::{auth_middleware, RequestIdLayer, SecurityHeadersLayer};
 use crate::sse;
 use crate::state::AppState;
@@ -36,15 +36,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/files/:id", get(templates::file_detail))
         .route("/policies", get(templates::policies))
         .route("/policies/:name/edit", get(templates::policy_editor))
-        .route("/jobs", get(templates::jobs_page))
-        .route("/plugins", get(templates::plugins_page))
+        .route("/jobs", get(templates::jobs))
+        .route("/plugins", get(templates::plugins))
         .route("/settings", get(templates::settings));
 
-    // Auth middleware protects API routes and the SSE endpoint.
-    // Page routes (HTML) remain public.
+    // Auth middleware protects all routes (API, SSE, and HTML pages) when
+    // an auth_token is configured. Without a token, all routes are public.
     let authenticated_routes = Router::new()
         .nest("/api", api_routes)
         .route("/events", get(sse::events_handler))
+        .merge(page_routes)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -53,7 +54,6 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .merge(authenticated_routes)
-        .merge(page_routes)
         .fallback(|| async {
             (
                 StatusCode::NOT_FOUND,
@@ -71,130 +71,21 @@ pub fn build_router(state: AppState) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-    use std::sync::Arc;
-    use voom_domain::errors::Result as VoomResult;
-    use voom_domain::job::{Job, JobStatus, JobUpdate};
-    use voom_domain::media::MediaFile;
-    use voom_domain::plan::Plan;
-    use voom_domain::stats::ProcessingStats;
-    use voom_domain::storage::{FileFilters, StorageTrait, StoredPlan};
-
-    struct DummyStore;
-    impl StorageTrait for DummyStore {
-        fn upsert_file(&self, _: &MediaFile) -> VoomResult<()> {
-            Ok(())
-        }
-        fn get_file(&self, _: &uuid::Uuid) -> VoomResult<Option<MediaFile>> {
-            Ok(None)
-        }
-        fn get_file_by_path(&self, _: &Path) -> VoomResult<Option<MediaFile>> {
-            Ok(None)
-        }
-        fn list_files(&self, _: &FileFilters) -> VoomResult<Vec<MediaFile>> {
-            Ok(vec![])
-        }
-        fn count_files(&self, _: &FileFilters) -> VoomResult<u64> {
-            Ok(0)
-        }
-        fn delete_file(&self, _: &uuid::Uuid) -> VoomResult<()> {
-            Ok(())
-        }
-        fn create_job(&self, _: &Job) -> VoomResult<uuid::Uuid> {
-            Ok(uuid::Uuid::new_v4())
-        }
-        fn get_job(&self, _: &uuid::Uuid) -> VoomResult<Option<Job>> {
-            Ok(None)
-        }
-        fn update_job(&self, _: &uuid::Uuid, _: &JobUpdate) -> VoomResult<()> {
-            Ok(())
-        }
-        fn claim_next_job(&self, _: &str) -> VoomResult<Option<Job>> {
-            Ok(None)
-        }
-        fn claim_job_by_id(&self, _: &uuid::Uuid, _: &str) -> VoomResult<Option<Job>> {
-            Ok(None)
-        }
-        fn list_jobs(&self, _: Option<JobStatus>, _: Option<u32>) -> VoomResult<Vec<Job>> {
-            Ok(vec![])
-        }
-        fn count_jobs_by_status(&self) -> VoomResult<Vec<(JobStatus, u64)>> {
-            Ok(vec![])
-        }
-        fn save_plan(&self, _: &Plan) -> VoomResult<uuid::Uuid> {
-            Ok(uuid::Uuid::new_v4())
-        }
-        fn get_plans_for_file(&self, _: &uuid::Uuid) -> VoomResult<Vec<StoredPlan>> {
-            Ok(vec![])
-        }
-        fn update_plan_status(&self, _: &uuid::Uuid, _: &str) -> VoomResult<()> {
-            Ok(())
-        }
-        fn get_file_history(
-            &self,
-            _: &Path,
-        ) -> VoomResult<Vec<voom_domain::storage::FileHistoryEntry>> {
-            Ok(vec![])
-        }
-        fn record_stats(&self, _: &ProcessingStats) -> VoomResult<()> {
-            Ok(())
-        }
-        fn get_plugin_data(&self, _: &str, _: &str) -> VoomResult<Option<Vec<u8>>> {
-            Ok(None)
-        }
-        fn set_plugin_data(&self, _: &str, _: &str, _: &[u8]) -> VoomResult<()> {
-            Ok(())
-        }
-        fn upsert_bad_file(&self, _: &voom_domain::bad_file::BadFile) -> VoomResult<()> {
-            Ok(())
-        }
-        fn get_bad_file_by_path(
-            &self,
-            _: &Path,
-        ) -> VoomResult<Option<voom_domain::bad_file::BadFile>> {
-            Ok(None)
-        }
-        fn list_bad_files(
-            &self,
-            _: &voom_domain::storage::BadFileFilters,
-        ) -> VoomResult<Vec<voom_domain::bad_file::BadFile>> {
-            Ok(vec![])
-        }
-        fn count_bad_files(&self) -> VoomResult<u64> {
-            Ok(0)
-        }
-        fn delete_bad_file(&self, _: &uuid::Uuid) -> VoomResult<()> {
-            Ok(())
-        }
-        fn delete_bad_file_by_path(&self, _: &Path) -> VoomResult<()> {
-            Ok(())
-        }
-        fn vacuum(&self) -> VoomResult<()> {
-            Ok(())
-        }
-        fn prune_missing_files(&self) -> VoomResult<u64> {
-            Ok(0)
-        }
-        fn prune_missing_files_under(&self, _root: &std::path::Path) -> VoomResult<u64> {
-            Ok(0)
-        }
-    }
+    use crate::state::make_test_state;
 
     fn make_state(auth_token: Option<String>) -> AppState {
-        let store = Arc::new(DummyStore);
-        let templates = tera::Tera::default();
-        AppState::new(store, templates, auth_token)
+        make_test_state(auth_token)
     }
 
     #[test]
-    fn build_router_returns_valid_router() {
+    fn test_build_router_returns_valid_router() {
         let state = make_state(None);
         // Should not panic — validates that all routes wire up correctly
         let _router = build_router(state);
     }
 
     #[test]
-    fn build_router_with_auth_token() {
+    fn test_build_router_with_auth_token() {
         let state = make_state(Some("test-token".into()));
         let _router = build_router(state);
     }

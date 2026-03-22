@@ -1,14 +1,16 @@
 use anyhow::Result;
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::app;
+use crate::config;
+use crate::tools::print_tool_status;
 
-pub async fn run() -> Result<()> {
-    println!("{}", "VOOM First-Time Setup".bold().underline());
+pub fn run() -> Result<()> {
+    println!("{}", style("VOOM First-Time Setup").bold().underlined());
     println!();
 
-    let config = app::AppConfig::default();
-    let config_path = app::config_path();
+    let cfg = config::AppConfig::default();
+    let config_path = config::config_path();
 
     // 1. Create config directory
     let config_dir = config_path
@@ -18,30 +20,30 @@ pub async fn run() -> Result<()> {
         std::fs::create_dir_all(config_dir)?;
         println!(
             "  {} Created {}",
-            "OK".green(),
-            config_dir.display().to_string().cyan()
+            style("OK").green(),
+            style(config_dir.display()).cyan()
         );
     } else {
         println!(
             "  {} {} already exists",
-            "OK".green(),
-            config_dir.display().to_string().dimmed()
+            style("OK").green(),
+            style(config_dir.display()).dim()
         );
     }
 
     // 2. Create data directory
-    if !config.data_dir.exists() {
-        std::fs::create_dir_all(&config.data_dir)?;
+    if !cfg.data_dir.exists() {
+        std::fs::create_dir_all(&cfg.data_dir)?;
         println!(
             "  {} Created {}",
-            "OK".green(),
-            config.data_dir.display().to_string().cyan()
+            style("OK").green(),
+            style(cfg.data_dir.display()).cyan()
         );
     } else {
         println!(
             "  {} {} already exists",
-            "OK".green(),
-            config.data_dir.display().to_string().dimmed()
+            style("OK").green(),
+            style(cfg.data_dir.display()).dim()
         );
     }
 
@@ -51,8 +53,8 @@ pub async fn run() -> Result<()> {
         std::fs::create_dir_all(&policies_dir)?;
         println!(
             "  {} Created {}",
-            "OK".green(),
-            policies_dir.display().to_string().cyan()
+            style("OK").green(),
+            style(policies_dir.display()).cyan()
         );
     }
 
@@ -61,64 +63,45 @@ pub async fn run() -> Result<()> {
         std::fs::write(&starter_policy, default_policy_contents())?;
         println!(
             "  {} Created {}",
-            "OK".green(),
-            starter_policy.display().to_string().cyan()
+            style("OK").green(),
+            style(starter_policy.display()).cyan()
         );
     }
 
     // 4. Create default config if missing
     if !config_path.exists() {
-        let contents = app::default_config_contents();
+        let contents = config::default_config_contents();
         std::fs::write(&config_path, &contents)?;
         println!(
             "  {} Created {}",
-            "OK".green(),
-            config_path.display().to_string().cyan()
+            style("OK").green(),
+            style(config_path.display()).cyan()
         );
     } else {
         println!(
             "  {} {} already exists",
-            "OK".green(),
-            config_path.display().to_string().dimmed()
+            style("OK").green(),
+            style(config_path.display()).dim()
         );
     }
 
     // 5. Initialize database
     print!("  Database ... ");
-    match app::bootstrap_kernel(&config) {
-        Ok(_) => println!("{}", "OK".green()),
-        Err(e) => println!("{} {e}", "ERROR".red()),
+    match app::bootstrap_kernel(&cfg) {
+        Ok(_) => println!("{}", style("OK").green()),
+        Err(e) => println!("{} {e}", style("ERROR").red()),
     }
 
     // 6. Check tools
     println!();
-    println!("{}", "Checking external tools:".bold());
+    println!("{}", style("Checking external tools:").bold());
     let mut detector = voom_tool_detector::ToolDetectorPlugin::new();
     detector.detect_all();
 
-    let required_tools = ["ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit"];
-    let optional_tools = ["mkvextract", "mediainfo", "HandBrakeCLI"];
-
-    for tool in required_tools {
-        print!("  {tool} ... ");
-        if let Some(t) = detector.get_tool(tool) {
-            println!("{} ({})", "found".green(), t.version.dimmed());
-        } else {
-            println!("{}", "not found".red());
-        }
-    }
-
-    for tool in optional_tools {
-        print!("  {tool} ... ");
-        if let Some(t) = detector.get_tool(tool) {
-            println!("{} ({})", "found".green(), t.version.dimmed());
-        } else {
-            println!("{} (optional)", "not found".yellow());
-        }
-    }
+    let _tool_result = print_tool_status(&detector);
 
     println!();
-    println!("{}", "Setup complete! You can now:".bold().green());
+    println!("{}", style("Setup complete! You can now:").bold().green());
     println!("  voom scan <path>              Scan a media directory");
     println!("  voom inspect <file>           Inspect a media file");
     println!("  voom policy validate <file>   Validate a policy");
@@ -181,12 +164,12 @@ policy "default" {
 
 #[cfg(test)]
 mod tests {
-    use crate::app;
+    use crate::config;
 
     #[test]
-    fn default_config_dirs_are_consistent() {
-        let config = app::AppConfig::default();
-        let config_path = app::config_path();
+    fn test_default_config_dirs_are_consistent() {
+        let cfg = config::AppConfig::default();
+        let config_path = config::config_path();
         let config_dir = config_path.parent().unwrap();
 
         // The policies dir that init creates
@@ -194,11 +177,11 @@ mod tests {
         assert!(policies_dir.ends_with("voom/policies"));
 
         // Data dir defaults to the config dir
-        assert_eq!(config.data_dir, app::voom_config_dir());
+        assert_eq!(cfg.data_dir, config::voom_config_dir());
     }
 
     #[test]
-    fn init_creates_directories_in_temp() {
+    fn test_init_creates_directories_in_temp() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path().join("voom");
         let policies_dir = config_dir.join("policies");
@@ -212,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn starter_policy_is_valid() {
+    fn test_starter_policy_is_valid() {
         let contents = super::default_policy_contents();
         // Verify it parses successfully
         let ast = voom_dsl::parse_policy(contents).expect("starter policy should parse");
@@ -222,15 +205,15 @@ mod tests {
     }
 
     #[test]
-    fn init_creates_default_config_file() {
+    fn test_init_creates_default_config_file() {
         let dir = tempfile::tempdir().unwrap();
         let config_file = dir.path().join("config.toml");
 
-        let contents = app::default_config_contents();
+        let contents = config::default_config_contents();
         std::fs::write(&config_file, &contents).unwrap();
 
         // Verify the written file is valid TOML (all options are commented out)
-        let reloaded: app::AppConfig =
+        let reloaded: config::AppConfig =
             toml::from_str(&std::fs::read_to_string(&config_file).unwrap()).unwrap();
         assert!(reloaded.auth_token.is_none());
         assert!(reloaded.plugins.disabled_plugins.is_empty());

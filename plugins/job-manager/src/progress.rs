@@ -74,15 +74,15 @@ impl ProgressReporter for TracingReporter {
     }
 }
 
-/// Reporter that stores progress in the database via `StorageTrait`.
+/// Reporter that stores progress in the database via `JobStorage`.
 ///
 /// Used in daemon mode where the web UI polls for progress updates.
 pub struct StorageReporter {
-    store: std::sync::Arc<dyn voom_domain::storage::StorageTrait>,
+    store: std::sync::Arc<dyn voom_domain::storage::JobStorage>,
 }
 
 impl StorageReporter {
-    pub fn new(store: std::sync::Arc<dyn voom_domain::storage::StorageTrait>) -> Self {
+    pub fn new(store: std::sync::Arc<dyn voom_domain::storage::JobStorage>) -> Self {
         Self { store }
     }
 }
@@ -154,7 +154,9 @@ mod tests {
     fn test_noop_reporter() {
         let r = NoopReporter;
         r.on_batch_start(10);
-        r.on_job_start(&voom_domain::job::Job::new("test".into()));
+        r.on_job_start(&voom_domain::job::Job::new(
+            voom_domain::job::JobType::Custom("test".into()),
+        ));
         r.on_job_progress(Uuid::new_v4(), 0.5, Some("halfway"));
         r.on_job_complete(Uuid::new_v4(), true, None);
         r.on_batch_complete(10, 0);
@@ -166,7 +168,7 @@ mod tests {
         r.on_batch_start(3);
         assert_eq!(r.batch_starts.load(Ordering::SeqCst), 1);
 
-        let job = voom_domain::job::Job::new("test".into());
+        let job = voom_domain::job::Job::new(voom_domain::job::JobType::Custom("test".into()));
         r.on_job_start(&job);
         r.on_job_start(&job);
         assert_eq!(r.job_starts.load(Ordering::SeqCst), 2);
@@ -181,17 +183,17 @@ mod tests {
 
     #[test]
     fn test_storage_reporter() {
-        let store = Arc::new(crate::test_helpers::InMemoryStore::new());
+        let store = Arc::new(voom_domain::test_support::InMemoryStore::new());
         let reporter = StorageReporter::new(store.clone());
 
         // Create a job first
-        let job = voom_domain::job::Job::new("test".into());
+        let job = voom_domain::job::Job::new(voom_domain::job::JobType::Custom("test".into()));
         let job_id = store.create_job(&job).unwrap();
 
         reporter.on_job_progress(job_id, 0.75, Some("Processing"));
 
-        use voom_domain::storage::StorageTrait;
-        let loaded = store.get_job(&job_id).unwrap().unwrap();
+        use voom_domain::storage::JobStorage;
+        let loaded = store.job(&job_id).unwrap().unwrap();
         assert_eq!(loaded.progress, 0.75);
         assert_eq!(loaded.progress_message.as_deref(), Some("Processing"));
     }

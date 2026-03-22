@@ -1,23 +1,23 @@
-//! Job queue backed by `StorageTrait`, with priority ordering and status management.
+//! Job queue backed by `JobStorage`, with priority ordering and status management.
 
 use std::sync::Arc;
 
 use chrono::Utc;
 use uuid::Uuid;
 use voom_domain::errors::Result;
-use voom_domain::job::{Job, JobStatus, JobUpdate};
-use voom_domain::storage::StorageTrait;
+use voom_domain::job::{Job, JobStatus, JobType, JobUpdate};
+use voom_domain::storage::{JobFilters, JobStorage};
 
 /// Job queue backed by a storage implementation.
 ///
 /// Provides high-level operations for managing the job lifecycle:
 /// enqueue, claim, progress, complete, fail, cancel.
 pub struct JobQueue {
-    store: Arc<dyn StorageTrait>,
+    store: Arc<dyn JobStorage>,
 }
 
 impl JobQueue {
-    pub fn new(store: Arc<dyn StorageTrait>) -> Self {
+    pub fn new(store: Arc<dyn JobStorage>) -> Self {
         Self { store }
     }
 
@@ -25,11 +25,11 @@ impl JobQueue {
     /// Lower priority numbers are processed first.
     pub fn enqueue(
         &self,
-        job_type: &str,
+        job_type: JobType,
         priority: i32,
         payload: Option<serde_json::Value>,
     ) -> Result<Uuid> {
-        let mut job = Job::new(job_type.to_string());
+        let mut job = Job::new(job_type);
         job.priority = priority;
         job.payload = payload;
         self.store.create_job(&job)
@@ -45,11 +45,11 @@ impl JobQueue {
         &self,
         job_id: &Uuid,
         progress: f64,
-        message: Option<String>,
+        message: Option<&str>,
     ) -> Result<()> {
         let update = JobUpdate {
             progress: Some(progress.clamp(0.0, 1.0)),
-            progress_message: Some(message),
+            progress_message: Some(message.map(String::from)),
             ..Default::default()
         };
         self.store.update_job(job_id, &update)
@@ -79,7 +79,30 @@ impl JobQueue {
     }
 
     /// Cancel a job. Only pending or running jobs can be cancelled.
+    ///
+    /// Returns an error if the job does not exist or is already in a
+    /// terminal state (Completed, Failed, or Cancelled).
     pub fn cancel(&self, job_id: &Uuid) -> Result<()> {
+        let job =
+            self.store
+                .job(job_id)?
+                .ok_or_else(|| voom_domain::errors::VoomError::Plugin {
+                    plugin: "job-manager".into(),
+                    message: format!("job {job_id} not found"),
+                })?;
+
+        match job.status {
+            JobStatus::Pending | JobStatus::Running => {}
+            status => {
+                return Err(voom_domain::errors::VoomError::Plugin {
+                    plugin: "job-manager".into(),
+                    message: format!(
+                        "cannot cancel job {job_id}: already in terminal state '{status:?}'"
+                    ),
+                });
+            }
+        }
+
         let update = JobUpdate {
             status: Some(JobStatus::Cancelled),
             completed_at: Some(Some(Utc::now())),
@@ -96,18 +119,17 @@ impl JobQueue {
         self.store.claim_job_by_id(job_id, worker_id)
     }
 
-    /// Get a job by ID.
-    pub fn get(&self, job_id: &Uuid) -> Result<Option<Job>> {
-        self.store.get_job(job_id)
+    pub fn job(&self, job_id: &Uuid) -> Result<Option<Job>> {
+        self.store.job(job_id)
     }
 
-    /// List jobs, optionally filtered by status.
-    pub fn list(&self, status: Option<JobStatus>, limit: Option<u32>) -> Result<Vec<Job>> {
-        self.store.list_jobs(status, limit)
+    /// List jobs filtered by the given [`JobFilters`].
+    pub fn list_jobs(&self, filters: &JobFilters) -> Result<Vec<Job>> {
+        self.store.list_jobs(filters)
     }
 
     /// Get job counts grouped by status.
-    pub fn counts(&self) -> Result<Vec<(JobStatus, u64)>> {
+    pub fn job_counts(&self) -> Result<Vec<(JobStatus, u64)>> {
         self.store.count_jobs_by_status()
     }
 }
@@ -115,14 +137,14 @@ impl JobQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::InMemoryStore;
+    use voom_domain::test_support::InMemoryStore;
 
     #[test]
     fn test_enqueue_and_claim() {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        let id = queue.enqueue("transcode", 100, None).unwrap();
+        let id = queue.enqueue(JobType::Transcode, 100, None).unwrap();
         let claimed = queue.claim("worker-1").unwrap().unwrap();
         assert_eq!(claimed.id, id);
         assert_eq!(claimed.status, JobStatus::Running);
@@ -133,8 +155,12 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        let _low = queue.enqueue("task-low", 200, None).unwrap();
-        let high = queue.enqueue("task-high", 50, None).unwrap();
+        let _low = queue
+            .enqueue(JobType::Custom("task-low".into()), 200, None)
+            .unwrap();
+        let high = queue
+            .enqueue(JobType::Custom("task-high".into()), 50, None)
+            .unwrap();
 
         let claimed = queue.claim("w-1").unwrap().unwrap();
         assert_eq!(claimed.id, high);
@@ -145,13 +171,11 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        let id = queue.enqueue("scan", 100, None).unwrap();
+        let id = queue.enqueue(JobType::Scan, 100, None).unwrap();
         queue.claim("w-1").unwrap();
-        queue
-            .report_progress(&id, 0.5, Some("Halfway".into()))
-            .unwrap();
+        queue.report_progress(&id, 0.5, Some("Halfway")).unwrap();
 
-        let job = queue.get(&id).unwrap().unwrap();
+        let job = queue.job(&id).unwrap().unwrap();
         assert_eq!(job.progress, 0.5);
         assert_eq!(job.progress_message.as_deref(), Some("Halfway"));
     }
@@ -161,13 +185,13 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        let id = queue.enqueue("process", 100, None).unwrap();
+        let id = queue.enqueue(JobType::Process, 100, None).unwrap();
         queue.claim("w-1").unwrap();
         queue
             .complete(&id, Some(serde_json::json!({"files": 10})))
             .unwrap();
 
-        let job = queue.get(&id).unwrap().unwrap();
+        let job = queue.job(&id).unwrap().unwrap();
         assert_eq!(job.status, JobStatus::Completed);
         assert_eq!(job.progress, 1.0);
         assert!(job.completed_at.is_some());
@@ -178,11 +202,11 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        let id = queue.enqueue("process", 100, None).unwrap();
+        let id = queue.enqueue(JobType::Process, 100, None).unwrap();
         queue.claim("w-1").unwrap();
         queue.fail(&id, "ffmpeg crashed".into()).unwrap();
 
-        let job = queue.get(&id).unwrap().unwrap();
+        let job = queue.job(&id).unwrap().unwrap();
         assert_eq!(job.status, JobStatus::Failed);
         assert_eq!(job.error.as_deref(), Some("ffmpeg crashed"));
     }
@@ -192,10 +216,10 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        let id = queue.enqueue("process", 100, None).unwrap();
+        let id = queue.enqueue(JobType::Process, 100, None).unwrap();
         queue.cancel(&id).unwrap();
 
-        let job = queue.get(&id).unwrap().unwrap();
+        let job = queue.job(&id).unwrap().unwrap();
         assert_eq!(job.status, JobStatus::Cancelled);
     }
 
@@ -204,18 +228,34 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        queue.enqueue("a", 100, None).unwrap();
-        queue.enqueue("b", 100, None).unwrap();
-        queue.enqueue("c", 100, None).unwrap();
+        queue
+            .enqueue(JobType::Custom("a".into()), 100, None)
+            .unwrap();
+        queue
+            .enqueue(JobType::Custom("b".into()), 100, None)
+            .unwrap();
+        queue
+            .enqueue(JobType::Custom("c".into()), 100, None)
+            .unwrap();
         queue.claim("w-1").unwrap(); // claims first by priority/time
 
-        let all = queue.list(None, None).unwrap();
+        let all = queue.list_jobs(&JobFilters::default()).unwrap();
         assert_eq!(all.len(), 3);
 
-        let pending = queue.list(Some(JobStatus::Pending), None).unwrap();
+        let pending = queue
+            .list_jobs(&JobFilters {
+                status: Some(JobStatus::Pending),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(pending.len(), 2);
 
-        let running = queue.list(Some(JobStatus::Running), None).unwrap();
+        let running = queue
+            .list_jobs(&JobFilters {
+                status: Some(JobStatus::Running),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(running.len(), 1);
     }
 
@@ -224,12 +264,18 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        queue.enqueue("a", 100, None).unwrap();
-        queue.enqueue("b", 100, None).unwrap();
-        queue.enqueue("c", 100, None).unwrap();
+        queue
+            .enqueue(JobType::Custom("a".into()), 100, None)
+            .unwrap();
+        queue
+            .enqueue(JobType::Custom("b".into()), 100, None)
+            .unwrap();
+        queue
+            .enqueue(JobType::Custom("c".into()), 100, None)
+            .unwrap();
         queue.claim("w-1").unwrap();
 
-        let counts = queue.counts().unwrap();
+        let counts = queue.job_counts().unwrap();
         let pending_count = counts
             .iter()
             .find(|(s, _)| *s == JobStatus::Pending)
@@ -249,11 +295,11 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let queue = JobQueue::new(store);
 
-        let id = queue.enqueue("scan", 100, None).unwrap();
+        let id = queue.enqueue(JobType::Scan, 100, None).unwrap();
         queue.claim("w-1").unwrap();
         queue.report_progress(&id, 1.5, None).unwrap();
 
-        let job = queue.get(&id).unwrap().unwrap();
+        let job = queue.job(&id).unwrap().unwrap();
         assert_eq!(job.progress, 1.0);
     }
 }

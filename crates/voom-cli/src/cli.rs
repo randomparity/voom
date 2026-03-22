@@ -295,8 +295,9 @@ pub enum OutputFormat {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum ErrorHandling {
-    Skip,
+    /// Continue processing remaining files after an error.
     Continue,
+    /// Stop all processing on the first error.
     Fail,
 }
 
@@ -317,13 +318,13 @@ mod tests {
     // ── Top-level flags ──────────────────────────────────────
 
     #[test]
-    fn verbose_default_is_zero() {
+    fn test_verbose_default_is_zero() {
         let cli = parse(&["voom", "doctor"]);
         assert_eq!(cli.verbose, 0);
     }
 
     #[test]
-    fn verbose_short_flag_counts() {
+    fn test_verbose_short_flag_counts() {
         let cli = parse(&["voom", "-v", "doctor"]);
         assert_eq!(cli.verbose, 1);
         let cli = parse(&["voom", "-vv", "doctor"]);
@@ -333,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn verbose_long_flag() {
+    fn test_verbose_long_flag() {
         let cli = parse(&["voom", "--verbose", "--verbose", "doctor"]);
         assert_eq!(cli.verbose, 2);
     }
@@ -341,12 +342,12 @@ mod tests {
     // ── Scan ─────────────────────────────────────────────────
 
     #[test]
-    fn scan_required_path() {
+    fn test_scan_required_path() {
         assert!(try_parse(&["voom", "scan"]).is_err());
     }
 
     #[test]
-    fn scan_defaults() {
+    fn test_scan_defaults() {
         let cli = parse(&["voom", "scan", "/media"]);
         match cli.command {
             Commands::Scan(args) => {
@@ -361,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_flags() {
+    fn test_scan_flags() {
         let cli = parse(&[
             "voom",
             "scan",
@@ -384,12 +385,12 @@ mod tests {
     // ── Inspect ──────────────────────────────────────────────
 
     #[test]
-    fn inspect_required_file() {
+    fn test_inspect_required_file() {
         assert!(try_parse(&["voom", "inspect"]).is_err());
     }
 
     #[test]
-    fn inspect_defaults() {
+    fn test_inspect_defaults() {
         let cli = parse(&["voom", "inspect", "movie.mkv"]);
         match cli.command {
             Commands::Inspect(args) => {
@@ -402,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn inspect_json_format() {
+    fn test_inspect_json_format() {
         let cli = parse(&["voom", "inspect", "movie.mkv", "--format", "json"]);
         match cli.command {
             Commands::Inspect(args) => assert!(matches!(args.format, OutputFormat::Json)),
@@ -411,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn inspect_tracks_only() {
+    fn test_inspect_tracks_only() {
         let cli = parse(&["voom", "inspect", "movie.mkv", "--tracks-only"]);
         match cli.command {
             Commands::Inspect(args) => assert!(args.tracks_only),
@@ -422,13 +423,13 @@ mod tests {
     // ── Process ──────────────────────────────────────────────
 
     #[test]
-    fn process_requires_path_and_policy() {
+    fn test_process_requires_path_and_policy() {
         assert!(try_parse(&["voom", "process"]).is_err());
         assert!(try_parse(&["voom", "process", "/media"]).is_err());
     }
 
     #[test]
-    fn process_defaults() {
+    fn test_process_defaults() {
         let cli = parse(&["voom", "process", "/media", "--policy", "my.voom"]);
         match cli.command {
             Commands::Process(args) => {
@@ -445,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn process_all_flags() {
+    fn test_process_all_flags() {
         let cli = parse(&[
             "voom",
             "process",
@@ -454,7 +455,7 @@ mod tests {
             "p.voom",
             "--dry-run",
             "--on-error",
-            "skip",
+            "continue",
             "--workers",
             "8",
             "--approve",
@@ -463,7 +464,7 @@ mod tests {
         match cli.command {
             Commands::Process(args) => {
                 assert!(args.dry_run);
-                assert!(matches!(args.on_error, ErrorHandling::Skip));
+                assert!(matches!(args.on_error, ErrorHandling::Continue));
                 assert_eq!(args.workers, 8);
                 assert!(args.approve);
                 assert!(args.no_backup);
@@ -473,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn process_on_error_continue() {
+    fn test_process_on_error_continue() {
         let cli = parse(&[
             "voom",
             "process",
@@ -492,7 +493,7 @@ mod tests {
     // ── Policy subcommands ───────────────────────────────────
 
     #[test]
-    fn policy_list() {
+    fn test_policy_list() {
         let cli = parse(&["voom", "policy", "list"]);
         assert!(matches!(
             cli.command,
@@ -501,12 +502,12 @@ mod tests {
     }
 
     #[test]
-    fn policy_validate_requires_file() {
+    fn test_policy_validate_requires_file() {
         assert!(try_parse(&["voom", "policy", "validate"]).is_err());
     }
 
     #[test]
-    fn policy_validate() {
+    fn test_policy_validate() {
         let cli = parse(&["voom", "policy", "validate", "my.voom"]);
         match cli.command {
             Commands::Policy(PolicyCommands::Validate { file }) => {
@@ -517,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_show() {
+    fn test_policy_show() {
         let cli = parse(&["voom", "policy", "show", "my.voom"]);
         match cli.command {
             Commands::Policy(PolicyCommands::Show { file }) => {
@@ -528,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_format() {
+    fn test_policy_format() {
         let cli = parse(&["voom", "policy", "format", "my.voom"]);
         match cli.command {
             Commands::Policy(PolicyCommands::Format { file }) => {
@@ -541,7 +542,7 @@ mod tests {
     // ── Plugin subcommands ───────────────────────────────────
 
     #[test]
-    fn plugin_list() {
+    fn test_plugin_list() {
         let cli = parse(&["voom", "plugin", "list"]);
         assert!(matches!(
             cli.command,
@@ -550,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_info() {
+    fn test_plugin_info() {
         let cli = parse(&["voom", "plugin", "info", "ffmpeg-executor"]);
         match cli.command {
             Commands::Plugin(PluginCommands::Info { name }) => {
@@ -561,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_enable() {
+    fn test_plugin_enable() {
         let cli = parse(&["voom", "plugin", "enable", "sqlite-store"]);
         match cli.command {
             Commands::Plugin(PluginCommands::Enable { name }) => {
@@ -572,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_disable() {
+    fn test_plugin_disable() {
         let cli = parse(&["voom", "plugin", "disable", "web-server"]);
         match cli.command {
             Commands::Plugin(PluginCommands::Disable { name }) => {
@@ -583,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_install() {
+    fn test_plugin_install() {
         let cli = parse(&["voom", "plugin", "install", "/tmp/my-plugin.wasm"]);
         match cli.command {
             Commands::Plugin(PluginCommands::Install { path }) => {
@@ -596,7 +597,7 @@ mod tests {
     // ── Jobs subcommands ─────────────────────────────────────
 
     #[test]
-    fn jobs_list_no_filter() {
+    fn test_jobs_list_no_filter() {
         let cli = parse(&["voom", "jobs", "list"]);
         match cli.command {
             Commands::Jobs(JobsCommands::List { status, limit }) => {
@@ -608,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn jobs_list_with_status_filter() {
+    fn test_jobs_list_with_status_filter() {
         let cli = parse(&["voom", "jobs", "list", "--status", "running"]);
         match cli.command {
             Commands::Jobs(JobsCommands::List { status, .. }) => {
@@ -619,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn jobs_status() {
+    fn test_jobs_status() {
         let cli = parse(&["voom", "jobs", "status", "abc-123"]);
         match cli.command {
             Commands::Jobs(JobsCommands::Status { id }) => assert_eq!(id, "abc-123"),
@@ -628,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn jobs_cancel() {
+    fn test_jobs_cancel() {
         let cli = parse(&["voom", "jobs", "cancel", "def-456"]);
         match cli.command {
             Commands::Jobs(JobsCommands::Cancel { id }) => assert_eq!(id, "def-456"),
@@ -639,7 +640,7 @@ mod tests {
     // ── Report ───────────────────────────────────────────────
 
     #[test]
-    fn report_default_format() {
+    fn test_report_default_format() {
         let cli = parse(&["voom", "report"]);
         match cli.command {
             Commands::Report(args) => assert!(matches!(args.format, OutputFormat::Table)),
@@ -648,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn report_json_format() {
+    fn test_report_json_format() {
         let cli = parse(&["voom", "report", "--format", "json"]);
         match cli.command {
             Commands::Report(args) => assert!(matches!(args.format, OutputFormat::Json)),
@@ -659,7 +660,7 @@ mod tests {
     // ── Serve ────────────────────────────────────────────────
 
     #[test]
-    fn serve_defaults() {
+    fn test_serve_defaults() {
         let cli = parse(&["voom", "serve"]);
         match cli.command {
             Commands::Serve(args) => {
@@ -671,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn serve_custom_port_and_host() {
+    fn test_serve_custom_port_and_host() {
         let cli = parse(&["voom", "serve", "--port", "3000", "--host", "0.0.0.0"]);
         match cli.command {
             Commands::Serve(args) => {
@@ -685,25 +686,25 @@ mod tests {
     // ── Db subcommands ───────────────────────────────────────
 
     #[test]
-    fn db_prune() {
+    fn test_db_prune() {
         let cli = parse(&["voom", "db", "prune"]);
         assert!(matches!(cli.command, Commands::Db(DbCommands::Prune)));
     }
 
     #[test]
-    fn db_vacuum() {
+    fn test_db_vacuum() {
         let cli = parse(&["voom", "db", "vacuum"]);
         assert!(matches!(cli.command, Commands::Db(DbCommands::Vacuum)));
     }
 
     #[test]
-    fn db_reset() {
+    fn test_db_reset() {
         let cli = parse(&["voom", "db", "reset"]);
         assert!(matches!(cli.command, Commands::Db(DbCommands::Reset)));
     }
 
     #[test]
-    fn db_list_bad() {
+    fn test_db_list_bad() {
         let cli = parse(&["voom", "db", "list-bad"]);
         assert!(matches!(
             cli.command,
@@ -712,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn db_list_bad_with_path() {
+    fn test_db_list_bad_with_path() {
         let cli = parse(&["voom", "db", "list-bad", "--path", "/media"]);
         match cli.command {
             Commands::Db(DbCommands::ListBad { path, .. }) => {
@@ -723,13 +724,13 @@ mod tests {
     }
 
     #[test]
-    fn db_purge_bad() {
+    fn test_db_purge_bad() {
         let cli = parse(&["voom", "db", "purge-bad"]);
         assert!(matches!(cli.command, Commands::Db(DbCommands::PurgeBad)));
     }
 
     #[test]
-    fn db_clean_bad() {
+    fn test_db_clean_bad() {
         let cli = parse(&["voom", "db", "clean-bad", "--yes"]);
         match cli.command {
             Commands::Db(DbCommands::CleanBad { yes }) => {
@@ -740,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn process_force_rescan() {
+    fn test_process_force_rescan() {
         let cli = parse(&[
             "voom",
             "process",
@@ -760,7 +761,7 @@ mod tests {
     // ── Config subcommands ───────────────────────────────────
 
     #[test]
-    fn config_show() {
+    fn test_config_show() {
         let cli = parse(&["voom", "config", "show"]);
         assert!(matches!(
             cli.command,
@@ -769,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn config_edit() {
+    fn test_config_edit() {
         let cli = parse(&["voom", "config", "edit"]);
         assert!(matches!(
             cli.command,
@@ -780,7 +781,7 @@ mod tests {
     // ── Completions ──────────────────────────────────────────
 
     #[test]
-    fn completions_bash() {
+    fn test_completions_bash() {
         let cli = parse(&["voom", "completions", "bash"]);
         match cli.command {
             Commands::Completions(args) => {
@@ -791,7 +792,7 @@ mod tests {
     }
 
     #[test]
-    fn completions_zsh() {
+    fn test_completions_zsh() {
         let cli = parse(&["voom", "completions", "zsh"]);
         match cli.command {
             Commands::Completions(args) => {
@@ -802,7 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn completions_fish() {
+    fn test_completions_fish() {
         let cli = parse(&["voom", "completions", "fish"]);
         match cli.command {
             Commands::Completions(args) => {
@@ -813,26 +814,26 @@ mod tests {
     }
 
     #[test]
-    fn completions_invalid_shell_rejected() {
+    fn test_completions_invalid_shell_rejected() {
         assert!(try_parse(&["voom", "completions", "nushell"]).is_err());
     }
 
     // ── No-arg subcommands ───────────────────────────────────
 
     #[test]
-    fn doctor_subcommand() {
+    fn test_doctor_subcommand() {
         let cli = parse(&["voom", "doctor"]);
         assert!(matches!(cli.command, Commands::Doctor));
     }
 
     #[test]
-    fn init_subcommand() {
+    fn test_init_subcommand() {
         let cli = parse(&["voom", "init"]);
         assert!(matches!(cli.command, Commands::Init));
     }
 
     #[test]
-    fn status_subcommand() {
+    fn test_status_subcommand() {
         let cli = parse(&["voom", "status"]);
         assert!(matches!(cli.command, Commands::Status));
     }
@@ -840,22 +841,22 @@ mod tests {
     // ── Invalid input ────────────────────────────────────────
 
     #[test]
-    fn no_subcommand_is_error() {
+    fn test_no_subcommand_is_error() {
         assert!(try_parse(&["voom"]).is_err());
     }
 
     #[test]
-    fn unknown_subcommand_is_error() {
+    fn test_unknown_subcommand_is_error() {
         assert!(try_parse(&["voom", "foobar"]).is_err());
     }
 
     #[test]
-    fn invalid_output_format_rejected() {
+    fn test_invalid_output_format_rejected() {
         assert!(try_parse(&["voom", "inspect", "f.mkv", "--format", "xml"]).is_err());
     }
 
     #[test]
-    fn invalid_on_error_rejected() {
+    fn test_invalid_on_error_rejected() {
         assert!(try_parse(&[
             "voom",
             "process",
@@ -871,7 +872,7 @@ mod tests {
     // ── Verbose flag is global (works after subcommand) ──────
 
     #[test]
-    fn verbose_after_subcommand() {
+    fn test_verbose_after_subcommand() {
         let cli = parse(&["voom", "doctor", "-vv"]);
         assert_eq!(cli.verbose, 2);
     }

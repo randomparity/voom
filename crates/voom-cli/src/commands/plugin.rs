@@ -1,24 +1,25 @@
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::app;
 use crate::cli::PluginCommands;
+use crate::config;
 use crate::output;
 
-pub async fn run(cmd: PluginCommands) -> Result<()> {
+pub fn run(cmd: PluginCommands) -> Result<()> {
     match cmd {
-        PluginCommands::List => list().await,
-        PluginCommands::Info { name } => info(name).await,
-        PluginCommands::Enable { name } => enable(name).await,
-        PluginCommands::Disable { name } => disable(name).await,
-        PluginCommands::Install { path } => install(path).await,
+        PluginCommands::List => list(),
+        PluginCommands::Info { name } => info(name),
+        PluginCommands::Enable { name } => enable(name),
+        PluginCommands::Disable { name } => disable(name),
+        PluginCommands::Install { path } => install(path),
     }
 }
 
-async fn list() -> Result<()> {
-    let config = app::load_config()?;
+fn list() -> Result<()> {
+    let config = config::load_config()?;
     let disabled = &config.plugins.disabled_plugins;
     let kernel = app::bootstrap_kernel(&config)?;
 
@@ -39,18 +40,18 @@ async fn list() -> Result<()> {
     // Collect disabled plugins that are known but not loaded
     let mut disabled_list: Vec<String> = Vec::new();
     for d in disabled {
-        if app::KNOWN_PLUGIN_NAMES.contains(&d.as_str()) && !names.contains(d) {
+        if config::KNOWN_PLUGIN_NAMES.contains(&d.as_str()) && !names.contains(d) {
             disabled_list.push(d.clone());
         }
     }
 
     let total = plugins.len() + disabled_list.len();
     if total == 0 {
-        println!("{}", "No plugins registered.".dimmed());
+        println!("{}", style("No plugins registered.").dim());
     } else {
         println!(
             "{} registered plugins{}:\n",
-            total.to_string().bold(),
+            style(total).bold(),
             if disabled_list.is_empty() {
                 String::new()
             } else {
@@ -60,9 +61,9 @@ async fn list() -> Result<()> {
         output::format_plugin_list(&plugins);
 
         if !disabled_list.is_empty() {
-            println!("\n{}", "Disabled plugins:".dimmed());
+            println!("\n{}", style("Disabled plugins:").dim());
             for name in &disabled_list {
-                println!("  {} {}", "-".dimmed(), name.dimmed());
+                println!("  {} {}", style("-").dim(), style(name).dim());
             }
         }
     }
@@ -70,18 +71,18 @@ async fn list() -> Result<()> {
     Ok(())
 }
 
-async fn info(name: String) -> Result<()> {
-    let config = app::load_config()?;
+fn info(name: String) -> Result<()> {
+    let config = config::load_config()?;
 
     // Check if it's a known but disabled plugin
     if config.plugins.disabled_plugins.contains(&name)
-        && app::KNOWN_PLUGIN_NAMES.contains(&name.as_str())
+        && config::KNOWN_PLUGIN_NAMES.contains(&name.as_str())
     {
-        println!("{} {}", "Plugin:".bold(), name.cyan());
-        println!("{} {}", "Status:".bold(), "disabled".yellow());
+        println!("{} {}", style("Plugin:").bold(), style(&name).cyan());
+        println!("{} {}", style("Status:").bold(), style("disabled").yellow());
         println!(
             "\nUse {} to re-enable this plugin.",
-            format!("voom plugin enable {name}").cyan()
+            style(format!("voom plugin enable {name}")).cyan()
         );
         return Ok(());
     }
@@ -90,10 +91,14 @@ async fn info(name: String) -> Result<()> {
 
     match kernel.registry.get(&name) {
         Some(plugin) => {
-            println!("{} {}", "Plugin:".bold(), plugin.name().cyan());
-            println!("{} {}", "Version:".bold(), plugin.version());
-            println!("{} {}", "Status:".bold(), "enabled".green());
-            println!("{}", "Capabilities:".bold());
+            println!(
+                "{} {}",
+                style("Plugin:").bold(),
+                style(plugin.name()).cyan()
+            );
+            println!("{} {}", style("Version:").bold(), plugin.version());
+            println!("{} {}", style("Status:").bold(), style("enabled").green());
+            println!("{}", style("Capabilities:").bold());
             for cap in plugin.capabilities() {
                 println!("  - {}", cap.kind());
             }
@@ -107,30 +112,30 @@ async fn info(name: String) -> Result<()> {
     Ok(())
 }
 
-async fn enable(name: String) -> Result<()> {
+fn enable(name: String) -> Result<()> {
     set_plugin_enabled(name, true)
 }
 
-async fn disable(name: String) -> Result<()> {
+fn disable(name: String) -> Result<()> {
     set_plugin_enabled(name, false)
 }
 
 /// Shared implementation for enable/disable: validates the plugin name, checks
 /// current state, mutates the disabled list, and saves the config.
 fn set_plugin_enabled(name: String, enabled: bool) -> Result<()> {
-    if !app::KNOWN_PLUGIN_NAMES.contains(&name.as_str()) {
-        let known = app::KNOWN_PLUGIN_NAMES.join(", ");
+    if !config::KNOWN_PLUGIN_NAMES.contains(&name.as_str()) {
+        let known = config::KNOWN_PLUGIN_NAMES.join(", ");
         bail!("Unknown plugin \"{name}\". Known plugins: {known}");
     }
 
-    let mut config = app::load_config()?;
+    let mut config = config::load_config()?;
     let is_disabled = config.plugins.disabled_plugins.contains(&name);
 
     if enabled && !is_disabled {
         println!(
             "Plugin \"{}\" is already {}.",
-            name.cyan(),
-            "enabled".green()
+            style(&name).cyan(),
+            style("enabled").green()
         );
         return Ok(());
     }
@@ -138,8 +143,8 @@ fn set_plugin_enabled(name: String, enabled: bool) -> Result<()> {
     if !enabled && is_disabled {
         println!(
             "Plugin \"{}\" is already {}.",
-            name.cyan(),
-            "disabled".yellow()
+            style(&name).cyan(),
+            style("disabled").yellow()
         );
         return Ok(());
     }
@@ -149,27 +154,27 @@ fn set_plugin_enabled(name: String, enabled: bool) -> Result<()> {
     } else {
         config.plugins.disabled_plugins.push(name.clone());
     }
-    app::save_config(&config)?;
+    config::save_config(&config)?;
 
     if enabled {
         println!(
             "{} Plugin \"{}\" has been {}.",
-            "OK".bold().green(),
-            name.cyan(),
-            "enabled".green()
+            style("OK").bold().green(),
+            style(&name).cyan(),
+            style("enabled").green()
         );
     } else {
         println!(
             "{} Plugin \"{}\" has been {}.",
-            "OK".bold().green(),
-            name.cyan(),
-            "disabled".yellow()
+            style("OK").bold().green(),
+            style(&name).cyan(),
+            style("disabled").yellow()
         );
     }
     Ok(())
 }
 
-async fn install(path: PathBuf) -> Result<()> {
+fn install(path: PathBuf) -> Result<()> {
     // 1. Check the path exists and has .wasm extension
     if !path.exists() {
         bail!("File not found: {}", path.display());
@@ -209,11 +214,11 @@ async fn install(path: PathBuf) -> Result<()> {
     }
 
     // 4. Determine target directory
-    let config = app::load_config()?;
-    let target_dir = config
+    let cfg = config::load_config()?;
+    let target_dir = cfg
         .plugins
         .wasm_dir
-        .unwrap_or_else(|| app::voom_config_dir().join("plugins").join("wasm"));
+        .unwrap_or_else(|| config::voom_config_dir().join("plugins").join("wasm"));
 
     // 5. Create target directory if needed
     std::fs::create_dir_all(&target_dir).with_context(|| {
@@ -251,10 +256,10 @@ async fn install(path: PathBuf) -> Result<()> {
     // 7. Print success
     println!(
         "{} Installed plugin \"{}\" v{} to {}",
-        "OK".bold().green(),
-        manifest.name.cyan(),
+        style("OK").bold().green(),
+        style(&manifest.name).cyan(),
         manifest.version,
-        target_dir.display().to_string().dimmed()
+        style(target_dir.display()).dim()
     );
 
     Ok(())
@@ -264,9 +269,9 @@ async fn install(path: PathBuf) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn install_nonexistent_file_fails() {
-        let result = install(PathBuf::from("/nonexistent/plugin.wasm")).await;
+    #[test]
+    fn test_install_nonexistent_file_fails() {
+        let result = install(PathBuf::from("/nonexistent/plugin.wasm"));
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("not found"),
@@ -274,13 +279,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn install_non_wasm_extension_fails() {
+    #[test]
+    fn test_install_non_wasm_extension_fails() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("plugin.txt");
         std::fs::write(&file, "not a wasm file").unwrap();
 
-        let result = install(file).await;
+        let result = install(file);
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains(".wasm"),
@@ -288,13 +293,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn install_wasm_without_manifest_fails() {
+    #[test]
+    fn test_install_wasm_without_manifest_fails() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("plugin.wasm");
         std::fs::write(&file, b"\0asm").unwrap();
 
-        let result = install(file).await;
+        let result = install(file);
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("Manifest"),
@@ -303,9 +308,9 @@ mod tests {
     }
 
     #[test]
-    fn known_plugins_enable_disable_validation() {
+    fn test_known_plugins_enable_disable_validation() {
         // Verify that enable/disable check against KNOWN_PLUGIN_NAMES
-        assert!(app::KNOWN_PLUGIN_NAMES.contains(&"sqlite-store"));
-        assert!(!app::KNOWN_PLUGIN_NAMES.contains(&"nonexistent-plugin"));
+        assert!(config::KNOWN_PLUGIN_NAMES.contains(&"sqlite-store"));
+        assert!(!config::KNOWN_PLUGIN_NAMES.contains(&"nonexistent-plugin"));
     }
 }

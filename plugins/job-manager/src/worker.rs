@@ -11,6 +11,14 @@ use uuid::Uuid;
 use crate::progress::ProgressReporter;
 use crate::queue::JobQueue;
 
+/// A unit of work to be enqueued and processed by the worker pool.
+#[derive(Debug, Clone)]
+pub struct WorkItem {
+    pub job_type: voom_domain::job::JobType,
+    pub priority: i32,
+    pub payload: Option<serde_json::Value>,
+}
+
 /// Configuration for the worker pool.
 #[derive(Debug, Clone)]
 pub struct WorkerPoolConfig {
@@ -80,24 +88,20 @@ impl WorkerPool {
         }
     }
 
-    /// Signal cancellation to all workers.
     pub fn cancel(&self) {
         self.token.cancel();
     }
 
-    /// Check if cancellation was requested.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.token.is_cancelled()
     }
 
-    /// Get the number of completed jobs.
     #[must_use]
     pub fn completed_count(&self) -> u64 {
         self.completed_count.load(Ordering::SeqCst)
     }
 
-    /// Get the number of failed jobs.
     #[must_use]
     pub fn failed_count(&self) -> u64 {
         self.failed_count.load(Ordering::SeqCst)
@@ -105,7 +109,7 @@ impl WorkerPool {
 
     /// Process a batch of work items concurrently.
     ///
-    /// `items` is a list of (`job_type`, priority, payload) tuples to enqueue.
+    /// `items` is a list of work items to enqueue.
     /// `processor` is called for each claimed job and should return Ok(output) or Err(error).
     /// `on_error` controls behavior when a job fails.
     /// `reporter` is notified of progress updates.
@@ -114,7 +118,7 @@ impl WorkerPool {
     #[tracing::instrument(skip(self, processor, reporter))]
     pub async fn process_batch<F, Fut>(
         &self,
-        items: Vec<(String, i32, Option<serde_json::Value>)>,
+        items: Vec<WorkItem>,
         processor: F,
         on_error: ErrorStrategy,
         reporter: Arc<dyn ProgressReporter>,
@@ -135,10 +139,12 @@ impl WorkerPool {
             "Starting worker pool"
         );
 
-        // Enqueue all items
         let mut job_ids = Vec::with_capacity(items.len());
-        for (job_type, priority, payload) in items {
-            match self.queue.enqueue(&job_type, priority, payload) {
+        for item in items {
+            match self
+                .queue
+                .enqueue(item.job_type, item.priority, item.payload)
+            {
                 Ok(id) => job_ids.push(id),
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to enqueue job");
@@ -171,151 +177,23 @@ impl WorkerPool {
 
             let handle = tokio::spawn(async move {
                 let _permit = permit;
-
-                if token.is_cancelled() {
-                    failed.fetch_add(1, Ordering::SeqCst);
-                    let _ = result_tx
-                        .send(JobResult {
-                            job_id,
-                            success: false,
-                            error: Some("cancelled".into()),
-                        })
-                        .await;
-                    return;
-                }
-
-                // Claim the specific job by ID (blocking storage call)
-                let queue_claim = queue.clone();
-                let wid = worker_id.clone();
-                let jid = job_id;
-                let job =
-                    match tokio::task::spawn_blocking(move || queue_claim.claim_by_id(&jid, &wid))
-                        .await
-                    {
-                        Ok(Ok(Some(job))) => job,
-                        Ok(Ok(None)) => {
-                            // Job was claimed by another worker — count as completed
-                            completed.fetch_add(1, Ordering::SeqCst);
-                            let _ = result_tx
-                                .send(JobResult {
-                                    job_id,
-                                    success: true,
-                                    error: None,
-                                })
-                                .await;
-                            return;
-                        }
-                        Ok(Err(e)) => {
-                            tracing::error!(error = %e, "Failed to claim job");
-                            failed.fetch_add(1, Ordering::SeqCst);
-                            let _ = result_tx
-                                .send(JobResult {
-                                    job_id,
-                                    success: false,
-                                    error: Some(format!("failed to claim: {e}")),
-                                })
-                                .await;
-                            return;
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "Task join error");
-                            failed.fetch_add(1, Ordering::SeqCst);
-                            let _ = result_tx
-                                .send(JobResult {
-                                    job_id,
-                                    success: false,
-                                    error: Some(format!("task join error: {e}")),
-                                })
-                                .await;
-                            return;
-                        }
-                    };
-
-                // Re-check cancellation after claiming (closes race with ErrorStrategy::Fail)
-                if token.is_cancelled() {
-                    let q = queue.clone();
-                    let jid = job.id;
-                    if let Err(e) = tokio::task::spawn_blocking(move || q.cancel(&jid)).await {
-                        tracing::error!(error = %e, "failed to mark job as cancelled");
-                    }
-                    failed.fetch_add(1, Ordering::SeqCst);
-                    let _ = result_tx
-                        .send(JobResult {
-                            job_id,
-                            success: false,
-                            error: Some("cancelled".into()),
-                        })
-                        .await;
-                    return;
-                }
-
-                let job_id = job.id;
-                reporter.on_job_start(&job);
-
-                match processor(job).await {
-                    Ok(output) => {
-                        let q = queue.clone();
-                        if let Err(e) =
-                            tokio::task::spawn_blocking(move || q.complete(&job_id, output)).await
-                        {
-                            tracing::error!(job_id = %job_id, error = %e, "failed to mark job as complete");
-                        }
-                        completed.fetch_add(1, Ordering::SeqCst);
-                        reporter.on_job_complete(job_id, true, None);
-
-                        if let Err(e) = result_tx
-                            .send(JobResult {
-                                job_id,
-                                success: true,
-                                error: None,
-                            })
-                            .await
-                        {
-                            tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
-                        }
-                    }
-                    Err(error) => {
-                        let q = queue.clone();
-                        let err = error.clone();
-                        if let Err(e) =
-                            tokio::task::spawn_blocking(move || q.fail(&job_id, err)).await
-                        {
-                            tracing::error!(job_id = %job_id, error = %e, "failed to mark job as failed");
-                        }
-                        failed.fetch_add(1, Ordering::SeqCst);
-                        reporter.on_job_complete(job_id, false, Some(&error));
-
-                        if let Err(e) = result_tx
-                            .send(JobResult {
-                                job_id,
-                                success: false,
-                                error: Some(error),
-                            })
-                            .await
-                        {
-                            tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
-                        }
-
-                        if on_error == ErrorStrategy::Fail {
-                            token.cancel();
-                        }
-                    }
-                }
+                run_one_job(
+                    job_id, queue, token, completed, failed, processor, reporter, result_tx,
+                    worker_id, on_error,
+                )
+                .await;
             });
 
             handles.push(handle);
         }
 
-        // Drop our sender so the channel closes when all workers finish
         drop(result_tx);
 
-        // Collect results
         let mut results = Vec::new();
         while let Some(result) = result_rx.recv().await {
             results.push(result);
         }
 
-        // Wait for all tasks
         for handle in handles {
             if let Err(e) = handle.await {
                 tracing::error!(error = %e, "worker task join error");
@@ -331,14 +209,156 @@ impl WorkerPool {
     }
 }
 
+/// Execute a single job: claim it, run the processor, and record the result.
+#[allow(clippy::too_many_arguments)]
+async fn run_one_job<F, Fut>(
+    job_id: Uuid,
+    queue: Arc<JobQueue>,
+    token: CancellationToken,
+    completed: Arc<AtomicU64>,
+    failed: Arc<AtomicU64>,
+    processor: Arc<F>,
+    reporter: Arc<dyn ProgressReporter>,
+    result_tx: mpsc::Sender<JobResult>,
+    worker_id: String,
+    on_error: ErrorStrategy,
+) where
+    F: Fn(voom_domain::job::Job) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = std::result::Result<Option<serde_json::Value>, String>>
+        + Send
+        + 'static,
+{
+    if token.is_cancelled() {
+        failed.fetch_add(1, Ordering::SeqCst);
+        let _ = result_tx
+            .send(JobResult {
+                job_id,
+                success: false,
+                error: Some("cancelled".into()),
+            })
+            .await;
+        return;
+    }
+
+    // Claim the specific job by ID (blocking storage call)
+    let queue_claim = queue.clone();
+    let wid = worker_id.clone();
+    let jid = job_id;
+    let job = match tokio::task::spawn_blocking(move || queue_claim.claim_by_id(&jid, &wid)).await {
+        Ok(Ok(Some(job))) => job,
+        Ok(Ok(None)) => {
+            // Job was claimed by another worker — count as completed
+            completed.fetch_add(1, Ordering::SeqCst);
+            let _ = result_tx
+                .send(JobResult {
+                    job_id,
+                    success: true,
+                    error: None,
+                })
+                .await;
+            return;
+        }
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "Failed to claim job");
+            failed.fetch_add(1, Ordering::SeqCst);
+            let _ = result_tx
+                .send(JobResult {
+                    job_id,
+                    success: false,
+                    error: Some(format!("failed to claim: {e}")),
+                })
+                .await;
+            return;
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Task join error");
+            failed.fetch_add(1, Ordering::SeqCst);
+            let _ = result_tx
+                .send(JobResult {
+                    job_id,
+                    success: false,
+                    error: Some(format!("task join error: {e}")),
+                })
+                .await;
+            return;
+        }
+    };
+
+    // Re-check cancellation after claiming (closes race with ErrorStrategy::Fail)
+    if token.is_cancelled() {
+        let q = queue.clone();
+        let jid = job.id;
+        if let Err(e) = tokio::task::spawn_blocking(move || q.cancel(&jid)).await {
+            tracing::error!(error = %e, "failed to mark job as cancelled");
+        }
+        failed.fetch_add(1, Ordering::SeqCst);
+        let _ = result_tx
+            .send(JobResult {
+                job_id,
+                success: false,
+                error: Some("cancelled".into()),
+            })
+            .await;
+        return;
+    }
+
+    let job_id = job.id;
+    reporter.on_job_start(&job);
+
+    match processor(job).await {
+        Ok(output) => {
+            let q = queue.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || q.complete(&job_id, output)).await {
+                tracing::error!(job_id = %job_id, error = %e, "failed to mark job as complete");
+            }
+            completed.fetch_add(1, Ordering::SeqCst);
+            reporter.on_job_complete(job_id, true, None);
+
+            if let Err(e) = result_tx
+                .send(JobResult {
+                    job_id,
+                    success: true,
+                    error: None,
+                })
+                .await
+            {
+                tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
+            }
+        }
+        Err(error) => {
+            let q = queue.clone();
+            let err = error.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || q.fail(&job_id, err)).await {
+                tracing::error!(job_id = %job_id, error = %e, "failed to mark job as failed");
+            }
+            failed.fetch_add(1, Ordering::SeqCst);
+            reporter.on_job_complete(job_id, false, Some(&error));
+
+            if let Err(e) = result_tx
+                .send(JobResult {
+                    job_id,
+                    success: false,
+                    error: Some(error),
+                })
+                .await
+            {
+                tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
+            }
+
+            if on_error == ErrorStrategy::Fail {
+                token.cancel();
+            }
+        }
+    }
+}
+
 /// How to handle errors during batch processing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorStrategy {
     /// Stop all processing on first error.
     Fail,
-    /// Skip the failed file and continue with remaining.
-    Skip,
-    /// Continue processing, collecting all errors.
+    /// Continue processing remaining items, collecting all errors.
+    /// Failed items are recorded but do not halt the batch.
     Continue,
 }
 
@@ -346,9 +366,9 @@ pub enum ErrorStrategy {
 mod tests {
     use super::*;
     use crate::progress::NoopReporter;
-    use crate::test_helpers::InMemoryStore;
     use std::sync::atomic::AtomicU32;
     use tokio_util::sync::CancellationToken;
+    use voom_domain::test_support::InMemoryStore;
 
     fn test_queue() -> Arc<JobQueue> {
         let store = Arc::new(InMemoryStore::new());
@@ -370,7 +390,13 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
 
-        let items: Vec<_> = (0..5).map(|i| (format!("task-{i}"), 100, None)).collect();
+        let items: Vec<_> = (0..5)
+            .map(|i| WorkItem {
+                job_type: voom_domain::job::JobType::Custom(format!("task-{i}")),
+                priority: 100,
+                payload: None,
+            })
+            .collect();
 
         pool.process_batch(
             items,
@@ -404,7 +430,11 @@ mod tests {
         );
 
         let items: Vec<_> = (0..4)
-            .map(|i| (format!("task-{i}"), 100, Some(serde_json::json!({"i": i}))))
+            .map(|i| WorkItem {
+                job_type: voom_domain::job::JobType::Custom(format!("task-{i}")),
+                priority: 100,
+                payload: Some(serde_json::json!({"i": i})),
+            })
             .collect();
 
         pool.process_batch(
@@ -440,14 +470,22 @@ mod tests {
         );
 
         let items = vec![
-            ("fail".into(), 50, None), // will be claimed first (lower priority)
-            ("ok".into(), 100, None),
+            WorkItem {
+                job_type: voom_domain::job::JobType::Custom("fail".into()),
+                priority: 50,
+                payload: None,
+            }, // claimed first (lower priority)
+            WorkItem {
+                job_type: voom_domain::job::JobType::Custom("ok".into()),
+                priority: 100,
+                payload: None,
+            },
         ];
 
         pool.process_batch(
             items,
             |job| async move {
-                if job.job_type == "fail" {
+                if job.job_type == voom_domain::job::JobType::Custom("fail".into()) {
                     Err("boom".into())
                 } else {
                     Ok(None)

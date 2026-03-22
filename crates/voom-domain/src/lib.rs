@@ -10,6 +10,11 @@ pub mod plan;
 pub mod stats;
 pub mod storage;
 #[cfg(feature = "testing")]
+#[allow(
+    clippy::unwrap_used,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use
+)]
 pub mod test_support;
 pub mod utils;
 
@@ -19,6 +24,12 @@ pub use errors::{Result, VoomError};
 pub use events::Event;
 pub use job::{Job, JobStatus, JobUpdate};
 pub use media::{Container, MediaFile, Track, TrackType};
-pub use plan::{ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction};
-pub use stats::ProcessingStats;
-pub use storage::{BadFileFilters, FileFilters, StorageTrait, StoredPlan};
+pub use plan::{
+    ActionParams, ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction,
+};
+pub use stats::{ProcessingOutcome, ProcessingStats};
+pub use storage::{
+    BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,
+    JobStorage, MaintenanceStorage, PlanStorage, PluginDataStorage, StatsStorage, StorageTrait,
+    StoredPlan,
+};

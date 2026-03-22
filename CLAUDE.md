@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 VOOM (Video Orchestration Operations Manager) is a policy-driven video library manager being built in Rust. It is a from-scratch rewrite of VPO (Video Policy Orchestrator) with a WASM plugin architecture and a custom block-based DSL for policy configuration.
 
-**Status:** Early development. The design document is at `docs/INITIAL_DESIGN.md`. No code has been written yet.
+**Status:** Active development (Sprints 1–12 complete, Sprint 13 next). All core crates, 8 native plugins (kernel-registered) + 3 library-only plugins, CLI, web UI, and WASM plugin SDK are implemented. ~800+ tests. See `docs/INITIAL_DESIGN.md` for the original design and `docs/architecture.md` for current architecture.
 
 ## Build & Development Commands
 
@@ -26,7 +26,7 @@ The core is a thin kernel with zero media knowledge. ALL functionality is implem
 - **Native plugins** — compiled into the binary as trait objects, zero overhead
 - **WASM plugins** — loaded at runtime via wasmtime, sandboxed, language-agnostic (via WIT interfaces)
 
-Plugins communicate exclusively through an **event bus** (tokio channels). No plugin directly calls another. The kernel routes work based on **capability matching**, not hardcoded types.
+Plugins communicate exclusively through an **event bus** (synchronous priority-ordered dispatch with `parking_lot::RwLock`). No plugin directly calls another. The kernel routes work based on **capability matching**, not hardcoded types.
 
 ### Workspace crates (`crates/`)
 - **voom-kernel** — Event bus, plugin registry, native + WASM loader, capability routing
@@ -35,7 +35,7 @@ Plugins communicate exclusively through an **event bus** (tokio channels). No pl
 - **voom-cli** — clap-derive CLI binary with subcommands (scan, inspect, process, policy, plugin, serve, doctor, jobs, report, db, config)
 - **voom-wit** — WIT interface definitions (plugin.wit, host.wit, types.wit)
 - **voom-plugin-sdk** — SDK crate for third-party plugin authors
-- **plugins/** — Native plugins: discovery, ffprobe-introspector, tool-detector, sqlite-store, policy-evaluator, phase-orchestrator, mkvtoolnix-executor, ffmpeg-executor, backup-manager, job-manager, web-server
+- **plugins/** — Native plugins: 8 kernel-registered (discovery, tool-detector, sqlite-store, policy-evaluator, phase-orchestrator, mkvtoolnix-executor, backup-manager, job-manager) + 3 library-only (ffprobe-introspector: used directly by CLI, ffmpeg-executor: Sprint 13, web-server: started by `serve` command)
 
 ### Key data flow
 1. DSL policy file (`.voom`) → pest parser → AST → CompiledPolicy

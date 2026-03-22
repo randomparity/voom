@@ -1,12 +1,14 @@
 //! Tool detector plugin: discovers and caches external tool availability and versions.
 
+#![allow(clippy::missing_errors_doc)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::events::{Event, EventResult, ToolDetectedEvent};
+use voom_domain::events::ToolDetectedEvent;
 use voom_kernel::{Plugin, PluginContext};
 
 /// A detected external tool with its path and version.
@@ -81,7 +83,7 @@ impl ToolDetectorPlugin {
 
     /// Get a detected tool by name.
     #[must_use]
-    pub fn get_tool(&self, name: &str) -> Option<&DetectedTool> {
+    pub fn tool(&self, name: &str) -> Option<&DetectedTool> {
         self.cache.get(name)
     }
 
@@ -118,14 +120,6 @@ impl Plugin for ToolDetectorPlugin {
         &self.capabilities
     }
 
-    fn handles(&self, _event_type: &str) -> bool {
-        false
-    }
-
-    fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> {
-        Ok(None)
-    }
-
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
         let events = self.detect_all();
         tracing::info!(
@@ -140,6 +134,9 @@ impl Plugin for ToolDetectorPlugin {
 /// Detect a tool by running it and parsing the version output.
 fn detect_tool(name: &str, args: &[&str]) -> Option<DetectedTool> {
     let output = Command::new(name).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let version = parse_version(name, &stdout);
@@ -214,6 +211,7 @@ fn find_tool_path(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use voom_domain::events::Event;
 
     #[test]
     fn test_plugin_metadata() {
@@ -225,8 +223,8 @@ mod tests {
     #[test]
     fn test_handles_no_events() {
         let plugin = ToolDetectorPlugin::new();
-        assert!(!plugin.handles("file.discovered"));
-        assert!(!plugin.handles("tool.detected"));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
+        assert!(!plugin.handles(Event::TOOL_DETECTED));
     }
 
     #[test]
@@ -293,7 +291,7 @@ mod tests {
         // but the cache should be populated for any found tools
         for (name, _) in KNOWN_TOOLS {
             if plugin.is_available(name) {
-                let tool = plugin.get_tool(name).unwrap();
+                let tool = plugin.tool(name).unwrap();
                 assert_eq!(tool.name, *name);
                 assert!(!tool.version.is_empty());
             }

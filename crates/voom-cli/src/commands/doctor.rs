@@ -1,94 +1,78 @@
 use anyhow::Result;
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::app;
+use crate::config;
+use crate::tools::print_tool_status;
 
-pub async fn run() -> Result<()> {
-    println!("{}", "VOOM System Health Check".bold().underline());
+/// Run the doctor command.
+///
+/// Tool detection creates a standalone `ToolDetectorPlugin` instance rather
+/// than retrieving the kernel-registered one. This is intentional: doctor
+/// must be able to diagnose tool availability even when the kernel fails to
+/// bootstrap (e.g. missing database directory). The standalone instance does
+/// not receive per-plugin configuration from config.toml, but tool-detector
+/// currently has no configurable settings.
+pub fn run() -> Result<()> {
+    println!("{}", style("VOOM System Health Check").bold().underlined());
     println!();
 
     let mut issues = 0u32;
 
     // 1. Config
     print!("  Config file ... ");
-    let config_path = app::config_path();
+    let config_path = config::config_path();
     if config_path.exists() {
-        match app::load_config() {
-            Ok(_) => println!("{}", "OK".green()),
+        match config::load_config() {
+            Ok(_) => println!("{}", style("OK").green()),
             Err(e) => {
-                println!("{} {e}", "ERROR".red());
+                println!("{} {e}", style("ERROR").red());
                 issues += 1;
             }
         }
     } else {
-        println!("{} (using defaults)", "not found".yellow());
+        println!("{} (using defaults)", style("not found").yellow());
     }
 
     // 2. Database
     print!("  Database ... ");
-    let config = app::load_config().unwrap_or_default();
-    let kernel_result = app::bootstrap_kernel(&config);
+    let config = config::load_config().unwrap_or_default();
+    let kernel_result = app::bootstrap_kernel_with_store(&config);
     match &kernel_result {
-        Ok(_kernel) => match app::open_store(&config) {
-            Ok(store) => {
-                use voom_domain::storage::StorageTrait;
-                match store.list_files(&voom_domain::FileFilters {
-                    limit: Some(1),
-                    ..Default::default()
-                }) {
-                    Ok(_) => println!("{}", "OK".green()),
-                    Err(e) => {
-                        println!("{} {e}", "ERROR".red());
-                        issues += 1;
-                    }
+        Ok((_kernel, store)) => {
+            match store.list_files(&voom_domain::FileFilters {
+                limit: Some(1),
+                ..Default::default()
+            }) {
+                Ok(_) => println!("{}", style("OK").green()),
+                Err(e) => {
+                    println!("{} {e}", style("ERROR").red());
+                    issues += 1;
                 }
             }
-            Err(e) => {
-                println!("{} {e}", "ERROR".red());
-                issues += 1;
-            }
-        },
+        }
         Err(e) => {
-            println!("{} {e}", "ERROR".red());
+            println!("{} {e}", style("ERROR").red());
             issues += 1;
         }
     }
 
     // 3. External tools
     println!();
-    println!("{}", "External tools:".bold());
+    println!("{}", style("External tools:").bold());
 
     let mut detector = voom_tool_detector::ToolDetectorPlugin::new();
     detector.detect_all();
 
-    let required_tools = ["ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit"];
-    let optional_tools = ["mkvextract", "mediainfo", "HandBrakeCLI"];
-
-    for tool in required_tools {
-        print!("  {tool} ... ");
-        if let Some(t) = detector.get_tool(tool) {
-            println!("{} ({})", "OK".green(), t.version.dimmed());
-        } else {
-            println!("{} (required)", "NOT FOUND".red());
-            issues += 1;
-        }
-    }
-
-    for tool in optional_tools {
-        print!("  {tool} ... ");
-        if let Some(t) = detector.get_tool(tool) {
-            println!("{} ({})", "OK".green(), t.version.dimmed());
-        } else {
-            println!("{}", "not found".yellow());
-        }
-    }
+    let tool_result = print_tool_status(&detector);
+    issues += tool_result.missing_required;
 
     // 4. Plugins
     println!();
-    println!("{}", "Plugins:".bold());
-    if let Ok(kernel) = &kernel_result {
+    println!("{}", style("Plugins:").bold());
+    if let Ok((kernel, _)) = &kernel_result {
         let names = kernel.registry.plugin_names();
-        println!("  {} plugins registered", names.len().to_string().green());
+        println!("  {} plugins registered", style(names.len()).green());
         for name in &names {
             println!("    - {name}");
         }
@@ -97,9 +81,13 @@ pub async fn run() -> Result<()> {
     // Summary
     println!();
     if issues == 0 {
-        println!("{}", "All checks passed.".bold().green());
+        println!("{}", style("All checks passed.").bold().green());
     } else {
-        println!("{} {} issue(s) found.", "WARNING".bold().yellow(), issues);
+        println!(
+            "{} {} issue(s) found.",
+            style("WARNING").bold().yellow(),
+            issues
+        );
     }
 
     Ok(())
@@ -108,25 +96,9 @@ pub async fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn required_tools_list() {
-        let required = ["ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit"];
-        assert_eq!(required.len(), 4);
-        // Verify these are the tools doctor checks
-        for tool in &required {
-            assert!(!tool.is_empty());
-        }
-    }
-
-    #[test]
-    fn optional_tools_list() {
-        let optional = ["mkvextract", "mediainfo", "HandBrakeCLI"];
-        assert_eq!(optional.len(), 3);
-    }
-
-    #[test]
-    fn tool_detector_creation() {
+    fn test_tool_detector_creation() {
         let detector = voom_tool_detector::ToolDetectorPlugin::new();
         // Should be able to create without panic
-        assert!(detector.get_tool("nonexistent-tool").is_none());
+        assert!(detector.tool("nonexistent-tool").is_none());
     }
 }

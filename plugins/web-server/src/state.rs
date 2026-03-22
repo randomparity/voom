@@ -39,8 +39,9 @@ pub struct AppState {
     pub store: Arc<dyn StorageTrait>,
     pub sse_tx: broadcast::Sender<SseEvent>,
     pub templates: Arc<tera::Tera>,
-    pub auth_token: Option<String>,
+    auth_token: Option<String>,
     pub sse_client_count: Arc<AtomicU32>,
+    pub plugin_info: Arc<Vec<crate::api::plugins::PluginInfo>>,
 }
 
 impl AppState {
@@ -56,16 +57,28 @@ impl AppState {
             templates: Arc::new(templates),
             auth_token,
             sse_client_count: Arc::new(AtomicU32::new(0)),
+            plugin_info: Arc::new(Vec::new()),
         }
+    }
+
+    /// Set the plugin info snapshot (typically populated from kernel registry at startup).
+    #[must_use]
+    pub fn with_plugin_info(mut self, info: Vec<crate::api::plugins::PluginInfo>) -> Self {
+        self.plugin_info = Arc::new(info);
+        self
+    }
+
+    /// Returns true if an auth token is configured.
+    #[must_use]
+    pub fn has_auth(&self) -> bool {
+        self.auth_token.is_some()
     }
 
     /// Validate an Authorization header value against the configured auth token.
     /// Returns true if no auth is configured (allow all) or if the Bearer token matches.
-    /// Validate an Authorization header value against the configured auth token.
-    /// Returns true if no auth is configured (allow all) or if the Bearer token matches.
     /// Uses constant-time comparison to prevent timing side-channel attacks.
     #[must_use]
-    pub fn validate_auth(&self, header: Option<&str>) -> bool {
+    pub fn is_authorized(&self, header: Option<&str>) -> bool {
         use subtle::ConstantTimeEq;
         match &self.auth_token {
             None => true, // no auth configured, allow all
@@ -78,139 +91,39 @@ impl AppState {
     }
 }
 
+/// Create an `AppState` with an in-memory store for testing.
+#[cfg(test)]
+pub(crate) fn make_test_state(auth_token: Option<String>) -> AppState {
+    use voom_domain::test_support::InMemoryStore;
+    let store = Arc::new(InMemoryStore::new());
+    let templates = tera::Tera::default();
+    AppState::new(store, templates, auth_token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-    use voom_domain::errors::Result as VoomResult;
-    use voom_domain::job::{Job, JobStatus, JobUpdate};
-    use voom_domain::media::MediaFile;
-    use voom_domain::plan::Plan;
-    use voom_domain::stats::ProcessingStats;
-    use voom_domain::storage::{FileFilters, StorageTrait, StoredPlan};
-
-    struct DummyStore;
-    impl StorageTrait for DummyStore {
-        fn upsert_file(&self, _: &MediaFile) -> VoomResult<()> {
-            Ok(())
-        }
-        fn get_file(&self, _: &uuid::Uuid) -> VoomResult<Option<MediaFile>> {
-            Ok(None)
-        }
-        fn get_file_by_path(&self, _: &Path) -> VoomResult<Option<MediaFile>> {
-            Ok(None)
-        }
-        fn list_files(&self, _: &FileFilters) -> VoomResult<Vec<MediaFile>> {
-            Ok(vec![])
-        }
-        fn count_files(&self, _: &FileFilters) -> VoomResult<u64> {
-            Ok(0)
-        }
-        fn delete_file(&self, _: &uuid::Uuid) -> VoomResult<()> {
-            Ok(())
-        }
-        fn create_job(&self, _: &Job) -> VoomResult<uuid::Uuid> {
-            Ok(uuid::Uuid::new_v4())
-        }
-        fn get_job(&self, _: &uuid::Uuid) -> VoomResult<Option<Job>> {
-            Ok(None)
-        }
-        fn update_job(&self, _: &uuid::Uuid, _: &JobUpdate) -> VoomResult<()> {
-            Ok(())
-        }
-        fn claim_next_job(&self, _: &str) -> VoomResult<Option<Job>> {
-            Ok(None)
-        }
-        fn claim_job_by_id(&self, _: &uuid::Uuid, _: &str) -> VoomResult<Option<Job>> {
-            Ok(None)
-        }
-        fn list_jobs(&self, _: Option<JobStatus>, _: Option<u32>) -> VoomResult<Vec<Job>> {
-            Ok(vec![])
-        }
-        fn count_jobs_by_status(&self) -> VoomResult<Vec<(JobStatus, u64)>> {
-            Ok(vec![])
-        }
-        fn save_plan(&self, _: &Plan) -> VoomResult<uuid::Uuid> {
-            Ok(uuid::Uuid::new_v4())
-        }
-        fn get_plans_for_file(&self, _: &uuid::Uuid) -> VoomResult<Vec<StoredPlan>> {
-            Ok(vec![])
-        }
-        fn update_plan_status(&self, _: &uuid::Uuid, _: &str) -> VoomResult<()> {
-            Ok(())
-        }
-        fn get_file_history(
-            &self,
-            _: &Path,
-        ) -> VoomResult<Vec<voom_domain::storage::FileHistoryEntry>> {
-            Ok(vec![])
-        }
-        fn record_stats(&self, _: &ProcessingStats) -> VoomResult<()> {
-            Ok(())
-        }
-        fn get_plugin_data(&self, _: &str, _: &str) -> VoomResult<Option<Vec<u8>>> {
-            Ok(None)
-        }
-        fn set_plugin_data(&self, _: &str, _: &str, _: &[u8]) -> VoomResult<()> {
-            Ok(())
-        }
-        fn upsert_bad_file(&self, _: &voom_domain::bad_file::BadFile) -> VoomResult<()> {
-            Ok(())
-        }
-        fn get_bad_file_by_path(
-            &self,
-            _: &Path,
-        ) -> VoomResult<Option<voom_domain::bad_file::BadFile>> {
-            Ok(None)
-        }
-        fn list_bad_files(
-            &self,
-            _: &voom_domain::storage::BadFileFilters,
-        ) -> VoomResult<Vec<voom_domain::bad_file::BadFile>> {
-            Ok(vec![])
-        }
-        fn count_bad_files(&self) -> VoomResult<u64> {
-            Ok(0)
-        }
-        fn delete_bad_file(&self, _: &uuid::Uuid) -> VoomResult<()> {
-            Ok(())
-        }
-        fn delete_bad_file_by_path(&self, _: &Path) -> VoomResult<()> {
-            Ok(())
-        }
-        fn vacuum(&self) -> VoomResult<()> {
-            Ok(())
-        }
-        fn prune_missing_files(&self) -> VoomResult<u64> {
-            Ok(0)
-        }
-        fn prune_missing_files_under(&self, _root: &std::path::Path) -> VoomResult<u64> {
-            Ok(0)
-        }
-    }
 
     fn make_state(auth_token: Option<String>) -> AppState {
-        let store = Arc::new(DummyStore);
-        let templates = tera::Tera::default();
-        AppState::new(store, templates, auth_token)
+        make_test_state(auth_token)
     }
 
     #[test]
-    fn new_creates_state_with_broadcast_channel() {
+    fn test_new_creates_state_with_broadcast_channel() {
         let state = make_state(None);
         // sse_tx should be usable: subscribing should succeed
         let _rx = state.sse_tx.subscribe();
-        assert!(state.auth_token.is_none());
+        assert!(!state.has_auth());
     }
 
     #[test]
-    fn new_with_auth_token() {
+    fn test_new_with_auth_token() {
         let state = make_state(Some("my-secret".into()));
-        assert_eq!(state.auth_token, Some("my-secret".to_string()));
+        assert!(state.has_auth());
     }
 
     #[test]
-    fn sse_client_count_starts_at_zero() {
+    fn test_sse_client_count_starts_at_zero() {
         let state = make_state(None);
         assert_eq!(
             state
@@ -221,41 +134,41 @@ mod tests {
     }
 
     #[test]
-    fn validate_auth_no_token_configured_allows_all() {
+    fn test_is_authorized_no_token_configured_allows_all() {
         let state = make_state(None);
-        assert!(state.validate_auth(None));
-        assert!(state.validate_auth(Some("Bearer anything")));
-        assert!(state.validate_auth(Some("garbage")));
+        assert!(state.is_authorized(None));
+        assert!(state.is_authorized(Some("Bearer anything")));
+        assert!(state.is_authorized(Some("garbage")));
     }
 
     #[test]
-    fn validate_auth_with_token_requires_bearer_prefix() {
+    fn test_is_authorized_with_token_requires_bearer_prefix() {
         let state = make_state(Some("secret123".into()));
-        assert!(state.validate_auth(Some("Bearer secret123")));
-        assert!(!state.validate_auth(Some("secret123")));
-        assert!(!state.validate_auth(Some("bearer secret123")));
-        assert!(!state.validate_auth(Some("Token secret123")));
+        assert!(state.is_authorized(Some("Bearer secret123")));
+        assert!(!state.is_authorized(Some("secret123")));
+        assert!(!state.is_authorized(Some("bearer secret123")));
+        assert!(!state.is_authorized(Some("Token secret123")));
     }
 
     #[test]
-    fn validate_auth_with_token_rejects_none() {
+    fn test_is_authorized_with_token_rejects_none() {
         let state = make_state(Some("secret123".into()));
-        assert!(!state.validate_auth(None));
+        assert!(!state.is_authorized(None));
     }
 
     #[test]
-    fn validate_auth_with_token_rejects_wrong_token() {
+    fn test_is_authorized_with_token_rejects_wrong_token() {
         let state = make_state(Some("secret123".into()));
-        assert!(!state.validate_auth(Some("Bearer wrong")));
-        assert!(!state.validate_auth(Some("Bearer secret1234")));
-        assert!(!state.validate_auth(Some("Bearer ")));
+        assert!(!state.is_authorized(Some("Bearer wrong")));
+        assert!(!state.is_authorized(Some("Bearer secret1234")));
+        assert!(!state.is_authorized(Some("Bearer ")));
     }
 
     #[test]
-    fn state_is_clone() {
+    fn test_state_is_clone() {
         let state = make_state(Some("tok".into()));
         let cloned = state.clone();
-        assert_eq!(cloned.auth_token, Some("tok".to_string()));
+        assert!(cloned.has_auth());
         // Cloned state shares the same Arc references
         assert!(Arc::ptr_eq(&state.templates, &cloned.templates));
         assert!(Arc::ptr_eq(
@@ -265,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn sse_broadcast_delivers_events() {
+    fn test_sse_broadcast_delivers_events() {
         let state = make_state(None);
         let mut rx = state.sse_tx.subscribe();
         let event = SseEvent::FileIntrospected {
@@ -280,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn sse_event_serialization_tagged() {
+    fn test_sse_event_serialization_tagged() {
         let event = SseEvent::JobStarted {
             job_id: "j1".into(),
             description: "test job".into(),
@@ -292,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn sse_event_scan_progress_serialization() {
+    fn test_sse_event_scan_progress_serialization() {
         let event = SseEvent::ScanProgress {
             files_found: 42,
             files_processed: 10,
@@ -304,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn sse_event_job_completed_serialization() {
+    fn test_sse_event_job_completed_serialization() {
         let event = SseEvent::JobCompleted {
             job_id: "j2".into(),
             success: true,

@@ -118,35 +118,6 @@ where
     }
 }
 
-/// Configuration for optional token-based auth.
-#[derive(Debug, Clone)]
-pub struct AuthConfig {
-    pub token: Option<String>,
-}
-
-impl AuthConfig {
-    #[must_use]
-    pub fn new(token: Option<String>) -> Self {
-        Self { token }
-    }
-
-    /// Check if the given token is valid. Returns true if no auth is configured.
-    /// Uses constant-time comparison to prevent timing side-channel attacks.
-    #[must_use]
-    pub fn validate(&self, provided: Option<&str>) -> bool {
-        use subtle::ConstantTimeEq;
-        match &self.token {
-            None => true, // No auth configured
-            Some(expected) => {
-                let provided_str = provided.unwrap_or("");
-                provided.is_some()
-                    && provided_str.len() == expected.len()
-                    && bool::from(provided_str.as_bytes().ct_eq(expected.as_bytes()))
-            }
-        }
-    }
-}
-
 /// Axum middleware that enforces Bearer token authentication on API routes.
 /// If `AppState` has no `auth_token` configured, all requests pass through.
 pub async fn auth_middleware(
@@ -159,7 +130,12 @@ pub async fn auth_middleware(
         .get("Authorization")
         .and_then(|v| v.to_str().ok());
 
-    if !state.validate_auth(auth_header) {
+    if !state.is_authorized(auth_header) {
+        tracing::warn!(
+            uri = %request.uri(),
+            method = %request.method(),
+            "authentication failed: invalid or missing bearer token"
+        );
         return (
             StatusCode::UNAUTHORIZED,
             axum::Json(serde_json::json!({"error": "Unauthorized"})),
@@ -168,24 +144,4 @@ pub async fn auth_middleware(
     }
 
     next.run(request).await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_auth_config_no_token() {
-        let config = AuthConfig::new(None);
-        assert!(config.validate(None));
-        assert!(config.validate(Some("anything")));
-    }
-
-    #[test]
-    fn test_auth_config_with_token() {
-        let config = AuthConfig::new(Some("secret-token".into()));
-        assert!(!config.validate(None));
-        assert!(!config.validate(Some("wrong")));
-        assert!(config.validate(Some("secret-token")));
-    }
 }

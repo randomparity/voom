@@ -46,6 +46,7 @@ pub fn event_result_from_wasm(
         produced_events: events,
         data: json_data,
         claimed: false,
+        execution_error: None,
     })
 }
 
@@ -91,7 +92,10 @@ pub fn capability_from_wit(cap_str: &str) -> Option<Capability> {
             let operations = if ops_part.is_empty() {
                 vec![]
             } else {
-                ops_part.split('+').map(|s| s.trim().to_string()).collect()
+                ops_part
+                    .split('+')
+                    .filter_map(|s| voom_domain::plan::OperationType::parse(s.trim()))
+                    .collect()
             };
             Some(Capability::Execute {
                 operations,
@@ -146,7 +150,11 @@ pub fn capability_to_wit(cap: &Capability) -> String {
             operations,
             formats,
         } => {
-            let ops = operations.join("+");
+            let ops = operations
+                .iter()
+                .map(|op| op.as_str())
+                .collect::<Vec<_>>()
+                .join("+");
             let fmts = formats.join(",");
             if ops.is_empty() && fmts.is_empty() {
                 "execute".to_string()
@@ -202,6 +210,7 @@ mod tests {
             })],
             data: Some(serde_json::json!({"status": "ok"})),
             claimed: false,
+            execution_error: None,
         };
 
         let (name, produced, data) = event_result_to_wasm(&result).unwrap();
@@ -237,12 +246,16 @@ mod tests {
 
     #[test]
     fn test_capability_roundtrip_execute() {
+        use voom_domain::plan::OperationType;
         let cap = Capability::Execute {
-            operations: vec!["transcode".into(), "mux".into()],
+            operations: vec![
+                OperationType::TranscodeVideo,
+                OperationType::ConvertContainer,
+            ],
             formats: vec!["mkv".into(), "mp4".into()],
         };
         let s = capability_to_wit(&cap);
-        assert_eq!(s, "execute:transcode+mux:mkv,mp4");
+        assert_eq!(s, "execute:transcode_video+convert_container:mkv,mp4");
         let restored = capability_from_wit(&s).unwrap();
         assert_eq!(restored, cap);
     }
@@ -304,16 +317,16 @@ mod tests {
                 content_hash: "hash".into(),
             }),
             Event::JobStarted(JobStartedEvent {
-                job_id: "j1".into(),
+                job_id: uuid::Uuid::new_v4(),
                 description: "test job".into(),
             }),
             Event::JobProgress(JobProgressEvent {
-                job_id: "j1".into(),
+                job_id: uuid::Uuid::new_v4(),
                 progress: 0.5,
                 message: None,
             }),
             Event::JobCompleted(JobCompletedEvent {
-                job_id: "j1".into(),
+                job_id: uuid::Uuid::new_v4(),
                 success: true,
                 message: Some("done".into()),
             }),
@@ -326,7 +339,7 @@ mod tests {
                     actions: vec![PlannedAction {
                         operation: OperationType::SetDefault,
                         track_index: Some(0),
-                        parameters: serde_json::json!({}),
+                        parameters: voom_domain::plan::ActionParams::Empty,
                         description: "set default".into(),
                     }],
                     warnings: vec![],

@@ -1,27 +1,24 @@
 use anyhow::{Context, Result};
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::cli::PolicyCommands;
 
-pub async fn run(cmd: PolicyCommands) -> Result<()> {
+pub fn run(cmd: PolicyCommands) -> Result<()> {
     match cmd {
-        PolicyCommands::List => list().await,
-        PolicyCommands::Validate { file } => validate(file).await,
-        PolicyCommands::Show { file } => show(file).await,
-        PolicyCommands::Format { file } => format(file).await,
+        PolicyCommands::List => list(),
+        PolicyCommands::Validate { file } => validate(file),
+        PolicyCommands::Show { file } => show(file),
+        PolicyCommands::Format { file } => format(file),
     }
 }
 
-async fn list() -> Result<()> {
+fn list() -> Result<()> {
     // Scan standard policy directories
-    let config_dir = crate::app::voom_config_dir().join("policies");
+    let config_dir = crate::config::voom_config_dir().join("policies");
 
     if !config_dir.exists() {
-        println!("{}", "No policies directory found.".dimmed());
-        println!(
-            "Create policies in: {}",
-            config_dir.display().to_string().cyan()
-        );
+        println!("{}", style("No policies directory found.").dim());
+        println!("Create policies in: {}", style(config_dir.display()).cyan());
         return Ok(());
     }
 
@@ -34,17 +31,17 @@ async fn list() -> Result<()> {
                 .file_stem()
                 .expect("file has .voom extension so stem exists")
                 .to_string_lossy();
-            match voom_dsl::compile(&std::fs::read_to_string(&path)?) {
+            match voom_dsl::compile_policy(&std::fs::read_to_string(&path)?) {
                 Ok(policy) => {
                     println!(
                         "  {} {} ({} phases)",
-                        "OK".green(),
-                        policy.name.bold(),
+                        style("OK").green(),
+                        style(&policy.name).bold(),
                         policy.phases.len()
                     );
                 }
                 Err(e) => {
-                    println!("  {} {} — {e}", "ERR".red(), name.bold());
+                    println!("  {} {} — {e}", style("ERR").red(), style(&name).bold());
                 }
             }
             found = true;
@@ -52,21 +49,21 @@ async fn list() -> Result<()> {
     }
 
     if !found {
-        println!("{}", "No .voom policy files found.".dimmed());
+        println!("{}", style("No .voom policy files found.").dim());
     }
 
     Ok(())
 }
 
-async fn validate(file: std::path::PathBuf) -> Result<()> {
+fn validate(file: std::path::PathBuf) -> Result<()> {
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
-    match voom_dsl::compile(&source) {
+    match voom_dsl::compile_policy(&source) {
         Ok(policy) => {
             println!(
                 "{} Policy \"{}\" is valid ({} phases, {} phase order: [{}])",
-                "OK".bold().green(),
+                style("OK").bold().green(),
                 policy.name,
                 policy.phases.len(),
                 policy.phase_order.len(),
@@ -81,18 +78,22 @@ async fn validate(file: std::path::PathBuf) -> Result<()> {
     Ok(())
 }
 
-async fn show(file: std::path::PathBuf) -> Result<()> {
+fn show(file: std::path::PathBuf) -> Result<()> {
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
-    let compiled = voom_dsl::compile(&source)
+    let compiled = voom_dsl::compile_policy(&source)
         .map_err(|e| anyhow::anyhow!("policy compilation failed: {e}"))?;
 
-    println!("{} \"{}\"", "Policy".bold(), compiled.name.cyan());
+    println!(
+        "{} \"{}\"",
+        style("Policy").bold(),
+        style(&compiled.name).cyan()
+    );
     println!();
 
     // Config
-    println!("{}", "Config:".bold());
+    println!("{}", style("Config:").bold());
     println!(
         "  Audio languages: [{}]",
         compiled.config.audio_languages.join(", ")
@@ -107,11 +108,11 @@ async fn show(file: std::path::PathBuf) -> Result<()> {
     // Phases
     println!(
         "{} (order: [{}])",
-        "Phases:".bold(),
+        style("Phases:").bold(),
         compiled.phase_order.join(" → ")
     );
     for phase in &compiled.phases {
-        println!("  {} {}", "▸".cyan(), phase.name.bold());
+        println!("  {} {}", style("▸").cyan(), style(&phase.name).bold());
         if !phase.depends_on.is_empty() {
             println!("    depends_on: [{}]", phase.depends_on.join(", "));
         }
@@ -135,7 +136,7 @@ async fn show(file: std::path::PathBuf) -> Result<()> {
     Ok(())
 }
 
-async fn format(file: std::path::PathBuf) -> Result<()> {
+fn format(file: std::path::PathBuf) -> Result<()> {
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
@@ -148,8 +149,8 @@ async fn format(file: std::path::PathBuf) -> Result<()> {
 
     println!(
         "{} Formatted {}",
-        "OK".bold().green(),
-        file.display().to_string().cyan()
+        style("OK").bold().green(),
+        style(file.display()).cyan()
     );
 
     Ok(())
@@ -172,41 +173,41 @@ policy "test-policy" {
 }
 "#;
 
-    #[tokio::test]
-    async fn validate_valid_policy() {
+    #[test]
+    fn validate_valid_policy() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.voom");
         std::fs::write(&file, MINIMAL_POLICY).unwrap();
 
-        // validate reads the file and calls voom_dsl::compile
-        let result = validate(file).await;
+        // validate reads the file and calls voom_dsl::compile_policy
+        let result = validate(file);
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
-    async fn validate_invalid_policy_returns_error() {
+    #[test]
+    fn validate_invalid_policy_returns_error() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("bad.voom");
         std::fs::write(&file, "not a valid policy at all").unwrap();
 
         // validate() returns Err for invalid policies, so we test indirectly via compile
         let source = std::fs::read_to_string(&file).unwrap();
-        assert!(voom_dsl::compile(&source).is_err());
+        assert!(voom_dsl::compile_policy(&source).is_err());
     }
 
-    #[tokio::test]
-    async fn validate_nonexistent_file_returns_error() {
-        let result = validate(std::path::PathBuf::from("/nonexistent/test.voom")).await;
+    #[test]
+    fn validate_nonexistent_file_returns_error() {
+        let result = validate(std::path::PathBuf::from("/nonexistent/test.voom"));
         assert!(result.is_err());
     }
 
-    #[tokio::test]
-    async fn format_valid_policy_file() {
+    #[test]
+    fn format_valid_policy_file() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.voom");
         std::fs::write(&file, MINIMAL_POLICY).unwrap();
 
-        let result = format(file.clone()).await;
+        let result = format(file.clone());
         assert!(result.is_ok());
 
         // Verify the file was rewritten
@@ -215,35 +216,35 @@ policy "test-policy" {
         assert!(formatted.contains("test-policy"));
     }
 
-    #[tokio::test]
-    async fn format_nonexistent_file_returns_error() {
-        let result = format(std::path::PathBuf::from("/nonexistent/test.voom")).await;
+    #[test]
+    fn format_nonexistent_file_returns_error() {
+        let result = format(std::path::PathBuf::from("/nonexistent/test.voom"));
         assert!(result.is_err());
     }
 
-    #[tokio::test]
-    async fn show_valid_policy() {
+    #[test]
+    fn show_valid_policy() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.voom");
         std::fs::write(&file, MINIMAL_POLICY).unwrap();
 
-        let result = show(file).await;
+        let result = show(file);
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
-    async fn show_nonexistent_file_returns_error() {
-        let result = show(std::path::PathBuf::from("/nonexistent/test.voom")).await;
+    #[test]
+    fn show_nonexistent_file_returns_error() {
+        let result = show(std::path::PathBuf::from("/nonexistent/test.voom"));
         assert!(result.is_err());
     }
 
-    #[tokio::test]
-    async fn show_invalid_policy_returns_error() {
+    #[test]
+    fn show_invalid_policy_returns_error() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("bad.voom");
         std::fs::write(&file, "garbage content here").unwrap();
 
-        let result = show(file).await;
+        let result = show(file);
         assert!(result.is_err());
     }
 }

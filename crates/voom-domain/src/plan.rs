@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::media::MediaFile;
+use crate::media::{Container, MediaFile, TrackType};
 
 fn epoch() -> DateTime<Utc> {
     DateTime::UNIX_EPOCH
@@ -26,19 +26,16 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Returns true if this plan has no actions to execute.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.actions.is_empty()
     }
 
-    /// Returns true if this plan was skipped.
     #[must_use]
     pub fn is_skipped(&self) -> bool {
         self.skip_reason.is_some()
     }
 
-    /// Returns a new Plan with the given skip reason set.
     #[must_use]
     pub fn with_skip_reason(mut self, reason: impl Into<String>) -> Self {
         self.skip_reason = Some(reason.into());
@@ -46,14 +43,12 @@ impl Plan {
         self
     }
 
-    /// Returns a new Plan with an additional warning.
     #[must_use]
     pub fn with_warning(mut self, warning: impl Into<String>) -> Self {
         self.warnings.push(warning.into());
         self
     }
 
-    /// Returns a new Plan with an additional action.
     #[must_use]
     pub fn with_action(mut self, action: PlannedAction) -> Self {
         self.actions.push(action);
@@ -66,8 +61,102 @@ impl Plan {
 pub struct PlannedAction {
     pub operation: OperationType,
     pub track_index: Option<u32>,
-    pub parameters: serde_json::Value,
+    pub parameters: ActionParams,
     pub description: String,
+}
+
+impl PlannedAction {
+    /// Create a new planned action for a file-level operation (no track index).
+    #[must_use]
+    pub fn file_op(
+        operation: OperationType,
+        parameters: ActionParams,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            operation,
+            track_index: None,
+            parameters,
+            description: description.into(),
+        }
+    }
+
+    /// Create a new planned action targeting a specific track.
+    #[must_use]
+    pub fn track_op(
+        operation: OperationType,
+        track_index: u32,
+        parameters: ActionParams,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            operation,
+            track_index: Some(track_index),
+            parameters,
+            description: description.into(),
+        }
+    }
+}
+
+/// Typed parameters for each operation type.
+/// Replaces the previous untyped `serde_json::Value` parameters field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ActionParams {
+    /// No parameters needed (SetDefault, ClearDefault, SetForced, ClearForced).
+    Empty,
+    /// Container conversion target.
+    Container {
+        container: Container,
+    },
+    /// Track removal with reason and track type.
+    RemoveTrack {
+        reason: String,
+        track_type: TrackType,
+    },
+    /// Track reordering.
+    ReorderTracks {
+        order: Vec<String>,
+    },
+    /// Language assignment.
+    Language {
+        language: String,
+    },
+    /// Title assignment (empty string to clear).
+    Title {
+        title: String,
+    },
+    /// Transcode settings (codec, plus optional quality/encoding parameters).
+    Transcode {
+        codec: String,
+        crf: Option<u32>,
+        preset: Option<String>,
+        bitrate: Option<String>,
+        channels: Option<u32>,
+    },
+    /// Audio synthesis parameters.
+    Synthesize {
+        name: String,
+        language: Option<String>,
+        codec: Option<String>,
+        text: Option<String>,
+        bitrate: Option<String>,
+        channels: Option<u32>,
+        title: Option<String>,
+        position: Option<String>,
+        source_track: Option<u32>,
+    },
+    /// Container tag operations.
+    SetTag {
+        tag: String,
+        value: String,
+    },
+    ClearTags {
+        tags: Vec<String>,
+    },
+    DeleteTag {
+        tag: String,
+    },
 }
 
 /// The type of operation to perform on a media file.
@@ -92,6 +181,54 @@ pub enum OperationType {
 }
 
 impl OperationType {
+    /// Parse an `OperationType` from its canonical string representation.
+    ///
+    /// Returns `None` for unrecognised strings (e.g., from external WIT plugins using a
+    /// newer schema version).
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "set_default" => Some(Self::SetDefault),
+            "clear_default" => Some(Self::ClearDefault),
+            "set_forced" => Some(Self::SetForced),
+            "clear_forced" => Some(Self::ClearForced),
+            "set_title" => Some(Self::SetTitle),
+            "set_language" => Some(Self::SetLanguage),
+            "remove_track" => Some(Self::RemoveTrack),
+            "reorder_tracks" => Some(Self::ReorderTracks),
+            "convert_container" => Some(Self::ConvertContainer),
+            "transcode_video" => Some(Self::TranscodeVideo),
+            "transcode_audio" => Some(Self::TranscodeAudio),
+            "synthesize_audio" => Some(Self::SynthesizeAudio),
+            "set_container_tag" => Some(Self::SetContainerTag),
+            "clear_container_tags" => Some(Self::ClearContainerTags),
+            "delete_container_tag" => Some(Self::DeleteContainerTag),
+            _ => None,
+        }
+    }
+
+    /// The set of operation types that are metadata-only edits (no transcode or remux).
+    ///
+    /// Both the `FFmpeg` and `MKVToolNix` executors use this to decide whether a plan
+    /// requires structural changes or can be handled via in-place metadata edits.
+    pub const METADATA_OPS: &[OperationType] = &[
+        OperationType::SetDefault,
+        OperationType::ClearDefault,
+        OperationType::SetForced,
+        OperationType::ClearForced,
+        OperationType::SetTitle,
+        OperationType::SetLanguage,
+        OperationType::SetContainerTag,
+        OperationType::ClearContainerTags,
+        OperationType::DeleteContainerTag,
+    ];
+
+    /// Returns `true` when this operation is a metadata-only edit (no transcode or remux).
+    #[must_use]
+    pub fn is_metadata_op(self) -> bool {
+        Self::METADATA_OPS.contains(&self)
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -158,7 +295,7 @@ mod tests {
             actions: vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(1),
-                parameters: serde_json::json!({}),
+                parameters: ActionParams::Empty,
                 description: "Set track 1 as default".into(),
             }],
             warnings: vec![],
@@ -215,7 +352,10 @@ mod tests {
         let action = PlannedAction {
             operation: OperationType::RemoveTrack,
             track_index: Some(2),
-            parameters: serde_json::json!({}),
+            parameters: ActionParams::RemoveTrack {
+                reason: "test".into(),
+                track_type: TrackType::AudioMain,
+            },
             description: "Remove track 2".into(),
         };
 

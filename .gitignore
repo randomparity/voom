@@ -10,3 +10,6 @@ wasm-plugins/*/Cargo.lock
 # Claude flow artifacts
 .claude-flow/
 .hive-mind/
+
+# Desloppify local state
+.desloppify/

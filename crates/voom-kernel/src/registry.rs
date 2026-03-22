@@ -29,30 +29,6 @@ impl PluginRegistry {
         self.plugins.read().get(name).cloned()
     }
 
-    /// Find all plugins that have a capability of the given kind.
-    pub fn find_by_capability_kind(&self, kind: &str) -> Vec<Arc<dyn Plugin>> {
-        let plugins = self.plugins.read();
-        plugins
-            .values()
-            .filter(|p| p.capabilities().iter().any(|c| c.kind() == kind))
-            .cloned()
-            .collect()
-    }
-
-    /// Find the best plugin for an operation on a given format.
-    /// Returns the first matching plugin (arbitrary if multiple match).
-    pub fn find_for_operation(&self, operation: &str, format: &str) -> Option<Arc<dyn Plugin>> {
-        let plugins = self.plugins.read();
-        plugins
-            .values()
-            .find(|p| {
-                p.capabilities()
-                    .iter()
-                    .any(|c| c.supports_operation(operation) && c.supports_format(format))
-            })
-            .cloned()
-    }
-
     /// Returns the names of all registered plugins.
     pub fn plugin_names(&self) -> Vec<String> {
         self.plugins.read().keys().cloned().collect()
@@ -115,70 +91,5 @@ mod tests {
         assert!(registry.get("test-plugin").is_some());
         assert!(registry.get("nonexistent").is_none());
         assert_eq!(registry.len(), 1);
-    }
-
-    #[test]
-    fn test_find_by_capability() {
-        let registry = PluginRegistry::new();
-
-        let executor = Arc::new(FakePlugin {
-            name: "mkvtoolnix".into(),
-            caps: vec![Capability::Execute {
-                operations: vec!["metadata".into(), "reorder".into(), "remux".into()],
-                formats: vec!["mkv".into()],
-            }],
-        });
-        let discovery = Arc::new(FakePlugin {
-            name: "discovery".into(),
-            caps: vec![Capability::Discover {
-                schemes: vec!["file".into()],
-            }],
-        });
-
-        registry.register(executor);
-        registry.register(discovery);
-
-        let executors = registry.find_by_capability_kind("execute");
-        assert_eq!(executors.len(), 1);
-        assert_eq!(executors[0].name(), "mkvtoolnix");
-
-        let discoverers = registry.find_by_capability_kind("discover");
-        assert_eq!(discoverers.len(), 1);
-    }
-
-    #[test]
-    fn test_find_for_operation() {
-        let registry = PluginRegistry::new();
-
-        let mkv = Arc::new(FakePlugin {
-            name: "mkvtoolnix".into(),
-            caps: vec![Capability::Execute {
-                operations: vec!["metadata".into(), "remux".into()],
-                formats: vec!["mkv".into()],
-            }],
-        });
-        let ffmpeg = Arc::new(FakePlugin {
-            name: "ffmpeg".into(),
-            caps: vec![Capability::Execute {
-                operations: vec!["transcode".into()],
-                formats: vec![],
-            }],
-        });
-
-        registry.register(mkv);
-        registry.register(ffmpeg);
-
-        // mkvtoolnix handles metadata on mkv
-        let p = registry.find_for_operation("metadata", "mkv");
-        assert!(p.is_some());
-        assert_eq!(p.unwrap().name(), "mkvtoolnix");
-
-        // ffmpeg handles transcode on any format
-        let p = registry.find_for_operation("transcode", "mp4");
-        assert!(p.is_some());
-        assert_eq!(p.unwrap().name(), "ffmpeg");
-
-        // nobody handles "magic"
-        assert!(registry.find_for_operation("magic", "mkv").is_none());
     }
 }

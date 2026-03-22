@@ -6,7 +6,7 @@ use axum_test::TestServer;
 use serde_json::json;
 use uuid::Uuid;
 
-use voom_domain::job::Job;
+use voom_domain::job::{Job, JobType};
 use voom_domain::media::{Container, MediaFile};
 use voom_domain::test_support::InMemoryStore;
 
@@ -25,7 +25,7 @@ fn make_server(store: InMemoryStore) -> TestServer {
 
 fn make_server_with_auth(store: InMemoryStore, auth_token: Option<String>) -> TestServer {
     let store = Arc::new(store);
-    let templates = voom_web_server::server::embedded_templates_for_test();
+    let templates = voom_web_server::server::embedded_templates();
     let state = voom_web_server::state::AppState::new(store, templates, auth_token);
     let router = voom_web_server::router::build_router(state);
     TestServer::new(router).unwrap()
@@ -110,7 +110,7 @@ async fn test_list_jobs_empty() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_list_jobs_with_data() {
-    let job = Job::new("transcode".into());
+    let job = Job::new(JobType::Transcode);
     let store = InMemoryStore::new().with_job(job);
     let server = make_server(store);
 
@@ -123,7 +123,7 @@ async fn test_list_jobs_with_data() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_job_by_id() {
-    let job = Job::new("scan".into());
+    let job = Job::new(JobType::Scan);
     let id = job.id;
     let store = InMemoryStore::new().with_job(job);
     let server = make_server(store);
@@ -143,8 +143,8 @@ async fn test_get_job_not_found() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_job_stats() {
-    let job1 = Job::new("scan".into());
-    let mut job2 = Job::new("transcode".into());
+    let job1 = Job::new(JobType::Scan);
+    let mut job2 = Job::new(JobType::Transcode);
     job2.status = voom_domain::job::JobStatus::Completed;
     let store = InMemoryStore::new().with_job(job1).with_job(job2);
     let server = make_server(store);
@@ -158,13 +158,38 @@ async fn test_job_stats() {
 // === Plugin API Tests ===
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_list_plugins() {
+async fn test_list_plugins_empty_by_default() {
     let server = make_server(InMemoryStore::new());
     let resp = server.get("/api/plugins").await;
     resp.assert_status_ok();
     let body: serde_json::Value = resp.json();
     let plugins = body["plugins"].as_array().unwrap();
-    assert!(plugins.len() >= 10);
+    // No plugins registered in test state (populated from kernel at startup)
+    assert_eq!(plugins.len(), 0);
+    assert_eq!(body["total"], 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_plugins_with_data() {
+    let store = Arc::new(InMemoryStore::new());
+    let templates = voom_web_server::server::embedded_templates();
+    let plugin_info = vec![voom_web_server::api::plugins::PluginInfo {
+        name: "test-plugin".into(),
+        version: "0.1.0".into(),
+        capabilities: vec!["test".into()],
+    }];
+    let state =
+        voom_web_server::state::AppState::new(store, templates, None).with_plugin_info(plugin_info);
+    let router = voom_web_server::router::build_router(state);
+    let server = TestServer::new(router).unwrap();
+
+    let resp = server.get("/api/plugins").await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    let plugins = body["plugins"].as_array().unwrap();
+    assert_eq!(plugins.len(), 1);
+    assert_eq!(plugins[0]["name"], "test-plugin");
+    assert_eq!(body["total"], 1);
 }
 
 // === Stats API Tests ===
@@ -224,7 +249,10 @@ async fn test_format_invalid_policy() {
         .post("/api/policy/format")
         .json(&json!({ "source": "not valid" }))
         .await;
-    resp.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert!(body["formatted"].as_str().unwrap().is_empty());
+    assert!(!body["errors"].as_array().unwrap().is_empty());
 }
 
 // === Page Tests (HTML) ===
@@ -341,14 +369,26 @@ async fn test_auth_passthrough_when_no_token_configured() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_page_routes_accessible_without_auth() {
-    let server = make_server_with_auth(InMemoryStore::new(), Some("secret-token".into()));
-    // Page routes should be public even when auth is configured
+    // Without auth configured, pages are public
+    let server = make_server(InMemoryStore::new());
     let resp = server.get("/").await;
     resp.assert_status_ok();
     let resp = server.get("/library").await;
     resp.assert_status_ok();
     let resp = server.get("/jobs").await;
     resp.assert_status_ok();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_page_routes_require_auth_when_configured() {
+    let server = make_server_with_auth(InMemoryStore::new(), Some("secret-token".into()));
+    // Page routes are protected when auth is configured
+    let resp = server.get("/").await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+    let resp = server.get("/library").await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+    let resp = server.get("/jobs").await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 }
 
 // === Fallback 404 Tests ===
@@ -409,7 +449,7 @@ async fn test_format_oversized_policy_returns_error() {
 async fn test_sse_client_limit_enforced() {
     use std::sync::atomic::Ordering;
     let store = Arc::new(InMemoryStore::new());
-    let templates = voom_web_server::server::embedded_templates_for_test();
+    let templates = voom_web_server::server::embedded_templates();
     let state = voom_web_server::state::AppState::new(store, templates, None);
     // Simulate 64 clients already connected
     state.sse_client_count.store(64, Ordering::Relaxed);
@@ -423,7 +463,7 @@ async fn test_sse_client_limit_enforced() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_request_id_header_present() {
     let store = Arc::new(InMemoryStore::new());
-    let templates = voom_web_server::server::embedded_templates_for_test();
+    let templates = voom_web_server::server::embedded_templates();
     let state = voom_web_server::state::AppState::new(store, templates, None);
     let router = voom_web_server::router::build_router(state);
     let server = TestServer::new(router).unwrap();
@@ -444,7 +484,7 @@ async fn test_request_id_header_present() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_request_id_unique_per_request() {
     let store = Arc::new(InMemoryStore::new());
-    let templates = voom_web_server::server::embedded_templates_for_test();
+    let templates = voom_web_server::server::embedded_templates();
     let state = voom_web_server::state::AppState::new(store, templates, None);
     let router = voom_web_server::router::build_router(state);
     let server = TestServer::new(router).unwrap();

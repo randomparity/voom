@@ -4,7 +4,7 @@ use std::path::Path;
 
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, ContentArrangement, Table};
-use owo_colors::OwoColorize;
+use console::style;
 use voom_domain::media::{MediaFile, Track};
 use voom_domain::utils::datetime;
 
@@ -92,7 +92,7 @@ pub fn format_scan_results(files: &[(std::path::PathBuf, u64, String)], format: 
 /// Format a media file's metadata as a table.
 pub fn format_file_info(file: &MediaFile, tracks_only: bool) {
     if !tracks_only {
-        println!("{}", "File Information".bold());
+        println!("{}", style("File Information").bold());
         let mut table = new_table();
         table.set_header(vec!["Property", "Value"]);
         table.add_row(vec!["Path", &file.path.display().to_string()]);
@@ -108,7 +108,7 @@ pub fn format_file_info(file: &MediaFile, tracks_only: bool) {
         println!();
     }
 
-    println!("{}", "Tracks".bold());
+    println!("{}", style("Tracks").bold());
     format_tracks(&file.tracks);
 }
 
@@ -197,36 +197,23 @@ pub fn new_table() -> Table {
     table
 }
 
-/// Count occurrences of each container format, sorted by frequency (descending).
-pub fn container_counts(files: &[MediaFile]) -> Vec<(String, usize)> {
-    let mut counts = std::collections::HashMap::new();
-    for file in files {
-        *counts
-            .entry(file.container.as_str().to_string())
-            .or_insert(0usize) += 1;
-    }
-    let mut sorted: Vec<_> = counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
-    sorted
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn shrink_no_truncation_needed() {
+    fn test_shrink_no_truncation_needed() {
         assert_eq!(shrink_filename("short.mkv", 40), "short.mkv");
     }
 
     #[test]
-    fn shrink_exact_length() {
+    fn test_shrink_exact_length() {
         let name = "x".repeat(30) + ".mkv";
         assert_eq!(shrink_filename(&name, 34), name);
     }
 
     #[test]
-    fn shrink_long_name_preserves_extension() {
+    fn test_shrink_long_name_preserves_extension() {
         let result = shrink_filename(
             "A Very Long Movie Name (2025) - S01E01 - Episode Title [WEBDL-1080p]-GROUP.mkv",
             40,
@@ -237,20 +224,20 @@ mod tests {
     }
 
     #[test]
-    fn shrink_no_extension() {
+    fn test_shrink_no_extension() {
         let result = shrink_filename("a_very_long_filename_without_extension", 20);
         assert_eq!(result.len(), 20);
         assert!(result.ends_with("..."), "got: {result}");
     }
 
     #[test]
-    fn shrink_very_small_max() {
+    fn test_shrink_very_small_max() {
         let result = shrink_filename("movie.mkv", 5);
         assert_eq!(result.len(), 5);
     }
 
     #[test]
-    fn shrink_various_extensions() {
+    fn test_shrink_various_extensions() {
         let result = shrink_filename("Some Long Name Here.m2ts", 20);
         assert!(result.ends_with("...m2ts"), "got: {result}");
         assert_eq!(result.len(), 20);

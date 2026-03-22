@@ -13,10 +13,8 @@ description = "Phase orchestration plugin for VOOM — sequences policy phases w
 voom-domain = { workspace = true }
 voom-kernel = { workspace = true }
 voom-dsl = { workspace = true }
-voom-policy-evaluator = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
+voom-policy-evaluator = { workspace = true }

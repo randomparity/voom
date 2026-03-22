@@ -3,18 +3,15 @@
 //! Provides the host-side implementations of functions that WASM plugins
 //! can call: logging, plugin data storage, tool execution, and HTTP requests.
 
-use std::collections::{HashMap, HashSet};
-use std::io::Read as _;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use wait_timeout::ChildExt;
+mod functions;
+mod store;
 
-/// State provided to WASM plugins via host function imports.
-///
-/// Each WASM plugin instance gets its own `HostState`, which holds
-/// plugin-specific data and shared references to host services.
+pub use store::{InMemoryPluginStore, StorageBackedPluginStore, WasmPluginStore};
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
+
 /// Maximum size for plugin data values (1 MiB).
 pub const MAX_PLUGIN_DATA_VALUE_SIZE: usize = 1024 * 1024;
 
@@ -36,6 +33,10 @@ impl Default for WasmResourceLimits {
     }
 }
 
+/// State provided to WASM plugins via host function imports.
+///
+/// Each WASM plugin instance gets its own `HostState`, which holds
+/// plugin-specific data and shared references to host services.
 pub struct HostState {
     /// Name of the plugin this state belongs to.
     pub plugin_name: String,
@@ -45,7 +46,7 @@ pub struct HostState {
     /// Allowed directories for tool execution (security sandbox).
     pub allowed_paths: Vec<PathBuf>,
     /// Shared storage backend for persistent plugin data.
-    pub storage: Option<Arc<dyn PluginDataStore>>,
+    pub storage: Option<Arc<dyn WasmPluginStore>>,
     /// Allowed tool names (empty = deny all).
     pub allowed_tools: Vec<String>,
     /// HTTP client configuration.
@@ -57,57 +58,6 @@ pub struct HostState {
     /// Store limits for wasmtime (only used when feature = "wasm").
     #[cfg(feature = "wasm")]
     pub store_limits: wasmtime::StoreLimits,
-}
-
-/// Trait for persistent plugin data storage.
-/// Implemented by the sqlite-store plugin or in-memory for testing.
-pub trait PluginDataStore: Send + Sync {
-    fn get(&self, plugin_name: &str, key: &str) -> Option<Vec<u8>>;
-    fn set(&self, plugin_name: &str, key: &str, value: &[u8]) -> Result<(), String>;
-    fn delete(&self, plugin_name: &str, key: &str) -> Result<(), String>;
-}
-
-/// In-memory implementation of `PluginDataStore` for testing.
-pub struct InMemoryDataStore {
-    data: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
-}
-
-impl InMemoryDataStore {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            data: Mutex::new(HashMap::new()),
-        }
-    }
-}
-
-impl Default for InMemoryDataStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PluginDataStore for InMemoryDataStore {
-    fn get(&self, plugin_name: &str, key: &str) -> Option<Vec<u8>> {
-        let data = self.data.lock().unwrap_or_else(|e| e.into_inner());
-        data.get(plugin_name).and_then(|m| m.get(key)).cloned()
-    }
-
-    fn set(&self, plugin_name: &str, key: &str, value: &[u8]) -> Result<(), String> {
-        let mut data = self.data.lock().unwrap_or_else(|e| e.into_inner());
-        data.entry(plugin_name.to_string())
-            .or_default()
-            .insert(key.to_string(), value.to_vec());
-        Ok(())
-    }
-
-    fn delete(&self, plugin_name: &str, key: &str) -> Result<(), String> {
-        let mut data = self.data.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(m) = data.get_mut(plugin_name) {
-            m.remove(key);
-        }
-        Ok(())
-    }
 }
 
 impl HostState {
@@ -128,37 +78,32 @@ impl HostState {
         }
     }
 
-    /// Enable HTTP access for this plugin.
     #[must_use]
     pub fn with_http(mut self) -> Self {
         self.http_allowed = true;
         self
     }
 
-    /// Set allowed tools for this plugin.
     #[must_use]
     pub fn with_tools(mut self, tools: Vec<String>) -> Self {
         self.allowed_tools = tools;
         self
     }
 
-    /// Set allowed filesystem paths for tool execution.
     #[must_use]
     pub fn with_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.allowed_paths = paths;
         self
     }
 
-    /// Set allowed capabilities for this plugin.
     #[must_use]
     pub fn with_capabilities(mut self, capabilities: HashSet<String>) -> Self {
         self.allowed_capabilities = capabilities;
         self
     }
 
-    /// Set persistent storage backend.
     #[must_use]
-    pub fn with_storage(mut self, storage: Arc<dyn PluginDataStore>) -> Self {
+    pub fn with_storage(mut self, storage: Arc<dyn WasmPluginStore>) -> Self {
         self.storage = Some(storage);
         self
     }
@@ -167,262 +112,27 @@ impl HostState {
     ///
     /// Stores the config as JSON bytes under the `"config"` key in the
     /// in-memory plugin data store. WASM plugins can then retrieve it
-    /// via `get_plugin_data("config")`.
+    /// via `resolve_plugin_data("config")`.
     ///
     /// Note: both `{}` (empty object) and `null` are treated as "no config"
     /// and do **not** seed the store. A plugin that receives no config and one
-    /// that receives `{}` are therefore indistinguishable via `get_plugin_data`.
+    /// that receives `{}` are therefore indistinguishable via `resolve_plugin_data`.
     #[must_use]
     pub fn with_initial_config(mut self, config: serde_json::Value) -> Self {
         if !config.is_null() && config != serde_json::json!({}) {
-            if let Ok(bytes) = serde_json::to_vec(&config) {
-                self.plugin_data.insert("config".to_string(), bytes);
-            }
-        }
-        self
-    }
-
-    // --- Host function implementations ---
-
-    /// Log a message at the given level.
-    pub fn log(&self, level: &str, message: &str) {
-        match level {
-            "trace" => tracing::trace!(plugin = %self.plugin_name, "{}", message),
-            "debug" => tracing::debug!(plugin = %self.plugin_name, "{}", message),
-            "info" => tracing::info!(plugin = %self.plugin_name, "{}", message),
-            "warn" => tracing::warn!(plugin = %self.plugin_name, "{}", message),
-            "error" => tracing::error!(plugin = %self.plugin_name, "{}", message),
-            _ => tracing::info!(plugin = %self.plugin_name, level = %level, "{}", message),
-        }
-    }
-
-    /// Get plugin-specific persisted data by key.
-    ///
-    /// Lookup order: persistent storage (if attached) → in-memory `plugin_data`.
-    /// This means config seeded via `with_initial_config` acts as a default that
-    /// the plugin can override by calling `set_plugin_data` (which writes to storage).
-    #[must_use]
-    pub fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
-        if let Some(storage) = &self.storage {
-            // Check persistent storage first, fall back to in-memory (seeded config).
-            storage
-                .get(&self.plugin_name, key)
-                .or_else(|| self.plugin_data.get(key).cloned())
-        } else {
-            self.plugin_data.get(key).cloned()
-        }
-    }
-
-    /// Set plugin-specific persisted data.
-    pub fn set_plugin_data(&mut self, key: &str, value: &[u8]) -> Result<(), String> {
-        if value.len() > MAX_PLUGIN_DATA_VALUE_SIZE {
-            return Err(format!(
-                "plugin data value exceeds maximum size ({} bytes, max {})",
-                value.len(),
-                MAX_PLUGIN_DATA_VALUE_SIZE
-            ));
-        }
-        if let Some(storage) = &self.storage {
-            storage.set(&self.plugin_name, key, value)
-        } else {
-            self.plugin_data.insert(key.to_string(), value.to_vec());
-            Ok(())
-        }
-    }
-
-    /// Run an external tool with the given arguments.
-    pub fn run_tool(
-        &self,
-        tool: &str,
-        args: &[String],
-        timeout_ms: u64,
-    ) -> Result<ToolOutput, String> {
-        // Security check: verify tool is allowed (empty allowlist = deny all).
-        if self.allowed_tools.is_empty() || !self.allowed_tools.iter().any(|t| t == tool) {
-            return Err(format!(
-                "tool '{}' is not in the allowed list for plugin '{}'",
-                tool, self.plugin_name
-            ));
-        }
-
-        // Security check: verify path arguments are within allowed directories.
-        // Canonicalize paths to prevent traversal attacks (e.g., /allowed/../etc/passwd).
-        if !self.allowed_paths.is_empty() {
-            for arg in args {
-                let path = Path::new(arg);
-                if path.is_absolute() || arg.starts_with("./") || arg.starts_with("../") {
-                    let canonical = std::fs::canonicalize(path).map_err(|e| {
-                        format!(
-                            "cannot resolve path '{}' for plugin '{}': {e}",
-                            arg, self.plugin_name
-                        )
-                    })?;
-                    let allowed = self
-                        .allowed_paths
-                        .iter()
-                        .any(|allowed_dir| canonical.starts_with(allowed_dir));
-                    if !allowed {
-                        return Err(format!(
-                            "path '{}' is not within allowed directories for plugin '{}'",
-                            arg, self.plugin_name
-                        ));
-                    }
+            match serde_json::to_vec(&config) {
+                Ok(bytes) => {
+                    self.plugin_data.insert("config".to_string(), bytes);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        plugin = %self.plugin_name,
+                        "Failed to serialize initial config: {e}"
+                    );
                 }
             }
         }
-
-        // Security check: verify plugin has execute capability.
-        if !self.allowed_capabilities.is_empty()
-            && !self
-                .allowed_capabilities
-                .iter()
-                .any(|c| c.starts_with("execute"))
-        {
-            return Err(format!(
-                "plugin '{}' lacks 'execute' capability required for tool execution",
-                self.plugin_name
-            ));
-        }
-
-        let mut child = Command::new(tool)
-            .args(args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("failed to spawn tool '{}': {}", tool, e))?;
-
-        // Read stdout/stderr on separate threads BEFORE waiting, to avoid
-        // deadlock when pipe buffers fill up.
-        let stdout_handle = child.stdout.take().map(|mut out| {
-            std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                std::io::Read::read_to_end(&mut out, &mut buf).map(|_| buf)
-            })
-        });
-        let stderr_handle = child.stderr.take().map(|mut err| {
-            std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                std::io::Read::read_to_end(&mut err, &mut buf).map(|_| buf)
-            })
-        });
-
-        let timeout = Duration::from_millis(timeout_ms);
-        match child.wait_timeout(timeout) {
-            Ok(Some(status)) => {
-                let stdout = stdout_handle
-                    .map(|h| h.join().unwrap_or(Ok(Vec::new())))
-                    .unwrap_or(Ok(Vec::new()))
-                    .map_err(|e| format!("failed to read stdout: {}", e))?;
-                let stderr = stderr_handle
-                    .map(|h| h.join().unwrap_or(Ok(Vec::new())))
-                    .unwrap_or(Ok(Vec::new()))
-                    .map_err(|e| format!("failed to read stderr: {}", e))?;
-                Ok(ToolOutput {
-                    exit_code: status.code().unwrap_or(-1),
-                    stdout,
-                    stderr,
-                })
-            }
-            Ok(None) => {
-                child.kill().ok();
-                child.wait().ok();
-                Err(format!("tool '{}' timed out after {}ms", tool, timeout_ms))
-            }
-            Err(e) => Err(format!("error waiting for tool '{}': {}", tool, e)),
-        }
-    }
-
-    /// Perform an HTTP GET request.
-    pub fn http_get(
-        &self,
-        url: &str,
-        headers: &[(String, String)],
-    ) -> Result<HttpResponse, String> {
-        if !self.http_allowed {
-            return Err(format!(
-                "HTTP access not enabled for plugin '{}'",
-                self.plugin_name
-            ));
-        }
-
-        let mut request = ureq::get(url);
-        for (name, value) in headers {
-            request = request.set(name, value);
-        }
-
-        let response = request
-            .call()
-            .map_err(|e| format!("HTTP GET failed: {e}"))?;
-
-        let status = response.status();
-        let header_names = response.headers_names();
-        let resp_headers: Vec<(String, String)> = header_names
-            .iter()
-            .filter_map(|name| {
-                response
-                    .header(name)
-                    .map(|val| (name.clone(), val.to_string()))
-            })
-            .collect();
-        let mut body = Vec::new();
-        response
-            .into_reader()
-            .take(10 * 1024 * 1024) // 10 MiB limit
-            .read_to_end(&mut body)
-            .map_err(|e| format!("failed to read response body: {e}"))?;
-
-        Ok(HttpResponse {
-            status,
-            headers: resp_headers,
-            body,
-        })
-    }
-
-    /// Perform an HTTP POST request.
-    pub fn http_post(
-        &self,
-        url: &str,
-        headers: &[(String, String)],
-        body: &[u8],
-    ) -> Result<HttpResponse, String> {
-        if !self.http_allowed {
-            return Err(format!(
-                "HTTP access not enabled for plugin '{}'",
-                self.plugin_name
-            ));
-        }
-
-        let mut request = ureq::post(url);
-        for (name, value) in headers {
-            request = request.set(name, value);
-        }
-
-        let response = request
-            .send_bytes(body)
-            .map_err(|e| format!("HTTP POST failed: {e}"))?;
-
-        let status = response.status();
-        let header_names = response.headers_names();
-        let resp_headers: Vec<(String, String)> = header_names
-            .iter()
-            .filter_map(|name| {
-                response
-                    .header(name)
-                    .map(|val| (name.clone(), val.to_string()))
-            })
-            .collect();
-        let mut resp_body = Vec::new();
-        response
-            .into_reader()
-            .take(10 * 1024 * 1024) // 10 MiB limit
-            .read_to_end(&mut resp_body)
-            .map_err(|e| format!("failed to read response body: {e}"))?;
-
-        Ok(HttpResponse {
-            status,
-            headers: resp_headers,
-            body: resp_body,
-        })
+        self
     }
 }
 
@@ -467,25 +177,25 @@ mod tests {
     fn test_plugin_data_in_memory() {
         let mut state = HostState::new("test".into());
 
-        assert!(state.get_plugin_data("key1").is_none());
+        assert!(state.resolve_plugin_data("key1").is_none());
 
         state.set_plugin_data("key1", b"hello world").unwrap();
-        assert_eq!(state.get_plugin_data("key1").unwrap(), b"hello world");
+        assert_eq!(state.resolve_plugin_data("key1").unwrap(), b"hello world");
 
         state.set_plugin_data("key1", b"updated").unwrap();
-        assert_eq!(state.get_plugin_data("key1").unwrap(), b"updated");
+        assert_eq!(state.resolve_plugin_data("key1").unwrap(), b"updated");
     }
 
     #[test]
     fn test_plugin_data_persistent_store() {
-        let store = Arc::new(InMemoryDataStore::new());
+        let store = Arc::new(InMemoryPluginStore::new());
         let mut state = HostState::new("test".into()).with_storage(store.clone());
 
         state.set_plugin_data("key1", b"value1").unwrap();
-        assert_eq!(state.get_plugin_data("key1").unwrap(), b"value1");
+        assert_eq!(state.resolve_plugin_data("key1").unwrap(), b"value1");
 
         // Verify data is in the shared store.
-        assert_eq!(store.get("test", "key1").unwrap(), b"value1");
+        assert_eq!(store.get("test", "key1").unwrap().unwrap(), b"value1");
     }
 
     #[test]
@@ -498,7 +208,9 @@ mod tests {
 
     #[test]
     fn test_run_tool_allowed() {
-        let state = HostState::new("test".into()).with_tools(vec!["echo".into()]);
+        let state = HostState::new("test".into())
+            .with_tools(vec!["echo".into()])
+            .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         let result = state.run_tool("echo", &["hello".into()], 5000);
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -562,7 +274,9 @@ mod tests {
 
     #[test]
     fn test_run_tool_successful_with_timeout() {
-        let state = HostState::new("test".into()).with_tools(vec!["echo".into()]);
+        let state = HostState::new("test".into())
+            .with_tools(vec!["echo".into()])
+            .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         let result = state.run_tool("echo", &["hello".into()], 5000);
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -572,7 +286,9 @@ mod tests {
 
     #[test]
     fn test_run_tool_timeout() {
-        let state = HostState::new("test".into()).with_tools(vec!["sleep".into()]);
+        let state = HostState::new("test".into())
+            .with_tools(vec!["sleep".into()])
+            .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         let result = state.run_tool("sleep", &["10".into()], 100);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -586,15 +302,15 @@ mod tests {
 
     #[test]
     fn test_in_memory_data_store() {
-        let store = InMemoryDataStore::new();
+        let store = InMemoryPluginStore::new();
 
-        assert!(store.get("plugin1", "key1").is_none());
+        assert!(store.get("plugin1", "key1").unwrap().is_none());
 
         store.set("plugin1", "key1", b"data").unwrap();
-        assert_eq!(store.get("plugin1", "key1").unwrap(), b"data");
+        assert_eq!(store.get("plugin1", "key1").unwrap().unwrap(), b"data");
 
         store.delete("plugin1", "key1").unwrap();
-        assert!(store.get("plugin1", "key1").is_none());
+        assert!(store.get("plugin1", "key1").unwrap().is_none());
 
         // Deleting non-existent key is fine.
         store.delete("plugin1", "nonexistent").unwrap();
@@ -621,7 +337,8 @@ mod tests {
         std::fs::write(&file_path, "test").unwrap();
         let state = HostState::new("test".into())
             .with_tools(vec!["echo".into()])
-            .with_paths(vec![dir.path().to_path_buf()]);
+            .with_paths(vec![dir.path().to_path_buf()])
+            .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         let result = state.run_tool("echo", &[file_path.to_string_lossy().into()], 5000);
         assert!(result.is_ok());
     }
@@ -630,7 +347,8 @@ mod tests {
     fn test_run_tool_path_blocked() {
         let state = HostState::new("test".into())
             .with_tools(vec!["echo".into()])
-            .with_paths(vec![PathBuf::from("/tmp")]);
+            .with_paths(vec![PathBuf::from("/tmp")])
+            .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         let result = state.run_tool("echo", &["/etc/passwd".into()], 5000);
         assert!(result.is_err());
         assert!(result
@@ -648,7 +366,8 @@ mod tests {
         // Try to access a file via traversal outside the allowed dir
         let state = HostState::new("test".into())
             .with_tools(vec!["echo".into()])
-            .with_paths(vec![allowed_dir]);
+            .with_paths(vec![allowed_dir])
+            .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         // /etc/passwd exists and will canonicalize to itself — outside allowed dir
         let result = state.run_tool("echo", &["/etc/passwd".into()], 5000);
         assert!(result.is_err());
@@ -662,7 +381,7 @@ mod tests {
         let config = serde_json::json!({"api_key": "abc123", "url": "http://localhost"});
         let state = HostState::new("test".into()).with_initial_config(config.clone());
         let data = state
-            .get_plugin_data("config")
+            .resolve_plugin_data("config")
             .expect("config should be seeded");
         let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(loaded, config);
@@ -671,27 +390,27 @@ mod tests {
     #[test]
     fn test_with_initial_config_empty_does_not_seed() {
         let state = HostState::new("test".into()).with_initial_config(serde_json::json!({}));
-        assert!(state.get_plugin_data("config").is_none());
+        assert!(state.resolve_plugin_data("config").is_none());
     }
 
     #[test]
     fn test_with_initial_config_null_does_not_seed() {
         let state = HostState::new("test".into()).with_initial_config(serde_json::Value::Null);
-        assert!(state.get_plugin_data("config").is_none());
+        assert!(state.resolve_plugin_data("config").is_none());
     }
 
     #[test]
     fn test_with_initial_config_with_storage() {
         // Seeded config should be accessible even when persistent storage is attached.
-        let store = Arc::new(InMemoryDataStore::new());
+        let store = Arc::new(InMemoryPluginStore::new());
         let config = serde_json::json!({"api_key": "abc123"});
         let state = HostState::new("test".into())
             .with_storage(store.clone())
             .with_initial_config(config.clone());
 
-        // get_plugin_data should fall through to in-memory seeded config.
+        // resolve_plugin_data should fall through to in-memory seeded config.
         let data = state
-            .get_plugin_data("config")
+            .resolve_plugin_data("config")
             .expect("seeded config should be accessible with storage attached");
         let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(loaded, config);
@@ -700,7 +419,7 @@ mod tests {
     #[test]
     fn test_with_initial_config_storage_overrides_seed() {
         // A value written to storage should take precedence over the seeded default.
-        let store = Arc::new(InMemoryDataStore::new());
+        let store = Arc::new(InMemoryPluginStore::new());
         let config = serde_json::json!({"api_key": "original"});
         let mut state = HostState::new("test".into())
             .with_storage(store.clone())
@@ -712,7 +431,7 @@ mod tests {
         state.set_plugin_data("config", &override_bytes).unwrap();
 
         // Should get the storage value, not the seeded one.
-        let data = state.get_plugin_data("config").unwrap();
+        let data = state.resolve_plugin_data("config").unwrap();
         let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(loaded, override_config);
     }

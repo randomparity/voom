@@ -3,6 +3,8 @@
 //! Executes media plans using `FFmpeg` for transcoding, container conversion,
 //! and metadata operations on non-MKV files (or any file requiring transcode).
 
+#![allow(clippy::missing_errors_doc)]
+
 pub mod command;
 pub mod hwaccel;
 pub mod progress;
@@ -10,12 +12,33 @@ pub mod progress;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{Event, EventResult, PlanCreatedEvent};
-use voom_domain::media::Container;
 use voom_domain::plan::{ActionResult, OperationType, Plan, PlannedAction};
 use voom_kernel::Plugin;
 
 use crate::command::{build_ffmpeg_command, output_extension};
 use crate::hwaccel::HwAccelConfig;
+
+/// Operations that FFmpeg handles: transcode/synthesize, container conversion,
+/// and metadata edits on non-MKV files.
+///
+/// This list declares the *capability* the plugin advertises. `can_handle()`
+/// enforces the actual dispatch rules at runtime.
+const FFMPEG_OPS: &[OperationType] = &[
+    OperationType::ConvertContainer,
+    OperationType::TranscodeVideo,
+    OperationType::TranscodeAudio,
+    OperationType::SynthesizeAudio,
+    // Metadata ops — handled by FFmpeg on non-MKV files
+    OperationType::SetDefault,
+    OperationType::ClearDefault,
+    OperationType::SetForced,
+    OperationType::ClearForced,
+    OperationType::SetTitle,
+    OperationType::SetLanguage,
+    OperationType::SetContainerTag,
+    OperationType::ClearContainerTags,
+    OperationType::DeleteContainerTag,
+];
 
 /// `FFmpeg` executor plugin.
 ///
@@ -32,19 +55,7 @@ impl FfmpegExecutorPlugin {
     pub fn new() -> Self {
         Self {
             capabilities: vec![Capability::Execute {
-                operations: vec![
-                    "convert_container".to_string(),
-                    "transcode_video".to_string(),
-                    "transcode_audio".to_string(),
-                    "synthesize_audio".to_string(),
-                    "set_default".to_string(),
-                    "clear_default".to_string(),
-                    "set_title".to_string(),
-                    "set_language".to_string(),
-                    "set_container_tag".to_string(),
-                    "clear_container_tags".to_string(),
-                    "delete_container_tag".to_string(),
-                ],
+                operations: FFMPEG_OPS.to_vec(),
                 formats: vec![], // Supports all formats
             }],
             hw_accel: HwAccelConfig::new(),
@@ -60,53 +71,24 @@ impl FfmpegExecutorPlugin {
 
     /// Check whether this plugin can handle the given plan.
     ///
-    /// Returns `true` when the plan contains transcode operations, or when
-    /// the file is non-MKV and needs metadata/remux work. MKV files with
-    /// only metadata operations are left to the `MKVToolNix` executor.
-    pub fn can_handle(&self, plan: &Plan) -> bool {
-        if plan.is_empty() || plan.is_skipped() {
-            return false;
-        }
-
-        let has_transcode = plan.actions.iter().any(|a| {
-            matches!(
-                a.operation,
-                OperationType::TranscodeVideo
-                    | OperationType::TranscodeAudio
-                    | OperationType::SynthesizeAudio
-            )
-        });
-
-        if has_transcode {
-            return true;
-        }
-
-        let has_convert = plan
-            .actions
-            .iter()
-            .any(|a| a.operation == OperationType::ConvertContainer);
-
-        if has_convert {
-            return true;
-        }
-
-        // For metadata-only operations on MKV files, defer to MKVToolNix
-        let is_mkv = plan.file.container == Container::Mkv;
-        let only_metadata = plan.actions.iter().all(is_metadata_op);
-
-        if is_mkv && only_metadata {
-            return false;
-        }
-
-        // Non-MKV files with metadata ops — ffmpeg handles them
-        !plan.actions.is_empty()
+    /// Returns `false` until FFmpeg subprocess execution is implemented in Sprint 13.
+    /// Returning `true` here while `execute_plan()` unconditionally errors would be a
+    /// contract lie — the plugin must not claim plans it cannot execute.
+    ///
+    /// TODO(sprint-13): Implement FFmpeg subprocess execution (std::process::Command,
+    /// progress parsing, temp-file-and-rename), then restore the real dispatch logic:
+    /// return `true` for transcode/synthesize/convert-container plans and for non-MKV
+    /// files with metadata-only operations. MKV metadata-only plans stay with
+    /// MkvtoolnixExecutorPlugin.
+    pub fn can_handle(&self, _plan: &Plan) -> bool {
+        false
     }
 
-    /// Execute a plan and return action results.
+    /// Build FFmpeg args for a plan but do not execute the subprocess.
     ///
-    /// Builds an `FFmpeg` command from the plan's actions, but does not actually
-    /// run the subprocess (that is left to the caller or the event handler).
-    /// Returns the expected action results.
+    /// Currently returns `Err` after building the command: subprocess execution
+    /// is planned for Sprint 13. The FFmpeg args are logged at info level for
+    /// debugging.
     pub fn execute_plan(&self, plan: &Plan) -> Result<Vec<ActionResult>> {
         if !self.can_handle(plan) {
             return Err(VoomError::Plugin {
@@ -132,36 +114,29 @@ impl FfmpegExecutorPlugin {
             .unwrap_or("output");
         let output_path = parent.join(format!("{stem}.voom_tmp.{ext}"));
 
-        let hw_accel = if self.hw_accel.enabled {
-            Some(&self.hw_accel)
-        } else {
-            None
-        };
+        let hw_accel = self.hw_accel.enabled().then_some(&self.hw_accel);
 
-        let _ffmpeg_args = build_ffmpeg_command(&plan.file, &actions, &output_path, hw_accel)?;
+        let ffmpeg_args = build_ffmpeg_command(&plan.file, &actions, &output_path, hw_accel)?;
 
         tracing::info!(
             path = %plan.file.path.display(),
             phase = %plan.phase_name,
             actions = actions.len(),
             output = %output_path.display(),
-            "Built FFmpeg command for plan execution"
+            args = ?ffmpeg_args,
+            "FFmpeg command built but subprocess execution is not yet implemented"
         );
 
-        // Build action results (in a real implementation, these would reflect
-        // actual execution status from running the ffmpeg subprocess)
-        let results: Vec<ActionResult> = plan
-            .actions
-            .iter()
-            .map(|action| ActionResult {
-                operation: action.operation,
-                success: true,
-                description: action.description.clone(),
-                error: None,
-            })
-            .collect();
-
-        Ok(results)
+        // TODO(sprint-13): Execute the built command via std::process::Command,
+        // parse progress from stderr, and return real ActionResult outcomes.
+        Err(VoomError::Plugin {
+            plugin: "ffmpeg-executor".into(),
+            message: format!(
+                "FFmpeg subprocess execution not yet implemented (built {} args for {} actions)",
+                ffmpeg_args.len(),
+                actions.len()
+            ),
+        })
     }
 
     /// Handle a `plan.created` event.
@@ -172,22 +147,10 @@ impl FfmpegExecutorPlugin {
             return Ok(None);
         }
 
-        match self.execute_plan(plan) {
-            Ok(results) => {
-                let actions_applied = results.iter().filter(|r| r.success).count();
-                Ok(Some(EventResult::plan_succeeded(
-                    "ffmpeg-executor",
-                    plan,
-                    actions_applied,
-                    Some(serde_json::to_value(&results).unwrap_or_default()),
-                )))
-            }
-            Err(e) => Ok(Some(EventResult::plan_failed(
-                "ffmpeg-executor",
-                plan,
-                e.to_string(),
-            ))),
-        }
+        Ok(Some(EventResult::from_plan_execution(
+            "ffmpeg-executor",
+            self.execute_plan(plan),
+        )))
     }
 }
 
@@ -195,22 +158,6 @@ impl Default for FfmpegExecutorPlugin {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Check if an action is a metadata-only operation (no transcode/remux).
-fn is_metadata_op(action: &PlannedAction) -> bool {
-    matches!(
-        action.operation,
-        OperationType::SetDefault
-            | OperationType::ClearDefault
-            | OperationType::SetForced
-            | OperationType::ClearForced
-            | OperationType::SetTitle
-            | OperationType::SetLanguage
-            | OperationType::SetContainerTag
-            | OperationType::ClearContainerTags
-            | OperationType::DeleteContainerTag
-    )
 }
 
 impl Plugin for FfmpegExecutorPlugin {
@@ -227,7 +174,7 @@ impl Plugin for FfmpegExecutorPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "plan.created"
+        event_type == Event::PLAN_CREATED
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
@@ -244,6 +191,7 @@ mod tests {
     use std::path::PathBuf;
     use voom_domain::events::PlanExecutingEvent;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    use voom_domain::plan::ActionParams;
 
     fn sample_mp4_file() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/media/video.mp4"));
@@ -295,14 +243,14 @@ mod tests {
                 operations,
                 formats,
             } => {
-                assert!(operations.contains(&"convert_container".to_string()));
-                assert!(operations.contains(&"transcode_video".to_string()));
-                assert!(operations.contains(&"transcode_audio".to_string()));
-                assert!(operations.contains(&"synthesize_audio".to_string()));
-                assert!(operations.contains(&"set_default".to_string()));
-                assert!(operations.contains(&"clear_default".to_string()));
-                assert!(operations.contains(&"set_title".to_string()));
-                assert!(operations.contains(&"set_language".to_string()));
+                assert!(operations.contains(&OperationType::ConvertContainer));
+                assert!(operations.contains(&OperationType::TranscodeVideo));
+                assert!(operations.contains(&OperationType::TranscodeAudio));
+                assert!(operations.contains(&OperationType::SynthesizeAudio));
+                assert!(operations.contains(&OperationType::SetDefault));
+                assert!(operations.contains(&OperationType::ClearDefault));
+                assert!(operations.contains(&OperationType::SetTitle));
+                assert!(operations.contains(&OperationType::SetLanguage));
                 assert!(formats.is_empty(), "Should support all formats");
             }
             other => panic!("Expected Execute capability, got {:?}", other),
@@ -312,86 +260,116 @@ mod tests {
     #[test]
     fn test_handles_plan_created() {
         let plugin = FfmpegExecutorPlugin::new();
-        assert!(plugin.handles("plan.created"));
-        assert!(!plugin.handles("file.discovered"));
-        assert!(!plugin.handles("plan.completed"));
+        assert!(plugin.handles(Event::PLAN_CREATED));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
+        assert!(!plugin.handles(Event::PLAN_COMPLETED));
     }
+
+    // can_handle() returns false unconditionally until Sprint 13 implements
+    // FFmpeg subprocess execution. All tests below verify it never claims a plan.
 
     #[test]
     fn test_can_handle_transcode() {
         let plugin = FfmpegExecutorPlugin::new();
 
-        // TranscodeVideo — should handle
+        // TranscodeVideo — not yet implemented, must not claim
         let plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction {
                 operation: OperationType::TranscodeVideo,
                 track_index: Some(0),
-                parameters: serde_json::json!({"codec": "hevc"}),
+                parameters: ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    crf: None,
+                    preset: None,
+                    bitrate: None,
+                    channels: None,
+                },
                 description: "Transcode to HEVC".into(),
             }],
         );
-        assert!(plugin.can_handle(&plan));
+        assert!(!plugin.can_handle(&plan));
 
-        // TranscodeAudio — should handle
+        // TranscodeAudio — not yet implemented, must not claim
         let plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction {
                 operation: OperationType::TranscodeAudio,
                 track_index: Some(1),
-                parameters: serde_json::json!({"codec": "opus"}),
+                parameters: ActionParams::Transcode {
+                    codec: "opus".into(),
+                    crf: None,
+                    preset: None,
+                    bitrate: None,
+                    channels: None,
+                },
                 description: "Transcode to Opus".into(),
             }],
         );
-        assert!(plugin.can_handle(&plan));
+        assert!(!plugin.can_handle(&plan));
 
-        // SynthesizeAudio — should handle
+        // SynthesizeAudio — not yet implemented, must not claim
         let plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction {
                 operation: OperationType::SynthesizeAudio,
                 track_index: Some(1),
-                parameters: serde_json::json!({"codec": "aac"}),
+                parameters: ActionParams::Synthesize {
+                    name: "stereo".into(),
+                    codec: Some("aac".into()),
+                    language: None,
+                    text: None,
+                    bitrate: None,
+                    channels: None,
+                    title: None,
+                    position: None,
+                    source_track: None,
+                },
                 description: "Synthesize audio".into(),
             }],
         );
-        assert!(plugin.can_handle(&plan));
+        assert!(!plugin.can_handle(&plan));
     }
 
     #[test]
     fn test_can_handle_convert() {
         let plugin = FfmpegExecutorPlugin::new();
 
+        // ConvertContainer — not yet implemented, must not claim
         let plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction {
                 operation: OperationType::ConvertContainer,
                 track_index: None,
-                parameters: serde_json::json!({"container": "mkv"}),
+                parameters: ActionParams::Container {
+                    container: Container::Mkv,
+                },
                 description: "Convert to MKV".into(),
             }],
         );
-        assert!(plugin.can_handle(&plan));
+        assert!(!plugin.can_handle(&plan));
     }
 
     #[test]
     fn test_cannot_handle_mkv_metadata_only() {
         let plugin = FfmpegExecutorPlugin::new();
 
-        // MKV file with only metadata ops — should be handled by mkvtoolnix
+        // MKV file with only metadata ops — can_handle is false (unimplemented)
         let plan = plan_with_actions(
             sample_mkv_file(),
             vec![
                 PlannedAction {
                     operation: OperationType::SetDefault,
                     track_index: Some(1),
-                    parameters: serde_json::json!({}),
+                    parameters: ActionParams::Empty,
                     description: "Set default".into(),
                 },
                 PlannedAction {
                     operation: OperationType::SetTitle,
                     track_index: Some(1),
-                    parameters: serde_json::json!({"title": "English"}),
+                    parameters: ActionParams::Title {
+                        title: "English".into(),
+                    },
                     description: "Set title".into(),
                 },
             ],
@@ -403,17 +381,17 @@ mod tests {
     fn test_can_handle_non_mkv_metadata() {
         let plugin = FfmpegExecutorPlugin::new();
 
-        // MP4 file with metadata ops — ffmpeg handles it
+        // MP4 file with metadata ops — not yet implemented, must not claim
         let plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(1),
-                parameters: serde_json::json!({}),
+                parameters: ActionParams::Empty,
                 description: "Set default".into(),
             }],
         );
-        assert!(plugin.can_handle(&plan));
+        assert!(!plugin.can_handle(&plan));
     }
 
     #[test]
@@ -433,7 +411,13 @@ mod tests {
             vec![PlannedAction {
                 operation: OperationType::TranscodeVideo,
                 track_index: Some(0),
-                parameters: serde_json::json!({"codec": "hevc"}),
+                parameters: ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    crf: None,
+                    preset: None,
+                    bitrate: None,
+                    channels: None,
+                },
                 description: "Transcode".into(),
             }],
         );
@@ -442,23 +426,29 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_plan_transcode() {
+    fn test_execute_plan_returns_not_handleable() {
         let plugin = FfmpegExecutorPlugin::new();
 
+        // can_handle() returns false, so execute_plan() returns Err immediately.
+        // TODO(sprint-13): Once subprocess execution is implemented, this test
+        // should instead verify real ActionResult outcomes.
         let plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction {
                 operation: OperationType::TranscodeVideo,
                 track_index: Some(0),
-                parameters: serde_json::json!({"codec": "hevc", "crf": 23}),
+                parameters: ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    crf: Some(23),
+                    preset: None,
+                    bitrate: None,
+                    channels: None,
+                },
                 description: "Transcode to HEVC".into(),
             }],
         );
 
-        let results = plugin.execute_plan(&plan).unwrap();
-        assert_eq!(results.len(), 1);
-        assert!(results[0].success);
-        assert_eq!(results[0].operation, OperationType::TranscodeVideo);
+        assert!(plugin.execute_plan(&plan).is_err());
     }
 
     #[test]
@@ -471,7 +461,7 @@ mod tests {
             vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(1),
-                parameters: serde_json::json!({}),
+                parameters: ActionParams::Empty,
                 description: "Set default".into(),
             }],
         );
@@ -480,28 +470,33 @@ mod tests {
     }
 
     #[test]
-    fn test_on_event_plan_created() {
+    fn test_on_event_plan_created_not_claimed() {
         let plugin = FfmpegExecutorPlugin::new();
 
+        // can_handle() is false until Sprint 13, so the plugin must not claim
+        // any plan — on_event returns None.
         let plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction {
                 operation: OperationType::TranscodeVideo,
                 track_index: Some(0),
-                parameters: serde_json::json!({"codec": "hevc"}),
+                parameters: ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    crf: None,
+                    preset: None,
+                    bitrate: None,
+                    channels: None,
+                },
                 description: "Transcode to HEVC".into(),
             }],
         );
 
         let event = Event::PlanCreated(PlanCreatedEvent { plan });
         let result = plugin.on_event(&event).unwrap();
-        assert!(result.is_some());
-
-        let result = result.unwrap();
-        assert_eq!(result.plugin_name, "ffmpeg-executor");
-        // Lifecycle events are dispatched by the orchestrator, not produced by executors
-        assert!(result.produced_events.is_empty());
-        assert!(result.claimed);
+        assert!(
+            result.is_none(),
+            "plugin must not claim plans until execution is implemented"
+        );
     }
 
     #[test]
@@ -527,7 +522,7 @@ mod tests {
             vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(1),
-                parameters: serde_json::json!({}),
+                parameters: ActionParams::Empty,
                 description: "Set default".into(),
             }],
         );
@@ -538,28 +533,35 @@ mod tests {
     }
 
     #[test]
-    fn test_mkv_with_transcode_is_handled() {
+    fn test_mkv_with_transcode_not_claimed() {
         let plugin = FfmpegExecutorPlugin::new();
 
-        // MKV file but with transcode op — ffmpeg should handle
+        // MKV file with transcode op — not yet implemented, must not claim
+        // TODO(sprint-13): Once execution is implemented, this should return true.
         let plan = plan_with_actions(
             sample_mkv_file(),
             vec![
                 PlannedAction {
                     operation: OperationType::TranscodeVideo,
                     track_index: Some(0),
-                    parameters: serde_json::json!({"codec": "h264"}),
+                    parameters: ActionParams::Transcode {
+                        codec: "h264".into(),
+                        crf: None,
+                        preset: None,
+                        bitrate: None,
+                        channels: None,
+                    },
                     description: "Transcode to H.264".into(),
                 },
                 PlannedAction {
                     operation: OperationType::SetDefault,
                     track_index: Some(1),
-                    parameters: serde_json::json!({}),
+                    parameters: ActionParams::Empty,
                     description: "Set default".into(),
                 },
             ],
         );
-        assert!(plugin.can_handle(&plan));
+        assert!(!plugin.can_handle(&plan));
     }
 
     #[test]

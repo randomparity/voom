@@ -2,11 +2,70 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Known job type categories.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum JobType {
+    Process,
+    Transcode,
+    Scan,
+    Introspect,
+    /// Extensibility variant for WASM plugins or future job types.
+    Custom(String),
+}
+
+impl Serialize for JobType {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for JobType {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(JobType::parse(&s))
+    }
+}
+
+impl JobType {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            JobType::Process => "process",
+            JobType::Transcode => "transcode",
+            JobType::Scan => "scan",
+            JobType::Introspect => "introspect",
+            JobType::Custom(s) => s,
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "process" => JobType::Process,
+            "transcode" => JobType::Transcode,
+            "scan" => JobType::Scan,
+            "introspect" => JobType::Introspect,
+            other => JobType::Custom(other.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for JobType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A background job tracked by the system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: Uuid,
-    pub job_type: String,
+    pub job_type: JobType,
     pub status: JobStatus,
     pub priority: i32,
     pub payload: Option<serde_json::Value>,
@@ -22,7 +81,7 @@ pub struct Job {
 
 impl Job {
     #[must_use]
-    pub fn new(job_type: String) -> Self {
+    pub fn new(job_type: JobType) -> Self {
         Self {
             id: Uuid::new_v4(),
             job_type,
@@ -105,8 +164,8 @@ mod tests {
 
     #[test]
     fn test_job_new() {
-        let job = Job::new("transcode".into());
-        assert_eq!(job.job_type, "transcode");
+        let job = Job::new(JobType::Transcode);
+        assert_eq!(job.job_type, JobType::Transcode);
         assert_eq!(job.status, JobStatus::Pending);
         assert_eq!(job.priority, 100);
         assert!(!job.is_terminal());
@@ -114,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_job_is_terminal() {
-        let mut job = Job::new("scan".into());
+        let mut job = Job::new(JobType::Scan);
         assert!(!job.is_terminal());
         job.status = JobStatus::Completed;
         assert!(job.is_terminal());
@@ -139,10 +198,10 @@ mod tests {
 
     #[test]
     fn test_job_serde_json_roundtrip() {
-        let job = Job::new("introspect".into());
+        let job = Job::new(JobType::Introspect);
         let json = serde_json::to_string(&job).unwrap();
         let deserialized: Job = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.job_type, "introspect");
+        assert_eq!(deserialized.job_type, JobType::Introspect);
         assert_eq!(deserialized.status, JobStatus::Pending);
     }
 }

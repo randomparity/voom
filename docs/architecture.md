@@ -14,7 +14,7 @@ VOOM (Video Orchestration Operations Manager) is a policy-driven video library m
 │                       Core Kernel                              │
 │   ┌────────────┐  ┌───────────┐  ┌────────────────────────┐    │
 │   │  Event Bus │  │ Registry  │  │  Plugin Loader         │    │
-│   │  (tokio)   │  │           │  │  (native + wasmtime)   │    │
+│   │(sync/prio) │  │           │  │  (native + wasmtime)   │    │
 │   └────────────┘  └───────────┘  └────────────────────────┘    │
 ├────────────────────────────────────────────────────────────────┤
 │                      DSL Engine                                │
@@ -33,7 +33,7 @@ VOOM (Video Orchestration Operations Manager) is a policy-driven video library m
 │            WASM Plugins (loaded at runtime via wasmtime)       │
 │                                                                │
 │   Radarr ───────── Sonarr ──────────── Whisper                 │
-│   HandBrake ────── Audio Synthesizer ─ Custom...               │
+│   TVDB ─────────── HandBrake ───────── Audio Synthesizer       │
 ├────────────────────────────────────────────────────────────────┤
 │                   Domain Types (shared)                        │
 │   MediaFile · Track · Plan · Action · Event · Capability       │
@@ -49,7 +49,7 @@ VOOM (Video Orchestration Operations Manager) is a policy-driven video library m
 
 3. **Plan as contract** — The policy evaluator produces serializable `Plan` structs describing what to do. Executors consume them. Plans can be inspected, approved, and audited before execution.
 
-4. **Events for coordination** — All inter-plugin communication happens through the event bus. No plugin directly calls another.
+4. **Events for coordination** — Passive subscribers (storage, backup, SSE) communicate exclusively through the event bus. The CLI commands call the policy-evaluator and phase-orchestrator directly for deterministic progress reporting and concurrency control, dispatching lifecycle events (`PlanCreated`, `PlanExecuting`, etc.) for downstream subscribers.
 
 5. **Domain types as lingua franca** — All plugins share types from `voom-domain`. WASM plugins access these types via WIT interfaces with MessagePack serialization at the boundary.
 
@@ -82,6 +82,7 @@ voom/
     ├── example-metadata/     # Example plugin demonstrating the SDK
     ├── radarr-metadata/      # Movie metadata enrichment via Radarr API
     ├── sonarr-metadata/      # TV metadata enrichment via Sonarr API
+    ├── tvdb-metadata/        # TV metadata enrichment from TVDB API
     ├── whisper-transcriber/   # Audio transcription via Whisper
     ├── audio-synthesizer/    # Audio track synthesis
     └── handbrake-executor/   # HandBrakeCLI-based transcoding
@@ -102,12 +103,14 @@ pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;
     fn version(&self) -> &str;
     fn capabilities(&self) -> &[Capability];
-    fn handles(&self, event_type: &str) -> bool;
-    fn on_event(&self, event: &Event) -> Result<Option<EventResult>>;
+    fn handles(&self, _event_type: &str) -> bool { false }
+    fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> { Ok(None) }
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> { Ok(()) }
     fn shutdown(&self) -> Result<()> { Ok(()) }
 }
 ```
+
+Plugins that participate in event-driven coordination override `handles()` and `on_event()`. Plugins that only provide direct API calls (policy-evaluator, phase-orchestrator, web-server) use the defaults and don't need stub implementations.
 
 ### WASM Plugins
 
@@ -127,7 +130,6 @@ Plugins declare capabilities using the `Capability` enum. The kernel matches req
 pub enum Capability {
     Discover { schemes: Vec<String> },        // e.g., ["file", "smb"]
     Introspect { formats: Vec<String> },      // e.g., ["mkv", "mp4", "avi"]
-    Evaluate,
     Execute { operations: Vec<String>, formats: Vec<String> },
     Store { backend: String },                // e.g., "sqlite"
     DetectTools,
@@ -141,25 +143,24 @@ pub enum Capability {
 }
 ```
 
-When the kernel needs to route an operation, it finds all plugins with matching capabilities and selects the best match (lowest priority value wins).
+Capabilities are used for plugin registration and discovery. Currently, executor routing uses priority-ordered event dispatch: when a `PlanCreated` event is published, the first executor that claims it (via `EventResult.claimed`) handles the plan. Capability-based routing methods exist in the registry but are not yet wired into the dispatch path (planned for Sprint 13).
 
 ## Event Bus
 
-The event bus is the sole communication mechanism between plugins. It uses tokio broadcast channels.
+The event bus is the sole communication mechanism between plugins. It uses synchronous priority-ordered dispatch with `parking_lot::RwLock`.
 
 ### Event Types
 
 | Event | Emitter | Description |
 |-------|---------|-------------|
 | `file.discovered` | Discovery | New file found during scan |
-| `file.introspected` | Introspector | File metadata extracted |
-| `file.introspection_failed` | CLI (scan/process) | File introspection failed |
+| `file.introspected` | CLI (introspect helper) | File metadata extracted via ffprobe |
+| `file.introspection_failed` | CLI (introspect helper) | File introspection failed |
 | `metadata.enriched` | WASM plugins | External metadata added |
-| `policy.evaluate` | Orchestrator | Request policy evaluation |
-| `plan.created` | Evaluator | Execution plan generated |
-| `plan.executing` | Executor | Plan execution started |
-| `plan.completed` | Executor | Plan execution succeeded |
-| `plan.failed` | Executor | Plan execution failed |
+| `plan.created` | CLI (process command) | Execution plan dispatched for executor claiming |
+| `plan.executing` | CLI (process command) | Plan execution about to start (triggers backup) |
+| `plan.completed` | CLI (process command) | Plan execution succeeded |
+| `plan.failed` | CLI (process command) | Plan execution failed or no executor claimed |
 | `job.started` | Job Manager | Background job started |
 | `job.progress` | Job Manager | Job progress update |
 | `job.completed` | Job Manager | Job finished |
@@ -197,7 +198,7 @@ DSL Policy File (.voom)              Media Files on Disk
   Plan (serializable, inspectable, approvable)
       │
       ▼
-  Executor Plugin ────── capability-routed (MKVToolNix or FFmpeg)
+  Executor Plugin ────── priority-claimed (MKVToolNix or FFmpeg)
       │
       ▼
   Modified media file

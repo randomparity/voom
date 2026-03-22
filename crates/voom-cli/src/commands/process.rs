@@ -1,20 +1,18 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use owo_colors::OwoColorize;
 
 use tokio_util::sync::CancellationToken;
 
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
+use crate::config;
 use crate::output::{max_filename_len, shrink_filename};
-use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{
-    Event, FileIntrospectionFailedEvent, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent,
-    PlanFailedEvent,
+    Event, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
 };
-use voom_domain::storage::StorageTrait;
 use voom_job_manager::progress::ProgressReporter;
 use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 
@@ -26,8 +24,9 @@ use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// progress reporting, worker-pool concurrency control, and structured error
 /// handling that would be difficult to achieve through the asynchronous pub/sub bus.
 pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
-    let config = app::load_config()?;
-    let kernel = Arc::new(app::bootstrap_kernel(&config)?);
+    let config = config::load_config()?;
+    let (kernel, store) = app::bootstrap_kernel_with_store(&config)?;
+    let kernel = Arc::new(kernel);
 
     let path = args
         .path
@@ -39,30 +38,26 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     print_run_header(&compiled.name, &path, args.dry_run);
 
     // Auto-prune stale file entries under the target directory
-    {
-        let store = app::open_store(&config)?;
-        match store.prune_missing_files_under(&path) {
-            Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
-            Ok(_) => {}
-            Err(e) => eprintln!("{} auto-prune failed: {e}", "Warning:".yellow()),
-        }
+    match store.prune_missing_files_under(&path) {
+        Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
+        Ok(_) => {}
+        Err(e) => eprintln!("{} auto-prune failed: {e}", style("Warning:").yellow()),
     }
 
     if token.is_cancelled() {
-        println!("{}", "Interrupted before discovery.".yellow());
+        println!("{}", style("Interrupted before discovery.").yellow());
         return Ok(());
     }
 
     // Discover files
     let mut events = discover_files(&path, &args, &kernel)?;
     if events.is_empty() {
-        println!("{}", "No media files found.".yellow());
+        println!("{}", style("No media files found.").yellow());
         return Ok(());
     }
 
     // Filter out known-bad files unless --force-rescan is set
     if !args.force_rescan {
-        let store = app::open_store(&config)?;
         let bad_files = store
             .list_bad_files(&voom_domain::storage::BadFileFilters::default())
             .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
@@ -75,33 +70,32 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
             if skipped > 0 {
                 println!(
                     "Skipping {} known-bad files (use {} to re-attempt).",
-                    skipped.to_string().yellow(),
-                    "--force-rescan".bold()
+                    style(skipped).yellow(),
+                    style("--force-rescan").bold()
                 );
             }
         }
     }
 
     if events.is_empty() {
-        println!("{}", "No processable files found.".yellow());
+        println!("{}", style("No processable files found.").yellow());
         return Ok(());
     }
 
     let file_count = events.len();
-    println!("Found {} media files.", file_count.to_string().bold());
+    println!("Found {} media files.", style(file_count).bold());
 
     let on_error = match args.on_error {
         ErrorHandling::Fail => ErrorStrategy::Fail,
-        ErrorHandling::Skip => ErrorStrategy::Skip,
         ErrorHandling::Continue => ErrorStrategy::Continue,
     };
 
     if token.is_cancelled() {
-        println!("{}", "Interrupted before processing.".yellow());
+        println!("{}", style("Interrupted before processing.").yellow());
         return Ok(());
     }
 
-    let (pool, effective_workers) = create_worker_pool(&config, &args, token.clone())?;
+    let (pool, effective_workers) = create_worker_pool(&store, &args, token.clone())?;
 
     let reporter: Arc<dyn ProgressReporter> = Arc::new(CliProgressReporter::new(file_count));
 
@@ -110,6 +104,8 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let dry_run = args.dry_run;
 
     let token_for_workers = token.clone();
+    let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
+    let ffprobe_path = Arc::new(ffprobe_path);
     let _results = pool
         .process_batch(
             items,
@@ -117,7 +113,18 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                 let compiled = compiled.clone();
                 let kernel = kernel.clone();
                 let token = token_for_workers.clone();
-                async move { process_single_file(job, &compiled, &kernel, dry_run, &token).await }
+                let ffprobe_path = ffprobe_path.clone();
+                async move {
+                    process_single_file(
+                        job,
+                        &compiled,
+                        &kernel,
+                        dry_run,
+                        &token,
+                        ffprobe_path.as_deref(),
+                    )
+                    .await
+                }
             },
             on_error,
             reporter.clone(),
@@ -138,7 +145,8 @@ fn load_and_compile_policy(args: &ProcessArgs) -> Result<voom_dsl::CompiledPolic
     let policy_source = std::fs::read_to_string(&args.policy)
         .with_context(|| format!("Failed to read policy: {}", args.policy.display()))?;
 
-    voom_dsl::compile(&policy_source).map_err(|e| anyhow::anyhow!("policy compilation failed: {e}"))
+    voom_dsl::compile_policy(&policy_source)
+        .map_err(|e| anyhow::anyhow!("policy compilation failed: {e}"))
 }
 
 /// Print the header line describing what we are about to do.
@@ -146,12 +154,12 @@ fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
     println!(
         "{} policy {} to {}{}",
         if dry_run {
-            "Dry-running".bold()
+            style("Dry-running").bold()
         } else {
-            "Applying".bold()
+            style("Applying").bold()
         },
-        policy_name.cyan(),
-        path.display().to_string().cyan(),
+        style(policy_name).cyan(),
+        style(path.display()).cyan(),
         if dry_run {
             " (no changes will be made)"
         } else {
@@ -161,6 +169,10 @@ fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
 }
 
 /// Walk the filesystem and discover media files, publishing events to the bus.
+///
+/// Creates a standalone `DiscoveryPlugin` for direct API access (scan options,
+/// progress callbacks) that the event-bus path does not support. Events are
+/// still dispatched to the kernel so that subscribers (storage, SSE) receive them.
 fn discover_files(
     path: &std::path::Path,
     args: &ProcessArgs,
@@ -186,48 +198,52 @@ fn discover_files(
     Ok(events)
 }
 
+/// Typed payload for the process worker pool, replacing freeform JSON.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ProcessJobPayload {
+    path: String,
+    size: u64,
+    content_hash: String,
+}
+
 /// Build work items from discovery events for the worker pool.
 fn build_work_items(
     events: &[voom_domain::events::FileDiscoveredEvent],
-) -> Vec<(String, i32, Option<serde_json::Value>)> {
+) -> Vec<voom_job_manager::worker::WorkItem> {
     events
         .iter()
         .map(|evt| {
-            let payload = serde_json::json!({
-                "path": evt.path.to_string_lossy(),
-                "size": evt.size,
-                "content_hash": evt.content_hash,
-            });
-            ("process".to_string(), 100, Some(payload))
+            let payload = ProcessJobPayload {
+                path: evt.path.to_string_lossy().into_owned(),
+                size: evt.size,
+                content_hash: evt.content_hash.clone(),
+            };
+            let value =
+                serde_json::to_value(&payload).expect("ProcessJobPayload is always serializable");
+            voom_job_manager::worker::WorkItem {
+                job_type: voom_domain::job::JobType::Process,
+                priority: 100,
+                payload: Some(value),
+            }
         })
         .collect()
 }
 
 /// Set up the job queue and worker pool.
 fn create_worker_pool(
-    config: &app::AppConfig,
+    store: &Arc<dyn voom_domain::storage::StorageTrait>,
     args: &ProcessArgs,
     token: CancellationToken,
 ) -> Result<(WorkerPool, usize)> {
-    let store = app::open_store(config)?;
     let queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
 
-    let effective_workers = if args.workers == 0 {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-    } else {
-        args.workers
+    let config = WorkerPoolConfig {
+        max_workers: args.workers,
+        worker_prefix: "voom".to_string(),
     };
+    let effective_workers = config.effective_workers();
 
-    let pool = WorkerPool::new(
-        queue,
-        WorkerPoolConfig {
-            max_workers: effective_workers,
-            worker_prefix: "voom".to_string(),
-        },
-        token,
-    );
+    let pool = WorkerPool::new(queue, config, token);
 
     Ok((pool, effective_workers))
 }
@@ -239,16 +255,22 @@ async fn process_single_file(
     kernel: &voom_kernel::Kernel,
     dry_run: bool,
     token: &CancellationToken,
+    ffprobe_path: Option<&str>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
-    let payload = job.payload.as_ref().ok_or("missing payload")?;
-    let file_path = payload["path"].as_str().ok_or("missing path in payload")?;
-    let file_size = payload["size"].as_u64().unwrap_or(0);
-    let content_hash = payload["content_hash"].as_str().unwrap_or("").to_string();
+    let raw_payload = job.payload.as_ref().ok_or("missing payload")?;
+    let payload: ProcessJobPayload =
+        serde_json::from_value(raw_payload.clone()).map_err(|e| format!("invalid payload: {e}"))?;
 
-    let path = std::path::PathBuf::from(file_path);
+    let path = std::path::PathBuf::from(&payload.path);
 
-    let file = introspect_file(path, file_size, content_hash, kernel).await?;
-    let file_path_str = file.path.display().to_string();
+    let file = crate::introspect::introspect_file(
+        path,
+        payload.size,
+        payload.content_hash,
+        kernel,
+        ffprobe_path,
+    )
+    .await?;
 
     let result = orchestrate_plans(compiled, &file)?;
 
@@ -268,105 +290,43 @@ async fn process_single_file(
             .collect();
 
         Ok(Some(serde_json::json!({
-            "path": file_path_str,
+            "path": file.path.display().to_string(),
             "needs_execution": needs_exec,
             "plans": plan_summaries,
         })))
     } else {
-        execute_plans(
-            file_path,
-            &file,
-            &result,
-            kernel,
-            &file_path_str,
-            needs_exec,
-            token,
-        )
-    }
-}
-
-/// Run ffprobe introspection on a single file (blocking I/O on a spawn_blocking thread).
-async fn introspect_file(
-    path: std::path::PathBuf,
-    file_size: u64,
-    content_hash: String,
-    kernel: &voom_kernel::Kernel,
-) -> std::result::Result<voom_domain::media::MediaFile, String> {
-    let introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
-    let path_for_event = path.clone();
-    let hash_for_event = content_hash.clone();
-    let path_display = path.display().to_string();
-    let intro_result = tokio::task::spawn_blocking(move || {
-        introspector.introspect(&path, file_size, &content_hash)
-    })
-    .await;
-
-    match intro_result {
-        Ok(Ok(intro_event)) => {
-            let file = intro_event.file.clone();
-            kernel.dispatch(Event::FileIntrospected(
-                voom_domain::events::FileIntrospectedEvent {
-                    file: intro_event.file,
-                },
-            ));
-            Ok(file)
-        }
-        Ok(Err(e)) => {
-            let error_msg = format!("introspection failed for {path_display}: {e}");
-            kernel.dispatch(Event::FileIntrospectionFailed(
-                FileIntrospectionFailedEvent {
-                    path: path_for_event,
-                    size: file_size,
-                    content_hash: Some(hash_for_event),
-                    error: e.to_string(),
-                    error_source: BadFileSource::Introspection,
-                },
-            ));
-            Err(error_msg)
-        }
-        Err(e) => {
-            let error_msg = format!("task join error: {e}");
-            kernel.dispatch(Event::FileIntrospectionFailed(
-                FileIntrospectionFailedEvent {
-                    path: path_for_event,
-                    size: file_size,
-                    content_hash: Some(hash_for_event),
-                    error: error_msg.clone(),
-                    error_source: BadFileSource::Introspection,
-                },
-            ));
-            Err(error_msg)
-        }
+        execute_plans(&file, &result, kernel, needs_exec, token)
     }
 }
 
 /// Run the phase orchestrator to produce plans.
 ///
-/// NOTE: This function does NOT dispatch PlanCreated events. The execute_plans
+/// NOTE: This function does NOT dispatch `PlanCreated` events. The `execute_plans`
 /// function dispatches them when it's time to actually execute. Dispatching
 /// here would trigger executor plugins during dry-run mode.
 fn orchestrate_plans(
     compiled: &voom_dsl::CompiledPolicy,
     file: &voom_domain::media::MediaFile,
 ) -> std::result::Result<voom_phase_orchestrator::OrchestrationResult, String> {
+    let plans = voom_policy_evaluator::evaluator::evaluate(compiled, file).plans;
     let orchestrator = voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
     orchestrator
-        .orchestrate(compiled, file)
+        .orchestrate(plans)
         .map_err(|e| format!("orchestration failed: {e}"))
 }
 
 /// Verify file integrity and publish plan lifecycle events for non-dry-run execution.
 fn execute_plans(
-    file_path: &str,
     file: &voom_domain::media::MediaFile,
     result: &voom_phase_orchestrator::OrchestrationResult,
     kernel: &voom_kernel::Kernel,
-    file_path_str: &str,
     needs_exec: bool,
     token: &CancellationToken,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
+    let file_path_str = file.path.display().to_string();
+
     // Verify file hasn't changed since introspection (TOCTOU guard)
-    let exec_path = std::path::PathBuf::from(file_path);
+    let exec_path = file.path.clone();
     if !file.content_hash.is_empty() {
         match voom_discovery::hash_file(&exec_path) {
             Ok(current_hash) if current_hash != file.content_hash => {
@@ -402,39 +362,7 @@ fn execute_plans(
             break;
         }
 
-        // Dispatch PlanExecuting first so backup-manager backs up the file
-        // BEFORE executors modify it
-        kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
-            path: file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            action_count: plan.actions.len(),
-        }));
-
-        // Dispatch PlanCreated to let executor plugins claim and execute the plan
-        let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
-
-        let claimed = results.iter().any(|r| r.claimed);
-
-        if claimed {
-            // An executor plugin claimed the plan — treat as successful
-            kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
-                plan_id: plan.id,
-                path: file.path.clone(),
-                phase_name: plan.phase_name.clone(),
-                actions_applied: plan.actions.len(),
-            }));
-        } else {
-            // No executor claimed the plan — emit PlanFailed
-            kernel.dispatch(Event::PlanFailed(PlanFailedEvent {
-                plan_id: plan.id,
-                path: file.path.clone(),
-                phase_name: plan.phase_name.clone(),
-                error: "no executor available for plan".into(),
-                error_code: None,
-                plugin_name: None,
-                error_chain: vec![],
-            }));
-        }
+        execute_single_plan(plan, file, kernel);
     }
 
     Ok(Some(serde_json::json!({
@@ -444,13 +372,71 @@ fn execute_plans(
     })))
 }
 
+/// Dispatch PlanExecuting + PlanCreated for a single plan, then emit
+/// PlanCompleted, PlanFailed (executor error), or PlanFailed (unclaimed).
+///
+/// PlanExecuting is dispatched first so the backup-manager backs up the file
+/// BEFORE any executor modifies it.  PlanCreated then lets executor plugins
+/// claim and run the plan.
+fn execute_single_plan(
+    plan: &voom_domain::plan::Plan,
+    file: &voom_domain::media::MediaFile,
+    kernel: &voom_kernel::Kernel,
+) {
+    kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
+        path: file.path.clone(),
+        phase_name: plan.phase_name.clone(),
+        action_count: plan.actions.len(),
+    }));
+
+    let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
+
+    let claimed = results.iter().any(|r| r.claimed);
+    let exec_error = results.iter().find_map(|r| r.execution_error.clone());
+
+    if claimed && exec_error.is_none() {
+        // An executor plugin claimed and successfully executed the plan
+        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
+            plan_id: plan.id,
+            path: file.path.clone(),
+            phase_name: plan.phase_name.clone(),
+            actions_applied: plan.actions.len(),
+        }));
+    } else if let Some(error) = exec_error {
+        // An executor claimed the plan but failed
+        kernel.dispatch(Event::PlanFailed(PlanFailedEvent {
+            plan_id: plan.id,
+            path: file.path.clone(),
+            phase_name: plan.phase_name.clone(),
+            error,
+            error_code: None,
+            plugin_name: results
+                .iter()
+                .find(|r| r.claimed)
+                .map(|r| r.plugin_name.clone()),
+            error_chain: vec![],
+        }));
+    } else {
+        // No executor claimed the plan — emit PlanFailed
+        kernel.dispatch(Event::PlanFailed(PlanFailedEvent {
+            plan_id: plan.id,
+            path: file.path.clone(),
+            phase_name: plan.phase_name.clone(),
+            error: "no executor available for plan".into(),
+            error_code: None,
+            plugin_name: None,
+            error_chain: vec![],
+        }));
+    }
+}
+
 /// Print a summary when interrupted by CTRL-C.
 fn print_interrupted_summary(pool: &WorkerPool, file_count: usize) {
     let completed = pool.completed_count();
     let failed = pool.failed_count();
     println!(
         "\n{} {}/{} processed, {} errors",
-        "Interrupted.".bold().yellow(),
+        style("Interrupted.").bold().yellow(),
         completed,
         file_count,
         failed,
@@ -461,15 +447,17 @@ fn print_interrupted_summary(pool: &WorkerPool, file_count: usize) {
 fn print_summary(pool: &WorkerPool, file_count: usize, effective_workers: usize, dry_run: bool) {
     let completed = pool.completed_count();
     let failed = pool.failed_count();
-    let skipped = file_count as u64 - completed - failed;
+    let skipped = (file_count as u64)
+        .saturating_sub(completed)
+        .saturating_sub(failed);
 
     println!(
         "\n{} {} processed, {} skipped, {} errors (workers: {})",
-        "Done.".bold().green(),
-        completed.to_string().green(),
-        skipped.to_string().dimmed(),
+        style("Done.").bold().green(),
+        style(completed).green(),
+        style(skipped).dim(),
         if failed > 0 {
-            failed.to_string().red().to_string()
+            style(failed).red().to_string()
         } else {
             failed.to_string()
         },
@@ -479,7 +467,7 @@ fn print_summary(pool: &WorkerPool, file_count: usize, effective_workers: usize,
     if dry_run {
         println!(
             "\n{}",
-            "This was a dry run. No files were modified.".dimmed()
+            style("This was a dry run. No files were modified.").dim()
         );
     }
 }
@@ -510,11 +498,11 @@ impl ProgressReporter for CliProgressReporter {
     fn on_batch_start(&self, _total: usize) {}
 
     fn on_job_start(&self, job: &voom_domain::job::Job) {
-        if let Some(ref payload) = job.payload {
-            if let Some(path) = payload["path"].as_str() {
-                // 57 ≈ spinner + space + [bar:40] + space + pos/len + space
+        if let Some(ref raw) = job.payload {
+            if let Ok(payload) = serde_json::from_value::<ProcessJobPayload>(raw.clone()) {
+                // 57 = spinner + space + [bar:40] + space + pos/len + space
                 let max_name = max_filename_len(57);
-                let filename = std::path::Path::new(path)
+                let filename = std::path::Path::new(&payload.path)
                     .file_name()
                     .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
                     .unwrap_or_default();
@@ -528,7 +516,7 @@ impl ProgressReporter for CliProgressReporter {
     fn on_job_complete(&self, _id: uuid::Uuid, _success: bool, error: Option<&str>) {
         if let Some(err) = error {
             self.overall.suspend(|| {
-                eprintln!("{} {err}", "ERROR:".bold().red());
+                eprintln!("{} {err}", style("ERROR:").bold().red());
             });
         }
         self.overall.inc(1);
@@ -547,7 +535,7 @@ mod tests {
     use voom_domain::capabilities::Capability;
     use voom_domain::events::{EventResult, FileDiscoveredEvent, FileIntrospectedEvent};
     use voom_domain::media::MediaFile;
-    use voom_domain::plan::{OperationType, Plan, PlannedAction};
+    use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 
     /// A test plugin that counts received plan lifecycle events.
     struct PlanRecordingPlugin {
@@ -583,11 +571,11 @@ mod tests {
         fn handles(&self, event_type: &str) -> bool {
             matches!(
                 event_type,
-                "file.discovered"
-                    | "file.introspected"
-                    | "plan.created"
-                    | "plan.executing"
-                    | "plan.completed"
+                Event::FILE_DISCOVERED
+                    | Event::FILE_INTROSPECTED
+                    | Event::PLAN_CREATED
+                    | Event::PLAN_EXECUTING
+                    | Event::PLAN_COMPLETED
             )
         }
         fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
@@ -622,7 +610,7 @@ mod tests {
             actions: vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(0),
-                parameters: serde_json::json!({}),
+                parameters: ActionParams::Empty,
                 description: "test action".into(),
             }],
             warnings: vec![],

@@ -50,7 +50,6 @@ pub fn parse_ffprobe_output(
     })
 }
 
-/// Parse duration from the format section.
 fn parse_duration(format: &serde_json::Value) -> f64 {
     format
         .get("duration")
@@ -59,7 +58,6 @@ fn parse_duration(format: &serde_json::Value) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Parse bitrate from the format section.
 fn parse_bitrate(format: &serde_json::Value) -> Option<u32> {
     format
         .get("bit_rate")
@@ -67,7 +65,6 @@ fn parse_bitrate(format: &serde_json::Value) -> Option<u32> {
         .and_then(|s| s.parse::<u32>().ok())
 }
 
-/// Parse container-level tags from the format section.
 fn parse_format_tags(format: &serde_json::Value) -> HashMap<String, String> {
     let mut tags = HashMap::new();
     if let Some(tag_obj) = format.get("tags").and_then(|t| t.as_object()) {
@@ -80,7 +77,6 @@ fn parse_format_tags(format: &serde_json::Value) -> HashMap<String, String> {
     tags
 }
 
-/// Parse all streams into Track objects.
 fn parse_streams(streams: &[serde_json::Value]) -> Vec<Track> {
     streams
         .iter()
@@ -89,7 +85,6 @@ fn parse_streams(streams: &[serde_json::Value]) -> Vec<Track> {
         .collect()
 }
 
-/// Parse a single stream into a Track.
 fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
     let codec_type = stream.get("codec_type")?.as_str()?;
     let codec_name = stream
@@ -130,29 +125,24 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
     let is_forced = disp_flag("forced");
     let is_commentary = disp_flag("comment");
 
+    // Common fields shared across all track types
+    let common = Track {
+        index,
+        codec,
+        language,
+        title,
+        is_default,
+        is_forced,
+        ..Track::default()
+    };
+
     match codec_type {
         "video" => {
             // Skip attached pictures (album art)
             if disp_flag("attached_pic") {
                 return Some(Track {
-                    index,
                     track_type: TrackType::Attachment,
-                    codec,
-                    language,
-                    title,
-                    is_default,
-                    is_forced,
-                    channels: None,
-                    channel_layout: None,
-                    sample_rate: None,
-                    bit_depth: None,
-                    width: None,
-                    height: None,
-                    frame_rate: None,
-                    is_vfr: false,
-                    is_hdr: false,
-                    hdr_format: None,
-                    pixel_format: None,
+                    ..common
                 });
             }
 
@@ -173,17 +163,7 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
                 .map(|s| s.to_string());
 
             Some(Track {
-                index,
                 track_type: TrackType::Video,
-                codec,
-                language,
-                title,
-                is_default,
-                is_forced,
-                channels: None,
-                channel_layout: None,
-                sample_rate: None,
-                bit_depth: None,
                 width,
                 height,
                 frame_rate,
@@ -191,6 +171,7 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
                 is_hdr,
                 hdr_format,
                 pixel_format,
+                ..common
             })
         }
         "audio" => {
@@ -211,72 +192,32 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
                 .and_then(|b| b.as_str())
                 .and_then(|s| s.parse::<u32>().ok());
 
-            let track_type = classify_audio_track(&title, is_default, is_commentary, is_forced);
+            let track_type =
+                classify_audio_track(&common.title, is_default, is_commentary, is_forced);
 
             Some(Track {
-                index,
                 track_type,
-                codec,
-                language,
-                title,
-                is_default,
-                is_forced,
                 channels,
                 channel_layout,
                 sample_rate,
                 bit_depth,
-                width: None,
-                height: None,
-                frame_rate: None,
-                is_vfr: false,
-                is_hdr: false,
-                hdr_format: None,
-                pixel_format: None,
+                ..common
             })
         }
         "subtitle" => {
-            let track_type = classify_subtitle_track(&title, is_default, is_commentary, is_forced);
+            let track_type =
+                classify_subtitle_track(&common.title, is_default, is_commentary, is_forced);
 
             Some(Track {
-                index,
                 track_type,
-                codec,
-                language,
-                title,
-                is_default,
-                is_forced,
-                channels: None,
-                channel_layout: None,
-                sample_rate: None,
-                bit_depth: None,
-                width: None,
-                height: None,
-                frame_rate: None,
-                is_vfr: false,
-                is_hdr: false,
-                hdr_format: None,
-                pixel_format: None,
+                ..common
             })
         }
         "attachment" => Some(Track {
-            index,
             track_type: TrackType::Attachment,
-            codec,
-            language,
-            title,
             is_default: false,
             is_forced: false,
-            channels: None,
-            channel_layout: None,
-            sample_rate: None,
-            bit_depth: None,
-            width: None,
-            height: None,
-            frame_rate: None,
-            is_vfr: false,
-            is_hdr: false,
-            hdr_format: None,
-            pixel_format: None,
+            ..common
         }),
         _ => None,
     }
@@ -284,18 +225,9 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
 
 /// Parse frame rate from `r_frame_rate` (e.g., "24000/1001").
 fn parse_frame_rate(stream: &serde_json::Value) -> Option<f64> {
-    let r_frame_rate = stream.get("r_frame_rate")?.as_str()?;
-    if let Some((num, den)) = r_frame_rate.split_once('/') {
-        let num: f64 = num.parse().ok()?;
-        let den: f64 = den.parse().ok()?;
-        if den > 0.0 {
-            return Some(num / den);
-        }
-    }
-    r_frame_rate.parse().ok()
+    parse_fraction(stream.get("r_frame_rate").and_then(|v| v.as_str()))
 }
 
-/// Detect variable frame rate by comparing `r_frame_rate` and `avg_frame_rate`.
 fn detect_vfr(stream: &serde_json::Value) -> bool {
     let r_rate = parse_fraction(stream.get("r_frame_rate").and_then(|v| v.as_str()));
     let avg_rate = parse_fraction(stream.get("avg_frame_rate").and_then(|v| v.as_str()));
@@ -322,7 +254,6 @@ fn parse_fraction(s: Option<&str>) -> Option<f64> {
     s.parse().ok()
 }
 
-/// Detect HDR from stream metadata.
 fn detect_hdr(stream: &serde_json::Value) -> (bool, Option<String>) {
     // Check color transfer characteristics
     let color_transfer = stream
@@ -376,7 +307,6 @@ fn detect_hdr(stream: &serde_json::Value) -> (bool, Option<String>) {
     (is_hdr, hdr_format)
 }
 
-/// Classify an audio track based on metadata.
 fn classify_audio_track(
     title: &str,
     is_default: bool,
@@ -402,7 +332,6 @@ fn classify_audio_track(
     }
 }
 
-/// Classify a subtitle track based on metadata.
 fn classify_subtitle_track(
     title: &str,
     _is_default: bool,

@@ -1,55 +1,41 @@
 //! Tera template rendering and page handlers.
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
 use axum::response::Html;
 use serde::Deserialize;
 
 use voom_domain::job::JobStatus;
-use voom_domain::storage::FileFilters;
+use voom_domain::media::Container;
+use voom_domain::storage::{FileFilters, JobFilters};
 
+use crate::api::files::FileFilterParams;
+use crate::errors::{spawn_store_op, WebError};
 use crate::state::AppState;
 use crate::views::file_views;
 
-type HtmlResult = Result<Html<String>, (StatusCode, String)>;
+type HtmlResult = Result<Html<String>, WebError>;
 
 fn render(templates: &tera::Tera, name: &str, ctx: &tera::Context) -> HtmlResult {
     templates.render(name, ctx).map(Html).map_err(|e| {
         tracing::error!(template = name, error = %e, "Template render failed");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error".to_string(),
-        )
+        WebError::Internal(format!("template render failed: {e}"))
     })
 }
 
 /// GET / -- Dashboard
 pub async fn dashboard(State(state): State<AppState>) -> HtmlResult {
     let store = state.store.clone();
-    let store2 = state.store.clone();
-    let store3 = state.store.clone();
 
-    let total_files_fut =
-        tokio::task::spawn_blocking(move || store3.count_files(&FileFilters::default()));
-
-    let files_fut = tokio::task::spawn_blocking(move || {
-        store.list_files(&FileFilters {
+    let (files, total_files, job_counts) = spawn_store_op(move || {
+        let total_files = store.count_files(&FileFilters::default())?;
+        let files = store.list_files(&FileFilters {
             limit: Some(10),
             ..Default::default()
-        })
-    });
-
-    let job_counts_fut = tokio::task::spawn_blocking(move || store2.count_jobs_by_status());
-
-    let (total_files_res, files_res, job_counts_res) =
-        tokio::try_join!(total_files_fut, files_fut, job_counts_fut)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let total_files =
-        total_files_res.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let files = files_res.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let job_counts =
-        job_counts_res.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        })?;
+        let job_counts = store.count_jobs_by_status()?;
+        Ok((files, total_files, job_counts))
+    })
+    .await?;
 
     let mut ctx = tera::Context::new();
     ctx.insert("recent_files", &file_views(files));
@@ -63,10 +49,8 @@ pub async fn dashboard(State(state): State<AppState>) -> HtmlResult {
 
 #[derive(Debug, Deserialize)]
 pub struct LibraryParams {
-    pub container: Option<String>,
-    pub codec: Option<String>,
-    pub language: Option<String>,
-    pub path_prefix: Option<String>,
+    #[serde(flatten)]
+    pub filters: FileFilterParams,
     pub page: Option<u32>,
 }
 
@@ -81,27 +65,28 @@ pub async fn library(
     let offset = (page - 1) * per_page;
 
     let filters = FileFilters {
-        container: params.container.clone(),
-        has_codec: params.codec.clone(),
-        has_language: params.language.clone(),
-        path_prefix: params.path_prefix.clone(),
+        container: params
+            .filters
+            .container
+            .as_deref()
+            .map(Container::from_extension),
+        has_codec: params.filters.codec.clone(),
+        has_language: params.filters.language.clone(),
+        path_prefix: params.filters.path_prefix.clone(),
         limit: Some(per_page),
         offset: Some(offset),
     };
 
-    let files = tokio::task::spawn_blocking(move || store.list_files(&filters))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let files = spawn_store_op(move || store.list_files(&filters)).await?;
 
     let mut ctx = tera::Context::new();
     ctx.insert("files", &file_views(files));
     ctx.insert("page", &page);
     ctx.insert("per_page", &per_page);
-    ctx.insert("filter_container", &params.container);
-    ctx.insert("filter_codec", &params.codec);
-    ctx.insert("filter_language", &params.language);
-    ctx.insert("filter_path_prefix", &params.path_prefix);
+    ctx.insert("filter_container", &params.filters.container);
+    ctx.insert("filter_codec", &params.filters.codec);
+    ctx.insert("filter_language", &params.filters.language);
+    ctx.insert("filter_path_prefix", &params.filters.path_prefix);
 
     render(&state.templates, "library.html", &ctx)
 }
@@ -109,19 +94,15 @@ pub async fn library(
 /// GET /files/:id -- File detail
 pub async fn file_detail(State(state): State<AppState>, Path(id): Path<uuid::Uuid>) -> HtmlResult {
     let store = state.store.clone();
-    let store2 = state.store.clone();
 
-    let file = tokio::task::spawn_blocking(move || store.get_file(&id))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let (file, plans) = spawn_store_op(move || {
+        let file = store.file(&id)?;
+        let plans = store.plans_for_file(&id)?;
+        Ok((file, plans))
+    })
+    .await?;
 
-    let file = file.ok_or_else(|| (StatusCode::NOT_FOUND, format!("File {id} not found")))?;
-
-    let plans = tokio::task::spawn_blocking(move || store2.get_plans_for_file(&id))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let file = file.ok_or_else(|| WebError::NotFound(format!("File {id} not found")))?;
 
     // StoredPlan doesn't derive Serialize, so convert to JSON values manually
     let plans_json: Vec<serde_json::Value> = plans
@@ -175,21 +156,23 @@ pub struct JobsPageParams {
 }
 
 /// GET /jobs -- Job monitor
-pub async fn jobs_page(
+pub async fn jobs(
     State(state): State<AppState>,
     Query(params): Query<JobsPageParams>,
 ) -> HtmlResult {
     let store = state.store.clone();
     let filter_status = params.status.as_deref().and_then(JobStatus::parse);
 
-    let (jobs, counts) = tokio::task::spawn_blocking(move || {
-        let jobs = store.list_jobs(filter_status, None)?;
+    let (jobs, counts) = spawn_store_op(move || {
+        let jobs = store.list_jobs(&JobFilters {
+            status: filter_status,
+            limit: None,
+            ..Default::default()
+        })?;
         let counts = store.count_jobs_by_status()?;
-        Ok::<_, voom_domain::errors::VoomError>((jobs, counts))
+        Ok((jobs, counts))
     })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    .await?;
 
     let mut ctx = tera::Context::new();
     ctx.insert("jobs", &jobs);
@@ -202,7 +185,7 @@ pub async fn jobs_page(
 }
 
 /// GET /plugins -- Plugin manager
-pub async fn plugins_page(State(state): State<AppState>) -> HtmlResult {
+pub async fn plugins(State(state): State<AppState>) -> HtmlResult {
     let ctx = tera::Context::new();
     render(&state.templates, "plugins.html", &ctx)
 }
@@ -218,11 +201,11 @@ mod tests {
     use super::*;
 
     fn make_tera() -> tera::Tera {
-        crate::server::embedded_templates_for_test()
+        crate::server::embedded_templates()
     }
 
     #[test]
-    fn render_success_returns_html() {
+    fn test_render_success_returns_html() {
         let tera = make_tera();
         let ctx = tera::Context::new();
         let result = render(&tera, "policies.html", &ctx);
@@ -232,17 +215,15 @@ mod tests {
     }
 
     #[test]
-    fn render_missing_template_returns_500() {
+    fn test_render_missing_template_returns_500() {
         let tera = make_tera();
         let ctx = tera::Context::new();
         let result = render(&tera, "nonexistent.html", &ctx);
         assert!(result.is_err());
-        let (status, _msg) = result.unwrap_err();
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]
-    fn render_settings_page() {
+    fn test_render_settings_page() {
         let tera = make_tera();
         let ctx = tera::Context::new();
         let result = render(&tera, "settings.html", &ctx);
@@ -250,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn render_plugins_page() {
+    fn test_render_plugins_page() {
         let tera = make_tera();
         let ctx = tera::Context::new();
         let result = render(&tera, "plugins.html", &ctx);
@@ -258,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn render_policy_editor_with_name() {
+    fn test_render_policy_editor_with_name() {
         let tera = make_tera();
         let mut ctx = tera::Context::new();
         ctx.insert("policy_name", "my-policy");
@@ -269,22 +250,22 @@ mod tests {
     }
 
     #[test]
-    fn library_params_defaults() {
+    fn test_library_params_defaults() {
         // Verify LibraryParams can deserialize with all optional fields absent
         let params: LibraryParams = serde_json::from_str("{}").unwrap();
-        assert!(params.container.is_none());
-        assert!(params.codec.is_none());
-        assert!(params.language.is_none());
-        assert!(params.path_prefix.is_none());
+        assert!(params.filters.container.is_none());
+        assert!(params.filters.codec.is_none());
+        assert!(params.filters.language.is_none());
+        assert!(params.filters.path_prefix.is_none());
         assert!(params.page.is_none());
     }
 
     #[test]
-    fn library_params_with_values() {
+    fn test_library_params_with_values() {
         let params: LibraryParams =
             serde_json::from_str(r#"{"container":"mkv","codec":"hevc","page":3}"#).unwrap();
-        assert_eq!(params.container, Some("mkv".to_string()));
-        assert_eq!(params.codec, Some("hevc".to_string()));
+        assert_eq!(params.filters.container, Some("mkv".to_string()));
+        assert_eq!(params.filters.codec, Some("hevc".to_string()));
         assert_eq!(params.page, Some(3));
     }
 }

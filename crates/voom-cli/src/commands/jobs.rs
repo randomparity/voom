@@ -1,33 +1,48 @@
 use anyhow::Result;
 use comfy_table::{Cell, Color};
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::cli::JobsCommands;
 use crate::output;
 
-pub async fn run(cmd: JobsCommands) -> Result<()> {
+pub fn run(cmd: JobsCommands) -> Result<()> {
     match cmd {
-        JobsCommands::List { status, limit } => list(status, limit).await,
-        JobsCommands::Status { id } => status(id).await,
-        JobsCommands::Cancel { id } => cancel(id).await,
+        JobsCommands::List { status, limit } => list(status, limit),
+        JobsCommands::Status { id } => status(id),
+        JobsCommands::Cancel { id } => cancel(id),
     }
 }
 
-async fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
-    let config = crate::app::load_config()?;
+fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
+    let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
     use voom_domain::job::JobStatus;
-    use voom_domain::storage::StorageTrait;
+    use voom_domain::storage::JobFilters;
 
-    let filter_status = status_filter.as_deref().and_then(JobStatus::parse);
+    let filter_status = match status_filter.as_deref() {
+        Some(s) => {
+            let parsed = JobStatus::parse(s);
+            if parsed.is_none() {
+                anyhow::bail!(
+                    "Invalid job status '{s}'. Valid values: pending, running, completed, failed, cancelled"
+                );
+            }
+            parsed
+        }
+        None => None,
+    };
 
     let jobs = store
-        .list_jobs(filter_status, Some(limit))
+        .list_jobs(&JobFilters {
+            status: filter_status,
+            limit: Some(limit),
+            ..Default::default()
+        })
         .map_err(|e| anyhow::anyhow!("failed to list jobs: {e}"))?;
 
     if jobs.is_empty() {
-        println!("{} No jobs found.", "INFO".dimmed());
+        println!("{} No jobs found.", style("INFO").dim());
         return Ok(());
     }
 
@@ -60,7 +75,7 @@ async fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
 
         table.add_row(vec![
             Cell::new(&job.id.to_string()[..8]),
-            Cell::new(&job.job_type),
+            Cell::new(job.job_type.as_str()),
             Cell::new(&file_name),
             status_cell,
             Cell::new(format!("{:.0}%", job.progress * 100.0)),
@@ -85,46 +100,45 @@ async fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
         if shown < total {
             println!(
                 "\n{} {}",
-                format!("Showing {shown} of {total} jobs.").dimmed(),
-                "Use --limit or --status to narrow results.".dimmed(),
+                style(format!("Showing {shown} of {total} jobs.")).dim(),
+                style("Use --limit or --status to narrow results.").dim(),
             );
         }
-        println!("{}", summary.join(" | ").dimmed());
+        println!("{}", style(summary.join(" | ")).dim());
     }
 
     Ok(())
 }
 
-async fn status(id: String) -> Result<()> {
-    let config = crate::app::load_config()?;
+fn status(id: String) -> Result<()> {
+    let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
     let uuid = uuid::Uuid::parse_str(&id).map_err(|_| anyhow::anyhow!("Invalid job ID: {id}"))?;
 
-    use voom_domain::storage::StorageTrait;
-    match store.get_job(&uuid)? {
+    match store.job(&uuid)? {
         Some(job) => {
-            println!("{} {}", "Job:".bold(), job.id.to_string().cyan());
-            println!("{} {}", "Type:".bold(), job.job_type);
+            println!("{} {}", style("Job:").bold(), style(&job.id).cyan());
+            println!("{} {}", style("Type:").bold(), job.job_type);
             if let Some(ref payload) = job.payload {
                 if let Some(path) = payload["path"].as_str() {
-                    println!("{} {}", "File:".bold(), path);
+                    println!("{} {}", style("File:").bold(), path);
                 }
             }
-            println!("{} {}", "Status:".bold(), job.status.as_str());
-            println!("{} {:.1}%", "Progress:".bold(), job.progress * 100.0);
+            println!("{} {}", style("Status:").bold(), job.status.as_str());
+            println!("{} {:.1}%", style("Progress:").bold(), job.progress * 100.0);
             if let Some(ref msg) = job.progress_message {
-                println!("{} {msg}", "Message:".bold());
+                println!("{} {msg}", style("Message:").bold());
             }
             if let Some(ref err) = job.error {
-                println!("{} {err}", "Error:".bold().red());
+                println!("{} {err}", style("Error:").bold().red());
             }
-            println!("{} {}", "Created:".bold(), job.created_at);
+            println!("{} {}", style("Created:").bold(), job.created_at);
             if let Some(ref started) = job.started_at {
-                println!("{} {started}", "Started:".bold());
+                println!("{} {started}", style("Started:").bold());
             }
             if let Some(ref completed) = job.completed_at {
-                println!("{} {completed}", "Completed:".bold());
+                println!("{} {completed}", style("Completed:").bold());
             }
         }
         None => {
@@ -135,15 +149,27 @@ async fn status(id: String) -> Result<()> {
     Ok(())
 }
 
-async fn cancel(id: String) -> Result<()> {
-    let config = crate::app::load_config()?;
+fn cancel(id: String) -> Result<()> {
+    let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
     let uuid = uuid::Uuid::parse_str(&id).map_err(|_| anyhow::anyhow!("Invalid job ID: {id}"))?;
 
-    use voom_domain::storage::StorageTrait;
+    // Check that the job exists and is not already in a terminal state
+    let job = store
+        .job(&uuid)?
+        .ok_or_else(|| anyhow::anyhow!("Job {id} not found"))?;
+
+    if job.is_terminal() {
+        anyhow::bail!(
+            "Cannot cancel job {id}: already in terminal state '{}'",
+            job.status.as_str()
+        );
+    }
+
     let update = voom_domain::JobUpdate {
         status: Some(voom_domain::JobStatus::Cancelled),
+        completed_at: Some(Some(chrono::Utc::now())),
         ..Default::default()
     };
 
@@ -151,7 +177,7 @@ async fn cancel(id: String) -> Result<()> {
         .update_job(&uuid, &update)
         .map_err(|e| anyhow::anyhow!("failed to cancel job: {e}"))?;
 
-    println!("{} Job {id} cancelled.", "OK".bold().green());
+    println!("{} Job {id} cancelled.", style("OK").bold().green());
 
     Ok(())
 }
@@ -161,7 +187,7 @@ mod tests {
     use voom_domain::job::JobStatus;
 
     #[test]
-    fn job_status_parse_valid_values() {
+    fn test_job_status_parse_valid_values() {
         assert_eq!(JobStatus::parse("pending"), Some(JobStatus::Pending));
         assert_eq!(JobStatus::parse("running"), Some(JobStatus::Running));
         assert_eq!(JobStatus::parse("completed"), Some(JobStatus::Completed));
@@ -170,13 +196,13 @@ mod tests {
     }
 
     #[test]
-    fn job_status_parse_invalid_returns_none() {
+    fn test_job_status_parse_invalid_returns_none() {
         assert_eq!(JobStatus::parse("unknown"), None);
         assert_eq!(JobStatus::parse(""), None);
     }
 
     #[test]
-    fn job_status_as_str_roundtrip() {
+    fn test_job_status_as_str_roundtrip() {
         let statuses = [
             JobStatus::Pending,
             JobStatus::Running,
@@ -191,13 +217,13 @@ mod tests {
     }
 
     #[test]
-    fn uuid_parse_valid() {
+    fn test_uuid_parse_valid() {
         let valid = "550e8400-e29b-41d4-a716-446655440000";
         assert!(uuid::Uuid::parse_str(valid).is_ok());
     }
 
     #[test]
-    fn uuid_parse_invalid() {
+    fn test_uuid_parse_invalid() {
         assert!(uuid::Uuid::parse_str("not-a-uuid").is_err());
     }
 }

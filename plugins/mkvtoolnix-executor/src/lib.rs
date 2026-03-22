@@ -1,5 +1,12 @@
 //! `MKVToolNix` executor plugin: mkvmerge and mkvpropedit command building and execution.
 
+#![allow(clippy::missing_errors_doc)]
+
+pub mod merge;
+pub mod propedit;
+#[cfg(test)]
+pub(crate) mod test_helpers;
+
 use std::ffi::OsStr;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
@@ -8,12 +15,23 @@ use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{Event, EventResult};
 use voom_domain::media::Container;
-use voom_domain::plan::{ActionResult, OperationType, Plan, PlannedAction};
+use voom_domain::plan::{ActionParams, ActionResult, OperationType, Plan, PlannedAction};
 use voom_kernel::Plugin;
 use wait_timeout::ChildExt;
 
-mod merge;
-mod propedit;
+/// Drain stdout and stderr pipes from a child process into buffers.
+fn drain_pipes(child: &mut std::process::Child) -> (Vec<u8>, Vec<u8>) {
+    use std::io::Read;
+    let mut stdout_buf = Vec::new();
+    let mut stderr_buf = Vec::new();
+    if let Some(mut out) = child.stdout.take() {
+        out.read_to_end(&mut stdout_buf).ok();
+    }
+    if let Some(mut err) = child.stderr.take() {
+        err.read_to_end(&mut stderr_buf).ok();
+    }
+    (stdout_buf, stderr_buf)
+}
 
 /// Run a subprocess with a timeout, killing it if it exceeds the deadline.
 fn run_with_timeout(tool: &str, args: &[impl AsRef<OsStr>], timeout: Duration) -> Result<Output> {
@@ -28,14 +46,17 @@ fn run_with_timeout(tool: &str, args: &[impl AsRef<OsStr>], timeout: Duration) -
         })?;
 
     match child.wait_timeout(timeout) {
-        Ok(Some(_status)) => child
-            .wait_with_output()
-            .map_err(|e| VoomError::ToolExecution {
-                tool: tool.into(),
-                message: format!("failed to read output: {e}"),
-            }),
+        Ok(Some(status)) => {
+            let (stdout, stderr) = drain_pipes(&mut child);
+            Ok(Output {
+                status,
+                stdout,
+                stderr,
+            })
+        }
         Ok(None) => {
             child.kill().ok();
+            drain_pipes(&mut child);
             child.wait().ok();
             Err(VoomError::ToolExecution {
                 tool: tool.into(),
@@ -49,18 +70,8 @@ fn run_with_timeout(tool: &str, args: &[impl AsRef<OsStr>], timeout: Duration) -
     }
 }
 
-/// Operations that can be handled via mkvpropedit (in-place metadata edits).
-const PROPEDIT_OPS: &[OperationType] = &[
-    OperationType::SetDefault,
-    OperationType::ClearDefault,
-    OperationType::SetForced,
-    OperationType::ClearForced,
-    OperationType::SetTitle,
-    OperationType::SetLanguage,
-    OperationType::SetContainerTag,
-    OperationType::ClearContainerTags,
-    OperationType::DeleteContainerTag,
-];
+// Propedit (in-place metadata) operations are identified by
+// `OperationType::is_metadata_op()` — defined once in voom-domain.
 
 /// Operations that require mkvmerge (structural changes, remux).
 const MERGE_OPS: &[OperationType] = &[
@@ -69,21 +80,10 @@ const MERGE_OPS: &[OperationType] = &[
     OperationType::ConvertContainer,
 ];
 
-/// All operations supported by this executor.
-const SUPPORTED_OPS: &[OperationType] = &[
-    OperationType::SetDefault,
-    OperationType::ClearDefault,
-    OperationType::SetForced,
-    OperationType::ClearForced,
-    OperationType::SetTitle,
-    OperationType::SetLanguage,
-    OperationType::SetContainerTag,
-    OperationType::ClearContainerTags,
-    OperationType::DeleteContainerTag,
-    OperationType::RemoveTrack,
-    OperationType::ReorderTracks,
-    OperationType::ConvertContainer,
-];
+/// Check whether the given operation type is supported by this executor.
+fn is_supported_op(op: OperationType) -> bool {
+    op.is_metadata_op() || MERGE_OPS.contains(&op)
+}
 
 /// `MKVToolNix` executor plugin.
 ///
@@ -100,12 +100,11 @@ pub struct MkvtoolnixExecutorPlugin {
 impl MkvtoolnixExecutorPlugin {
     #[must_use]
     pub fn new() -> Self {
+        let mut operations: Vec<OperationType> = OperationType::METADATA_OPS.to_vec();
+        operations.extend_from_slice(MERGE_OPS);
         Self {
             capabilities: vec![Capability::Execute {
-                operations: SUPPORTED_OPS
-                    .iter()
-                    .map(|op| op.as_str().to_string())
-                    .collect(),
+                operations,
                 formats: vec!["mkv".into()],
             }],
         }
@@ -121,16 +120,14 @@ impl MkvtoolnixExecutorPlugin {
         let is_mkv = plan.file.container == Container::Mkv;
         let is_convert_to_mkv = plan.actions.iter().any(|a| {
             a.operation == OperationType::ConvertContainer
-                && a.parameters["target"].as_str() == Some("mkv")
+                && matches!(&a.parameters, ActionParams::Container { container } if *container == Container::Mkv)
         });
 
         if !is_mkv && !is_convert_to_mkv {
             return false;
         }
 
-        plan.actions
-            .iter()
-            .all(|a| SUPPORTED_OPS.contains(&a.operation))
+        plan.actions.iter().all(|a| is_supported_op(a.operation))
     }
 
     /// Execute all actions in a plan, returning results for each action.
@@ -183,18 +180,16 @@ impl MkvtoolnixExecutorPlugin {
             // Non-MKV source: merge first (convert to MKV), then propedit
             // on the resulting .mkv file (merge removes the original).
             let mut converted_path = path.to_path_buf();
-            if !merge_actions.is_empty() {
-                tracing::info!(
-                    path = %path.display(),
-                    count = merge_actions.len(),
-                    "running merge actions (convert to MKV first)"
-                );
-                let merge_results = merge::execute_merge_actions(path, &merge_actions)?;
-                results.extend(merge_results);
+            tracing::info!(
+                path = %path.display(),
+                count = merge_actions.len(),
+                "running merge actions (convert to MKV first)"
+            );
+            let merge_results = merge::execute_merge_actions(path, &merge_actions)?;
+            results.extend(merge_results);
 
-                // After ConvertContainer, the file is now at the .mkv path
-                converted_path.set_extension("mkv");
-            }
+            // After ConvertContainer, the file is now at the .mkv path
+            converted_path.set_extension("mkv");
 
             if !propedit_actions.is_empty() {
                 tracing::info!(
@@ -209,6 +204,34 @@ impl MkvtoolnixExecutorPlugin {
         }
 
         Ok(results)
+    }
+
+    /// Handle a `plan.created` event.
+    fn handle_plan_created(
+        &self,
+        plan_event: &voom_domain::events::PlanCreatedEvent,
+    ) -> Result<Option<EventResult>> {
+        let plan = &plan_event.plan;
+
+        // Skip empty or already-skipped plans
+        if plan.is_empty() || plan.is_skipped() {
+            return Ok(None);
+        }
+
+        // Check if we can handle this plan
+        if !self.can_handle(plan) {
+            tracing::debug!(
+                path = %plan.file.path.display(),
+                phase = %plan.phase_name,
+                "plan not handled by mkvtoolnix executor"
+            );
+            return Ok(None);
+        }
+
+        Ok(Some(EventResult::from_plan_execution(
+            self.name(),
+            self.execute_plan(plan),
+        )))
     }
 }
 
@@ -232,46 +255,12 @@ impl Plugin for MkvtoolnixExecutorPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == "plan.created"
+        event_type == Event::PLAN_CREATED
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
         match event {
-            Event::PlanCreated(plan_created) => {
-                let plan = &plan_created.plan;
-
-                // Skip empty or already-skipped plans
-                if plan.is_empty() || plan.is_skipped() {
-                    return Ok(None);
-                }
-
-                // Check if we can handle this plan
-                if !self.can_handle(plan) {
-                    tracing::debug!(
-                        path = %plan.file.path.display(),
-                        phase = %plan.phase_name,
-                        "plan not handled by mkvtoolnix executor"
-                    );
-                    return Ok(None);
-                }
-
-                match self.execute_plan(plan) {
-                    Ok(results) => {
-                        let actions_applied = results.iter().filter(|r| r.success).count();
-                        Ok(Some(EventResult::plan_succeeded(
-                            self.name(),
-                            plan,
-                            actions_applied,
-                            Some(serde_json::to_value(&results).unwrap_or_default()),
-                        )))
-                    }
-                    Err(e) => Ok(Some(EventResult::plan_failed(
-                        "mkvtoolnix-executor",
-                        plan,
-                        e.to_string(),
-                    ))),
-                }
-            }
+            Event::PlanCreated(plan_event) => self.handle_plan_created(plan_event),
             _ => Ok(None),
         }
     }
@@ -283,7 +272,7 @@ fn classify_actions(actions: &[PlannedAction]) -> (Vec<&PlannedAction>, Vec<&Pla
     let mut merge = Vec::new();
 
     for action in actions {
-        if PROPEDIT_OPS.contains(&action.operation) {
+        if action.operation.is_metadata_op() {
             propedit.push(action);
         } else if MERGE_OPS.contains(&action.operation) {
             merge.push(action);
@@ -336,18 +325,8 @@ mod tests {
         }
     }
 
-    fn make_action(
-        op: OperationType,
-        track_index: Option<u32>,
-        params: serde_json::Value,
-    ) -> PlannedAction {
-        PlannedAction {
-            operation: op,
-            track_index,
-            parameters: params,
-            description: format!("{:?} action", op),
-        }
-    }
+    use crate::test_helpers::make_action;
+    use voom_domain::plan::ActionParams;
 
     #[test]
     fn test_plugin_metadata() {
@@ -361,21 +340,24 @@ mod tests {
     #[test]
     fn test_handles_plan_created() {
         let plugin = MkvtoolnixExecutorPlugin::new();
-        assert!(plugin.handles("plan.created"));
-        assert!(!plugin.handles("file.discovered"));
-        assert!(!plugin.handles("plan.completed"));
-        assert!(!plugin.handles("plan.executing"));
+        assert!(plugin.handles(Event::PLAN_CREATED));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
+        assert!(!plugin.handles(Event::PLAN_COMPLETED));
+        assert!(!plugin.handles(Event::PLAN_EXECUTING));
     }
 
     #[test]
     fn test_can_handle_mkv() {
         let plugin = MkvtoolnixExecutorPlugin::new();
         let plan = make_mkv_plan(vec![
-            make_action(OperationType::SetDefault, Some(1), serde_json::json!({})),
+            make_action(OperationType::SetDefault, Some(1), ActionParams::Empty),
             make_action(
                 OperationType::RemoveTrack,
                 Some(3),
-                serde_json::json!({"track_type": "subtitle_main"}),
+                ActionParams::RemoveTrack {
+                    reason: "test".into(),
+                    track_type: voom_domain::media::TrackType::SubtitleMain,
+                },
             ),
         ]);
         assert!(plugin.can_handle(&plan));
@@ -387,7 +369,7 @@ mod tests {
         let plan = make_mp4_plan(vec![make_action(
             OperationType::SetDefault,
             Some(1),
-            serde_json::json!({}),
+            ActionParams::Empty,
         )]);
         assert!(!plugin.can_handle(&plan));
     }
@@ -398,7 +380,9 @@ mod tests {
         let plan = make_mp4_plan(vec![make_action(
             OperationType::ConvertContainer,
             None,
-            serde_json::json!({"target": "mkv"}),
+            ActionParams::Container {
+                container: Container::Mkv,
+            },
         )]);
         assert!(plugin.can_handle(&plan));
     }
@@ -409,7 +393,13 @@ mod tests {
         let plan = make_mkv_plan(vec![make_action(
             OperationType::TranscodeVideo,
             Some(0),
-            serde_json::json!({"codec": "hevc"}),
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                crf: None,
+                preset: None,
+                bitrate: None,
+                channels: None,
+            },
         )]);
         assert!(!plugin.can_handle(&plan));
     }
@@ -417,22 +407,29 @@ mod tests {
     #[test]
     fn test_classify_actions() {
         let actions = vec![
-            make_action(OperationType::SetDefault, Some(1), serde_json::json!({})),
-            make_action(OperationType::ClearForced, Some(2), serde_json::json!({})),
+            make_action(OperationType::SetDefault, Some(1), ActionParams::Empty),
+            make_action(OperationType::ClearForced, Some(2), ActionParams::Empty),
             make_action(
                 OperationType::RemoveTrack,
                 Some(3),
-                serde_json::json!({"track_type": "subtitle_main"}),
+                ActionParams::RemoveTrack {
+                    reason: "test".into(),
+                    track_type: voom_domain::media::TrackType::SubtitleMain,
+                },
             ),
             make_action(
                 OperationType::ReorderTracks,
                 None,
-                serde_json::json!({"order": [0, 1, 2]}),
+                ActionParams::ReorderTracks {
+                    order: vec!["0".into(), "1".into(), "2".into()],
+                },
             ),
             make_action(
                 OperationType::SetLanguage,
                 Some(1),
-                serde_json::json!({"language": "eng"}),
+                ActionParams::Language {
+                    language: "eng".into(),
+                },
             ),
         ];
 
@@ -468,29 +465,11 @@ mod tests {
         let mut plan = make_mkv_plan(vec![make_action(
             OperationType::SetDefault,
             Some(1),
-            serde_json::json!({}),
+            ActionParams::Empty,
         )]);
         plan.skip_reason = Some("already correct".into());
         let event = Event::PlanCreated(voom_domain::events::PlanCreatedEvent { plan });
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_capability_operations() {
-        let plugin = MkvtoolnixExecutorPlugin::new();
-        let cap = &plugin.capabilities()[0];
-        assert!(cap.supports_operation("set_default"));
-        assert!(cap.supports_operation("remove_track"));
-        assert!(cap.supports_operation("convert_container"));
-        assert!(!cap.supports_operation("transcode_video"));
-    }
-
-    #[test]
-    fn test_capability_format() {
-        let plugin = MkvtoolnixExecutorPlugin::new();
-        let cap = &plugin.capabilities()[0];
-        assert!(cap.supports_format("mkv"));
-        assert!(!cap.supports_format("mp4"));
     }
 }

@@ -11,9 +11,9 @@ categories.workspace = true
 description = "Web server plugin for VOOM — REST API and web dashboard"
 
 [dependencies]
-voom-domain = { path = "../../crates/voom-domain" }
-voom-dsl = { path = "../../crates/voom-dsl" }
-voom-kernel = { path = "../../crates/voom-kernel" }
+voom-domain.workspace = true
+voom-dsl.workspace = true
+voom-kernel.workspace = true
 
 # Web framework
 axum = { version = "0.7", features = ["tokio", "json"] }
@@ -26,7 +26,6 @@ tera = "1"
 # Async
 tokio.workspace = true
 tokio-stream = { version = "0.1", features = ["sync"] }
-futures-core = "0.3"
 
 # Serialization
 serde.workspace = true
@@ -41,11 +40,10 @@ subtle = "2"
 
 # Errors & logging
 thiserror.workspace = true
-anyhow.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-voom-domain = { path = "../../crates/voom-domain", features = ["testing"] }
+voom-domain = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 axum-test = "16"

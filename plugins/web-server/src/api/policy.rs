@@ -3,10 +3,22 @@
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::error::WebError;
+use voom_dsl::errors::DslError;
+
+use crate::errors::WebError;
 
 /// Maximum policy source size (1 MiB).
 const MAX_POLICY_SIZE: usize = 1_024 * 1_024;
+
+/// Extract line/column information from a `DslError`, if available.
+fn extract_dsl_error_location(err: &DslError) -> (Option<usize>, Option<usize>) {
+    match err {
+        DslError::Parse { line, col, .. }
+        | DslError::Build { line, col, .. }
+        | DslError::Validation { line, col, .. } => (Some(*line), Some(*col)),
+        DslError::Compile { .. } => (None, None),
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct PolicyInput {
@@ -30,9 +42,12 @@ pub struct PolicyError {
 #[derive(Debug, Serialize)]
 pub struct FormatResponse {
     pub formatted: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<PolicyError>,
 }
 
 /// POST /api/policy/validate -- validate DSL source
+#[tracing::instrument(skip(input))]
 pub async fn validate_policy(
     Json(input): Json<PolicyInput>,
 ) -> Result<Json<ValidateResponse>, WebError> {
@@ -55,10 +70,13 @@ pub async fn validate_policy(
                     let errors = validation_errors
                         .errors
                         .iter()
-                        .map(|e| PolicyError {
-                            message: e.to_string(),
-                            line: None,
-                            column: None,
+                        .map(|e| {
+                            let (line, column) = extract_dsl_error_location(e);
+                            PolicyError {
+                                message: e.to_string(),
+                                line,
+                                column,
+                            }
                         })
                         .collect();
                     Ok(Json(ValidateResponse {
@@ -68,18 +86,22 @@ pub async fn validate_policy(
                 }
             }
         }
-        Err(e) => Ok(Json(ValidateResponse {
-            valid: false,
-            errors: vec![PolicyError {
-                message: e.to_string(),
-                line: None,
-                column: None,
-            }],
-        })),
+        Err(e) => {
+            let (line, column) = extract_dsl_error_location(&e);
+            Ok(Json(ValidateResponse {
+                valid: false,
+                errors: vec![PolicyError {
+                    message: e.to_string(),
+                    line,
+                    column,
+                }],
+            }))
+        }
     }
 }
 
 /// POST /api/policy/format -- format DSL source
+#[tracing::instrument(skip(input))]
 pub async fn format_policy(
     Json(input): Json<PolicyInput>,
 ) -> Result<Json<FormatResponse>, WebError> {
@@ -90,11 +112,26 @@ pub async fn format_policy(
         )));
     }
 
-    let ast = voom_dsl::parse_policy(&input.source)
-        .map_err(|e| WebError::BadRequest(format!("Parse error: {e}")))?;
-
-    let formatted = voom_dsl::format_policy(&ast);
-    Ok(Json(FormatResponse { formatted }))
+    match voom_dsl::parse_policy(&input.source) {
+        Ok(ast) => {
+            let formatted = voom_dsl::format_policy(&ast);
+            Ok(Json(FormatResponse {
+                formatted,
+                errors: vec![],
+            }))
+        }
+        Err(e) => {
+            let (line, column) = extract_dsl_error_location(&e);
+            Ok(Json(FormatResponse {
+                formatted: String::new(),
+                errors: vec![PolicyError {
+                    message: e.to_string(),
+                    line,
+                    column,
+                }],
+            }))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -108,7 +145,7 @@ mod tests {
 }"#;
 
     #[tokio::test]
-    async fn validate_valid_policy_returns_valid_true() {
+    async fn test_validate_valid_policy_returns_valid_true() {
         let input = PolicyInput {
             source: VALID_POLICY.to_string(),
         };
@@ -120,7 +157,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validate_invalid_policy_returns_errors() {
+    async fn test_validate_invalid_policy_returns_errors() {
         let input = PolicyInput {
             source: "this is not valid DSL".to_string(),
         };
@@ -132,7 +169,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validate_oversized_policy_returns_bad_request() {
+    async fn test_validate_oversized_policy_returns_bad_request() {
         let input = PolicyInput {
             source: "x".repeat(MAX_POLICY_SIZE + 1),
         };
@@ -143,7 +180,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn format_valid_policy_returns_formatted() {
+    async fn test_format_valid_policy_returns_formatted() {
         let input = PolicyInput {
             source: VALID_POLICY.to_string(),
         };
@@ -155,18 +192,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn format_invalid_policy_returns_error() {
+    async fn test_format_invalid_policy_returns_errors_in_body() {
         let input = PolicyInput {
             source: "not valid".to_string(),
         };
         let result = format_policy(Json(input)).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, WebError::BadRequest(_)));
+        assert!(result.is_ok());
+        let response = result.unwrap().0;
+        assert!(response.formatted.is_empty());
+        assert!(!response.errors.is_empty());
     }
 
     #[tokio::test]
-    async fn format_oversized_policy_returns_bad_request() {
+    async fn test_format_oversized_policy_returns_bad_request() {
         let input = PolicyInput {
             source: "x".repeat(MAX_POLICY_SIZE + 1),
         };
@@ -175,13 +213,13 @@ mod tests {
     }
 
     #[test]
-    fn policy_input_deserialize() {
+    fn test_policy_input_deserialize() {
         let input: PolicyInput = serde_json::from_str(r#"{"source":"policy \"x\" {}"}"#).unwrap();
         assert_eq!(input.source, r#"policy "x" {}"#);
     }
 
     #[test]
-    fn validate_response_serialization_valid() {
+    fn test_validate_response_serialization_valid() {
         let response = ValidateResponse {
             valid: true,
             errors: vec![],
@@ -193,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_response_serialization_with_errors() {
+    fn test_validate_response_serialization_with_errors() {
         let response = ValidateResponse {
             valid: false,
             errors: vec![PolicyError {
@@ -210,16 +248,17 @@ mod tests {
     }
 
     #[test]
-    fn format_response_serialization() {
+    fn test_format_response_serialization() {
         let response = FormatResponse {
             formatted: "policy \"x\" {}".into(),
+            errors: vec![],
         };
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["formatted"], "policy \"x\" {}");
     }
 
     #[test]
-    fn max_policy_size_is_1mib() {
+    fn test_max_policy_size_is_1mib() {
         assert_eq!(MAX_POLICY_SIZE, 1_024 * 1_024);
     }
 }

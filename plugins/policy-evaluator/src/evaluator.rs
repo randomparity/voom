@@ -8,23 +8,27 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
 use uuid::Uuid;
-use voom_domain::media::{Container, MediaFile, Track, TrackType};
-use voom_domain::plan::{OperationType, Plan, PlannedAction};
+use voom_domain::media::{Container, MediaFile, Track};
+use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 use voom_dsl::compiler::*;
 
 use crate::condition::{evaluate_condition, resolve_value_or_field};
-use crate::filter::track_matches;
+use crate::filter::{track_matches, tracks_for_target};
 
 /// Result of evaluating a full policy against a file.
 #[derive(Debug)]
 pub struct EvaluationResult {
     pub plans: Vec<Plan>,
-    pub phase_outcomes: HashMap<String, PhaseOutcome>,
+    pub phase_outcomes: HashMap<String, EvaluationOutcome>,
 }
 
 /// Outcome of a single phase evaluation.
+///
+/// This is internal to the evaluator and distinct from `voom_domain::plan::PhaseOutcome`,
+/// which represents execution outcomes. This type tracks evaluation-time outcomes
+/// (e.g., whether a phase produced modifications) for dependency resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PhaseOutcome {
+pub enum EvaluationOutcome {
     Executed { modified: bool },
     Skipped,
     Failed,
@@ -34,7 +38,7 @@ pub enum PhaseOutcome {
 #[must_use]
 pub fn evaluate(policy: &CompiledPolicy, file: &MediaFile) -> EvaluationResult {
     let mut plans = Vec::new();
-    let mut phase_outcomes: HashMap<String, PhaseOutcome> = HashMap::new();
+    let mut phase_outcomes: HashMap<String, EvaluationOutcome> = HashMap::new();
 
     for phase_name in &policy.phase_order {
         let phase = match policy.phases.iter().find(|p| &p.name == phase_name) {
@@ -45,9 +49,9 @@ pub fn evaluate(policy: &CompiledPolicy, file: &MediaFile) -> EvaluationResult {
         let plan = evaluate_phase(phase, policy, file, &phase_outcomes);
 
         let outcome = if plan.is_skipped() {
-            PhaseOutcome::Skipped
+            EvaluationOutcome::Skipped
         } else {
-            PhaseOutcome::Executed {
+            EvaluationOutcome::Executed {
                 modified: !plan.is_empty(),
             }
         };
@@ -67,7 +71,7 @@ fn evaluate_phase(
     phase: &CompiledPhase,
     policy: &CompiledPolicy,
     file: &MediaFile,
-    phase_outcomes: &HashMap<String, PhaseOutcome>,
+    phase_outcomes: &HashMap<String, EvaluationOutcome>,
 ) -> Plan {
     let mut plan = Plan {
         id: Uuid::new_v4(),
@@ -85,7 +89,6 @@ fn evaluate_phase(
         evaluated_at: Utc::now(),
     };
 
-    // Check skip_when condition
     if let Some(ref cond) = phase.skip_when {
         if evaluate_condition(cond, file) {
             plan.skip_reason = Some("skip_when condition met".into());
@@ -93,14 +96,13 @@ fn evaluate_phase(
         }
     }
 
-    // Check run_if dependency
     if let Some(ref run_if) = phase.run_if {
         let should_run = match phase_outcomes.get(&run_if.phase) {
             Some(outcome) => match run_if.trigger {
                 RunIfTrigger::Modified => {
-                    matches!(outcome, PhaseOutcome::Executed { modified: true })
+                    matches!(outcome, EvaluationOutcome::Executed { modified: true })
                 }
-                RunIfTrigger::Completed => matches!(outcome, PhaseOutcome::Executed { .. }),
+                RunIfTrigger::Completed => matches!(outcome, EvaluationOutcome::Executed { .. }),
             },
             None => false, // Referenced phase hasn't run
         };
@@ -117,10 +119,9 @@ fn evaluate_phase(
         }
     }
 
-    // Check all depends_on phases completed
     for dep in &phase.depends_on {
         match phase_outcomes.get(dep) {
-            Some(PhaseOutcome::Failed) => {
+            Some(EvaluationOutcome::Failed) => {
                 plan.skip_reason = Some(format!("dependency '{dep}' failed"));
                 return plan;
             }
@@ -132,14 +133,13 @@ fn evaluate_phase(
         }
     }
 
-    // Process operations
     let mut ctx = PhaseContext {
         plan: &mut plan,
         file,
     };
 
     for op in &phase.operations {
-        if let Err(msg) = process_operation(op, &mut ctx) {
+        if let Err(msg) = emit_operation(op, &mut ctx) {
             match phase.on_error {
                 ErrorStrategy::Abort => {
                     ctx.plan.warnings.push(format!("Error (aborting): {msg}"));
@@ -164,74 +164,89 @@ struct PhaseContext<'a> {
     file: &'a MediaFile,
 }
 
-/// Process a single operation, adding planned actions to the plan.
-fn process_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), String> {
+/// Emit planned actions for a single operation into the plan.
+fn emit_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), String> {
     match op {
         CompiledOperation::SetContainer(container) => {
-            process_set_container(container, ctx);
+            emit_set_container(container, ctx);
         }
         CompiledOperation::Keep { target, filter } => {
-            process_keep(target, filter.as_ref(), ctx);
+            emit_keep(target, filter.as_ref(), ctx);
         }
         CompiledOperation::Remove { target, filter } => {
-            process_remove(target, filter.as_ref(), ctx);
+            emit_remove(target, filter.as_ref(), ctx);
         }
         CompiledOperation::ReorderTracks(order) => {
-            process_reorder(order, ctx);
+            emit_reorder(order, ctx);
         }
         CompiledOperation::SetDefaults(defaults) => {
-            process_set_defaults(defaults, ctx);
+            emit_set_defaults(defaults, ctx);
         }
         CompiledOperation::ClearActions { target, settings } => {
-            process_clear_actions(target, settings, ctx);
+            emit_clear_actions(target, settings, ctx);
         }
         CompiledOperation::Transcode {
             target,
             codec,
             settings,
         } => {
-            process_transcode(target, codec, settings, ctx);
+            emit_transcode(target, codec, settings, ctx);
         }
         CompiledOperation::Synthesize(synth) => {
-            process_synthesize(synth, ctx);
+            emit_synthesize(synth, ctx);
         }
         CompiledOperation::ClearTags => {
-            process_clear_tags(ctx);
+            emit_clear_tags(ctx);
         }
         CompiledOperation::SetTag { tag, value } => {
-            process_set_tag(tag, value, ctx)?;
+            emit_set_tag(tag, value, ctx)?;
         }
         CompiledOperation::DeleteTag(tag) => {
-            process_delete_tag(tag, ctx);
+            emit_delete_tag(tag, ctx);
         }
         CompiledOperation::Conditional(cond) => {
-            process_conditional(cond, ctx)?;
+            emit_conditional(cond, ctx)?;
         }
         CompiledOperation::Rules { mode, rules } => {
-            process_rules(mode, rules, ctx)?;
+            emit_rules(mode, rules, ctx)?;
         }
     }
     Ok(())
 }
 
-fn process_set_container(container: &str, ctx: &mut PhaseContext) {
+fn emit_set_container(container: &str, ctx: &mut PhaseContext) {
     let target = Container::from_extension(container);
     if ctx.file.container != target {
-        ctx.plan.actions.push(PlannedAction {
-            operation: OperationType::ConvertContainer,
-            track_index: None,
-            parameters: serde_json::json!({
-                "target": container,
-            }),
-            description: format!(
+        ctx.plan.actions.push(PlannedAction::file_op(
+            OperationType::ConvertContainer,
+            ActionParams::Container { container: target },
+            format!(
                 "Convert container from {} to {container}",
                 ctx.file.container.as_str()
             ),
-        });
+        ));
     }
 }
 
-fn process_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
+fn emit_remove_track(track: &Track, target: &TrackTarget, reason: &str, ctx: &mut PhaseContext) {
+    ctx.plan.actions.push(PlannedAction::track_op(
+        OperationType::RemoveTrack,
+        track.index,
+        ActionParams::RemoveTrack {
+            reason: reason.into(),
+            track_type: track.track_type,
+        },
+        format!(
+            "Remove {} track {} ({}, {})",
+            target_str(target),
+            track.index,
+            track.codec,
+            track.language
+        ),
+    ));
+}
+
+fn emit_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
     let tracks = tracks_for_target(ctx.file, target);
     for track in &tracks {
         let should_remove = match filter {
@@ -239,25 +254,12 @@ fn process_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut
             None => false, // "keep audio" with no filter keeps all
         };
         if should_remove {
-            ctx.plan.actions.push(PlannedAction {
-                operation: OperationType::RemoveTrack,
-                track_index: Some(track.index),
-                parameters: serde_json::json!({
-                    "reason": "does not match keep filter",
-                }),
-                description: format!(
-                    "Remove {} track {} ({}, {})",
-                    target_str(target),
-                    track.index,
-                    track.codec,
-                    track.language
-                ),
-            });
+            emit_remove_track(track, target, "does not match keep filter", ctx);
         }
     }
 }
 
-fn process_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
+fn emit_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
     let tracks = tracks_for_target(ctx.file, target);
     for track in &tracks {
         let should_remove = match filter {
@@ -265,83 +267,95 @@ fn process_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &m
             None => true, // "remove audio" with no filter removes all
         };
         if should_remove {
-            ctx.plan.actions.push(PlannedAction {
-                operation: OperationType::RemoveTrack,
-                track_index: Some(track.index),
-                parameters: serde_json::json!({
-                    "reason": "matches remove filter",
-                }),
-                description: format!(
-                    "Remove {} track {} ({}, {})",
-                    target_str(target),
-                    track.index,
-                    track.codec,
-                    track.language
-                ),
-            });
+            emit_remove_track(track, target, "matches remove filter", ctx);
         }
     }
 }
 
-fn process_reorder(order: &[String], ctx: &mut PhaseContext) {
-    ctx.plan.actions.push(PlannedAction {
-        operation: OperationType::ReorderTracks,
-        track_index: None,
-        parameters: serde_json::json!({
-            "order": order,
-        }),
-        description: format!("Reorder tracks: {}", order.join(", ")),
-    });
+fn emit_reorder(order: &[String], ctx: &mut PhaseContext) {
+    ctx.plan.actions.push(PlannedAction::file_op(
+        OperationType::ReorderTracks,
+        ActionParams::ReorderTracks {
+            order: order.to_vec(),
+        },
+        format!("Reorder tracks: {}", order.join(", ")),
+    ));
 }
 
-fn process_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
+fn emit_set_default(target: &TrackTarget, track: &Track, detail: &str, ctx: &mut PhaseContext) {
+    ctx.plan.actions.push(PlannedAction::track_op(
+        OperationType::SetDefault,
+        track.index,
+        ActionParams::Empty,
+        format!(
+            "Set default on {} track {}{detail}",
+            target_str(target),
+            track.index
+        ),
+    ));
+}
+
+fn emit_clear_default(target: &TrackTarget, track: &Track, detail: &str, ctx: &mut PhaseContext) {
+    ctx.plan.actions.push(PlannedAction::track_op(
+        OperationType::ClearDefault,
+        track.index,
+        ActionParams::Empty,
+        format!(
+            "Clear default flag on {} track {}{detail}",
+            target_str(target),
+            track.index
+        ),
+    ));
+}
+
+fn emit_clear_forced(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext) {
+    ctx.plan.actions.push(PlannedAction::track_op(
+        OperationType::ClearForced,
+        track.index,
+        ActionParams::Empty,
+        format!(
+            "Clear forced flag on {} track {}",
+            target_str(target),
+            track.index
+        ),
+    ));
+}
+
+fn emit_clear_title(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext) {
+    ctx.plan.actions.push(PlannedAction::track_op(
+        OperationType::SetTitle,
+        track.index,
+        ActionParams::Title {
+            title: String::new(),
+        },
+        format!(
+            "Clear title on {} track {}",
+            target_str(target),
+            track.index
+        ),
+    ));
+}
+
+fn emit_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
     for default in defaults {
         let tracks = tracks_for_target(ctx.file, &default.target);
         match default.strategy {
             DefaultStrategy::None => {
                 for track in &tracks {
                     if track.is_default {
-                        ctx.plan.actions.push(PlannedAction {
-                            operation: OperationType::ClearDefault,
-                            track_index: Some(track.index),
-                            parameters: serde_json::json!({}),
-                            description: format!(
-                                "Clear default flag on {} track {}",
-                                target_str(&default.target),
-                                track.index
-                            ),
-                        });
+                        emit_clear_default(&default.target, track, "", ctx);
                     }
                 }
             }
             DefaultStrategy::First => {
-                let mut first = true;
-                for track in &tracks {
-                    if first {
-                        if !track.is_default {
-                            ctx.plan.actions.push(PlannedAction {
-                                operation: OperationType::SetDefault,
-                                track_index: Some(track.index),
-                                parameters: serde_json::json!({}),
-                                description: format!(
-                                    "Set default on {} track {}",
-                                    target_str(&default.target),
-                                    track.index
-                                ),
-                            });
+                if let Some((first_track, rest)) = tracks.split_first() {
+                    if !first_track.is_default {
+                        emit_set_default(&default.target, first_track, "", ctx);
+                    }
+                    for track in rest {
+                        if track.is_default {
+                            emit_clear_default(&default.target, track, "", ctx);
                         }
-                        first = false;
-                    } else if track.is_default {
-                        ctx.plan.actions.push(PlannedAction {
-                            operation: OperationType::ClearDefault,
-                            track_index: Some(track.index),
-                            parameters: serde_json::json!({}),
-                            description: format!(
-                                "Clear default flag on {} track {}",
-                                target_str(&default.target),
-                                track.index
-                            ),
-                        });
                     }
                 }
             }
@@ -350,45 +364,26 @@ fn process_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
                 for track in &tracks {
                     let is_first = seen_langs.insert(track.language.clone());
                     if is_first && !track.is_default {
-                        ctx.plan.actions.push(PlannedAction {
-                            operation: OperationType::SetDefault,
-                            track_index: Some(track.index),
-                            parameters: serde_json::json!({}),
-                            description: format!(
-                                "Set default on {} track {} (first for lang '{}')",
-                                target_str(&default.target),
-                                track.index,
-                                track.language
-                            ),
-                        });
+                        emit_set_default(
+                            &default.target,
+                            track,
+                            &format!(" (first for lang '{}')", track.language),
+                            ctx,
+                        );
                     } else if !is_first && track.is_default {
-                        ctx.plan.actions.push(PlannedAction {
-                            operation: OperationType::ClearDefault,
-                            track_index: Some(track.index),
-                            parameters: serde_json::json!({}),
-                            description: format!(
-                                "Clear default flag on {} track {} (not first for lang '{}')",
-                                target_str(&default.target),
-                                track.index,
-                                track.language
-                            ),
-                        });
+                        emit_clear_default(
+                            &default.target,
+                            track,
+                            &format!(" (not first for lang '{}')", track.language),
+                            ctx,
+                        );
                     }
                 }
             }
             DefaultStrategy::All => {
                 for track in &tracks {
                     if !track.is_default {
-                        ctx.plan.actions.push(PlannedAction {
-                            operation: OperationType::SetDefault,
-                            track_index: Some(track.index),
-                            parameters: serde_json::json!({}),
-                            description: format!(
-                                "Set default on {} track {}",
-                                target_str(&default.target),
-                                track.index
-                            ),
-                        });
+                        emit_set_default(&default.target, track, "", ctx);
                     }
                 }
             }
@@ -396,117 +391,78 @@ fn process_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
     }
 }
 
-fn process_clear_actions(
+fn emit_clear_actions(
     target: &TrackTarget,
-    settings: &HashMap<String, serde_json::Value>,
+    settings: &ClearActionsSettings,
     ctx: &mut PhaseContext,
 ) {
     let tracks = tracks_for_target(ctx.file, target);
-    let clear_default = settings
-        .get("clear_all_default")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let clear_forced = settings
-        .get("clear_all_forced")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let clear_titles = settings
-        .get("clear_all_titles")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let clear_default = settings.clear_all_default;
+    let clear_forced = settings.clear_all_forced;
+    let clear_titles = settings.clear_all_titles;
 
     for track in &tracks {
         if clear_default && track.is_default {
-            ctx.plan.actions.push(PlannedAction {
-                operation: OperationType::ClearDefault,
-                track_index: Some(track.index),
-                parameters: serde_json::json!({}),
-                description: format!(
-                    "Clear default flag on {} track {}",
-                    target_str(target),
-                    track.index
-                ),
-            });
+            emit_clear_default(target, track, "", ctx);
         }
         if clear_forced && track.is_forced {
-            ctx.plan.actions.push(PlannedAction {
-                operation: OperationType::ClearForced,
-                track_index: Some(track.index),
-                parameters: serde_json::json!({}),
-                description: format!(
-                    "Clear forced flag on {} track {}",
-                    target_str(target),
-                    track.index
-                ),
-            });
+            emit_clear_forced(target, track, ctx);
         }
         if clear_titles && !track.title.is_empty() {
-            ctx.plan.actions.push(PlannedAction {
-                operation: OperationType::SetTitle,
-                track_index: Some(track.index),
-                parameters: serde_json::json!({"title": ""}),
-                description: format!(
-                    "Clear title on {} track {}",
-                    target_str(target),
-                    track.index
-                ),
-            });
+            emit_clear_title(target, track, ctx);
         }
     }
 }
 
-fn process_transcode(
+fn emit_transcode(
     target: &TrackTarget,
     codec: &str,
-    settings: &HashMap<String, serde_json::Value>,
+    settings: &CompiledTranscodeSettings,
     ctx: &mut PhaseContext,
 ) {
     let tracks = tracks_for_target(ctx.file, target);
 
-    // Check preserve list
-    let preserve: Vec<String> = settings
-        .get("preserve")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let preserve = &settings.preserve;
 
     let operation = match target {
         TrackTarget::Video => OperationType::TranscodeVideo,
         _ => OperationType::TranscodeAudio,
     };
 
+    let crf = settings.crf;
+    let preset = settings.preset.clone();
+    let bitrate = settings.bitrate.clone();
+    let channels = settings.channels;
+
     for track in &tracks {
-        // Skip if already the target codec
         if track.codec == codec {
             continue;
         }
-        // Skip if codec is in preserve list
         if preserve.iter().any(|p| p == &track.codec) {
             continue;
         }
 
-        let mut params = settings.clone();
-        params.insert("codec".into(), serde_json::Value::String(codec.into()));
-
-        ctx.plan.actions.push(PlannedAction {
+        ctx.plan.actions.push(PlannedAction::track_op(
             operation,
-            track_index: Some(track.index),
-            parameters: serde_json::json!(params),
-            description: format!(
+            track.index,
+            ActionParams::Transcode {
+                codec: codec.into(),
+                crf,
+                preset: preset.clone(),
+                bitrate: bitrate.clone(),
+                channels,
+            },
+            format!(
                 "Transcode {} track {} from {} to {codec}",
                 target_str(target),
                 track.index,
                 track.codec
             ),
-        });
+        ));
     }
 }
 
-fn process_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
+fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
     // Check create_if condition
     if let Some(ref cond) = synth.create_if {
         if !evaluate_condition(cond, ctx.file) {
@@ -514,9 +470,10 @@ fn process_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
         }
     }
 
+    let audio_tracks = ctx.file.audio_tracks();
+
     // Check skip_if_exists
     if let Some(ref skip_filter) = synth.skip_if_exists {
-        let audio_tracks = ctx.file.audio_tracks();
         if audio_tracks.iter().any(|t| track_matches(t, skip_filter)) {
             return;
         }
@@ -524,104 +481,100 @@ fn process_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
 
     // Find source track
     let source_index = if let Some(ref source_filter) = synth.source {
-        ctx.file
-            .audio_tracks()
+        audio_tracks
             .iter()
             .find(|t| track_matches(t, source_filter))
             .map(|t| t.index)
     } else {
-        ctx.file.audio_tracks().first().map(|t| t.index)
+        audio_tracks.first().map(|t| t.index)
     };
 
-    let mut params = serde_json::Map::new();
-    if let Some(ref codec) = synth.codec {
-        params.insert("codec".into(), serde_json::Value::String(codec.clone()));
-    }
-    if let Some(ref channels) = synth.channels {
-        params.insert("channels".into(), channels.clone());
-    }
-    if let Some(ref bitrate) = synth.bitrate {
-        params.insert("bitrate".into(), serde_json::Value::String(bitrate.clone()));
-    }
-    if let Some(ref title) = synth.title {
-        params.insert("title".into(), serde_json::Value::String(title.clone()));
-    }
-    if let Some(ref lang) = synth.language {
-        match lang {
-            SynthLanguage::Inherit => {
-                if let Some(idx) = source_index {
-                    if let Some(src) = ctx.file.tracks.iter().find(|t| t.index == idx) {
-                        params.insert(
-                            "language".into(),
-                            serde_json::Value::String(src.language.clone()),
-                        );
-                    }
-                }
-            }
-            SynthLanguage::Fixed(l) => {
-                params.insert("language".into(), serde_json::Value::String(l.clone()));
-            }
-        }
-    }
-    if let Some(ref position) = synth.position {
-        params.insert("position".into(), position.clone());
-    }
-    if let Some(idx) = source_index {
-        params.insert("source_track".into(), serde_json::json!(idx));
-    }
+    let language = match &synth.language {
+        Some(SynthLanguage::Inherit) => source_index.and_then(|idx| {
+            ctx.file
+                .tracks
+                .iter()
+                .find(|t| t.index == idx)
+                .map(|src| src.language.clone())
+        }),
+        Some(SynthLanguage::Fixed(l)) => Some(l.clone()),
+        None => None,
+    };
 
-    ctx.plan.actions.push(PlannedAction {
-        operation: OperationType::SynthesizeAudio,
-        track_index: source_index,
-        parameters: serde_json::Value::Object(params),
-        description: format!("Synthesize audio: {}", synth.name),
+    let channels = synth.channels.as_ref().map(|c| match c {
+        SynthChannels::Count(n) => *n,
+        SynthChannels::Named(_) => 2, // default stereo for named presets
+    });
+
+    let position = synth.position.as_ref().map(|p| match p {
+        SynthPosition::Index(n) => n.to_string(),
+        SynthPosition::Named(s) => s.clone(),
+    });
+
+    let params = ActionParams::Synthesize {
+        name: synth.name.clone(),
+        language,
+        codec: synth.codec.clone(),
+        text: None,
+        bitrate: synth.bitrate.clone(),
+        channels,
+        title: synth.title.clone(),
+        position,
+        source_track: source_index,
+    };
+    let desc = format!("Synthesize audio: {}", synth.name);
+    ctx.plan.actions.push(match source_index {
+        Some(idx) => PlannedAction::track_op(OperationType::SynthesizeAudio, idx, params, desc),
+        None => PlannedAction::file_op(OperationType::SynthesizeAudio, params, desc),
     });
 }
 
-fn process_clear_tags(ctx: &mut PhaseContext) {
+fn emit_clear_tags(ctx: &mut PhaseContext) {
     if ctx.file.tags.is_empty() {
         return;
     }
     let mut tag_keys: Vec<String> = ctx.file.tags.keys().cloned().collect();
     tag_keys.sort();
-    ctx.plan.actions.push(PlannedAction {
-        operation: OperationType::ClearContainerTags,
-        track_index: None,
-        parameters: serde_json::json!({ "tags": tag_keys }),
-        description: format!("Clear all container tags ({})", tag_keys.join(", ")),
-    });
+    ctx.plan.actions.push(PlannedAction::file_op(
+        OperationType::ClearContainerTags,
+        ActionParams::ClearTags {
+            tags: tag_keys.clone(),
+        },
+        format!("Clear all container tags ({})", tag_keys.join(", ")),
+    ));
 }
 
-fn process_set_tag(
+fn emit_set_tag(
     tag: &str,
     value: &CompiledValueOrField,
     ctx: &mut PhaseContext,
 ) -> Result<(), String> {
     let val = resolve_value_or_field(value, ctx.file)
         .ok_or_else(|| format!("Cannot resolve tag value for '{tag}'"))?;
-    ctx.plan.actions.push(PlannedAction {
-        operation: OperationType::SetContainerTag,
-        track_index: None,
-        parameters: serde_json::json!({ "tag": tag, "value": val }),
-        description: format!("Set container tag '{tag}' = '{val}'"),
-    });
+    ctx.plan.actions.push(PlannedAction::file_op(
+        OperationType::SetContainerTag,
+        ActionParams::SetTag {
+            tag: tag.into(),
+            value: val.clone(),
+        },
+        format!("Set container tag '{tag}' = '{val}'"),
+    ));
     Ok(())
 }
 
-fn process_delete_tag(tag: &str, ctx: &mut PhaseContext) {
+fn emit_delete_tag(tag: &str, ctx: &mut PhaseContext) {
     if ctx.file.tags.contains_key(tag) {
-        ctx.plan.actions.push(PlannedAction {
-            operation: OperationType::DeleteContainerTag,
-            track_index: None,
-            parameters: serde_json::json!({ "tag": tag }),
-            description: format!("Delete container tag '{tag}'"),
-        });
+        ctx.plan.actions.push(PlannedAction::file_op(
+            OperationType::DeleteContainerTag,
+            ActionParams::DeleteTag { tag: tag.into() },
+            format!("Delete container tag '{tag}'"),
+        ));
     } else {
         tracing::debug!(tag, "delete_tag: tag not present in file, skipping");
     }
 }
 
-fn process_conditional(cond: &CompiledConditional, ctx: &mut PhaseContext) -> Result<(), String> {
+fn emit_conditional(cond: &CompiledConditional, ctx: &mut PhaseContext) -> Result<(), String> {
     let matched = evaluate_condition(&cond.condition, ctx.file);
     let actions = if matched {
         &cond.then_actions
@@ -629,12 +582,12 @@ fn process_conditional(cond: &CompiledConditional, ctx: &mut PhaseContext) -> Re
         &cond.else_actions
     };
     for action in actions {
-        process_action(action, ctx)?;
+        emit_action(action, ctx)?;
     }
     Ok(())
 }
 
-fn process_rules(
+fn emit_rules(
     mode: &RulesMode,
     rules: &[CompiledRule],
     ctx: &mut PhaseContext,
@@ -643,21 +596,21 @@ fn process_rules(
         let matched = evaluate_condition(&rule.conditional.condition, ctx.file);
         if matched {
             for action in &rule.conditional.then_actions {
-                process_action(action, ctx)?;
+                emit_action(action, ctx)?;
             }
             if *mode == RulesMode::First {
                 break;
             }
         } else {
             for action in &rule.conditional.else_actions {
-                process_action(action, ctx)?;
+                emit_action(action, ctx)?;
             }
         }
     }
     Ok(())
 }
 
-fn process_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), String> {
+fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), String> {
     match action {
         CompiledAction::Skip(phase) => {
             ctx.plan.skip_reason = Some(match phase {
@@ -674,46 +627,10 @@ fn process_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(),
             return Err(expanded);
         }
         CompiledAction::SetDefault { target, filter } => {
-            let tracks = tracks_for_target(ctx.file, target);
-            for track in &tracks {
-                let matches = match filter {
-                    Some(f) => track_matches(track, f),
-                    None => true,
-                };
-                if matches && !track.is_default {
-                    ctx.plan.actions.push(PlannedAction {
-                        operation: OperationType::SetDefault,
-                        track_index: Some(track.index),
-                        parameters: serde_json::json!({}),
-                        description: format!(
-                            "Set default on {} track {}",
-                            target_str(target),
-                            track.index
-                        ),
-                    });
-                }
-            }
+            emit_flag_action(ctx, target, filter, FlagKind::Default)?;
         }
         CompiledAction::SetForced { target, filter } => {
-            let tracks = tracks_for_target(ctx.file, target);
-            for track in &tracks {
-                let matches = match filter {
-                    Some(f) => track_matches(track, f),
-                    None => true,
-                };
-                if matches && !track.is_forced {
-                    ctx.plan.actions.push(PlannedAction {
-                        operation: OperationType::SetForced,
-                        track_index: Some(track.index),
-                        parameters: serde_json::json!({}),
-                        description: format!(
-                            "Set forced on {} track {}",
-                            target_str(target),
-                            track.index
-                        ),
-                    });
-                }
-            }
+            emit_flag_action(ctx, target, filter, FlagKind::Forced)?;
         }
         CompiledAction::SetLanguage {
             target,
@@ -724,33 +641,24 @@ fn process_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(),
                 .ok_or_else(|| "Cannot resolve language value".to_string())?;
             let tracks = tracks_for_target(ctx.file, target);
             for track in &tracks {
-                let matches = match filter {
-                    Some(f) => track_matches(track, f),
-                    None => true,
-                };
-                if matches && track.language != lang {
-                    ctx.plan.actions.push(PlannedAction {
-                        operation: OperationType::SetLanguage,
-                        track_index: Some(track.index),
-                        parameters: serde_json::json!({"language": lang}),
-                        description: format!(
+                if filter_matches(track, filter) && track.language != lang {
+                    ctx.plan.actions.push(PlannedAction::track_op(
+                        OperationType::SetLanguage,
+                        track.index,
+                        ActionParams::Language {
+                            language: lang.clone(),
+                        },
+                        format!(
                             "Set language on {} track {} to '{lang}'",
                             target_str(target),
                             track.index
                         ),
-                    });
+                    ));
                 }
             }
         }
         CompiledAction::SetTag { tag, value } => {
-            let val = resolve_value_or_field(value, ctx.file)
-                .ok_or_else(|| format!("Cannot resolve tag value for '{tag}'"))?;
-            ctx.plan.actions.push(PlannedAction {
-                operation: OperationType::SetContainerTag,
-                track_index: None,
-                parameters: serde_json::json!({ "tag": tag, "value": val }),
-                description: format!("Set container tag '{tag}' = '{val}'"),
-            });
+            emit_set_tag(tag, value, ctx)?;
         }
     }
     Ok(())
@@ -768,14 +676,44 @@ fn expand_template(template: &str, file: &MediaFile) -> String {
         .replace("{path}", &file.path.to_string_lossy())
 }
 
-fn tracks_for_target<'a>(file: &'a MediaFile, target: &TrackTarget) -> Vec<&'a Track> {
-    match target {
-        TrackTarget::Video => file.video_tracks(),
-        TrackTarget::Audio => file.audio_tracks(),
-        TrackTarget::Subtitle => file.subtitle_tracks(),
-        TrackTarget::Attachment => file.tracks_of_type(TrackType::Attachment),
-        TrackTarget::Any => file.tracks.iter().collect(),
+fn filter_matches(track: &Track, filter: &Option<CompiledFilter>) -> bool {
+    match filter {
+        Some(f) => track_matches(track, f),
+        None => true,
     }
+}
+
+enum FlagKind {
+    Default,
+    Forced,
+}
+
+fn emit_flag_action(
+    ctx: &mut PhaseContext,
+    target: &TrackTarget,
+    filter: &Option<CompiledFilter>,
+    kind: FlagKind,
+) -> Result<(), String> {
+    let (op, label, is_set_fn): (OperationType, &str, fn(&Track) -> bool) = match kind {
+        FlagKind::Default => (OperationType::SetDefault, "default", |t| t.is_default),
+        FlagKind::Forced => (OperationType::SetForced, "forced", |t| t.is_forced),
+    };
+    let tracks = tracks_for_target(ctx.file, target);
+    for track in &tracks {
+        if filter_matches(track, filter) && !is_set_fn(track) {
+            ctx.plan.actions.push(PlannedAction::track_op(
+                op,
+                track.index,
+                ActionParams::Empty,
+                format!(
+                    "Set {label} on {} track {}",
+                    target_str(target),
+                    track.index
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn target_str(target: &TrackTarget) -> &'static str {
@@ -848,7 +786,7 @@ mod tests {
     }
 
     fn test_policy(source: &str) -> CompiledPolicy {
-        voom_dsl::compile(source).expect("Failed to compile test policy")
+        voom_dsl::compile_policy(source).expect("Failed to compile test policy")
     }
 
     #[test]
@@ -1266,7 +1204,7 @@ mod tests {
     fn test_full_production_policy() {
         let source =
             include_str!("../../../crates/voom-dsl/tests/fixtures/production-normalize.voom");
-        let policy = voom_dsl::compile(source).unwrap();
+        let policy = voom_dsl::compile_policy(source).unwrap();
         let file = test_file();
         let result = evaluate(&policy, &file);
         assert_eq!(result.plans.len(), 6);
@@ -1296,8 +1234,10 @@ mod tests {
         let plan = &result.plans[0];
         assert_eq!(plan.actions.len(), 1);
         assert_eq!(plan.actions[0].operation, OperationType::ClearContainerTags);
-        let tags = plan.actions[0].parameters["tags"].as_array().unwrap();
-        assert_eq!(tags.len(), 2);
+        match &plan.actions[0].parameters {
+            ActionParams::ClearTags { tags } => assert_eq!(tags.len(), 2),
+            other => panic!("Expected ClearTags, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1333,8 +1273,13 @@ mod tests {
         let plan = &result.plans[0];
         assert_eq!(plan.actions.len(), 1);
         assert_eq!(plan.actions[0].operation, OperationType::SetContainerTag);
-        assert_eq!(plan.actions[0].parameters["tag"], "title");
-        assert_eq!(plan.actions[0].parameters["value"], "My Movie");
+        match &plan.actions[0].parameters {
+            ActionParams::SetTag { tag, value } => {
+                assert_eq!(tag, "title");
+                assert_eq!(value, "My Movie");
+            }
+            other => panic!("Expected SetTag, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1354,7 +1299,10 @@ mod tests {
         let plan = &result.plans[0];
         assert_eq!(plan.actions.len(), 1);
         assert_eq!(plan.actions[0].operation, OperationType::DeleteContainerTag);
-        assert_eq!(plan.actions[0].parameters["tag"], "encoder");
+        match &plan.actions[0].parameters {
+            ActionParams::DeleteTag { tag } => assert_eq!(tag, "encoder"),
+            other => panic!("Expected DeleteTag, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1397,5 +1345,28 @@ mod tests {
         assert_eq!(plan.actions[0].operation, OperationType::ClearContainerTags);
         assert_eq!(plan.actions[1].operation, OperationType::SetContainerTag);
         assert_eq!(plan.actions[2].operation, OperationType::DeleteContainerTag);
+    }
+
+    #[test]
+    fn test_convert_container_parameter_key_is_container() {
+        let mut file = test_file();
+        file.container = Container::Mkv;
+        let policy = test_policy(r#"policy "test" { phase init { container mp4 } }"#);
+        let result = evaluate(&policy, &file);
+        assert_eq!(result.plans.len(), 1);
+        assert_eq!(result.plans[0].actions.len(), 1);
+        let action = &result.plans[0].actions[0];
+        assert_eq!(action.operation, OperationType::ConvertContainer);
+        // Verify the parameter uses Container variant (regression guard)
+        match &action.parameters {
+            ActionParams::Container { container } => {
+                assert_eq!(
+                    *container,
+                    voom_domain::media::Container::Mp4,
+                    "ConvertContainer action must specify container"
+                );
+            }
+            other => panic!("Expected Container params, got {:?}", other),
+        }
     }
 }

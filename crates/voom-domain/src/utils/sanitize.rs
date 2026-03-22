@@ -2,6 +2,10 @@ use crate::errors::VoomError;
 
 /// Validates that a metadata value does not contain dangerous control characters.
 /// Allows tab (\t) and newline (\n, \r) but rejects other control characters (\x00-\x1F).
+///
+/// # Errors
+///
+/// Returns [`VoomError::Validation`] if the value contains control characters.
 pub fn validate_metadata_value(value: &str) -> Result<&str, VoomError> {
     if let Some(pos) = value
         .bytes()

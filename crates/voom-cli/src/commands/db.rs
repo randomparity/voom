@@ -1,71 +1,70 @@
 use anyhow::Result;
 use comfy_table::{Cell, Table};
-use owo_colors::OwoColorize;
+use console::style;
 
 use crate::app;
 use crate::cli::{DbCommands, OutputFormat};
+use crate::config;
 
 pub async fn run(cmd: DbCommands) -> Result<()> {
     match cmd {
-        DbCommands::Prune => prune().await,
-        DbCommands::Vacuum => vacuum().await,
+        DbCommands::Prune => prune(),
+        DbCommands::Vacuum => vacuum(),
         DbCommands::Reset => reset().await,
-        DbCommands::ListBad { path, format } => list_bad(path, format).await,
-        DbCommands::PurgeBad => purge_bad().await,
+        DbCommands::ListBad { path, format } => list_bad(path, format),
+        DbCommands::PurgeBad => purge_bad(),
         DbCommands::CleanBad { yes } => clean_bad(yes).await,
     }
 }
 
-async fn prune() -> Result<()> {
-    let config = app::load_config()?;
+fn prune() -> Result<()> {
+    let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::StorageTrait;
     let count = store
         .prune_missing_files()
         .map_err(|e| anyhow::anyhow!("failed to prune missing files: {e}"))?;
 
     if count == 0 {
-        println!("{}", "No stale entries found.".dimmed());
+        println!("{}", style("No stale entries found.").dim());
     } else {
         println!(
             "{} Pruned {} stale entries.",
-            "OK".bold().green(),
-            count.to_string().bold()
+            style("OK").bold().green(),
+            style(count).bold()
         );
     }
 
     Ok(())
 }
 
-async fn vacuum() -> Result<()> {
-    let config = app::load_config()?;
+fn vacuum() -> Result<()> {
+    let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::StorageTrait;
     store
         .vacuum()
         .map_err(|e| anyhow::anyhow!("failed to vacuum database: {e}"))?;
 
-    println!("{} Database vacuumed.", "OK".bold().green());
+    println!("{} Database vacuumed.", style("OK").bold().green());
 
     Ok(())
 }
 
 async fn reset() -> Result<()> {
-    let config = app::load_config()?;
+    let config = config::load_config()?;
     let db_path = config.data_dir.join("voom.db");
 
     if !db_path.exists() {
-        println!("{}", "No database file found.".dimmed());
+        println!("{}", style("No database file found.").dim());
         return Ok(());
     }
 
     // Safety prompt via stderr
     eprintln!(
         "{} This will delete all data in {}",
-        "WARNING".bold().red(),
-        db_path.display().to_string().bold()
+        style("WARNING").bold().red(),
+        style(db_path.display()).bold()
     );
     eprintln!("Type 'yes' to confirm:");
 
@@ -76,7 +75,7 @@ async fn reset() -> Result<()> {
     .await??;
 
     if input.trim() != "yes" {
-        println!("{}", "Aborted.".dimmed());
+        println!("{}", style("Aborted.").dim());
         return Ok(());
     }
 
@@ -84,16 +83,16 @@ async fn reset() -> Result<()> {
     // Also remove WAL and SHM companion files to avoid corruption on next open
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    println!("{} Database reset.", "OK".bold().green());
+    println!("{} Database reset.", style("OK").bold().green());
 
     Ok(())
 }
 
-async fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
-    let config = app::load_config()?;
+fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
+    let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::{BadFileFilters, StorageTrait};
+    use voom_domain::storage::BadFileFilters;
     let filters = BadFileFilters {
         path_prefix: path,
         ..Default::default()
@@ -103,7 +102,7 @@ async fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
 
     if bad_files.is_empty() {
-        println!("{}", "No bad files recorded.".dimmed());
+        println!("{}", style("No bad files recorded.").dim());
         return Ok(());
     }
 
@@ -142,24 +141,24 @@ async fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
                 ]);
             }
             println!("{table}");
-            println!("\n{} bad files total.", bad_files.len().to_string().bold());
+            println!("\n{} bad files total.", style(bad_files.len()).bold());
         }
     }
 
     Ok(())
 }
 
-async fn purge_bad() -> Result<()> {
-    let config = app::load_config()?;
+fn purge_bad() -> Result<()> {
+    let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::{BadFileFilters, StorageTrait};
+    use voom_domain::storage::BadFileFilters;
     let bad_files = store
         .list_bad_files(&BadFileFilters::default())
         .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
 
     if bad_files.is_empty() {
-        println!("{}", "No bad files recorded.".dimmed());
+        println!("{}", style("No bad files recorded.").dim());
         return Ok(());
     }
 
@@ -172,24 +171,24 @@ async fn purge_bad() -> Result<()> {
 
     println!(
         "{} Purged {} bad file entries from database.",
-        "OK".bold().green(),
-        count.to_string().bold()
+        style("OK").bold().green(),
+        style(count).bold()
     );
 
     Ok(())
 }
 
 async fn clean_bad(yes: bool) -> Result<()> {
-    let config = app::load_config()?;
+    let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::{BadFileFilters, StorageTrait};
+    use voom_domain::storage::BadFileFilters;
     let bad_files = store
         .list_bad_files(&BadFileFilters::default())
         .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
 
     if bad_files.is_empty() {
-        println!("{}", "No bad files recorded.".dimmed());
+        println!("{}", style("No bad files recorded.").dim());
         return Ok(());
     }
 
@@ -198,14 +197,14 @@ async fn clean_bad(yes: bool) -> Result<()> {
 
     println!(
         "Found {} bad files ({}).",
-        count.to_string().bold(),
+        style(count).bold(),
         voom_domain::utils::datetime::format_size(total_size)
     );
 
     if !yes {
         eprintln!(
             "{} This will delete {} files from disk.",
-            "WARNING".bold().red(),
+            style("WARNING").bold().red(),
             count
         );
         eprintln!("Type 'yes' to confirm:");
@@ -217,7 +216,7 @@ async fn clean_bad(yes: bool) -> Result<()> {
         .await??;
 
         if input.trim() != "yes" {
-            println!("{}", "Aborted.".dimmed());
+            println!("{}", style("Aborted.").dim());
             return Ok(());
         }
     }
@@ -236,7 +235,7 @@ async fn clean_bad(yes: bool) -> Result<()> {
                 Err(e) => {
                     eprintln!(
                         "{} Failed to delete {}: {e}",
-                        "ERROR".red(),
+                        style("ERROR").red(),
                         bf.path.display()
                     );
                     errors += 1;
@@ -256,11 +255,11 @@ async fn clean_bad(yes: bool) -> Result<()> {
 
     println!(
         "{} {} deleted, {} already missing, {} errors.",
-        "Done.".bold().green(),
-        deleted.to_string().bold(),
-        missing.to_string().dimmed(),
+        style("Done.").bold().green(),
+        style(deleted).bold(),
+        style(missing).dim(),
         if errors > 0 {
-            errors.to_string().red().to_string()
+            style(errors).red().to_string()
         } else {
             errors.to_string()
         }
@@ -272,29 +271,30 @@ async fn clean_bad(yes: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use crate::app;
+    use crate::config;
 
     #[test]
-    fn db_path_uses_data_dir() {
-        let config = app::AppConfig {
+    fn test_db_path_uses_data_dir() {
+        let cfg = config::AppConfig {
             data_dir: std::path::PathBuf::from("/tmp/test-voom"),
-            plugins: app::PluginsConfig::default(),
+            plugins: config::PluginsConfig::default(),
             auth_token: None,
             plugin: std::collections::HashMap::new(),
         };
-        let db_path = config.data_dir.join("voom.db");
+        let db_path = cfg.data_dir.join("voom.db");
         assert_eq!(db_path, std::path::PathBuf::from("/tmp/test-voom/voom.db"));
     }
 
     #[test]
-    fn open_store_in_temp_dir() {
+    fn test_open_store_in_temp_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let config = app::AppConfig {
+        let cfg = config::AppConfig {
             data_dir: dir.path().to_path_buf(),
-            plugins: app::PluginsConfig::default(),
+            plugins: config::PluginsConfig::default(),
             auth_token: None,
             plugin: std::collections::HashMap::new(),
         };
-        let store = app::open_store(&config);
+        let store = app::open_store(&cfg);
         assert!(store.is_ok(), "should open store in temp directory");
     }
 }

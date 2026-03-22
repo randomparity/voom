@@ -852,7 +852,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -941,17 +941,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718"
 
 [[package]]
-name = "futures-macro"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "futures-sink"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -971,7 +960,6 @@ checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
 dependencies = [
  "futures-core",
  "futures-io",
- "futures-macro",
  "futures-task",
  "memchr",
  "pin-project-lite",
@@ -1723,12 +1711,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
-name = "owo-colors"
-version = "4.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
-
-[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2274,7 +2256,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2303,9 +2285,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.9"
+version = "0.103.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7df23109aa6c1567d1c575b9952556388da57401e4ace1d15f79eedad0d8f53"
+checksum = "df33b2b81ac578cabaf06b89b0631153a3f416b0a886e8a7a1707fb51abbd1ef"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -2590,7 +2572,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2769,7 +2751,6 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
- "futures-util",
  "pin-project-lite",
  "tokio",
 ]
@@ -3097,7 +3078,6 @@ dependencies = [
  "console",
  "dirs",
  "indicatif",
- "owo-colors",
  "predicates",
  "serde",
  "serde_json",
@@ -3112,7 +3092,6 @@ dependencies = [
  "voom-discovery",
  "voom-domain",
  "voom-dsl",
- "voom-ffmpeg-executor",
  "voom-ffprobe-introspector",
  "voom-job-manager",
  "voom-kernel",
@@ -3129,8 +3108,6 @@ name = "voom-discovery"
 version = "0.1.0"
 dependencies = [
  "rayon",
- "serde",
- "serde_json",
  "tempfile",
  "tracing",
  "voom-domain",
@@ -3159,6 +3136,7 @@ dependencies = [
  "insta",
  "pest",
  "pest_derive",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3218,7 +3196,6 @@ dependencies = [
 name = "voom-kernel"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
  "parking_lot",
  "rmp-serde",
@@ -3260,8 +3237,6 @@ name = "voom-phase-orchestrator"
 version = "0.1.0"
 dependencies = [
  "insta",
- "serde",
- "serde_json",
  "tracing",
  "voom-domain",
  "voom-dsl",
@@ -3276,6 +3251,7 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
+ "tracing",
  "voom-domain",
 ]
 
@@ -3285,7 +3261,6 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "insta",
- "regex",
  "serde",
  "serde_json",
  "tracing",
@@ -3317,8 +3292,6 @@ dependencies = [
 name = "voom-tool-detector"
 version = "0.1.0"
 dependencies = [
- "serde",
- "serde_json",
  "tempfile",
  "tracing",
  "voom-domain",
@@ -3329,11 +3302,9 @@ dependencies = [
 name = "voom-web-server"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "axum",
  "axum-test",
  "chrono",
- "futures-core",
  "serde",
  "serde_json",
  "subtle",

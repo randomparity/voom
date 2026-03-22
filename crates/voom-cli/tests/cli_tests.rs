@@ -172,13 +172,12 @@ fn test_policy_validate_valid_file() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../crates/voom-dsl/tests/fixtures/production-normalize.voom");
 
-    if fixture.exists() {
-        voom()
-            .args(["policy", "validate", fixture.to_str().unwrap()])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("OK"));
-    }
+    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
+    voom()
+        .args(["policy", "validate", fixture.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("OK"));
 }
 
 #[test]
@@ -206,13 +205,12 @@ fn test_policy_show_valid_file() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../crates/voom-dsl/tests/fixtures/production-normalize.voom");
 
-    if fixture.exists() {
-        voom()
-            .args(["policy", "show", fixture.to_str().unwrap()])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("Policy"));
-    }
+    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
+    voom()
+        .args(["policy", "show", fixture.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Policy"));
 }
 
 #[test]
@@ -220,23 +218,22 @@ fn test_policy_format_roundtrip() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../crates/voom-dsl/tests/fixtures/production-normalize.voom");
 
-    if fixture.exists() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let content = std::fs::read_to_string(&fixture).unwrap();
-        std::fs::write(tmp.path(), &content).unwrap();
+    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let content = std::fs::read_to_string(&fixture).unwrap();
+    std::fs::write(tmp.path(), &content).unwrap();
 
-        voom()
-            .args(["policy", "format", tmp.path().to_str().unwrap()])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("OK"));
+    voom()
+        .args(["policy", "format", tmp.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("OK"));
 
-        // Formatted file should still be valid
-        voom()
-            .args(["policy", "validate", tmp.path().to_str().unwrap()])
-            .assert()
-            .success();
-    }
+    // Formatted file should still be valid
+    voom()
+        .args(["policy", "validate", tmp.path().to_str().unwrap()])
+        .assert()
+        .success();
 }
 
 // === Error cases ===
