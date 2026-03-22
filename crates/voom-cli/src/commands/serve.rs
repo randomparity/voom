@@ -38,13 +38,9 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     );
     println!("  {} http://{}:{}", style("→").bold(), args.host, args.port);
 
-    let server_config = ServerConfig {
-        host: args.host,
-        port: args.port,
-        template_dir: None,
-        auth_token: config.auth_token,
-        plugin_info,
-    };
+    let mut server_config = ServerConfig::new(args.host, args.port);
+    server_config.auth_token = config.auth_token;
+    server_config.plugin_info = plugin_info;
 
     let shutdown = async move { token.cancelled().await };
     start_server(server_config, store, shutdown).await?;
@@ -64,13 +60,7 @@ mod tests {
             port: 8080,
             host: "127.0.0.1".to_string(),
         };
-        let server_config = ServerConfig {
-            host: args.host.clone(),
-            port: args.port,
-            template_dir: None,
-            auth_token: None,
-            plugin_info: vec![],
-        };
+        let server_config = ServerConfig::new(args.host.clone(), args.port);
         assert_eq!(server_config.port, 8080);
         assert_eq!(server_config.host, "127.0.0.1");
         assert!(server_config.auth_token.is_none());
@@ -84,13 +74,8 @@ mod tests {
             auth_token: Some("secret".to_string()),
             plugin: std::collections::HashMap::new(),
         };
-        let server_config = ServerConfig {
-            host: "0.0.0.0".to_string(),
-            port: 3000,
-            template_dir: None,
-            auth_token: config.auth_token.clone(),
-            plugin_info: vec![],
-        };
+        let mut server_config = ServerConfig::new("0.0.0.0".to_string(), 3000);
+        server_config.auth_token = config.auth_token.clone();
         assert_eq!(server_config.auth_token.as_deref(), Some("secret"));
         assert_eq!(server_config.port, 3000);
     }

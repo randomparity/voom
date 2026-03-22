@@ -137,7 +137,7 @@ pub enum DslPipelineError {
     Parse(DslError),
     /// The AST failed semantic validation (may contain multiple errors).
     Validation(ValidationErrors),
-    /// The validated AST could not be compiled to a [`crate::compiler::CompiledPolicy`].
+    /// The validated AST could not be compiled to a [`CompiledPolicy`](crate::CompiledPolicy).
     Compile(DslError),
 }
 

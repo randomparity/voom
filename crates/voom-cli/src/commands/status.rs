@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use console::style;
 
 use crate::app;
@@ -16,7 +16,7 @@ pub fn run() -> Result<()> {
         Ok((kernel, store)) => {
             let files = store
                 .list_files(&voom_domain::FileFilters::default())
-                .map_err(|e| anyhow::anyhow!("failed to list files from database: {e}"))?;
+                .context("failed to list files from database")?;
 
             let total_size: u64 = files.iter().map(|f| f.size).sum();
 
@@ -28,7 +28,7 @@ pub fn run() -> Result<()> {
             );
 
             // Bad file count
-            match store.count_bad_files() {
+            match store.count_bad_files(&voom_domain::storage::BadFileFilters::default()) {
                 Ok(0) => {}
                 Ok(n) => {
                     println!(

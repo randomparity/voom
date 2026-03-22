@@ -8,356 +8,26 @@
 #![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;
-use std::fmt;
 
-use regex::Regex;
-use serde::{Deserialize, Serialize};
+use voom_domain::compiled::{
+    ClearActionsSettings, CompiledAction, CompiledCompareOp, CompiledCondition,
+    CompiledConditional, CompiledConfig, CompiledDefault, CompiledFilter, CompiledOperation,
+    CompiledPhase, CompiledPolicy, CompiledRegex, CompiledRule, CompiledRunIf, CompiledSynthesize,
+    CompiledTranscodeSettings, CompiledValueOrField, DefaultStrategy, ErrorStrategy, RulesMode,
+    RunIfTrigger, SynthChannels, SynthLanguage, SynthPosition, TrackTarget,
+};
 use voom_domain::utils::codecs;
 
 use crate::ast::*;
 use crate::errors::DslError;
 
-/// A pre-compiled regex that supports `Clone`, `Debug`, `Serialize`, and `Deserialize`.
-///
-/// Serialized as the pattern string; deserialization re-compiles the regex.
-#[derive(Clone)]
-pub struct CompiledRegex {
-    pattern: String,
-    regex: Regex,
-}
-
-impl CompiledRegex {
-    /// Compile a new regex from the given pattern.
-    pub fn new(pattern: &str) -> Result<Self, regex::Error> {
-        let regex = Regex::new(pattern)?;
-        Ok(Self {
-            pattern: pattern.to_string(),
-            regex,
-        })
+/// Safely convert an f64 to u32, returning None for negative, fractional, or out-of-range values.
+fn safe_u32(n: f64) -> Option<u32> {
+    if n >= 0.0 && n <= u32::MAX as f64 && n.fract() == 0.0 {
+        Some(n as u32)
+    } else {
+        None
     }
-
-    /// Returns the underlying compiled `Regex`.
-    #[must_use]
-    pub fn regex(&self) -> &Regex {
-        &self.regex
-    }
-
-    /// Returns the original pattern string.
-    #[must_use]
-    pub fn pattern(&self) -> &str {
-        &self.pattern
-    }
-}
-
-impl fmt::Debug for CompiledRegex {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("CompiledRegex").field(&self.pattern).finish()
-    }
-}
-
-impl Serialize for CompiledRegex {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.pattern.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for CompiledRegex {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let pattern = String::deserialize(deserializer)?;
-        CompiledRegex::new(&pattern).map_err(serde::de::Error::custom)
-    }
-}
-
-/// A compiled policy ready for evaluation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompiledPolicy {
-    pub name: String,
-    pub config: CompiledConfig,
-    pub phases: Vec<CompiledPhase>,
-    /// Topologically sorted phase execution order.
-    pub phase_order: Vec<String>,
-    /// xxHash64 of the policy source text.
-    #[serde(default)]
-    pub source_hash: String,
-}
-
-/// Compiled configuration block.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompiledConfig {
-    pub audio_languages: Vec<String>,
-    pub subtitle_languages: Vec<String>,
-    pub on_error: ErrorStrategy,
-    pub commentary_patterns: Vec<String>,
-}
-
-/// Error handling strategy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ErrorStrategy {
-    Continue,
-    Abort,
-    Skip,
-}
-
-/// A compiled phase with resolved references.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompiledPhase {
-    pub name: String,
-    pub depends_on: Vec<String>,
-    pub skip_when: Option<CompiledCondition>,
-    pub run_if: Option<CompiledRunIf>,
-    pub on_error: ErrorStrategy,
-    pub operations: Vec<CompiledOperation>,
-}
-
-/// Compiled `run_if` trigger.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompiledRunIf {
-    pub phase: String,
-    pub trigger: RunIfTrigger,
-}
-
-/// Run-if trigger type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RunIfTrigger {
-    Modified,
-    Completed,
-}
-
-/// A compiled operation within a phase.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CompiledOperation {
-    SetContainer(String),
-    Keep {
-        target: TrackTarget,
-        filter: Option<CompiledFilter>,
-    },
-    Remove {
-        target: TrackTarget,
-        filter: Option<CompiledFilter>,
-    },
-    ReorderTracks(Vec<String>),
-    SetDefaults(Vec<CompiledDefault>),
-    ClearActions {
-        target: TrackTarget,
-        settings: ClearActionsSettings,
-    },
-    Transcode {
-        target: TrackTarget,
-        codec: String,
-        settings: CompiledTranscodeSettings,
-    },
-    Synthesize(Box<CompiledSynthesize>),
-    ClearTags,
-    SetTag {
-        tag: String,
-        value: CompiledValueOrField,
-    },
-    DeleteTag(String),
-    Conditional(CompiledConditional),
-    Rules {
-        mode: RulesMode,
-        rules: Vec<CompiledRule>,
-    },
-}
-
-/// Track target category.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TrackTarget {
-    Video,
-    Audio,
-    Subtitle,
-    Attachment,
-    Any,
-}
-
-/// Defaults strategy for a track type.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompiledDefault {
-    pub target: TrackTarget,
-    pub strategy: DefaultStrategy,
-}
-
-/// Default track selection strategy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DefaultStrategy {
-    FirstPerLanguage,
-    None,
-    First,
-    All,
-}
-
-/// Settings for the `ClearActions` operation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ClearActionsSettings {
-    pub clear_all_default: bool,
-    pub clear_all_forced: bool,
-    pub clear_all_titles: bool,
-}
-
-/// Settings for the `Transcode` operation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CompiledTranscodeSettings {
-    pub preserve: Vec<String>,
-    pub crf: Option<u32>,
-    pub preset: Option<String>,
-    pub bitrate: Option<String>,
-    pub channels: Option<u32>,
-}
-
-/// Channel count for a synthesize operation — either a named preset or an explicit count.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum SynthChannels {
-    /// Named preset, e.g. `stereo`, `mono`, `5.1`.
-    Named(String),
-    /// Explicit channel count, e.g. `2`, `6`.
-    Count(u32),
-}
-
-/// Position hint for a synthesize operation — either a named position or a numeric index.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum SynthPosition {
-    /// Named position, e.g. `after_source`, `last`.
-    Named(String),
-    /// Zero-based track index.
-    Index(u32),
-}
-
-/// Synthesize operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompiledSynthesize {
-    pub name: String,
-    pub codec: Option<String>,
-    pub channels: Option<SynthChannels>,
-    pub source: Option<CompiledFilter>,
-    pub bitrate: Option<String>,
-    pub skip_if_exists: Option<CompiledFilter>,
-    pub create_if: Option<CompiledCondition>,
-    pub title: Option<String>,
-    pub language: Option<SynthLanguage>,
-    pub position: Option<SynthPosition>,
-}
-
-/// Language setting for synthesize.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SynthLanguage {
-    Inherit,
-    Fixed(String),
-}
-
-/// A conditional (when/else) block.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompiledConditional {
-    pub condition: CompiledCondition,
-    pub then_actions: Vec<CompiledAction>,
-    pub else_actions: Vec<CompiledAction>,
-}
-
-/// A named rule within a rules block.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompiledRule {
-    pub name: String,
-    pub conditional: CompiledConditional,
-}
-
-/// Rules evaluation mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RulesMode {
-    First,
-    All,
-}
-
-/// A compiled condition expression.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CompiledCondition {
-    Exists {
-        target: TrackTarget,
-        filter: Option<CompiledFilter>,
-    },
-    Count {
-        target: TrackTarget,
-        filter: Option<CompiledFilter>,
-        op: CompiledCompareOp,
-        value: f64,
-    },
-    FieldCompare {
-        path: Vec<String>,
-        op: CompiledCompareOp,
-        value: serde_json::Value,
-    },
-    FieldExists {
-        path: Vec<String>,
-    },
-    AudioIsMultiLanguage,
-    IsDubbed,
-    IsOriginal,
-    And(Vec<CompiledCondition>),
-    Or(Vec<CompiledCondition>),
-    Not(Box<CompiledCondition>),
-}
-
-/// Comparison operator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CompiledCompareOp {
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    In,
-}
-
-/// A compiled filter expression.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CompiledFilter {
-    LangIn(Vec<String>),
-    LangCompare(CompiledCompareOp, String),
-    CodecIn(Vec<String>),
-    CodecCompare(CompiledCompareOp, String),
-    Channels(CompiledCompareOp, f64),
-    Commentary,
-    Forced,
-    Default,
-    Font,
-    TitleContains(String),
-    TitleMatches(CompiledRegex),
-    And(Vec<CompiledFilter>),
-    Or(Vec<CompiledFilter>),
-    Not(Box<CompiledFilter>),
-}
-
-/// A compiled action within a conditional block.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CompiledAction {
-    Skip(Option<String>),
-    Warn(String),
-    Fail(String),
-    SetDefault {
-        target: TrackTarget,
-        filter: Option<CompiledFilter>,
-    },
-    SetForced {
-        target: TrackTarget,
-        filter: Option<CompiledFilter>,
-    },
-    SetLanguage {
-        target: TrackTarget,
-        filter: Option<CompiledFilter>,
-        value: CompiledValueOrField,
-    },
-    SetTag {
-        tag: String,
-        value: CompiledValueOrField,
-    },
-}
-
-/// Either a literal value or a field access path.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CompiledValueOrField {
-    Value(serde_json::Value),
-    Field(Vec<String>),
 }
 
 /// Compile a pre-parsed and validated AST into a [`CompiledPolicy`].
@@ -370,33 +40,27 @@ pub(crate) fn compile_ast(ast: &PolicyAst) -> std::result::Result<CompiledPolicy
         .collect::<std::result::Result<_, _>>()?;
     let phase_order = topological_sort(ast)?;
 
-    Ok(CompiledPolicy {
-        name: ast.name.clone(),
+    Ok(CompiledPolicy::new(
+        ast.name.clone(),
         config,
         phases,
         phase_order,
-        source_hash: String::new(),
-    })
+        String::new(),
+    ))
 }
 
 fn compile_config(config: Option<&ConfigNode>) -> CompiledConfig {
     match config {
-        Some(c) => CompiledConfig {
-            audio_languages: c.audio_languages.clone(),
-            subtitle_languages: c.subtitle_languages.clone(),
-            on_error: c
-                .on_error
+        Some(c) => CompiledConfig::new(
+            c.audio_languages.clone(),
+            c.subtitle_languages.clone(),
+            c.on_error
                 .as_deref()
                 .and_then(parse_error_strategy)
                 .unwrap_or(ErrorStrategy::Abort),
-            commentary_patterns: c.commentary_patterns.clone(),
-        },
-        None => CompiledConfig {
-            audio_languages: vec![],
-            subtitle_languages: vec![],
-            on_error: ErrorStrategy::Abort,
-            commentary_patterns: vec![],
-        },
+            c.commentary_patterns.clone(),
+        ),
+        None => CompiledConfig::new(vec![], vec![], ErrorStrategy::Abort, vec![]),
     }
 }
 
@@ -430,12 +94,14 @@ fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslErr
         .map(compile_condition)
         .transpose()?;
 
-    let run_if = phase.run_if.as_ref().map(|r| CompiledRunIf {
-        phase: r.phase.clone(),
-        trigger: match r.trigger.as_str() {
-            "modified" => RunIfTrigger::Modified,
-            _ => RunIfTrigger::Completed,
-        },
+    let run_if = phase.run_if.as_ref().map(|r| {
+        CompiledRunIf::new(
+            r.phase.clone(),
+            match r.trigger.as_str() {
+                "modified" => RunIfTrigger::Modified,
+                _ => RunIfTrigger::Completed,
+            },
+        )
     });
 
     let operations: Vec<CompiledOperation> = phase
@@ -444,18 +110,18 @@ fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslErr
         .map(|spanned| compile_operation(&spanned.node))
         .collect::<std::result::Result<_, _>>()?;
 
-    Ok(CompiledPhase {
-        name: phase.name.clone(),
-        depends_on: phase.depends_on.clone(),
+    Ok(CompiledPhase::new(
+        phase.name.clone(),
+        phase.depends_on.clone(),
         skip_when,
         run_if,
-        on_error: phase
+        phase
             .on_error
             .as_deref()
             .and_then(parse_error_strategy)
             .unwrap_or(ErrorStrategy::Abort),
         operations,
-    })
+    ))
 }
 
 fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperation, DslError> {
@@ -473,9 +139,11 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
         OperationNode::Defaults(items) => {
             let defaults = items
                 .iter()
-                .map(|(kind, value)| CompiledDefault {
-                    target: parse_track_target(kind),
-                    strategy: parse_default_strategy(value).unwrap_or(DefaultStrategy::None),
+                .map(|(kind, value)| {
+                    CompiledDefault::new(
+                        parse_track_target(kind),
+                        parse_default_strategy(value).unwrap_or(DefaultStrategy::None),
+                    )
                 })
                 .collect();
             Ok(CompiledOperation::SetDefaults(defaults))
@@ -496,11 +164,11 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
             };
             Ok(CompiledOperation::ClearActions {
                 target: parse_track_target(target),
-                settings: ClearActionsSettings {
-                    clear_all_default: bool_setting("clear_all_default"),
-                    clear_all_forced: bool_setting("clear_all_forced"),
-                    clear_all_titles: bool_setting("clear_all_titles"),
-                },
+                settings: ClearActionsSettings::new(
+                    bool_setting("clear_all_default"),
+                    bool_setting("clear_all_forced"),
+                    bool_setting("clear_all_titles"),
+                ),
             })
         }
         OperationNode::Transcode {
@@ -533,7 +201,7 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
                 .unwrap_or_default();
             let crf = get("crf").and_then(|v| {
                 if let Value::Number(n, _) = v {
-                    Some(*n as u32)
+                    safe_u32(*n)
                 } else {
                     None
                 }
@@ -549,7 +217,7 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
             });
             let channels = get("channels").and_then(|v| {
                 if let Value::Number(n, _) = v {
-                    Some(*n as u32)
+                    safe_u32(*n)
                 } else {
                     None
                 }
@@ -557,13 +225,7 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
             Ok(CompiledOperation::Transcode {
                 target: parse_track_target(target),
                 codec: canonical,
-                settings: CompiledTranscodeSettings {
-                    preserve,
-                    crf,
-                    preset,
-                    bitrate,
-                    channels,
-                },
+                settings: CompiledTranscodeSettings::new(preserve, crf, preset, bitrate, channels),
             })
         }
         OperationNode::Synthesize { name, settings } => Ok(CompiledOperation::Synthesize(
@@ -580,10 +242,10 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
             let compiled_rules: Vec<CompiledRule> = rules
                 .iter()
                 .map(|r| {
-                    Ok(CompiledRule {
-                        name: r.name.clone(),
-                        conditional: compile_conditional(&r.when)?,
-                    })
+                    Ok(CompiledRule::new(
+                        r.name.clone(),
+                        compile_conditional(&r.when)?,
+                    ))
                 })
                 .collect::<std::result::Result<_, DslError>>()?;
             Ok(CompiledOperation::Rules {
@@ -601,50 +263,47 @@ fn compile_synthesize(
     name: &str,
     settings: &[SynthSetting],
 ) -> std::result::Result<CompiledSynthesize, DslError> {
-    let mut synth = CompiledSynthesize {
-        name: name.to_string(),
-        codec: None,
-        channels: None,
-        source: None,
-        bitrate: None,
-        skip_if_exists: None,
-        create_if: None,
-        title: None,
-        language: None,
-        position: None,
-    };
+    let mut codec = None;
+    let mut channels = None;
+    let mut source = None;
+    let mut bitrate = None;
+    let mut skip_if_exists = None;
+    let mut create_if = None;
+    let mut title = None;
+    let mut language = None;
+    let mut position = None;
 
     for setting in settings {
         match setting {
             SynthSetting::Codec(c) => {
-                synth.codec = Some(
+                codec = Some(
                     codecs::normalize_codec(c)
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| c.clone()),
                 );
             }
             SynthSetting::Channels(v) => {
-                synth.channels = Some(match v {
-                    Value::Number(n, _) => SynthChannels::Count(*n as u32),
+                channels = Some(match v {
+                    Value::Number(n, _) => SynthChannels::Count(safe_u32(*n).unwrap_or(0)),
                     Value::Ident(s) => SynthChannels::Named(s.clone()),
                     _ => SynthChannels::Named(format!("{v:?}")),
                 });
             }
-            SynthSetting::Source(f) => synth.source = Some(compile_filter(f)?),
-            SynthSetting::Bitrate(b) => synth.bitrate = Some(b.clone()),
-            SynthSetting::SkipIfExists(f) => synth.skip_if_exists = Some(compile_filter(f)?),
-            SynthSetting::CreateIf(c) => synth.create_if = Some(compile_condition(c)?),
-            SynthSetting::Title(t) => synth.title = Some(t.clone()),
+            SynthSetting::Source(f) => source = Some(compile_filter(f)?),
+            SynthSetting::Bitrate(b) => bitrate = Some(b.clone()),
+            SynthSetting::SkipIfExists(f) => skip_if_exists = Some(compile_filter(f)?),
+            SynthSetting::CreateIf(c) => create_if = Some(compile_condition(c)?),
+            SynthSetting::Title(t) => title = Some(t.clone()),
             SynthSetting::Language(l) => {
-                synth.language = Some(if l == "inherit" {
+                language = Some(if l == "inherit" {
                     SynthLanguage::Inherit
                 } else {
                     SynthLanguage::Fixed(l.clone())
                 });
             }
             SynthSetting::Position(v) => {
-                synth.position = Some(match v {
-                    Value::Number(n, _) => SynthPosition::Index(*n as u32),
+                position = Some(match v {
+                    Value::Number(n, _) => SynthPosition::Index(safe_u32(*n).unwrap_or(0)),
                     Value::Ident(s) => SynthPosition::Named(s.clone()),
                     _ => SynthPosition::Named(format!("{v:?}")),
                 });
@@ -652,6 +311,16 @@ fn compile_synthesize(
         }
     }
 
+    let mut synth = CompiledSynthesize::new(name.to_string());
+    synth.codec = codec;
+    synth.channels = channels;
+    synth.source = source;
+    synth.bitrate = bitrate;
+    synth.skip_if_exists = skip_if_exists;
+    synth.create_if = create_if;
+    synth.title = title;
+    synth.language = language;
+    synth.position = position;
     Ok(synth)
 }
 
@@ -668,11 +337,11 @@ fn compile_conditional(when: &WhenNode) -> std::result::Result<CompiledCondition
         .map(compile_action)
         .collect::<std::result::Result<_, _>>()?;
 
-    Ok(CompiledConditional {
+    Ok(CompiledConditional::new(
         condition,
         then_actions,
         else_actions,
-    })
+    ))
 }
 
 fn compile_condition(cond: &ConditionNode) -> std::result::Result<CompiledCondition, DslError> {

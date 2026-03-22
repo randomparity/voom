@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use comfy_table::{Cell, Table};
 use console::style;
 
@@ -23,7 +23,7 @@ fn prune() -> Result<()> {
 
     let count = store
         .prune_missing_files()
-        .map_err(|e| anyhow::anyhow!("failed to prune missing files: {e}"))?;
+        .context("failed to prune missing files")?;
 
     if count == 0 {
         println!("{}", style("No stale entries found.").dim());
@@ -42,9 +42,7 @@ fn vacuum() -> Result<()> {
     let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
-    store
-        .vacuum()
-        .map_err(|e| anyhow::anyhow!("failed to vacuum database: {e}"))?;
+    store.vacuum().context("failed to vacuum database")?;
 
     println!("{} Database vacuumed.", style("OK").bold().green());
 
@@ -93,13 +91,11 @@ fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
     let store = app::open_store(&config)?;
 
     use voom_domain::storage::BadFileFilters;
-    let filters = BadFileFilters {
-        path_prefix: path,
-        ..Default::default()
-    };
+    let mut filters = BadFileFilters::default();
+    filters.path_prefix = path;
     let bad_files = store
         .list_bad_files(&filters)
-        .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
+        .context("failed to list bad files")?;
 
     if bad_files.is_empty() {
         println!("{}", style("No bad files recorded.").dim());
@@ -155,7 +151,7 @@ fn purge_bad() -> Result<()> {
     use voom_domain::storage::BadFileFilters;
     let bad_files = store
         .list_bad_files(&BadFileFilters::default())
-        .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
+        .context("failed to list bad files")?;
 
     if bad_files.is_empty() {
         println!("{}", style("No bad files recorded.").dim());
@@ -166,7 +162,7 @@ fn purge_bad() -> Result<()> {
     for bf in &bad_files {
         store
             .delete_bad_file(&bf.id)
-            .map_err(|e| anyhow::anyhow!("failed to delete bad file entry: {e}"))?;
+            .context("failed to delete bad file entry")?;
     }
 
     println!(
@@ -185,7 +181,7 @@ async fn clean_bad(yes: bool) -> Result<()> {
     use voom_domain::storage::BadFileFilters;
     let bad_files = store
         .list_bad_files(&BadFileFilters::default())
-        .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
+        .context("failed to list bad files")?;
 
     if bad_files.is_empty() {
         println!("{}", style("No bad files recorded.").dim());
@@ -249,7 +245,7 @@ async fn clean_bad(yes: bool) -> Result<()> {
         if should_delete_entry {
             store
                 .delete_bad_file(&bf.id)
-                .map_err(|e| anyhow::anyhow!("failed to delete bad file entry: {e}"))?;
+                .context("failed to delete bad file entry")?;
         }
     }
 

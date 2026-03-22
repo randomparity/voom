@@ -82,8 +82,7 @@ fn show(file: std::path::PathBuf) -> Result<()> {
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
-    let compiled = voom_dsl::compile_policy(&source)
-        .map_err(|e| anyhow::anyhow!("policy compilation failed: {e}"))?;
+    let compiled = voom_dsl::compile_policy(&source).context("policy compilation failed")?;
 
     println!(
         "{} \"{}\"",
@@ -140,8 +139,7 @@ fn format(file: std::path::PathBuf) -> Result<()> {
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
-    let ast =
-        voom_dsl::parse_policy(&source).map_err(|e| anyhow::anyhow!("policy parse failed: {e}"))?;
+    let ast = voom_dsl::parse_policy(&source).context("policy parse failed")?;
     let formatted = voom_dsl::format_policy(&ast);
 
     std::fs::write(&file, &formatted)

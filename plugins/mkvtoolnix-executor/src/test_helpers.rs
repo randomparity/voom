@@ -7,10 +7,8 @@ pub fn make_action(
     track_index: Option<u32>,
     params: ActionParams,
 ) -> PlannedAction {
-    PlannedAction {
-        operation: op,
-        track_index,
-        parameters: params,
-        description: format!("{:?} action", op),
+    match track_index {
+        Some(idx) => PlannedAction::track_op(op, idx, params, format!("{:?} action", op)),
+        None => PlannedAction::file_op(op, params, format!("{:?} action", op)),
     }
 }

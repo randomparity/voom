@@ -56,6 +56,7 @@ pub trait HostFunctions {
 }
 
 /// HTTP response returned by the host's `http_get` function.
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct HttpResponse {
     /// HTTP status code.
@@ -65,6 +66,7 @@ pub struct HttpResponse {
 }
 
 /// Output from a tool execution via the host's `run_tool` function.
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct ToolOutput {
     /// Process exit code.

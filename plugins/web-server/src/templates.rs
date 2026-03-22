@@ -28,10 +28,9 @@ pub async fn dashboard(State(state): State<AppState>) -> HtmlResult {
 
     let (files, total_files, job_counts) = spawn_store_op(move || {
         let total_files = store.count_files(&FileFilters::default())?;
-        let files = store.list_files(&FileFilters {
-            limit: Some(10),
-            ..Default::default()
-        })?;
+        let mut file_filters = FileFilters::default();
+        file_filters.limit = Some(10);
+        let files = store.list_files(&file_filters)?;
         let job_counts = store.count_jobs_by_status()?;
         Ok((files, total_files, job_counts))
     })
@@ -64,18 +63,17 @@ pub async fn library(
     let per_page = 50u32;
     let offset = (page - 1) * per_page;
 
-    let filters = FileFilters {
-        container: params
-            .filters
-            .container
-            .as_deref()
-            .map(Container::from_extension),
-        has_codec: params.filters.codec.clone(),
-        has_language: params.filters.language.clone(),
-        path_prefix: params.filters.path_prefix.clone(),
-        limit: Some(per_page),
-        offset: Some(offset),
-    };
+    let mut filters = FileFilters::default();
+    filters.container = params
+        .filters
+        .container
+        .as_deref()
+        .map(Container::from_extension);
+    filters.has_codec = params.filters.codec.clone();
+    filters.has_language = params.filters.language.clone();
+    filters.path_prefix = params.filters.path_prefix.clone();
+    filters.limit = Some(per_page);
+    filters.offset = Some(offset);
 
     let files = spawn_store_op(move || store.list_files(&filters)).await?;
 
@@ -164,11 +162,9 @@ pub async fn jobs(
     let filter_status = params.status.as_deref().and_then(JobStatus::parse);
 
     let (jobs, counts) = spawn_store_op(move || {
-        let jobs = store.list_jobs(&JobFilters {
-            status: filter_status,
-            limit: None,
-            ..Default::default()
-        })?;
+        let mut job_filters = JobFilters::default();
+        job_filters.status = filter_status;
+        let jobs = store.list_jobs(&job_filters)?;
         let counts = store.count_jobs_by_status()?;
         Ok((jobs, counts))
     })

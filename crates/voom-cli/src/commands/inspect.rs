@@ -24,12 +24,18 @@ pub fn run(args: InspectArgs) -> Result<()> {
     let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
-    if let Ok(Some(file)) = store.file_by_path(&path) {
-        match args.format {
-            OutputFormat::Json => output::format_file_json(&file),
-            OutputFormat::Table => output::format_file_info(&file, args.tracks_only),
+    match store.file_by_path(&path) {
+        Ok(Some(file)) => {
+            match args.format {
+                OutputFormat::Json => output::format_file_json(&file),
+                OutputFormat::Table => output::format_file_info(&file, args.tracks_only),
+            }
+            return Ok(());
         }
-        return Ok(());
+        Ok(None) => {} // Not in DB — fall through to live introspection
+        Err(e) => {
+            tracing::warn!(error = %e, "database lookup failed, falling back to live introspection");
+        }
     }
 
     // Not in DB — introspect live
@@ -43,7 +49,7 @@ pub fn run(args: InspectArgs) -> Result<()> {
 
     let event = introspector
         .introspect(&path, size, "")
-        .map_err(|e| anyhow::anyhow!("Introspection failed: {e}"))?;
+        .context("Introspection failed")?;
 
     match args.format {
         OutputFormat::Json => output::format_file_json(&event.file),

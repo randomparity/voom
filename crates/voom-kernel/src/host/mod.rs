@@ -16,6 +16,7 @@ use std::sync::Arc;
 pub const MAX_PLUGIN_DATA_VALUE_SIZE: usize = 1024 * 1024;
 
 /// Resource limits for WASM plugin execution.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct WasmResourceLimits {
     /// Maximum memory in bytes a WASM module can allocate (default: 256 MiB).
@@ -37,6 +38,7 @@ impl Default for WasmResourceLimits {
 ///
 /// Each WASM plugin instance gets its own `HostState`, which holds
 /// plugin-specific data and shared references to host services.
+#[non_exhaustive]
 pub struct HostState {
     /// Name of the plugin this state belongs to.
     pub plugin_name: String,
@@ -137,6 +139,7 @@ impl HostState {
 }
 
 /// Output from running an external tool.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
     pub exit_code: i32,
@@ -145,6 +148,7 @@ pub struct ToolOutput {
 }
 
 /// Response from an HTTP request.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct HttpResponse {
     pub status: u16,

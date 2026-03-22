@@ -28,6 +28,7 @@ pub enum ScanProgress {
 }
 
 /// Configuration for a discovery scan.
+#[non_exhaustive]
 pub struct ScanOptions {
     /// Root directory to scan.
     pub root: std::path::PathBuf,

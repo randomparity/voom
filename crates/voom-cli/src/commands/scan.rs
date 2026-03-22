@@ -51,7 +51,7 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     match store.prune_missing_files_under(&path) {
         Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
         Ok(_) => {}
-        Err(e) => eprintln!("{} auto-prune failed: {e}", style("Warning:").yellow()),
+        Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
     }
 
     println!(
@@ -77,58 +77,54 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     let start = Instant::now();
     let hash_files = !args.no_hash;
 
-    let options = voom_discovery::ScanOptions {
-        root: path,
-        recursive: args.recursive,
-        hash_files,
-        workers: args.workers,
-        on_progress: Some(Box::new(move |progress| {
-            match progress {
-                voom_discovery::ScanProgress::Discovered { count, path } => {
-                    // 2 = spinner + space; the rest is the message prefix
-                    let prefix = format!("Discovering... {count} files found — ");
-                    let max_name = max_filename_len(2 + prefix.len());
-                    let name = path
-                        .file_name()
-                        .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
-                        .unwrap_or_default();
-                    pb_clone.set_message(format!("{prefix}{name}"));
-                }
-                voom_discovery::ScanProgress::Processing {
-                    current,
-                    total,
-                    path,
-                } => {
-                    // Switch to determinate progress on first processing event
-                    if current == 1 {
-                        pb_clone.set_length(total as u64);
-                        pb_clone.set_style(
-                            ProgressStyle::with_template(
-                                "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}"
-                            )
-                            .expect("valid progress template")
-                            .progress_chars("#>-"),
-                        );
-                    }
-                    let eta = format_eta(start.elapsed(), current, total);
-                    let prefix = if hash_files { "Hashing" } else { "Processing" };
-                    let max_name =
-                        max_filename_len(PROGRESS_FIXED_WIDTH + eta.len() + prefix.len() + 3);
-                    let name = path
-                        .file_name()
-                        .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
-                        .unwrap_or_default();
-                    pb_clone.set_position(current as u64);
-                    pb_clone.set_message(format!("{} {}{}", prefix, name, eta));
-                    file_count_clone.store(total as u64, Ordering::Relaxed);
-                }
+    let mut options = voom_discovery::ScanOptions::new(path);
+    options.recursive = args.recursive;
+    options.hash_files = hash_files;
+    options.workers = args.workers;
+    options.on_progress = Some(Box::new(move |progress| {
+        match progress {
+            voom_discovery::ScanProgress::Discovered { count, path } => {
+                // 2 = spinner + space; the rest is the message prefix
+                let prefix = format!("Discovering... {count} files found — ");
+                let max_name = max_filename_len(2 + prefix.len());
+                let name = path
+                    .file_name()
+                    .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
+                    .unwrap_or_default();
+                pb_clone.set_message(format!("{prefix}{name}"));
             }
-        })),
-    };
+            voom_discovery::ScanProgress::Processing {
+                current,
+                total,
+                path,
+            } => {
+                // Switch to determinate progress on first processing event
+                if current == 1 {
+                    pb_clone.set_length(total as u64);
+                    pb_clone.set_style(
+                        ProgressStyle::with_template(
+                            "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}",
+                        )
+                        .expect("valid progress template")
+                        .progress_chars("#>-"),
+                    );
+                }
+                let eta = format_eta(start.elapsed(), current, total);
+                let prefix = if hash_files { "Hashing" } else { "Processing" };
+                let max_name =
+                    max_filename_len(PROGRESS_FIXED_WIDTH + eta.len() + prefix.len() + 3);
+                let name = path
+                    .file_name()
+                    .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
+                    .unwrap_or_default();
+                pb_clone.set_position(current as u64);
+                pb_clone.set_message(format!("{} {}{}", prefix, name, eta));
+                file_count_clone.store(total as u64, Ordering::Relaxed);
+            }
+        }
+    }));
 
-    let events = discovery
-        .scan(&options)
-        .map_err(|e| anyhow::anyhow!("filesystem scan failed: {e}"))?;
+    let events = discovery.scan(&options).context("filesystem scan failed")?;
 
     pb.finish_and_clear();
 
@@ -160,11 +156,18 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
         );
     }
 
-    // Introspect each discovered file
-    // Note: FileDiscovered events are NOT dispatched through the kernel because
-    // the scan command drives introspection directly (for progress reporting).
-    // The ffprobe-introspector plugin also handles "file.discovered" events,
-    // which would cause every file to be introspected twice.
+    // Introspect each discovered file using the dual-dispatch pattern:
+    //
+    // 1. Direct call — introspect_file() calls FfprobeIntrospectorPlugin::introspect
+    //    directly so scan can drive the progress bar deterministically.
+    // 2. Event publish — introspect_file() dispatches the resulting FileIntrospected
+    //    event through the kernel for persistence (sqlite-store) and other subscribers.
+    //
+    // FileDiscovered events are intentionally NOT dispatched here. The
+    // ffprobe-introspector plugin's on_event handler also listens for
+    // "file.discovered", so dispatching it would trigger a second introspection
+    // of every file. The scan command owns the full discovery→introspection
+    // pipeline directly; only the results are published.
     let pb = ProgressBar::new(events.len() as u64);
     pb.set_style(
         ProgressStyle::with_template(
@@ -327,18 +330,15 @@ mod tests {
         kernel.register_plugin(recorder.clone(), 50);
 
         // Simulate discovery event
-        let discovered = FileDiscoveredEvent {
-            path: PathBuf::from("/tmp/test.mkv"),
-            size: 1024,
-            content_hash: "abc123".into(),
-        };
+        let discovered =
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/test.mkv"), 1024, "abc123".into());
         kernel.dispatch(Event::FileDiscovered(discovered));
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 1);
 
         // Simulate introspection event
         let file = test_media_file("/tmp/test.mkv");
-        kernel.dispatch(Event::FileIntrospected(FileIntrospectedEvent { file }));
+        kernel.dispatch(Event::FileIntrospected(FileIntrospectedEvent::new(file)));
 
         assert_eq!(recorder.introspected_count.load(Ordering::SeqCst), 1);
     }
@@ -368,21 +368,9 @@ mod tests {
         kernel.register_plugin(recorder.clone(), 50);
 
         let events = vec![
-            FileDiscoveredEvent {
-                path: PathBuf::from("/tmp/a.mkv"),
-                size: 100,
-                content_hash: "aaa".into(),
-            },
-            FileDiscoveredEvent {
-                path: PathBuf::from("/tmp/b.mp4"),
-                size: 200,
-                content_hash: "bbb".into(),
-            },
-            FileDiscoveredEvent {
-                path: PathBuf::from("/tmp/c.avi"),
-                size: 300,
-                content_hash: "ccc".into(),
-            },
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/a.mkv"), 100, "aaa".into()),
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/b.mp4"), 200, "bbb".into()),
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/c.avi"), 300, "ccc".into()),
         ];
 
         for event in &events {

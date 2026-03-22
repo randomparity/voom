@@ -18,11 +18,26 @@ use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 
 /// Run the process command.
 ///
-/// This function calls the discovery, introspector, policy evaluator, and phase
-/// orchestrator plugins directly rather than routing through the event bus. This
-/// direct-call pattern is intentional for CLI commands: it enables deterministic
-/// progress reporting, worker-pool concurrency control, and structured error
-/// handling that would be difficult to achieve through the asynchronous pub/sub bus.
+/// Uses the dual-dispatch pattern (direct-call + event-publish) throughout:
+///
+/// - **Discovery** — called directly for progress/filtering control, then each
+///   `FileDiscovered` event IS dispatched so sqlite-store tracks the file.
+///   (Unlike `scan`, process can safely dispatch these because it does not
+///   register the ffprobe-introspector as a kernel plugin listening for
+///   discovery events.)
+/// - **Introspection** — called directly via `introspect_file()` for
+///   deterministic worker-pool concurrency. The result `FileIntrospected`
+///   event is dispatched for persistence.
+/// - **Policy evaluation & orchestration** — called directly to produce `Plan`
+///   structs. No events dispatched at this stage (avoids triggering executors
+///   during dry-run).
+/// - **Plan execution** — `PlanExecuting` and `PlanCreated` events ARE
+///   dispatched through the kernel so that backup-manager and executor plugins
+///   handle them via the event bus.
+///
+/// This split gives the CLI full control over ordering, concurrency, and
+/// progress reporting while still letting kernel-registered plugins react to
+/// the events they care about.
 pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let config = config::load_config()?;
     let (kernel, store) = app::bootstrap_kernel_with_store(&config)?;
@@ -41,7 +56,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     match store.prune_missing_files_under(&path) {
         Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
         Ok(_) => {}
-        Err(e) => eprintln!("{} auto-prune failed: {e}", style("Warning:").yellow()),
+        Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
     }
 
     if token.is_cancelled() {
@@ -60,7 +75,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     if !args.force_rescan {
         let bad_files = store
             .list_bad_files(&voom_domain::storage::BadFileFilters::default())
-            .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
+            .context("failed to list bad files")?;
         if !bad_files.is_empty() {
             let bad_paths: std::collections::HashSet<_> =
                 bad_files.iter().map(|bf| &bf.path).collect();
@@ -145,8 +160,7 @@ fn load_and_compile_policy(args: &ProcessArgs) -> Result<voom_dsl::CompiledPolic
     let policy_source = std::fs::read_to_string(&args.policy)
         .with_context(|| format!("Failed to read policy: {}", args.policy.display()))?;
 
-    voom_dsl::compile_policy(&policy_source)
-        .map_err(|e| anyhow::anyhow!("policy compilation failed: {e}"))
+    voom_dsl::compile_policy(&policy_source).context("policy compilation failed")
 }
 
 /// Print the header line describing what we are about to do.
@@ -168,28 +182,25 @@ fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
     );
 }
 
-/// Walk the filesystem and discover media files, publishing events to the bus.
+/// Walk the filesystem and discover media files (dual-dispatch: direct + event-publish).
 ///
 /// Creates a standalone `DiscoveryPlugin` for direct API access (scan options,
-/// progress callbacks) that the event-bus path does not support. Events are
-/// still dispatched to the kernel so that subscribers (storage, SSE) receive them.
+/// progress callbacks) that the event-bus path does not support. `FileDiscovered`
+/// events are dispatched to the kernel so that subscribers (storage, SSE) track
+/// the files. This is safe here because process does not register an introspector
+/// plugin that would react to discovery events — introspection is driven
+/// separately by `process_single_file`.
 fn discover_files(
     path: &std::path::Path,
     args: &ProcessArgs,
     kernel: &voom_kernel::Kernel,
 ) -> Result<Vec<voom_domain::events::FileDiscoveredEvent>> {
     let discovery = voom_discovery::DiscoveryPlugin::new();
-    let options = voom_discovery::ScanOptions {
-        root: path.to_path_buf(),
-        recursive: true,
-        hash_files: !args.no_backup,
-        workers: args.workers,
-        on_progress: None,
-    };
+    let mut options = voom_discovery::ScanOptions::new(path.to_path_buf());
+    options.hash_files = !args.no_backup;
+    options.workers = args.workers;
 
-    let events = discovery
-        .scan(&options)
-        .map_err(|e| anyhow::anyhow!("filesystem scan failed: {e}"))?;
+    let events = discovery.scan(&options).context("filesystem scan failed")?;
 
     for event in &events {
         kernel.dispatch(Event::FileDiscovered(event.clone()));
@@ -209,22 +220,19 @@ struct ProcessJobPayload {
 /// Build work items from discovery events for the worker pool.
 fn build_work_items(
     events: &[voom_domain::events::FileDiscoveredEvent],
-) -> Vec<voom_job_manager::worker::WorkItem> {
+) -> Vec<voom_job_manager::worker::WorkItem<ProcessJobPayload>> {
     events
         .iter()
         .map(|evt| {
-            let payload = ProcessJobPayload {
-                path: evt.path.to_string_lossy().into_owned(),
-                size: evt.size,
-                content_hash: evt.content_hash.clone(),
-            };
-            let value =
-                serde_json::to_value(&payload).expect("ProcessJobPayload is always serializable");
-            voom_job_manager::worker::WorkItem {
-                job_type: voom_domain::job::JobType::Process,
-                priority: 100,
-                payload: Some(value),
-            }
+            voom_job_manager::worker::WorkItem::new(
+                voom_domain::job::JobType::Process,
+                100,
+                Some(ProcessJobPayload {
+                    path: evt.path.to_string_lossy().into_owned(),
+                    size: evt.size,
+                    content_hash: evt.content_hash.clone(),
+                }),
+            )
         })
         .collect()
 }
@@ -237,15 +245,22 @@ fn create_worker_pool(
 ) -> Result<(WorkerPool, usize)> {
     let queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
 
-    let config = WorkerPoolConfig {
-        max_workers: args.workers,
-        worker_prefix: "voom".to_string(),
-    };
+    let mut config = WorkerPoolConfig::default();
+    config.max_workers = args.workers;
+    config.worker_prefix = "voom".to_string();
     let effective_workers = config.effective_workers();
 
     let pool = WorkerPool::new(queue, config, token);
 
     Ok((pool, effective_workers))
+}
+
+/// Extract and deserialize the job payload from a process job.
+fn parse_job_payload(
+    job: &voom_domain::job::Job,
+) -> std::result::Result<ProcessJobPayload, String> {
+    let raw_payload = job.payload.as_ref().ok_or("missing payload")?;
+    serde_json::from_value(raw_payload.clone()).map_err(|e| format!("invalid payload: {e}"))
 }
 
 /// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
@@ -257,9 +272,7 @@ async fn process_single_file(
     token: &CancellationToken,
     ffprobe_path: Option<&str>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
-    let raw_payload = job.payload.as_ref().ok_or("missing payload")?;
-    let payload: ProcessJobPayload =
-        serde_json::from_value(raw_payload.clone()).map_err(|e| format!("invalid payload: {e}"))?;
+    let payload = parse_job_payload(&job)?;
 
     let path = std::path::PathBuf::from(&payload.path);
 
@@ -383,50 +396,42 @@ fn execute_single_plan(
     file: &voom_domain::media::MediaFile,
     kernel: &voom_kernel::Kernel,
 ) {
-    kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
-        path: file.path.clone(),
-        phase_name: plan.phase_name.clone(),
-        action_count: plan.actions.len(),
-    }));
+    kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent::new(
+        file.path.clone(),
+        plan.phase_name.clone(),
+        plan.actions.len(),
+    )));
 
-    let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
+    let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
 
     let claimed = results.iter().any(|r| r.claimed);
     let exec_error = results.iter().find_map(|r| r.execution_error.clone());
 
     if claimed && exec_error.is_none() {
         // An executor plugin claimed and successfully executed the plan
-        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
-            plan_id: plan.id,
-            path: file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            actions_applied: plan.actions.len(),
-        }));
+        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
+            plan.id,
+            file.path.clone(),
+            plan.phase_name.clone(),
+            plan.actions.len(),
+        )));
     } else if let Some(error) = exec_error {
         // An executor claimed the plan but failed
-        kernel.dispatch(Event::PlanFailed(PlanFailedEvent {
-            plan_id: plan.id,
-            path: file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            error,
-            error_code: None,
-            plugin_name: results
-                .iter()
-                .find(|r| r.claimed)
-                .map(|r| r.plugin_name.clone()),
-            error_chain: vec![],
-        }));
+        let mut failed =
+            PlanFailedEvent::new(plan.id, file.path.clone(), plan.phase_name.clone(), error);
+        failed.plugin_name = results
+            .iter()
+            .find(|r| r.claimed)
+            .map(|r| r.plugin_name.clone());
+        kernel.dispatch(Event::PlanFailed(failed));
     } else {
         // No executor claimed the plan — emit PlanFailed
-        kernel.dispatch(Event::PlanFailed(PlanFailedEvent {
-            plan_id: plan.id,
-            path: file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            error: "no executor available for plan".into(),
-            error_code: None,
-            plugin_name: None,
-            error_chain: vec![],
-        }));
+        kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
+            plan.id,
+            file.path.clone(),
+            plan.phase_name.clone(),
+            "no executor available for plan",
+        )));
     }
 }
 
@@ -602,105 +607,60 @@ mod tests {
     }
 
     fn test_plan(phase: &str, skipped: bool) -> Plan {
-        Plan {
-            id: uuid::Uuid::new_v4(),
-            file: MediaFile::new(PathBuf::from("/tmp/test.mkv")),
-            policy_name: "test-policy".into(),
-            phase_name: phase.into(),
-            actions: vec![PlannedAction {
-                operation: OperationType::SetDefault,
-                track_index: Some(0),
-                parameters: ActionParams::Empty,
-                description: "test action".into(),
-            }],
-            warnings: vec![],
-            skip_reason: if skipped {
-                Some("skipped".into())
-            } else {
-                None
-            },
-            policy_hash: None,
-            evaluated_at: chrono::Utc::now(),
+        let mut plan = Plan::new(
+            MediaFile::new(PathBuf::from("/tmp/test.mkv")),
+            "test-policy",
+            phase,
+        );
+        plan.actions = vec![PlannedAction::track_op(
+            OperationType::SetDefault,
+            0,
+            ActionParams::Empty,
+            "test action",
+        )];
+        if skipped {
+            plan.skip_reason = Some("skipped".into());
         }
+        plan
     }
 
     #[tokio::test]
-    async fn test_plan_lifecycle_events_dispatched() {
+    async fn test_execute_single_plan_dispatches_lifecycle_events() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(PlanRecordingPlugin::new());
         kernel.register_plugin(recorder.clone(), 50);
 
         let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
-
-        // Simulate: PlanExecuting + PlanCreated + PlanCompleted for non-skipped plan
         let plan = test_plan("normalize", false);
-        kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
-            path: file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            action_count: plan.actions.len(),
-        }));
-        kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
-        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
-            plan_id: plan.id,
-            path: file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            actions_applied: plan.actions.len(),
-        }));
+
+        // Call the actual production function
+        execute_single_plan(&plan, &file, &kernel);
 
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
-        assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn test_skipped_plans_no_lifecycle_events() {
-        let mut kernel = voom_kernel::Kernel::new();
-        let recorder = Arc::new(PlanRecordingPlugin::new());
-        kernel.register_plugin(recorder.clone(), 50);
-
-        // Skipped plans should NOT get PlanCreated/PlanExecuting/PlanCompleted
-        let plan = test_plan("normalize", true);
-        assert!(plan.is_skipped());
-
-        // Simulate the process.rs logic: skip if plan.is_skipped()
-        if !plan.is_skipped() {
-            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
-        }
-
-        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
-        assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
+        // Plan is unclaimed (no executor registered), so PlanFailed is dispatched instead of PlanCompleted
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
-    async fn test_dry_run_no_executing_events() {
+    async fn test_execute_plans_skips_skipped_plans() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(PlanRecordingPlugin::new());
         kernel.register_plugin(recorder.clone(), 50);
 
         let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
-        let plan = test_plan("normalize", false);
-        let dry_run = true;
+        let skipped_plan = test_plan("normalize", true);
+        assert!(skipped_plan.is_skipped());
 
-        // Simulate the process.rs logic: in dry_run mode, no events are dispatched
-        if !dry_run {
-            kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
-                path: file.path.clone(),
-                phase_name: plan.phase_name.clone(),
-                action_count: plan.actions.len(),
-            }));
-            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
-            kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
-                plan_id: plan.id,
-                path: file.path.clone(),
-                phase_name: plan.phase_name.clone(),
-                actions_applied: plan.actions.len(),
-            }));
-        }
+        let result =
+            voom_phase_orchestrator::OrchestrationResult::new(vec![skipped_plan], vec![], false);
 
-        // No events in dry_run
-        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
+        let token = CancellationToken::new();
+        let _ = execute_plans(&file, &result, &kernel, true, &token);
+
+        // Skipped plans should NOT trigger any lifecycle events
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
+        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
     }
 
@@ -711,16 +671,12 @@ mod tests {
         kernel.register_plugin(recorder.clone(), 50);
 
         // Simulate discovery events
-        let discovered = FileDiscoveredEvent {
-            path: PathBuf::from("/tmp/a.mkv"),
-            size: 1024,
-            content_hash: "abc".into(),
-        };
+        let discovered = FileDiscoveredEvent::new(PathBuf::from("/tmp/a.mkv"), 1024, "abc".into());
         kernel.dispatch(Event::FileDiscovered(discovered));
 
         // Simulate introspection event
         let file = MediaFile::new(PathBuf::from("/tmp/a.mkv"));
-        kernel.dispatch(Event::FileIntrospected(FileIntrospectedEvent { file }));
+        kernel.dispatch(Event::FileIntrospected(FileIntrospectedEvent::new(file)));
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.introspected_count.load(Ordering::SeqCst), 1);

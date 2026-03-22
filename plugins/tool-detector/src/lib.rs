@@ -12,6 +12,7 @@ use voom_domain::events::ToolDetectedEvent;
 use voom_kernel::{Plugin, PluginContext};
 
 /// A detected external tool with its path and version.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct DetectedTool {
     pub name: String,
@@ -48,11 +49,9 @@ impl ToolDetectorPlugin {
         }
     }
 
-    /// Detect all known tools and cache results. Returns events for each found tool.
-    pub fn detect_all(&mut self) -> Vec<ToolDetectedEvent> {
+    /// Populate the tool cache by detecting all known tools on PATH.
+    fn populate_cache(&mut self) {
         self.cache.clear();
-        let mut events = Vec::new();
-
         for &(name, args) in KNOWN_TOOLS {
             if let Some(tool) = detect_tool(name, args) {
                 tracing::info!(
@@ -61,18 +60,22 @@ impl ToolDetectorPlugin {
                     path = %tool.path.display(),
                     "tool detected"
                 );
-                events.push(ToolDetectedEvent {
-                    tool_name: tool.name.clone(),
-                    version: tool.version.clone(),
-                    path: tool.path.clone(),
-                });
                 self.cache.insert(tool.name.clone(), tool);
             } else {
                 tracing::debug!(tool = name, "tool not found");
             }
         }
+    }
 
-        events
+    /// Detect all known tools, refresh the cache, and return events for each found tool.
+    pub fn detect_all(&mut self) -> Vec<ToolDetectedEvent> {
+        self.populate_cache();
+        self.cache
+            .values()
+            .map(|tool| {
+                ToolDetectedEvent::new(tool.name.clone(), tool.version.clone(), tool.path.clone())
+            })
+            .collect()
     }
 
     /// Check if a specific tool is available.
@@ -121,9 +124,9 @@ impl Plugin for ToolDetectorPlugin {
     }
 
     fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        let events = self.detect_all();
+        self.populate_cache();
         tracing::info!(
-            found = events.len(),
+            found = self.cache.len(),
             total = KNOWN_TOOLS.len(),
             "tool detection complete"
         );

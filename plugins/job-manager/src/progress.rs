@@ -93,11 +93,9 @@ impl ProgressReporter for StorageReporter {
     fn on_job_start(&self, _job: &Job) {}
 
     fn on_job_progress(&self, job_id: Uuid, progress: f64, message: Option<&str>) {
-        let update = voom_domain::job::JobUpdate {
-            progress: Some(progress),
-            progress_message: Some(message.map(|s| s.to_string())),
-            ..Default::default()
-        };
+        let mut update = voom_domain::job::JobUpdate::default();
+        update.progress = Some(progress);
+        update.progress_message = Some(message.map(|s| s.to_string()));
         if let Err(e) = self.store.update_job(&job_id, &update) {
             tracing::warn!(%job_id, error = %e, "Failed to update job progress in storage");
         }

@@ -235,11 +235,11 @@ mod tests {
     fn test_on_event_returns_none_when_store_not_initialized() {
         let plugin = SqliteStorePlugin::new();
         // Even for a handled event type, returns None if store is not init'd
-        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent {
-            tool_name: "ffprobe".into(),
-            version: "6.0".into(),
-            path: "/usr/bin/ffprobe".into(),
-        });
+        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent::new(
+            "ffprobe",
+            "6.0",
+            "/usr/bin/ffprobe".into(),
+        ));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
     }
@@ -248,10 +248,7 @@ mod tests {
     fn test_init_creates_store() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
-        let ctx = PluginContext {
-            config: serde_json::Value::Null,
-            data_dir: tmp.path().to_path_buf(),
-        };
+        let ctx = PluginContext::new(serde_json::Value::Null, tmp.path().to_path_buf());
         plugin.init(&ctx).unwrap();
         assert!(plugin.store().is_some());
     }
@@ -261,10 +258,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let nested = tmp.path().join("nested").join("dir");
         let mut plugin = SqliteStorePlugin::new();
-        let ctx = PluginContext {
-            config: serde_json::Value::Null,
-            data_dir: nested,
-        };
+        let ctx = PluginContext::new(serde_json::Value::Null, nested);
         plugin.init(&ctx).unwrap();
         assert!(plugin.store().is_some());
     }
@@ -279,20 +273,17 @@ mod tests {
     fn test_on_event_handles_introspection_failed() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
-        let ctx = PluginContext {
-            config: serde_json::Value::Null,
-            data_dir: tmp.path().to_path_buf(),
-        };
+        let ctx = PluginContext::new(serde_json::Value::Null, tmp.path().to_path_buf());
         plugin.init(&ctx).unwrap();
 
         let event =
-            Event::FileIntrospectionFailed(voom_domain::events::FileIntrospectionFailedEvent {
-                path: "/media/corrupt.mkv".into(),
-                size: 2048,
-                content_hash: Some("abc123".into()),
-                error: "ffprobe failed".into(),
-                error_source: voom_domain::bad_file::BadFileSource::Introspection,
-            });
+            Event::FileIntrospectionFailed(voom_domain::events::FileIntrospectionFailedEvent::new(
+                "/media/corrupt.mkv".into(),
+                2048,
+                Some("abc123".into()),
+                "ffprobe failed".into(),
+                voom_domain::bad_file::BadFileSource::Introspection,
+            ));
         plugin.on_event(&event).unwrap();
 
         // Verify bad file was stored
@@ -309,28 +300,25 @@ mod tests {
     fn test_on_event_introspected_clears_bad_file() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
-        let ctx = PluginContext {
-            config: serde_json::Value::Null,
-            data_dir: tmp.path().to_path_buf(),
-        };
+        let ctx = PluginContext::new(serde_json::Value::Null, tmp.path().to_path_buf());
         plugin.init(&ctx).unwrap();
 
         // First mark file as bad
         let fail_event =
-            Event::FileIntrospectionFailed(voom_domain::events::FileIntrospectionFailedEvent {
-                path: "/media/recovered.mkv".into(),
-                size: 2048,
-                content_hash: Some("abc123".into()),
-                error: "ffprobe failed".into(),
-                error_source: voom_domain::bad_file::BadFileSource::Introspection,
-            });
+            Event::FileIntrospectionFailed(voom_domain::events::FileIntrospectionFailedEvent::new(
+                "/media/recovered.mkv".into(),
+                2048,
+                Some("abc123".into()),
+                "ffprobe failed".into(),
+                voom_domain::bad_file::BadFileSource::Introspection,
+            ));
         plugin.on_event(&fail_event).unwrap();
 
         // Then successfully introspect it
         let file =
             voom_domain::media::MediaFile::new(std::path::PathBuf::from("/media/recovered.mkv"));
         let success_event =
-            Event::FileIntrospected(voom_domain::events::FileIntrospectedEvent { file });
+            Event::FileIntrospected(voom_domain::events::FileIntrospectedEvent::new(file));
         plugin.on_event(&success_event).unwrap();
 
         // Bad file entry should be cleared
@@ -346,17 +334,14 @@ mod tests {
     fn test_on_event_with_initialized_store_handles_tool_detected() {
         let tmp = tempfile::tempdir().unwrap();
         let mut plugin = SqliteStorePlugin::new();
-        let ctx = PluginContext {
-            config: serde_json::Value::Null,
-            data_dir: tmp.path().to_path_buf(),
-        };
+        let ctx = PluginContext::new(serde_json::Value::Null, tmp.path().to_path_buf());
         plugin.init(&ctx).unwrap();
 
-        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent {
-            tool_name: "ffprobe".into(),
-            version: "6.0".into(),
-            path: "/usr/bin/ffprobe".into(),
-        });
+        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent::new(
+            "ffprobe",
+            "6.0",
+            "/usr/bin/ffprobe".into(),
+        ));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none()); // on_event always returns None for store
 

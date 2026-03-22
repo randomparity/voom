@@ -12,12 +12,12 @@ description = "MKVToolNix executor plugin for VOOM — mkvmerge and mkvpropedit 
 [dependencies]
 voom-domain = { workspace = true }
 voom-kernel = { workspace = true }
+voom-process = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
-wait-timeout = { workspace = true }
 scopeguard = { workspace = true }
 
 [dev-dependencies]

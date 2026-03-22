@@ -68,18 +68,17 @@ pub async fn list_files(
 ) -> Result<Json<FileListResponse>, WebError> {
     let store = state.store.clone();
     let count_store = state.store.clone();
-    let filters = FileFilters {
-        container: params
-            .filters
-            .container
-            .as_deref()
-            .map(Container::from_extension),
-        has_codec: truncate_filter(params.filters.codec),
-        has_language: truncate_filter(params.filters.language),
-        path_prefix: truncate_filter(params.filters.path_prefix),
-        limit: Some(params.limit.unwrap_or(100).min(MAX_LIMIT)),
-        offset: Some(params.offset.unwrap_or(0).min(MAX_OFFSET)),
-    };
+    let mut filters = FileFilters::default();
+    filters.container = params
+        .filters
+        .container
+        .as_deref()
+        .map(Container::from_extension);
+    filters.has_codec = truncate_filter(params.filters.codec);
+    filters.has_language = truncate_filter(params.filters.language);
+    filters.path_prefix = truncate_filter(params.filters.path_prefix);
+    filters.limit = Some(params.limit.unwrap_or(100).min(MAX_LIMIT));
+    filters.offset = Some(params.offset.unwrap_or(0).min(MAX_OFFSET));
     let count_filters = filters.clone();
 
     let files = spawn_store_op(move || store.list_files(&filters)).await?;

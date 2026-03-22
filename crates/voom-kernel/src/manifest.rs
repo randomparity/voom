@@ -3,6 +3,7 @@ use voom_domain::capabilities::Capability;
 
 /// Plugin manifest describing a plugin's identity and requirements.
 /// For native plugins this is built in code; for WASM plugins it's loaded from a TOML file.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub name: String,
@@ -20,6 +21,7 @@ pub struct PluginManifest {
     pub priority: i32,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginDependency {
     pub name: String,

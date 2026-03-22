@@ -38,11 +38,31 @@ pub fn serialize_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 pub fn load_plugin_config<T: DeserializeOwned>(
     get_data: impl FnOnce(&str) -> Option<Vec<u8>>,
 ) -> Option<T> {
+    load_plugin_config_named(None, get_data)
+}
+
+/// Like [`load_plugin_config`], but includes the plugin name in the warning
+/// log when deserialization fails.
+///
+/// ```rust,ignore
+/// let config: Option<MyConfig> = load_plugin_config_named(
+///     Some("my-plugin"),
+///     |key| host.get_plugin_data(key),
+/// );
+/// ```
+pub fn load_plugin_config_named<T: DeserializeOwned>(
+    plugin_name: Option<&str>,
+    get_data: impl FnOnce(&str) -> Option<Vec<u8>>,
+) -> Option<T> {
     let data = get_data("config")?;
     match serde_json::from_slice(&data) {
         Ok(config) => Some(config),
         Err(e) => {
-            tracing::warn!("Failed to deserialize plugin config: {e}");
+            if let Some(name) = plugin_name {
+                tracing::warn!("Failed to deserialize plugin config for '{name}': {e}");
+            } else {
+                tracing::warn!("Failed to deserialize plugin config: {e}");
+            }
             None
         }
     }
@@ -56,11 +76,11 @@ mod tests {
 
     #[test]
     fn test_event_serialize_deserialize() {
-        let event = Event::FileDiscovered(FileDiscoveredEvent {
-            path: PathBuf::from("/test.mkv"),
-            size: 42,
-            content_hash: "abc".into(),
-        });
+        let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+            PathBuf::from("/test.mkv"),
+            42,
+            "abc".into(),
+        ));
 
         let bytes = serialize_event(&event).unwrap();
         let restored = deserialize_event(&bytes).unwrap();

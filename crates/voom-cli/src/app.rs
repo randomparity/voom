@@ -3,25 +3,27 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use voom_kernel::{Kernel, Plugin};
 
 use crate::config::AppConfig;
 
+// Plugin priority scheme (lower number = runs first during event dispatch).
+// mkvtoolnix at 39 runs before ffmpeg at 40 so it gets first crack at
+// MKV-specific plans (metadata, convert-to-MKV).
+const PRIORITY_STORAGE: i32 = 100;
+const PRIORITY_TOOL_DETECTOR: i32 = 90;
+const PRIORITY_DISCOVERY: i32 = 80;
+const PRIORITY_POLICY_EVALUATOR: i32 = 60;
+const PRIORITY_PHASE_ORCHESTRATOR: i32 = 50;
+const PRIORITY_FFMPEG_EXECUTOR: i32 = 40;
+const PRIORITY_MKVTOOLNIX_EXECUTOR: i32 = 39;
+const PRIORITY_BACKUP_MANAGER: i32 = 30;
+const PRIORITY_JOB_MANAGER: i32 = 20;
+
 /// Bootstrap a kernel with all native plugins registered.
 ///
 /// All plugins go through `init_and_register` for consistent lifecycle management.
-///
-// Plugin priority scheme (lower number = runs first during event dispatch):
-// 100 = storage (must initialize first to be available for other plugins)
-// 90  = tool detector
-// 80  = discovery
-// 60  = policy evaluator
-// 50  = phase orchestrator
-// 39  = mkvtoolnix executor
-// 40  = ffmpeg executor
-// 30  = backup manager
-// 20  = job manager
 pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
     let (kernel, _store) = bootstrap_kernel_with_store(config)?;
     Ok(kernel)
@@ -62,13 +64,10 @@ pub fn bootstrap_kernel_with_store(
     macro_rules! register_if_enabled {
         ($name:expr, $plugin:expr, $priority:expr, $label:expr) => {
             if !disabled.iter().any(|d| d == $name) {
-                let ctx = voom_kernel::PluginContext {
-                    config: plugin_json($name),
-                    data_dir: data_dir.clone(),
-                };
+                let ctx = voom_kernel::PluginContext::new(plugin_json($name), data_dir.clone());
                 kernel
                     .init_and_register(Arc::new($plugin), $priority, &ctx)
-                    .map_err(|e| anyhow::anyhow!("Failed to initialize {}: {e}", $label))?;
+                    .with_context(|| format!("Failed to initialize {}", $label))?;
             }
         };
     }
@@ -80,13 +79,9 @@ pub fn bootstrap_kernel_with_store(
     let store: Arc<dyn voom_domain::storage::StorageTrait> =
         if !disabled.iter().any(|d| d == "sqlite-store") {
             let mut plugin = voom_sqlite_store::SqliteStorePlugin::new();
-            let ctx = voom_kernel::PluginContext {
-                config: plugin_json("sqlite-store"),
-                data_dir: data_dir.clone(),
-            };
-            plugin
-                .init(&ctx)
-                .map_err(|e| anyhow::anyhow!("Failed to initialize storage: {e}"))?;
+            let ctx =
+                voom_kernel::PluginContext::new(plugin_json("sqlite-store"), data_dir.clone());
+            plugin.init(&ctx).context("Failed to initialize storage")?;
 
             // Capture the store handle before moving the plugin into an Arc.
             // `plugin.store()` is always Some after a successful init().
@@ -96,21 +91,21 @@ pub fn bootstrap_kernel_with_store(
                 .expect("store is Some after successful init");
 
             let plugin_arc: Arc<dyn voom_kernel::Plugin> = Arc::new(plugin);
-            kernel.register_plugin(plugin_arc, 100);
+            kernel.register_plugin(plugin_arc, PRIORITY_STORAGE);
 
             handle
         } else {
             // sqlite-store disabled: open a standalone pool so callers always
             // get a usable handle.  No plugin is registered, so events will
             // not be persisted, but read-only CLI commands still work.
-            open_store_in(data_dir).map_err(|e| anyhow::anyhow!("Failed to open storage: {e}"))?
+            open_store_in(data_dir).context("Failed to open storage")?
         };
 
     // Tool detector
     register_if_enabled!(
         "tool-detector",
         voom_tool_detector::ToolDetectorPlugin::new(),
-        90,
+        PRIORITY_TOOL_DETECTOR,
         "tool detector"
     );
 
@@ -118,7 +113,7 @@ pub fn bootstrap_kernel_with_store(
     register_if_enabled!(
         "discovery",
         voom_discovery::DiscoveryPlugin::new(),
-        80,
+        PRIORITY_DISCOVERY,
         "discovery"
     );
 
@@ -126,7 +121,7 @@ pub fn bootstrap_kernel_with_store(
     register_if_enabled!(
         "policy-evaluator",
         voom_policy_evaluator::PolicyEvaluatorPlugin::new(),
-        60,
+        PRIORITY_POLICY_EVALUATOR,
         "policy evaluator"
     );
 
@@ -134,7 +129,7 @@ pub fn bootstrap_kernel_with_store(
     register_if_enabled!(
         "phase-orchestrator",
         voom_phase_orchestrator::PhaseOrchestratorPlugin::new(),
-        50,
+        PRIORITY_PHASE_ORCHESTRATOR,
         "phase orchestrator"
     );
 
@@ -142,17 +137,15 @@ pub fn bootstrap_kernel_with_store(
     register_if_enabled!(
         "mkvtoolnix-executor",
         voom_mkvtoolnix_executor::MkvtoolnixExecutorPlugin::new(),
-        39,
+        PRIORITY_MKVTOOLNIX_EXECUTOR,
         "mkvtoolnix executor"
     );
 
     // Executor — ffmpeg (transcode, non-MKV metadata, container conversion)
-    // Priority 40: runs after mkvtoolnix (39) so mkvtoolnix gets first crack
-    // at plans it can handle (MKV metadata, convert-to-MKV).
     register_if_enabled!(
         "ffmpeg-executor",
         voom_ffmpeg_executor::FfmpegExecutorPlugin::new(),
-        40,
+        PRIORITY_FFMPEG_EXECUTOR,
         "ffmpeg executor"
     );
 
@@ -160,7 +153,7 @@ pub fn bootstrap_kernel_with_store(
     register_if_enabled!(
         "backup-manager",
         voom_backup_manager::BackupManagerPlugin::new(),
-        30,
+        PRIORITY_BACKUP_MANAGER,
         "backup manager"
     );
 
@@ -168,7 +161,7 @@ pub fn bootstrap_kernel_with_store(
     register_if_enabled!(
         "job-manager",
         voom_job_manager::JobManagerPlugin::new(),
-        20,
+        PRIORITY_JOB_MANAGER,
         "job manager"
     );
 
@@ -237,10 +230,10 @@ pub(crate) fn open_store_in(
 ) -> Result<Arc<dyn voom_domain::storage::StorageTrait>> {
     // Ensure the directory exists (mirrors what the plugin's init() does).
     std::fs::create_dir_all(data_dir)
-        .map_err(|e| anyhow::anyhow!("Failed to create data dir {}: {e}", data_dir.display()))?;
+        .with_context(|| format!("Failed to create data dir {}", data_dir.display()))?;
     let db_path = data_dir.join("voom.db");
-    let store = voom_sqlite_store::store::SqliteStore::open(&db_path)
-        .map_err(|e| anyhow::anyhow!("Failed to open store: {e}"))?;
+    let store =
+        voom_sqlite_store::store::SqliteStore::open(&db_path).context("Failed to open store")?;
     Ok(Arc::new(store))
 }
 

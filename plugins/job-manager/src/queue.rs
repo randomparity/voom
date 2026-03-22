@@ -4,14 +4,19 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use uuid::Uuid;
-use voom_domain::errors::Result;
+use voom_domain::errors::{Result, VoomError};
 use voom_domain::job::{Job, JobStatus, JobType, JobUpdate};
 use voom_domain::storage::{JobFilters, JobStorage};
 
+fn plugin_err(message: impl Into<String>) -> VoomError {
+    VoomError::plugin("job-manager", message)
+}
+
 /// Job queue backed by a storage implementation.
 ///
-/// Provides high-level operations for managing the job lifecycle:
-/// enqueue, claim, progress, complete, fail, cancel.
+/// All job lifecycle access (enqueue, claim, progress, complete, fail, cancel,
+/// queries) goes through this struct. Read-only methods delegate directly to
+/// storage; write methods add policy (timestamping, status transitions).
 pub struct JobQueue {
     store: Arc<dyn JobStorage>,
 }
@@ -47,34 +52,28 @@ impl JobQueue {
         progress: f64,
         message: Option<&str>,
     ) -> Result<()> {
-        let update = JobUpdate {
-            progress: Some(progress.clamp(0.0, 1.0)),
-            progress_message: Some(message.map(String::from)),
-            ..Default::default()
-        };
+        let mut update = JobUpdate::default();
+        update.progress = Some(progress.clamp(0.0, 1.0));
+        update.progress_message = Some(message.map(String::from));
         self.store.update_job(job_id, &update)
     }
 
     /// Mark a job as completed with optional output data.
     pub fn complete(&self, job_id: &Uuid, output: Option<serde_json::Value>) -> Result<()> {
-        let update = JobUpdate {
-            status: Some(JobStatus::Completed),
-            progress: Some(1.0),
-            output: Some(output),
-            completed_at: Some(Some(Utc::now())),
-            ..Default::default()
-        };
+        let mut update = JobUpdate::default();
+        update.status = Some(JobStatus::Completed);
+        update.progress = Some(1.0);
+        update.output = Some(output);
+        update.completed_at = Some(Some(Utc::now()));
         self.store.update_job(job_id, &update)
     }
 
     /// Mark a job as failed with an error message.
     pub fn fail(&self, job_id: &Uuid, error: String) -> Result<()> {
-        let update = JobUpdate {
-            status: Some(JobStatus::Failed),
-            error: Some(Some(error)),
-            completed_at: Some(Some(Utc::now())),
-            ..Default::default()
-        };
+        let mut update = JobUpdate::default();
+        update.status = Some(JobStatus::Failed);
+        update.error = Some(Some(error));
+        update.completed_at = Some(Some(Utc::now()));
         self.store.update_job(job_id, &update)
     }
 
@@ -83,31 +82,23 @@ impl JobQueue {
     /// Returns an error if the job does not exist or is already in a
     /// terminal state (Completed, Failed, or Cancelled).
     pub fn cancel(&self, job_id: &Uuid) -> Result<()> {
-        let job =
-            self.store
-                .job(job_id)?
-                .ok_or_else(|| voom_domain::errors::VoomError::Plugin {
-                    plugin: "job-manager".into(),
-                    message: format!("job {job_id} not found"),
-                })?;
+        let job = self
+            .store
+            .job(job_id)?
+            .ok_or_else(|| plugin_err(format!("job {job_id} not found")))?;
 
         match job.status {
             JobStatus::Pending | JobStatus::Running => {}
             status => {
-                return Err(voom_domain::errors::VoomError::Plugin {
-                    plugin: "job-manager".into(),
-                    message: format!(
-                        "cannot cancel job {job_id}: already in terminal state '{status:?}'"
-                    ),
-                });
+                return Err(plugin_err(format!(
+                    "cannot cancel job {job_id}: already in terminal state '{status:?}'"
+                )));
             }
         }
 
-        let update = JobUpdate {
-            status: Some(JobStatus::Cancelled),
-            completed_at: Some(Some(Utc::now())),
-            ..Default::default()
-        };
+        let mut update = JobUpdate::default();
+        update.status = Some(JobStatus::Cancelled);
+        update.completed_at = Some(Some(Utc::now()));
         self.store.update_job(job_id, &update)
     }
 
@@ -243,17 +234,19 @@ mod tests {
         assert_eq!(all.len(), 3);
 
         let pending = queue
-            .list_jobs(&JobFilters {
-                status: Some(JobStatus::Pending),
-                ..Default::default()
+            .list_jobs(&{
+                let mut f = JobFilters::default();
+                f.status = Some(JobStatus::Pending);
+                f
             })
             .unwrap();
         assert_eq!(pending.len(), 2);
 
         let running = queue
-            .list_jobs(&JobFilters {
-                status: Some(JobStatus::Running),
-                ..Default::default()
+            .list_jobs(&{
+                let mut f = JobFilters::default();
+                f.status = Some(JobStatus::Running);
+                f
             })
             .unwrap();
         assert_eq!(running.len(), 1);

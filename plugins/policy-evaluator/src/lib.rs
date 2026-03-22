@@ -1,7 +1,7 @@
 //! Policy Evaluator Plugin.
 //!
 //! Evaluates compiled policies against introspected media files to produce
-//! [`Plan`] structs describing the operations needed. Pure logic plugin with
+//! [`Plan`](voom_domain::plan::Plan) structs describing the operations needed. Pure logic plugin with
 //! no external dependencies.
 
 #![allow(clippy::missing_errors_doc)]
@@ -11,9 +11,9 @@ pub mod evaluator;
 pub mod filter;
 
 use voom_domain::capabilities::Capability;
+use voom_domain::compiled::CompiledPolicy;
 use voom_domain::errors::Result;
 use voom_domain::media::MediaFile;
-use voom_dsl::compiler::CompiledPolicy;
 use voom_kernel::{Plugin, PluginContext};
 
 /// The policy evaluator plugin.
@@ -113,11 +113,11 @@ mod tests {
     #[test]
     fn test_on_event_returns_none_for_unhandled_event() {
         let plugin = PolicyEvaluatorPlugin::new();
-        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent {
-            tool_name: "ffprobe".into(),
-            version: "6.0".into(),
-            path: PathBuf::from("/usr/bin/ffprobe"),
-        });
+        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent::new(
+            "ffprobe",
+            "6.0",
+            PathBuf::from("/usr/bin/ffprobe"),
+        ));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
     }
@@ -125,10 +125,7 @@ mod tests {
     #[test]
     fn test_init_succeeds() {
         let mut plugin = PolicyEvaluatorPlugin::new();
-        let ctx = PluginContext {
-            config: serde_json::Value::Null,
-            data_dir: PathBuf::from("/tmp/voom-test"),
-        };
+        let ctx = PluginContext::new(serde_json::Value::Null, PathBuf::from("/tmp/voom-test"));
         assert!(plugin.init(&ctx).is_ok());
     }
 }

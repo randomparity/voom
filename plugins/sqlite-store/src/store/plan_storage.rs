@@ -88,45 +88,43 @@ impl PlanStorage for SqliteStore {
             .query_map(params![file_id.to_string()], |row| {
                 let id_str: String = row.get("id")?;
                 let file_id_str: String = row.get("file_id")?;
-                Ok(StoredPlan {
-                    id: row_uuid(&id_str, "plans")?,
-                    file_id: row_uuid(&file_id_str, "plans")?,
-                    policy_name: row.get("policy_name")?,
-                    phase_name: row.get("phase_name")?,
-                    status: {
-                        let s: String = row.get("status")?;
-                        PlanStatus::parse(&s).ok_or_else(|| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                0,
-                                rusqlite::types::Type::Text,
-                                format!("unknown plan status: {s}").into(),
-                            )
-                        })?
-                    },
-                    actions_json: row.get("actions")?,
-                    warnings: row.get("warnings")?,
-                    skip_reason: row.get("skip_reason")?,
-                    policy_hash: row.get("policy_hash")?,
-                    evaluated_at: parse_optional_datetime(
-                        row.get("evaluated_at")?,
-                        "plans.evaluated_at",
-                    )?,
-                    created_at: {
-                        let s: String = row.get("created_at")?;
-                        s.parse().map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                0,
-                                rusqlite::types::Type::Text,
-                                format!("invalid datetime in plans.created_at: {e}").into(),
-                            )
-                        })?
-                    },
-                    executed_at: parse_optional_datetime(
-                        row.get("executed_at")?,
-                        "plans.executed_at",
-                    )?,
-                    result: row.get("result")?,
-                })
+                let status = {
+                    let s: String = row.get("status")?;
+                    PlanStatus::parse(&s).ok_or_else(|| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            format!("unknown plan status: {s}").into(),
+                        )
+                    })?
+                };
+                let mut sp = StoredPlan::new(
+                    row_uuid(&id_str, "plans")?,
+                    row_uuid(&file_id_str, "plans")?,
+                    row.get::<_, String>("policy_name")?,
+                    row.get::<_, String>("phase_name")?,
+                    status,
+                    row.get::<_, String>("actions")?,
+                );
+                sp.warnings = row.get("warnings")?;
+                sp.skip_reason = row.get("skip_reason")?;
+                sp.policy_hash = row.get("policy_hash")?;
+                sp.evaluated_at =
+                    parse_optional_datetime(row.get("evaluated_at")?, "plans.evaluated_at")?;
+                sp.created_at = {
+                    let s: String = row.get("created_at")?;
+                    s.parse().map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            format!("invalid datetime in plans.created_at: {e}").into(),
+                        )
+                    })?
+                };
+                sp.executed_at =
+                    parse_optional_datetime(row.get("executed_at")?, "plans.executed_at")?;
+                sp.result = row.get("result")?;
+                Ok(sp)
             })
             .map_err(storage_err("failed to query plans"))?
             .collect::<rusqlite::Result<Vec<_>>>()

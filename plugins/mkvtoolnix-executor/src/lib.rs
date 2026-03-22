@@ -7,68 +7,12 @@ pub mod propedit;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 
-use std::ffi::OsStr;
-use std::process::{Command, Output, Stdio};
-use std::time::Duration;
-
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{Event, EventResult};
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, ActionResult, OperationType, Plan, PlannedAction};
 use voom_kernel::Plugin;
-use wait_timeout::ChildExt;
-
-/// Drain stdout and stderr pipes from a child process into buffers.
-fn drain_pipes(child: &mut std::process::Child) -> (Vec<u8>, Vec<u8>) {
-    use std::io::Read;
-    let mut stdout_buf = Vec::new();
-    let mut stderr_buf = Vec::new();
-    if let Some(mut out) = child.stdout.take() {
-        out.read_to_end(&mut stdout_buf).ok();
-    }
-    if let Some(mut err) = child.stderr.take() {
-        err.read_to_end(&mut stderr_buf).ok();
-    }
-    (stdout_buf, stderr_buf)
-}
-
-/// Run a subprocess with a timeout, killing it if it exceeds the deadline.
-fn run_with_timeout(tool: &str, args: &[impl AsRef<OsStr>], timeout: Duration) -> Result<Output> {
-    let mut child = Command::new(tool)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| VoomError::ToolExecution {
-            tool: tool.into(),
-            message: format!("failed to spawn {tool}: {e}"),
-        })?;
-
-    match child.wait_timeout(timeout) {
-        Ok(Some(status)) => {
-            let (stdout, stderr) = drain_pipes(&mut child);
-            Ok(Output {
-                status,
-                stdout,
-                stderr,
-            })
-        }
-        Ok(None) => {
-            child.kill().ok();
-            drain_pipes(&mut child);
-            child.wait().ok();
-            Err(VoomError::ToolExecution {
-                tool: tool.into(),
-                message: format!("{tool} timed out after {}s", timeout.as_secs()),
-            })
-        }
-        Err(e) => Err(VoomError::ToolExecution {
-            tool: tool.into(),
-            message: format!("error waiting for {tool}: {e}"),
-        }),
-    }
-}
 
 // Propedit (in-place metadata) operations are identified by
 // `OperationType::is_metadata_op()` — defined once in voom-domain.
@@ -296,32 +240,20 @@ mod tests {
     fn make_mkv_plan(actions: Vec<PlannedAction>) -> Plan {
         let mut file = MediaFile::new(PathBuf::from("/media/movie.mkv"));
         file.container = Container::Mkv;
-        Plan {
-            id: uuid::Uuid::new_v4(),
-            file,
-            policy_name: "test-policy".into(),
-            phase_name: "normalize".into(),
-            actions,
-            warnings: vec![],
-            skip_reason: None,
-            policy_hash: None,
-            evaluated_at: chrono::Utc::now(),
+        {
+            let mut plan = Plan::new(file, "test-policy", "normalize");
+            plan.actions = actions;
+            plan
         }
     }
 
     fn make_mp4_plan(actions: Vec<PlannedAction>) -> Plan {
         let mut file = MediaFile::new(PathBuf::from("/media/movie.mp4"));
         file.container = Container::Mp4;
-        Plan {
-            id: uuid::Uuid::new_v4(),
-            file,
-            policy_name: "test-policy".into(),
-            phase_name: "normalize".into(),
-            actions,
-            warnings: vec![],
-            skip_reason: None,
-            policy_hash: None,
-            evaluated_at: chrono::Utc::now(),
+        {
+            let mut plan = Plan::new(file, "test-policy", "normalize");
+            plan.actions = actions;
+            plan
         }
     }
 
@@ -441,11 +373,11 @@ mod tests {
     #[test]
     fn test_on_event_ignores_non_plan_events() {
         let plugin = MkvtoolnixExecutorPlugin::new();
-        let event = Event::FileDiscovered(voom_domain::events::FileDiscoveredEvent {
-            path: PathBuf::from("/test.mkv"),
-            size: 1024,
-            content_hash: "abc".into(),
-        });
+        let event = Event::FileDiscovered(voom_domain::events::FileDiscoveredEvent::new(
+            PathBuf::from("/test.mkv"),
+            1024,
+            "abc".into(),
+        ));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
     }
@@ -454,7 +386,7 @@ mod tests {
     fn test_on_event_skips_empty_plan() {
         let plugin = MkvtoolnixExecutorPlugin::new();
         let plan = make_mkv_plan(vec![]);
-        let event = Event::PlanCreated(voom_domain::events::PlanCreatedEvent { plan });
+        let event = Event::PlanCreated(voom_domain::events::PlanCreatedEvent::new(plan));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
     }
@@ -468,7 +400,7 @@ mod tests {
             ActionParams::Empty,
         )]);
         plan.skip_reason = Some("already correct".into());
-        let event = Event::PlanCreated(voom_domain::events::PlanCreatedEvent { plan });
+        let event = Event::PlanCreated(voom_domain::events::PlanCreatedEvent::new(plan));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
     }

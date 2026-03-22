@@ -3123,6 +3123,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "insta",
+ "regex",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -3137,7 +3138,6 @@ dependencies = [
  "insta",
  "pest",
  "pest_derive",
- "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3158,7 +3158,7 @@ dependencies = [
  "uuid",
  "voom-domain",
  "voom-kernel",
- "wait-timeout",
+ "voom-process",
 ]
 
 [[package]]
@@ -3231,7 +3231,7 @@ dependencies = [
  "uuid",
  "voom-domain",
  "voom-kernel",
- "wait-timeout",
+ "voom-process",
 ]
 
 [[package]]
@@ -3270,6 +3270,15 @@ dependencies = [
  "voom-domain",
  "voom-dsl",
  "voom-kernel",
+]
+
+[[package]]
+name = "voom-process"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "voom-domain",
+ "wait-timeout",
 ]
 
 [[package]]

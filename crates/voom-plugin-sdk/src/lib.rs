@@ -57,24 +57,38 @@ pub mod event;
 pub mod host;
 pub mod types;
 
-// Re-export domain types commonly used by plugins.
-pub use voom_domain::capabilities::Capability;
-pub use voom_domain::events::{
-    Event, EventResult, FileIntrospectedEvent, MetadataEnrichedEvent, PlanCompletedEvent,
-    PlanCreatedEvent,
-};
-pub use voom_domain::media::{Container, MediaFile, Track, TrackType};
-pub use voom_domain::plan::{
-    ActionParams, ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction,
-};
+// ── WASM boundary types ─────────────────────────────────────────────
+// These are the types WASM plugins actually need at the host/guest boundary.
 
-// Re-export helpers.
-pub use event::{
-    deserialize_event, deserialize_json, load_plugin_config, serialize_event, serialize_json,
-};
-
-/// `PluginInfoData` mirrors the WIT `plugin-info` record (name, version, capabilities).
+/// SDK helper types for building plugin info and returning event results.
 pub use types::{OnEventResult, PluginInfoData};
 
-// Re-export host abstractions for WASM plugins.
+/// Event serialization/deserialization helpers (MessagePack across WASM boundary).
+pub use event::{
+    deserialize_event, deserialize_json, load_plugin_config, load_plugin_config_named,
+    serialize_event, serialize_json,
+};
+
+/// Host function abstractions for calling back into the kernel from WASM.
 pub use host::{HostFunctions, HttpResponse, ToolOutput};
+
+// ── Domain types used inside event payloads ─────────────────────────
+// These are needed when deserializing event payloads into concrete types.
+// Import additional domain types directly from `voom_domain` if needed.
+
+pub use voom_domain::events::Event;
+pub use voom_domain::plan::{ActionParams, OperationType};
+
+// ── Full domain re-exports (for plugins that need deeper access) ────
+// Available under `voom_plugin_sdk::domain` for explicit opt-in.
+pub mod domain {
+    //! Full domain type re-exports for plugins that need deeper access
+    //! beyond the standard WASM boundary types.
+    pub use voom_domain::capabilities::Capability;
+    pub use voom_domain::events::{
+        EventResult, FileIntrospectedEvent, MetadataEnrichedEvent, PlanCompletedEvent,
+        PlanCreatedEvent,
+    };
+    pub use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    pub use voom_domain::plan::{ActionResult, PhaseOutcome, PhaseResult, Plan, PlannedAction};
+}

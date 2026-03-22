@@ -6,6 +6,7 @@
 use serde::Serialize;
 
 /// Source location span for error reporting.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Span {
     pub start: usize,
@@ -27,6 +28,7 @@ impl Span {
 }
 
 /// Root AST node representing an entire policy file.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct PolicyAst {
     pub name: String,
@@ -36,6 +38,7 @@ pub struct PolicyAst {
 }
 
 /// Configuration block at the top of a policy.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct ConfigNode {
     pub audio_languages: Vec<String>,
@@ -45,6 +48,7 @@ pub struct ConfigNode {
 }
 
 /// A single phase within a policy.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct PhaseNode {
     pub name: String,
@@ -57,6 +61,7 @@ pub struct PhaseNode {
 }
 
 /// Phase dependency trigger.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct RunIfNode {
     pub phase: String,
@@ -64,6 +69,7 @@ pub struct RunIfNode {
 }
 
 /// An operation wrapped with its source span for precise error reporting.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct SpannedOperation {
     pub node: OperationNode,
@@ -125,6 +131,7 @@ pub enum SynthSetting {
 }
 
 /// A when/else conditional block.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct WhenNode {
     pub condition: ConditionNode,
@@ -133,6 +140,7 @@ pub struct WhenNode {
 }
 
 /// A named rule within a rules block.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct RuleNode {
     pub name: String,
@@ -155,6 +163,7 @@ pub enum ConditionNode {
 }
 
 /// Track query used in `exists()/count()` conditions.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct TrackQueryNode {
     pub target: String,
@@ -181,6 +190,7 @@ pub enum FilterNode {
 }
 
 /// Track reference used in actions like `set_default`.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize)]
 pub struct TrackRefNode {
     pub target: String,

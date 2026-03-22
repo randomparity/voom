@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use comfy_table::{Cell, Color};
 use console::style;
 
@@ -34,12 +34,13 @@ fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
     };
 
     let jobs = store
-        .list_jobs(&JobFilters {
-            status: filter_status,
-            limit: Some(limit),
-            ..Default::default()
+        .list_jobs(&{
+            let mut f = JobFilters::default();
+            f.status = filter_status;
+            f.limit = Some(limit);
+            f
         })
-        .map_err(|e| anyhow::anyhow!("failed to list jobs: {e}"))?;
+        .context("failed to list jobs")?;
 
     if jobs.is_empty() {
         println!("{} No jobs found.", style("INFO").dim());
@@ -89,7 +90,7 @@ fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
     // Show summary counts
     let counts = store
         .count_jobs_by_status()
-        .map_err(|e| anyhow::anyhow!("failed to count jobs by status: {e}"))?;
+        .context("failed to count jobs by status")?;
     if !counts.is_empty() {
         let total: u64 = counts.iter().map(|(_, c)| c).sum();
         let summary: Vec<String> = counts
@@ -114,7 +115,7 @@ fn status(id: String) -> Result<()> {
     let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
-    let uuid = uuid::Uuid::parse_str(&id).map_err(|_| anyhow::anyhow!("Invalid job ID: {id}"))?;
+    let uuid = uuid::Uuid::parse_str(&id).with_context(|| format!("Invalid job ID: {id}"))?;
 
     match store.job(&uuid)? {
         Some(job) => {
@@ -153,7 +154,7 @@ fn cancel(id: String) -> Result<()> {
     let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
-    let uuid = uuid::Uuid::parse_str(&id).map_err(|_| anyhow::anyhow!("Invalid job ID: {id}"))?;
+    let uuid = uuid::Uuid::parse_str(&id).with_context(|| format!("Invalid job ID: {id}"))?;
 
     // Check that the job exists and is not already in a terminal state
     let job = store
@@ -167,15 +168,13 @@ fn cancel(id: String) -> Result<()> {
         );
     }
 
-    let update = voom_domain::JobUpdate {
-        status: Some(voom_domain::JobStatus::Cancelled),
-        completed_at: Some(Some(chrono::Utc::now())),
-        ..Default::default()
-    };
+    let mut update = voom_domain::JobUpdate::default();
+    update.status = Some(voom_domain::JobStatus::Cancelled);
+    update.completed_at = Some(Some(chrono::Utc::now()));
 
     store
         .update_job(&uuid, &update)
-        .map_err(|e| anyhow::anyhow!("failed to cancel job: {e}"))?;
+        .context("failed to cancel job")?;
 
     println!("{} Job {id} cancelled.", style("OK").bold().green());
 

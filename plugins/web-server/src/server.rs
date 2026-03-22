@@ -11,6 +11,7 @@ use crate::router::build_router;
 use crate::state::AppState;
 
 /// Configuration for the web server.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub host: String,
@@ -18,6 +19,19 @@ pub struct ServerConfig {
     pub template_dir: Option<String>,
     pub auth_token: Option<String>,
     pub plugin_info: Vec<crate::api::plugins::PluginInfo>,
+}
+
+impl ServerConfig {
+    #[must_use]
+    pub fn new(host: String, port: u16) -> Self {
+        Self {
+            host,
+            port,
+            template_dir: None,
+            auth_token: None,
+            plugin_info: Vec::new(),
+        }
+    }
 }
 
 /// Start the web server.
@@ -86,35 +100,33 @@ fn load_templates(template_dir: Option<&str>) -> Result<tera::Tera, ServerError>
 /// template set without starting the full server.
 #[must_use]
 pub fn embedded_templates() -> tera::Tera {
+    macro_rules! register_templates {
+        ($tera:expr, $( $name:literal ),+ $(,)?) => {
+            $(
+                $tera
+                    .add_raw_template(
+                        $name,
+                        include_str!(concat!("../templates/", $name)),
+                    )
+                    .expect(concat!("Failed to add template: ", $name));
+            )+
+        };
+    }
+
     let mut tera = tera::Tera::default();
 
-    tera.add_raw_template("base.html", include_str!("../templates/base.html"))
-        .expect("Failed to add base template");
-    tera.add_raw_template(
+    register_templates!(
+        tera,
+        "base.html",
         "dashboard.html",
-        include_str!("../templates/dashboard.html"),
-    )
-    .expect("Failed to add dashboard template");
-    tera.add_raw_template("library.html", include_str!("../templates/library.html"))
-        .expect("Failed to add library template");
-    tera.add_raw_template(
+        "library.html",
         "file_detail.html",
-        include_str!("../templates/file_detail.html"),
-    )
-    .expect("Failed to add file_detail template");
-    tera.add_raw_template("policies.html", include_str!("../templates/policies.html"))
-        .expect("Failed to add policies template");
-    tera.add_raw_template(
+        "policies.html",
         "policy_editor.html",
-        include_str!("../templates/policy_editor.html"),
-    )
-    .expect("Failed to add policy_editor template");
-    tera.add_raw_template("jobs.html", include_str!("../templates/jobs.html"))
-        .expect("Failed to add jobs template");
-    tera.add_raw_template("plugins.html", include_str!("../templates/plugins.html"))
-        .expect("Failed to add plugins template");
-    tera.add_raw_template("settings.html", include_str!("../templates/settings.html"))
-        .expect("Failed to add settings template");
+        "jobs.html",
+        "plugins.html",
+        "settings.html",
+    );
 
     tera
 }

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// A media file with full introspection metadata.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaFile {
     pub id: Uuid,
@@ -99,6 +100,7 @@ impl MediaFile {
 }
 
 /// A single track within a media file.
+#[non_exhaustive]
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
@@ -234,6 +236,27 @@ impl TrackType {
             TrackType::SubtitleForced => "subtitle_forced",
             TrackType::SubtitleCommentary => "subtitle_commentary",
             TrackType::Attachment => "attachment",
+        }
+    }
+}
+
+impl std::str::FromStr for TrackType {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "video" => Ok(TrackType::Video),
+            "audio_main" => Ok(TrackType::AudioMain),
+            "audio_alternate" => Ok(TrackType::AudioAlternate),
+            "audio_commentary" => Ok(TrackType::AudioCommentary),
+            "audio_music" => Ok(TrackType::AudioMusic),
+            "audio_sfx" => Ok(TrackType::AudioSfx),
+            "audio_non_speech" => Ok(TrackType::AudioNonSpeech),
+            "subtitle_main" => Ok(TrackType::SubtitleMain),
+            "subtitle_forced" => Ok(TrackType::SubtitleForced),
+            "subtitle_commentary" => Ok(TrackType::SubtitleCommentary),
+            "attachment" => Ok(TrackType::Attachment),
+            other => Err(format!("unknown track type: {other}")),
         }
     }
 }

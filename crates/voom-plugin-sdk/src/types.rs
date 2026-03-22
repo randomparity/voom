@@ -4,6 +4,7 @@
 ///
 /// Mirrors the WIT `plugin-info` record exactly. Used by WASM plugins
 /// in their `get_info()` implementation.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct PluginInfoData {
     pub name: String,
@@ -12,6 +13,7 @@ pub struct PluginInfoData {
 }
 
 /// Result from processing an event, mirroring the WIT `event-result` record.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct OnEventResult {
     pub plugin_name: String,

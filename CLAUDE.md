@@ -26,10 +26,10 @@ The core is a thin kernel with zero media knowledge. ALL functionality is implem
 - **Native plugins** — compiled into the binary as trait objects, zero overhead
 - **WASM plugins** — loaded at runtime via wasmtime, sandboxed, language-agnostic (via WIT interfaces)
 
-Plugins communicate exclusively through an **event bus** (synchronous priority-ordered dispatch with `parking_lot::RwLock`). No plugin directly calls another. The kernel routes work based on **capability matching**, not hardcoded types.
+Plugins communicate exclusively through an **event bus** (synchronous priority-ordered dispatch with `parking_lot::RwLock`). No plugin directly calls another. Executor selection currently uses event-bus priority ordering; capability-based routing is planned for a future sprint.
 
 ### Workspace crates (`crates/`)
-- **voom-kernel** — Event bus, plugin registry, native + WASM loader, capability routing
+- **voom-kernel** — Event bus, plugin registry, native + WASM loader
 - **voom-domain** — Shared types: `MediaFile`, `Track`, `Plan`, `Event`, `Capability` (serde-serializable, exposed to WASM via WIT)
 - **voom-dsl** — PEG grammar (pest), parser, AST, compiler (AST → CompiledPolicy), validator, formatter
 - **voom-cli** — clap-derive CLI binary with subcommands (scan, inspect, process, policy, plugin, serve, doctor, jobs, report, db, config)

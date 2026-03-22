@@ -43,6 +43,7 @@ pub enum ServerError {
 }
 
 /// API error response.
+#[non_exhaustive]
 #[derive(Debug, Serialize)]
 pub struct ApiError {
     pub error: String,

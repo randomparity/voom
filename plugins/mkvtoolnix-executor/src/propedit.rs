@@ -4,6 +4,7 @@ use std::time::Duration;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::plan::{ActionParams, ActionResult, OperationType, PlannedAction};
 use voom_domain::utils::sanitize::validate_metadata_value;
+use voom_process::run_with_timeout;
 
 /// Build and execute mkvpropedit commands for metadata operations.
 ///
@@ -26,17 +27,12 @@ pub fn execute_propedit_actions(
     );
     tracing::debug!(args = ?args, "mkvpropedit arguments");
 
-    let output = crate::run_with_timeout("mkvpropedit", &args, Duration::from_secs(300))?;
+    let output = run_with_timeout("mkvpropedit", &args, Duration::from_secs(300))?;
 
     if output.status.success() {
         Ok(actions
             .iter()
-            .map(|a| ActionResult {
-                operation: a.operation,
-                success: true,
-                description: a.description.clone(),
-                error: None,
-            })
+            .map(|a| ActionResult::success(a.operation, a.description.clone()))
             .collect())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();

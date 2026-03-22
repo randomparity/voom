@@ -8,12 +8,13 @@
 #![allow(clippy::missing_errors_doc)]
 
 use voom_domain::capabilities::Capability;
+use voom_domain::compiled::{CompiledPolicy, ErrorStrategy};
 use voom_domain::errors::Result;
 use voom_domain::plan::{PhaseOutcome, PhaseResult, Plan};
-use voom_dsl::compiler::{CompiledPolicy, ErrorStrategy};
 use voom_kernel::Plugin;
 
 /// Result of orchestrating all phases of a policy.
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct OrchestrationResult {
     /// Plans produced for each phase (in execution order).
@@ -22,6 +23,18 @@ pub struct OrchestrationResult {
     pub phase_results: Vec<PhaseResult>,
     /// Whether any phase modified the file.
     pub file_modified: bool,
+}
+
+impl OrchestrationResult {
+    /// Create a new orchestration result.
+    #[must_use]
+    pub fn new(plans: Vec<Plan>, phase_results: Vec<PhaseResult>, file_modified: bool) -> Self {
+        Self {
+            plans,
+            phase_results,
+            file_modified,
+        }
+    }
 }
 
 /// The phase orchestrator plugin.
@@ -62,14 +75,10 @@ impl PhaseOrchestratorPlugin {
                 PhaseOutcome::Pending // Would be Completed after execution
             };
 
-            phase_results.push(PhaseResult {
-                phase_name: plan.phase_name.clone(),
-                outcome,
-                actions: Vec::new(), // Populated after execution
-                file_modified: !plan.actions.is_empty(),
-                skip_reason: plan.skip_reason.clone(),
-                duration_ms: 0,
-            });
+            let mut phase_result = PhaseResult::new(plan.phase_name.clone(), outcome);
+            phase_result.file_modified = !plan.actions.is_empty();
+            phase_result.skip_reason = plan.skip_reason.clone();
+            phase_results.push(phase_result);
         }
 
         Ok(OrchestrationResult {
