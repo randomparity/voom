@@ -45,11 +45,11 @@ impl JobQueue {
         &self,
         job_id: &Uuid,
         progress: f64,
-        message: Option<String>,
+        message: Option<&str>,
     ) -> Result<()> {
         let update = JobUpdate {
             progress: Some(progress.clamp(0.0, 1.0)),
-            progress_message: Some(message),
+            progress_message: Some(message.map(String::from)),
             ..Default::default()
         };
         self.store.update_job(job_id, &update)
@@ -183,9 +183,7 @@ mod tests {
 
         let id = queue.enqueue(JobType::Scan, 100, None).unwrap();
         queue.claim("w-1").unwrap();
-        queue
-            .report_progress(&id, 0.5, Some("Halfway".into()))
-            .unwrap();
+        queue.report_progress(&id, 0.5, Some("Halfway")).unwrap();
 
         let job = queue.get(&id).unwrap().unwrap();
         assert_eq!(job.progress, 0.5);

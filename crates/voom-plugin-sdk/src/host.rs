@@ -10,17 +10,36 @@
 /// Plugins that only need a subset of host functions can rely on the default
 /// implementations, which return errors or no-ops for unimplemented functions.
 pub trait HostFunctions {
+    /// Read metadata for a file (sandboxed to media library paths).
+    fn read_file_metadata(&self, path: &str) -> Result<Vec<u8>, String> {
+        let _ = path;
+        Err("read_file_metadata not available".to_string())
+    }
+
+    /// List files matching filters (serialized as MessagePack bytes).
+    fn list_files(&self, filters: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+        let _ = filters;
+        Err("list_files not available".to_string())
+    }
+
     /// Execute an HTTP GET request via the host.
-    ///
-    /// Used by plugins that query external APIs (e.g., Radarr, Sonarr).
     fn http_get(&self, url: &str, headers: &[(String, String)]) -> Result<HttpResponse, String> {
         let _ = (url, headers);
         Err("http_get not available".to_string())
     }
 
+    /// Execute an HTTP POST request via the host.
+    fn http_post(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+    ) -> Result<HttpResponse, String> {
+        let _ = (url, headers, body);
+        Err("http_post not available".to_string())
+    }
+
     /// Run an external tool via the host's sandboxed tool runner.
-    ///
-    /// Used by plugins that invoke CLI tools (e.g., ffmpeg, whisper, HandBrakeCLI).
     fn run_tool(&self, tool: &str, args: &[String], timeout_ms: u64) -> Result<ToolOutput, String> {
         let _ = (tool, args, timeout_ms);
         Err("run_tool not available".to_string())
