@@ -1,8 +1,9 @@
 //! Phase Orchestrator Plugin.
 //!
-//! Sequences phase execution with dependency resolution, `skip_when` evaluation,
-//! `run_if` triggers, and per-phase error handling. Coordinates the policy
-//! evaluator and executors to process files through all phases of a policy.
+//! Produces an [`OrchestrationResult`] from pre-evaluated plans: determines
+//! phase outcomes based on `skip_when`, `run_if`, and `depends_on` results,
+//! and provides dry-run formatting. Does not call executors — the CLI's
+//! `process` command handles actual execution and re-introspection.
 
 #![allow(clippy::missing_errors_doc)]
 
