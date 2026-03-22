@@ -185,18 +185,16 @@ impl MkvtoolnixExecutorPlugin {
             // Non-MKV source: merge first (convert to MKV), then propedit
             // on the resulting .mkv file (merge removes the original).
             let mut converted_path = path.to_path_buf();
-            if !merge_actions.is_empty() {
-                tracing::info!(
-                    path = %path.display(),
-                    count = merge_actions.len(),
-                    "running merge actions (convert to MKV first)"
-                );
-                let merge_results = merge::execute_merge_actions(path, &merge_actions)?;
-                results.extend(merge_results);
+            tracing::info!(
+                path = %path.display(),
+                count = merge_actions.len(),
+                "running merge actions (convert to MKV first)"
+            );
+            let merge_results = merge::execute_merge_actions(path, &merge_actions)?;
+            results.extend(merge_results);
 
-                // After ConvertContainer, the file is now at the .mkv path
-                converted_path.set_extension("mkv");
-            }
+            // After ConvertContainer, the file is now at the .mkv path
+            converted_path.set_extension("mkv");
 
             if !propedit_actions.is_empty() {
                 tracing::info!(

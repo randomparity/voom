@@ -22,7 +22,7 @@ use uuid::Uuid;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{Event, EventResult};
-use voom_kernel::{Plugin, PluginContext};
+use voom_kernel::Plugin;
 
 /// Create a `VoomError::Plugin` for the backup-manager plugin.
 fn plugin_err(message: impl Into<String>) -> VoomError {
@@ -291,10 +291,6 @@ impl Plugin for BackupManagerPlugin {
             }
             _ => Ok(None),
         }
-    }
-
-    fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        Ok(())
     }
 }
 

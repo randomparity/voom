@@ -71,13 +71,10 @@ pub fn build_router(state: AppState) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use voom_domain::test_support::InMemoryStore;
+    use crate::state::make_test_state;
 
     fn make_state(auth_token: Option<String>) -> AppState {
-        let store = Arc::new(InMemoryStore::new());
-        let templates = tera::Tera::default();
-        AppState::new(store, templates, auth_token)
+        make_test_state(auth_token)
     }
 
     #[test]

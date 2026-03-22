@@ -138,7 +138,7 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// Run migrations for existing databases that may lack newer columns/tables.
-pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // Check plans table for new columns
     const KNOWN_TABLES: &[&str] = &[
         "files",
@@ -168,37 +168,6 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if !has_column("plans", "evaluated_at")? {
         conn.execute_batch("ALTER TABLE plans ADD COLUMN evaluated_at TEXT")?;
     }
-
-    // Create file_history table if it doesn't exist
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS file_history (
-            id TEXT PRIMARY KEY,
-            file_id TEXT NOT NULL,
-            path TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            container TEXT NOT NULL,
-            track_count INTEGER NOT NULL,
-            introspected_at TEXT NOT NULL,
-            archived_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_file_history_file ON file_history(file_id);",
-    )?;
-
-    // Create bad_files table if it doesn't exist
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS bad_files (
-            id TEXT PRIMARY KEY,
-            path TEXT NOT NULL UNIQUE,
-            size INTEGER NOT NULL,
-            content_hash TEXT,
-            error TEXT NOT NULL,
-            error_source TEXT NOT NULL,
-            attempt_count INTEGER NOT NULL DEFAULT 1,
-            first_seen_at TEXT NOT NULL,
-            last_seen_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_bad_files_path ON bad_files(path);",
-    )?;
 
     Ok(())
 }

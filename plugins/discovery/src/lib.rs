@@ -9,7 +9,7 @@ pub use scanner::hash_file;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::FileDiscoveredEvent;
-use voom_kernel::{Plugin, PluginContext};
+use voom_kernel::Plugin;
 
 /// Progress update during a scan.
 #[derive(Debug, Clone)]
@@ -106,10 +106,6 @@ impl Plugin for DiscoveryPlugin {
 
     fn capabilities(&self) -> &[Capability] {
         &self.capabilities
-    }
-
-    fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        Ok(())
     }
 }
 

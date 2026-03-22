@@ -10,7 +10,7 @@ use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::plan::{PhaseOutcome, PhaseResult, Plan};
 use voom_dsl::compiler::{CompiledPolicy, ErrorStrategy};
-use voom_kernel::{Plugin, PluginContext};
+use voom_kernel::Plugin;
 
 /// Result of orchestrating all phases of a policy.
 #[derive(Debug)]
@@ -147,10 +147,6 @@ impl Plugin for PhaseOrchestratorPlugin {
 
     fn capabilities(&self) -> &[Capability] {
         &self.capabilities
-    }
-
-    fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        Ok(())
     }
 }
 

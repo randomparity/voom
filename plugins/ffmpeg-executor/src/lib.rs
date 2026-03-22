@@ -144,11 +144,7 @@ impl FfmpegExecutorPlugin {
             .unwrap_or("output");
         let output_path = parent.join(format!("{stem}.voom_tmp.{ext}"));
 
-        let hw_accel = if self.hw_accel.enabled() {
-            Some(&self.hw_accel)
-        } else {
-            None
-        };
+        let hw_accel = self.hw_accel.enabled().then_some(&self.hw_accel);
 
         let ffmpeg_args = build_ffmpeg_command(&plan.file, &actions, &output_path, hw_accel)?;
 

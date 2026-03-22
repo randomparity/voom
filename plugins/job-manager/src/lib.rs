@@ -19,7 +19,7 @@ use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
 use voom_domain::storage::JobStorage;
-use voom_kernel::{Plugin, PluginContext};
+use voom_kernel::Plugin;
 
 use crate::queue::JobQueue;
 
@@ -109,10 +109,6 @@ impl Plugin for JobManagerPlugin {
             }
             _ => Ok(None),
         }
-    }
-
-    fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        Ok(())
     }
 }
 

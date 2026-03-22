@@ -114,15 +114,21 @@ impl AppState {
     }
 }
 
+/// Create an `AppState` with an in-memory store for testing.
+#[cfg(test)]
+pub(crate) fn make_test_state(auth_token: Option<String>) -> AppState {
+    use voom_domain::test_support::InMemoryStore;
+    let store = Arc::new(InMemoryStore::new());
+    let templates = tera::Tera::default();
+    AppState::new(store, templates, auth_token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use voom_domain::test_support::InMemoryStore;
 
     fn make_state(auth_token: Option<String>) -> AppState {
-        let store = Arc::new(InMemoryStore::new());
-        let templates = tera::Tera::default();
-        AppState::new(store, templates, auth_token)
+        make_test_state(auth_token)
     }
 
     #[test]
