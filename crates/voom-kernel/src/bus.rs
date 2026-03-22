@@ -26,6 +26,7 @@ fn make_error_result(plugin_name: String, event_type: &str, error: String) -> Ev
         })],
         data: None,
         claimed: false,
+        execution_error: None,
     }
 }
 
@@ -205,6 +206,7 @@ mod tests {
                 produced_events: vec![],
                 data: None,
                 claimed: false,
+                execution_error: None,
             }))
         }
     }
@@ -433,6 +435,7 @@ mod tests {
                 produced_events: self.produced_event.iter().cloned().collect(),
                 data: None,
                 claimed: false,
+                execution_error: None,
             }))
         }
     }
@@ -507,6 +510,7 @@ mod tests {
                     })],
                     data: None,
                     claimed: false,
+                    execution_error: None,
                 }))
             }
         }
@@ -559,6 +563,7 @@ mod tests {
                 produced_events: vec![],
                 data: None,
                 claimed: true,
+                execution_error: None,
             }))
         }
     }

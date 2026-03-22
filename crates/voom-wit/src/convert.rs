@@ -46,6 +46,7 @@ pub fn event_result_from_wasm(
         produced_events: events,
         data: json_data,
         claimed: false,
+        execution_error: None,
     })
 }
 
@@ -202,6 +203,7 @@ mod tests {
             })],
             data: Some(serde_json::json!({"status": "ok"})),
             claimed: false,
+            execution_error: None,
         };
 
         let (name, produced, data) = event_result_to_wasm(&result).unwrap();

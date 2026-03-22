@@ -731,6 +731,7 @@ mod tests {
                 produced_events: vec![],
                 data: Some(serde_json::json!({"loaded": true})),
                 claimed: false,
+                execution_error: None,
             }))
         }
     }

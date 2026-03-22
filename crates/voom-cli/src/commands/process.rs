@@ -377,13 +377,7 @@ fn execute_plans(
         let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
 
         let claimed = results.iter().any(|r| r.claimed);
-        let exec_error = results.iter().find_map(|r| {
-            r.data
-                .as_ref()
-                .and_then(|d| d.get("error"))
-                .and_then(|e| e.as_str())
-                .map(String::from)
-        });
+        let exec_error = results.iter().find_map(|r| r.execution_error.clone());
 
         if claimed && exec_error.is_none() {
             // An executor plugin claimed and successfully executed the plan

@@ -241,6 +241,7 @@ impl Plugin for BackupManagerPlugin {
                         "phase": evt.phase_name,
                     })),
                     claimed: false,
+                    execution_error: None,
                 }))
             }
             Event::PlanCompleted(evt) => {
@@ -260,6 +261,7 @@ impl Plugin for BackupManagerPlugin {
                             "phase": evt.phase_name,
                         })),
                         claimed: false,
+                        execution_error: None,
                     }))
                 } else {
                     Ok(None)
@@ -284,6 +286,7 @@ impl Plugin for BackupManagerPlugin {
                             "error": evt.error,
                         })),
                         claimed: false,
+                        execution_error: None,
                     }))
                 } else {
                     Ok(None)

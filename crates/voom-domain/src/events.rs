@@ -78,6 +78,11 @@ pub struct EventResult {
     /// handlers. Produced events from the claiming result still cascade normally.
     #[serde(default)]
     pub claimed: bool,
+    /// Set when an executor claims a plan but fails to execute it.
+    /// Allows callers to distinguish claimed+succeeded from claimed+failed
+    /// without parsing the `data` JSON.
+    #[serde(default)]
+    pub execution_error: Option<String>,
 }
 
 impl EventResult {
@@ -92,6 +97,7 @@ impl EventResult {
             produced_events: vec![],
             data,
             claimed: true,
+            execution_error: None,
         }
     }
 
@@ -106,6 +112,7 @@ impl EventResult {
             produced_events: vec![],
             data: None,
             claimed: true,
+            execution_error: None,
         }
     }
 
@@ -132,7 +139,7 @@ impl EventResult {
             }
             Err(e) => {
                 let mut result = Self::plan_failed(plugin_name);
-                result.data = Some(serde_json::json!({ "error": e.to_string() }));
+                result.execution_error = Some(e.to_string());
                 result
             }
         }

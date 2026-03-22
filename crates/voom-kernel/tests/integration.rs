@@ -35,6 +35,7 @@ impl Plugin for DiscoveryLogger {
                     "size": discovered.size,
                 })),
                 claimed: false,
+                execution_error: None,
             }))
         } else {
             Ok(None)
@@ -75,6 +76,7 @@ impl Plugin for MockIntrospector {
                 produced_events: vec![introspected],
                 data: None,
                 claimed: false,
+                execution_error: None,
             }))
         } else {
             Ok(None)
@@ -110,6 +112,7 @@ impl Plugin for MockExecutor {
             produced_events: vec![],
             data: Some(serde_json::json!({"executed": true})),
             claimed: false,
+            execution_error: None,
         }))
     }
 }
@@ -255,6 +258,7 @@ impl Plugin for MockMkvExecutor {
                     produced_events: vec![],
                     data: Some(serde_json::json!({"handler": "mkvtoolnix"})),
                     claimed: true,
+                    execution_error: None,
                 }));
             }
         }
@@ -285,6 +289,7 @@ impl Plugin for MockFfmpegExecutor {
                 produced_events: vec![],
                 data: Some(serde_json::json!({"handler": "ffmpeg"})),
                 claimed: true,
+                execution_error: None,
             }))
         } else {
             Ok(None)
