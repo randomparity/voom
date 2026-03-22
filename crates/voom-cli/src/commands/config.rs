@@ -1,8 +1,8 @@
 use anyhow::Result;
 use console::style;
 
-use crate::app;
 use crate::cli::ConfigCommands;
+use crate::config;
 
 pub fn run(cmd: ConfigCommands) -> Result<()> {
     match cmd {
@@ -12,7 +12,7 @@ pub fn run(cmd: ConfigCommands) -> Result<()> {
 }
 
 fn show() -> Result<()> {
-    let path = app::config_path();
+    let path = config::config_path();
 
     if path.exists() {
         let contents = std::fs::read_to_string(&path)?;
@@ -46,10 +46,10 @@ fn show() -> Result<()> {
         );
         println!();
         println!("{}", style("Default configuration:").bold());
-        let config = app::AppConfig::default();
+        let cfg = config::AppConfig::default();
         println!(
             "{}",
-            toml::to_string_pretty(&config).unwrap_or_else(|_| "Failed to serialize".into())
+            toml::to_string_pretty(&cfg).unwrap_or_else(|_| "Failed to serialize".into())
         );
     }
 
@@ -57,7 +57,7 @@ fn show() -> Result<()> {
 }
 
 fn edit() -> Result<()> {
-    let path = app::config_path();
+    let path = config::config_path();
 
     // Ensure directory exists
     if let Some(parent) = path.parent() {
@@ -66,8 +66,8 @@ fn edit() -> Result<()> {
 
     // Create default config if it doesn't exist
     if !path.exists() {
-        let config = app::AppConfig::default();
-        let contents = toml::to_string_pretty(&config)?;
+        let cfg = config::AppConfig::default();
+        let contents = toml::to_string_pretty(&cfg)?;
         std::fs::write(&path, contents)?;
     }
 
@@ -79,7 +79,7 @@ fn edit() -> Result<()> {
     }
 
     // Validate the edited config
-    match app::load_config() {
+    match config::load_config() {
         Ok(_) => println!("{} Config is valid.", style("OK").bold().green()),
         Err(e) => {
             println!(
@@ -94,22 +94,22 @@ fn edit() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::app;
+    use crate::config;
 
     #[test]
     fn test_default_config_serializes_to_valid_toml() {
-        let config = app::AppConfig::default();
+        let config = config::AppConfig::default();
         let toml_str =
             toml::to_string_pretty(&config).expect("default config should serialize to TOML");
         assert!(!toml_str.is_empty());
         // Verify it can be parsed back
-        let _: app::AppConfig = toml::from_str(&toml_str).expect("serialized TOML should parse");
+        let _: config::AppConfig = toml::from_str(&toml_str).expect("serialized TOML should parse");
     }
 
     #[test]
     fn test_config_path_is_in_voom_dir() {
-        let path = app::config_path();
-        let dir = app::voom_config_dir();
+        let path = config::config_path();
+        let dir = config::voom_config_dir();
         assert_eq!(path.parent().unwrap(), dir);
     }
 }

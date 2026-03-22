@@ -14,7 +14,7 @@ pub fn run(cmd: JobsCommands) -> Result<()> {
 }
 
 fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
-    let config = crate::app::load_config()?;
+    let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
     use voom_domain::job::JobStatus;
@@ -111,7 +111,7 @@ fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
 }
 
 fn status(id: String) -> Result<()> {
-    let config = crate::app::load_config()?;
+    let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
     let uuid = uuid::Uuid::parse_str(&id).map_err(|_| anyhow::anyhow!("Invalid job ID: {id}"))?;
@@ -150,7 +150,7 @@ fn status(id: String) -> Result<()> {
 }
 
 fn cancel(id: String) -> Result<()> {
-    let config = crate::app::load_config()?;
+    let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
     let uuid = uuid::Uuid::parse_str(&id).map_err(|_| anyhow::anyhow!("Invalid job ID: {id}"))?;

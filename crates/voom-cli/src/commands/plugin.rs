@@ -5,6 +5,7 @@ use console::style;
 
 use crate::app;
 use crate::cli::PluginCommands;
+use crate::config;
 use crate::output;
 
 pub fn run(cmd: PluginCommands) -> Result<()> {
@@ -18,7 +19,7 @@ pub fn run(cmd: PluginCommands) -> Result<()> {
 }
 
 fn list() -> Result<()> {
-    let config = app::load_config()?;
+    let config = config::load_config()?;
     let disabled = &config.plugins.disabled_plugins;
     let kernel = app::bootstrap_kernel(&config)?;
 
@@ -39,7 +40,7 @@ fn list() -> Result<()> {
     // Collect disabled plugins that are known but not loaded
     let mut disabled_list: Vec<String> = Vec::new();
     for d in disabled {
-        if app::KNOWN_PLUGIN_NAMES.contains(&d.as_str()) && !names.contains(d) {
+        if config::KNOWN_PLUGIN_NAMES.contains(&d.as_str()) && !names.contains(d) {
             disabled_list.push(d.clone());
         }
     }
@@ -71,11 +72,11 @@ fn list() -> Result<()> {
 }
 
 fn info(name: String) -> Result<()> {
-    let config = app::load_config()?;
+    let config = config::load_config()?;
 
     // Check if it's a known but disabled plugin
     if config.plugins.disabled_plugins.contains(&name)
-        && app::KNOWN_PLUGIN_NAMES.contains(&name.as_str())
+        && config::KNOWN_PLUGIN_NAMES.contains(&name.as_str())
     {
         println!("{} {}", style("Plugin:").bold(), style(&name).cyan());
         println!("{} {}", style("Status:").bold(), style("disabled").yellow());
@@ -122,12 +123,12 @@ fn disable(name: String) -> Result<()> {
 /// Shared implementation for enable/disable: validates the plugin name, checks
 /// current state, mutates the disabled list, and saves the config.
 fn set_plugin_enabled(name: String, enabled: bool) -> Result<()> {
-    if !app::KNOWN_PLUGIN_NAMES.contains(&name.as_str()) {
-        let known = app::KNOWN_PLUGIN_NAMES.join(", ");
+    if !config::KNOWN_PLUGIN_NAMES.contains(&name.as_str()) {
+        let known = config::KNOWN_PLUGIN_NAMES.join(", ");
         bail!("Unknown plugin \"{name}\". Known plugins: {known}");
     }
 
-    let mut config = app::load_config()?;
+    let mut config = config::load_config()?;
     let is_disabled = config.plugins.disabled_plugins.contains(&name);
 
     if enabled && !is_disabled {
@@ -153,7 +154,7 @@ fn set_plugin_enabled(name: String, enabled: bool) -> Result<()> {
     } else {
         config.plugins.disabled_plugins.push(name.clone());
     }
-    app::save_config(&config)?;
+    config::save_config(&config)?;
 
     if enabled {
         println!(
@@ -213,11 +214,11 @@ fn install(path: PathBuf) -> Result<()> {
     }
 
     // 4. Determine target directory
-    let config = app::load_config()?;
-    let target_dir = config
+    let cfg = config::load_config()?;
+    let target_dir = cfg
         .plugins
         .wasm_dir
-        .unwrap_or_else(|| app::voom_config_dir().join("plugins").join("wasm"));
+        .unwrap_or_else(|| config::voom_config_dir().join("plugins").join("wasm"));
 
     // 5. Create target directory if needed
     std::fs::create_dir_all(&target_dir).with_context(|| {
@@ -309,7 +310,7 @@ mod tests {
     #[test]
     fn test_known_plugins_enable_disable_validation() {
         // Verify that enable/disable check against KNOWN_PLUGIN_NAMES
-        assert!(app::KNOWN_PLUGIN_NAMES.contains(&"sqlite-store"));
-        assert!(!app::KNOWN_PLUGIN_NAMES.contains(&"nonexistent-plugin"));
+        assert!(config::KNOWN_PLUGIN_NAMES.contains(&"sqlite-store"));
+        assert!(!config::KNOWN_PLUGIN_NAMES.contains(&"nonexistent-plugin"));
     }
 }

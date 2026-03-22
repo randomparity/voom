@@ -2,10 +2,11 @@ use anyhow::Result;
 use console::style;
 
 use crate::app;
+use crate::config;
 use crate::stats;
 
 pub fn run() -> Result<()> {
-    let config = app::load_config()?;
+    let config = config::load_config()?;
 
     println!("{}", style("VOOM Status").bold().underlined());
     println!();
@@ -77,7 +78,7 @@ pub fn run() -> Result<()> {
     // Config path
     println!();
     println!("{}", style("Paths:").bold());
-    println!("  Config: {}", app::config_path().display());
+    println!("  Config: {}", config::config_path().display());
     println!("  Data:   {}", config.data_dir.display());
 
     Ok(())
@@ -85,7 +86,7 @@ pub fn run() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::app;
+    use crate::config;
     use voom_domain::media::{Container, MediaFile};
 
     #[test]
@@ -102,10 +103,10 @@ mod tests {
 
     #[test]
     fn test_status_paths_display() {
-        let config = app::AppConfig::default();
-        let config_path = app::config_path();
+        let cfg = config::AppConfig::default();
+        let config_path = config::config_path();
         // Both paths should be displayable without panic
         let _ = format!("Config: {}", config_path.display());
-        let _ = format!("Data: {}", config.data_dir.display());
+        let _ = format!("Data: {}", cfg.data_dir.display());
     }
 }

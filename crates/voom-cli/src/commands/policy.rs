@@ -14,7 +14,7 @@ pub async fn run(cmd: PolicyCommands) -> Result<()> {
 
 async fn list() -> Result<()> {
     // Scan standard policy directories
-    let config_dir = crate::app::voom_config_dir().join("policies");
+    let config_dir = crate::config::voom_config_dir().join("policies");
 
     if !config_dir.exists() {
         println!("{}", style("No policies directory found.").dim());

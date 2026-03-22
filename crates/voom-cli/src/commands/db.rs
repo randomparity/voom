@@ -4,6 +4,7 @@ use console::style;
 
 use crate::app;
 use crate::cli::{DbCommands, OutputFormat};
+use crate::config;
 
 pub async fn run(cmd: DbCommands) -> Result<()> {
     match cmd {
@@ -17,7 +18,7 @@ pub async fn run(cmd: DbCommands) -> Result<()> {
 }
 
 fn prune() -> Result<()> {
-    let config = app::load_config()?;
+    let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
     let count = store
@@ -38,7 +39,7 @@ fn prune() -> Result<()> {
 }
 
 fn vacuum() -> Result<()> {
-    let config = app::load_config()?;
+    let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
     store
@@ -51,7 +52,7 @@ fn vacuum() -> Result<()> {
 }
 
 async fn reset() -> Result<()> {
-    let config = app::load_config()?;
+    let config = config::load_config()?;
     let db_path = config.data_dir.join("voom.db");
 
     if !db_path.exists() {
@@ -88,7 +89,7 @@ async fn reset() -> Result<()> {
 }
 
 fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
-    let config = app::load_config()?;
+    let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
     use voom_domain::storage::BadFileFilters;
@@ -148,7 +149,7 @@ fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
 }
 
 fn purge_bad() -> Result<()> {
-    let config = app::load_config()?;
+    let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
     use voom_domain::storage::BadFileFilters;
@@ -178,7 +179,7 @@ fn purge_bad() -> Result<()> {
 }
 
 async fn clean_bad(yes: bool) -> Result<()> {
-    let config = app::load_config()?;
+    let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
     use voom_domain::storage::BadFileFilters;
@@ -270,29 +271,30 @@ async fn clean_bad(yes: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use crate::app;
+    use crate::config;
 
     #[test]
     fn test_db_path_uses_data_dir() {
-        let config = app::AppConfig {
+        let cfg = config::AppConfig {
             data_dir: std::path::PathBuf::from("/tmp/test-voom"),
-            plugins: app::PluginsConfig::default(),
+            plugins: config::PluginsConfig::default(),
             auth_token: None,
             plugin: std::collections::HashMap::new(),
         };
-        let db_path = config.data_dir.join("voom.db");
+        let db_path = cfg.data_dir.join("voom.db");
         assert_eq!(db_path, std::path::PathBuf::from("/tmp/test-voom/voom.db"));
     }
 
     #[test]
     fn test_open_store_in_temp_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let config = app::AppConfig {
+        let cfg = config::AppConfig {
             data_dir: dir.path().to_path_buf(),
-            plugins: app::PluginsConfig::default(),
+            plugins: config::PluginsConfig::default(),
             auth_token: None,
             plugin: std::collections::HashMap::new(),
         };
-        let store = app::open_store(&config);
+        let store = app::open_store(&cfg);
         assert!(store.is_ok(), "should open store in temp directory");
     }
 }

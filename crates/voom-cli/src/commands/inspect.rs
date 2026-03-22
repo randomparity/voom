@@ -3,6 +3,7 @@ use console::style;
 
 use crate::app;
 use crate::cli::{InspectArgs, OutputFormat};
+use crate::config;
 use crate::output;
 
 /// Run the inspect command.
@@ -20,7 +21,7 @@ pub async fn run(args: InspectArgs) -> Result<()> {
         .with_context(|| format!("File not found: {}", args.file.display()))?;
 
     // First check if we have it in the database
-    let config = app::load_config()?;
+    let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
     if let Ok(Some(file)) = store.get_file_by_path(&path) {

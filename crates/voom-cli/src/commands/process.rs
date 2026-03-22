@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
+use crate::config;
 use crate::output::{max_filename_len, shrink_filename};
 use voom_domain::events::{
     Event, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
@@ -23,7 +24,7 @@ use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// progress reporting, worker-pool concurrency control, and structured error
 /// handling that would be difficult to achieve through the asynchronous pub/sub bus.
 pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
-    let config = app::load_config()?;
+    let config = config::load_config()?;
     let (kernel, store) = app::bootstrap_kernel_with_store(&config)?;
     let kernel = Arc::new(kernel);
     let store = match store {

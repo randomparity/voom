@@ -2,14 +2,15 @@ use anyhow::Result;
 use console::style;
 
 use crate::app;
+use crate::config;
 use crate::tools::print_tool_status;
 
 pub fn run() -> Result<()> {
     println!("{}", style("VOOM First-Time Setup").bold().underlined());
     println!();
 
-    let config = app::AppConfig::default();
-    let config_path = app::config_path();
+    let cfg = config::AppConfig::default();
+    let config_path = config::config_path();
 
     // 1. Create config directory
     let config_dir = config_path
@@ -31,18 +32,18 @@ pub fn run() -> Result<()> {
     }
 
     // 2. Create data directory
-    if !config.data_dir.exists() {
-        std::fs::create_dir_all(&config.data_dir)?;
+    if !cfg.data_dir.exists() {
+        std::fs::create_dir_all(&cfg.data_dir)?;
         println!(
             "  {} Created {}",
             style("OK").green(),
-            style(config.data_dir.display()).cyan()
+            style(cfg.data_dir.display()).cyan()
         );
     } else {
         println!(
             "  {} {} already exists",
             style("OK").green(),
-            style(config.data_dir.display()).dim()
+            style(cfg.data_dir.display()).dim()
         );
     }
 
@@ -69,7 +70,7 @@ pub fn run() -> Result<()> {
 
     // 4. Create default config if missing
     if !config_path.exists() {
-        let contents = app::default_config_contents();
+        let contents = config::default_config_contents();
         std::fs::write(&config_path, &contents)?;
         println!(
             "  {} Created {}",
@@ -86,7 +87,7 @@ pub fn run() -> Result<()> {
 
     // 5. Initialize database
     print!("  Database ... ");
-    match app::bootstrap_kernel(&config) {
+    match app::bootstrap_kernel(&cfg) {
         Ok(_) => println!("{}", style("OK").green()),
         Err(e) => println!("{} {e}", style("ERROR").red()),
     }
@@ -163,12 +164,12 @@ policy "default" {
 
 #[cfg(test)]
 mod tests {
-    use crate::app;
+    use crate::config;
 
     #[test]
     fn test_default_config_dirs_are_consistent() {
-        let config = app::AppConfig::default();
-        let config_path = app::config_path();
+        let cfg = config::AppConfig::default();
+        let config_path = config::config_path();
         let config_dir = config_path.parent().unwrap();
 
         // The policies dir that init creates
@@ -176,7 +177,7 @@ mod tests {
         assert!(policies_dir.ends_with("voom/policies"));
 
         // Data dir defaults to the config dir
-        assert_eq!(config.data_dir, app::voom_config_dir());
+        assert_eq!(cfg.data_dir, config::voom_config_dir());
     }
 
     #[test]
@@ -208,11 +209,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config_file = dir.path().join("config.toml");
 
-        let contents = app::default_config_contents();
+        let contents = config::default_config_contents();
         std::fs::write(&config_file, &contents).unwrap();
 
         // Verify the written file is valid TOML (all options are commented out)
-        let reloaded: app::AppConfig =
+        let reloaded: config::AppConfig =
             toml::from_str(&std::fs::read_to_string(&config_file).unwrap()).unwrap();
         assert!(reloaded.auth_token.is_none());
         assert!(reloaded.plugins.disabled_plugins.is_empty());

@@ -6,7 +6,7 @@ use voom_web_server::server::{start_server, ServerConfig};
 use crate::cli::ServeArgs;
 
 pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
-    let config = crate::app::load_config()?;
+    let config = crate::config::load_config()?;
     let (kernel, store) = crate::app::bootstrap_kernel_with_store(&config)?;
     let store = match store {
         Some(s) => s,
@@ -82,9 +82,9 @@ mod tests {
 
     #[test]
     fn test_server_config_with_auth_token() {
-        let config = crate::app::AppConfig {
+        let config = crate::config::AppConfig {
             data_dir: std::path::PathBuf::from("/tmp"),
-            plugins: crate::app::PluginsConfig::default(),
+            plugins: crate::config::PluginsConfig::default(),
             auth_token: Some("secret".to_string()),
             plugin: std::collections::HashMap::new(),
         };

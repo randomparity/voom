@@ -4,11 +4,12 @@ use console::style;
 
 use crate::app;
 use crate::cli::{OutputFormat, ReportArgs};
+use crate::config;
 use crate::output;
 use crate::stats;
 
 pub fn run(args: ReportArgs) -> Result<()> {
-    let config = app::load_config()?;
+    let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
     let files = store

@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use crate::app;
 use crate::cli::ScanArgs;
+use crate::config;
 use crate::output::{self, max_filename_len, shrink_filename};
 use anyhow::{Context, Result};
 use console::style;
@@ -38,7 +39,7 @@ fn format_eta(start: &Instant, current: usize, total: usize) -> String {
 /// reporting, but all events are also published through the kernel's event bus
 /// so that subscribers (sqlite-store, SSE, WASM plugins) receive them.
 pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
-    let config = app::load_config()?;
+    let config = config::load_config()?;
     let (kernel, store) = app::bootstrap_kernel_with_store(&config)?;
     let store = match store {
         Some(s) => s,

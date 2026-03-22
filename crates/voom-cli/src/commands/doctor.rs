@@ -4,6 +4,7 @@ use anyhow::Result;
 use console::style;
 
 use crate::app;
+use crate::config;
 use crate::tools::print_tool_status;
 
 /// Run the doctor command.
@@ -22,9 +23,9 @@ pub fn run() -> Result<()> {
 
     // 1. Config
     print!("  Config file ... ");
-    let config_path = app::config_path();
+    let config_path = config::config_path();
     if config_path.exists() {
-        match app::load_config() {
+        match config::load_config() {
             Ok(_) => println!("{}", style("OK").green()),
             Err(e) => {
                 println!("{} {e}", style("ERROR").red());
@@ -37,7 +38,7 @@ pub fn run() -> Result<()> {
 
     // 2. Database
     print!("  Database ... ");
-    let config = app::load_config().unwrap_or_default();
+    let config = config::load_config().unwrap_or_default();
     let kernel_result = app::bootstrap_kernel_with_store(&config);
     match &kernel_result {
         Ok((_kernel, store_opt)) => {
