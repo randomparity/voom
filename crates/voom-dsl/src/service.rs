@@ -9,6 +9,7 @@ use crate::{format_policy, parse_policy, validate};
 
 /// Location information for a policy error.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ErrorInfo {
     pub message: String,
     pub line: Option<usize>,
@@ -17,6 +18,7 @@ pub struct ErrorInfo {
 
 /// Result of validating a policy source string.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ValidationResult {
     pub valid: bool,
     pub errors: Vec<ErrorInfo>,
@@ -24,6 +26,7 @@ pub struct ValidationResult {
 
 /// Result of formatting a policy source string.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FormatResult {
     pub formatted: Option<String>,
     pub errors: Vec<ErrorInfo>,
