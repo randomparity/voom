@@ -3092,6 +3092,7 @@ dependencies = [
  "voom-discovery",
  "voom-domain",
  "voom-dsl",
+ "voom-ffmpeg-executor",
  "voom-ffprobe-introspector",
  "voom-job-manager",
  "voom-kernel",
@@ -3157,6 +3158,7 @@ dependencies = [
  "uuid",
  "voom-domain",
  "voom-kernel",
+ "wait-timeout",
 ]
 
 [[package]]

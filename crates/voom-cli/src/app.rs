@@ -19,6 +19,7 @@ use crate::config::AppConfig;
 // 60  = policy evaluator
 // 50  = phase orchestrator
 // 39  = mkvtoolnix executor
+// 40  = ffmpeg executor
 // 30  = backup manager
 // 20  = job manager
 pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
@@ -137,12 +138,22 @@ pub fn bootstrap_kernel_with_store(
         "phase orchestrator"
     );
 
-    // Executor — mkvtoolnix (ffmpeg-executor re-added when Sprint 13 wires execution)
+    // Executor — mkvtoolnix (MKV metadata, track removal/reorder, convert-to-MKV)
     register_if_enabled!(
         "mkvtoolnix-executor",
         voom_mkvtoolnix_executor::MkvtoolnixExecutorPlugin::new(),
         39,
         "mkvtoolnix executor"
+    );
+
+    // Executor — ffmpeg (transcode, non-MKV metadata, container conversion)
+    // Priority 40: runs after mkvtoolnix (39) so mkvtoolnix gets first crack
+    // at plans it can handle (MKV metadata, convert-to-MKV).
+    register_if_enabled!(
+        "ffmpeg-executor",
+        voom_ffmpeg_executor::FfmpegExecutorPlugin::new(),
+        40,
+        "ffmpeg executor"
     );
 
     // Backup manager
@@ -161,8 +172,47 @@ pub fn bootstrap_kernel_with_store(
         "job manager"
     );
 
-    // TODO: load WASM plugins here using loader.load_dir_with_config()
-    // once WASM plugin integration is wired up (Sprint 13).
+    // WASM plugins — loaded from the configured directory (if it exists).
+    #[cfg(feature = "wasm")]
+    {
+        let wasm_dir = config
+            .plugins
+            .wasm_dir
+            .clone()
+            .unwrap_or_else(|| config.data_dir.join("plugins").join("wasm"));
+
+        if wasm_dir.is_dir() {
+            match voom_kernel::loader::wasm::WasmPluginLoader::new() {
+                Ok(loader) => {
+                    let results = loader.load_dir_with_config(&wasm_dir, &config.plugin);
+                    for result in results {
+                        match result {
+                            Ok(plugin) => {
+                                let name = plugin.name().to_string();
+                                if disabled.iter().any(|d| d == &name) {
+                                    tracing::info!(plugin = %name, "WASM plugin disabled, skipping");
+                                    continue;
+                                }
+                                // WASM plugins are already initialized during load,
+                                // register directly with priority 70 (after storage,
+                                // before policy evaluation).
+                                kernel.register_plugin(plugin, 70);
+                                tracing::info!(plugin = %name, "WASM plugin loaded");
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "failed to load WASM plugin");
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to create WASM plugin loader");
+                }
+            }
+        } else {
+            tracing::debug!(dir = %wasm_dir.display(), "WASM plugins directory not found, skipping");
+        }
+    }
 
     Ok((kernel, store))
 }
