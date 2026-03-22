@@ -3,22 +3,12 @@
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use voom_dsl::errors::DslError;
+use voom_dsl::service;
 
 use crate::errors::WebError;
 
 /// Maximum policy source size (1 MiB).
 const MAX_POLICY_SIZE: usize = 1_024 * 1_024;
-
-/// Extract line/column information from a `DslError`, if available.
-fn extract_dsl_error_location(err: &DslError) -> (Option<usize>, Option<usize>) {
-    match err {
-        DslError::Parse { line, col, .. }
-        | DslError::Build { line, col, .. }
-        | DslError::Validation { line, col, .. } => (Some(*line), Some(*col)),
-        DslError::Compile { .. } => (None, None),
-    }
-}
 
 #[derive(Debug, Deserialize)]
 pub struct PolicyInput {
@@ -46,6 +36,16 @@ pub struct FormatResponse {
     pub errors: Vec<PolicyError>,
 }
 
+impl From<service::ErrorInfo> for PolicyError {
+    fn from(e: service::ErrorInfo) -> Self {
+        PolicyError {
+            message: e.message,
+            line: e.line,
+            column: e.column,
+        }
+    }
+}
+
 /// POST /api/policy/validate -- validate DSL source
 #[tracing::instrument(skip(input))]
 pub async fn validate_policy(
@@ -58,46 +58,11 @@ pub async fn validate_policy(
         )));
     }
 
-    match voom_dsl::parse_policy(&input.source) {
-        Ok(ast) => {
-            // Run semantic validation
-            match voom_dsl::validate(&ast) {
-                Ok(()) => Ok(Json(ValidateResponse {
-                    valid: true,
-                    errors: vec![],
-                })),
-                Err(validation_errors) => {
-                    let errors = validation_errors
-                        .errors
-                        .iter()
-                        .map(|e| {
-                            let (line, column) = extract_dsl_error_location(e);
-                            PolicyError {
-                                message: e.to_string(),
-                                line,
-                                column,
-                            }
-                        })
-                        .collect();
-                    Ok(Json(ValidateResponse {
-                        valid: false,
-                        errors,
-                    }))
-                }
-            }
-        }
-        Err(e) => {
-            let (line, column) = extract_dsl_error_location(&e);
-            Ok(Json(ValidateResponse {
-                valid: false,
-                errors: vec![PolicyError {
-                    message: e.to_string(),
-                    line,
-                    column,
-                }],
-            }))
-        }
-    }
+    let result = service::validate_source(&input.source);
+    Ok(Json(ValidateResponse {
+        valid: result.valid,
+        errors: result.errors.into_iter().map(PolicyError::from).collect(),
+    }))
 }
 
 /// POST /api/policy/format -- format DSL source
@@ -112,26 +77,11 @@ pub async fn format_policy(
         )));
     }
 
-    match voom_dsl::parse_policy(&input.source) {
-        Ok(ast) => {
-            let formatted = voom_dsl::format_policy(&ast);
-            Ok(Json(FormatResponse {
-                formatted,
-                errors: vec![],
-            }))
-        }
-        Err(e) => {
-            let (line, column) = extract_dsl_error_location(&e);
-            Ok(Json(FormatResponse {
-                formatted: String::new(),
-                errors: vec![PolicyError {
-                    message: e.to_string(),
-                    line,
-                    column,
-                }],
-            }))
-        }
-    }
+    let result = service::format_source(&input.source);
+    Ok(Json(FormatResponse {
+        formatted: result.formatted.unwrap_or_default(),
+        errors: result.errors.into_iter().map(PolicyError::from).collect(),
+    }))
 }
 
 #[cfg(test)]
