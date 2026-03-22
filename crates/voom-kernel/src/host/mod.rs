@@ -6,7 +6,7 @@
 mod functions;
 mod store;
 
-pub use store::{InMemoryDataStore, PluginDataStore, StorageBackedDataStore};
+pub use store::{InMemoryPluginStore, StorageBackedPluginStore, WasmPluginStore};
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -46,7 +46,7 @@ pub struct HostState {
     /// Allowed directories for tool execution (security sandbox).
     pub allowed_paths: Vec<PathBuf>,
     /// Shared storage backend for persistent plugin data.
-    pub storage: Option<Arc<dyn PluginDataStore>>,
+    pub storage: Option<Arc<dyn WasmPluginStore>>,
     /// Allowed tool names (empty = deny all).
     pub allowed_tools: Vec<String>,
     /// HTTP client configuration.
@@ -103,7 +103,7 @@ impl HostState {
     }
 
     #[must_use]
-    pub fn with_storage(mut self, storage: Arc<dyn PluginDataStore>) -> Self {
+    pub fn with_storage(mut self, storage: Arc<dyn WasmPluginStore>) -> Self {
         self.storage = Some(storage);
         self
     }
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn test_plugin_data_persistent_store() {
-        let store = Arc::new(InMemoryDataStore::new());
+        let store = Arc::new(InMemoryPluginStore::new());
         let mut state = HostState::new("test".into()).with_storage(store.clone());
 
         state.set_plugin_data("key1", b"value1").unwrap();
@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_in_memory_data_store() {
-        let store = InMemoryDataStore::new();
+        let store = InMemoryPluginStore::new();
 
         assert!(store.get("plugin1", "key1").unwrap().is_none());
 
@@ -402,7 +402,7 @@ mod tests {
     #[test]
     fn test_with_initial_config_with_storage() {
         // Seeded config should be accessible even when persistent storage is attached.
-        let store = Arc::new(InMemoryDataStore::new());
+        let store = Arc::new(InMemoryPluginStore::new());
         let config = serde_json::json!({"api_key": "abc123"});
         let state = HostState::new("test".into())
             .with_storage(store.clone())
@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn test_with_initial_config_storage_overrides_seed() {
         // A value written to storage should take precedence over the seeded default.
-        let store = Arc::new(InMemoryDataStore::new());
+        let store = Arc::new(InMemoryPluginStore::new());
         let config = serde_json::json!({"api_key": "original"});
         let mut state = HostState::new("test".into())
             .with_storage(store.clone())

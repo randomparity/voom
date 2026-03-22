@@ -116,10 +116,9 @@ impl FfmpegExecutorPlugin {
 
     /// Build FFmpeg args for a plan but do not execute the subprocess.
     ///
-    /// This is currently a stub: it constructs the FFmpeg command arguments
-    /// via [`build_ffmpeg_command`] and logs them, but does not spawn a
-    /// process. It returns placeholder success results for every action in
-    /// the plan.
+    /// Currently returns `Err` after building the command: subprocess execution
+    /// is planned for Sprint 13. The FFmpeg args are logged at info level for
+    /// debugging.
     pub fn execute_plan(&self, plan: &Plan) -> Result<Vec<ActionResult>> {
         if !self.can_handle(plan) {
             return Err(VoomError::Plugin {
@@ -151,30 +150,27 @@ impl FfmpegExecutorPlugin {
             None
         };
 
-        let _ffmpeg_args = build_ffmpeg_command(&plan.file, &actions, &output_path, hw_accel)?;
+        let ffmpeg_args = build_ffmpeg_command(&plan.file, &actions, &output_path, hw_accel)?;
 
         tracing::info!(
             path = %plan.file.path.display(),
             phase = %plan.phase_name,
             actions = actions.len(),
             output = %output_path.display(),
-            "Built FFmpeg command for plan execution"
+            args = ?ffmpeg_args,
+            "FFmpeg command built but subprocess execution is not yet implemented"
         );
 
-        // Build action results (in a real implementation, these would reflect
-        // actual execution status from running the ffmpeg subprocess)
-        let results: Vec<ActionResult> = plan
-            .actions
-            .iter()
-            .map(|action| ActionResult {
-                operation: action.operation,
-                success: true,
-                description: action.description.clone(),
-                error: None,
-            })
-            .collect();
-
-        Ok(results)
+        // TODO(sprint-13): Execute the built command via std::process::Command,
+        // parse progress from stderr, and return real ActionResult outcomes.
+        Err(VoomError::Plugin {
+            plugin: "ffmpeg-executor".into(),
+            message: format!(
+                "FFmpeg subprocess execution not yet implemented (built {} args for {} actions)",
+                ffmpeg_args.len(),
+                actions.len()
+            ),
+        })
     }
 
     /// Handle a `plan.created` event.
@@ -427,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_plan_transcode() {
+    fn test_execute_plan_returns_not_implemented() {
         let plugin = FfmpegExecutorPlugin::new();
 
         let plan = plan_with_actions(
@@ -440,10 +436,13 @@ mod tests {
             }],
         );
 
-        let results = plugin.execute_plan(&plan).unwrap();
-        assert_eq!(results.len(), 1);
-        assert!(results[0].success);
-        assert_eq!(results[0].operation, OperationType::TranscodeVideo);
+        // execute_plan builds the FFmpeg command but returns Err because
+        // subprocess execution is not yet implemented
+        let err = plugin.execute_plan(&plan).unwrap_err();
+        assert!(
+            err.to_string().contains("not yet implemented"),
+            "expected 'not yet implemented' error, got: {err}"
+        );
     }
 
     #[test]
