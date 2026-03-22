@@ -62,7 +62,7 @@ pub use voom_domain::capabilities::Capability;
 pub use voom_domain::events::{Event, EventResult};
 pub use voom_domain::media::{Container, MediaFile, Track, TrackType};
 pub use voom_domain::plan::{
-    ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction,
+    ActionParams, ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction,
 };
 
 // Re-export the domain crate for direct access by plugins.

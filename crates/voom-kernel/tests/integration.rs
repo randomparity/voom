@@ -329,7 +329,7 @@ fn test_executor_claimed_mkv_metadata_goes_to_mkvtoolnix() {
         vec![PlannedAction {
             operation: OperationType::SetDefault,
             track_index: Some(1),
-            parameters: serde_json::json!({}),
+            parameters: voom_domain::plan::ActionParams::Empty,
             description: "Set default".into(),
         }],
     );
@@ -345,7 +345,7 @@ fn test_executor_claimed_mkv_metadata_goes_to_mkvtoolnix() {
 
 #[test]
 fn test_executor_claimed_mp4_goes_to_ffmpeg() {
-    use voom_domain::plan::{OperationType, PlannedAction};
+    use voom_domain::plan::{ActionParams, OperationType, PlannedAction};
 
     let mut kernel = Kernel::new();
 
@@ -358,7 +358,10 @@ fn test_executor_claimed_mp4_goes_to_ffmpeg() {
         vec![PlannedAction {
             operation: OperationType::TranscodeVideo,
             track_index: Some(0),
-            parameters: serde_json::json!({"codec": "hevc"}),
+            parameters: ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: serde_json::json!({}),
+            },
             description: "Transcode".into(),
         }],
     );
@@ -372,7 +375,7 @@ fn test_executor_claimed_mp4_goes_to_ffmpeg() {
 
 #[test]
 fn test_executor_mkv_transcode_falls_through_to_ffmpeg() {
-    use voom_domain::plan::{OperationType, PlannedAction};
+    use voom_domain::plan::{ActionParams, OperationType, PlannedAction};
 
     let mut kernel = Kernel::new();
 
@@ -385,7 +388,10 @@ fn test_executor_mkv_transcode_falls_through_to_ffmpeg() {
         vec![PlannedAction {
             operation: OperationType::TranscodeVideo,
             track_index: Some(0),
-            parameters: serde_json::json!({"codec": "h264"}),
+            parameters: ActionParams::Transcode {
+                codec: "h264".into(),
+                settings: serde_json::json!({}),
+            },
             description: "Transcode to H.264".into(),
         }],
     );

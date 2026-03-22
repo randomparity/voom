@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 use uuid::Uuid;
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
-use voom_domain::plan::{OperationType, Plan, PlannedAction};
+use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 use voom_dsl::compiler::*;
 
 use crate::condition::{evaluate_condition, resolve_value_or_field};
@@ -223,7 +223,9 @@ fn emit_set_container(container: &str, ctx: &mut PhaseContext) {
     if ctx.file.container != target {
         ctx.plan.actions.push(PlannedAction::file_op(
             OperationType::ConvertContainer,
-            serde_json::json!({ "container": container }),
+            ActionParams::Container {
+                container: container.into(),
+            },
             format!(
                 "Convert container from {} to {container}",
                 ctx.file.container.as_str()
@@ -236,13 +238,19 @@ fn emit_remove_track(track: &Track, target: &TrackTarget, reason: &str, ctx: &mu
     ctx.plan.actions.push(PlannedAction::track_op(
         OperationType::RemoveTrack,
         track.index,
-        serde_json::json!({
-            "reason": reason,
-            "track_type": if track.track_type.is_video() { "video" }
-                          else if track.track_type.is_audio() { "audio" }
-                          else if track.track_type.is_subtitle() { "subtitle" }
-                          else { "attachment" },
-        }),
+        ActionParams::RemoveTrack {
+            reason: reason.into(),
+            track_type: if track.track_type.is_video() {
+                "video"
+            } else if track.track_type.is_audio() {
+                "audio"
+            } else if track.track_type.is_subtitle() {
+                "subtitle"
+            } else {
+                "attachment"
+            }
+            .into(),
+        },
         format!(
             "Remove {} track {} ({}, {})",
             target_str(target),
@@ -282,7 +290,9 @@ fn emit_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut 
 fn emit_reorder(order: &[String], ctx: &mut PhaseContext) {
     ctx.plan.actions.push(PlannedAction::file_op(
         OperationType::ReorderTracks,
-        serde_json::json!({ "order": order }),
+        ActionParams::ReorderTracks {
+            order: order.to_vec(),
+        },
         format!("Reorder tracks: {}", order.join(", ")),
     ));
 }
@@ -291,7 +301,7 @@ fn emit_set_default(target: &TrackTarget, track: &Track, detail: &str, ctx: &mut
     ctx.plan.actions.push(PlannedAction::track_op(
         OperationType::SetDefault,
         track.index,
-        serde_json::json!({}),
+        ActionParams::Empty,
         format!(
             "Set default on {} track {}{detail}",
             target_str(target),
@@ -304,7 +314,7 @@ fn emit_clear_default(target: &TrackTarget, track: &Track, detail: &str, ctx: &m
     ctx.plan.actions.push(PlannedAction::track_op(
         OperationType::ClearDefault,
         track.index,
-        serde_json::json!({}),
+        ActionParams::Empty,
         format!(
             "Clear default flag on {} track {}{detail}",
             target_str(target),
@@ -317,7 +327,7 @@ fn emit_clear_forced(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext
     ctx.plan.actions.push(PlannedAction::track_op(
         OperationType::ClearForced,
         track.index,
-        serde_json::json!({}),
+        ActionParams::Empty,
         format!(
             "Clear forced flag on {} track {}",
             target_str(target),
@@ -330,7 +340,9 @@ fn emit_clear_title(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext)
     ctx.plan.actions.push(PlannedAction::track_op(
         OperationType::SetTitle,
         track.index,
-        serde_json::json!({"title": ""}),
+        ActionParams::Title {
+            title: String::new(),
+        },
         format!(
             "Clear title on {} track {}",
             target_str(target),
@@ -460,13 +472,21 @@ fn emit_transcode(
             continue;
         }
 
-        let mut params = settings.clone();
-        params.insert("codec".into(), serde_json::Value::String(codec.into()));
+        // Build settings without "codec" and "preserve" keys (those are handled above)
+        let mut extra = serde_json::Map::new();
+        for (k, v) in settings {
+            if k != "preserve" {
+                extra.insert(k.clone(), v.clone());
+            }
+        }
 
         ctx.plan.actions.push(PlannedAction::track_op(
             operation,
             track.index,
-            serde_json::json!(params),
+            ActionParams::Transcode {
+                codec: codec.into(),
+                settings: serde_json::Value::Object(extra),
+            },
             format!(
                 "Transcode {} track {} from {} to {codec}",
                 target_str(target),
@@ -504,25 +524,25 @@ fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
         audio_tracks.first().map(|t| t.index)
     };
 
-    let mut params = serde_json::Map::new();
+    let mut settings = serde_json::Map::new();
     if let Some(ref codec) = synth.codec {
-        params.insert("codec".into(), serde_json::Value::String(codec.clone()));
+        settings.insert("codec".into(), serde_json::Value::String(codec.clone()));
     }
     if let Some(ref channels) = synth.channels {
-        params.insert("channels".into(), channels.clone());
+        settings.insert("channels".into(), channels.clone());
     }
     if let Some(ref bitrate) = synth.bitrate {
-        params.insert("bitrate".into(), serde_json::Value::String(bitrate.clone()));
+        settings.insert("bitrate".into(), serde_json::Value::String(bitrate.clone()));
     }
     if let Some(ref title) = synth.title {
-        params.insert("title".into(), serde_json::Value::String(title.clone()));
+        settings.insert("title".into(), serde_json::Value::String(title.clone()));
     }
     if let Some(ref lang) = synth.language {
         match lang {
             SynthLanguage::Inherit => {
                 if let Some(idx) = source_index {
                     if let Some(src) = ctx.file.tracks.iter().find(|t| t.index == idx) {
-                        params.insert(
+                        settings.insert(
                             "language".into(),
                             serde_json::Value::String(src.language.clone()),
                         );
@@ -530,22 +550,25 @@ fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
                 }
             }
             SynthLanguage::Fixed(l) => {
-                params.insert("language".into(), serde_json::Value::String(l.clone()));
+                settings.insert("language".into(), serde_json::Value::String(l.clone()));
             }
         }
     }
     if let Some(ref position) = synth.position {
-        params.insert("position".into(), position.clone());
+        settings.insert("position".into(), position.clone());
     }
     if let Some(idx) = source_index {
-        params.insert("source_track".into(), serde_json::json!(idx));
+        settings.insert("source_track".into(), serde_json::json!(idx));
     }
 
-    let params_val = serde_json::Value::Object(params);
+    let params = ActionParams::Synthesize {
+        name: synth.name.clone(),
+        settings: serde_json::Value::Object(settings),
+    };
     let desc = format!("Synthesize audio: {}", synth.name);
     ctx.plan.actions.push(match source_index {
-        Some(idx) => PlannedAction::track_op(OperationType::SynthesizeAudio, idx, params_val, desc),
-        None => PlannedAction::file_op(OperationType::SynthesizeAudio, params_val, desc),
+        Some(idx) => PlannedAction::track_op(OperationType::SynthesizeAudio, idx, params, desc),
+        None => PlannedAction::file_op(OperationType::SynthesizeAudio, params, desc),
     });
 }
 
@@ -557,7 +580,9 @@ fn emit_clear_tags(ctx: &mut PhaseContext) {
     tag_keys.sort();
     ctx.plan.actions.push(PlannedAction::file_op(
         OperationType::ClearContainerTags,
-        serde_json::json!({ "tags": tag_keys }),
+        ActionParams::ClearTags {
+            tags: tag_keys.clone(),
+        },
         format!("Clear all container tags ({})", tag_keys.join(", ")),
     ));
 }
@@ -571,7 +596,10 @@ fn emit_set_tag(
         .ok_or_else(|| format!("Cannot resolve tag value for '{tag}'"))?;
     ctx.plan.actions.push(PlannedAction::file_op(
         OperationType::SetContainerTag,
-        serde_json::json!({ "tag": tag, "value": val }),
+        ActionParams::SetTag {
+            tag: tag.into(),
+            value: val.clone(),
+        },
         format!("Set container tag '{tag}' = '{val}'"),
     ));
     Ok(())
@@ -581,7 +609,7 @@ fn emit_delete_tag(tag: &str, ctx: &mut PhaseContext) {
     if ctx.file.tags.contains_key(tag) {
         ctx.plan.actions.push(PlannedAction::file_op(
             OperationType::DeleteContainerTag,
-            serde_json::json!({ "tag": tag }),
+            ActionParams::DeleteTag { tag: tag.into() },
             format!("Delete container tag '{tag}'"),
         ));
     } else {
@@ -660,7 +688,9 @@ fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), St
                     ctx.plan.actions.push(PlannedAction::track_op(
                         OperationType::SetLanguage,
                         track.index,
-                        serde_json::json!({"language": lang}),
+                        ActionParams::Language {
+                            language: lang.clone(),
+                        },
                         format!(
                             "Set language on {} track {} to '{lang}'",
                             target_str(target),
@@ -717,7 +747,7 @@ fn emit_flag_action(
             ctx.plan.actions.push(PlannedAction::track_op(
                 op,
                 track.index,
-                serde_json::json!({}),
+                ActionParams::Empty,
                 format!(
                     "Set {label} on {} track {}",
                     target_str(target),
@@ -1257,8 +1287,10 @@ mod tests {
         let plan = &result.plans[0];
         assert_eq!(plan.actions.len(), 1);
         assert_eq!(plan.actions[0].operation, OperationType::ClearContainerTags);
-        let tags = plan.actions[0].parameters["tags"].as_array().unwrap();
-        assert_eq!(tags.len(), 2);
+        match &plan.actions[0].parameters {
+            ActionParams::ClearTags { tags } => assert_eq!(tags.len(), 2),
+            other => panic!("Expected ClearTags, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1294,8 +1326,13 @@ mod tests {
         let plan = &result.plans[0];
         assert_eq!(plan.actions.len(), 1);
         assert_eq!(plan.actions[0].operation, OperationType::SetContainerTag);
-        assert_eq!(plan.actions[0].parameters["tag"], "title");
-        assert_eq!(plan.actions[0].parameters["value"], "My Movie");
+        match &plan.actions[0].parameters {
+            ActionParams::SetTag { tag, value } => {
+                assert_eq!(tag, "title");
+                assert_eq!(value, "My Movie");
+            }
+            other => panic!("Expected SetTag, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1315,7 +1352,10 @@ mod tests {
         let plan = &result.plans[0];
         assert_eq!(plan.actions.len(), 1);
         assert_eq!(plan.actions[0].operation, OperationType::DeleteContainerTag);
-        assert_eq!(plan.actions[0].parameters["tag"], "encoder");
+        match &plan.actions[0].parameters {
+            ActionParams::DeleteTag { tag } => assert_eq!(tag, "encoder"),
+            other => panic!("Expected DeleteTag, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1370,11 +1410,15 @@ mod tests {
         assert_eq!(result.plans[0].actions.len(), 1);
         let action = &result.plans[0].actions[0];
         assert_eq!(action.operation, OperationType::ConvertContainer);
-        // Verify the parameter key is "container", not "target" (regression guard)
-        assert_eq!(
-            action.parameters["container"].as_str(),
-            Some("mp4"),
-            "ConvertContainer action must use 'container' as the parameter key"
-        );
+        // Verify the parameter uses Container variant (regression guard)
+        match &action.parameters {
+            ActionParams::Container { container } => {
+                assert_eq!(
+                    container, "mp4",
+                    "ConvertContainer action must specify container"
+                );
+            }
+            other => panic!("Expected Container params, got {:?}", other),
+        }
     }
 }

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use scopeguard::ScopeGuard;
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::plan::{ActionResult, OperationType, PlannedAction};
+use voom_domain::plan::{ActionParams, ActionResult, OperationType, PlannedAction};
 
 /// Execute mkvmerge operations (remux, track removal, reorder).
 ///
@@ -135,9 +135,10 @@ pub fn build_merge_args(
     for action in actions.iter() {
         if action.operation == OperationType::RemoveTrack {
             if let Some(idx) = action.track_index {
-                let track_type = action.parameters["track_type"]
-                    .as_str()
-                    .unwrap_or("unknown");
+                let track_type = match &action.parameters {
+                    ActionParams::RemoveTrack { track_type, .. } => track_type.as_str(),
+                    _ => "unknown",
+                };
                 match track_type {
                     "video" => video_removes.push(idx),
                     "audio" => audio_removes.push(idx),
@@ -175,10 +176,10 @@ pub fn build_merge_args(
     // Handle track reordering
     for action in actions.iter() {
         if action.operation == OperationType::ReorderTracks {
-            if let Some(order) = action.parameters["order"].as_array() {
+            if let ActionParams::ReorderTracks { order } = &action.parameters {
                 let track_order: Vec<String> = order
                     .iter()
-                    .filter_map(|v| v.as_u64())
+                    .filter_map(|v| v.parse::<u64>().ok())
                     .map(|idx| format!("0:{}", idx))
                     .collect();
                 if !track_order.is_empty() {
@@ -207,7 +208,10 @@ mod tests {
         let action = make_action(
             OperationType::RemoveTrack,
             Some(3),
-            serde_json::json!({"track_type": "subtitle"}),
+            ActionParams::RemoveTrack {
+                reason: "test".into(),
+                track_type: "subtitle".into(),
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_merge_args(
@@ -232,7 +236,9 @@ mod tests {
         let action = make_action(
             OperationType::ReorderTracks,
             None,
-            serde_json::json!({"order": [0, 2, 1, 3]}),
+            ActionParams::ReorderTracks {
+                order: vec!["0".into(), "2".into(), "1".into(), "3".into()],
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_merge_args(
@@ -257,7 +263,9 @@ mod tests {
         let action = make_action(
             OperationType::ConvertContainer,
             None,
-            serde_json::json!({"target": "mkv"}),
+            ActionParams::Container {
+                container: "mkv".into(),
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_merge_args(
@@ -277,12 +285,18 @@ mod tests {
         let a1 = make_action(
             OperationType::RemoveTrack,
             Some(2),
-            serde_json::json!({"track_type": "audio"}),
+            ActionParams::RemoveTrack {
+                reason: "test".into(),
+                track_type: "audio".into(),
+            },
         );
         let a2 = make_action(
             OperationType::RemoveTrack,
             Some(4),
-            serde_json::json!({"track_type": "subtitle"}),
+            ActionParams::RemoveTrack {
+                reason: "test".into(),
+                track_type: "subtitle".into(),
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&a1, &a2];
         let args = build_merge_args(
@@ -309,12 +323,17 @@ mod tests {
         let a1 = make_action(
             OperationType::RemoveTrack,
             Some(3),
-            serde_json::json!({"track_type": "audio"}),
+            ActionParams::RemoveTrack {
+                reason: "test".into(),
+                track_type: "audio".into(),
+            },
         );
         let a2 = make_action(
             OperationType::ReorderTracks,
             None,
-            serde_json::json!({"order": [0, 1, 2, 4]}),
+            ActionParams::ReorderTracks {
+                order: vec!["0".into(), "1".into(), "2".into(), "4".into()],
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&a1, &a2];
         let args = build_merge_args(

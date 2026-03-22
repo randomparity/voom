@@ -4,7 +4,7 @@ use std::path::Path;
 
 use voom_domain::errors::Result;
 use voom_domain::media::{Container, MediaFile};
-use voom_domain::plan::{OperationType, PlannedAction};
+use voom_domain::plan::{ActionParams, OperationType, PlannedAction};
 use voom_domain::utils::sanitize::validate_metadata_value;
 
 use crate::hwaccel::{self, HwAccelConfig};
@@ -212,11 +212,10 @@ pub fn build_ffmpeg_command(
                 // Container conversion is handled by output extension; codecs stay as copy
             }
             OperationType::TranscodeVideo => {
-                let codec = action
-                    .parameters
-                    .get("codec")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("hevc");
+                let (codec, settings) = match &action.parameters {
+                    ActionParams::Transcode { codec, settings } => (codec.as_str(), settings),
+                    _ => ("hevc", &serde_json::Value::Null),
+                };
 
                 let encoder = if let Some(hw) = hw_accel {
                     hw.encoder_name(codec)
@@ -230,24 +229,23 @@ pub fn build_ffmpeg_command(
                     cmd = cmd.video_codec(&encoder);
                 }
 
-                if let Some(crf_val) = action.parameters.get("crf").and_then(|v| v.as_u64()) {
+                if let Some(crf_val) = settings.get("crf").and_then(|v| v.as_u64()) {
                     cmd = cmd.crf(crf_val as u32);
                 }
 
-                if let Some(preset_val) = action.parameters.get("preset").and_then(|v| v.as_str()) {
+                if let Some(preset_val) = settings.get("preset").and_then(|v| v.as_str()) {
                     cmd = cmd.preset(preset_val);
                 }
 
-                if let Some(bitrate) = action.parameters.get("bitrate").and_then(|v| v.as_str()) {
+                if let Some(bitrate) = settings.get("bitrate").and_then(|v| v.as_str()) {
                     cmd = cmd.arg("-b:v").arg(bitrate);
                 }
             }
-            OperationType::TranscodeAudio | OperationType::SynthesizeAudio => {
-                let codec = action
-                    .parameters
-                    .get("codec")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("aac");
+            OperationType::TranscodeAudio => {
+                let (codec, settings) = match &action.parameters {
+                    ActionParams::Transcode { codec, settings } => (codec.as_str(), settings),
+                    _ => ("aac", &serde_json::Value::Null),
+                };
 
                 let encoder = hwaccel::software_encoder(codec).to_string();
 
@@ -257,11 +255,40 @@ pub fn build_ffmpeg_command(
                     cmd = cmd.audio_codec(&encoder);
                 }
 
-                if let Some(bitrate) = action.parameters.get("bitrate").and_then(|v| v.as_str()) {
+                if let Some(bitrate) = settings.get("bitrate").and_then(|v| v.as_str()) {
                     cmd = cmd.audio_bitrate(bitrate);
                 }
 
-                if let Some(channels) = action.parameters.get("channels").and_then(|v| v.as_u64()) {
+                if let Some(channels) = settings.get("channels").and_then(|v| v.as_u64()) {
+                    cmd = cmd.arg("-ac").arg(&channels.to_string());
+                }
+            }
+            OperationType::SynthesizeAudio => {
+                let (codec, settings) = match &action.parameters {
+                    ActionParams::Synthesize { settings, .. } => {
+                        let c = settings
+                            .get("codec")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("aac");
+                        (c, settings)
+                    }
+                    ActionParams::Transcode { codec, settings } => (codec.as_str(), settings),
+                    _ => ("aac", &serde_json::Value::Null),
+                };
+
+                let encoder = hwaccel::software_encoder(codec).to_string();
+
+                if let Some(stream) = action.track_index {
+                    cmd = cmd.audio_codec_for_track(stream, &encoder);
+                } else {
+                    cmd = cmd.audio_codec(&encoder);
+                }
+
+                if let Some(bitrate) = settings.get("bitrate").and_then(|v| v.as_str()) {
+                    cmd = cmd.audio_bitrate(bitrate);
+                }
+
+                if let Some(channels) = settings.get("channels").and_then(|v| v.as_u64()) {
                     cmd = cmd.arg("-ac").arg(&channels.to_string());
                 }
             }
@@ -277,7 +304,7 @@ pub fn build_ffmpeg_command(
             }
             OperationType::SetTitle => {
                 if let Some(stream) = action.track_index {
-                    if let Some(title) = action.parameters.get("title").and_then(|v| v.as_str()) {
+                    if let ActionParams::Title { title } = &action.parameters {
                         validate_metadata_value(title)?;
                         cmd = cmd.metadata(Some(stream), "title", title);
                     }
@@ -285,34 +312,29 @@ pub fn build_ffmpeg_command(
             }
             OperationType::SetLanguage => {
                 if let Some(stream) = action.track_index {
-                    if let Some(lang) = action.parameters.get("language").and_then(|v| v.as_str()) {
-                        validate_metadata_value(lang)?;
-                        cmd = cmd.metadata(Some(stream), "language", lang);
+                    if let ActionParams::Language { language } = &action.parameters {
+                        validate_metadata_value(language)?;
+                        cmd = cmd.metadata(Some(stream), "language", language);
                     }
                 }
             }
             OperationType::SetContainerTag => {
-                if let (Some(tag), Some(value)) = (
-                    action.parameters.get("tag").and_then(|v| v.as_str()),
-                    action.parameters.get("value").and_then(|v| v.as_str()),
-                ) {
+                if let ActionParams::SetTag { tag, value } = &action.parameters {
                     validate_metadata_value(tag)?;
                     validate_metadata_value(value)?;
                     cmd = cmd.metadata(None, tag, value);
                 }
             }
             OperationType::ClearContainerTags => {
-                if let Some(tags) = action.parameters.get("tags").and_then(|v| v.as_array()) {
-                    for tag_val in tags {
-                        if let Some(tag) = tag_val.as_str() {
-                            validate_metadata_value(tag)?;
-                            cmd = cmd.clear_metadata(tag);
-                        }
+                if let ActionParams::ClearTags { tags } = &action.parameters {
+                    for tag in tags {
+                        validate_metadata_value(tag)?;
+                        cmd = cmd.clear_metadata(tag);
                     }
                 }
             }
             OperationType::DeleteContainerTag => {
-                if let Some(tag) = action.parameters.get("tag").and_then(|v| v.as_str()) {
+                if let ActionParams::DeleteTag { tag } = &action.parameters {
                     validate_metadata_value(tag)?;
                     cmd = cmd.clear_metadata(tag);
                 }
@@ -339,8 +361,8 @@ pub fn build_ffmpeg_command(
 pub fn output_extension(file: &MediaFile, actions: &[&PlannedAction]) -> String {
     for action in actions {
         if action.operation == OperationType::ConvertContainer {
-            if let Some(container) = action.parameters.get("container").and_then(|v| v.as_str()) {
-                return container.to_string();
+            if let ActionParams::Container { container } = &action.parameters {
+                return container.clone();
             }
         }
     }
@@ -392,7 +414,9 @@ mod tests {
         let action = PlannedAction {
             operation: OperationType::ConvertContainer,
             track_index: None,
-            parameters: serde_json::json!({"container": "mp4"}),
+            parameters: ActionParams::Container {
+                container: "mp4".into(),
+            },
             description: "Convert AVI to MP4".into(),
         };
         let actions: Vec<&PlannedAction> = vec![&action];
@@ -417,7 +441,10 @@ mod tests {
         let action = PlannedAction {
             operation: OperationType::TranscodeVideo,
             track_index: Some(0),
-            parameters: serde_json::json!({"codec": "hevc", "crf": 23, "preset": "medium"}),
+            parameters: ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: serde_json::json!({"crf": 23, "preset": "medium"}),
+            },
             description: "Transcode video to HEVC CRF 23".into(),
         };
         let actions: Vec<&PlannedAction> = vec![&action];
@@ -439,7 +466,10 @@ mod tests {
         let action = PlannedAction {
             operation: OperationType::TranscodeVideo,
             track_index: Some(0),
-            parameters: serde_json::json!({"codec": "h264", "bitrate": "5M"}),
+            parameters: ActionParams::Transcode {
+                codec: "h264".into(),
+                settings: serde_json::json!({"bitrate": "5M"}),
+            },
             description: "Transcode video to H.264 at 5M".into(),
         };
         let actions: Vec<&PlannedAction> = vec![&action];
@@ -459,7 +489,10 @@ mod tests {
         let action = PlannedAction {
             operation: OperationType::TranscodeAudio,
             track_index: Some(1),
-            parameters: serde_json::json!({"codec": "opus", "bitrate": "128k", "channels": 2}),
+            parameters: ActionParams::Transcode {
+                codec: "opus".into(),
+                settings: serde_json::json!({"bitrate": "128k", "channels": 2}),
+            },
             description: "Transcode audio to Opus".into(),
         };
         let actions: Vec<&PlannedAction> = vec![&action];
@@ -482,13 +515,17 @@ mod tests {
             PlannedAction {
                 operation: OperationType::SetTitle,
                 track_index: Some(1),
-                parameters: serde_json::json!({"title": "English Stereo"}),
+                parameters: ActionParams::Title {
+                    title: "English Stereo".into(),
+                },
                 description: "Set track title".into(),
             },
             PlannedAction {
                 operation: OperationType::SetLanguage,
                 track_index: Some(1),
-                parameters: serde_json::json!({"language": "eng"}),
+                parameters: ActionParams::Language {
+                    language: "eng".into(),
+                },
                 description: "Set track language".into(),
             },
         ];
@@ -509,13 +546,13 @@ mod tests {
             PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(1),
-                parameters: serde_json::json!({}),
+                parameters: ActionParams::Empty,
                 description: "Set track 1 as default".into(),
             },
             PlannedAction {
                 operation: OperationType::ClearDefault,
                 track_index: Some(2),
-                parameters: serde_json::json!({}),
+                parameters: ActionParams::Empty,
                 description: "Clear default on track 2".into(),
             },
         ];
@@ -539,13 +576,18 @@ mod tests {
             PlannedAction {
                 operation: OperationType::TranscodeVideo,
                 track_index: Some(0),
-                parameters: serde_json::json!({"codec": "hevc", "crf": 20}),
+                parameters: ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    settings: serde_json::json!({"crf": 20}),
+                },
                 description: "Transcode to HEVC".into(),
             },
             PlannedAction {
                 operation: OperationType::SetLanguage,
                 track_index: Some(1),
-                parameters: serde_json::json!({"language": "eng"}),
+                parameters: ActionParams::Language {
+                    language: "eng".into(),
+                },
                 description: "Set audio language".into(),
             },
         ];
@@ -614,7 +656,9 @@ mod tests {
         let convert = PlannedAction {
             operation: OperationType::ConvertContainer,
             track_index: None,
-            parameters: serde_json::json!({"container": "mkv"}),
+            parameters: ActionParams::Container {
+                container: "mkv".into(),
+            },
             description: "Convert to MKV".into(),
         };
         let actions: Vec<&PlannedAction> = vec![&convert];
@@ -635,7 +679,9 @@ mod tests {
         let convert = PlannedAction {
             operation: OperationType::ConvertContainer,
             track_index: None,
-            parameters: serde_json::json!({"container": "mp4"}),
+            parameters: ActionParams::Container {
+                container: "mp4".into(),
+            },
             description: "Convert to MP4".into(),
         };
         let actions: Vec<&PlannedAction> = vec![&convert];
@@ -648,7 +694,10 @@ mod tests {
         let action = PlannedAction {
             operation: OperationType::TranscodeVideo,
             track_index: Some(0),
-            parameters: serde_json::json!({"codec": "hevc", "crf": 23}),
+            parameters: ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: serde_json::json!({"crf": 23}),
+            },
             description: "Transcode with NVENC".into(),
         };
         let actions: Vec<&PlannedAction> = vec![&action];
@@ -670,7 +719,9 @@ mod tests {
         let action = PlannedAction {
             operation: OperationType::SetTitle,
             track_index: Some(1),
-            parameters: serde_json::json!({"title": "Bad\x00Title"}),
+            parameters: ActionParams::Title {
+                title: "Bad\x00Title".into(),
+            },
             description: "Set track title".into(),
         };
         let actions: Vec<&PlannedAction> = vec![&action];
@@ -686,7 +737,9 @@ mod tests {
         let action = PlannedAction {
             operation: OperationType::SetLanguage,
             track_index: Some(1),
-            parameters: serde_json::json!({"language": "en\x01g"}),
+            parameters: ActionParams::Language {
+                language: "en\x01g".into(),
+            },
             description: "Set track language".into(),
         };
         let actions: Vec<&PlannedAction> = vec![&action];
@@ -702,7 +755,10 @@ mod tests {
         let action = PlannedAction {
             operation: OperationType::SetContainerTag,
             track_index: None,
-            parameters: serde_json::json!({"tag": "title", "value": "My Movie"}),
+            parameters: ActionParams::SetTag {
+                tag: "title".into(),
+                value: "My Movie".into(),
+            },
             description: "Set container tag".into(),
         };
         let actions: Vec<&PlannedAction> = vec![&action];
@@ -719,7 +775,9 @@ mod tests {
         let action = PlannedAction {
             operation: OperationType::ClearContainerTags,
             track_index: None,
-            parameters: serde_json::json!({"tags": ["title", "encoder"]}),
+            parameters: ActionParams::ClearTags {
+                tags: vec!["title".into(), "encoder".into()],
+            },
             description: "Clear all tags".into(),
         };
         let actions: Vec<&PlannedAction> = vec![&action];
@@ -736,7 +794,9 @@ mod tests {
         let action = PlannedAction {
             operation: OperationType::DeleteContainerTag,
             track_index: None,
-            parameters: serde_json::json!({"tag": "encoder"}),
+            parameters: ActionParams::DeleteTag {
+                tag: "encoder".into(),
+            },
             description: "Delete container tag".into(),
         };
         let actions: Vec<&PlannedAction> = vec![&action];

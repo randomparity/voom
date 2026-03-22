@@ -326,7 +326,7 @@ mod tests {
                     actions: vec![PlannedAction {
                         operation: OperationType::SetDefault,
                         track_index: Some(0),
-                        parameters: serde_json::json!({}),
+                        parameters: voom_domain::plan::ActionParams::Empty,
                         description: "set default".into(),
                     }],
                     warnings: vec![],

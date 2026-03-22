@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::plan::{ActionResult, OperationType, PlannedAction};
+use voom_domain::plan::{ActionParams, ActionResult, OperationType, PlannedAction};
 use voom_domain::utils::sanitize::validate_metadata_value;
 
 /// Build and execute mkvpropedit commands for metadata operations.
@@ -103,7 +103,10 @@ pub fn build_propedit_args(path: &Path, actions: &[&PlannedAction]) -> Result<Ve
             OperationType::ClearForced => push_track_flag(&mut args, action, "flag-forced=0"),
             OperationType::SetTitle => {
                 if let Some(idx) = action.track_index {
-                    let title = action.parameters["title"].as_str().unwrap_or("");
+                    let title = match &action.parameters {
+                        ActionParams::Title { title } => title.as_str(),
+                        _ => "",
+                    };
                     validate_metadata_value(title)?;
                     args.push("--edit".into());
                     args.push(format!("track:{}", idx + 1));
@@ -113,7 +116,10 @@ pub fn build_propedit_args(path: &Path, actions: &[&PlannedAction]) -> Result<Ve
             }
             OperationType::SetLanguage => {
                 if let Some(idx) = action.track_index {
-                    let language = action.parameters["language"].as_str().unwrap_or("und");
+                    let language = match &action.parameters {
+                        ActionParams::Language { language } => language.as_str(),
+                        _ => "und",
+                    };
                     validate_metadata_value(language)?;
                     args.push("--edit".into());
                     args.push(format!("track:{}", idx + 1));
@@ -122,8 +128,10 @@ pub fn build_propedit_args(path: &Path, actions: &[&PlannedAction]) -> Result<Ve
                 }
             }
             OperationType::SetContainerTag => {
-                let tag = action.parameters["tag"].as_str().unwrap_or("title");
-                let value = action.parameters["value"].as_str().unwrap_or("");
+                let (tag, value) = match &action.parameters {
+                    ActionParams::SetTag { tag, value } => (tag.as_str(), value.as_str()),
+                    _ => ("title", ""),
+                };
                 if is_segment_info_property(tag) {
                     validate_metadata_value(tag)?;
                     validate_metadata_value(value)?;
@@ -151,7 +159,10 @@ pub fn build_propedit_args(path: &Path, actions: &[&PlannedAction]) -> Result<Ve
                 // Segment info properties (title) can be deleted with --edit info.
                 // We handle the known segment info case; for Tags entries,
                 // ClearContainerTags (--tags all:) is the correct approach.
-                let tag = action.parameters["tag"].as_str().unwrap_or("");
+                let tag = match &action.parameters {
+                    ActionParams::DeleteTag { tag } => tag.as_str(),
+                    _ => "",
+                };
                 if is_segment_info_property(tag) {
                     validate_metadata_value(tag)?;
                     args.push("--edit".into());
@@ -187,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_build_propedit_args_set_default() {
-        let action = make_action(OperationType::SetDefault, Some(2), serde_json::json!({}));
+        let action = make_action(OperationType::SetDefault, Some(2), ActionParams::Empty);
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
         assert_eq!(
@@ -204,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_build_propedit_args_clear_default() {
-        let action = make_action(OperationType::ClearDefault, Some(0), serde_json::json!({}));
+        let action = make_action(OperationType::ClearDefault, Some(0), ActionParams::Empty);
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
         assert_eq!(
@@ -221,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_build_propedit_args_set_forced() {
-        let action = make_action(OperationType::SetForced, Some(3), serde_json::json!({}));
+        let action = make_action(OperationType::SetForced, Some(3), ActionParams::Empty);
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
         assert_eq!(
@@ -238,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_build_propedit_args_clear_forced() {
-        let action = make_action(OperationType::ClearForced, Some(1), serde_json::json!({}));
+        let action = make_action(OperationType::ClearForced, Some(1), ActionParams::Empty);
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
         assert_eq!(
@@ -258,7 +269,9 @@ mod tests {
         let action = make_action(
             OperationType::SetTitle,
             Some(1),
-            serde_json::json!({"title": "English Commentary"}),
+            ActionParams::Title {
+                title: "English Commentary".into(),
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
@@ -279,7 +292,9 @@ mod tests {
         let action = make_action(
             OperationType::SetLanguage,
             Some(2),
-            serde_json::json!({"language": "jpn"}),
+            ActionParams::Language {
+                language: "jpn".into(),
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
@@ -300,7 +315,10 @@ mod tests {
         let action = make_action(
             OperationType::SetContainerTag,
             None,
-            serde_json::json!({"tag": "title", "value": "My Movie"}),
+            ActionParams::SetTag {
+                tag: "title".into(),
+                value: "My Movie".into(),
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
@@ -318,12 +336,14 @@ mod tests {
 
     #[test]
     fn test_build_propedit_args_multiple() {
-        let a1 = make_action(OperationType::SetDefault, Some(1), serde_json::json!({}));
-        let a2 = make_action(OperationType::ClearDefault, Some(2), serde_json::json!({}));
+        let a1 = make_action(OperationType::SetDefault, Some(1), ActionParams::Empty);
+        let a2 = make_action(OperationType::ClearDefault, Some(2), ActionParams::Empty);
         let a3 = make_action(
             OperationType::SetLanguage,
             Some(3),
-            serde_json::json!({"language": "eng"}),
+            ActionParams::Language {
+                language: "eng".into(),
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&a1, &a2, &a3];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
@@ -359,7 +379,9 @@ mod tests {
         let action = make_action(
             OperationType::SetTitle,
             Some(0),
-            serde_json::json!({"title": "Bad\x00Title"}),
+            ActionParams::Title {
+                title: "Bad\x00Title".into(),
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let result = build_propedit_args(Path::new("/media/movie.mkv"), &actions);
@@ -371,7 +393,9 @@ mod tests {
         let action = make_action(
             OperationType::SetLanguage,
             Some(0),
-            serde_json::json!({"language": "en\x00g"}),
+            ActionParams::Language {
+                language: "en\x00g".into(),
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let result = build_propedit_args(Path::new("/media/movie.mkv"), &actions);
@@ -383,7 +407,10 @@ mod tests {
         let action = make_action(
             OperationType::SetContainerTag,
             None,
-            serde_json::json!({"tag": "title", "value": "Bad\x01Value"}),
+            ActionParams::SetTag {
+                tag: "title".into(),
+                value: "Bad\x01Value".into(),
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let result = build_propedit_args(Path::new("/media/movie.mkv"), &actions);
@@ -395,7 +422,9 @@ mod tests {
         let action = make_action(
             OperationType::ClearContainerTags,
             None,
-            serde_json::json!({"tags": ["title", "ENCODER"]}),
+            ActionParams::ClearTags {
+                tags: vec!["title".into(), "ENCODER".into()],
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
@@ -409,7 +438,9 @@ mod tests {
         let action = make_action(
             OperationType::DeleteContainerTag,
             None,
-            serde_json::json!({"tag": "title"}),
+            ActionParams::DeleteTag {
+                tag: "title".into(),
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();
@@ -425,7 +456,9 @@ mod tests {
         let action = make_action(
             OperationType::DeleteContainerTag,
             None,
-            serde_json::json!({"tag": "ENCODER"}),
+            ActionParams::DeleteTag {
+                tag: "ENCODER".into(),
+            },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let args = build_propedit_args(Path::new("/media/movie.mkv"), &actions).unwrap();

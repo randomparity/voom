@@ -15,7 +15,7 @@ use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{Event, EventResult};
 use voom_domain::media::Container;
-use voom_domain::plan::{ActionResult, OperationType, Plan, PlannedAction};
+use voom_domain::plan::{ActionParams, ActionResult, OperationType, Plan, PlannedAction};
 use voom_kernel::Plugin;
 use wait_timeout::ChildExt;
 
@@ -125,7 +125,7 @@ impl MkvtoolnixExecutorPlugin {
         let is_mkv = plan.file.container == Container::Mkv;
         let is_convert_to_mkv = plan.actions.iter().any(|a| {
             a.operation == OperationType::ConvertContainer
-                && a.parameters["target"].as_str() == Some("mkv")
+                && matches!(&a.parameters, ActionParams::Container { container } if container == "mkv")
         });
 
         if !is_mkv && !is_convert_to_mkv {
@@ -331,6 +331,7 @@ mod tests {
     }
 
     use crate::test_helpers::make_action;
+    use voom_domain::plan::ActionParams;
 
     #[test]
     fn test_plugin_metadata() {
@@ -354,11 +355,14 @@ mod tests {
     fn test_can_handle_mkv() {
         let plugin = MkvtoolnixExecutorPlugin::new();
         let plan = make_mkv_plan(vec![
-            make_action(OperationType::SetDefault, Some(1), serde_json::json!({})),
+            make_action(OperationType::SetDefault, Some(1), ActionParams::Empty),
             make_action(
                 OperationType::RemoveTrack,
                 Some(3),
-                serde_json::json!({"track_type": "subtitle_main"}),
+                ActionParams::RemoveTrack {
+                    reason: "test".into(),
+                    track_type: "subtitle_main".into(),
+                },
             ),
         ]);
         assert!(plugin.can_handle(&plan));
@@ -370,7 +374,7 @@ mod tests {
         let plan = make_mp4_plan(vec![make_action(
             OperationType::SetDefault,
             Some(1),
-            serde_json::json!({}),
+            ActionParams::Empty,
         )]);
         assert!(!plugin.can_handle(&plan));
     }
@@ -381,7 +385,9 @@ mod tests {
         let plan = make_mp4_plan(vec![make_action(
             OperationType::ConvertContainer,
             None,
-            serde_json::json!({"target": "mkv"}),
+            ActionParams::Container {
+                container: "mkv".into(),
+            },
         )]);
         assert!(plugin.can_handle(&plan));
     }
@@ -392,7 +398,10 @@ mod tests {
         let plan = make_mkv_plan(vec![make_action(
             OperationType::TranscodeVideo,
             Some(0),
-            serde_json::json!({"codec": "hevc"}),
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: serde_json::json!({}),
+            },
         )]);
         assert!(!plugin.can_handle(&plan));
     }
@@ -400,22 +409,29 @@ mod tests {
     #[test]
     fn test_classify_actions() {
         let actions = vec![
-            make_action(OperationType::SetDefault, Some(1), serde_json::json!({})),
-            make_action(OperationType::ClearForced, Some(2), serde_json::json!({})),
+            make_action(OperationType::SetDefault, Some(1), ActionParams::Empty),
+            make_action(OperationType::ClearForced, Some(2), ActionParams::Empty),
             make_action(
                 OperationType::RemoveTrack,
                 Some(3),
-                serde_json::json!({"track_type": "subtitle_main"}),
+                ActionParams::RemoveTrack {
+                    reason: "test".into(),
+                    track_type: "subtitle_main".into(),
+                },
             ),
             make_action(
                 OperationType::ReorderTracks,
                 None,
-                serde_json::json!({"order": [0, 1, 2]}),
+                ActionParams::ReorderTracks {
+                    order: vec!["0".into(), "1".into(), "2".into()],
+                },
             ),
             make_action(
                 OperationType::SetLanguage,
                 Some(1),
-                serde_json::json!({"language": "eng"}),
+                ActionParams::Language {
+                    language: "eng".into(),
+                },
             ),
         ];
 
@@ -451,7 +467,7 @@ mod tests {
         let mut plan = make_mkv_plan(vec![make_action(
             OperationType::SetDefault,
             Some(1),
-            serde_json::json!({}),
+            ActionParams::Empty,
         )]);
         plan.skip_reason = Some("already correct".into());
         let event = Event::PlanCreated(voom_domain::events::PlanCreatedEvent { plan });

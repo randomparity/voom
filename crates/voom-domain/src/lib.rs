@@ -24,7 +24,9 @@ pub use errors::{Result, VoomError};
 pub use events::Event;
 pub use job::{Job, JobStatus, JobUpdate};
 pub use media::{Container, MediaFile, Track, TrackType};
-pub use plan::{ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction};
+pub use plan::{
+    ActionParams, ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction,
+};
 pub use stats::{ProcessingOutcome, ProcessingStats};
 pub use storage::{
     BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,

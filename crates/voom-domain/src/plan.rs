@@ -61,7 +61,7 @@ impl Plan {
 pub struct PlannedAction {
     pub operation: OperationType,
     pub track_index: Option<u32>,
-    pub parameters: serde_json::Value,
+    pub parameters: ActionParams,
     pub description: String,
 }
 
@@ -70,7 +70,7 @@ impl PlannedAction {
     #[must_use]
     pub fn file_op(
         operation: OperationType,
-        parameters: serde_json::Value,
+        parameters: ActionParams,
         description: impl Into<String>,
     ) -> Self {
         Self {
@@ -86,7 +86,7 @@ impl PlannedAction {
     pub fn track_op(
         operation: OperationType,
         track_index: u32,
-        parameters: serde_json::Value,
+        parameters: ActionParams,
         description: impl Into<String>,
     ) -> Self {
         Self {
@@ -96,6 +96,59 @@ impl PlannedAction {
             description: description.into(),
         }
     }
+}
+
+/// Typed parameters for each operation type.
+/// Replaces the previous untyped `serde_json::Value` parameters field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ActionParams {
+    /// No parameters needed (SetDefault, ClearDefault, SetForced, ClearForced).
+    Empty,
+    /// Container conversion target.
+    Container {
+        container: String,
+    },
+    /// Track removal with reason and track type category.
+    RemoveTrack {
+        reason: String,
+        track_type: String,
+    },
+    /// Track reordering.
+    ReorderTracks {
+        order: Vec<String>,
+    },
+    /// Language assignment.
+    Language {
+        language: String,
+    },
+    /// Title assignment (empty string to clear).
+    Title {
+        title: String,
+    },
+    /// Transcode settings (codec, plus optional settings like crf, bitrate, channels).
+    Transcode {
+        codec: String,
+        #[serde(flatten)]
+        settings: serde_json::Value,
+    },
+    /// Audio synthesis parameters.
+    Synthesize {
+        name: String,
+        #[serde(flatten)]
+        settings: serde_json::Value,
+    },
+    /// Container tag operations.
+    SetTag {
+        tag: String,
+        value: String,
+    },
+    ClearTags {
+        tags: Vec<String>,
+    },
+    DeleteTag {
+        tag: String,
+    },
 }
 
 /// The type of operation to perform on a media file.
@@ -208,7 +261,7 @@ mod tests {
             actions: vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(1),
-                parameters: serde_json::json!({}),
+                parameters: ActionParams::Empty,
                 description: "Set track 1 as default".into(),
             }],
             warnings: vec![],
@@ -265,7 +318,10 @@ mod tests {
         let action = PlannedAction {
             operation: OperationType::RemoveTrack,
             track_index: Some(2),
-            parameters: serde_json::json!({}),
+            parameters: ActionParams::RemoveTrack {
+                reason: "test".into(),
+                track_type: "audio".into(),
+            },
             description: "Remove track 2".into(),
         };
 

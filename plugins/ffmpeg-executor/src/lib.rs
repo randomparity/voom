@@ -221,6 +221,7 @@ mod tests {
     use std::path::PathBuf;
     use voom_domain::events::PlanExecutingEvent;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    use voom_domain::plan::ActionParams;
 
     fn sample_mp4_file() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/media/video.mp4"));
@@ -304,7 +305,10 @@ mod tests {
             vec![PlannedAction {
                 operation: OperationType::TranscodeVideo,
                 track_index: Some(0),
-                parameters: serde_json::json!({"codec": "hevc"}),
+                parameters: ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    settings: serde_json::json!({}),
+                },
                 description: "Transcode to HEVC".into(),
             }],
         );
@@ -316,7 +320,10 @@ mod tests {
             vec![PlannedAction {
                 operation: OperationType::TranscodeAudio,
                 track_index: Some(1),
-                parameters: serde_json::json!({"codec": "opus"}),
+                parameters: ActionParams::Transcode {
+                    codec: "opus".into(),
+                    settings: serde_json::json!({}),
+                },
                 description: "Transcode to Opus".into(),
             }],
         );
@@ -328,7 +335,10 @@ mod tests {
             vec![PlannedAction {
                 operation: OperationType::SynthesizeAudio,
                 track_index: Some(1),
-                parameters: serde_json::json!({"codec": "aac"}),
+                parameters: ActionParams::Synthesize {
+                    name: "stereo".into(),
+                    settings: serde_json::json!({"codec": "aac"}),
+                },
                 description: "Synthesize audio".into(),
             }],
         );
@@ -344,7 +354,9 @@ mod tests {
             vec![PlannedAction {
                 operation: OperationType::ConvertContainer,
                 track_index: None,
-                parameters: serde_json::json!({"container": "mkv"}),
+                parameters: ActionParams::Container {
+                    container: "mkv".into(),
+                },
                 description: "Convert to MKV".into(),
             }],
         );
@@ -362,13 +374,15 @@ mod tests {
                 PlannedAction {
                     operation: OperationType::SetDefault,
                     track_index: Some(1),
-                    parameters: serde_json::json!({}),
+                    parameters: ActionParams::Empty,
                     description: "Set default".into(),
                 },
                 PlannedAction {
                     operation: OperationType::SetTitle,
                     track_index: Some(1),
-                    parameters: serde_json::json!({"title": "English"}),
+                    parameters: ActionParams::Title {
+                        title: "English".into(),
+                    },
                     description: "Set title".into(),
                 },
             ],
@@ -386,7 +400,7 @@ mod tests {
             vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(1),
-                parameters: serde_json::json!({}),
+                parameters: ActionParams::Empty,
                 description: "Set default".into(),
             }],
         );
@@ -410,7 +424,10 @@ mod tests {
             vec![PlannedAction {
                 operation: OperationType::TranscodeVideo,
                 track_index: Some(0),
-                parameters: serde_json::json!({"codec": "hevc"}),
+                parameters: ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    settings: serde_json::json!({}),
+                },
                 description: "Transcode".into(),
             }],
         );
@@ -427,7 +444,10 @@ mod tests {
             vec![PlannedAction {
                 operation: OperationType::TranscodeVideo,
                 track_index: Some(0),
-                parameters: serde_json::json!({"codec": "hevc", "crf": 23}),
+                parameters: ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    settings: serde_json::json!({"crf": 23}),
+                },
                 description: "Transcode to HEVC".into(),
             }],
         );
@@ -451,7 +471,7 @@ mod tests {
             vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(1),
-                parameters: serde_json::json!({}),
+                parameters: ActionParams::Empty,
                 description: "Set default".into(),
             }],
         );
@@ -468,7 +488,10 @@ mod tests {
             vec![PlannedAction {
                 operation: OperationType::TranscodeVideo,
                 track_index: Some(0),
-                parameters: serde_json::json!({"codec": "hevc"}),
+                parameters: ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    settings: serde_json::json!({}),
+                },
                 description: "Transcode to HEVC".into(),
             }],
         );
@@ -507,7 +530,7 @@ mod tests {
             vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(1),
-                parameters: serde_json::json!({}),
+                parameters: ActionParams::Empty,
                 description: "Set default".into(),
             }],
         );
@@ -528,13 +551,16 @@ mod tests {
                 PlannedAction {
                     operation: OperationType::TranscodeVideo,
                     track_index: Some(0),
-                    parameters: serde_json::json!({"codec": "h264"}),
+                    parameters: ActionParams::Transcode {
+                        codec: "h264".into(),
+                        settings: serde_json::json!({}),
+                    },
                     description: "Transcode to H.264".into(),
                 },
                 PlannedAction {
                     operation: OperationType::SetDefault,
                     track_index: Some(1),
-                    parameters: serde_json::json!({}),
+                    parameters: ActionParams::Empty,
                     description: "Set default".into(),
                 },
             ],

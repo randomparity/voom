@@ -533,7 +533,7 @@ mod tests {
     use voom_domain::capabilities::Capability;
     use voom_domain::events::{EventResult, FileDiscoveredEvent, FileIntrospectedEvent};
     use voom_domain::media::MediaFile;
-    use voom_domain::plan::{OperationType, Plan, PlannedAction};
+    use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 
     /// A test plugin that counts received plan lifecycle events.
     struct PlanRecordingPlugin {
@@ -608,7 +608,7 @@ mod tests {
             actions: vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(0),
-                parameters: serde_json::json!({}),
+                parameters: ActionParams::Empty,
                 description: "test action".into(),
             }],
             warnings: vec![],

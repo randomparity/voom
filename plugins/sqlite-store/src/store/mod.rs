@@ -890,7 +890,7 @@ mod tests {
             actions: vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(1),
-                parameters: serde_json::json!({}),
+                parameters: voom_domain::plan::ActionParams::Empty,
                 description: "Set default audio".into(),
             }],
             warnings: vec!["test warning".into()],
@@ -1038,7 +1038,7 @@ mod tests {
             actions: vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(0),
-                parameters: serde_json::json!({}),
+                parameters: voom_domain::plan::ActionParams::Empty,
                 description: "set default".into(),
             }],
             warnings: vec![],
@@ -1192,7 +1192,7 @@ mod tests {
             actions: vec![PlannedAction {
                 operation: OperationType::SetDefault,
                 track_index: Some(1),
-                parameters: serde_json::json!({}),
+                parameters: voom_domain::plan::ActionParams::Empty,
                 description: "Set default audio".into(),
             }],
             warnings: vec![],
@@ -1226,7 +1226,10 @@ mod tests {
             actions: vec![PlannedAction {
                 operation: OperationType::TranscodeVideo,
                 track_index: Some(0),
-                parameters: serde_json::json!({"codec": "hevc"}),
+                parameters: voom_domain::plan::ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    settings: serde_json::json!({}),
+                },
                 description: "Transcode video".into(),
             }],
             warnings: vec![],
