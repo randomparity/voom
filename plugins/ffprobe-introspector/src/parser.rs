@@ -50,7 +50,6 @@ pub fn parse_ffprobe_output(
     })
 }
 
-/// Parse duration from the format section.
 fn parse_duration(format: &serde_json::Value) -> f64 {
     format
         .get("duration")
@@ -59,7 +58,6 @@ fn parse_duration(format: &serde_json::Value) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Parse bitrate from the format section.
 fn parse_bitrate(format: &serde_json::Value) -> Option<u32> {
     format
         .get("bit_rate")
@@ -67,7 +65,6 @@ fn parse_bitrate(format: &serde_json::Value) -> Option<u32> {
         .and_then(|s| s.parse::<u32>().ok())
 }
 
-/// Parse container-level tags from the format section.
 fn parse_format_tags(format: &serde_json::Value) -> HashMap<String, String> {
     let mut tags = HashMap::new();
     if let Some(tag_obj) = format.get("tags").and_then(|t| t.as_object()) {
@@ -80,7 +77,6 @@ fn parse_format_tags(format: &serde_json::Value) -> HashMap<String, String> {
     tags
 }
 
-/// Parse all streams into Track objects.
 fn parse_streams(streams: &[serde_json::Value]) -> Vec<Track> {
     streams
         .iter()
@@ -89,7 +85,6 @@ fn parse_streams(streams: &[serde_json::Value]) -> Vec<Track> {
         .collect()
 }
 
-/// Parse a single stream into a Track.
 fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
     let codec_type = stream.get("codec_type")?.as_str()?;
     let codec_name = stream
@@ -233,7 +228,6 @@ fn parse_frame_rate(stream: &serde_json::Value) -> Option<f64> {
     parse_fraction(stream.get("r_frame_rate").and_then(|v| v.as_str()))
 }
 
-/// Detect variable frame rate by comparing `r_frame_rate` and `avg_frame_rate`.
 fn detect_vfr(stream: &serde_json::Value) -> bool {
     let r_rate = parse_fraction(stream.get("r_frame_rate").and_then(|v| v.as_str()));
     let avg_rate = parse_fraction(stream.get("avg_frame_rate").and_then(|v| v.as_str()));
@@ -260,7 +254,6 @@ fn parse_fraction(s: Option<&str>) -> Option<f64> {
     s.parse().ok()
 }
 
-/// Detect HDR from stream metadata.
 fn detect_hdr(stream: &serde_json::Value) -> (bool, Option<String>) {
     // Check color transfer characteristics
     let color_transfer = stream
@@ -314,7 +307,6 @@ fn detect_hdr(stream: &serde_json::Value) -> (bool, Option<String>) {
     (is_hdr, hdr_format)
 }
 
-/// Classify an audio track based on metadata.
 fn classify_audio_track(
     title: &str,
     is_default: bool,
@@ -340,7 +332,6 @@ fn classify_audio_track(
     }
 }
 
-/// Classify a subtitle track based on metadata.
 fn classify_subtitle_track(
     title: &str,
     _is_default: bool,

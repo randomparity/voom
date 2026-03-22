@@ -15,7 +15,7 @@ pub mod space;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -94,6 +94,12 @@ impl BackupManagerPlugin {
         }
     }
 
+    fn records(&self) -> Result<MutexGuard<'_, HashMap<PathBuf, BackupRecord>>> {
+        self.records
+            .lock()
+            .map_err(|_| plugin_err("backup records lock poisoned"))
+    }
+
     /// Create a backup of the given file before modification.
     /// Returns the `BackupRecord` on success.
     pub fn backup_file(&self, path: &Path) -> Result<BackupRecord> {
@@ -102,10 +108,7 @@ impl BackupManagerPlugin {
             space::validate_disk_space_for(backup_path, source_path, min_free)
         })?;
 
-        let mut records = self
-            .records
-            .lock()
-            .map_err(|_| plugin_err("backup records lock poisoned"))?;
+        let mut records = self.records()?;
         records.insert(path.to_path_buf(), record.clone());
 
         Ok(record)
@@ -113,10 +116,7 @@ impl BackupManagerPlugin {
 
     /// Restore a file from its backup.
     pub fn restore_file(&self, path: &Path) -> Result<()> {
-        let mut records = self
-            .records
-            .lock()
-            .map_err(|_| plugin_err("backup records lock poisoned"))?;
+        let mut records = self.records()?;
         let record = records
             .get(path)
             .ok_or_else(|| plugin_err(format!("no backup found for {}", path.display())))?;
@@ -128,10 +128,7 @@ impl BackupManagerPlugin {
 
     /// Remove the backup for a file (after successful execution).
     pub fn remove_backup(&self, path: &Path) -> Result<()> {
-        let mut records = self
-            .records
-            .lock()
-            .map_err(|_| plugin_err("backup records lock poisoned"))?;
+        let mut records = self.records()?;
         let record = records
             .get(path)
             .ok_or_else(|| plugin_err(format!("no backup found for {}", path.display())))?;
@@ -159,19 +156,13 @@ impl BackupManagerPlugin {
 
     /// Check if a backup exists for the given file.
     pub fn has_backup(&self, path: &Path) -> Result<bool> {
-        let records = self
-            .records
-            .lock()
-            .map_err(|_| plugin_err("backup records lock poisoned"))?;
+        let records = self.records()?;
         Ok(records.contains_key(path))
     }
 
     /// Get all active backup records.
     pub fn active_backups(&self) -> Result<Vec<BackupRecord>> {
-        let records = self
-            .records
-            .lock()
-            .map_err(|_| plugin_err("backup records lock poisoned"))?;
+        let records = self.records()?;
         Ok(records.values().cloned().collect())
     }
 
@@ -180,19 +171,13 @@ impl BackupManagerPlugin {
     /// Returns the number of backups removed.
     pub fn cleanup_all(&self) -> Result<u64> {
         let all_records: Vec<BackupRecord> = {
-            let records = self
-                .records
-                .lock()
-                .map_err(|_| plugin_err("backup records lock poisoned"))?;
+            let records = self.records()?;
             records.values().cloned().collect()
         };
 
         let removed = backup::cleanup_all(&all_records)?;
 
-        let mut records_map = self
-            .records
-            .lock()
-            .map_err(|_| plugin_err("backup records lock poisoned"))?;
+        let mut records_map = self.records()?;
         records_map.clear();
 
         Ok(removed)

@@ -12,6 +12,8 @@ use voom_domain::storage::JobFilters;
 
 /// Maximum allowed limit for job listing queries.
 const MAX_JOB_LIMIT: u32 = 10_000;
+/// Maximum allowed offset for job listing queries.
+const MAX_OFFSET: u32 = 1_000_000;
 
 #[derive(Debug, Deserialize)]
 pub struct ListJobsParams {
@@ -57,7 +59,7 @@ pub async fn list_jobs(
     let filters = JobFilters {
         status,
         limit,
-        offset: params.offset,
+        offset: params.offset.map(|o| o.min(MAX_OFFSET)),
     };
     let (jobs, total) = spawn_store_op(move || {
         let jobs = store.list_jobs(&filters)?;

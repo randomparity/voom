@@ -313,6 +313,32 @@ fn emit_clear_default(target: &TrackTarget, track: &Track, detail: &str, ctx: &m
     ));
 }
 
+fn emit_clear_forced(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext) {
+    ctx.plan.actions.push(PlannedAction::track_op(
+        OperationType::ClearForced,
+        track.index,
+        serde_json::json!({}),
+        format!(
+            "Clear forced flag on {} track {}",
+            target_str(target),
+            track.index
+        ),
+    ));
+}
+
+fn emit_clear_title(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext) {
+    ctx.plan.actions.push(PlannedAction::track_op(
+        OperationType::SetTitle,
+        track.index,
+        serde_json::json!({"title": ""}),
+        format!(
+            "Clear title on {} track {}",
+            target_str(target),
+            track.index
+        ),
+    ));
+}
+
 fn emit_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
     for default in defaults {
         let tracks = tracks_for_target(ctx.file, &default.target);
@@ -392,28 +418,10 @@ fn emit_clear_actions(
             emit_clear_default(target, track, "", ctx);
         }
         if clear_forced && track.is_forced {
-            ctx.plan.actions.push(PlannedAction::track_op(
-                OperationType::ClearForced,
-                track.index,
-                serde_json::json!({}),
-                format!(
-                    "Clear forced flag on {} track {}",
-                    target_str(target),
-                    track.index
-                ),
-            ));
+            emit_clear_forced(target, track, ctx);
         }
         if clear_titles && !track.title.is_empty() {
-            ctx.plan.actions.push(PlannedAction::track_op(
-                OperationType::SetTitle,
-                track.index,
-                serde_json::json!({"title": ""}),
-                format!(
-                    "Clear title on {} track {}",
-                    target_str(target),
-                    track.index
-                ),
-            ));
+            emit_clear_title(target, track, ctx);
         }
     }
 }
