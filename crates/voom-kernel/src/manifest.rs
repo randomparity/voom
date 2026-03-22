@@ -14,12 +14,20 @@ pub struct PluginManifest {
     pub dependencies: Vec<PluginDependency>,
     #[serde(default)]
     pub config_schema: Option<serde_json::Value>,
+    /// Event bus priority for this plugin (lower = runs first in dispatch).
+    /// Defaults to 70 if not specified in the manifest.
+    #[serde(default = "default_priority")]
+    pub priority: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginDependency {
     pub name: String,
     pub version_req: String,
+}
+
+fn default_priority() -> i32 {
+    70
 }
 
 impl PluginManifest {
@@ -59,6 +67,7 @@ mod tests {
             handles_events: vec!["plan.created".into()],
             dependencies: vec![],
             config_schema: None,
+            priority: 70,
         };
         assert!(manifest.validate().is_ok());
     }
@@ -73,6 +82,7 @@ mod tests {
             handles_events: vec![],
             dependencies: vec![],
             config_schema: None,
+            priority: 70,
         };
         let errors = manifest.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("name")));
@@ -88,6 +98,7 @@ mod tests {
             handles_events: vec![],
             dependencies: vec![],
             config_schema: None,
+            priority: 70,
         };
         assert!(manifest.validate().is_err());
     }
@@ -107,6 +118,7 @@ mod tests {
                 version_req: ">=0.1.0".into(),
             }],
             config_schema: None,
+            priority: 50,
         };
 
         let json = serde_json::to_string(&manifest).unwrap();

@@ -184,20 +184,20 @@ pub fn bootstrap_kernel_with_store(
         if wasm_dir.is_dir() {
             match voom_kernel::loader::wasm::WasmPluginLoader::new() {
                 Ok(loader) => {
-                    let results = loader.load_dir_with_config(&wasm_dir, &config.plugin);
+                    // Pass disabled set so plugins are skipped before compilation.
+                    let skip_set: std::collections::HashSet<String> =
+                        disabled.iter().cloned().collect();
+                    let results =
+                        loader.load_dir_with_config_skip(&wasm_dir, &config.plugin, &skip_set);
                     for result in results {
                         match result {
-                            Ok(plugin) => {
+                            Ok((plugin, priority)) => {
                                 let name = plugin.name().to_string();
-                                if disabled.iter().any(|d| d == &name) {
-                                    tracing::info!(plugin = %name, "WASM plugin disabled, skipping");
-                                    continue;
-                                }
-                                // WASM plugins are already initialized during load,
-                                // register directly with priority 70 (between
-                                // discovery at 80 and orchestrator at 50).
-                                kernel.register_plugin(plugin, 70);
-                                tracing::info!(plugin = %name, "WASM plugin loaded");
+                                // WASM plugins are already initialized during load
+                                // (WasmPluginLoader::load_with_manifest handles init).
+                                // Priority comes from manifest (default: 70).
+                                kernel.register_plugin(plugin, priority);
+                                tracing::info!(plugin = %name, priority, "WASM plugin loaded");
                             }
                             Err(e) => {
                                 tracing::warn!(error = %e, "failed to load WASM plugin");

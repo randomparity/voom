@@ -5,7 +5,7 @@ use std::path::Path;
 use voom_domain::errors::Result;
 use voom_domain::media::{Container, MediaFile};
 use voom_domain::plan::{ActionParams, OperationType, PlannedAction};
-use voom_domain::utils::sanitize::validate_metadata_value;
+use voom_domain::utils::sanitize::{validate_metadata_key, validate_metadata_value};
 
 use crate::hwaccel::{self, HwAccelConfig};
 
@@ -342,7 +342,7 @@ pub fn build_ffmpeg_command(
             }
             OperationType::SetContainerTag => {
                 if let ActionParams::SetTag { tag, value } = &action.parameters {
-                    validate_metadata_value(tag)?;
+                    validate_metadata_key(tag)?;
                     validate_metadata_value(value)?;
                     cmd = cmd.metadata(None, tag, value);
                 }
@@ -350,14 +350,14 @@ pub fn build_ffmpeg_command(
             OperationType::ClearContainerTags => {
                 if let ActionParams::ClearTags { tags } = &action.parameters {
                     for tag in tags {
-                        validate_metadata_value(tag)?;
+                        validate_metadata_key(tag)?;
                         cmd = cmd.clear_metadata(tag);
                     }
                 }
             }
             OperationType::DeleteContainerTag => {
                 if let ActionParams::DeleteTag { tag } = &action.parameters {
-                    validate_metadata_value(tag)?;
+                    validate_metadata_key(tag)?;
                     cmd = cmd.clear_metadata(tag);
                 }
             }

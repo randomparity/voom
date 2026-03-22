@@ -221,6 +221,26 @@ fn snapshot_container_metadata() {
     assert_yaml_snapshot!(ast);
 }
 
+// === Escape sequence test ===
+
+#[test]
+fn test_escape_sequences_in_strings() {
+    let input = r#"policy "test \"escapes\"" {
+        phase clean {
+            set_tag "path" "C:\\Media\\Movies"
+            set_tag "note" "contains \"quotes\""
+        }
+    }"#;
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, r#"test "escapes""#);
+
+    // Verify round-trip through formatter preserves escapes
+    let formatted = voom_dsl::format_policy(&ast);
+    let ast2 = parse_policy(&formatted).unwrap();
+    assert_eq!(ast2.name, ast.name);
+    assert_eq!(ast2.phases.len(), ast.phases.len());
+}
+
 // === Example policy parsing tests ===
 // Verify all sample policies in docs/examples/ are syntactically valid.
 
