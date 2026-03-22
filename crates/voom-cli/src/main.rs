@@ -40,9 +40,9 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Scan(args) => commands::scan::run(args, token).await,
-        Commands::Inspect(args) => commands::inspect::run(args).await,
+        Commands::Inspect(args) => commands::inspect::run(args),
         Commands::Process(args) => commands::process::run(args, token).await,
-        Commands::Policy(sub) => commands::policy::run(sub).await,
+        Commands::Policy(sub) => commands::policy::run(sub),
         Commands::Plugin(sub) => commands::plugin::run(sub),
         Commands::Jobs(sub) => commands::jobs::run(sub),
         Commands::Report(args) => commands::report::run(args),

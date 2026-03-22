@@ -84,11 +84,9 @@ pub mod wasm {
                 )));
             }
 
-            // Compile the WASM component.
             let component = wasmtime::component::Component::new(&self.engine, &wasm_bytes)
                 .map_err(|e| VoomError::Wasm(format!("failed to compile component: {e}")))?;
 
-            // Set up the linker with host function imports.
             let mut linker: wasmtime::component::Linker<HostState> =
                 wasmtime::component::Linker::new(&self.engine);
             register_host_functions(&mut linker)
@@ -105,7 +103,6 @@ pub mod wasm {
                         .to_string()
                 });
 
-            // Create the store with host state and resource limits.
             let mut state = host_state.unwrap_or_else(|| HostState::new(plugin_name.clone()));
 
             // Populate allowed capabilities from manifest (always overwrites).
@@ -129,7 +126,6 @@ pub mod wasm {
             store.limiter(|s| &mut s.store_limits);
             store.set_epoch_deadline(store.data().wasm_limits.epoch_deadline_ticks);
 
-            // Extract info from manifest or use defaults.
             let version = manifest
                 .as_ref()
                 .map(|m| m.version.clone())
@@ -291,8 +287,6 @@ pub mod wasm {
 
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
-            // Try to find and call the on-event export.
-            // The component is lazily instantiated on first call.
             match call_on_event(&mut inner, &event_type, &payload) {
                 Ok(Some((plugin_name, produced, data))) => {
                     let result = voom_wit::event_result_from_wasm(plugin_name, produced, data)
@@ -331,7 +325,6 @@ pub mod wasm {
     ) -> Result<Option<voom_wit::WasmEventResult>, anyhow::Error> {
         use wasmtime::component::Val;
 
-        // Lazily instantiate the component.
         if inner.instance.is_none() {
             let instance = inner
                 .linker
@@ -362,7 +355,6 @@ pub mod wasm {
             }
         };
 
-        // Build the event-data record as a Val::Record.
         let event_data = Val::Record(vec![
             ("event-type".into(), Val::String(event_type.into())),
             (
@@ -371,13 +363,11 @@ pub mod wasm {
             ),
         ]);
 
-        // Prepare the result slot. The return type is option<event-result>.
         let mut results = vec![Val::Option(None)];
 
         on_event.call(&mut inner.store, &[event_data], &mut results)?;
         on_event.post_return(&mut inner.store)?;
 
-        // Parse the option<event-result> return value.
         match &results[0] {
             Val::Option(None) => Ok(None),
             Val::Option(Some(boxed_val)) => parse_event_result(boxed_val).map(Some),
@@ -485,12 +475,10 @@ pub mod wasm {
     fn register_host_functions(
         linker: &mut wasmtime::component::Linker<HostState>,
     ) -> Result<(), anyhow::Error> {
-        // Register the host interface functions.
         // The interface name in WIT is "host" in package "voom:plugin".
         let mut root = linker.root();
         let mut host_instance = root.instance("voom:plugin/host@0.1.0")?;
 
-        // log: func(level: log-level, message: string)
         host_instance.func_wrap(
             "log",
             |ctx: wasmtime::StoreContextMut<'_, HostState>, (level, message): (u32, String)| {
@@ -507,7 +495,6 @@ pub mod wasm {
             },
         )?;
 
-        // get-plugin-data: func(key: string) -> option<list<u8>>
         host_instance.func_wrap(
             "get-plugin-data",
             |ctx: wasmtime::StoreContextMut<'_, HostState>, (key,): (String,)| {
@@ -516,7 +503,6 @@ pub mod wasm {
             },
         )?;
 
-        // set-plugin-data: func(key: string, value: list<u8>) -> result<_, string>
         host_instance.func_wrap(
             "set-plugin-data",
             |mut ctx: wasmtime::StoreContextMut<'_, HostState>, (key, value): (String, Vec<u8>)| {
@@ -525,7 +511,6 @@ pub mod wasm {
             },
         )?;
 
-        // run-tool: func(tool: string, args: list<string>, timeout-ms: u64) -> result<tool-output, string>
         host_instance.func_wrap(
             "run-tool",
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
@@ -539,7 +524,6 @@ pub mod wasm {
             },
         )?;
 
-        // http-get: func(url: string, headers: list<tuple<string, string>>) -> result<http-response, string>
         host_instance.func_wrap(
             "http-get",
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
@@ -553,7 +537,6 @@ pub mod wasm {
             },
         )?;
 
-        // http-post: func(url: string, headers: list<tuple<string, string>>, body: list<u8>) -> result<http-response, string>
         host_instance.func_wrap(
             "http-post",
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
@@ -567,7 +550,6 @@ pub mod wasm {
             },
         )?;
 
-        // read-file-metadata: func(path: string) -> result<list<u8>, string>
         host_instance.func_wrap(
             "read-file-metadata",
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
@@ -615,7 +597,6 @@ pub mod wasm {
             },
         )?;
 
-        // list-files: func(dir: string, pattern: string) -> result<list<string>, string>
         host_instance.func_wrap(
             "list-files",
             |ctx: wasmtime::StoreContextMut<'_, HostState>,

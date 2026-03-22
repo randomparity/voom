@@ -294,7 +294,7 @@ mod tests {
         let host = MockHost::new();
         let plan = make_synth_plan();
         let event = Event::PlanCreated(
-            voom_plugin_sdk::voom_domain::events::PlanCreatedEvent { plan },
+            voom_plugin_sdk::PlanCreatedEvent { plan },
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -330,7 +330,7 @@ mod tests {
             evaluated_at: chrono::Utc::now(),
         };
         let event = Event::PlanCreated(
-            voom_plugin_sdk::voom_domain::events::PlanCreatedEvent { plan },
+            voom_plugin_sdk::PlanCreatedEvent { plan },
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -358,7 +358,7 @@ mod tests {
             evaluated_at: chrono::Utc::now(),
         };
         let event = Event::PlanCreated(
-            voom_plugin_sdk::voom_domain::events::PlanCreatedEvent { plan },
+            voom_plugin_sdk::PlanCreatedEvent { plan },
         );
         let payload = serialize_event(&event).unwrap();
 

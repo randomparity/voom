@@ -126,7 +126,7 @@ pub fn on_event(
             host.log("info", &format!("HandBrake transcode complete: {output_path}"));
 
             let completed_event = Event::PlanCompleted(
-                voom_plugin_sdk::voom_domain::events::PlanCompletedEvent {
+                voom_plugin_sdk::PlanCompletedEvent {
                     plan_id: plan.id,
                     path: plan.file.path.clone(),
                     phase_name: plan.phase_name.clone(),
@@ -358,7 +358,7 @@ mod tests {
         let host = MockHost::new();
         let plan = make_transcode_plan();
         let event = Event::PlanCreated(
-            voom_plugin_sdk::voom_domain::events::PlanCreatedEvent { plan },
+            voom_plugin_sdk::PlanCreatedEvent { plan },
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -381,7 +381,7 @@ mod tests {
         let host = MockHost::with_failure();
         let plan = make_transcode_plan();
         let event = Event::PlanCreated(
-            voom_plugin_sdk::voom_domain::events::PlanCreatedEvent { plan },
+            voom_plugin_sdk::PlanCreatedEvent { plan },
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -409,7 +409,7 @@ mod tests {
             evaluated_at: chrono::Utc::now(),
         };
         let event = Event::PlanCreated(
-            voom_plugin_sdk::voom_domain::events::PlanCreatedEvent { plan },
+            voom_plugin_sdk::PlanCreatedEvent { plan },
         );
         let payload = serialize_event(&event).unwrap();
 

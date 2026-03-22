@@ -418,7 +418,7 @@ impl Guest for MyWasmPlugin {
                 });
 
                 let enriched = Event::MetadataEnriched(
-                    voom_plugin_sdk::voom_domain::events::MetadataEnrichedEvent {
+                    voom_plugin_sdk::MetadataEnrichedEvent {
                         path: file.path.clone(),
                         source: "my-wasm-plugin".to_string(),
                         metadata,

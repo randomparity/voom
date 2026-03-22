@@ -46,7 +46,7 @@ pub trait HostFunctions {
     }
 
     /// Retrieve plugin-specific data from the host's data store.
-    fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>>;
+    fn plugin_data(&self, key: &str) -> Option<Vec<u8>>;
 
     /// Store plugin-specific data in the host's data store.
     fn set_plugin_data(&self, key: &str, value: &[u8]) -> Result<(), String>;
@@ -82,7 +82,7 @@ mod tests {
     struct TestHost;
 
     impl HostFunctions for TestHost {
-        fn get_plugin_data(&self, _key: &str) -> Option<Vec<u8>> {
+        fn plugin_data(&self, _key: &str) -> Option<Vec<u8>> {
             None
         }
 

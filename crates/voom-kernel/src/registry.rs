@@ -83,6 +83,7 @@ mod tests {
     use super::*;
     use voom_domain::capabilities::Capability;
     use voom_domain::events::{Event, EventResult};
+    use voom_domain::plan::OperationType;
 
     struct FakePlugin {
         name: String,
@@ -128,7 +129,11 @@ mod tests {
         let executor = Arc::new(FakePlugin {
             name: "mkvtoolnix".into(),
             caps: vec![Capability::Execute {
-                operations: vec!["metadata".into(), "reorder".into(), "remux".into()],
+                operations: vec![
+                    OperationType::SetDefault,
+                    OperationType::ReorderTracks,
+                    OperationType::RemoveTrack,
+                ],
                 formats: vec!["mkv".into()],
             }],
         });
@@ -157,14 +162,14 @@ mod tests {
         let mkv = Arc::new(FakePlugin {
             name: "mkvtoolnix".into(),
             caps: vec![Capability::Execute {
-                operations: vec!["metadata".into(), "remux".into()],
+                operations: vec![OperationType::SetDefault, OperationType::RemoveTrack],
                 formats: vec!["mkv".into()],
             }],
         });
         let ffmpeg = Arc::new(FakePlugin {
             name: "ffmpeg".into(),
             caps: vec![Capability::Execute {
-                operations: vec!["transcode".into()],
+                operations: vec![OperationType::TranscodeVideo],
                 formats: vec![],
             }],
         });
@@ -172,13 +177,13 @@ mod tests {
         registry.register(mkv);
         registry.register(ffmpeg);
 
-        // mkvtoolnix handles metadata on mkv
-        let p = registry.find_for_operation("metadata", "mkv");
+        // mkvtoolnix handles set_default on mkv
+        let p = registry.find_for_operation("set_default", "mkv");
         assert!(p.is_some());
         assert_eq!(p.unwrap().name(), "mkvtoolnix");
 
-        // ffmpeg handles transcode on any format
-        let p = registry.find_for_operation("transcode", "mp4");
+        // ffmpeg handles transcode_video on any format
+        let p = registry.find_for_operation("transcode_video", "mp4");
         assert!(p.is_some());
         assert_eq!(p.unwrap().name(), "ffmpeg");
 

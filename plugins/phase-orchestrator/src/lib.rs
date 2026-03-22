@@ -198,7 +198,7 @@ mod tests {
     fn test_orchestrate_simple_policy() {
         let orch = PhaseOrchestratorPlugin::new();
         let policy =
-            voom_dsl::compile(r#"policy "test" { phase init { container mkv } }"#).unwrap();
+            voom_dsl::compile_policy(r#"policy "test" { phase init { container mkv } }"#).unwrap();
         let file = test_file();
         let result = orch.orchestrate(eval(&policy, &file)).unwrap();
         assert_eq!(result.plans.len(), 1);
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn test_orchestrate_multi_phase() {
         let orch = PhaseOrchestratorPlugin::new();
-        let policy = voom_dsl::compile(
+        let policy = voom_dsl::compile_policy(
             r#"policy "test" {
                 phase containerize { container mkv }
                 phase normalize {
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn test_orchestrate_skipped_phases() {
         let orch = PhaseOrchestratorPlugin::new();
-        let policy = voom_dsl::compile(
+        let policy = voom_dsl::compile_policy(
             r#"policy "test" {
                 phase tc {
                     skip when video.codec == "hevc"
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn test_format_dry_run() {
         let orch = PhaseOrchestratorPlugin::new();
-        let policy = voom_dsl::compile(
+        let policy = voom_dsl::compile_policy(
             r#"policy "test" {
                 config { on_error: continue }
                 phase containerize { container mkv }
@@ -271,22 +271,23 @@ mod tests {
 
         // No changes needed
         let policy =
-            voom_dsl::compile(r#"policy "test" { phase init { container mkv } }"#).unwrap();
+            voom_dsl::compile_policy(r#"policy "test" { phase init { container mkv } }"#).unwrap();
         let file = test_file();
         let result = orch.orchestrate(eval(&policy, &file)).unwrap();
         assert!(!PhaseOrchestratorPlugin::needs_execution(&result));
 
         // Changes needed
-        let policy =
-            voom_dsl::compile(r#"policy "test" { phase norm { keep audio where lang in [eng] } }"#)
-                .unwrap();
+        let policy = voom_dsl::compile_policy(
+            r#"policy "test" { phase norm { keep audio where lang in [eng] } }"#,
+        )
+        .unwrap();
         let result = orch.orchestrate(eval(&policy, &file)).unwrap();
         assert!(PhaseOrchestratorPlugin::needs_execution(&result));
     }
 
     #[test]
     fn test_phase_error_strategy() {
-        let policy = voom_dsl::compile(
+        let policy = voom_dsl::compile_policy(
             r#"policy "test" {
                 config { on_error: continue }
                 phase a {
@@ -313,7 +314,7 @@ mod tests {
         let orch = PhaseOrchestratorPlugin::new();
         let file = test_file(); // already MKV
 
-        let policy = voom_dsl::compile(
+        let policy = voom_dsl::compile_policy(
             r#"policy "test" {
                 phase containerize { container mkv }
                 phase validate {
@@ -336,7 +337,7 @@ mod tests {
         let orch = PhaseOrchestratorPlugin::new();
         let source =
             include_str!("../../../crates/voom-dsl/tests/fixtures/production-normalize.voom");
-        let policy = voom_dsl::compile(source).unwrap();
+        let policy = voom_dsl::compile_policy(source).unwrap();
         let file = test_file();
         let result = orch.orchestrate(eval(&policy, &file)).unwrap();
         assert_eq!(result.plans.len(), 6);

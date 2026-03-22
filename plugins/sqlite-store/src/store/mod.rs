@@ -17,7 +17,7 @@ use rusqlite::{params, Row};
 use uuid::Uuid;
 
 use voom_domain::bad_file::{BadFile, BadFileSource};
-use voom_domain::errors::{Result, VoomError};
+use voom_domain::errors::{Result, StorageErrorKind, VoomError};
 use voom_domain::job::{Job, JobStatus};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 
@@ -66,12 +66,10 @@ impl SqliteStore {
             .max_size(pool_size)
             .min_idle(Some(0))
             .build(manager)
-            .map_err(storage_err("failed to create connection pool"))?;
+            .map_err(pool_err("failed to create connection pool"))?;
 
         // Initialize schema on the first connection
-        let conn = pool
-            .get()
-            .map_err(storage_err("failed to get connection"))?;
+        let conn = pool.get().map_err(pool_err("failed to get connection"))?;
         schema::create_schema(&conn).map_err(storage_err("failed to create schema"))?;
 
         Ok(Self { pool })
@@ -80,7 +78,7 @@ impl SqliteStore {
     pub(crate) fn conn(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>> {
         self.pool
             .get()
-            .map_err(storage_err("failed to get connection"))
+            .map_err(pool_err("failed to get connection"))
     }
 }
 
@@ -103,9 +101,45 @@ fn str_to_track_type(s: &str) -> Option<TrackType> {
     }
 }
 
-/// Create a `.map_err` closure that wraps the source error in `VoomError::Storage`.
-pub(crate) fn storage_err<E: std::fmt::Display>(msg: &str) -> impl FnOnce(E) -> VoomError + '_ {
-    move |e| VoomError::Storage(format!("{msg}: {e}"))
+/// Classify a rusqlite error into a [`StorageErrorKind`].
+fn classify_rusqlite(e: &rusqlite::Error) -> StorageErrorKind {
+    match e {
+        rusqlite::Error::SqliteFailure(ffi_err, _) => {
+            use rusqlite::ffi::ErrorCode;
+            match ffi_err.code {
+                ErrorCode::ConstraintViolation => StorageErrorKind::ConstraintViolation,
+                _ => StorageErrorKind::Other,
+            }
+        }
+        rusqlite::Error::QueryReturnedNoRows => StorageErrorKind::NotFound,
+        _ => StorageErrorKind::Other,
+    }
+}
+
+/// Create a `.map_err` closure for `rusqlite::Error` that classifies the error kind.
+pub(crate) fn storage_err(msg: &str) -> impl FnOnce(rusqlite::Error) -> VoomError + '_ {
+    move |e| VoomError::Storage {
+        kind: classify_rusqlite(&e),
+        message: format!("{msg}: {e}"),
+    }
+}
+
+/// Create a `.map_err` closure for r2d2 pool errors (treated as ConnectionError).
+pub(crate) fn pool_err<E: std::fmt::Display>(msg: &str) -> impl FnOnce(E) -> VoomError + '_ {
+    move |e| VoomError::Storage {
+        kind: StorageErrorKind::ConnectionError,
+        message: format!("{msg}: {e}"),
+    }
+}
+
+/// Wrap any displayable error as a generic storage error with [`StorageErrorKind::Other`].
+pub(crate) fn other_storage_err<E: std::fmt::Display>(
+    msg: &str,
+) -> impl FnOnce(E) -> VoomError + '_ {
+    move |e| VoomError::Storage {
+        kind: StorageErrorKind::Other,
+        message: format!("{msg}: {e}"),
+    }
 }
 
 /// Lightweight builder for dynamic SQL queries with positional parameters.
@@ -150,7 +184,7 @@ impl SqlQuery {
 }
 
 pub(crate) fn parse_uuid(s: &str) -> Result<Uuid> {
-    Uuid::parse_str(s).map_err(|e| VoomError::Storage(format!("invalid UUID '{s}': {e}")))
+    Uuid::parse_str(s).map_err(other_storage_err(&format!("invalid UUID '{s}'")))
 }
 
 /// Parse a required datetime string, returning a `FromSqlConversionFailure` on corrupt values.
@@ -207,7 +241,7 @@ pub(crate) fn escape_like(s: &str) -> String {
 
 pub(crate) fn parse_datetime(s: &str) -> Result<DateTime<Utc>> {
     s.parse::<DateTime<Utc>>()
-        .map_err(|e| VoomError::Storage(format!("invalid datetime '{s}': {e}")))
+        .map_err(other_storage_err(&format!("invalid datetime '{s}'")))
 }
 
 pub(crate) fn format_datetime(dt: &DateTime<Utc>) -> String {
@@ -248,8 +282,7 @@ impl FileRow {
             .tags
             .as_deref()
             .map(|s| {
-                serde_json::from_str(s)
-                    .map_err(|e| VoomError::Storage(format!("corrupt JSON in files.tags: {e}")))
+                serde_json::from_str(s).map_err(other_storage_err("corrupt JSON in files.tags"))
             })
             .transpose()?
             .unwrap_or_default();
@@ -258,9 +291,8 @@ impl FileRow {
             .plugin_metadata
             .as_deref()
             .map(|s| {
-                serde_json::from_str(s).map_err(|e| {
-                    VoomError::Storage(format!("corrupt JSON in files.plugin_metadata: {e}"))
-                })
+                serde_json::from_str(s)
+                    .map_err(other_storage_err("corrupt JSON in files.plugin_metadata"))
             })
             .transpose()?
             .unwrap_or_default();
@@ -434,7 +466,7 @@ impl SqliteStore {
                     &format!("DELETE FROM {table} WHERE {column} IN ({in_clause})"),
                     param_refs.as_slice(),
                 )
-                .map_err(|e| VoomError::Storage(format!("failed to delete from {table}: {e}")))?;
+                .map_err(storage_err(&format!("failed to delete from {table}")))?;
             total += deleted as u64;
         }
         Ok(total)
@@ -1228,7 +1260,10 @@ mod tests {
                 track_index: Some(0),
                 parameters: voom_domain::plan::ActionParams::Transcode {
                     codec: "hevc".into(),
-                    settings: serde_json::json!({}),
+                    crf: None,
+                    preset: None,
+                    bitrate: None,
+                    channels: None,
                 },
                 description: "Transcode video".into(),
             }],

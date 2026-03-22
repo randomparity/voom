@@ -81,7 +81,7 @@ pub fn on_event(
     });
 
     let enriched_event = Event::MetadataEnriched(
-        voom_plugin_sdk::voom_domain::events::MetadataEnrichedEvent {
+        voom_plugin_sdk::MetadataEnrichedEvent {
             path: file.path.clone(),
             source: "sonarr".to_string(),
             metadata,
@@ -288,7 +288,7 @@ mod tests {
             "/media/tv/Breaking Bad/Season 01/Breaking.Bad.S01E01.1080p.mkv",
         );
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent { file },
+            voom_plugin_sdk::FileIntrospectedEvent { file },
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -316,7 +316,7 @@ mod tests {
         let host = MockHost::new();
         let file = make_test_file("/media/tv/Unknown Show/S01E01.mkv");
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent { file },
+            voom_plugin_sdk::FileIntrospectedEvent { file },
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -329,7 +329,7 @@ mod tests {
         let host = MockHost::without_config();
         let file = make_test_file("/media/tv/test.mkv");
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent { file },
+            voom_plugin_sdk::FileIntrospectedEvent { file },
         );
         let payload = serialize_event(&event).unwrap();
 

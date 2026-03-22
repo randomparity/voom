@@ -149,7 +149,8 @@ fn load_and_compile_policy(args: &ProcessArgs) -> Result<voom_dsl::CompiledPolic
     let policy_source = std::fs::read_to_string(&args.policy)
         .with_context(|| format!("Failed to read policy: {}", args.policy.display()))?;
 
-    voom_dsl::compile(&policy_source).map_err(|e| anyhow::anyhow!("policy compilation failed: {e}"))
+    voom_dsl::compile_policy(&policy_source)
+        .map_err(|e| anyhow::anyhow!("policy compilation failed: {e}"))
 }
 
 /// Print the header line describing what we are about to do.
@@ -365,54 +366,7 @@ fn execute_plans(
             break;
         }
 
-        // Dispatch PlanExecuting first so backup-manager backs up the file
-        // BEFORE executors modify it
-        kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
-            path: file.path.clone(),
-            phase_name: plan.phase_name.clone(),
-            action_count: plan.actions.len(),
-        }));
-
-        // Dispatch PlanCreated to let executor plugins claim and execute the plan
-        let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
-
-        let claimed = results.iter().any(|r| r.claimed);
-        let exec_error = results.iter().find_map(|r| r.execution_error.clone());
-
-        if claimed && exec_error.is_none() {
-            // An executor plugin claimed and successfully executed the plan
-            kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
-                plan_id: plan.id,
-                path: file.path.clone(),
-                phase_name: plan.phase_name.clone(),
-                actions_applied: plan.actions.len(),
-            }));
-        } else if let Some(error) = exec_error {
-            // An executor claimed the plan but failed
-            kernel.dispatch(Event::PlanFailed(PlanFailedEvent {
-                plan_id: plan.id,
-                path: file.path.clone(),
-                phase_name: plan.phase_name.clone(),
-                error,
-                error_code: None,
-                plugin_name: results
-                    .iter()
-                    .find(|r| r.claimed)
-                    .map(|r| r.plugin_name.clone()),
-                error_chain: vec![],
-            }));
-        } else {
-            // No executor claimed the plan — emit PlanFailed
-            kernel.dispatch(Event::PlanFailed(PlanFailedEvent {
-                plan_id: plan.id,
-                path: file.path.clone(),
-                phase_name: plan.phase_name.clone(),
-                error: "no executor available for plan".into(),
-                error_code: None,
-                plugin_name: None,
-                error_chain: vec![],
-            }));
-        }
+        execute_single_plan(plan, file, kernel);
     }
 
     Ok(Some(serde_json::json!({
@@ -420,6 +374,64 @@ fn execute_plans(
         "needs_execution": needs_exec,
         "plans_evaluated": result.plans.len(),
     })))
+}
+
+/// Dispatch PlanExecuting + PlanCreated for a single plan, then emit
+/// PlanCompleted, PlanFailed (executor error), or PlanFailed (unclaimed).
+///
+/// PlanExecuting is dispatched first so the backup-manager backs up the file
+/// BEFORE any executor modifies it.  PlanCreated then lets executor plugins
+/// claim and run the plan.
+fn execute_single_plan(
+    plan: &voom_domain::plan::Plan,
+    file: &voom_domain::media::MediaFile,
+    kernel: &voom_kernel::Kernel,
+) {
+    kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent {
+        path: file.path.clone(),
+        phase_name: plan.phase_name.clone(),
+        action_count: plan.actions.len(),
+    }));
+
+    let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent { plan: plan.clone() }));
+
+    let claimed = results.iter().any(|r| r.claimed);
+    let exec_error = results.iter().find_map(|r| r.execution_error.clone());
+
+    if claimed && exec_error.is_none() {
+        // An executor plugin claimed and successfully executed the plan
+        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent {
+            plan_id: plan.id,
+            path: file.path.clone(),
+            phase_name: plan.phase_name.clone(),
+            actions_applied: plan.actions.len(),
+        }));
+    } else if let Some(error) = exec_error {
+        // An executor claimed the plan but failed
+        kernel.dispatch(Event::PlanFailed(PlanFailedEvent {
+            plan_id: plan.id,
+            path: file.path.clone(),
+            phase_name: plan.phase_name.clone(),
+            error,
+            error_code: None,
+            plugin_name: results
+                .iter()
+                .find(|r| r.claimed)
+                .map(|r| r.plugin_name.clone()),
+            error_chain: vec![],
+        }));
+    } else {
+        // No executor claimed the plan — emit PlanFailed
+        kernel.dispatch(Event::PlanFailed(PlanFailedEvent {
+            plan_id: plan.id,
+            path: file.path.clone(),
+            phase_name: plan.phase_name.clone(),
+            error: "no executor available for plan".into(),
+            error_code: None,
+            plugin_name: None,
+            error_chain: vec![],
+        }));
+    }
 }
 
 /// Print a summary when interrupted by CTRL-C.

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use voom_domain::capabilities::Capability;
 use voom_domain::events::*;
+use voom_domain::plan::OperationType;
 use voom_kernel::{Kernel, Plugin};
 
 /// A native plugin that logs file discovery events.
@@ -165,7 +166,11 @@ fn test_kernel_capability_queries() {
 
     let executor = Arc::new(MockExecutor {
         caps: vec![Capability::Execute {
-            operations: vec!["metadata".into(), "reorder".into(), "remux".into()],
+            operations: vec![
+                OperationType::SetDefault,
+                OperationType::ReorderTracks,
+                OperationType::RemoveTrack,
+            ],
             formats: vec!["mkv".into()],
         }],
     });
@@ -178,20 +183,20 @@ fn test_kernel_capability_queries() {
     assert_eq!(executors[0].name(), "mock-mkvtoolnix");
 
     // Query for specific operation + format.
-    let handler = kernel.registry.find_for_operation("metadata", "mkv");
+    let handler = kernel.registry.find_for_operation("set_default", "mkv");
     assert!(handler.is_some());
     assert_eq!(handler.unwrap().name(), "mock-mkvtoolnix");
 
-    // No handler for transcode.
+    // No handler for transcode_video.
     assert!(kernel
         .registry
-        .find_for_operation("transcode", "mkv")
+        .find_for_operation("transcode_video", "mkv")
         .is_none());
 
     // No handler for mp4 format.
     assert!(kernel
         .registry
-        .find_for_operation("metadata", "mp4")
+        .find_for_operation("set_default", "mp4")
         .is_none());
 }
 
@@ -365,7 +370,10 @@ fn test_executor_claimed_mp4_goes_to_ffmpeg() {
             track_index: Some(0),
             parameters: ActionParams::Transcode {
                 codec: "hevc".into(),
-                settings: serde_json::json!({}),
+                crf: None,
+                preset: None,
+                bitrate: None,
+                channels: None,
             },
             description: "Transcode".into(),
         }],
@@ -395,7 +403,10 @@ fn test_executor_mkv_transcode_falls_through_to_ffmpeg() {
             track_index: Some(0),
             parameters: ActionParams::Transcode {
                 codec: "h264".into(),
-                settings: serde_json::json!({}),
+                crf: None,
+                preset: None,
+                bitrate: None,
+                channels: None,
             },
             description: "Transcode to H.264".into(),
         }],

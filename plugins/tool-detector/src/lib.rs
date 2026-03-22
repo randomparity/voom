@@ -83,7 +83,7 @@ impl ToolDetectorPlugin {
 
     /// Get a detected tool by name.
     #[must_use]
-    pub fn get_tool(&self, name: &str) -> Option<&DetectedTool> {
+    pub fn tool(&self, name: &str) -> Option<&DetectedTool> {
         self.cache.get(name)
     }
 
@@ -291,7 +291,7 @@ mod tests {
         // but the cache should be populated for any found tools
         for (name, _) in KNOWN_TOOLS {
             if plugin.is_available(name) {
-                let tool = plugin.get_tool(name).unwrap();
+                let tool = plugin.tool(name).unwrap();
                 assert_eq!(tool.name, *name);
                 assert!(!tool.version.is_empty());
             }

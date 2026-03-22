@@ -156,7 +156,7 @@ pub struct JobsPageParams {
 }
 
 /// GET /jobs -- Job monitor
-pub async fn jobs_page(
+pub async fn jobs(
     State(state): State<AppState>,
     Query(params): Query<JobsPageParams>,
 ) -> HtmlResult {
@@ -185,7 +185,7 @@ pub async fn jobs_page(
 }
 
 /// GET /plugins -- Plugin manager
-pub async fn plugins_page(State(state): State<AppState>) -> HtmlResult {
+pub async fn plugins(State(state): State<AppState>) -> HtmlResult {
     let ctx = tera::Context::new();
     render(&state.templates, "plugins.html", &ctx)
 }

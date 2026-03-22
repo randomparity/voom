@@ -92,7 +92,10 @@ pub fn capability_from_wit(cap_str: &str) -> Option<Capability> {
             let operations = if ops_part.is_empty() {
                 vec![]
             } else {
-                ops_part.split('+').map(|s| s.trim().to_string()).collect()
+                ops_part
+                    .split('+')
+                    .filter_map(|s| voom_domain::plan::OperationType::parse(s.trim()))
+                    .collect()
             };
             Some(Capability::Execute {
                 operations,
@@ -147,7 +150,11 @@ pub fn capability_to_wit(cap: &Capability) -> String {
             operations,
             formats,
         } => {
-            let ops = operations.join("+");
+            let ops = operations
+                .iter()
+                .map(|op| op.as_str())
+                .collect::<Vec<_>>()
+                .join("+");
             let fmts = formats.join(",");
             if ops.is_empty() && fmts.is_empty() {
                 "execute".to_string()
@@ -239,12 +246,16 @@ mod tests {
 
     #[test]
     fn test_capability_roundtrip_execute() {
+        use voom_domain::plan::OperationType;
         let cap = Capability::Execute {
-            operations: vec!["transcode".into(), "mux".into()],
+            operations: vec![
+                OperationType::TranscodeVideo,
+                OperationType::ConvertContainer,
+            ],
             formats: vec!["mkv".into(), "mp4".into()],
         };
         let s = capability_to_wit(&cap);
-        assert_eq!(s, "execute:transcode+mux:mkv,mp4");
+        assert_eq!(s, "execute:transcode_video+convert_container:mkv,mp4");
         let restored = capability_from_wit(&s).unwrap();
         assert_eq!(restored, cap);
     }

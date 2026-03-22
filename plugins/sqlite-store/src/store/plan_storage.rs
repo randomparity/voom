@@ -7,20 +7,21 @@ use voom_domain::plan::Plan;
 use voom_domain::storage::{PlanStatus, PlanStorage, StoredPlan};
 
 use super::{
-    format_datetime, parse_optional_datetime, row_uuid, storage_err, OptionalExt, SqliteStore,
+    format_datetime, other_storage_err, parse_optional_datetime, row_uuid, storage_err,
+    OptionalExt, SqliteStore,
 };
 
 impl PlanStorage for SqliteStore {
     fn save_plan(&self, plan: &Plan) -> Result<Uuid> {
         let conn = self.conn()?;
         let actions_json = serde_json::to_string(&plan.actions)
-            .map_err(storage_err("failed to serialize actions"))?;
+            .map_err(other_storage_err("failed to serialize actions"))?;
         let warnings_json = if plan.warnings.is_empty() {
             None
         } else {
             Some(
                 serde_json::to_string(&plan.warnings)
-                    .map_err(storage_err("failed to serialize warnings"))?,
+                    .map_err(other_storage_err("failed to serialize warnings"))?,
             )
         };
 
@@ -46,7 +47,7 @@ impl PlanStorage for SqliteStore {
                 effective_file_id,
                 plan.policy_name,
                 plan.phase_name,
-                "pending",
+                PlanStatus::Pending.as_str(),
                 actions_json,
                 warnings_json,
                 plan.skip_reason,

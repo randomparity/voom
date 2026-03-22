@@ -9,17 +9,18 @@ use voom_domain::media::MediaFile;
 use voom_domain::storage::{FileFilters, FileStorage};
 
 use super::{
-    escape_like, format_datetime, row_to_file, storage_err, FileRow, SqlQuery, SqliteStore,
+    escape_like, format_datetime, other_storage_err, row_to_file, storage_err, FileRow, SqlQuery,
+    SqliteStore,
 };
 
 impl FileStorage for SqliteStore {
     fn upsert_file(&self, file: &MediaFile) -> Result<()> {
         let conn = self.conn()?;
         let now = format_datetime(&Utc::now());
-        let tags_json =
-            serde_json::to_string(&file.tags).map_err(storage_err("failed to serialize tags"))?;
+        let tags_json = serde_json::to_string(&file.tags)
+            .map_err(other_storage_err("failed to serialize tags"))?;
         let meta_json = serde_json::to_string(&file.plugin_metadata)
-            .map_err(storage_err("failed to serialize metadata"))?;
+            .map_err(other_storage_err("failed to serialize metadata"))?;
         let filename = file
             .path
             .file_name()

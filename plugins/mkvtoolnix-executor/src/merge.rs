@@ -136,16 +136,15 @@ pub fn build_merge_args(
         if action.operation == OperationType::RemoveTrack {
             if let Some(idx) = action.track_index {
                 let track_type = match &action.parameters {
-                    ActionParams::RemoveTrack { track_type, .. } => track_type.as_str(),
-                    _ => "unknown",
+                    ActionParams::RemoveTrack { track_type, .. } => *track_type,
+                    _ => continue,
                 };
-                match track_type {
+                match track_type.track_category() {
                     "video" => video_removes.push(idx),
                     "audio" => audio_removes.push(idx),
                     "subtitle" => subtitle_removes.push(idx),
                     _ => {
-                        // If track type is unknown, use a general approach:
-                        // add to all removal lists and let mkvmerge ignore non-matching
+                        // Attachment or unknown — add to all removal lists and let mkvmerge ignore non-matching
                         video_removes.push(idx);
                         audio_removes.push(idx);
                         subtitle_removes.push(idx);
@@ -202,6 +201,7 @@ mod tests {
     use std::path::Path;
 
     use crate::test_helpers::make_action;
+    use voom_domain::media::{Container, TrackType};
 
     #[test]
     fn test_build_merge_args_remove_track() {
@@ -210,7 +210,7 @@ mod tests {
             Some(3),
             ActionParams::RemoveTrack {
                 reason: "test".into(),
-                track_type: "subtitle".into(),
+                track_type: TrackType::SubtitleMain,
             },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
@@ -264,7 +264,7 @@ mod tests {
             OperationType::ConvertContainer,
             None,
             ActionParams::Container {
-                container: "mkv".into(),
+                container: Container::Mkv,
             },
         );
         let actions: Vec<&PlannedAction> = vec![&action];
@@ -287,7 +287,7 @@ mod tests {
             Some(2),
             ActionParams::RemoveTrack {
                 reason: "test".into(),
-                track_type: "audio".into(),
+                track_type: TrackType::AudioMain,
             },
         );
         let a2 = make_action(
@@ -295,7 +295,7 @@ mod tests {
             Some(4),
             ActionParams::RemoveTrack {
                 reason: "test".into(),
-                track_type: "subtitle".into(),
+                track_type: TrackType::SubtitleMain,
             },
         );
         let actions: Vec<&PlannedAction> = vec![&a1, &a2];
@@ -325,7 +325,7 @@ mod tests {
             Some(3),
             ActionParams::RemoveTrack {
                 reason: "test".into(),
-                track_type: "audio".into(),
+                track_type: TrackType::AudioMain,
             },
         );
         let a2 = make_action(

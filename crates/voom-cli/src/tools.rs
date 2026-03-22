@@ -19,7 +19,7 @@ pub fn print_tool_status(detector: &voom_tool_detector::ToolDetectorPlugin) -> T
 
     for tool in required_tools {
         print!("  {tool} ... ");
-        if let Some(t) = detector.get_tool(tool) {
+        if let Some(t) = detector.tool(tool) {
             println!("{} ({})", style("OK").green(), style(&t.version).dim());
         } else {
             println!("{} (required)", style("NOT FOUND").red());
@@ -29,7 +29,7 @@ pub fn print_tool_status(detector: &voom_tool_detector::ToolDetectorPlugin) -> T
 
     for tool in optional_tools {
         print!("  {tool} ... ");
-        if let Some(t) = detector.get_tool(tool) {
+        if let Some(t) = detector.tool(tool) {
             println!("{} ({})", style("OK").green(), style(&t.version).dim());
         } else {
             println!("{}", style("not found").yellow());

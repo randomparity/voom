@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use uuid::Uuid;
 
 use crate::bad_file::BadFile;
-use crate::errors::{Result, VoomError};
+use crate::errors::{Result, StorageErrorKind, VoomError};
 use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::MediaFile;
 use crate::plan::Plan;
@@ -147,9 +147,10 @@ impl JobStorage for InMemoryStore {
 
     fn update_job(&self, id: &Uuid, update: &JobUpdate) -> Result<()> {
         let mut jobs = self.jobs.lock().unwrap();
-        let job = jobs
-            .get_mut(id)
-            .ok_or_else(|| VoomError::Storage(format!("job {id} not found")))?;
+        let job = jobs.get_mut(id).ok_or_else(|| VoomError::Storage {
+            kind: StorageErrorKind::NotFound,
+            message: format!("job {id} not found"),
+        })?;
 
         if let Some(status) = update.status {
             job.status = status;

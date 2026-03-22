@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::media::MediaFile;
+use crate::media::{Container, MediaFile, TrackType};
 
 fn epoch() -> DateTime<Utc> {
     DateTime::UNIX_EPOCH
@@ -107,12 +107,12 @@ pub enum ActionParams {
     Empty,
     /// Container conversion target.
     Container {
-        container: String,
+        container: Container,
     },
-    /// Track removal with reason and track type category.
+    /// Track removal with reason and track type.
     RemoveTrack {
         reason: String,
-        track_type: String,
+        track_type: TrackType,
     },
     /// Track reordering.
     ReorderTracks {
@@ -126,17 +126,25 @@ pub enum ActionParams {
     Title {
         title: String,
     },
-    /// Transcode settings (codec, plus optional settings like crf, bitrate, channels).
+    /// Transcode settings (codec, plus optional quality/encoding parameters).
     Transcode {
         codec: String,
-        #[serde(flatten)]
-        settings: serde_json::Value,
+        crf: Option<u32>,
+        preset: Option<String>,
+        bitrate: Option<String>,
+        channels: Option<u32>,
     },
     /// Audio synthesis parameters.
     Synthesize {
         name: String,
-        #[serde(flatten)]
-        settings: serde_json::Value,
+        language: Option<String>,
+        codec: Option<String>,
+        text: Option<String>,
+        bitrate: Option<String>,
+        channels: Option<u32>,
+        title: Option<String>,
+        position: Option<String>,
+        source_track: Option<u32>,
     },
     /// Container tag operations.
     SetTag {
@@ -173,6 +181,32 @@ pub enum OperationType {
 }
 
 impl OperationType {
+    /// Parse an `OperationType` from its canonical string representation.
+    ///
+    /// Returns `None` for unrecognised strings (e.g., from external WIT plugins using a
+    /// newer schema version).
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "set_default" => Some(Self::SetDefault),
+            "clear_default" => Some(Self::ClearDefault),
+            "set_forced" => Some(Self::SetForced),
+            "clear_forced" => Some(Self::ClearForced),
+            "set_title" => Some(Self::SetTitle),
+            "set_language" => Some(Self::SetLanguage),
+            "remove_track" => Some(Self::RemoveTrack),
+            "reorder_tracks" => Some(Self::ReorderTracks),
+            "convert_container" => Some(Self::ConvertContainer),
+            "transcode_video" => Some(Self::TranscodeVideo),
+            "transcode_audio" => Some(Self::TranscodeAudio),
+            "synthesize_audio" => Some(Self::SynthesizeAudio),
+            "set_container_tag" => Some(Self::SetContainerTag),
+            "clear_container_tags" => Some(Self::ClearContainerTags),
+            "delete_container_tag" => Some(Self::DeleteContainerTag),
+            _ => None,
+        }
+    }
+
     /// The set of operation types that are metadata-only edits (no transcode or remux).
     ///
     /// Both the `FFmpeg` and `MKVToolNix` executors use this to decide whether a plan
@@ -320,7 +354,7 @@ mod tests {
             track_index: Some(2),
             parameters: ActionParams::RemoveTrack {
                 reason: "test".into(),
-                track_type: "audio".into(),
+                track_type: TrackType::AudioMain,
             },
             description: "Remove track 2".into(),
         };

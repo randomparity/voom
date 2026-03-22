@@ -190,6 +190,17 @@ impl Default for BackupManagerPlugin {
     }
 }
 
+/// Construct a successful `EventResult` for the backup-manager plugin.
+fn backup_result(data: serde_json::Value) -> EventResult {
+    EventResult {
+        plugin_name: "backup-manager".into(),
+        produced_events: vec![],
+        data: Some(data),
+        claimed: false,
+        execution_error: None,
+    }
+}
+
 impl Plugin for BackupManagerPlugin {
     fn name(&self) -> &str {
         "backup-manager"
@@ -232,17 +243,11 @@ impl Plugin for BackupManagerPlugin {
 
                 self.backup_file(&evt.path)?;
 
-                Ok(Some(EventResult {
-                    plugin_name: "backup-manager".into(),
-                    produced_events: vec![],
-                    data: Some(serde_json::json!({
-                        "backed_up": true,
-                        "path": evt.path,
-                        "phase": evt.phase_name,
-                    })),
-                    claimed: false,
-                    execution_error: None,
-                }))
+                Ok(Some(backup_result(serde_json::json!({
+                    "backed_up": true,
+                    "path": evt.path,
+                    "phase": evt.phase_name,
+                }))))
             }
             Event::PlanCompleted(evt) => {
                 if self.has_backup(&evt.path)? {
@@ -252,17 +257,11 @@ impl Plugin for BackupManagerPlugin {
                         "Plan completed successfully, removing backup"
                     );
                     self.remove_backup(&evt.path)?;
-                    Ok(Some(EventResult {
-                        plugin_name: "backup-manager".into(),
-                        produced_events: vec![],
-                        data: Some(serde_json::json!({
-                            "backup_removed": true,
-                            "path": evt.path,
-                            "phase": evt.phase_name,
-                        })),
-                        claimed: false,
-                        execution_error: None,
-                    }))
+                    Ok(Some(backup_result(serde_json::json!({
+                        "backup_removed": true,
+                        "path": evt.path,
+                        "phase": evt.phase_name,
+                    }))))
                 } else {
                     Ok(None)
                 }
@@ -276,18 +275,12 @@ impl Plugin for BackupManagerPlugin {
                         "Plan failed, restoring file from backup"
                     );
                     self.restore_file(&evt.path)?;
-                    Ok(Some(EventResult {
-                        plugin_name: "backup-manager".into(),
-                        produced_events: vec![],
-                        data: Some(serde_json::json!({
-                            "restored": true,
-                            "path": evt.path,
-                            "phase": evt.phase_name,
-                            "error": evt.error,
-                        })),
-                        claimed: false,
-                        execution_error: None,
-                    }))
+                    Ok(Some(backup_result(serde_json::json!({
+                        "restored": true,
+                        "path": evt.path,
+                        "phase": evt.phase_name,
+                        "error": evt.error,
+                    }))))
                 } else {
                     Ok(None)
                 }

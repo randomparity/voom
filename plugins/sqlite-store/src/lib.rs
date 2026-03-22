@@ -111,9 +111,10 @@ impl Plugin for SqliteStorePlugin {
             Event::MetadataEnriched(e) => {
                 let key = format!("metadata:{}", e.path.display());
                 let value = serde_json::to_vec(&e.metadata).map_err(|err| {
-                    voom_domain::VoomError::Storage(format!(
-                        "failed to serialize enriched metadata: {err}"
-                    ))
+                    voom_domain::VoomError::Storage {
+                        kind: voom_domain::errors::StorageErrorKind::Other,
+                        message: format!("failed to serialize enriched metadata: {err}"),
+                    }
                 })?;
                 store.set_plugin_data(&e.source, &key, &value)?;
                 tracing::info!(
@@ -129,9 +130,11 @@ impl Plugin for SqliteStorePlugin {
                     "version": e.version,
                     "path": e.path,
                 });
-                let bytes = serde_json::to_vec(&value).map_err(|err| {
-                    voom_domain::VoomError::Storage(format!("failed to serialize tool info: {err}"))
-                })?;
+                let bytes =
+                    serde_json::to_vec(&value).map_err(|err| voom_domain::VoomError::Storage {
+                        kind: voom_domain::errors::StorageErrorKind::Other,
+                        message: format!("failed to serialize tool info: {err}"),
+                    })?;
                 store.set_plugin_data("tool-detector", &key, &bytes)?;
                 tracing::info!(
                     tool = %e.tool_name,
@@ -150,11 +153,9 @@ impl Plugin for SqliteStorePlugin {
 
         // Ensure data directory exists
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                voom_domain::VoomError::Storage(format!(
-                    "failed to create data dir {}: {e}",
-                    parent.display()
-                ))
+            std::fs::create_dir_all(parent).map_err(|e| voom_domain::VoomError::Storage {
+                kind: voom_domain::errors::StorageErrorKind::Other,
+                message: format!("failed to create data dir {}: {e}", parent.display()),
             })?;
         }
 

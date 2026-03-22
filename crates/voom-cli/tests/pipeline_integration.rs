@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::OperationType;
-use voom_dsl::compile;
+use voom_dsl::compile_policy as compile;
 use voom_policy_evaluator::evaluator::evaluate;
 
 /// Build a realistic media file with multiple track types.
@@ -77,7 +77,7 @@ fn pipeline_parse_compile_evaluate_produces_correct_plans() {
         }
     "#;
 
-    // Step 1+2: parse + compile (voom_dsl::compile does both)
+    // Step 1+2: parse + compile (voom_dsl::compile_policy does both)
     let compiled = compile(source).expect("policy should compile");
     assert_eq!(compiled.name, "integration-test");
     assert_eq!(compiled.phases.len(), 2);

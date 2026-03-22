@@ -206,6 +206,20 @@ impl TrackType {
         matches!(self, TrackType::Video)
     }
 
+    /// Returns the broad category of this track type: "video", "audio", "subtitle", or "attachment".
+    #[must_use]
+    pub fn track_category(&self) -> &'static str {
+        if self.is_video() {
+            "video"
+        } else if self.is_audio() {
+            "audio"
+        } else if self.is_subtitle() {
+            "subtitle"
+        } else {
+            "attachment"
+        }
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {

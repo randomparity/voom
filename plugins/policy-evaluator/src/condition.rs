@@ -3,9 +3,9 @@
 use std::collections::HashSet;
 
 use voom_domain::media::MediaFile;
-use voom_dsl::compiler::{CompiledCompareOp, CompiledCondition, TrackTarget};
+use voom_dsl::compiler::{CompiledCompareOp, CompiledCondition};
 
-use crate::filter::{compare_f64, track_matches};
+use crate::filter::{compare_f64, track_matches, tracks_for_target};
 
 /// Evaluate a condition against a media file.
 #[must_use]
@@ -227,25 +227,12 @@ pub fn resolve_value_or_field(
     }
 }
 
-/// Get tracks from a file matching the given target type.
-fn tracks_for_target<'a>(
-    file: &'a MediaFile,
-    target: &TrackTarget,
-) -> Vec<&'a voom_domain::media::Track> {
-    match target {
-        TrackTarget::Video => file.video_tracks(),
-        TrackTarget::Audio => file.audio_tracks(),
-        TrackTarget::Subtitle => file.subtitle_tracks(),
-        TrackTarget::Attachment => file.tracks_of_type(voom_domain::media::TrackType::Attachment),
-        TrackTarget::Any => file.tracks.iter().collect(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    use voom_dsl::compiler::TrackTarget;
 
     fn test_file() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/test/movie.mkv"));

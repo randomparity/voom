@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::app;
 use crate::cli::ScanArgs;
@@ -16,11 +16,11 @@ const PROGRESS_FIXED_WIDTH: usize = 77;
 
 /// Format an ETA string from elapsed time and progress counts.
 /// Returns an empty string when ETA cannot be meaningfully computed.
-fn format_eta(start: &Instant, current: usize, total: usize) -> String {
+fn format_eta(elapsed: Duration, current: usize, total: usize) -> String {
     if current == 0 {
         return String::new();
     }
-    let elapsed = start.elapsed().as_secs_f64();
+    let elapsed = elapsed.as_secs_f64();
     let rate = current as f64 / elapsed;
     let remaining = (total - current) as f64 / rate;
     if remaining.is_finite() && remaining > 0.0 {
@@ -114,7 +114,7 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
                             .progress_chars("#>-"),
                         );
                     }
-                    let eta = format_eta(&start, current, total);
+                    let eta = format_eta(start.elapsed(), current, total);
                     let prefix = if hash_files { "Hashing" } else { "Processing" };
                     let max_name =
                         max_filename_len(PROGRESS_FIXED_WIDTH + eta.len() + prefix.len() + 3);
@@ -188,7 +188,7 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
         if token.is_cancelled() {
             break;
         }
-        let eta = format_eta(&intro_start, i + 1, total as usize);
+        let eta = format_eta(intro_start.elapsed(), i + 1, total as usize);
         let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len() + 9); // "Probing "
         let name = event
             .path
@@ -349,24 +349,18 @@ mod tests {
 
     #[test]
     fn test_format_eta_zero_current_returns_empty() {
-        let start = Instant::now();
-        assert_eq!(format_eta(&start, 0, 100), "");
+        assert_eq!(format_eta(Duration::from_secs(1), 0, 100), "");
     }
 
     #[test]
     fn test_format_eta_complete_returns_empty() {
-        let start = Instant::now();
         // When current == total, remaining == 0 so empty string
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        assert_eq!(format_eta(&start, 100, 100), "");
+        assert_eq!(format_eta(Duration::from_secs(1), 100, 100), "");
     }
 
     #[test]
     fn test_format_eta_in_progress_returns_nonempty() {
-        let start = Instant::now();
-        // Sleep a tiny bit so elapsed > 0
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let eta = format_eta(&start, 1, 100);
+        let eta = format_eta(Duration::from_secs(1), 1, 100);
         // Should produce something like ", ETA 1s" or similar
         assert!(eta.starts_with(", ETA "), "expected ETA prefix, got: {eta}");
     }

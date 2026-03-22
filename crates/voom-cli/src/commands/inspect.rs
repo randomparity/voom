@@ -14,7 +14,7 @@ use crate::output;
 /// inspect does not need the full plugin lifecycle (event bus, storage
 /// persistence, etc.) and should work even when the kernel is not bootstrapped.
 /// The ad-hoc instance respects `ffprobe_path` from config.
-pub async fn run(args: InspectArgs) -> Result<()> {
+pub fn run(args: InspectArgs) -> Result<()> {
     let path = args
         .file
         .canonicalize()
@@ -57,14 +57,14 @@ pub async fn run(args: InspectArgs) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn inspect_nonexistent_file_returns_error() {
+    #[test]
+    fn inspect_nonexistent_file_returns_error() {
         let args = InspectArgs {
             file: std::path::PathBuf::from("/nonexistent/video.mkv"),
             format: OutputFormat::Table,
             tracks_only: false,
         };
-        let result = run(args).await;
+        let result = run(args);
         assert!(result.is_err());
     }
 }

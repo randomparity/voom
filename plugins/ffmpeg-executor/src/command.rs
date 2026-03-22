@@ -212,9 +212,15 @@ pub fn build_ffmpeg_command(
                 // Container conversion is handled by output extension; codecs stay as copy
             }
             OperationType::TranscodeVideo => {
-                let (codec, settings) = match &action.parameters {
-                    ActionParams::Transcode { codec, settings } => (codec.as_str(), settings),
-                    _ => ("hevc", &serde_json::Value::Null),
+                let ActionParams::Transcode {
+                    codec,
+                    crf,
+                    preset,
+                    bitrate,
+                    ..
+                } = &action.parameters
+                else {
+                    continue;
                 };
 
                 let encoder = if let Some(hw) = hw_accel {
@@ -229,22 +235,27 @@ pub fn build_ffmpeg_command(
                     cmd = cmd.video_codec(&encoder);
                 }
 
-                if let Some(crf_val) = settings.get("crf").and_then(|v| v.as_u64()) {
-                    cmd = cmd.crf(crf_val as u32);
+                if let Some(crf_val) = crf {
+                    cmd = cmd.crf(*crf_val);
                 }
 
-                if let Some(preset_val) = settings.get("preset").and_then(|v| v.as_str()) {
+                if let Some(preset_val) = preset {
                     cmd = cmd.preset(preset_val);
                 }
 
-                if let Some(bitrate) = settings.get("bitrate").and_then(|v| v.as_str()) {
-                    cmd = cmd.arg("-b:v").arg(bitrate);
+                if let Some(brate) = bitrate {
+                    cmd = cmd.arg("-b:v").arg(brate);
                 }
             }
             OperationType::TranscodeAudio => {
-                let (codec, settings) = match &action.parameters {
-                    ActionParams::Transcode { codec, settings } => (codec.as_str(), settings),
-                    _ => ("aac", &serde_json::Value::Null),
+                let ActionParams::Transcode {
+                    codec,
+                    bitrate,
+                    channels,
+                    ..
+                } = &action.parameters
+                else {
+                    continue;
                 };
 
                 let encoder = hwaccel::software_encoder(codec).to_string();
@@ -255,28 +266,36 @@ pub fn build_ffmpeg_command(
                     cmd = cmd.audio_codec(&encoder);
                 }
 
-                if let Some(bitrate) = settings.get("bitrate").and_then(|v| v.as_str()) {
-                    cmd = cmd.audio_bitrate(bitrate);
+                if let Some(brate) = bitrate {
+                    cmd = cmd.audio_bitrate(brate);
                 }
 
-                if let Some(channels) = settings.get("channels").and_then(|v| v.as_u64()) {
-                    cmd = cmd.arg("-ac").arg(&channels.to_string());
+                if let Some(ch) = channels {
+                    cmd = cmd.arg("-ac").arg(&ch.to_string());
                 }
             }
             OperationType::SynthesizeAudio => {
-                let (codec, settings) = match &action.parameters {
-                    ActionParams::Synthesize { settings, .. } => {
-                        let c = settings
-                            .get("codec")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("aac");
-                        (c, settings)
-                    }
-                    ActionParams::Transcode { codec, settings } => (codec.as_str(), settings),
-                    _ => ("aac", &serde_json::Value::Null),
+                let (codec_str, bitrate, channels) = match &action.parameters {
+                    ActionParams::Synthesize {
+                        codec,
+                        bitrate,
+                        channels,
+                        ..
+                    } => (
+                        codec.as_deref().unwrap_or("aac"),
+                        bitrate.as_deref(),
+                        *channels,
+                    ),
+                    ActionParams::Transcode {
+                        codec,
+                        bitrate,
+                        channels,
+                        ..
+                    } => (codec.as_str(), bitrate.as_deref(), *channels),
+                    _ => ("aac", None, None),
                 };
 
-                let encoder = hwaccel::software_encoder(codec).to_string();
+                let encoder = hwaccel::software_encoder(codec_str).to_string();
 
                 if let Some(stream) = action.track_index {
                     cmd = cmd.audio_codec_for_track(stream, &encoder);
@@ -284,12 +303,12 @@ pub fn build_ffmpeg_command(
                     cmd = cmd.audio_codec(&encoder);
                 }
 
-                if let Some(bitrate) = settings.get("bitrate").and_then(|v| v.as_str()) {
-                    cmd = cmd.audio_bitrate(bitrate);
+                if let Some(brate) = bitrate {
+                    cmd = cmd.audio_bitrate(brate);
                 }
 
-                if let Some(channels) = settings.get("channels").and_then(|v| v.as_u64()) {
-                    cmd = cmd.arg("-ac").arg(&channels.to_string());
+                if let Some(ch) = channels {
+                    cmd = cmd.arg("-ac").arg(&ch.to_string());
                 }
             }
             OperationType::SetDefault => {
@@ -362,7 +381,7 @@ pub fn output_extension(file: &MediaFile, actions: &[&PlannedAction]) -> String 
     for action in actions {
         if action.operation == OperationType::ConvertContainer {
             if let ActionParams::Container { container } = &action.parameters {
-                return container.clone();
+                return container.as_str().to_string();
             }
         }
     }
@@ -415,7 +434,7 @@ mod tests {
             operation: OperationType::ConvertContainer,
             track_index: None,
             parameters: ActionParams::Container {
-                container: "mp4".into(),
+                container: Container::Mp4,
             },
             description: "Convert AVI to MP4".into(),
         };
@@ -443,7 +462,10 @@ mod tests {
             track_index: Some(0),
             parameters: ActionParams::Transcode {
                 codec: "hevc".into(),
-                settings: serde_json::json!({"crf": 23, "preset": "medium"}),
+                crf: Some(23),
+                preset: Some("medium".into()),
+                bitrate: None,
+                channels: None,
             },
             description: "Transcode video to HEVC CRF 23".into(),
         };
@@ -468,7 +490,10 @@ mod tests {
             track_index: Some(0),
             parameters: ActionParams::Transcode {
                 codec: "h264".into(),
-                settings: serde_json::json!({"bitrate": "5M"}),
+                crf: None,
+                preset: None,
+                bitrate: Some("5M".into()),
+                channels: None,
             },
             description: "Transcode video to H.264 at 5M".into(),
         };
@@ -491,7 +516,10 @@ mod tests {
             track_index: Some(1),
             parameters: ActionParams::Transcode {
                 codec: "opus".into(),
-                settings: serde_json::json!({"bitrate": "128k", "channels": 2}),
+                crf: None,
+                preset: None,
+                bitrate: Some("128k".into()),
+                channels: Some(2),
             },
             description: "Transcode audio to Opus".into(),
         };
@@ -578,7 +606,10 @@ mod tests {
                 track_index: Some(0),
                 parameters: ActionParams::Transcode {
                     codec: "hevc".into(),
-                    settings: serde_json::json!({"crf": 20}),
+                    crf: Some(20),
+                    preset: None,
+                    bitrate: None,
+                    channels: None,
                 },
                 description: "Transcode to HEVC".into(),
             },
@@ -657,7 +688,7 @@ mod tests {
             operation: OperationType::ConvertContainer,
             track_index: None,
             parameters: ActionParams::Container {
-                container: "mkv".into(),
+                container: Container::Mkv,
             },
             description: "Convert to MKV".into(),
         };
@@ -680,7 +711,7 @@ mod tests {
             operation: OperationType::ConvertContainer,
             track_index: None,
             parameters: ActionParams::Container {
-                container: "mp4".into(),
+                container: Container::Mp4,
             },
             description: "Convert to MP4".into(),
         };
@@ -696,7 +727,10 @@ mod tests {
             track_index: Some(0),
             parameters: ActionParams::Transcode {
                 codec: "hevc".into(),
-                settings: serde_json::json!({"crf": 23}),
+                crf: Some(23),
+                preset: None,
+                bitrate: None,
+                channels: None,
             },
             description: "Transcode with NVENC".into(),
         };

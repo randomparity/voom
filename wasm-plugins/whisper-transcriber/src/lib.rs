@@ -172,7 +172,7 @@ fn build_result(
     });
 
     let enriched_event = Event::MetadataEnriched(
-        voom_plugin_sdk::voom_domain::events::MetadataEnrichedEvent {
+        voom_plugin_sdk::MetadataEnrichedEvent {
             path: file.path.clone(),
             source: "whisper-transcriber".to_string(),
             metadata,
@@ -347,7 +347,7 @@ mod tests {
         let host = MockHost::new();
         let file = make_audio_file();
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent { file },
+            voom_plugin_sdk::FileIntrospectedEvent { file },
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -375,7 +375,7 @@ mod tests {
         let host = MockHost::new();
         let file = MediaFile::new(PathBuf::from("/media/test.mkv")); // no tracks
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent { file },
+            voom_plugin_sdk::FileIntrospectedEvent { file },
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -388,7 +388,7 @@ mod tests {
         let host = MockHost::with_failing_ffmpeg();
         let file = make_audio_file();
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent { file },
+            voom_plugin_sdk::FileIntrospectedEvent { file },
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -411,7 +411,7 @@ mod tests {
 
         let file = make_audio_file();
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent { file },
+            voom_plugin_sdk::FileIntrospectedEvent { file },
         );
         let payload = serialize_event(&event).unwrap();
 

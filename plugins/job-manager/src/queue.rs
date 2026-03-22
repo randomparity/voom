@@ -119,22 +119,13 @@ impl JobQueue {
         self.store.claim_job_by_id(job_id, worker_id)
     }
 
-    pub fn get_job(&self, job_id: &Uuid) -> Result<Option<Job>> {
+    pub fn job(&self, job_id: &Uuid) -> Result<Option<Job>> {
         self.store.get_job(job_id)
     }
 
-    /// List jobs, optionally filtered by status, with limit and offset for pagination.
-    pub fn list_jobs(
-        &self,
-        status: Option<JobStatus>,
-        limit: Option<u32>,
-        offset: Option<u32>,
-    ) -> Result<Vec<Job>> {
-        self.store.list_jobs(&JobFilters {
-            status,
-            limit,
-            offset,
-        })
+    /// List jobs filtered by the given [`JobFilters`].
+    pub fn list_jobs(&self, filters: &JobFilters) -> Result<Vec<Job>> {
+        self.store.list_jobs(filters)
     }
 
     /// Get job counts grouped by status.
@@ -184,7 +175,7 @@ mod tests {
         queue.claim("w-1").unwrap();
         queue.report_progress(&id, 0.5, Some("Halfway")).unwrap();
 
-        let job = queue.get_job(&id).unwrap().unwrap();
+        let job = queue.job(&id).unwrap().unwrap();
         assert_eq!(job.progress, 0.5);
         assert_eq!(job.progress_message.as_deref(), Some("Halfway"));
     }
@@ -200,7 +191,7 @@ mod tests {
             .complete(&id, Some(serde_json::json!({"files": 10})))
             .unwrap();
 
-        let job = queue.get_job(&id).unwrap().unwrap();
+        let job = queue.job(&id).unwrap().unwrap();
         assert_eq!(job.status, JobStatus::Completed);
         assert_eq!(job.progress, 1.0);
         assert!(job.completed_at.is_some());
@@ -215,7 +206,7 @@ mod tests {
         queue.claim("w-1").unwrap();
         queue.fail(&id, "ffmpeg crashed".into()).unwrap();
 
-        let job = queue.get_job(&id).unwrap().unwrap();
+        let job = queue.job(&id).unwrap().unwrap();
         assert_eq!(job.status, JobStatus::Failed);
         assert_eq!(job.error.as_deref(), Some("ffmpeg crashed"));
     }
@@ -228,7 +219,7 @@ mod tests {
         let id = queue.enqueue(JobType::Process, 100, None).unwrap();
         queue.cancel(&id).unwrap();
 
-        let job = queue.get_job(&id).unwrap().unwrap();
+        let job = queue.job(&id).unwrap().unwrap();
         assert_eq!(job.status, JobStatus::Cancelled);
     }
 
@@ -248,16 +239,22 @@ mod tests {
             .unwrap();
         queue.claim("w-1").unwrap(); // claims first by priority/time
 
-        let all = queue.list_jobs(None, None, None).unwrap();
+        let all = queue.list_jobs(&JobFilters::default()).unwrap();
         assert_eq!(all.len(), 3);
 
         let pending = queue
-            .list_jobs(Some(JobStatus::Pending), None, None)
+            .list_jobs(&JobFilters {
+                status: Some(JobStatus::Pending),
+                ..Default::default()
+            })
             .unwrap();
         assert_eq!(pending.len(), 2);
 
         let running = queue
-            .list_jobs(Some(JobStatus::Running), None, None)
+            .list_jobs(&JobFilters {
+                status: Some(JobStatus::Running),
+                ..Default::default()
+            })
             .unwrap();
         assert_eq!(running.len(), 1);
     }
@@ -302,7 +299,7 @@ mod tests {
         queue.claim("w-1").unwrap();
         queue.report_progress(&id, 1.5, None).unwrap();
 
-        let job = queue.get_job(&id).unwrap().unwrap();
+        let job = queue.job(&id).unwrap().unwrap();
         assert_eq!(job.progress, 1.0);
     }
 }

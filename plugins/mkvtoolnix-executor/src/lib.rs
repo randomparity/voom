@@ -100,13 +100,8 @@ pub struct MkvtoolnixExecutorPlugin {
 impl MkvtoolnixExecutorPlugin {
     #[must_use]
     pub fn new() -> Self {
-        let mut operations: Vec<String> = OperationType::METADATA_OPS
-            .iter()
-            .map(|op| op.as_str().to_string())
-            .collect();
-        for op in MERGE_OPS {
-            operations.push(op.as_str().to_string());
-        }
+        let mut operations: Vec<OperationType> = OperationType::METADATA_OPS.to_vec();
+        operations.extend_from_slice(MERGE_OPS);
         Self {
             capabilities: vec![Capability::Execute {
                 operations,
@@ -125,7 +120,7 @@ impl MkvtoolnixExecutorPlugin {
         let is_mkv = plan.file.container == Container::Mkv;
         let is_convert_to_mkv = plan.actions.iter().any(|a| {
             a.operation == OperationType::ConvertContainer
-                && matches!(&a.parameters, ActionParams::Container { container } if container == "mkv")
+                && matches!(&a.parameters, ActionParams::Container { container } if *container == Container::Mkv)
         });
 
         if !is_mkv && !is_convert_to_mkv {
@@ -361,7 +356,7 @@ mod tests {
                 Some(3),
                 ActionParams::RemoveTrack {
                     reason: "test".into(),
-                    track_type: "subtitle_main".into(),
+                    track_type: voom_domain::media::TrackType::SubtitleMain,
                 },
             ),
         ]);
@@ -386,7 +381,7 @@ mod tests {
             OperationType::ConvertContainer,
             None,
             ActionParams::Container {
-                container: "mkv".into(),
+                container: Container::Mkv,
             },
         )]);
         assert!(plugin.can_handle(&plan));
@@ -400,7 +395,10 @@ mod tests {
             Some(0),
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                settings: serde_json::json!({}),
+                crf: None,
+                preset: None,
+                bitrate: None,
+                channels: None,
             },
         )]);
         assert!(!plugin.can_handle(&plan));
@@ -416,7 +414,7 @@ mod tests {
                 Some(3),
                 ActionParams::RemoveTrack {
                     reason: "test".into(),
-                    track_type: "subtitle_main".into(),
+                    track_type: voom_domain::media::TrackType::SubtitleMain,
                 },
             ),
             make_action(

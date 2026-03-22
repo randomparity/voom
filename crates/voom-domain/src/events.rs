@@ -106,13 +106,13 @@ impl EventResult {
     /// Lifecycle events (`PlanExecuting`, `PlanFailed`) are dispatched by the
     /// orchestrator in `process.rs`, not produced by executors, to avoid
     /// duplicate dispatches.
-    pub fn plan_failed(plugin_name: impl Into<String>) -> Self {
+    pub fn plan_failed(plugin_name: impl Into<String>, error: impl Into<String>) -> Self {
         Self {
             plugin_name: plugin_name.into(),
             produced_events: vec![],
             data: None,
             claimed: true,
-            execution_error: None,
+            execution_error: Some(error.into()),
         }
     }
 
@@ -137,11 +137,7 @@ impl EventResult {
                     })),
                 )
             }
-            Err(e) => {
-                let mut result = Self::plan_failed(plugin_name);
-                result.execution_error = Some(e.to_string());
-                result
-            }
+            Err(e) => Self::plan_failed(plugin_name, e.to_string()),
         }
     }
 }

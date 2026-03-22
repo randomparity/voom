@@ -2,14 +2,14 @@ use chrono::Utc;
 use rusqlite::params;
 use uuid::Uuid;
 
-use voom_domain::errors::{Result, VoomError};
+use voom_domain::errors::{Result, StorageErrorKind, VoomError};
 use voom_domain::job::{Job, JobStatus, JobUpdate};
 use voom_domain::storage::{JobFilters, JobStorage};
 
-use super::{format_datetime, row_to_job, storage_err, SqlQuery, SqliteStore};
+use super::{format_datetime, other_storage_err, row_to_job, storage_err, SqlQuery, SqliteStore};
 
 fn serialize_json(value: &serde_json::Value) -> Result<String> {
-    serde_json::to_string(value).map_err(super::storage_err("failed to serialize JSON"))
+    serde_json::to_string(value).map_err(other_storage_err("failed to serialize JSON"))
 }
 
 impl JobStorage for SqliteStore {
@@ -221,10 +221,11 @@ impl JobStorage for SqliteStore {
             .map(|(s, c)| {
                 JobStatus::parse(&s)
                     .map(|status| (status, c))
-                    .ok_or_else(|| {
-                        VoomError::Storage(format!(
+                    .ok_or_else(|| VoomError::Storage {
+                        kind: StorageErrorKind::Other,
+                        message: format!(
                             "unknown job status in database: '{s}' (count={c}) — data integrity issue"
-                        ))
+                        ),
                     })
             })
             .collect::<Result<Vec<_>>>()?;

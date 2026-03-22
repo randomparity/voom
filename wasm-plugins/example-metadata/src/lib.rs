@@ -97,7 +97,7 @@ pub fn on_event(event_type: &str, payload: &[u8], _host: &dyn HostFunctions) -> 
 
             // Produce a MetadataEnriched event.
             let enriched_event = Event::MetadataEnriched(
-                voom_plugin_sdk::voom_domain::events::MetadataEnrichedEvent {
+                voom_plugin_sdk::MetadataEnrichedEvent {
                     path: file.path.clone(),
                     source: "example-metadata".to_string(),
                     metadata,
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn test_on_event_file_introspected() {
         let file = make_test_file();
-        let event = Event::FileIntrospected(voom_plugin_sdk::voom_domain::events::FileIntrospectedEvent {
+        let event = Event::FileIntrospected(voom_plugin_sdk::FileIntrospectedEvent {
             file,
         });
 

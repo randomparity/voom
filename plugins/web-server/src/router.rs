@@ -36,8 +36,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/files/:id", get(templates::file_detail))
         .route("/policies", get(templates::policies))
         .route("/policies/:name/edit", get(templates::policy_editor))
-        .route("/jobs", get(templates::jobs_page))
-        .route("/plugins", get(templates::plugins_page))
+        .route("/jobs", get(templates::jobs))
+        .route("/plugins", get(templates::plugins))
         .route("/settings", get(templates::settings));
 
     // Auth middleware protects all routes (API, SSE, and HTML pages) when

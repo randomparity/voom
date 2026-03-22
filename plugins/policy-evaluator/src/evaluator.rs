@@ -8,12 +8,12 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
 use uuid::Uuid;
-use voom_domain::media::{Container, MediaFile, Track, TrackType};
+use voom_domain::media::{Container, MediaFile, Track};
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 use voom_dsl::compiler::*;
 
 use crate::condition::{evaluate_condition, resolve_value_or_field};
-use crate::filter::track_matches;
+use crate::filter::{track_matches, tracks_for_target};
 
 /// Result of evaluating a full policy against a file.
 #[derive(Debug)]
@@ -89,7 +89,6 @@ fn evaluate_phase(
         evaluated_at: Utc::now(),
     };
 
-    // Check skip_when condition
     if let Some(ref cond) = phase.skip_when {
         if evaluate_condition(cond, file) {
             plan.skip_reason = Some("skip_when condition met".into());
@@ -97,7 +96,6 @@ fn evaluate_phase(
         }
     }
 
-    // Check run_if dependency
     if let Some(ref run_if) = phase.run_if {
         let should_run = match phase_outcomes.get(&run_if.phase) {
             Some(outcome) => match run_if.trigger {
@@ -121,7 +119,6 @@ fn evaluate_phase(
         }
     }
 
-    // Check all depends_on phases completed
     for dep in &phase.depends_on {
         match phase_outcomes.get(dep) {
             Some(EvaluationOutcome::Failed) => {
@@ -136,7 +133,6 @@ fn evaluate_phase(
         }
     }
 
-    // Process operations
     let mut ctx = PhaseContext {
         plan: &mut plan,
         file,
@@ -223,9 +219,7 @@ fn emit_set_container(container: &str, ctx: &mut PhaseContext) {
     if ctx.file.container != target {
         ctx.plan.actions.push(PlannedAction::file_op(
             OperationType::ConvertContainer,
-            ActionParams::Container {
-                container: container.into(),
-            },
+            ActionParams::Container { container: target },
             format!(
                 "Convert container from {} to {container}",
                 ctx.file.container.as_str()
@@ -240,16 +234,7 @@ fn emit_remove_track(track: &Track, target: &TrackTarget, reason: &str, ctx: &mu
         track.index,
         ActionParams::RemoveTrack {
             reason: reason.into(),
-            track_type: if track.track_type.is_video() {
-                "video"
-            } else if track.track_type.is_audio() {
-                "audio"
-            } else if track.track_type.is_subtitle() {
-                "subtitle"
-            } else {
-                "attachment"
-            }
-            .into(),
+            track_type: track.track_type,
         },
         format!(
             "Remove {} track {} ({}, {})",
@@ -408,22 +393,13 @@ fn emit_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
 
 fn emit_clear_actions(
     target: &TrackTarget,
-    settings: &HashMap<String, serde_json::Value>,
+    settings: &ClearActionsSettings,
     ctx: &mut PhaseContext,
 ) {
     let tracks = tracks_for_target(ctx.file, target);
-    let clear_default = settings
-        .get("clear_all_default")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let clear_forced = settings
-        .get("clear_all_forced")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let clear_titles = settings
-        .get("clear_all_titles")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let clear_default = settings.clear_all_default;
+    let clear_forced = settings.clear_all_forced;
+    let clear_titles = settings.clear_all_titles;
 
     for track in &tracks {
         if clear_default && track.is_default {
@@ -441,43 +417,29 @@ fn emit_clear_actions(
 fn emit_transcode(
     target: &TrackTarget,
     codec: &str,
-    settings: &HashMap<String, serde_json::Value>,
+    settings: &CompiledTranscodeSettings,
     ctx: &mut PhaseContext,
 ) {
     let tracks = tracks_for_target(ctx.file, target);
 
-    // Check preserve list
-    let preserve: Vec<String> = settings
-        .get("preserve")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let preserve = &settings.preserve;
 
     let operation = match target {
         TrackTarget::Video => OperationType::TranscodeVideo,
         _ => OperationType::TranscodeAudio,
     };
 
+    let crf = settings.crf;
+    let preset = settings.preset.clone();
+    let bitrate = settings.bitrate.clone();
+    let channels = settings.channels;
+
     for track in &tracks {
-        // Skip if already the target codec
         if track.codec == codec {
             continue;
         }
-        // Skip if codec is in preserve list
         if preserve.iter().any(|p| p == &track.codec) {
             continue;
-        }
-
-        // Build settings without "codec" and "preserve" keys (those are handled above)
-        let mut extra = serde_json::Map::new();
-        for (k, v) in settings {
-            if k != "preserve" {
-                extra.insert(k.clone(), v.clone());
-            }
         }
 
         ctx.plan.actions.push(PlannedAction::track_op(
@@ -485,7 +447,10 @@ fn emit_transcode(
             track.index,
             ActionParams::Transcode {
                 codec: codec.into(),
-                settings: serde_json::Value::Object(extra),
+                crf,
+                preset: preset.clone(),
+                bitrate: bitrate.clone(),
+                channels,
             },
             format!(
                 "Transcode {} track {} from {} to {codec}",
@@ -524,46 +489,38 @@ fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
         audio_tracks.first().map(|t| t.index)
     };
 
-    let mut settings = serde_json::Map::new();
-    if let Some(ref codec) = synth.codec {
-        settings.insert("codec".into(), serde_json::Value::String(codec.clone()));
-    }
-    if let Some(ref channels) = synth.channels {
-        settings.insert("channels".into(), channels.clone());
-    }
-    if let Some(ref bitrate) = synth.bitrate {
-        settings.insert("bitrate".into(), serde_json::Value::String(bitrate.clone()));
-    }
-    if let Some(ref title) = synth.title {
-        settings.insert("title".into(), serde_json::Value::String(title.clone()));
-    }
-    if let Some(ref lang) = synth.language {
-        match lang {
-            SynthLanguage::Inherit => {
-                if let Some(idx) = source_index {
-                    if let Some(src) = ctx.file.tracks.iter().find(|t| t.index == idx) {
-                        settings.insert(
-                            "language".into(),
-                            serde_json::Value::String(src.language.clone()),
-                        );
-                    }
-                }
-            }
-            SynthLanguage::Fixed(l) => {
-                settings.insert("language".into(), serde_json::Value::String(l.clone()));
-            }
-        }
-    }
-    if let Some(ref position) = synth.position {
-        settings.insert("position".into(), position.clone());
-    }
-    if let Some(idx) = source_index {
-        settings.insert("source_track".into(), serde_json::json!(idx));
-    }
+    let language = match &synth.language {
+        Some(SynthLanguage::Inherit) => source_index.and_then(|idx| {
+            ctx.file
+                .tracks
+                .iter()
+                .find(|t| t.index == idx)
+                .map(|src| src.language.clone())
+        }),
+        Some(SynthLanguage::Fixed(l)) => Some(l.clone()),
+        None => None,
+    };
+
+    let channels = synth.channels.as_ref().map(|c| match c {
+        SynthChannels::Count(n) => *n,
+        SynthChannels::Named(_) => 2, // default stereo for named presets
+    });
+
+    let position = synth.position.as_ref().map(|p| match p {
+        SynthPosition::Index(n) => n.to_string(),
+        SynthPosition::Named(s) => s.clone(),
+    });
 
     let params = ActionParams::Synthesize {
         name: synth.name.clone(),
-        settings: serde_json::Value::Object(settings),
+        language,
+        codec: synth.codec.clone(),
+        text: None,
+        bitrate: synth.bitrate.clone(),
+        channels,
+        title: synth.title.clone(),
+        position,
+        source_track: source_index,
     };
     let desc = format!("Synthesize audio: {}", synth.name);
     ctx.plan.actions.push(match source_index {
@@ -759,16 +716,6 @@ fn emit_flag_action(
     Ok(())
 }
 
-fn tracks_for_target<'a>(file: &'a MediaFile, target: &TrackTarget) -> Vec<&'a Track> {
-    match target {
-        TrackTarget::Video => file.video_tracks(),
-        TrackTarget::Audio => file.audio_tracks(),
-        TrackTarget::Subtitle => file.subtitle_tracks(),
-        TrackTarget::Attachment => file.tracks_of_type(TrackType::Attachment),
-        TrackTarget::Any => file.tracks.iter().collect(),
-    }
-}
-
 fn target_str(target: &TrackTarget) -> &'static str {
     match target {
         TrackTarget::Video => "video",
@@ -839,7 +786,7 @@ mod tests {
     }
 
     fn test_policy(source: &str) -> CompiledPolicy {
-        voom_dsl::compile(source).expect("Failed to compile test policy")
+        voom_dsl::compile_policy(source).expect("Failed to compile test policy")
     }
 
     #[test]
@@ -1257,7 +1204,7 @@ mod tests {
     fn test_full_production_policy() {
         let source =
             include_str!("../../../crates/voom-dsl/tests/fixtures/production-normalize.voom");
-        let policy = voom_dsl::compile(source).unwrap();
+        let policy = voom_dsl::compile_policy(source).unwrap();
         let file = test_file();
         let result = evaluate(&policy, &file);
         assert_eq!(result.plans.len(), 6);
@@ -1414,7 +1361,8 @@ mod tests {
         match &action.parameters {
             ActionParams::Container { container } => {
                 assert_eq!(
-                    container, "mp4",
+                    *container,
+                    voom_domain::media::Container::Mp4,
                     "ConvertContainer action must specify container"
                 );
             }

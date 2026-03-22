@@ -1,8 +1,16 @@
 use serde::{Deserialize, Serialize};
 
+use crate::plan::OperationType;
+
 /// Returns true if the list is empty (wildcard) or contains the given value.
-fn list_contains(list: &[String], value: &str) -> bool {
+fn list_contains_str(list: &[String], value: &str) -> bool {
     list.is_empty() || list.iter().any(|item| item == value)
+}
+
+/// Returns true if the list is empty (wildcard) or contains an operation whose
+/// canonical string matches `value`.
+fn operations_contain(list: &[OperationType], value: &str) -> bool {
+    list.is_empty() || list.iter().any(|op| op.as_str() == value)
 }
 
 /// Describes what a plugin can do. The kernel uses these for capability-based routing.
@@ -17,7 +25,7 @@ pub enum Capability {
     },
     Evaluate,
     Execute {
-        operations: Vec<String>,
+        operations: Vec<OperationType>,
         formats: Vec<String>,
     },
     Store {
@@ -63,7 +71,7 @@ impl Capability {
     #[must_use]
     pub fn supports_operation(&self, operation: &str) -> bool {
         match self {
-            Capability::Execute { operations, .. } => list_contains(operations, operation),
+            Capability::Execute { operations, .. } => operations_contain(operations, operation),
             _ => false,
         }
     }
@@ -76,9 +84,9 @@ impl Capability {
     pub fn supports_format(&self, format: &str) -> bool {
         match self {
             Capability::Introspect { formats } | Capability::Execute { formats, .. } => {
-                list_contains(formats, format)
+                list_contains_str(formats, format)
             }
-            Capability::Discover { schemes } => list_contains(schemes, format),
+            Capability::Discover { schemes } => list_contains_str(schemes, format),
             // Capabilities without a format concept don't match any format.
             _ => false,
         }

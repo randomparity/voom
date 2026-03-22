@@ -1,8 +1,8 @@
 //! Track filtering: evaluates `CompiledFilter` against tracks.
 
-use voom_domain::media::{Track, TrackType};
+use voom_domain::media::{MediaFile, Track, TrackType};
 use voom_dsl::compiler::CompiledCompareOp;
-use voom_dsl::compiler::CompiledFilter;
+use voom_dsl::compiler::{CompiledFilter, TrackTarget};
 
 /// Returns true if the track matches the filter.
 #[must_use]
@@ -87,6 +87,18 @@ pub fn compare_f64(left: f64, op: &CompiledCompareOp, right: f64) -> bool {
         CompiledCompareOp::Gt => left > right,
         CompiledCompareOp::Ge => left >= right,
         CompiledCompareOp::In => false, // In is not valid for scalar comparison
+    }
+}
+
+/// Get tracks from a file matching the given target type.
+#[must_use]
+pub(crate) fn tracks_for_target<'a>(file: &'a MediaFile, target: &TrackTarget) -> Vec<&'a Track> {
+    match target {
+        TrackTarget::Video => file.video_tracks(),
+        TrackTarget::Audio => file.audio_tracks(),
+        TrackTarget::Subtitle => file.subtitle_tracks(),
+        TrackTarget::Attachment => file.tracks_of_type(TrackType::Attachment),
+        TrackTarget::Any => file.tracks.iter().collect(),
     }
 }
 

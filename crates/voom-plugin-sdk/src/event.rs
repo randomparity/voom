@@ -27,19 +27,25 @@ pub fn serialize_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     serde_json::to_vec(value).map_err(|e| VoomError::Wasm(format!("failed to serialize JSON: {e}")))
 }
 
-/// Load a plugin config from a `get_plugin_data("config")` provider.
+/// Load a plugin config from a `plugin_data("config")` provider.
 ///
 /// This is a convenience for the common pattern of loading JSON config
 /// from the host's plugin data store:
 ///
 /// ```rust,ignore
-/// let config: Option<MyConfig> = load_plugin_config(|key| host.get_plugin_data(key));
+/// let config: Option<MyConfig> = load_plugin_config(|key| host.plugin_data(key));
 /// ```
 pub fn load_plugin_config<T: DeserializeOwned>(
     get_data: impl FnOnce(&str) -> Option<Vec<u8>>,
 ) -> Option<T> {
     let data = get_data("config")?;
-    serde_json::from_slice(&data).ok()
+    match serde_json::from_slice(&data) {
+        Ok(config) => Some(config),
+        Err(e) => {
+            tracing::warn!("Failed to deserialize plugin config: {e}");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
