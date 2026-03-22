@@ -126,9 +126,7 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
         })),
     };
 
-    let events = discovery
-        .scan(&options)
-        .map_err(|e| anyhow::anyhow!("filesystem scan failed: {e}"))?;
+    let events = discovery.scan(&options).context("filesystem scan failed")?;
 
     pb.finish_and_clear();
 

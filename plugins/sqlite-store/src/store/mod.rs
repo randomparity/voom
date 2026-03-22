@@ -85,20 +85,7 @@ impl SqliteStore {
 // --- Conversion helpers ---
 
 fn str_to_track_type(s: &str) -> Option<TrackType> {
-    match s {
-        "video" => Some(TrackType::Video),
-        "audio_main" => Some(TrackType::AudioMain),
-        "audio_alternate" => Some(TrackType::AudioAlternate),
-        "audio_commentary" => Some(TrackType::AudioCommentary),
-        "audio_music" => Some(TrackType::AudioMusic),
-        "audio_sfx" => Some(TrackType::AudioSfx),
-        "audio_non_speech" => Some(TrackType::AudioNonSpeech),
-        "subtitle_main" => Some(TrackType::SubtitleMain),
-        "subtitle_forced" => Some(TrackType::SubtitleForced),
-        "subtitle_commentary" => Some(TrackType::SubtitleCommentary),
-        "attachment" => Some(TrackType::Attachment),
-        _ => None,
-    }
+    s.parse().ok()
 }
 
 /// Classify a rusqlite error into a [`StorageErrorKind`].

@@ -9,12 +9,26 @@
 
 use std::collections::HashMap;
 
-// Re-export compiled IR types so that `use voom_dsl::compiler::*` keeps working.
-pub use voom_domain::compiled::*;
+use voom_domain::compiled::{
+    ClearActionsSettings, CompiledAction, CompiledCompareOp, CompiledCondition,
+    CompiledConditional, CompiledConfig, CompiledDefault, CompiledFilter, CompiledOperation,
+    CompiledPhase, CompiledPolicy, CompiledRegex, CompiledRule, CompiledRunIf, CompiledSynthesize,
+    CompiledTranscodeSettings, CompiledValueOrField, DefaultStrategy, ErrorStrategy, RulesMode,
+    RunIfTrigger, SynthChannels, SynthLanguage, SynthPosition, TrackTarget,
+};
 use voom_domain::utils::codecs;
 
 use crate::ast::*;
 use crate::errors::DslError;
+
+/// Safely convert an f64 to u32, returning None for negative, fractional, or out-of-range values.
+fn safe_u32(n: f64) -> Option<u32> {
+    if n >= 0.0 && n <= u32::MAX as f64 && n.fract() == 0.0 {
+        Some(n as u32)
+    } else {
+        None
+    }
+}
 
 /// Compile a pre-parsed and validated AST into a [`CompiledPolicy`].
 pub(crate) fn compile_ast(ast: &PolicyAst) -> std::result::Result<CompiledPolicy, DslError> {
@@ -187,7 +201,7 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
                 .unwrap_or_default();
             let crf = get("crf").and_then(|v| {
                 if let Value::Number(n, _) = v {
-                    Some(*n as u32)
+                    safe_u32(*n)
                 } else {
                     None
                 }
@@ -203,7 +217,7 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
             });
             let channels = get("channels").and_then(|v| {
                 if let Value::Number(n, _) = v {
-                    Some(*n as u32)
+                    safe_u32(*n)
                 } else {
                     None
                 }
@@ -270,7 +284,7 @@ fn compile_synthesize(
             }
             SynthSetting::Channels(v) => {
                 channels = Some(match v {
-                    Value::Number(n, _) => SynthChannels::Count(*n as u32),
+                    Value::Number(n, _) => SynthChannels::Count(safe_u32(*n).unwrap_or(0)),
                     Value::Ident(s) => SynthChannels::Named(s.clone()),
                     _ => SynthChannels::Named(format!("{v:?}")),
                 });
@@ -289,7 +303,7 @@ fn compile_synthesize(
             }
             SynthSetting::Position(v) => {
                 position = Some(match v {
-                    Value::Number(n, _) => SynthPosition::Index(*n as u32),
+                    Value::Number(n, _) => SynthPosition::Index(safe_u32(*n).unwrap_or(0)),
                     Value::Ident(s) => SynthPosition::Named(s.clone()),
                     _ => SynthPosition::Named(format!("{v:?}")),
                 });
@@ -297,18 +311,17 @@ fn compile_synthesize(
         }
     }
 
-    Ok(CompiledSynthesize::new(
-        name.to_string(),
-        codec,
-        channels,
-        source,
-        bitrate,
-        skip_if_exists,
-        create_if,
-        title,
-        language,
-        position,
-    ))
+    let mut synth = CompiledSynthesize::new(name.to_string());
+    synth.codec = codec;
+    synth.channels = channels;
+    synth.source = source;
+    synth.bitrate = bitrate;
+    synth.skip_if_exists = skip_if_exists;
+    synth.create_if = create_if;
+    synth.title = title;
+    synth.language = language;
+    synth.position = position;
+    Ok(synth)
 }
 
 fn compile_conditional(when: &WhenNode) -> std::result::Result<CompiledConditional, DslError> {

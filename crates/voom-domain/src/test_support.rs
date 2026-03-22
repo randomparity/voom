@@ -24,6 +24,20 @@ use crate::storage::{
     JobStorage, MaintenanceStorage, PlanStorage, PluginDataStorage, StatsStorage, StoredPlan,
 };
 
+fn matches_filter(file: &MediaFile, filters: &FileFilters) -> bool {
+    if let Some(container) = filters.container {
+        if file.container != container {
+            return false;
+        }
+    }
+    if let Some(ref prefix) = filters.path_prefix {
+        if !file.path.to_string_lossy().starts_with(prefix.as_str()) {
+            return false;
+        }
+    }
+    true
+}
+
 /// In-memory storage for testing. Implements the full `StorageTrait` via
 /// sub-traits with working file and job methods. Plan/stats/plugin-data
 /// methods are stubs.
@@ -83,19 +97,7 @@ impl FileStorage for InMemoryStore {
         let files = self.files.lock().unwrap();
         let mut result: Vec<MediaFile> = files
             .values()
-            .filter(|f| {
-                if let Some(container) = filters.container {
-                    if f.container != container {
-                        return false;
-                    }
-                }
-                if let Some(ref prefix) = filters.path_prefix {
-                    if !f.path.to_string_lossy().starts_with(prefix.as_str()) {
-                        return false;
-                    }
-                }
-                true
-            })
+            .filter(|f| matches_filter(f, filters))
             .cloned()
             .collect();
         result.sort_by(|a, b| a.path.cmp(&b.path));
@@ -112,19 +114,7 @@ impl FileStorage for InMemoryStore {
         let files = self.files.lock().unwrap();
         let count = files
             .values()
-            .filter(|f| {
-                if let Some(container) = filters.container {
-                    if f.container != container {
-                        return false;
-                    }
-                }
-                if let Some(ref prefix) = filters.path_prefix {
-                    if !f.path.to_string_lossy().starts_with(prefix.as_str()) {
-                        return false;
-                    }
-                }
-                true
-            })
+            .filter(|f| matches_filter(f, filters))
             .count();
         Ok(count as u64)
     }

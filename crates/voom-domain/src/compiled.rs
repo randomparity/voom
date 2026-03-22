@@ -79,7 +79,6 @@ pub struct CompiledPolicy {
 }
 
 impl CompiledPolicy {
-    /// Creates a new `CompiledPolicy`.
     #[must_use]
     pub fn new(
         name: String,
@@ -109,7 +108,6 @@ pub struct CompiledConfig {
 }
 
 impl CompiledConfig {
-    /// Creates a new `CompiledConfig`.
     #[must_use]
     pub fn new(
         audio_languages: Vec<String>,
@@ -147,7 +145,6 @@ pub struct CompiledPhase {
 }
 
 impl CompiledPhase {
-    /// Creates a new `CompiledPhase`.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -178,7 +175,6 @@ pub struct CompiledRunIf {
 }
 
 impl CompiledRunIf {
-    /// Creates a new `CompiledRunIf`.
     #[must_use]
     pub fn new(phase: String, trigger: RunIfTrigger) -> Self {
         Self { phase, trigger }
@@ -248,7 +244,6 @@ pub struct CompiledDefault {
 }
 
 impl CompiledDefault {
-    /// Creates a new `CompiledDefault`.
     #[must_use]
     pub fn new(target: TrackTarget, strategy: DefaultStrategy) -> Self {
         Self { target, strategy }
@@ -274,7 +269,6 @@ pub struct ClearActionsSettings {
 }
 
 impl ClearActionsSettings {
-    /// Creates a new `ClearActionsSettings`.
     #[must_use]
     pub fn new(clear_all_default: bool, clear_all_forced: bool, clear_all_titles: bool) -> Self {
         Self {
@@ -297,7 +291,6 @@ pub struct CompiledTranscodeSettings {
 }
 
 impl CompiledTranscodeSettings {
-    /// Creates a new `CompiledTranscodeSettings`.
     #[must_use]
     pub fn new(
         preserve: Vec<String>,
@@ -353,32 +346,19 @@ pub struct CompiledSynthesize {
 }
 
 impl CompiledSynthesize {
-    /// Creates a new `CompiledSynthesize`.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        name: String,
-        codec: Option<String>,
-        channels: Option<SynthChannels>,
-        source: Option<CompiledFilter>,
-        bitrate: Option<String>,
-        skip_if_exists: Option<CompiledFilter>,
-        create_if: Option<CompiledCondition>,
-        title: Option<String>,
-        language: Option<SynthLanguage>,
-        position: Option<SynthPosition>,
-    ) -> Self {
+    pub fn new(name: String) -> Self {
         Self {
             name,
-            codec,
-            channels,
-            source,
-            bitrate,
-            skip_if_exists,
-            create_if,
-            title,
-            language,
-            position,
+            codec: None,
+            channels: None,
+            source: None,
+            bitrate: None,
+            skip_if_exists: None,
+            create_if: None,
+            title: None,
+            language: None,
+            position: None,
         }
     }
 }
@@ -400,7 +380,6 @@ pub struct CompiledConditional {
 }
 
 impl CompiledConditional {
-    /// Creates a new `CompiledConditional`.
     #[must_use]
     pub fn new(
         condition: CompiledCondition,
@@ -424,7 +403,6 @@ pub struct CompiledRule {
 }
 
 impl CompiledRule {
-    /// Creates a new `CompiledRule`.
     #[must_use]
     pub fn new(name: String, conditional: CompiledConditional) -> Self {
         Self { name, conditional }

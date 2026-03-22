@@ -14,10 +14,17 @@ use std::time::Duration;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{Event, EventResult, PlanCreatedEvent};
+
+fn plugin_err(message: impl Into<String>) -> VoomError {
+    VoomError::Plugin {
+        plugin: "ffmpeg-executor".into(),
+        message: message.into(),
+    }
+}
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionResult, OperationType, Plan, PlannedAction};
-use voom_domain::utils::subprocess::run_with_timeout;
 use voom_kernel::Plugin;
+use voom_process::run_with_timeout;
 
 use crate::command::{build_ffmpeg_command, output_extension};
 use crate::hwaccel::HwAccelConfig;
@@ -126,10 +133,7 @@ impl FfmpegExecutorPlugin {
     /// if converting containers).
     pub fn execute_plan(&self, plan: &Plan) -> Result<Vec<ActionResult>> {
         if !self.can_handle(plan) {
-            return Err(VoomError::Plugin {
-                plugin: "ffmpeg-executor".into(),
-                message: "Plan cannot be handled by FFmpeg executor".into(),
-            });
+            return Err(plugin_err("Plan cannot be handled by FFmpeg executor"));
         }
 
         if !plan.file.path.exists() {

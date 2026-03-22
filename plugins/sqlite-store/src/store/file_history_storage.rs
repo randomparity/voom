@@ -26,7 +26,7 @@ impl FileHistoryStorage for SqliteStore {
                 let container_str: String = row.get("container")?;
                 let introspected_str: String = row.get("introspected_at")?;
                 let archived_str: String = row.get("archived_at")?;
-                Ok(voom_domain::storage::FileHistoryEntry::new(
+                Ok(voom_domain::storage::FileHistoryEntry::from_stored(
                     row_uuid(&id_str, "file_history")?,
                     row_uuid(&file_id_str, "file_history")?,
                     PathBuf::from(row.get::<_, String>("path")?),

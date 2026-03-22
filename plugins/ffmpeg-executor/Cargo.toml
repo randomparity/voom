@@ -12,6 +12,7 @@ description = "FFmpeg executor plugin for VOOM — transcoding and muxing with h
 [dependencies]
 voom-domain = { workspace = true }
 voom-kernel = { workspace = true }
+voom-process = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

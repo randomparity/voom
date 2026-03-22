@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use wait_timeout::ChildExt;
 
-use crate::errors::{Result, VoomError};
+use voom_domain::errors::{Result, VoomError};
 
 /// Drain stdout and stderr pipes from a child process into buffers.
 ///
@@ -21,10 +21,14 @@ pub fn drain_pipes(child: &mut std::process::Child) -> (Vec<u8>, Vec<u8>) {
     let mut stdout_buf = Vec::new();
     let mut stderr_buf = Vec::new();
     if let Some(mut out) = child.stdout.take() {
-        out.read_to_end(&mut stdout_buf).ok();
+        if let Err(e) = out.read_to_end(&mut stdout_buf) {
+            tracing::warn!(error = %e, "failed to read child stdout");
+        }
     }
     if let Some(mut err) = child.stderr.take() {
-        err.read_to_end(&mut stderr_buf).ok();
+        if let Err(e) = err.read_to_end(&mut stderr_buf) {
+            tracing::warn!(error = %e, "failed to read child stderr");
+        }
     }
     (stdout_buf, stderr_buf)
 }

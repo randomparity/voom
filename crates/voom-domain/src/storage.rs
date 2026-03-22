@@ -255,10 +255,25 @@ pub struct FileHistoryEntry {
 }
 
 impl FileHistoryEntry {
-    /// Create a new `FileHistoryEntry`.
+    /// Create a new history entry by snapshotting a file's current state.
+    #[must_use]
+    pub fn from_file(file: &MediaFile, archived_at: DateTime<Utc>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            file_id: file.id,
+            path: file.path.clone(),
+            content_hash: file.content_hash.clone(),
+            container: file.container,
+            track_count: file.tracks.len() as u32,
+            introspected_at: file.introspected_at,
+            archived_at,
+        }
+    }
+
+    /// Reconstruct a history entry from stored fields (e.g., database rows).
     #[must_use]
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub fn from_stored(
         id: Uuid,
         file_id: Uuid,
         path: PathBuf,

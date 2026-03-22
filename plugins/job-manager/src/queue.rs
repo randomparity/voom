@@ -4,9 +4,16 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use uuid::Uuid;
-use voom_domain::errors::Result;
+use voom_domain::errors::{Result, VoomError};
 use voom_domain::job::{Job, JobStatus, JobType, JobUpdate};
 use voom_domain::storage::{JobFilters, JobStorage};
+
+fn plugin_err(message: impl Into<String>) -> VoomError {
+    VoomError::Plugin {
+        plugin: "job-manager".into(),
+        message: message.into(),
+    }
+}
 
 /// Job queue backed by a storage implementation.
 ///
@@ -78,23 +85,17 @@ impl JobQueue {
     /// Returns an error if the job does not exist or is already in a
     /// terminal state (Completed, Failed, or Cancelled).
     pub fn cancel(&self, job_id: &Uuid) -> Result<()> {
-        let job =
-            self.store
-                .job(job_id)?
-                .ok_or_else(|| voom_domain::errors::VoomError::Plugin {
-                    plugin: "job-manager".into(),
-                    message: format!("job {job_id} not found"),
-                })?;
+        let job = self
+            .store
+            .job(job_id)?
+            .ok_or_else(|| plugin_err(format!("job {job_id} not found")))?;
 
         match job.status {
             JobStatus::Pending | JobStatus::Running => {}
             status => {
-                return Err(voom_domain::errors::VoomError::Plugin {
-                    plugin: "job-manager".into(),
-                    message: format!(
-                        "cannot cancel job {job_id}: already in terminal state '{status:?}'"
-                    ),
-                });
+                return Err(plugin_err(format!(
+                    "cannot cancel job {job_id}: already in terminal state '{status:?}'"
+                )));
             }
         }
 

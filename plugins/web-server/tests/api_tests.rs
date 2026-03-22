@@ -251,7 +251,7 @@ async fn test_format_invalid_policy() {
         .await;
     resp.assert_status_ok();
     let body: serde_json::Value = resp.json();
-    assert!(body["formatted"].as_str().unwrap().is_empty());
+    assert!(body.get("formatted").is_none());
     assert!(!body["errors"].as_array().unwrap().is_empty());
 }
 

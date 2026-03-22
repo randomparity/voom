@@ -5,7 +5,7 @@ use std::time::Duration;
 use scopeguard::ScopeGuard;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::plan::{ActionParams, ActionResult, OperationType, PlannedAction};
-use voom_domain::utils::subprocess::run_with_timeout;
+use voom_process::run_with_timeout;
 
 /// Execute mkvmerge operations (remux, track removal, reorder).
 ///

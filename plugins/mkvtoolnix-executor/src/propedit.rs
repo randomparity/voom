@@ -4,7 +4,7 @@ use std::time::Duration;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::plan::{ActionParams, ActionResult, OperationType, PlannedAction};
 use voom_domain::utils::sanitize::validate_metadata_value;
-use voom_domain::utils::subprocess::run_with_timeout;
+use voom_process::run_with_timeout;
 
 /// Build and execute mkvpropedit commands for metadata operations.
 ///

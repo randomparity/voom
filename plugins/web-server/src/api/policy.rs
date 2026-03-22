@@ -31,7 +31,8 @@ pub struct PolicyError {
 
 #[derive(Debug, Serialize)]
 pub struct FormatResponse {
-    pub formatted: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formatted: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<PolicyError>,
 }
@@ -79,7 +80,7 @@ pub async fn format_policy(
 
     let result = service::format_source(&input.source);
     Ok(Json(FormatResponse {
-        formatted: result.formatted.unwrap_or_default(),
+        formatted: result.formatted,
         errors: result.errors.into_iter().map(PolicyError::from).collect(),
     }))
 }
@@ -137,8 +138,9 @@ mod tests {
         let result = format_policy(Json(input)).await;
         assert!(result.is_ok());
         let response = result.unwrap().0;
-        assert!(!response.formatted.is_empty());
-        assert!(response.formatted.contains("policy"));
+        let formatted = response.formatted.expect("formatted should be Some");
+        assert!(!formatted.is_empty());
+        assert!(formatted.contains("policy"));
     }
 
     #[tokio::test]
@@ -149,7 +151,7 @@ mod tests {
         let result = format_policy(Json(input)).await;
         assert!(result.is_ok());
         let response = result.unwrap().0;
-        assert!(response.formatted.is_empty());
+        assert!(response.formatted.is_none());
         assert!(!response.errors.is_empty());
     }
 
@@ -200,7 +202,7 @@ mod tests {
     #[test]
     fn test_format_response_serialization() {
         let response = FormatResponse {
-            formatted: "policy \"x\" {}".into(),
+            formatted: Some("policy \"x\" {}".into()),
             errors: vec![],
         };
         let json = serde_json::to_value(&response).unwrap();

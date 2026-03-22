@@ -240,6 +240,27 @@ impl TrackType {
     }
 }
 
+impl std::str::FromStr for TrackType {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "video" => Ok(TrackType::Video),
+            "audio_main" => Ok(TrackType::AudioMain),
+            "audio_alternate" => Ok(TrackType::AudioAlternate),
+            "audio_commentary" => Ok(TrackType::AudioCommentary),
+            "audio_music" => Ok(TrackType::AudioMusic),
+            "audio_sfx" => Ok(TrackType::AudioSfx),
+            "audio_non_speech" => Ok(TrackType::AudioNonSpeech),
+            "subtitle_main" => Ok(TrackType::SubtitleMain),
+            "subtitle_forced" => Ok(TrackType::SubtitleForced),
+            "subtitle_commentary" => Ok(TrackType::SubtitleCommentary),
+            "attachment" => Ok(TrackType::Attachment),
+            other => Err(format!("unknown track type: {other}")),
+        }
+    }
+}
+
 /// Container format of a media file.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

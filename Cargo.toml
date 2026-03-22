@@ -17,6 +17,7 @@ members = [
     "plugins/ffmpeg-executor",
     "plugins/job-manager",
     "plugins/web-server",
+    "crates/voom-process",
     "crates/voom-cli",
 ]
 exclude = [
@@ -43,6 +44,7 @@ voom-dsl = { path = "crates/voom-dsl" }
 voom-kernel = { path = "crates/voom-kernel" }
 voom-wit = { path = "crates/voom-wit" }
 voom-plugin-sdk = { path = "crates/voom-plugin-sdk" }
+voom-process = { path = "crates/voom-process" }
 voom-sqlite-store = { path = "plugins/sqlite-store" }
 voom-discovery = { path = "plugins/discovery" }
 voom-ffprobe-introspector = { path = "plugins/ffprobe-introspector" }
@@ -70,6 +72,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 # Synchronization
 parking_lot = "0.12"
+
+# Text matching
+regex = "1"
 
 # Errors
 thiserror = "2"

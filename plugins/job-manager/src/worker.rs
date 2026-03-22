@@ -357,7 +357,10 @@ async fn run_one_job<F, Fut>(
 pub enum ErrorStrategy {
     /// Stop all processing on first error.
     Fail,
-    /// Continue processing remaining items, collecting all errors.
+    /// Skip the failed item and continue processing remaining items.
+    /// The failed item is recorded but does not halt the batch.
+    Skip,
+    /// Continue processing all remaining items, collecting all errors.
     /// Failed items are recorded but do not halt the batch.
     Continue,
 }
@@ -521,5 +524,186 @@ mod tests {
         assert!(!pool.is_cancelled());
         pool.cancel();
         assert!(pool.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn test_error_strategy_skip_continues_after_failure() {
+        let queue = test_queue();
+        let pool = WorkerPool::new(
+            queue.clone(),
+            WorkerPoolConfig {
+                max_workers: 1, // sequential for determinism
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let items: Vec<_> = (0..5)
+            .map(|i| WorkItem {
+                job_type: voom_domain::job::JobType::Custom(format!("task-{i}")),
+                priority: 100,
+                payload: Some(serde_json::json!({"i": i})),
+            })
+            .collect();
+
+        let results = pool
+            .process_batch(
+                items,
+                move |job| {
+                    let c = counter_clone.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        let payload = job.payload.as_ref().unwrap();
+                        let i = payload["i"].as_u64().unwrap();
+                        if i == 0 {
+                            Err("first item fails".into())
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                },
+                ErrorStrategy::Skip,
+                Arc::new(NoopReporter),
+            )
+            .await;
+
+        // All 5 items were attempted despite the first one failing
+        assert_eq!(counter.load(Ordering::SeqCst), 5);
+        // 4 succeeded, 1 failed
+        assert_eq!(pool.completed_count(), 4);
+        assert_eq!(pool.failed_count(), 1);
+        // Results contain both successes and failures
+        let failures: Vec<_> = results.iter().filter(|r| !r.success).collect();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].error.as_deref(), Some("first item fails"));
+    }
+
+    #[tokio::test]
+    async fn test_error_strategy_continue_attempts_all_items() {
+        let queue = test_queue();
+        let pool = WorkerPool::new(
+            queue.clone(),
+            WorkerPoolConfig {
+                max_workers: 1,
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        // Create 6 items where every other one fails
+        let items: Vec<_> = (0..6)
+            .map(|i| WorkItem {
+                job_type: voom_domain::job::JobType::Custom(format!("task-{i}")),
+                priority: 100,
+                payload: Some(serde_json::json!({"i": i})),
+            })
+            .collect();
+
+        let results = pool
+            .process_batch(
+                items,
+                move |job| {
+                    let c = counter_clone.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        let payload = job.payload.as_ref().unwrap();
+                        let i = payload["i"].as_u64().unwrap();
+                        if i % 2 == 0 {
+                            Err(format!("task-{i} failed"))
+                        } else {
+                            Ok(Some(serde_json::json!({"result": i})))
+                        }
+                    }
+                },
+                ErrorStrategy::Continue,
+                Arc::new(NoopReporter),
+            )
+            .await;
+
+        // All 6 items were attempted
+        assert_eq!(counter.load(Ordering::SeqCst), 6);
+        assert_eq!(pool.completed_count(), 3);
+        assert_eq!(pool.failed_count(), 3);
+        // All 6 results are present
+        assert_eq!(results.len(), 6);
+        let successes: Vec<_> = results.iter().filter(|r| r.success).collect();
+        let failures: Vec<_> = results.iter().filter(|r| !r.success).collect();
+        assert_eq!(successes.len(), 3);
+        assert_eq!(failures.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_execution_multiple_workers() {
+        use std::sync::atomic::AtomicUsize;
+        use std::time::Duration;
+
+        let queue = test_queue();
+        let pool = WorkerPool::new(
+            queue.clone(),
+            WorkerPoolConfig {
+                max_workers: 4,
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
+
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let active_count = Arc::new(AtomicUsize::new(0));
+        let total_processed = Arc::new(AtomicU32::new(0));
+
+        let max_concurrent_clone = max_concurrent.clone();
+        let active_count_clone = active_count.clone();
+        let total_processed_clone = total_processed.clone();
+
+        let items: Vec<_> = (0..8)
+            .map(|i| WorkItem {
+                job_type: voom_domain::job::JobType::Custom(format!("concurrent-{i}")),
+                priority: 100,
+                payload: None,
+            })
+            .collect();
+
+        pool.process_batch(
+            items,
+            move |_job| {
+                let max_c = max_concurrent_clone.clone();
+                let active = active_count_clone.clone();
+                let total = total_processed_clone.clone();
+                async move {
+                    // Track concurrent execution
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    // Update max concurrency seen
+                    max_c.fetch_max(current, Ordering::SeqCst);
+
+                    // Small delay to allow concurrent tasks to overlap
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    total.fetch_add(1, Ordering::SeqCst);
+                    Ok(None)
+                }
+            },
+            ErrorStrategy::Continue,
+            Arc::new(NoopReporter),
+        )
+        .await;
+
+        // All 8 items were processed
+        assert_eq!(total_processed.load(Ordering::SeqCst), 8);
+        assert_eq!(pool.completed_count(), 8);
+        assert_eq!(pool.failed_count(), 0);
+        // With 4 workers and 8 items with a 20ms delay, we expect some concurrency
+        // (at least 2 tasks running simultaneously)
+        assert!(
+            max_concurrent.load(Ordering::SeqCst) >= 2,
+            "Expected concurrent execution with max_workers=4, but max concurrency was {}",
+            max_concurrent.load(Ordering::SeqCst)
+        );
     }
 }

@@ -3129,7 +3129,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "uuid",
- "wait-timeout",
 ]
 
 [[package]]
@@ -3139,7 +3138,6 @@ dependencies = [
  "insta",
  "pest",
  "pest_derive",
- "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3160,6 +3158,7 @@ dependencies = [
  "uuid",
  "voom-domain",
  "voom-kernel",
+ "voom-process",
 ]
 
 [[package]]
@@ -3232,6 +3231,7 @@ dependencies = [
  "uuid",
  "voom-domain",
  "voom-kernel",
+ "voom-process",
 ]
 
 [[package]]
@@ -3270,6 +3270,15 @@ dependencies = [
  "voom-domain",
  "voom-dsl",
  "voom-kernel",
+]
+
+[[package]]
+name = "voom-process"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "voom-domain",
+ "wait-timeout",
 ]
 
 [[package]]

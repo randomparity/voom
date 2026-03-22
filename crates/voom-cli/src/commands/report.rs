@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use comfy_table::Cell;
 use console::style;
 
@@ -14,7 +14,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
 
     let files = store
         .list_files(&voom_domain::FileFilters::default())
-        .map_err(|e| anyhow::anyhow!("failed to list files from database: {e}"))?;
+        .context("failed to list files from database")?;
 
     if files.is_empty() {
         println!(

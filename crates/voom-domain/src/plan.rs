@@ -57,6 +57,9 @@ impl Plan {
         self.skip_reason.is_some()
     }
 
+    /// Set a skip reason and clear any existing actions.
+    ///
+    /// Skipped plans must have no actions, so this method enforces that invariant.
     #[must_use]
     pub fn with_skip_reason(mut self, reason: impl Into<String>) -> Self {
         self.skip_reason = Some(reason.into());

@@ -60,7 +60,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     if !args.force_rescan {
         let bad_files = store
             .list_bad_files(&voom_domain::storage::BadFileFilters::default())
-            .map_err(|e| anyhow::anyhow!("failed to list bad files: {e}"))?;
+            .context("failed to list bad files")?;
         if !bad_files.is_empty() {
             let bad_paths: std::collections::HashSet<_> =
                 bad_files.iter().map(|bf| &bf.path).collect();
@@ -145,8 +145,7 @@ fn load_and_compile_policy(args: &ProcessArgs) -> Result<voom_dsl::CompiledPolic
     let policy_source = std::fs::read_to_string(&args.policy)
         .with_context(|| format!("Failed to read policy: {}", args.policy.display()))?;
 
-    voom_dsl::compile_policy(&policy_source)
-        .map_err(|e| anyhow::anyhow!("policy compilation failed: {e}"))
+    voom_dsl::compile_policy(&policy_source).context("policy compilation failed")
 }
 
 /// Print the header line describing what we are about to do.
@@ -187,9 +186,7 @@ fn discover_files(
         on_progress: None,
     };
 
-    let events = discovery
-        .scan(&options)
-        .map_err(|e| anyhow::anyhow!("filesystem scan failed: {e}"))?;
+    let events = discovery.scan(&options).context("filesystem scan failed")?;
 
     for event in &events {
         kernel.dispatch(Event::FileDiscovered(event.clone()));
@@ -612,82 +609,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_plan_lifecycle_events_dispatched() {
+    async fn test_execute_single_plan_dispatches_lifecycle_events() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(PlanRecordingPlugin::new());
         kernel.register_plugin(recorder.clone(), 50);
 
         let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
-
-        // Simulate: PlanExecuting + PlanCreated + PlanCompleted for non-skipped plan
         let plan = test_plan("normalize", false);
-        kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent::new(
-            file.path.clone(),
-            plan.phase_name.clone(),
-            plan.actions.len(),
-        )));
-        kernel.dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
-        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
-            plan.id,
-            file.path.clone(),
-            plan.phase_name.clone(),
-            plan.actions.len(),
-        )));
+
+        // Call the actual production function
+        execute_single_plan(&plan, &file, &kernel);
 
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
-        assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn test_skipped_plans_no_lifecycle_events() {
-        let mut kernel = voom_kernel::Kernel::new();
-        let recorder = Arc::new(PlanRecordingPlugin::new());
-        kernel.register_plugin(recorder.clone(), 50);
-
-        // Skipped plans should NOT get PlanCreated/PlanExecuting/PlanCompleted
-        let plan = test_plan("normalize", true);
-        assert!(plan.is_skipped());
-
-        // Simulate the process.rs logic: skip if plan.is_skipped()
-        if !plan.is_skipped() {
-            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
-        }
-
-        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
-        assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
+        // Plan is unclaimed (no executor registered), so PlanFailed is dispatched instead of PlanCompleted
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
-    async fn test_dry_run_no_executing_events() {
+    async fn test_execute_plans_skips_skipped_plans() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(PlanRecordingPlugin::new());
         kernel.register_plugin(recorder.clone(), 50);
 
         let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
-        let plan = test_plan("normalize", false);
-        let dry_run = true;
+        let skipped_plan = test_plan("normalize", true);
+        assert!(skipped_plan.is_skipped());
 
-        // Simulate the process.rs logic: in dry_run mode, no events are dispatched
-        if !dry_run {
-            kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent::new(
-                file.path.clone(),
-                plan.phase_name.clone(),
-                plan.actions.len(),
-            )));
-            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
-            kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
-                plan.id,
-                file.path.clone(),
-                plan.phase_name.clone(),
-                plan.actions.len(),
-            )));
-        }
+        let result = voom_phase_orchestrator::OrchestrationResult {
+            plans: vec![skipped_plan],
+            phase_results: vec![],
+            file_modified: false,
+        };
 
-        // No events in dry_run
-        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
+        let token = CancellationToken::new();
+        let _ = execute_plans(&file, &result, &kernel, true, &token);
+
+        // Skipped plans should NOT trigger any lifecycle events
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
+        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
     }
 
