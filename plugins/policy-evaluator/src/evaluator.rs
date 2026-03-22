@@ -14,6 +14,7 @@ use crate::condition::{evaluate_condition, resolve_value_or_field};
 use crate::filter::{track_matches, tracks_for_target};
 
 /// Result of evaluating a full policy against a file.
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct EvaluationResult {
     pub plans: Vec<Plan>,

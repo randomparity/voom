@@ -17,6 +17,7 @@ use crate::queue::JobQueue;
 /// that don't need a payload.  When `P` implements `Serialize`, the worker pool
 /// converts it to `serde_json::Value` at enqueue time, keeping the caller's
 /// side free of manual serialization.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct WorkItem<P = ()> {
     pub job_type: voom_domain::job::JobType,
@@ -24,7 +25,20 @@ pub struct WorkItem<P = ()> {
     pub payload: Option<P>,
 }
 
+impl<P> WorkItem<P> {
+    /// Create a new work item with the given job type, priority, and optional payload.
+    #[must_use]
+    pub fn new(job_type: voom_domain::job::JobType, priority: i32, payload: Option<P>) -> Self {
+        Self {
+            job_type,
+            priority,
+            payload,
+        }
+    }
+}
+
 /// Configuration for the worker pool.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct WorkerPoolConfig {
     /// Maximum number of concurrent workers. 0 = number of CPUs.
@@ -61,6 +75,7 @@ fn num_cpus() -> usize {
 }
 
 /// Result of processing a single job.
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct JobResult {
     pub job_id: Uuid,

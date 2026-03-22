@@ -10,11 +10,13 @@ use crate::errors::WebError;
 /// Maximum policy source size (1 MiB).
 const MAX_POLICY_SIZE: usize = 1_024 * 1_024;
 
+#[non_exhaustive]
 #[derive(Debug, Deserialize)]
 pub struct PolicyInput {
     pub source: String,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Serialize)]
 pub struct ValidateResponse {
     pub valid: bool,
@@ -22,6 +24,7 @@ pub struct ValidateResponse {
     pub errors: Vec<service::ErrorInfo>,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Serialize)]
 pub struct FormatResponse {
     #[serde(skip_serializing_if = "Option::is_none")]

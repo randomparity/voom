@@ -1,6 +1,7 @@
 //! `FFmpeg` progress parsing from `-progress pipe:1` output and stderr.
 
 /// Parsed progress information from `FFmpeg` output.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct ProgressInfo {
     pub frame: Option<u64>,

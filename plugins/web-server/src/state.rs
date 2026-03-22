@@ -34,6 +34,7 @@ pub enum SseEvent {
 }
 
 /// Application state shared across all handlers.
+#[non_exhaustive]
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<dyn StorageTrait>,

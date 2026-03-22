@@ -12,6 +12,7 @@ use voom_domain::events::ToolDetectedEvent;
 use voom_kernel::{Plugin, PluginContext};
 
 /// A detected external tool with its path and version.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct DetectedTool {
     pub name: String,

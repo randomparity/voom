@@ -77,54 +77,52 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     let start = Instant::now();
     let hash_files = !args.no_hash;
 
-    let options = voom_discovery::ScanOptions {
-        root: path,
-        recursive: args.recursive,
-        hash_files,
-        workers: args.workers,
-        on_progress: Some(Box::new(move |progress| {
-            match progress {
-                voom_discovery::ScanProgress::Discovered { count, path } => {
-                    // 2 = spinner + space; the rest is the message prefix
-                    let prefix = format!("Discovering... {count} files found — ");
-                    let max_name = max_filename_len(2 + prefix.len());
-                    let name = path
-                        .file_name()
-                        .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
-                        .unwrap_or_default();
-                    pb_clone.set_message(format!("{prefix}{name}"));
-                }
-                voom_discovery::ScanProgress::Processing {
-                    current,
-                    total,
-                    path,
-                } => {
-                    // Switch to determinate progress on first processing event
-                    if current == 1 {
-                        pb_clone.set_length(total as u64);
-                        pb_clone.set_style(
-                            ProgressStyle::with_template(
-                                "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}"
-                            )
-                            .expect("valid progress template")
-                            .progress_chars("#>-"),
-                        );
-                    }
-                    let eta = format_eta(start.elapsed(), current, total);
-                    let prefix = if hash_files { "Hashing" } else { "Processing" };
-                    let max_name =
-                        max_filename_len(PROGRESS_FIXED_WIDTH + eta.len() + prefix.len() + 3);
-                    let name = path
-                        .file_name()
-                        .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
-                        .unwrap_or_default();
-                    pb_clone.set_position(current as u64);
-                    pb_clone.set_message(format!("{} {}{}", prefix, name, eta));
-                    file_count_clone.store(total as u64, Ordering::Relaxed);
-                }
+    let mut options = voom_discovery::ScanOptions::new(path);
+    options.recursive = args.recursive;
+    options.hash_files = hash_files;
+    options.workers = args.workers;
+    options.on_progress = Some(Box::new(move |progress| {
+        match progress {
+            voom_discovery::ScanProgress::Discovered { count, path } => {
+                // 2 = spinner + space; the rest is the message prefix
+                let prefix = format!("Discovering... {count} files found — ");
+                let max_name = max_filename_len(2 + prefix.len());
+                let name = path
+                    .file_name()
+                    .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
+                    .unwrap_or_default();
+                pb_clone.set_message(format!("{prefix}{name}"));
             }
-        })),
-    };
+            voom_discovery::ScanProgress::Processing {
+                current,
+                total,
+                path,
+            } => {
+                // Switch to determinate progress on first processing event
+                if current == 1 {
+                    pb_clone.set_length(total as u64);
+                    pb_clone.set_style(
+                        ProgressStyle::with_template(
+                            "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}",
+                        )
+                        .expect("valid progress template")
+                        .progress_chars("#>-"),
+                    );
+                }
+                let eta = format_eta(start.elapsed(), current, total);
+                let prefix = if hash_files { "Hashing" } else { "Processing" };
+                let max_name =
+                    max_filename_len(PROGRESS_FIXED_WIDTH + eta.len() + prefix.len() + 3);
+                let name = path
+                    .file_name()
+                    .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
+                    .unwrap_or_default();
+                pb_clone.set_position(current as u64);
+                pb_clone.set_message(format!("{} {}{}", prefix, name, eta));
+                file_count_clone.store(total as u64, Ordering::Relaxed);
+            }
+        }
+    }));
 
     let events = discovery.scan(&options).context("filesystem scan failed")?;
 

@@ -30,6 +30,7 @@ pub(crate) fn plugin_err(message: impl Into<String>) -> VoomError {
 }
 
 /// A record of a backed-up file.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct BackupRecord {
     pub id: Uuid,
@@ -40,6 +41,7 @@ pub struct BackupRecord {
 }
 
 /// Configuration for backup operations.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct BackupConfig {
     /// Directory to store backups. Used when `use_global_dir` is true.

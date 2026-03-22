@@ -14,6 +14,7 @@ use voom_domain::plan::{PhaseOutcome, PhaseResult, Plan};
 use voom_kernel::Plugin;
 
 /// Result of orchestrating all phases of a policy.
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct OrchestrationResult {
     /// Plans produced for each phase (in execution order).
@@ -22,6 +23,18 @@ pub struct OrchestrationResult {
     pub phase_results: Vec<PhaseResult>,
     /// Whether any phase modified the file.
     pub file_modified: bool,
+}
+
+impl OrchestrationResult {
+    /// Create a new orchestration result.
+    #[must_use]
+    pub fn new(plans: Vec<Plan>, phase_results: Vec<PhaseResult>, file_modified: bool) -> Self {
+        Self {
+            plans,
+            phase_results,
+            file_modified,
+        }
+    }
 }
 
 /// The phase orchestrator plugin.

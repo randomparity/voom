@@ -196,13 +196,9 @@ fn discover_files(
     kernel: &voom_kernel::Kernel,
 ) -> Result<Vec<voom_domain::events::FileDiscoveredEvent>> {
     let discovery = voom_discovery::DiscoveryPlugin::new();
-    let options = voom_discovery::ScanOptions {
-        root: path.to_path_buf(),
-        recursive: true,
-        hash_files: !args.no_backup,
-        workers: args.workers,
-        on_progress: None,
-    };
+    let mut options = voom_discovery::ScanOptions::new(path.to_path_buf());
+    options.hash_files = !args.no_backup;
+    options.workers = args.workers;
 
     let events = discovery.scan(&options).context("filesystem scan failed")?;
 
@@ -227,14 +223,16 @@ fn build_work_items(
 ) -> Vec<voom_job_manager::worker::WorkItem<ProcessJobPayload>> {
     events
         .iter()
-        .map(|evt| voom_job_manager::worker::WorkItem {
-            job_type: voom_domain::job::JobType::Process,
-            priority: 100,
-            payload: Some(ProcessJobPayload {
-                path: evt.path.to_string_lossy().into_owned(),
-                size: evt.size,
-                content_hash: evt.content_hash.clone(),
-            }),
+        .map(|evt| {
+            voom_job_manager::worker::WorkItem::new(
+                voom_domain::job::JobType::Process,
+                100,
+                Some(ProcessJobPayload {
+                    path: evt.path.to_string_lossy().into_owned(),
+                    size: evt.size,
+                    content_hash: evt.content_hash.clone(),
+                }),
+            )
         })
         .collect()
 }
@@ -247,10 +245,9 @@ fn create_worker_pool(
 ) -> Result<(WorkerPool, usize)> {
     let queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
 
-    let config = WorkerPoolConfig {
-        max_workers: args.workers,
-        worker_prefix: "voom".to_string(),
-    };
+    let mut config = WorkerPoolConfig::default();
+    config.max_workers = args.workers;
+    config.worker_prefix = "voom".to_string();
     let effective_workers = config.effective_workers();
 
     let pool = WorkerPool::new(queue, config, token);
@@ -655,11 +652,8 @@ mod tests {
         let skipped_plan = test_plan("normalize", true);
         assert!(skipped_plan.is_skipped());
 
-        let result = voom_phase_orchestrator::OrchestrationResult {
-            plans: vec![skipped_plan],
-            phase_results: vec![],
-            file_modified: false,
-        };
+        let result =
+            voom_phase_orchestrator::OrchestrationResult::new(vec![skipped_plan], vec![], false);
 
         let token = CancellationToken::new();
         let _ = execute_plans(&file, &result, &kernel, true, &token);
