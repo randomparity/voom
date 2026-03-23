@@ -170,6 +170,37 @@ The event bus is the sole communication mechanism between plugins. It uses synch
 
 Events are published to all subscribed plugins, ordered by priority (lower = runs first). Each subscriber can optionally return an `EventResult` that may influence downstream processing.
 
+## CLI Dual-Dispatch Pattern
+
+CLI commands (`scan`, `process`) use a **hybrid approach**: direct plugin calls for CLI control flow, with event publishing for plugin coordination. This is an intentional architectural decision, not interim scaffolding.
+
+### How it works
+
+1. **Direct calls** drive the CLI workflow — discovery scanning, introspection, policy evaluation, and phase orchestration are called directly so the CLI controls progress reporting, error handling, and concurrency.
+2. **Event publishing** notifies downstream plugins — after each direct call completes, the CLI dispatches the corresponding event (`FileIntrospected`, `PlanCreated`, `PlanExecuting`, etc.) through the kernel's event bus.
+3. **Passive subscribers** (sqlite-store, backup-manager, web-server SSE, WASM metadata plugins) react to these events without the CLI needing to call them directly.
+
+### Why not fully event-driven
+
+Three CLI requirements cannot be satisfied by the current event bus:
+
+- **Progress reporting** — Progress bars are driven by direct return values and worker pool callbacks (`on_job_start`, `on_job_complete`). The event bus is fire-and-forget with no feedback channel to the caller.
+- **Error strategies** — `ErrorStrategy::Fail` cancels a `CancellationToken` to stop all workers immediately; `Skip`/`Continue` let the batch proceed. The event bus has no batch-level error strategy — a failed handler produces a `PluginError` event but cannot halt or skip processing.
+- **Concurrency control** — The worker pool uses `tokio::Semaphore` to limit concurrent file processing. The event bus dispatches synchronously in priority order with no parallelism.
+
+### Side-effect safety
+
+There is no duplication of side effects. CLI commands never call storage methods (`upsert_file`, `save_plan`, `update_plan_status`) directly. All persistence flows exclusively through event dispatch to sqlite-store's `on_event` handler, ensuring a single write path.
+
+### Per-command details
+
+| Command | Direct calls | Events dispatched |
+|---------|-------------|-------------------|
+| `scan` | `discovery.scan()`, `introspect_file()` | `FileIntrospected`, `FileIntrospectionFailed` |
+| `process` | `discovery.scan()`, `introspect_file()`, `evaluate()`, `orchestrate()` | `FileDiscovered`, `FileIntrospected`, `PlanExecuting`, `PlanCreated`, `PlanCompleted`/`PlanFailed` |
+
+Note: `scan` intentionally does **not** dispatch `FileDiscovered` events to avoid triggering a second introspection via the ffprobe-introspector's event handler.
+
 ## Data Flow
 
 ```
