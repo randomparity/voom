@@ -7,8 +7,9 @@
 use std::collections::{HashMap, HashSet};
 
 use voom_domain::compiled::*;
-use voom_domain::media::{Container, MediaFile, Track};
+use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
+use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
 
 use crate::condition::{evaluate_condition, resolve_value_or_field};
 use crate::filter::{track_matches, tracks_for_target};
@@ -146,7 +147,94 @@ fn evaluate_phase(
         }
     }
 
+    validate_plan(&mut plan, file);
+
     plan
+}
+
+/// Post-evaluation safeguard: verify that critical track types (video, audio)
+/// are not entirely removed across all operations in the plan. This catches
+/// multi-operation scenarios where individual keep/remove operations each
+/// leave some tracks, but the combination removes all.
+fn validate_plan(plan: &mut Plan, file: &MediaFile) {
+    if plan.is_skipped() {
+        return;
+    }
+
+    let removed_indices: HashSet<u32> = plan
+        .actions
+        .iter()
+        .filter(|a| a.operation == OperationType::RemoveTrack)
+        .filter_map(|a| a.track_index)
+        .collect();
+
+    if removed_indices.is_empty() {
+        return;
+    }
+
+    let filename = file_name(file);
+
+    validate_track_type(
+        plan,
+        file,
+        &removed_indices,
+        &filename,
+        TrackType::is_video,
+        SafeguardKind::NoVideoTrack,
+        "video",
+    );
+    validate_track_type(
+        plan,
+        file,
+        &removed_indices,
+        &filename,
+        TrackType::is_audio,
+        SafeguardKind::NoAudioTrack,
+        "audio",
+    );
+}
+
+fn validate_track_type(
+    plan: &mut Plan,
+    file: &MediaFile,
+    removed_indices: &HashSet<u32>,
+    filename: &str,
+    type_check: fn(&TrackType) -> bool,
+    kind: SafeguardKind,
+    label: &str,
+) {
+    let total = file
+        .tracks
+        .iter()
+        .filter(|t| type_check(&t.track_type))
+        .count();
+    if total == 0 {
+        return;
+    }
+    let surviving = file
+        .tracks
+        .iter()
+        .filter(|t| type_check(&t.track_type) && !removed_indices.contains(&t.index))
+        .count();
+    if surviving > 0 {
+        return;
+    }
+    // Retract RemoveTrack actions for this track type
+    plan.actions.retain(|a| {
+        !(a.operation == OperationType::RemoveTrack
+            && a.track_index.is_some_and(|idx| {
+                file.tracks
+                    .iter()
+                    .any(|t| t.index == idx && type_check(&t.track_type))
+            }))
+    });
+    let msg = format!(
+        "Safeguard: would have removed all {label} tracks in \
+         {filename}, keeping them instead"
+    );
+    plan.warnings.push(msg.clone());
+    plan.safeguard_violations
+        .push(SafeguardViolation::new(kind, msg, &plan.phase_name));
 }
 
 struct PhaseContext<'a> {
@@ -238,6 +326,12 @@ fn emit_remove_track(track: &Track, target: &TrackTarget, reason: &str, ctx: &mu
 
 fn emit_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
     let tracks = tracks_for_target(ctx.file, target);
+    if tracks.is_empty() {
+        return;
+    }
+
+    let actions_before = ctx.plan.actions.len();
+    let mut kept = 0u32;
     for track in &tracks {
         let should_remove = match filter {
             Some(f) => !track_matches(track, f),
@@ -245,12 +339,38 @@ fn emit_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut Ph
         };
         if should_remove {
             emit_remove_track(track, target, "does not match keep filter", ctx);
+        } else {
+            kept += 1;
         }
+    }
+
+    if kept == 0 {
+        // Safeguard: retract all RemoveTrack actions we just added
+        ctx.plan.actions.truncate(actions_before);
+        let label = target_str(target);
+        let filename = file_name(ctx.file);
+        let msg = format!(
+            "Safeguard: kept all {label} tracks in {filename} \
+             — no tracks matched the keep filter, would have removed all"
+        );
+        ctx.plan.warnings.push(msg.clone());
+        ctx.plan.safeguard_violations.push(SafeguardViolation::new(
+            SafeguardKind::AllTracksRemoved,
+            msg,
+            &ctx.plan.phase_name,
+        ));
     }
 }
 
 fn emit_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
     let tracks = tracks_for_target(ctx.file, target);
+    if tracks.is_empty() {
+        return;
+    }
+
+    let is_critical = matches!(target, TrackTarget::Video | TrackTarget::Audio);
+    let actions_before = ctx.plan.actions.len();
+    let mut kept = 0u32;
     for track in &tracks {
         let should_remove = match filter {
             Some(f) => track_matches(track, f),
@@ -258,7 +378,26 @@ fn emit_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut 
         };
         if should_remove {
             emit_remove_track(track, target, "matches remove filter", ctx);
+        } else {
+            kept += 1;
         }
+    }
+
+    if kept == 0 && is_critical {
+        // Safeguard: retract all RemoveTrack actions for critical track types
+        ctx.plan.actions.truncate(actions_before);
+        let label = target_str(target);
+        let filename = file_name(ctx.file);
+        let msg = format!(
+            "Safeguard: kept all {label} tracks in {filename} \
+             — remove operation would have removed all"
+        );
+        ctx.plan.warnings.push(msg.clone());
+        ctx.plan.safeguard_violations.push(SafeguardViolation::new(
+            SafeguardKind::AllTracksRemoved,
+            msg,
+            &ctx.plan.phase_name,
+        ));
     }
 }
 
@@ -656,13 +795,8 @@ fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), St
 
 /// Expand `{filename}` and `{path}` templates in a string.
 fn expand_template(template: &str, file: &MediaFile) -> String {
-    let filename = file
-        .path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
     template
-        .replace("{filename}", &filename)
+        .replace("{filename}", &file_name(file))
         .replace("{path}", &file.path.to_string_lossy())
 }
 
@@ -704,6 +838,13 @@ fn emit_flag_action(
         }
     }
     Ok(())
+}
+
+fn file_name(file: &MediaFile) -> String {
+    file.path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 fn target_str(target: &TrackTarget) -> &'static str {
@@ -1358,5 +1499,152 @@ mod tests {
             }
             other => panic!("Expected Container params, got {:?}", other),
         }
+    }
+
+    // --- Safeguard tests ---
+
+    #[test]
+    fn test_keep_safeguard_retracts_when_all_tracks_removed() {
+        let file = test_file();
+        let policy =
+            test_policy(r#"policy "test" { phase norm { keep audio where lang in [fre] } }"#);
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        // Safeguard should retract all RemoveTrack actions
+        let removes: Vec<_> = plan
+            .actions
+            .iter()
+            .filter(|a| a.operation == OperationType::RemoveTrack)
+            .collect();
+        assert_eq!(removes.len(), 0, "safeguard should retract remove actions");
+        // Should have a safeguard violation
+        assert_eq!(plan.safeguard_violations.len(), 1);
+        assert_eq!(
+            plan.safeguard_violations[0].kind,
+            voom_domain::SafeguardKind::AllTracksRemoved
+        );
+        // Warning should also be present
+        assert!(
+            plan.warnings.iter().any(|w| w.contains("Safeguard")),
+            "Expected safeguard warning, got: {:?}",
+            plan.warnings
+        );
+    }
+
+    #[test]
+    fn test_keep_no_safeguard_when_some_tracks_kept() {
+        let file = test_file();
+        let policy =
+            test_policy(r#"policy "test" { phase norm { keep audio where lang in [eng] } }"#);
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        assert!(
+            plan.safeguard_violations.is_empty(),
+            "Should not trigger safeguard when some tracks are kept"
+        );
+        // jpn audio (track 2) should still be removed
+        let removes: Vec<_> = plan
+            .actions
+            .iter()
+            .filter(|a| a.operation == OperationType::RemoveTrack)
+            .collect();
+        assert_eq!(removes.len(), 1);
+    }
+
+    #[test]
+    fn test_remove_safeguard_retracts_for_critical_tracks() {
+        let file = test_file();
+        // Remove all audio — safeguard should prevent this
+        let policy = test_policy(
+            r#"policy "test" { phase norm { remove audio where lang in [eng, jpn] } }"#,
+        );
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        let removes: Vec<_> = plan
+            .actions
+            .iter()
+            .filter(|a| a.operation == OperationType::RemoveTrack)
+            .collect();
+        assert_eq!(removes.len(), 0, "safeguard should retract audio removes");
+        assert_eq!(plan.safeguard_violations.len(), 1);
+    }
+
+    #[test]
+    fn test_remove_no_safeguard_for_non_critical_tracks() {
+        let file = test_file();
+        // Remove all subtitles — subtitles are not critical, should proceed
+        let policy =
+            test_policy(r#"policy "test" { phase norm { remove subtitles where lang in [eng] } }"#);
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        let removes: Vec<_> = plan
+            .actions
+            .iter()
+            .filter(|a| a.operation == OperationType::RemoveTrack)
+            .collect();
+        assert_eq!(removes.len(), 2, "non-critical tracks can be fully removed");
+        assert!(plan.safeguard_violations.is_empty());
+    }
+
+    #[test]
+    fn test_remove_no_safeguard_when_some_tracks_kept() {
+        let file = test_file();
+        // Remove only commentary audio — non-commentary tracks should remain
+        let policy =
+            test_policy(r#"policy "test" { phase norm { remove audio where commentary } }"#);
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        assert!(
+            plan.safeguard_violations.is_empty(),
+            "Should not trigger safeguard when some tracks are kept"
+        );
+    }
+
+    #[test]
+    fn test_validate_plan_no_safeguard_when_tracks_survive() {
+        let file = test_file();
+        // keep audio where lang in [eng] — track 1 (eng) and track 3 (eng commentary) kept
+        // track 2 (jpn) removed. Multiple tracks survive, no safeguard.
+        let policy =
+            test_policy(r#"policy "test" { phase norm { keep audio where lang in [eng] } }"#);
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        assert!(
+            plan.safeguard_violations.is_empty(),
+            "No safeguard when tracks survive"
+        );
+    }
+
+    #[test]
+    fn test_validate_plan_retracts_when_all_video_removed() {
+        // File with one video track — removing it should trigger safeguard
+        let mut file = test_file();
+        file.tracks[0] = {
+            let mut t = Track::new(0, TrackType::Video, "h264".into());
+            t.language = "und".into();
+            t
+        };
+        let policy = test_policy(
+            r#"policy "test" {
+                phase norm {
+                    remove video where codec == h264
+                }
+            }"#,
+        );
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        // validate_plan should catch this since emit_remove doesn't guard video
+        // (emit_remove guards audio/video at the per-operation level)
+        let removes: Vec<_> = plan
+            .actions
+            .iter()
+            .filter(|a| a.operation == OperationType::RemoveTrack)
+            .collect();
+        assert_eq!(removes.len(), 0, "safeguard should retract video removal");
+        assert!(plan
+            .safeguard_violations
+            .iter()
+            .any(|v| v.kind == voom_domain::SafeguardKind::NoVideoTrack
+                || v.kind == voom_domain::SafeguardKind::AllTracksRemoved));
     }
 }

@@ -24,6 +24,10 @@ pub fn run(args: ReportArgs) -> Result<()> {
         return Ok(());
     }
 
+    if args.issues {
+        return run_issues_report(&files, &args.format);
+    }
+
     match args.format {
         OutputFormat::Json => {
             let report = serde_json::json!({
@@ -73,6 +77,72 @@ pub fn run(args: ReportArgs) -> Result<()> {
             table.set_header(vec!["Codec", "Count"]);
             for (codec, count) in &codecs {
                 table.add_row(vec![Cell::new(codec), Cell::new(count)]);
+            }
+            println!("{table}");
+        }
+    }
+
+    Ok(())
+}
+
+fn run_issues_report(files: &[voom_domain::MediaFile], format: &OutputFormat) -> Result<()> {
+    let files_with_issues: Vec<_> = files
+        .iter()
+        .filter_map(|f| {
+            let violations = f.plugin_metadata.get("safeguard_violations")?;
+            let parsed: Vec<voom_domain::SafeguardViolation> =
+                serde_json::from_value(violations.clone()).ok()?;
+            if parsed.is_empty() {
+                return None;
+            }
+            Some((f, parsed))
+        })
+        .collect();
+
+    if files_with_issues.is_empty() {
+        println!("{}", style("No files with safeguard violations.").green());
+        return Ok(());
+    }
+
+    match format {
+        OutputFormat::Json => {
+            let entries: Vec<serde_json::Value> = files_with_issues
+                .iter()
+                .map(|(f, violations)| {
+                    serde_json::json!({
+                        "path": f.path.display().to_string(),
+                        "violations": violations,
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&entries).expect("report is serializable")
+            );
+        }
+        OutputFormat::Table => {
+            println!(
+                "{} ({} files)",
+                style("Safeguard Violations").bold().underlined(),
+                files_with_issues.len()
+            );
+            println!();
+            let mut table = output::new_table();
+            table.set_header(vec!["Path", "Violation", "Phase", "Message"]);
+            for (f, violations) in &files_with_issues {
+                let path = f
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                for v in violations {
+                    table.add_row(vec![
+                        Cell::new(&path),
+                        Cell::new(v.kind.as_str()),
+                        Cell::new(&v.phase_name),
+                        Cell::new(&v.message),
+                    ]);
+                }
             }
             println!("{table}");
         }

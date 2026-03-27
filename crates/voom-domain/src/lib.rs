@@ -8,6 +8,7 @@ pub mod events;
 pub mod job;
 pub mod media;
 pub mod plan;
+pub mod safeguard;
 pub mod stats;
 pub mod storage;
 #[cfg(feature = "testing")]
@@ -28,6 +29,7 @@ pub use media::{Container, MediaFile, Track, TrackType};
 pub use plan::{
     ActionParams, ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction,
 };
+pub use safeguard::{SafeguardKind, SafeguardViolation};
 pub use stats::{ProcessingOutcome, ProcessingStats};
 pub use storage::{
     BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,

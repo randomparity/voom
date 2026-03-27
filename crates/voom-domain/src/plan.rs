@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::media::{Container, MediaFile, TrackType};
+use crate::safeguard::SafeguardViolation;
 
 fn epoch() -> DateTime<Utc> {
     DateTime::UNIX_EPOCH
@@ -19,6 +20,8 @@ pub struct Plan {
     pub phase_name: String,
     pub actions: Vec<PlannedAction>,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub safeguard_violations: Vec<SafeguardViolation>,
     pub skip_reason: Option<String>,
     #[serde(default)]
     pub policy_hash: Option<String>,
@@ -41,6 +44,7 @@ impl Plan {
             phase_name: phase_name.into(),
             actions: Vec::new(),
             warnings: Vec::new(),
+            safeguard_violations: Vec::new(),
             skip_reason: None,
             policy_hash: None,
             evaluated_at: Utc::now(),
@@ -369,6 +373,7 @@ mod tests {
                 description: "Set track 1 as default".into(),
             }],
             warnings: vec![],
+            safeguard_violations: vec![],
             skip_reason: None,
             policy_hash: None,
             evaluated_at: Utc::now(),
