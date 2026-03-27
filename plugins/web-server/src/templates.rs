@@ -2,6 +2,7 @@
 
 use axum::extract::{Path, Query, State};
 use axum::response::Html;
+use axum::Extension;
 use serde::Deserialize;
 
 use voom_domain::job::JobStatus;
@@ -10,12 +11,19 @@ use voom_domain::storage::{FileFilters, JobFilters};
 
 use crate::api::files::FileFilterParams;
 use crate::errors::{spawn_store_op, WebError};
+use crate::middleware::CspNonce;
 use crate::state::AppState;
 use crate::views::file_views;
 
 type HtmlResult = Result<Html<String>, WebError>;
 
-fn render(templates: &tera::Tera, name: &str, ctx: &tera::Context) -> HtmlResult {
+fn render(
+    templates: &tera::Tera,
+    name: &str,
+    ctx: &mut tera::Context,
+    nonce: &CspNonce,
+) -> HtmlResult {
+    ctx.insert("csp_nonce", &nonce.0);
     templates.render(name, ctx).map(Html).map_err(|e| {
         tracing::error!(template = name, error = %e, "Template render failed");
         WebError::Internal(format!("template render failed: {e}"))
@@ -23,7 +31,10 @@ fn render(templates: &tera::Tera, name: &str, ctx: &tera::Context) -> HtmlResult
 }
 
 /// GET / -- Dashboard
-pub async fn dashboard(State(state): State<AppState>) -> HtmlResult {
+pub async fn dashboard(
+    State(state): State<AppState>,
+    Extension(nonce): Extension<CspNonce>,
+) -> HtmlResult {
     let store = state.store.clone();
 
     let (files, total_files, job_counts) = spawn_store_op(move || {
@@ -43,7 +54,7 @@ pub async fn dashboard(State(state): State<AppState>) -> HtmlResult {
         ctx.insert(format!("jobs_{}", status.as_str()), count);
     }
 
-    render(&state.templates, "dashboard.html", &ctx)
+    render(&state.templates, "dashboard.html", &mut ctx, &nonce)
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,6 +67,7 @@ pub struct LibraryParams {
 /// GET /library -- File browser
 pub async fn library(
     State(state): State<AppState>,
+    Extension(nonce): Extension<CspNonce>,
     Query(params): Query<LibraryParams>,
 ) -> HtmlResult {
     let store = state.store.clone();
@@ -86,11 +98,15 @@ pub async fn library(
     ctx.insert("filter_language", &params.filters.language);
     ctx.insert("filter_path_prefix", &params.filters.path_prefix);
 
-    render(&state.templates, "library.html", &ctx)
+    render(&state.templates, "library.html", &mut ctx, &nonce)
 }
 
 /// GET /files/:id -- File detail
-pub async fn file_detail(State(state): State<AppState>, Path(id): Path<uuid::Uuid>) -> HtmlResult {
+pub async fn file_detail(
+    State(state): State<AppState>,
+    Extension(nonce): Extension<CspNonce>,
+    Path(id): Path<uuid::Uuid>,
+) -> HtmlResult {
     let store = state.store.clone();
 
     let (file, plans) = spawn_store_op(move || {
@@ -132,20 +148,27 @@ pub async fn file_detail(State(state): State<AppState>, Path(id): Path<uuid::Uui
     ctx.insert("tracks", &tracks_json);
     ctx.insert("plans", &plans_json);
 
-    render(&state.templates, "file_detail.html", &ctx)
+    render(&state.templates, "file_detail.html", &mut ctx, &nonce)
 }
 
 /// GET /policies -- Policy list
-pub async fn policies(State(state): State<AppState>) -> HtmlResult {
-    let ctx = tera::Context::new();
-    render(&state.templates, "policies.html", &ctx)
+pub async fn policies(
+    State(state): State<AppState>,
+    Extension(nonce): Extension<CspNonce>,
+) -> HtmlResult {
+    let mut ctx = tera::Context::new();
+    render(&state.templates, "policies.html", &mut ctx, &nonce)
 }
 
 /// GET /policies/:name/edit -- Policy editor
-pub async fn policy_editor(State(state): State<AppState>, Path(name): Path<String>) -> HtmlResult {
+pub async fn policy_editor(
+    State(state): State<AppState>,
+    Extension(nonce): Extension<CspNonce>,
+    Path(name): Path<String>,
+) -> HtmlResult {
     let mut ctx = tera::Context::new();
     ctx.insert("policy_name", &name);
-    render(&state.templates, "policy_editor.html", &ctx)
+    render(&state.templates, "policy_editor.html", &mut ctx, &nonce)
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,6 +179,7 @@ pub struct JobsPageParams {
 /// GET /jobs -- Job monitor
 pub async fn jobs(
     State(state): State<AppState>,
+    Extension(nonce): Extension<CspNonce>,
     Query(params): Query<JobsPageParams>,
 ) -> HtmlResult {
     let store = state.store.clone();
@@ -177,19 +201,25 @@ pub async fn jobs(
         ctx.insert(format!("jobs_{}", status.as_str()), count);
     }
 
-    render(&state.templates, "jobs.html", &ctx)
+    render(&state.templates, "jobs.html", &mut ctx, &nonce)
 }
 
 /// GET /plugins -- Plugin manager
-pub async fn plugins(State(state): State<AppState>) -> HtmlResult {
-    let ctx = tera::Context::new();
-    render(&state.templates, "plugins.html", &ctx)
+pub async fn plugins(
+    State(state): State<AppState>,
+    Extension(nonce): Extension<CspNonce>,
+) -> HtmlResult {
+    let mut ctx = tera::Context::new();
+    render(&state.templates, "plugins.html", &mut ctx, &nonce)
 }
 
 /// GET /settings -- Configuration
-pub async fn settings(State(state): State<AppState>) -> HtmlResult {
-    let ctx = tera::Context::new();
-    render(&state.templates, "settings.html", &ctx)
+pub async fn settings(
+    State(state): State<AppState>,
+    Extension(nonce): Extension<CspNonce>,
+) -> HtmlResult {
+    let mut ctx = tera::Context::new();
+    render(&state.templates, "settings.html", &mut ctx, &nonce)
 }
 
 #[cfg(test)]
@@ -200,37 +230,55 @@ mod tests {
         crate::server::embedded_templates()
     }
 
+    fn test_nonce() -> CspNonce {
+        CspNonce("test-nonce-value".into())
+    }
+
     #[test]
     fn test_render_success_returns_html() {
         let tera = make_tera();
-        let ctx = tera::Context::new();
-        let result = render(&tera, "policies.html", &ctx);
+        let mut ctx = tera::Context::new();
+        let result = render(&tera, "policies.html", &mut ctx, &test_nonce());
         assert!(result.is_ok());
         let html = result.unwrap().0;
         assert!(html.contains("html"), "Expected HTML content");
     }
 
     #[test]
+    fn test_render_injects_csp_nonce() {
+        let tera = make_tera();
+        let mut ctx = tera::Context::new();
+        let nonce = CspNonce("abc123".into());
+        let result = render(&tera, "policies.html", &mut ctx, &nonce);
+        assert!(result.is_ok());
+        let html = result.unwrap().0;
+        assert!(
+            html.contains(r#"nonce="abc123""#),
+            "Expected nonce attribute in rendered HTML"
+        );
+    }
+
+    #[test]
     fn test_render_missing_template_returns_500() {
         let tera = make_tera();
-        let ctx = tera::Context::new();
-        let result = render(&tera, "nonexistent.html", &ctx);
+        let mut ctx = tera::Context::new();
+        let result = render(&tera, "nonexistent.html", &mut ctx, &test_nonce());
         assert!(result.is_err());
     }
 
     #[test]
     fn test_render_settings_page() {
         let tera = make_tera();
-        let ctx = tera::Context::new();
-        let result = render(&tera, "settings.html", &ctx);
+        let mut ctx = tera::Context::new();
+        let result = render(&tera, "settings.html", &mut ctx, &test_nonce());
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_render_plugins_page() {
         let tera = make_tera();
-        let ctx = tera::Context::new();
-        let result = render(&tera, "plugins.html", &ctx);
+        let mut ctx = tera::Context::new();
+        let result = render(&tera, "plugins.html", &mut ctx, &test_nonce());
         assert!(result.is_ok());
     }
 
@@ -239,7 +287,7 @@ mod tests {
         let tera = make_tera();
         let mut ctx = tera::Context::new();
         ctx.insert("policy_name", "my-policy");
-        let result = render(&tera, "policy_editor.html", &ctx);
+        let result = render(&tera, "policy_editor.html", &mut ctx, &test_nonce());
         assert!(result.is_ok());
         let html = result.unwrap().0;
         assert!(html.contains("my-policy"));

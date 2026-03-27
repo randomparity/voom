@@ -67,8 +67,11 @@ pub fn available_space(path: &Path) -> Result<u64> {
         let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
         if libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) == 0 {
             let stat = stat.assume_init();
-            // Available space for unprivileged users
-            Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
+            // Available space for unprivileged users.
+            // f_bavail is u32 on macOS, u64 on Linux — cast needed for portability.
+            #[allow(clippy::unnecessary_cast)]
+            let avail = (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64);
+            Ok(avail)
         } else {
             Err(VoomError::Io(std::io::Error::last_os_error()))
         }

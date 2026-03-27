@@ -13,6 +13,11 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
+/// Per-request CSP nonce, injected by [`SecurityHeadersLayer`] and extracted
+/// by page handlers to stamp inline `<script>` / `<style>` tags.
+#[derive(Clone, Debug)]
+pub struct CspNonce(pub String);
+
 /// Layer that adds security headers (CSP, X-Frame-Options, etc.) to all responses.
 #[derive(Clone)]
 pub struct SecurityHeadersLayer;
@@ -45,19 +50,30 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
+    fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
+        let nonce = Uuid::new_v4().simple().to_string();
+        req.extensions_mut().insert(CspNonce(nonce.clone()));
+
         let mut svc = self.inner.clone();
         Box::pin(async move {
             let mut response = svc.call(req).await?;
             let headers = response.headers_mut();
 
-            // TODO: Replace 'unsafe-inline' with nonce-based CSP once templates support it
-            headers.insert(
-                "Content-Security-Policy",
-                HeaderValue::from_static(
-                    "default-src 'self'; script-src 'self' https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
-                ),
+            let csp = format!(
+                "default-src 'self'; \
+                 script-src 'self' 'nonce-{nonce}' \
+                 https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js \
+                 https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js; \
+                 style-src 'self' 'nonce-{nonce}'; \
+                 img-src 'self' data:; \
+                 connect-src 'self'; \
+                 frame-ancestors 'none'; \
+                 base-uri 'self'"
             );
+            if let Ok(val) = HeaderValue::from_str(&csp) {
+                headers.insert("Content-Security-Policy", val);
+            }
+
             headers.insert(
                 "X-Content-Type-Options",
                 HeaderValue::from_static("nosniff"),

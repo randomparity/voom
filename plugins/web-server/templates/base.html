@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}VOOM{% endblock %}</title>
-    <style>
+    <style nonce="{{ csp_nonce }}">
         :root {
             --bg-primary: #1a1a2e;
             --bg-card: #16213e;
@@ -388,7 +388,7 @@
 
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
-    <script>
+    <script nonce="{{ csp_nonce }}">
         const evtSource = new EventSource('/events');
 
         evtSource.addEventListener('job-update', function(e) {

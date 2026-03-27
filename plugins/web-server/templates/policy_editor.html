@@ -60,7 +60,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
 function policyEditor() {
     return {
         source: {{ source | default(value="") | json_encode() | safe }},
