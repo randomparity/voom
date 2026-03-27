@@ -238,6 +238,11 @@ fn emit_remove_track(track: &Track, target: &TrackTarget, reason: &str, ctx: &mu
 
 fn emit_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
     let tracks = tracks_for_target(ctx.file, target);
+    if tracks.is_empty() {
+        return;
+    }
+
+    let mut kept = 0u32;
     for track in &tracks {
         let should_remove = match filter {
             Some(f) => !track_matches(track, f),
@@ -245,12 +250,33 @@ fn emit_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut Ph
         };
         if should_remove {
             emit_remove_track(track, target, "does not match keep filter", ctx);
+        } else {
+            kept += 1;
         }
+    }
+
+    if kept == 0 {
+        let label = target_str(target);
+        let filename = ctx
+            .file
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        ctx.plan.warnings.push(format!(
+            "All {label} tracks removed by keep filter in {filename} \
+             — no tracks matched the filter"
+        ));
     }
 }
 
 fn emit_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
     let tracks = tracks_for_target(ctx.file, target);
+    if tracks.is_empty() {
+        return;
+    }
+
+    let mut kept = 0u32;
     for track in &tracks {
         let should_remove = match filter {
             Some(f) => track_matches(track, f),
@@ -258,7 +284,23 @@ fn emit_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut 
         };
         if should_remove {
             emit_remove_track(track, target, "matches remove filter", ctx);
+        } else {
+            kept += 1;
         }
+    }
+
+    if kept == 0 {
+        let label = target_str(target);
+        let filename = ctx
+            .file
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        ctx.plan.warnings.push(format!(
+            "All {label} tracks removed by remove operation in {filename} \
+             — every track matched the filter"
+        ));
     }
 }
 
@@ -1358,5 +1400,85 @@ mod tests {
             }
             other => panic!("Expected Container params, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_keep_warns_when_all_tracks_removed() {
+        let file = test_file();
+        let policy =
+            test_policy(r#"policy "test" { phase norm { keep audio where lang in [fre] } }"#);
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        // All 3 audio tracks should be removed (none are French)
+        let removes: Vec<_> = plan
+            .actions
+            .iter()
+            .filter(|a| a.operation == OperationType::RemoveTrack)
+            .collect();
+        assert_eq!(removes.len(), 3);
+        // Should have a warning about all audio tracks being removed
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|w| w.contains("All audio tracks removed")),
+            "Expected warning about all audio tracks removed, got: {:?}",
+            plan.warnings
+        );
+    }
+
+    #[test]
+    fn test_keep_no_warning_when_some_tracks_kept() {
+        let file = test_file();
+        let policy =
+            test_policy(r#"policy "test" { phase norm { keep audio where lang in [eng] } }"#);
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        assert!(
+            !plan
+                .warnings
+                .iter()
+                .any(|w| w.contains("All audio tracks removed")),
+            "Should not warn when some tracks are kept"
+        );
+    }
+
+    #[test]
+    fn test_remove_warns_when_all_tracks_removed() {
+        let file = test_file();
+        // Remove all subtitles (both tracks match lang in [eng])
+        let policy =
+            test_policy(r#"policy "test" { phase norm { remove subtitles where lang in [eng] } }"#);
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        let removes: Vec<_> = plan
+            .actions
+            .iter()
+            .filter(|a| a.operation == OperationType::RemoveTrack)
+            .collect();
+        assert_eq!(removes.len(), 2);
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|w| w.contains("All subtitle tracks removed")),
+            "Expected warning about all subtitle tracks removed, got: {:?}",
+            plan.warnings
+        );
+    }
+
+    #[test]
+    fn test_remove_no_warning_when_some_tracks_kept() {
+        let file = test_file();
+        // Remove only commentary subtitles — track 4 (main) should remain
+        let policy =
+            test_policy(r#"policy "test" { phase norm { remove subtitles where commentary } }"#);
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        assert!(
+            !plan
+                .warnings
+                .iter()
+                .any(|w| w.contains("All subtitle tracks removed")),
+            "Should not warn when some tracks are kept"
+        );
     }
 }
