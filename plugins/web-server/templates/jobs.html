@@ -131,7 +131,7 @@
     </div>
 </div>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 function filterJobRows(query) {
     var q = query.toLowerCase();
     var rows = document.querySelectorAll('#jobs-table tbody tr');

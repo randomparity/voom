@@ -317,9 +317,13 @@ async fn test_security_headers() {
     assert!(csp.contains("frame-ancestors 'none'"));
     assert!(csp.contains("base-uri 'self'"));
     assert!(!csp.contains("unsafe-eval"));
-    // unsafe-inline should only be in style-src, not in script-src
-    assert!(csp.contains("style-src 'self' 'unsafe-inline'"));
-    assert!(csp.contains("script-src 'self' https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"));
+    assert!(
+        !csp.contains("unsafe-inline"),
+        "CSP should use nonces, not unsafe-inline"
+    );
+    // Nonce-based CSP: each response gets a unique nonce for inline scripts/styles
+    assert!(csp.contains("style-src 'self' 'nonce-"));
+    assert!(csp.contains("script-src 'self' 'nonce-"));
     assert!(headers.get("x-content-type-options").is_some());
     assert!(headers.get("x-frame-options").is_some());
     assert!(headers.get("referrer-policy").is_some());

@@ -68,7 +68,7 @@ pub fn available_space(path: &Path) -> Result<u64> {
         if libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) == 0 {
             let stat = stat.assume_init();
             // Available space for unprivileged users
-            Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
+            Ok(u64::from(stat.f_bavail).saturating_mul(stat.f_frsize))
         } else {
             Err(VoomError::Io(std::io::Error::last_os_error()))
         }
