@@ -2,7 +2,6 @@
 
 pub mod bad_file;
 pub mod capabilities;
-pub mod compiled;
 pub mod errors;
 pub mod events;
 pub mod job;
@@ -33,6 +32,6 @@ pub use safeguard::{SafeguardKind, SafeguardViolation};
 pub use stats::{ProcessingOutcome, ProcessingStats};
 pub use storage::{
     BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,
-    JobStorage, MaintenanceStorage, PlanStorage, PluginDataStorage, StatsStorage, StorageTrait,
-    StoredPlan,
+    JobStorage, MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage, StatsStorage,
+    StorageTrait,
 };

@@ -8,8 +8,6 @@ pub enum StorageErrorKind {
     ConstraintViolation,
     /// The requested record does not exist.
     NotFound,
-    /// Could not acquire or open a database connection.
-    ConnectionError,
     /// Any other storage error.
     Other,
 }
@@ -96,6 +94,6 @@ mod tests {
         let a = StorageErrorKind::ConstraintViolation;
         let b = a.clone();
         assert_eq!(a, b);
-        assert_ne!(a, StorageErrorKind::ConnectionError);
+        assert_ne!(a, StorageErrorKind::Other);
     }
 }

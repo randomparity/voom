@@ -119,25 +119,6 @@ pub async fn file_detail(
 
     let file = file.ok_or_else(|| WebError::NotFound(format!("File {id} not found")))?;
 
-    // StoredPlan doesn't derive Serialize, so convert to JSON values manually
-    let plans_json: Vec<serde_json::Value> = plans
-        .iter()
-        .map(|p| {
-            serde_json::json!({
-                "id": p.id.to_string(),
-                "file_id": p.file_id.to_string(),
-                "policy_name": p.policy_name,
-                "phase_name": p.phase_name,
-                "status": p.status,
-                "actions_json": p.actions_json,
-                "warnings": p.warnings,
-                "created_at": p.created_at,
-                "executed_at": p.executed_at,
-                "result": p.result,
-            })
-        })
-        .collect();
-
     let mut ctx = tera::Context::new();
     let tracks_json: Vec<serde_json::Value> = file
         .tracks
@@ -147,7 +128,7 @@ pub async fn file_detail(
     let file_view = crate::views::FileView::from_media_file(file);
     ctx.insert("file", &file_view);
     ctx.insert("tracks", &tracks_json);
-    ctx.insert("plans", &plans_json);
+    ctx.insert("plans", &plans);
 
     render(&state.templates, "file_detail.html", &mut ctx, &nonce)
 }

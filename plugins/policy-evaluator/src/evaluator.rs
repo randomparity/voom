@@ -6,11 +6,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use voom_domain::compiled::*;
 use voom_domain::errors::VoomError;
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
+use voom_dsl::compiled::*;
 
 use crate::condition::{evaluate_condition, resolve_value_or_field};
 use crate::filter::{track_matches, tracks_for_target};
@@ -640,7 +640,16 @@ fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
 
     let channels = synth.channels.as_ref().map(|c| match c {
         SynthChannels::Count(n) => *n,
-        SynthChannels::Named(_) => 2, // default stereo for named presets
+        SynthChannels::Named(s) => match s.as_str() {
+            "mono" => 1,
+            "stereo" => 2,
+            "5.1" | "surround" => 6,
+            "7.1" => 8,
+            other => {
+                tracing::warn!(preset = other, "unknown channel preset, defaulting to 2");
+                2
+            }
+        },
     });
 
     let position = synth.position.as_ref().map(|p| match p {

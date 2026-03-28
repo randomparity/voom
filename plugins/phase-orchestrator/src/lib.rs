@@ -8,9 +8,9 @@
 #![allow(clippy::missing_errors_doc)]
 
 use voom_domain::capabilities::Capability;
-use voom_domain::compiled::{CompiledPolicy, ErrorStrategy};
 use voom_domain::errors::Result;
 use voom_domain::plan::{PhaseOutcome, PhaseResult, Plan};
+use voom_dsl::compiled::{CompiledPolicy, ErrorStrategy};
 use voom_kernel::Plugin;
 
 /// Result of orchestrating all phases of a policy.
@@ -49,7 +49,7 @@ impl PhaseOrchestratorPlugin {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            capabilities: vec![Capability::Orchestrate],
+            capabilities: vec![Capability::Plan],
         }
     }
 

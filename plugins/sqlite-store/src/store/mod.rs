@@ -66,10 +66,12 @@ impl SqliteStore {
             .max_size(pool_size)
             .min_idle(Some(0))
             .build(manager)
-            .map_err(pool_err("failed to create connection pool"))?;
+            .map_err(other_storage_err("failed to create connection pool"))?;
 
         // Initialize schema on the first connection
-        let conn = pool.get().map_err(pool_err("failed to get connection"))?;
+        let conn = pool
+            .get()
+            .map_err(other_storage_err("failed to get connection"))?;
         schema::create_schema(&conn).map_err(storage_err("failed to create schema"))?;
 
         Ok(Self { pool })
@@ -78,7 +80,7 @@ impl SqliteStore {
     pub(crate) fn conn(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>> {
         self.pool
             .get()
-            .map_err(pool_err("failed to get connection"))
+            .map_err(other_storage_err("failed to get connection"))
     }
 }
 
@@ -107,14 +109,6 @@ fn classify_rusqlite(e: &rusqlite::Error) -> StorageErrorKind {
 pub(crate) fn storage_err(msg: &str) -> impl FnOnce(rusqlite::Error) -> VoomError + '_ {
     move |e| VoomError::Storage {
         kind: classify_rusqlite(&e),
-        message: format!("{msg}: {e}"),
-    }
-}
-
-/// Create a `.map_err` closure for r2d2 pool errors (treated as `ConnectionError`).
-pub(crate) fn pool_err<E: std::fmt::Display>(msg: &str) -> impl FnOnce(E) -> VoomError + '_ {
-    move |e| VoomError::Storage {
-        kind: StorageErrorKind::ConnectionError,
         message: format!("{msg}: {e}"),
     }
 }

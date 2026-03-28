@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use voom_domain::compiled::{
+use crate::compiled::{
     ClearActionsSettings, CompiledAction, CompiledCompareOp, CompiledCondition,
     CompiledConditional, CompiledConfig, CompiledDefault, CompiledFilter, CompiledOperation,
     CompiledPhase, CompiledPolicy, CompiledRegex, CompiledRule, CompiledRunIf, CompiledSynthesize,
@@ -95,13 +95,14 @@ fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslErr
         .transpose()?;
 
     let run_if = phase.run_if.as_ref().map(|r| {
-        CompiledRunIf::new(
-            r.phase.clone(),
-            match r.trigger.as_str() {
-                "modified" => RunIfTrigger::Modified,
-                _ => RunIfTrigger::Completed,
-            },
-        )
+        let trigger = match r.trigger.as_str() {
+            "modified" => RunIfTrigger::Modified,
+            "completed" => RunIfTrigger::Completed,
+            other => {
+                unreachable!("grammar restricts run_if_trigger to modified|completed, got: {other}")
+            }
+        };
+        CompiledRunIf::new(r.phase.clone(), trigger)
     });
 
     let operations: Vec<CompiledOperation> = phase

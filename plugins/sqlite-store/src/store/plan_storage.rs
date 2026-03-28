@@ -1,15 +1,59 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::params;
 use uuid::Uuid;
 
 use voom_domain::errors::Result;
-use voom_domain::plan::Plan;
-use voom_domain::storage::{PlanStatus, PlanStorage, StoredPlan};
+use voom_domain::plan::{Plan, PlannedAction};
+use voom_domain::storage::{PlanStatus, PlanStorage, PlanSummary};
 
 use super::{
     format_datetime, other_storage_err, parse_optional_datetime, row_uuid, storage_err,
     OptionalExt, SqliteStore,
 };
+
+/// Internal DTO for mapping database rows. Not exposed outside this crate.
+struct StoredPlan {
+    id: Uuid,
+    file_id: Uuid,
+    policy_name: String,
+    phase_name: String,
+    status: PlanStatus,
+    actions_json: String,
+    warnings: Option<String>,
+    skip_reason: Option<String>,
+    policy_hash: Option<String>,
+    evaluated_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    executed_at: Option<DateTime<Utc>>,
+    result: Option<String>,
+}
+
+impl StoredPlan {
+    fn into_summary(self) -> Result<PlanSummary> {
+        let actions: Vec<PlannedAction> = serde_json::from_str(&self.actions_json)
+            .map_err(other_storage_err("failed to deserialize plan actions"))?;
+        let warnings: Vec<String> = match self.warnings {
+            Some(ref json) => serde_json::from_str(json).unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let mut summary = PlanSummary::new(
+            self.id,
+            self.file_id,
+            self.policy_name,
+            self.phase_name,
+            self.status,
+            actions,
+        );
+        summary.warnings = warnings;
+        summary.skip_reason = self.skip_reason;
+        summary.policy_hash = self.policy_hash;
+        summary.evaluated_at = self.evaluated_at;
+        summary.created_at = self.created_at;
+        summary.executed_at = self.executed_at;
+        summary.result = self.result;
+        Ok(summary)
+    }
+}
 
 impl PlanStorage for SqliteStore {
     fn save_plan(&self, plan: &Plan) -> Result<Uuid> {
@@ -75,7 +119,7 @@ impl PlanStorage for SqliteStore {
         Ok(())
     }
 
-    fn plans_for_file(&self, file_id: &Uuid) -> Result<Vec<StoredPlan>> {
+    fn plans_for_file(&self, file_id: &Uuid) -> Result<Vec<PlanSummary>> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
@@ -84,7 +128,7 @@ impl PlanStorage for SqliteStore {
             )
             .map_err(storage_err("failed to prepare plans query"))?;
 
-        let plans = stmt
+        let stored_plans = stmt
             .query_map(params![file_id.to_string()], |row| {
                 let id_str: String = row.get("id")?;
                 let file_id_str: String = row.get("file_id")?;
@@ -98,20 +142,7 @@ impl PlanStorage for SqliteStore {
                         )
                     })?
                 };
-                let mut sp = StoredPlan::new(
-                    row_uuid(&id_str, "plans")?,
-                    row_uuid(&file_id_str, "plans")?,
-                    row.get::<_, String>("policy_name")?,
-                    row.get::<_, String>("phase_name")?,
-                    status,
-                    row.get::<_, String>("actions")?,
-                );
-                sp.warnings = row.get("warnings")?;
-                sp.skip_reason = row.get("skip_reason")?;
-                sp.policy_hash = row.get("policy_hash")?;
-                sp.evaluated_at =
-                    parse_optional_datetime(row.get("evaluated_at")?, "plans.evaluated_at")?;
-                sp.created_at = {
+                let created_at: DateTime<Utc> = {
                     let s: String = row.get("created_at")?;
                     s.parse().map_err(|e| {
                         rusqlite::Error::FromSqlConversionFailure(
@@ -121,15 +152,35 @@ impl PlanStorage for SqliteStore {
                         )
                     })?
                 };
-                sp.executed_at =
-                    parse_optional_datetime(row.get("executed_at")?, "plans.executed_at")?;
-                sp.result = row.get("result")?;
-                Ok(sp)
+                Ok(StoredPlan {
+                    id: row_uuid(&id_str, "plans")?,
+                    file_id: row_uuid(&file_id_str, "plans")?,
+                    policy_name: row.get("policy_name")?,
+                    phase_name: row.get("phase_name")?,
+                    status,
+                    actions_json: row.get("actions")?,
+                    warnings: row.get("warnings")?,
+                    skip_reason: row.get("skip_reason")?,
+                    policy_hash: row.get("policy_hash")?,
+                    evaluated_at: parse_optional_datetime(
+                        row.get("evaluated_at")?,
+                        "plans.evaluated_at",
+                    )?,
+                    created_at,
+                    executed_at: parse_optional_datetime(
+                        row.get("executed_at")?,
+                        "plans.executed_at",
+                    )?,
+                    result: row.get("result")?,
+                })
             })
             .map_err(storage_err("failed to query plans"))?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(storage_err("failed to collect plans"))?;
 
-        Ok(plans)
+        stored_plans
+            .into_iter()
+            .map(StoredPlan::into_summary)
+            .collect()
     }
 }

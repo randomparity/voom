@@ -105,11 +105,10 @@ fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
             .unwrap_or("");
         match keyword {
             "languages" => {
-                let is_audio = text.contains("audio");
-                let list_pair = item
-                    .into_inner()
-                    .find(|p| p.as_rule() == Rule::list)
-                    .unwrap();
+                let mut inner = item.into_inner();
+                let lang_target = inner.find(|p| p.as_rule() == Rule::lang_target).unwrap();
+                let is_audio = lang_target.as_str() == "audio";
+                let list_pair = inner.find(|p| p.as_rule() == Rule::list).unwrap();
                 let values = build_list(list_pair);
                 if is_audio {
                     audio_languages = values;
@@ -175,15 +174,18 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
                 depends_on = build_list(list);
             }
             Rule::run_if => {
-                // Grammar: "run_if" ~ ident ~ "." ~ ("modified" | "completed")
-                // Only the ident is a named rule child; extract trigger from text.
-                let text = child.as_str();
-                let phase_name = child.into_inner().next().unwrap().as_str().to_string();
-                let trigger = if text.contains("modified") {
-                    "modified".to_string()
-                } else {
-                    "completed".to_string()
-                };
+                // Grammar: "run_if" ~ ident ~ "." ~ run_if_trigger
+                let mut inner = child.into_inner();
+                let phase_name = inner
+                    .find(|p| p.as_rule() == Rule::ident)
+                    .unwrap()
+                    .as_str()
+                    .to_string();
+                let trigger = inner
+                    .find(|p| p.as_rule() == Rule::run_if_trigger)
+                    .unwrap()
+                    .as_str()
+                    .to_string();
                 run_if = Some(RunIfNode {
                     phase: phase_name,
                     trigger,

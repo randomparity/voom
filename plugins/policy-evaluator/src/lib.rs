@@ -11,9 +11,9 @@ pub mod evaluator;
 pub mod filter;
 
 use voom_domain::capabilities::Capability;
-use voom_domain::compiled::CompiledPolicy;
 use voom_domain::errors::Result;
 use voom_domain::media::MediaFile;
+use voom_dsl::compiled::CompiledPolicy;
 use voom_kernel::{Plugin, PluginContext};
 
 /// The policy evaluator plugin.
