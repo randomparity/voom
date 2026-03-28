@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -42,20 +43,49 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
         .and_then(|v| v.as_integer())
         .unwrap_or(300) as u64;
 
+    // Wrap kernel in Arc so the health-check background task can share it
+    // with any future consumers. The kernel is not used after this point
+    // by the main task (plugin_info snapshot was taken above).
+    let kernel = Arc::new(kernel);
+
+    let retention_days = config
+        .plugin
+        .get("health-checker")
+        .and_then(|t| t.get("retention_days"))
+        .and_then(|v| v.as_integer())
+        .unwrap_or(30) as i64;
+
     if health_interval > 0 {
         let health_token = token.clone();
         let data_dir = config.data_dir.clone();
+        let health_kernel = kernel.clone();
+        let health_store = store.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(health_interval));
             interval.tick().await; // skip immediate first tick (init already ran checks)
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let checker = voom_health_checker::HealthCheckerPlugin::new();
-                        let events = checker.run_checks(&data_dir);
-                        for event in events {
-                            kernel.dispatch(event);
-                        }
+                        // Prune old health check records
+                        let prune_store = health_store.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            let cutoff = chrono::Utc::now()
+                                - chrono::Duration::days(retention_days);
+                            if let Err(e) = prune_store.prune_health_checks(cutoff) {
+                                tracing::warn!(error = %e, "failed to prune health checks");
+                            }
+                        }).await;
+
+                        // Run health checks and dispatch events
+                        let k = health_kernel.clone();
+                        let d = data_dir.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            let checker = voom_health_checker::HealthCheckerPlugin::new();
+                            let events = checker.run_checks(&d);
+                            for event in events {
+                                k.dispatch(event);
+                            }
+                        }).await;
                     }
                     _ = health_token.cancelled() => break,
                 }

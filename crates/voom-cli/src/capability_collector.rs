@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::capability_map::CapabilityMap;
@@ -22,10 +22,7 @@ impl CapabilityCollectorPlugin {
     /// Returns a clone of the collected capability map.
     #[must_use]
     pub fn snapshot(&self) -> CapabilityMap {
-        self.map
-            .lock()
-            .expect("capability collector lock poisoned")
-            .clone()
+        self.map.lock().clone()
     }
 }
 
@@ -52,10 +49,7 @@ impl voom_kernel::Plugin for CapabilityCollectorPlugin {
 
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
         if let Event::ExecutorCapabilities(ref caps) = event {
-            self.map
-                .lock()
-                .expect("capability collector lock poisoned")
-                .register(caps.clone());
+            self.map.lock().register(caps.clone());
         }
         Ok(None)
     }

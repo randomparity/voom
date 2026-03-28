@@ -412,6 +412,12 @@ pub mod wasm {
             .and_then(|idx| instance.get_export(&mut inner.store, Some(&idx), "on-event"))
             .and_then(|idx| instance.get_func(&mut inner.store, idx))
             .or_else(|| {
+                instance
+                    .get_export(&mut inner.store, None, "voom:plugin/plugin@0.1.0")
+                    .and_then(|idx| instance.get_export(&mut inner.store, Some(&idx), "on-event"))
+                    .and_then(|idx| instance.get_func(&mut inner.store, idx))
+            })
+            .or_else(|| {
                 let idx = instance.get_export(&mut inner.store, None, "on-event")?;
                 instance.get_func(&mut inner.store, idx)
             });

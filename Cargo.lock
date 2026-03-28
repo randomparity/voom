@@ -3217,6 +3217,7 @@ dependencies = [
  "console",
  "dirs",
  "indicatif",
+ "parking_lot",
  "predicates",
  "serde",
  "serde_json",
