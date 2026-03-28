@@ -143,6 +143,7 @@ pub fn default_config_contents() -> String {
 
 # Optional bearer token for authenticating REST API and SSE requests.
 # When set, all API requests must include an "Authorization: Bearer <token>" header.
+# Generate a strong token (≥32 chars): openssl rand -base64 32
 # auth_token = "your-secret-token"
 
 [plugins]

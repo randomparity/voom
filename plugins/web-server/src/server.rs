@@ -42,8 +42,21 @@ pub async fn start_server(
     store: Arc<dyn StorageTrait>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
-    if config.auth_token.is_none() {
-        tracing::warn!("Web server starting without authentication — all requests will be allowed");
+    match &config.auth_token {
+        None => {
+            tracing::warn!(
+                "Web server starting without authentication \
+                 — all requests will be allowed"
+            );
+        }
+        Some(token) if token.len() < 32 => {
+            tracing::warn!(
+                "Auth token is short ({} chars); consider using \
+                 a stronger token: openssl rand -base64 32",
+                token.len()
+            );
+        }
+        Some(_) => {}
     }
 
     let templates = load_templates(config.template_dir.as_deref())?;
