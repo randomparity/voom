@@ -2,6 +2,7 @@ mod bad_file_storage;
 pub mod discovered_file_storage;
 mod file_history_storage;
 mod file_storage;
+mod health_check_storage;
 mod job_storage;
 mod maintenance_storage;
 mod plan_storage;

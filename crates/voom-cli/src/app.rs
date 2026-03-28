@@ -13,6 +13,7 @@ use crate::config::AppConfig;
 // MKV-specific plans (metadata, convert-to-MKV).
 const PRIORITY_BUS_TRACER: i32 = 1;
 const PRIORITY_STORAGE: i32 = 100;
+const PRIORITY_HEALTH_CHECKER: i32 = 95;
 const PRIORITY_TOOL_DETECTOR: i32 = 90;
 const PRIORITY_DISCOVERY: i32 = 80;
 const PRIORITY_FFPROBE_INTROSPECTOR: i32 = 60;
@@ -127,6 +128,14 @@ pub fn bootstrap_kernel_with_store(
             &ctx
         );
     }
+
+    // Health checker
+    register_if_enabled!(
+        "health-checker",
+        voom_health_checker::HealthCheckerPlugin::new(),
+        PRIORITY_HEALTH_CHECKER,
+        "health checker"
+    );
 
     // Tool detector
     register_if_enabled!(

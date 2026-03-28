@@ -27,6 +27,7 @@ pub enum Event {
     /// to persist tool info, exposed via the web server's GET /api/tools endpoint.
     ToolDetected(ToolDetectedEvent),
     PluginError(PluginErrorEvent),
+    HealthStatus(HealthStatusEvent),
 }
 
 impl Event {
@@ -46,6 +47,7 @@ impl Event {
     pub const JOB_COMPLETED: &str = "job.completed";
     pub const TOOL_DETECTED: &str = "tool.detected";
     pub const PLUGIN_ERROR: &str = "plugin.error";
+    pub const HEALTH_STATUS: &str = "health.status";
 
     /// Returns the event type string used for subscription matching.
     #[must_use]
@@ -64,6 +66,7 @@ impl Event {
             Event::JobCompleted(_) => Self::JOB_COMPLETED,
             Event::ToolDetected(_) => Self::TOOL_DETECTED,
             Event::PluginError(_) => Self::PLUGIN_ERROR,
+            Event::HealthStatus(_) => Self::HEALTH_STATUS,
         }
     }
 }
@@ -428,6 +431,25 @@ impl PluginErrorEvent {
             plugin_name: plugin_name.into(),
             event_type: event_type.into(),
             error: error.into(),
+        }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthStatusEvent {
+    pub check_name: String,
+    pub passed: bool,
+    pub details: Option<String>,
+}
+
+impl HealthStatusEvent {
+    #[must_use]
+    pub fn new(check_name: impl Into<String>, passed: bool, details: Option<String>) -> Self {
+        Self {
+            check_name: check_name.into(),
+            passed,
+            details,
         }
     }
 }

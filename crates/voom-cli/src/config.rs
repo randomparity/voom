@@ -120,6 +120,7 @@ pub fn load_config() -> Result<AppConfig> {
 pub const KNOWN_PLUGIN_NAMES: &[&str] = &[
     "bus-tracer",
     "sqlite-store",
+    "health-checker",
     "tool-detector",
     "discovery",
     "ffprobe-introspector",
@@ -321,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_known_plugin_names_count() {
-        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 9);
+        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 10);
     }
 
     #[test]

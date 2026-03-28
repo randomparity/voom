@@ -8,7 +8,10 @@ use std::sync::Arc;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
-use voom_domain::storage::{BadFileStorage, FileStorage, PlanStorage, PluginDataStorage};
+use voom_domain::storage::{
+    BadFileStorage, FileStorage, HealthCheckRecord, HealthCheckStorage, PlanStorage,
+    PluginDataStorage,
+};
 use voom_kernel::{Plugin, PluginContext};
 
 use crate::store::SqliteStore;
@@ -67,6 +70,7 @@ impl Plugin for SqliteStorePlugin {
                 | Event::PLAN_FAILED
                 | Event::METADATA_ENRICHED
                 | Event::TOOL_DETECTED
+                | Event::HEALTH_STATUS
         )
     }
 
@@ -146,6 +150,15 @@ impl Plugin for SqliteStorePlugin {
                     tool = %e.tool_name,
                     version = %e.version,
                     "stored detected tool"
+                );
+            }
+            Event::HealthStatus(e) => {
+                let record = HealthCheckRecord::new(&e.check_name, e.passed, e.details.clone());
+                store.insert_health_check(&record)?;
+                tracing::info!(
+                    check = %e.check_name,
+                    passed = e.passed,
+                    "stored health check"
                 );
             }
             _ => {}
@@ -228,6 +241,7 @@ mod tests {
         assert!(plugin.handles(Event::PLAN_FAILED));
         assert!(plugin.handles(Event::METADATA_ENRICHED));
         assert!(plugin.handles(Event::TOOL_DETECTED));
+        assert!(plugin.handles(Event::HEALTH_STATUS));
     }
 
     #[test]

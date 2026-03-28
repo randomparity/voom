@@ -3234,6 +3234,7 @@ dependencies = [
  "voom-dsl",
  "voom-ffmpeg-executor",
  "voom-ffprobe-introspector",
+ "voom-health-checker",
  "voom-job-manager",
  "voom-kernel",
  "voom-mkvtoolnix-executor",
@@ -3315,6 +3316,19 @@ dependencies = [
  "voom-job-manager",
  "voom-kernel",
  "voom-process",
+]
+
+[[package]]
+name = "voom-health-checker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "voom-domain",
+ "voom-kernel",
 ]
 
 [[package]]

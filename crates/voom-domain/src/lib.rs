@@ -32,7 +32,7 @@ pub use plan::{
 pub use safeguard::{SafeguardKind, SafeguardViolation};
 pub use stats::{ProcessingOutcome, ProcessingStats};
 pub use storage::{
-    BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,
-    JobStorage, MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage, StatsStorage,
-    StorageTrait,
+    BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage,
+    HealthCheckFilters, HealthCheckRecord, HealthCheckStorage, JobFilters, JobStorage,
+    MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage, StatsStorage, StorageTrait,
 };

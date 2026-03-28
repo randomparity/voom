@@ -20,8 +20,9 @@ use crate::media::{Container, MediaFile, Track, TrackType};
 use crate::plan::Plan;
 use crate::stats::ProcessingStats;
 use crate::storage::{
-    BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,
-    JobStorage, MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage, StatsStorage,
+    BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage,
+    HealthCheckFilters, HealthCheckRecord, HealthCheckStorage, JobFilters, JobStorage,
+    MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage, StatsStorage,
 };
 
 /// Create a standard test `MediaFile` with video, two audio, and one subtitle track.
@@ -340,6 +341,24 @@ impl BadFileStorage for InMemoryStore {
 
     fn delete_bad_file_by_path(&self, _path: &Path) -> Result<()> {
         Ok(())
+    }
+}
+
+impl HealthCheckStorage for InMemoryStore {
+    fn insert_health_check(&self, _record: &HealthCheckRecord) -> Result<()> {
+        Ok(())
+    }
+
+    fn list_health_checks(&self, _filters: &HealthCheckFilters) -> Result<Vec<HealthCheckRecord>> {
+        Ok(Vec::new())
+    }
+
+    fn latest_health_checks(&self) -> Result<Vec<HealthCheckRecord>> {
+        Ok(Vec::new())
+    }
+
+    fn prune_health_checks(&self, _before: chrono::DateTime<chrono::Utc>) -> Result<u64> {
+        Ok(0)
     }
 }
 

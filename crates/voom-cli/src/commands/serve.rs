@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::Result;
 use console::style;
 use tokio_util::sync::CancellationToken;
@@ -27,6 +29,35 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
             })
         })
         .collect();
+
+    // Start periodic health checks in the background
+    let health_interval = config
+        .plugin
+        .get("health-checker")
+        .and_then(|t| t.get("interval_secs"))
+        .and_then(|v| v.as_integer())
+        .unwrap_or(300) as u64;
+
+    if health_interval > 0 {
+        let health_token = token.clone();
+        let data_dir = config.data_dir.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(health_interval));
+            interval.tick().await; // skip immediate first tick (init already ran checks)
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let checker = voom_health_checker::HealthCheckerPlugin::new();
+                        let events = checker.run_checks(&data_dir);
+                        for event in events {
+                            kernel.dispatch(event);
+                        }
+                    }
+                    _ = health_token.cancelled() => break,
+                }
+            }
+        });
+    }
 
     println!(
         "{} Starting VOOM web server on {}:{}",
