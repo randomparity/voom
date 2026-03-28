@@ -70,6 +70,7 @@ impl Plugin for SqliteStorePlugin {
                 | Event::PLAN_FAILED
                 | Event::METADATA_ENRICHED
                 | Event::TOOL_DETECTED
+                | Event::EXECUTOR_CAPABILITIES
                 | Event::HEALTH_STATUS
         )
     }
@@ -150,6 +151,23 @@ impl Plugin for SqliteStorePlugin {
                     tool = %e.tool_name,
                     version = %e.version,
                     "stored detected tool"
+                );
+            }
+            Event::ExecutorCapabilities(e) => {
+                let key = format!("executor_capabilities:{}", e.plugin_name);
+                let bytes =
+                    serde_json::to_vec(e).map_err(|err| voom_domain::VoomError::Storage {
+                        kind: voom_domain::errors::StorageErrorKind::Other,
+                        message: format!("failed to serialize executor capabilities: {err}"),
+                    })?;
+                store.set_plugin_data(&e.plugin_name, &key, &bytes)?;
+                tracing::info!(
+                    plugin = %e.plugin_name,
+                    codecs_decoders = e.codecs.decoders.len(),
+                    codecs_encoders = e.codecs.encoders.len(),
+                    formats = e.formats.len(),
+                    hw_accels = e.hw_accels.len(),
+                    "stored executor capabilities"
                 );
             }
             Event::HealthStatus(e) => {
@@ -242,6 +260,12 @@ mod tests {
         assert!(plugin.handles(Event::METADATA_ENRICHED));
         assert!(plugin.handles(Event::TOOL_DETECTED));
         assert!(plugin.handles(Event::HEALTH_STATUS));
+    }
+
+    #[test]
+    fn test_handles_executor_capabilities() {
+        let plugin = SqliteStorePlugin::new();
+        assert!(plugin.handles(Event::EXECUTOR_CAPABILITIES));
     }
 
     #[test]
@@ -369,6 +393,39 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "/media/test.mkv");
         assert_eq!(files[0].size, 1_500_000_000);
+    }
+
+    #[test]
+    fn test_on_event_handles_executor_capabilities() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut plugin = SqliteStorePlugin::new();
+        let ctx = PluginContext::new(serde_json::Value::Null, tmp.path().to_path_buf());
+        plugin.init(&ctx).unwrap();
+
+        let event =
+            Event::ExecutorCapabilities(voom_domain::events::ExecutorCapabilitiesEvent::new(
+                "ffmpeg-executor",
+                voom_domain::events::CodecCapabilities::new(
+                    vec!["h264".into(), "hevc".into()],
+                    vec!["libx264".into()],
+                ),
+                vec!["matroska".into(), "mp4".into()],
+                vec!["videotoolbox".into()],
+            ));
+        let result = plugin.on_event(&event).unwrap();
+        assert!(result.is_none());
+
+        // Verify data was stored
+        let store = plugin.store().unwrap();
+        let data = store
+            .plugin_data("ffmpeg-executor", "executor_capabilities:ffmpeg-executor")
+            .unwrap();
+        assert!(data.is_some());
+        let value: serde_json::Value = serde_json::from_slice(&data.unwrap()).unwrap();
+        assert_eq!(value["plugin_name"], "ffmpeg-executor");
+        assert_eq!(value["codecs"]["decoders"][0], "h264");
+        assert_eq!(value["formats"][0], "matroska");
+        assert_eq!(value["hw_accels"][0], "videotoolbox");
     }
 
     #[test]

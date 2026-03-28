@@ -130,6 +130,16 @@ fn event_summary(event: &Event) -> String {
         Event::MetadataEnriched(e) => {
             format!("path={} source={}", e.path.display(), e.source)
         }
+        Event::ExecutorCapabilities(e) => {
+            format!(
+                "plugin={} decoders={} encoders={} formats={} hw_accels={}",
+                e.plugin_name,
+                e.codecs.decoders.len(),
+                e.codecs.encoders.len(),
+                e.formats.len(),
+                e.hw_accels.len()
+            )
+        }
         Event::PluginError(e) => {
             format!(
                 "plugin={} event={} error={}",

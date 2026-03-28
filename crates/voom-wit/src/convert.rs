@@ -328,6 +328,12 @@ mod tests {
                 e
             }),
             Event::PlanCreated(PlanCreatedEvent::new(plan)),
+            Event::ExecutorCapabilities(ExecutorCapabilitiesEvent::new(
+                "test",
+                CodecCapabilities::empty(),
+                vec![],
+                vec![],
+            )),
         ];
 
         for event in &events {
@@ -335,6 +341,26 @@ mod tests {
             let restored = event_from_wasm(&evt_type, &payload).unwrap();
             assert_eq!(restored.event_type(), event.event_type());
         }
+    }
+
+    #[test]
+    fn test_executor_capabilities_event_roundtrip() {
+        let event = Event::ExecutorCapabilities(ExecutorCapabilitiesEvent::new(
+            "ffmpeg-executor",
+            CodecCapabilities::new(
+                vec!["h264".into(), "hevc".into(), "aac".into()],
+                vec!["libx264".into(), "libx265".into(), "aac".into()],
+            ),
+            vec!["matroska".into(), "mp4".into(), "avi".into()],
+            vec!["videotoolbox".into(), "cuda".into()],
+        ));
+
+        let (event_type, payload) = event_to_wasm(&event).unwrap();
+        assert_eq!(event_type, "executor.capabilities");
+        assert!(!payload.is_empty());
+
+        let restored = event_from_wasm(&event_type, &payload).unwrap();
+        assert_eq!(restored.event_type(), "executor.capabilities");
     }
 
     #[test]

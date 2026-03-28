@@ -33,6 +33,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/policy/validate", post(api::policy::validate_policy))
         .route("/policy/format", post(api::policy::format_policy))
         .route("/tools", get(api::tools::list_tools))
+        .route(
+            "/executor-capabilities",
+            get(api::tools::list_executor_capabilities),
+        )
         .route("/health", get(api::health::get_health));
 
     let page_routes = Router::new()

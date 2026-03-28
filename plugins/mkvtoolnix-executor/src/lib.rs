@@ -5,12 +5,14 @@ pub mod propedit;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 
+use std::process::Command;
+
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::events::{Event, EventResult};
+use voom_domain::events::{CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent};
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, ActionResult, OperationType, Plan, PlannedAction};
-use voom_kernel::Plugin;
+use voom_kernel::{Plugin, PluginContext};
 
 // Propedit (in-place metadata) operations are identified by
 // `OperationType::is_metadata_op()` — defined once in voom-domain.
@@ -35,8 +37,15 @@ fn is_supported_op(op: OperationType) -> bool {
 ///
 /// Propedit actions are always run first since they operate in-place and are much faster.
 /// Merge actions run second and produce a new file that replaces the original.
+/// Known input containers that MKVToolNix can remux.
+const MKVTOOLNIX_FORMATS: &[&str] = &[
+    "ass", "avi", "flac", "flv", "matroska", "mov", "mp4", "mpeg", "ogm", "srt", "ssa", "wav",
+    "webm",
+];
+
 pub struct MkvtoolnixExecutorPlugin {
     capabilities: Vec<Capability>,
+    available: bool,
 }
 
 impl MkvtoolnixExecutorPlugin {
@@ -49,6 +58,7 @@ impl MkvtoolnixExecutorPlugin {
                 operations,
                 formats: vec!["mkv".into()],
             }],
+            available: false,
         }
     }
 
@@ -205,6 +215,34 @@ impl Plugin for MkvtoolnixExecutorPlugin {
             Event::PlanCreated(plan_event) => self.handle_plan_created(plan_event),
             _ => Ok(None),
         }
+    }
+
+    fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
+        let available = Command::new("mkvmerge")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+
+        self.available = available;
+
+        if !available {
+            tracing::warn!("mkvmerge not found; mkvtoolnix executor disabled");
+            return Ok(vec![]);
+        }
+
+        let formats: Vec<String> = MKVTOOLNIX_FORMATS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+
+        let event = ExecutorCapabilitiesEvent::new(
+            "mkvtoolnix-executor",
+            CodecCapabilities::empty(),
+            formats,
+            vec![],
+        );
+
+        Ok(vec![Event::ExecutorCapabilities(event)])
     }
 }
 

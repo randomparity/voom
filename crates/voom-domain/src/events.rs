@@ -26,6 +26,9 @@ pub enum Event {
     /// Emitted by the tool-detector plugin. Consumed by the sqlite-store plugin
     /// to persist tool info, exposed via the web server's GET /api/tools endpoint.
     ToolDetected(ToolDetectedEvent),
+    /// Emitted by executor plugins during init(). Reports probed codec,
+    /// format, and hardware acceleration support for the underlying tool.
+    ExecutorCapabilities(ExecutorCapabilitiesEvent),
     PluginError(PluginErrorEvent),
     HealthStatus(HealthStatusEvent),
 }
@@ -46,6 +49,7 @@ impl Event {
     pub const JOB_PROGRESS: &str = "job.progress";
     pub const JOB_COMPLETED: &str = "job.completed";
     pub const TOOL_DETECTED: &str = "tool.detected";
+    pub const EXECUTOR_CAPABILITIES: &str = "executor.capabilities";
     pub const PLUGIN_ERROR: &str = "plugin.error";
     pub const HEALTH_STATUS: &str = "health.status";
 
@@ -65,6 +69,7 @@ impl Event {
             Event::JobProgress(_) => Self::JOB_PROGRESS,
             Event::JobCompleted(_) => Self::JOB_COMPLETED,
             Event::ToolDetected(_) => Self::TOOL_DETECTED,
+            Event::ExecutorCapabilities(_) => Self::EXECUTOR_CAPABILITIES,
             Event::PluginError(_) => Self::PLUGIN_ERROR,
             Event::HealthStatus(_) => Self::HEALTH_STATUS,
         }
@@ -414,6 +419,54 @@ impl ToolDetectedEvent {
 
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodecCapabilities {
+    pub decoders: Vec<String>,
+    pub encoders: Vec<String>,
+}
+
+impl CodecCapabilities {
+    #[must_use]
+    pub fn new(decoders: Vec<String>, encoders: Vec<String>) -> Self {
+        Self { decoders, encoders }
+    }
+
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            decoders: vec![],
+            encoders: vec![],
+        }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutorCapabilitiesEvent {
+    pub plugin_name: String,
+    pub codecs: CodecCapabilities,
+    pub formats: Vec<String>,
+    pub hw_accels: Vec<String>,
+}
+
+impl ExecutorCapabilitiesEvent {
+    #[must_use]
+    pub fn new(
+        plugin_name: impl Into<String>,
+        codecs: CodecCapabilities,
+        formats: Vec<String>,
+        hw_accels: Vec<String>,
+    ) -> Self {
+        Self {
+            plugin_name: plugin_name.into(),
+            codecs,
+            formats,
+            hw_accels,
+        }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginErrorEvent {
     pub plugin_name: String,
     pub event_type: String,
@@ -561,6 +614,44 @@ mod tests {
         let bytes = rmp_serde::to_vec(&event).unwrap();
         let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(deserialized.event_type(), "file.introspection_failed");
+    }
+
+    #[test]
+    fn test_executor_capabilities_serde_roundtrip() {
+        let event = Event::ExecutorCapabilities(ExecutorCapabilitiesEvent::new(
+            "ffmpeg-executor",
+            CodecCapabilities::new(
+                vec!["h264".into(), "hevc".into()],
+                vec!["libx264".into(), "libx265".into()],
+            ),
+            vec!["matroska".into(), "mp4".into()],
+            vec!["videotoolbox".into()],
+        ));
+        assert_eq!(event.event_type(), "executor.capabilities");
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.event_type(), "executor.capabilities");
+
+        let bytes = rmp_serde::to_vec(&event).unwrap();
+        let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(deserialized.event_type(), "executor.capabilities");
+    }
+
+    #[test]
+    fn test_executor_capabilities_empty_codecs() {
+        let caps = CodecCapabilities::empty();
+        assert!(caps.decoders.is_empty());
+        assert!(caps.encoders.is_empty());
+
+        let event = ExecutorCapabilitiesEvent::new(
+            "mkvtoolnix-executor",
+            caps,
+            vec!["matroska".into()],
+            vec![],
+        );
+        assert_eq!(event.plugin_name, "mkvtoolnix-executor");
+        assert!(event.hw_accels.is_empty());
     }
 
     #[test]

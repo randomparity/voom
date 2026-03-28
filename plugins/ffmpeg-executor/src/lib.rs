@@ -7,18 +7,21 @@ pub mod command;
 pub mod hwaccel;
 pub mod progress;
 
+use std::process::Command;
 use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::events::{Event, EventResult, PlanCreatedEvent};
+use voom_domain::events::{
+    CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent, PlanCreatedEvent,
+};
 
 fn plugin_err(message: impl Into<String>) -> VoomError {
     VoomError::plugin("ffmpeg-executor", message)
 }
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionResult, OperationType, Plan, PlannedAction};
-use voom_kernel::Plugin;
+use voom_kernel::{Plugin, PluginContext};
 use voom_process::run_with_timeout;
 
 use crate::command::{build_ffmpeg_command, output_extension};
@@ -56,6 +59,9 @@ const FFMPEG_OPS: &[OperationType] = &[
 pub struct FfmpegExecutorPlugin {
     capabilities: Vec<Capability>,
     hw_accel: HwAccelConfig,
+    probed_codecs: Option<CodecCapabilities>,
+    probed_formats: Option<Vec<String>>,
+    probed_hw_accels: Option<Vec<String>>,
 }
 
 impl FfmpegExecutorPlugin {
@@ -68,6 +74,9 @@ impl FfmpegExecutorPlugin {
                 formats: vec![], // Supports all formats
             }],
             hw_accel: HwAccelConfig::new(),
+            probed_codecs: None,
+            probed_formats: None,
+            probed_hw_accels: None,
         }
     }
 
@@ -265,6 +274,106 @@ impl FfmpegExecutorPlugin {
     }
 }
 
+/// Parse `ffmpeg -codecs` output into decoder and encoder lists.
+///
+/// Each codec line (after the `-------` separator) has flags in columns 0-5:
+/// `D` = decoding, `E` = encoding. The codec name follows after whitespace.
+fn parse_codecs(output: &str) -> CodecCapabilities {
+    let mut decoders = Vec::new();
+    let mut encoders = Vec::new();
+    let mut past_separator = false;
+
+    for line in output.lines() {
+        if line.starts_with(" ------") {
+            past_separator = true;
+            continue;
+        }
+        if !past_separator {
+            continue;
+        }
+        // Lines look like: " DEV.L. h264   H.264 / AVC / MPEG-4 AVC"
+        // Flags are in columns 1-6, codec name starts after whitespace
+        let trimmed = line.trim_start();
+        if trimmed.len() < 8 {
+            continue;
+        }
+        let flags = &trimmed[..6];
+        let rest = trimmed[6..].trim_start();
+        let name = rest.split_whitespace().next().unwrap_or("").to_string();
+        if name.is_empty() {
+            continue;
+        }
+        if flags.starts_with('D') {
+            decoders.push(name.clone());
+        }
+        if flags.chars().nth(1) == Some('E') {
+            encoders.push(name);
+        }
+    }
+
+    CodecCapabilities::new(decoders, encoders)
+}
+
+/// Parse `ffmpeg -formats` output into a list of supported format names.
+///
+/// Each format line (after the `-------` separator) has flags in columns 0-2:
+/// `D` = demux, `E` = mux. We collect any format that can be muxed or demuxed.
+fn parse_formats(output: &str) -> Vec<String> {
+    let mut formats = Vec::new();
+    let mut past_separator = false;
+
+    for line in output.lines() {
+        if line.starts_with(" ------") {
+            past_separator = true;
+            continue;
+        }
+        if !past_separator {
+            continue;
+        }
+        // Lines look like: " DE matroska,webm Matroska / WebM"
+        let trimmed = line.trim_start();
+        if trimmed.len() < 4 {
+            continue;
+        }
+        let rest = trimmed[2..].trim_start();
+        let name_field = rest.split_whitespace().next().unwrap_or("");
+        // Some formats list aliases: "matroska,webm" — take the primary
+        for name in name_field.split(',') {
+            let name = name.trim();
+            if !name.is_empty() {
+                formats.push(name.to_string());
+            }
+        }
+    }
+
+    formats.sort();
+    formats.dedup();
+    formats
+}
+
+/// Parse `ffmpeg -hwaccels` output into a list of hardware acceleration names.
+///
+/// Lines after "Hardware acceleration methods:" are individual backend names.
+fn parse_hwaccels(output: &str) -> Vec<String> {
+    let mut accels = Vec::new();
+    let mut past_header = false;
+
+    for line in output.lines() {
+        if line.contains("Hardware acceleration methods:") {
+            past_header = true;
+            continue;
+        }
+        if past_header {
+            let name = line.trim();
+            if !name.is_empty() {
+                accels.push(name.to_string());
+            }
+        }
+    }
+
+    accels
+}
+
 impl Default for FfmpegExecutorPlugin {
     fn default() -> Self {
         Self::new()
@@ -293,6 +402,46 @@ impl Plugin for FfmpegExecutorPlugin {
             Event::PlanCreated(plan_event) => self.handle_plan_created(plan_event),
             _ => Ok(None),
         }
+    }
+
+    fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
+        let codecs = Command::new("ffmpeg")
+            .args(["-codecs", "-hide_banner"])
+            .output()
+            .map(|o| parse_codecs(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to probe ffmpeg codecs");
+                CodecCapabilities::empty()
+            });
+
+        let formats = Command::new("ffmpeg")
+            .args(["-formats", "-hide_banner"])
+            .output()
+            .map(|o| parse_formats(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to probe ffmpeg formats");
+                Vec::new()
+            });
+
+        let hw_accels = Command::new("ffmpeg")
+            .args(["-hwaccels", "-hide_banner"])
+            .output()
+            .map(|o| parse_hwaccels(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to probe ffmpeg hwaccels");
+                Vec::new()
+            });
+
+        self.probed_codecs = Some(codecs.clone());
+        self.probed_formats = Some(formats.clone());
+        self.probed_hw_accels = Some(hw_accels.clone());
+
+        // Detect HW accel backend for use during execution
+        self.hw_accel = HwAccelConfig::detect();
+
+        let event = ExecutorCapabilitiesEvent::new("ffmpeg-executor", codecs, formats, hw_accels);
+
+        Ok(vec![Event::ExecutorCapabilities(event)])
     }
 }
 
@@ -694,5 +843,85 @@ mod tests {
     fn test_default_impl() {
         let plugin = FfmpegExecutorPlugin::default();
         assert_eq!(plugin.name(), "ffmpeg-executor");
+    }
+
+    // ── codec/format/hwaccel parsing ────────────────────────────
+
+    #[test]
+    fn test_parse_codecs() {
+        let output = "\
+Codecs:
+ -------
+ DEVIL. h264                 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10
+ DEV.L. hevc                 H.265 / HEVC
+ D.A.L. aac                  AAC (Advanced Audio Coding)
+ .EA.L. opus                 Opus (Opus Interactive Audio Codec)
+ ..S... srt                  SubRip subtitle
+";
+        let caps = parse_codecs(output);
+        assert!(caps.decoders.contains(&"h264".to_string()));
+        assert!(caps.decoders.contains(&"hevc".to_string()));
+        assert!(caps.decoders.contains(&"aac".to_string()));
+        assert!(!caps.decoders.contains(&"opus".to_string()));
+        assert!(caps.encoders.contains(&"h264".to_string()));
+        assert!(caps.encoders.contains(&"hevc".to_string()));
+        assert!(caps.encoders.contains(&"opus".to_string()));
+        assert!(!caps.encoders.contains(&"aac".to_string()));
+    }
+
+    #[test]
+    fn test_parse_codecs_empty_output() {
+        let caps = parse_codecs("");
+        assert!(caps.decoders.is_empty());
+        assert!(caps.encoders.is_empty());
+    }
+
+    #[test]
+    fn test_parse_formats() {
+        let output = "\
+File formats:
+ -------
+ DE matroska,webm  Matroska / WebM
+  E mp4            MP4 (MPEG-4 Part 14)
+ D  avi            AVI (Audio Video Interleaved)
+ DE flac           raw FLAC
+";
+        let formats = parse_formats(output);
+        assert!(formats.contains(&"matroska".to_string()));
+        assert!(formats.contains(&"webm".to_string()));
+        assert!(formats.contains(&"mp4".to_string()));
+        assert!(formats.contains(&"avi".to_string()));
+        assert!(formats.contains(&"flac".to_string()));
+    }
+
+    #[test]
+    fn test_parse_formats_empty_output() {
+        let formats = parse_formats("");
+        assert!(formats.is_empty());
+    }
+
+    #[test]
+    fn test_parse_hwaccels() {
+        let output = "\
+Hardware acceleration methods:
+videotoolbox
+cuda
+vaapi
+";
+        let accels = parse_hwaccels(output);
+        assert_eq!(accels, vec!["videotoolbox", "cuda", "vaapi"]);
+    }
+
+    #[test]
+    fn test_parse_hwaccels_empty_output() {
+        let accels = parse_hwaccels("");
+        assert!(accels.is_empty());
+    }
+
+    #[test]
+    fn test_parse_hwaccels_no_methods() {
+        let output = "Hardware acceleration methods:\n";
+        let accels = parse_hwaccels(output);
+        assert!(accels.is_empty());
     }
 }
