@@ -196,6 +196,7 @@ pub enum OperationType {
     ClearDefault,
     SetForced,
     ClearForced,
+    /// Set a track's title. An empty title string means "clear/remove the title".
     SetTitle,
     SetLanguage,
     RemoveTrack,

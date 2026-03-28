@@ -894,8 +894,8 @@ fn build_value(pair: Pair<'_, Rule>) -> Value {
             Value::Number(num, raw)
         }
         Rule::boolean => Value::Bool(pair.as_str() == "true"),
-        Rule::ident => Value::Ident(pair.as_str().to_string()),
         Rule::list => Value::List(build_list_values(pair)),
+        // Rule::ident and any other token types are treated as identifiers
         _ => Value::Ident(pair.as_str().to_string()),
     }
 }

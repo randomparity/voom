@@ -447,6 +447,8 @@ fn emit_clear_forced(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext
     ));
 }
 
+/// Emit a "clear title" action. Uses `SetTitle` with an empty string as the
+/// canonical representation — executors treat an empty title as "remove title".
 fn emit_clear_title(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext) {
     ctx.plan.actions.push(PlannedAction::track_op(
         OperationType::SetTitle,

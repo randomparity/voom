@@ -335,7 +335,9 @@ pub fn build_ffmpeg_command(
                     cmd = cmd.disposition(stream, "default");
                 }
             }
-            OperationType::ClearDefault => {
+            // Both clear operations use disposition "0" — ffmpeg clears all
+            // disposition flags on the stream when set to 0.
+            OperationType::ClearDefault | OperationType::ClearForced => {
                 if let Some(stream) = action.track_index {
                     cmd = cmd.disposition(stream, "0");
                 }
@@ -343,11 +345,6 @@ pub fn build_ffmpeg_command(
             OperationType::SetForced => {
                 if let Some(stream) = action.track_index {
                     cmd = cmd.disposition(stream, "forced");
-                }
-            }
-            OperationType::ClearForced => {
-                if let Some(stream) = action.track_index {
-                    cmd = cmd.disposition(stream, "0");
                 }
             }
             OperationType::SetTitle => {
