@@ -12,12 +12,12 @@ description = "FFprobe introspection plugin for VOOM — media metadata extracti
 [dependencies]
 voom-domain = { workspace = true }
 voom-kernel = { workspace = true }
+voom-process = { path = "../../crates/voom-process" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
-wait-timeout = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -3174,7 +3174,7 @@ dependencies = [
  "uuid",
  "voom-domain",
  "voom-kernel",
- "wait-timeout",
+ "voom-process",
 ]
 
 [[package]]

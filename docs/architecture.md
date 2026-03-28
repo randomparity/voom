@@ -23,12 +23,16 @@ VOOM (Video Orchestration Operations Manager) is a policy-driven video library m
 │   │ (pest) │ │ (pest) │ │          │ │          │ │       │    │
 │   └────────┘ └────────┘ └──────────┘ └──────────┘ └───────┘    │
 ├────────────────────────────────────────────────────────────────┤
-│            Native Plugins (compiled into binary)               │
+│     Native Plugins — Kernel-Registered (event bus dispatch)     │
 │                                                                │
-│   Discovery ────── Introspection ────── Storage                │
-│   Evaluator ────── Orchestrator ─────── Jobs                   │
+│   Discovery ────── Tool Detector ───── Storage                 │
 │   MKVToolNix ───── FFmpeg ──────────── Backup                  │
-│   Web Server ───── Tool Detector                               │
+│   Job Manager                                                  │
+│                                                                │
+│     Native Plugins — Library-Only (called directly by CLI)     │
+│                                                                │
+│   Evaluator ────── Orchestrator ─────── Introspection          │
+│   Web Server                                                   │
 ├────────────────────────────────────────────────────────────────┤
 │            WASM Plugins (loaded at runtime via wasmtime)       │
 │                                                                │
@@ -110,7 +114,7 @@ pub trait Plugin: Send + Sync {
 }
 ```
 
-Plugins that participate in event-driven coordination override `handles()` and `on_event()`. Plugins that only provide direct API calls (policy-evaluator, phase-orchestrator, web-server) use the defaults and don't need stub implementations.
+Plugins that participate in event-driven coordination override `handles()` and `on_event()`. Library-only plugins (policy-evaluator, phase-orchestrator, ffprobe-introspector, web-server) are called directly by the CLI and are not registered with the kernel — they don't participate in event dispatch.
 
 ### WASM Plugins
 
