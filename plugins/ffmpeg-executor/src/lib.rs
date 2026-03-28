@@ -20,7 +20,7 @@ fn plugin_err(message: impl Into<String>) -> VoomError {
     VoomError::plugin("ffmpeg-executor", message)
 }
 use voom_domain::media::Container;
-use voom_domain::plan::{ActionResult, OperationType, Plan, PlannedAction};
+use voom_domain::plan::{ActionParams, ActionResult, OperationType, Plan, PlannedAction};
 use voom_kernel::{Plugin, PluginContext};
 use voom_process::run_with_timeout;
 
@@ -96,6 +96,7 @@ impl FfmpegExecutorPlugin {
     /// Returns `false` for:
     /// - Empty or skipped plans
     /// - MKV files with only metadata operations (deferred to mkvtoolnix)
+    /// - Plans requiring codecs/formats the probed FFmpeg doesn't support
     #[must_use]
     pub fn can_handle(&self, plan: &Plan) -> bool {
         if plan.is_empty() || plan.is_skipped() {
@@ -117,6 +118,10 @@ impl FfmpegExecutorPlugin {
 
         // FFmpeg always handles transcode/synthesize/convert-container
         if has_transcode || has_convert {
+            // When probed data exists, verify the required codecs/formats
+            if !self.can_handle_probed(plan) {
+                return false;
+            }
             return true;
         }
 
@@ -128,6 +133,62 @@ impl FfmpegExecutorPlugin {
         }
 
         false
+    }
+
+    /// Check probed codec/format data against the plan's requirements.
+    ///
+    /// Returns `true` if probing wasn't performed (graceful fallback)
+    /// or if all required codecs and formats are supported.
+    fn can_handle_probed(&self, plan: &Plan) -> bool {
+        for action in &plan.actions {
+            match (&action.operation, &action.parameters) {
+                (
+                    OperationType::TranscodeVideo | OperationType::TranscodeAudio,
+                    ActionParams::Transcode { codec, .. },
+                ) => {
+                    if let Some(caps) = &self.probed_codecs {
+                        if !caps.encoders.iter().any(|e| e == codec) {
+                            tracing::debug!(
+                                codec = %codec,
+                                "rejecting plan: codec not in probed encoders"
+                            );
+                            return false;
+                        }
+                    }
+                }
+                (
+                    OperationType::SynthesizeAudio,
+                    ActionParams::Synthesize {
+                        codec: Some(codec), ..
+                    },
+                ) => {
+                    if let Some(caps) = &self.probed_codecs {
+                        if !caps.encoders.iter().any(|e| e == codec) {
+                            tracing::debug!(
+                                codec = %codec,
+                                "rejecting plan: synthesize codec not in probed encoders"
+                            );
+                            return false;
+                        }
+                    }
+                }
+                (OperationType::ConvertContainer, ActionParams::Container { container }) => {
+                    if let Some(formats) = &self.probed_formats {
+                        if let Some(name) = ffmpeg_format_name(container) {
+                            if !formats.iter().any(|f| f == name) {
+                                tracing::debug!(
+                                    format = %name,
+                                    "rejecting plan: format not in probed formats"
+                                );
+                                return false;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
     }
 
     /// Execute a plan by spawning an `FFmpeg` subprocess.
@@ -372,6 +433,23 @@ fn parse_hwaccels(output: &str) -> Vec<String> {
     }
 
     accels
+}
+
+/// Map a `Container` variant to the FFmpeg muxer format name.
+///
+/// Returns `None` for `Other` (unknown containers are not rejected).
+fn ffmpeg_format_name(container: &Container) -> Option<&'static str> {
+    match container {
+        Container::Mkv => Some("matroska"),
+        Container::Mp4 => Some("mp4"),
+        Container::Avi => Some("avi"),
+        Container::Webm => Some("webm"),
+        Container::Flv => Some("flv"),
+        Container::Wmv => Some("asf"),
+        Container::Mov => Some("mov"),
+        Container::Ts => Some("mpegts"),
+        Container::Other | _ => None,
+    }
 }
 
 impl Default for FfmpegExecutorPlugin {
@@ -939,5 +1017,121 @@ vaapi
         let output = "Hardware acceleration methods:\n";
         let accels = parse_hwaccels(output);
         assert!(accels.is_empty());
+    }
+
+    // ── can_handle: probed capability checks ───────────────────
+
+    fn plugin_with_probed(encoders: Vec<&str>, formats: Vec<&str>) -> FfmpegExecutorPlugin {
+        let mut plugin = FfmpegExecutorPlugin::new();
+        plugin.probed_codecs = Some(CodecCapabilities::new(
+            vec![],
+            encoders.into_iter().map(String::from).collect(),
+        ));
+        plugin.probed_formats = Some(formats.into_iter().map(String::from).collect());
+        plugin
+    }
+
+    #[test]
+    fn test_can_handle_rejects_unsupported_codec() {
+        let plugin = plugin_with_probed(vec!["h264", "aac"], vec!["mp4"]);
+        let plan = plan_with_actions(
+            sample_mp4_file(),
+            vec![PlannedAction::track_op(
+                OperationType::TranscodeVideo,
+                0,
+                ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    crf: None,
+                    preset: None,
+                    bitrate: None,
+                    channels: None,
+                },
+                "Transcode to HEVC",
+            )],
+        );
+        assert!(!plugin.can_handle(&plan));
+    }
+
+    #[test]
+    fn test_can_handle_accepts_supported_codec() {
+        let plugin = plugin_with_probed(vec!["h264", "hevc", "aac"], vec!["mp4"]);
+        let plan = plan_with_actions(
+            sample_mp4_file(),
+            vec![PlannedAction::track_op(
+                OperationType::TranscodeVideo,
+                0,
+                ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    crf: None,
+                    preset: None,
+                    bitrate: None,
+                    channels: None,
+                },
+                "Transcode to HEVC",
+            )],
+        );
+        assert!(plugin.can_handle(&plan));
+    }
+
+    #[test]
+    fn test_can_handle_rejects_unsupported_format() {
+        let plugin = plugin_with_probed(vec!["h264"], vec!["mp4", "matroska"]);
+        let plan = plan_with_actions(
+            sample_mp4_file(),
+            vec![PlannedAction::file_op(
+                OperationType::ConvertContainer,
+                ActionParams::Container {
+                    container: Container::Webm,
+                },
+                "Convert to WebM",
+            )],
+        );
+        assert!(!plugin.can_handle(&plan));
+    }
+
+    #[test]
+    fn test_can_handle_fallback_when_not_probed() {
+        let plugin = FfmpegExecutorPlugin::new(); // no probed data
+        let plan = plan_with_actions(
+            sample_mp4_file(),
+            vec![PlannedAction::track_op(
+                OperationType::TranscodeVideo,
+                0,
+                ActionParams::Transcode {
+                    codec: "av1".into(),
+                    crf: None,
+                    preset: None,
+                    bitrate: None,
+                    channels: None,
+                },
+                "Transcode to AV1",
+            )],
+        );
+        assert!(plugin.can_handle(&plan));
+    }
+
+    #[test]
+    fn test_can_handle_synthesize_checks_codec() {
+        let plugin = plugin_with_probed(vec!["h264", "aac"], vec!["mp4"]);
+        let plan = plan_with_actions(
+            sample_mp4_file(),
+            vec![PlannedAction::track_op(
+                OperationType::SynthesizeAudio,
+                1,
+                ActionParams::Synthesize {
+                    name: "stereo".into(),
+                    codec: Some("opus".into()),
+                    language: None,
+                    text: None,
+                    bitrate: None,
+                    channels: None,
+                    title: None,
+                    position: None,
+                    source_track: None,
+                },
+                "Synthesize audio (opus)",
+            )],
+        );
+        assert!(!plugin.can_handle(&plan));
     }
 }

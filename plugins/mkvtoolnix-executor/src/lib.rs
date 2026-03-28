@@ -62,6 +62,13 @@ impl MkvtoolnixExecutorPlugin {
         }
     }
 
+    /// Create a plugin with `available` set to the given value (for testing).
+    #[cfg(test)]
+    fn with_available(mut self, available: bool) -> Self {
+        self.available = available;
+        self
+    }
+
     /// Check whether this plugin can handle all operations in the given plan.
     ///
     /// Returns true if:
@@ -69,6 +76,10 @@ impl MkvtoolnixExecutorPlugin {
     /// - All actions use supported operation types
     #[must_use]
     pub fn can_handle(&self, plan: &Plan) -> bool {
+        if !self.available {
+            return false;
+        }
+
         let is_mkv = plan.file.container == Container::Mkv;
         let is_convert_to_mkv = plan.actions.iter().any(|a| {
             a.operation == OperationType::ConvertContainer
@@ -314,7 +325,7 @@ mod tests {
 
     #[test]
     fn test_plugin_metadata() {
-        let plugin = MkvtoolnixExecutorPlugin::new();
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
         assert_eq!(plugin.name(), "mkvtoolnix-executor");
         assert_eq!(plugin.version(), env!("CARGO_PKG_VERSION"));
         assert_eq!(plugin.capabilities().len(), 1);
@@ -332,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_mkv() {
-        let plugin = MkvtoolnixExecutorPlugin::new();
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
         let plan = make_mkv_plan(vec![
             make_action(OperationType::SetDefault, Some(1), ActionParams::Empty),
             make_action(
@@ -349,7 +360,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_non_mkv() {
-        let plugin = MkvtoolnixExecutorPlugin::new();
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
         let plan = make_mp4_plan(vec![make_action(
             OperationType::SetDefault,
             Some(1),
@@ -360,7 +371,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_convert_to_mkv() {
-        let plugin = MkvtoolnixExecutorPlugin::new();
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
         let plan = make_mp4_plan(vec![make_action(
             OperationType::ConvertContainer,
             None,
@@ -373,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_unsupported_op() {
-        let plugin = MkvtoolnixExecutorPlugin::new();
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
         let plan = make_mkv_plan(vec![make_action(
             OperationType::TranscodeVideo,
             Some(0),
@@ -384,6 +395,17 @@ mod tests {
                 bitrate: None,
                 channels: None,
             },
+        )]);
+        assert!(!plugin.can_handle(&plan));
+    }
+
+    #[test]
+    fn test_can_handle_unavailable() {
+        let plugin = MkvtoolnixExecutorPlugin::new(); // available defaults to false
+        let plan = make_mkv_plan(vec![make_action(
+            OperationType::SetDefault,
+            Some(1),
+            ActionParams::Empty,
         )]);
         assert!(!plugin.can_handle(&plan));
     }
