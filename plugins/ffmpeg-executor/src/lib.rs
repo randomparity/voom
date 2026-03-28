@@ -437,19 +437,9 @@ fn parse_hwaccels(output: &str) -> Vec<String> {
 
 /// Map a `Container` variant to the FFmpeg muxer format name.
 ///
-/// Returns `None` for `Other` (unknown containers are not rejected).
+/// Delegates to [`Container::ffmpeg_format_name`].
 fn ffmpeg_format_name(container: &Container) -> Option<&'static str> {
-    match container {
-        Container::Mkv => Some("matroska"),
-        Container::Mp4 => Some("mp4"),
-        Container::Avi => Some("avi"),
-        Container::Webm => Some("webm"),
-        Container::Flv => Some("flv"),
-        Container::Wmv => Some("asf"),
-        Container::Mov => Some("mov"),
-        Container::Ts => Some("mpegts"),
-        Container::Other | _ => None,
-    }
+    container.ffmpeg_format_name()
 }
 
 impl Default for FfmpegExecutorPlugin {

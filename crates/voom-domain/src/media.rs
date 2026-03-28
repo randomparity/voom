@@ -303,6 +303,24 @@ impl Container {
             Container::Other => "other",
         }
     }
+
+    /// Map to the FFmpeg muxer format name used in capability announcements.
+    ///
+    /// Returns `None` for `Other` (unknown containers).
+    #[must_use]
+    pub fn ffmpeg_format_name(&self) -> Option<&'static str> {
+        match self {
+            Container::Mkv => Some("matroska"),
+            Container::Mp4 => Some("mp4"),
+            Container::Avi => Some("avi"),
+            Container::Webm => Some("webm"),
+            Container::Flv => Some("flv"),
+            Container::Wmv => Some("asf"),
+            Container::Mov => Some("mov"),
+            Container::Ts => Some("mpegts"),
+            Container::Other => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -348,6 +366,19 @@ mod tests {
         assert_eq!(mf.video_tracks().len(), 1);
         assert_eq!(mf.audio_tracks().len(), 2);
         assert_eq!(mf.subtitle_tracks().len(), 1);
+    }
+
+    #[test]
+    fn test_container_ffmpeg_format_name() {
+        assert_eq!(Container::Mkv.ffmpeg_format_name(), Some("matroska"));
+        assert_eq!(Container::Mp4.ffmpeg_format_name(), Some("mp4"));
+        assert_eq!(Container::Avi.ffmpeg_format_name(), Some("avi"));
+        assert_eq!(Container::Webm.ffmpeg_format_name(), Some("webm"));
+        assert_eq!(Container::Flv.ffmpeg_format_name(), Some("flv"));
+        assert_eq!(Container::Wmv.ffmpeg_format_name(), Some("asf"));
+        assert_eq!(Container::Mov.ffmpeg_format_name(), Some("mov"));
+        assert_eq!(Container::Ts.ffmpeg_format_name(), Some("mpegts"));
+        assert_eq!(Container::Other.ffmpeg_format_name(), None);
     }
 
     #[test]

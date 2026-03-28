@@ -871,7 +871,7 @@ fn target_str(target: &TrackTarget) -> &'static str {
 ///
 /// Skips validation entirely when the capability map is empty (no
 /// executors reported capabilities).
-pub fn validate_against_capabilities(plans: &mut [Plan], capabilities: &CapabilityMap) {
+pub(crate) fn validate_against_capabilities(plans: &mut [Plan], capabilities: &CapabilityMap) {
     if capabilities.is_empty() {
         return;
     }
@@ -902,7 +902,7 @@ pub fn validate_against_capabilities(plans: &mut [Plan], capabilities: &Capabili
                     intersect_executors(&mut all_encoders, &executors);
                 }
                 ActionParams::Container { container } => {
-                    let fmt = container.as_str();
+                    let fmt = container.ffmpeg_format_name().unwrap_or(container.as_str());
                     if !capabilities.has_format(fmt) {
                         plan.warnings
                             .push(format!("No executor supports format '{fmt}'"));
@@ -1885,6 +1885,32 @@ mod tests {
                 Some("ffmpeg-executor"),
                 "Should set executor_hint when a single executor matches"
             );
+        }
+
+        #[test]
+        fn test_mkv_container_uses_matroska_format_name() {
+            let mut file = test_file();
+            file.container = Container::Mkv;
+            let policy = test_policy(r#"policy "test" { phase init { container mkv } }"#);
+            let mut result = evaluate(&policy, &file);
+            // File is already MKV so no convert action, but verify the mapping
+            // works by converting an MP4 file
+            file.container = Container::Mp4;
+            let mut result2 = evaluate(&policy, &file);
+            let caps = ffmpeg_capabilities();
+            validate_against_capabilities(&mut result2.plans, &caps);
+            // ffmpeg_capabilities includes "matroska", and Container::Mkv
+            // maps to "matroska" via ffmpeg_format_name(), so no warning
+            assert!(
+                !result2.plans[0]
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains("No executor")),
+                "MKV should map to 'matroska' and be supported, warnings: {:?}",
+                result2.plans[0].warnings
+            );
+            // Also verify the original result has no actions (already MKV)
+            assert!(result.plans[0].actions.is_empty());
         }
 
         #[test]

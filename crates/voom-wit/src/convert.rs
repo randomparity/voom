@@ -112,6 +112,7 @@ pub fn capability_from_wit(cap_str: &str) -> Option<Capability> {
         }),
         "transcribe" => Some(Capability::Transcribe),
         "synthesize" => Some(Capability::Synthesize),
+        "health_check" => Some(Capability::HealthCheck),
         _ => None,
     }
 }
@@ -170,6 +171,7 @@ pub fn capability_to_wit(cap: &Capability) -> String {
         Capability::EnrichMetadata { source } => format!("enrich_metadata:{source}"),
         Capability::Transcribe => "transcribe".to_string(),
         Capability::Synthesize => "synthesize".to_string(),
+        Capability::HealthCheck => "health_check".to_string(),
         _ => unreachable!("all Capability variants must be handled"),
     }
 }
@@ -285,6 +287,7 @@ mod tests {
             (Capability::Backup, "backup"),
             (Capability::Transcribe, "transcribe"),
             (Capability::Synthesize, "synthesize"),
+            (Capability::HealthCheck, "health_check"),
             (Capability::Evaluate, "evaluate"),
         ] {
             let s = capability_to_wit(&cap);
@@ -361,6 +364,22 @@ mod tests {
 
         let restored = event_from_wasm(&event_type, &payload).unwrap();
         assert_eq!(restored.event_type(), "executor.capabilities");
+    }
+
+    #[test]
+    fn test_health_status_event_roundtrip() {
+        let event = Event::HealthStatus(HealthStatusEvent::new(
+            "data_dir_exists",
+            true,
+            Some("/data/voom".into()),
+        ));
+
+        let (event_type, payload) = event_to_wasm(&event).unwrap();
+        assert_eq!(event_type, "health.status");
+        assert!(!payload.is_empty());
+
+        let restored = event_from_wasm(&event_type, &payload).unwrap();
+        assert_eq!(restored.event_type(), "health.status");
     }
 
     #[test]
