@@ -189,11 +189,18 @@ impl Plugin for SqliteStorePlugin {
             Event::HealthStatus(e) => {
                 let record = HealthCheckRecord::new(&e.check_name, e.passed, e.details.clone());
                 store.insert_health_check(&record)?;
-                tracing::info!(
-                    check = %e.check_name,
-                    passed = e.passed,
-                    "stored health check"
-                );
+                if e.passed {
+                    tracing::info!(
+                        check = %e.check_name,
+                        "stored health check (passed)"
+                    );
+                } else {
+                    tracing::warn!(
+                        check = %e.check_name,
+                        details = ?e.details,
+                        "stored health check (FAILED)"
+                    );
+                }
             }
             _ => {}
         }

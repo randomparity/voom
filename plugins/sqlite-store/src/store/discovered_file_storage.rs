@@ -28,10 +28,17 @@ impl DiscoveredStatus {
 
     fn from_str(s: &str) -> Self {
         match s {
+            "pending" => Self::Pending,
             "introspecting" => Self::Introspecting,
             "completed" => Self::Completed,
             "failed" => Self::Failed,
-            _ => Self::Pending,
+            other => {
+                tracing::warn!(
+                    status = other,
+                    "unknown discovered file status, defaulting to Pending"
+                );
+                Self::Pending
+            }
         }
     }
 }
@@ -114,8 +121,15 @@ impl SqliteStore {
             .query_map(param_refs.as_slice(), |row| {
                 let id_str: String = row.get("id")?;
                 let status_str: String = row.get("status")?;
+                let id = Uuid::parse_str(&id_str).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
                 Ok(DiscoveredFile {
-                    id: Uuid::parse_str(&id_str).unwrap_or_default(),
+                    id,
                     path: row.get("path")?,
                     size: row.get::<_, i64>("size")? as u64,
                     content_hash: row.get("content_hash")?,

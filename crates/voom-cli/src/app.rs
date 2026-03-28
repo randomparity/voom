@@ -97,7 +97,7 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
             let mut plugin = voom_sqlite_store::SqliteStorePlugin::new();
             let ctx =
                 voom_kernel::PluginContext::new(plugin_json("sqlite-store"), data_dir.clone());
-            plugin.init(&ctx).context("Failed to initialize storage")?;
+            let init_events = plugin.init(&ctx).context("Failed to initialize storage")?;
 
             // Capture the store handle before moving the plugin into an Arc.
             // `plugin.store()` is always Some after a successful init().
@@ -108,6 +108,12 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
 
             let plugin_arc: Arc<dyn voom_kernel::Plugin> = Arc::new(plugin);
             kernel.register_plugin(plugin_arc, PRIORITY_STORAGE);
+
+            // Dispatch init events after registration so bus subscribers can
+            // see them (e.g. health status events from other init'd plugins).
+            for event in init_events {
+                kernel.dispatch(event);
+            }
 
             handle
         } else {
