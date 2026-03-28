@@ -3066,6 +3066,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "voom-bus-tracer"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "voom-domain",
+ "voom-kernel",
+]
+
+[[package]]
 name = "voom-cli"
 version = "0.1.0"
 dependencies = [
@@ -3089,6 +3103,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "voom-backup-manager",
+ "voom-bus-tracer",
  "voom-discovery",
  "voom-domain",
  "voom-dsl",
@@ -3172,6 +3187,8 @@ dependencies = [
  "tracing",
  "uuid",
  "voom-domain",
+ "voom-job-manager",
+ "voom-kernel",
  "voom-process",
 ]
 

@@ -59,7 +59,8 @@ impl Plugin for SqliteStorePlugin {
     fn handles(&self, event_type: &str) -> bool {
         matches!(
             event_type,
-            Event::FILE_INTROSPECTED
+            Event::FILE_DISCOVERED
+                | Event::FILE_INTROSPECTED
                 | Event::FILE_INTROSPECTION_FAILED
                 | Event::PLAN_CREATED
                 | Event::PLAN_COMPLETED
@@ -78,6 +79,11 @@ impl Plugin for SqliteStorePlugin {
         };
 
         match event {
+            Event::FileDiscovered(e) => {
+                let path_str = e.path.to_string_lossy();
+                store.upsert_discovered_file(&path_str, e.size, &e.content_hash)?;
+                tracing::info!(path = %e.path.display(), "stored discovered file");
+            }
             Event::FileIntrospected(e) => {
                 store.upsert_file(&e.file)?;
                 // Auto-clear any bad file entry when introspection succeeds
@@ -214,6 +220,7 @@ mod tests {
     #[test]
     fn test_handles_expected_event_types() {
         let plugin = SqliteStorePlugin::new();
+        assert!(plugin.handles(Event::FILE_DISCOVERED));
         assert!(plugin.handles(Event::FILE_INTROSPECTED));
         assert!(plugin.handles(Event::FILE_INTROSPECTION_FAILED));
         assert!(plugin.handles(Event::PLAN_CREATED));
@@ -226,7 +233,6 @@ mod tests {
     #[test]
     fn test_does_not_handle_unrelated_event_types() {
         let plugin = SqliteStorePlugin::new();
-        assert!(!plugin.handles(Event::FILE_DISCOVERED));
         assert!(!plugin.handles(Event::JOB_STARTED));
         assert!(!plugin.handles(""));
     }
@@ -327,6 +333,28 @@ mod tests {
             .bad_file_by_path(std::path::Path::new("/media/recovered.mkv"))
             .unwrap();
         assert!(bf.is_none());
+    }
+
+    #[test]
+    fn test_on_event_handles_file_discovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut plugin = SqliteStorePlugin::new();
+        let ctx = PluginContext::new(serde_json::Value::Null, tmp.path().to_path_buf());
+        plugin.init(&ctx).unwrap();
+
+        let event = Event::FileDiscovered(voom_domain::events::FileDiscoveredEvent::new(
+            "/media/test.mkv".into(),
+            1_500_000_000,
+            "abc123def456".into(),
+        ));
+        plugin.on_event(&event).unwrap();
+
+        // Verify discovered file was stored
+        let store = plugin.store().unwrap();
+        let files = store.list_discovered_files(None).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "/media/test.mkv");
+        assert_eq!(files[0].size, 1_500_000_000);
     }
 
     #[test]

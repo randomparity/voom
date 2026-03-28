@@ -19,13 +19,11 @@ use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 
 /// Run the process command.
 ///
-/// Uses the dual-dispatch pattern (direct-call + event-publish) throughout:
+/// Uses the event-driven + direct-call pattern throughout:
 ///
 /// - **Discovery** — called directly for progress/filtering control, then each
-///   `FileDiscovered` event IS dispatched so sqlite-store tracks the file.
-///   (Unlike `scan`, process can safely dispatch these because it does not
-///   register the ffprobe-introspector as a kernel plugin listening for
-///   discovery events.)
+///   `FileDiscovered` event is dispatched so sqlite-store records the file in
+///   `discovered_files` and ffprobe-introspector enqueues introspection jobs.
 /// - **Introspection** — called directly via `introspect_file()` for
 ///   deterministic worker-pool concurrency. The result `FileIntrospected`
 ///   event is dispatched for persistence.
@@ -41,7 +39,7 @@ use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// the events they care about.
 pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let config = config::load_config()?;
-    let (kernel, store) = app::bootstrap_kernel_with_store(&config)?;
+    let (kernel, store, _job_queue) = app::bootstrap_kernel_with_store(&config)?;
     let kernel = Arc::new(kernel);
 
     let path = args
@@ -188,14 +186,16 @@ fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
     );
 }
 
-/// Walk the filesystem and discover media files (dual-dispatch: direct + event-publish).
+/// Walk the filesystem and discover media files, dispatching events through the kernel.
 ///
 /// Creates a standalone `DiscoveryPlugin` for direct API access (scan options,
 /// progress callbacks) that the event-bus path does not support. `FileDiscovered`
-/// events are dispatched to the kernel so that subscribers (storage, SSE) track
-/// the files. This is safe here because process does not register an introspector
-/// plugin that would react to discovery events — introspection is driven
-/// separately by `process_single_file`.
+/// events are dispatched to the kernel so that subscribers react:
+/// - sqlite-store records each file in `discovered_files`
+/// - ffprobe-introspector enqueues `JobType::Introspect` jobs
+///
+/// Introspection is still driven directly by `process_single_file` for
+/// deterministic progress reporting.
 fn discover_files(
     path: &std::path::Path,
     args: &ProcessArgs,

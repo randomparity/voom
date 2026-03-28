@@ -118,9 +118,11 @@ pub fn load_config() -> Result<AppConfig> {
 
 /// All known native plugin names (used for validation in enable/disable commands).
 pub const KNOWN_PLUGIN_NAMES: &[&str] = &[
+    "bus-tracer",
     "sqlite-store",
     "tool-detector",
     "discovery",
+    "ffprobe-introspector",
     "mkvtoolnix-executor",
     "ffmpeg-executor",
     "backup-manager",
@@ -311,13 +313,14 @@ mod tests {
         assert!(KNOWN_PLUGIN_NAMES.contains(&"discovery"));
         assert!(KNOWN_PLUGIN_NAMES.contains(&"job-manager"));
         assert!(KNOWN_PLUGIN_NAMES.contains(&"ffmpeg-executor"));
+        assert!(KNOWN_PLUGIN_NAMES.contains(&"ffprobe-introspector"));
+        assert!(KNOWN_PLUGIN_NAMES.contains(&"bus-tracer"));
         assert!(!KNOWN_PLUGIN_NAMES.contains(&"web-server"));
-        assert!(!KNOWN_PLUGIN_NAMES.contains(&"ffprobe-introspector"));
     }
 
     #[test]
     fn test_known_plugin_names_count() {
-        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 7);
+        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 9);
     }
 
     #[test]

@@ -8,6 +8,8 @@ pub mod loader;
 pub mod manifest;
 pub mod registry;
 
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -62,12 +64,29 @@ pub trait Plugin: Send + Sync {
 pub struct PluginContext {
     config: serde_json::Value,
     pub data_dir: PathBuf,
+    resources: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
 impl PluginContext {
     #[must_use]
     pub fn new(config: serde_json::Value, data_dir: PathBuf) -> Self {
-        Self { config, data_dir }
+        Self {
+            config,
+            data_dir,
+            resources: HashMap::new(),
+        }
+    }
+
+    /// Register a shared resource that plugins can retrieve during init.
+    pub fn register_resource<T: Send + Sync + 'static>(&mut self, resource: Arc<T>) {
+        self.resources.insert(TypeId::of::<T>(), resource);
+    }
+
+    /// Retrieve a shared resource by type.
+    pub fn resource<T: Send + Sync + 'static>(&self) -> Option<Arc<T>> {
+        self.resources
+            .get(&TypeId::of::<T>())
+            .and_then(|r| r.clone().downcast::<T>().ok())
     }
 
     /// Deserialize the config into a typed struct.
@@ -263,10 +282,7 @@ mod tests {
                 shutdown_called: shutdown_called.clone(),
             });
 
-            let ctx = PluginContext {
-                config: serde_json::json!({}),
-                data_dir: PathBuf::from("/tmp"),
-            };
+            let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
 
             let mut kernel = Kernel::new();
             kernel.init_and_register(plugin, 50, &ctx).unwrap();
@@ -370,5 +386,31 @@ mod tests {
         let captured = received.lock().expect("lock poisoned");
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0], "test-tool");
+    }
+
+    #[test]
+    fn test_plugin_context_resource_map() {
+        let mut ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+
+        let value = Arc::new(42_u64);
+        ctx.register_resource(value);
+
+        let retrieved = ctx.resource::<u64>();
+        assert_eq!(retrieved.as_deref(), Some(&42));
+    }
+
+    #[test]
+    fn test_plugin_context_resource_missing_type() {
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+        let result = ctx.resource::<String>();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_plugin_context_resource_overwrite() {
+        let mut ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+        ctx.register_resource(Arc::new(1_u32));
+        ctx.register_resource(Arc::new(2_u32));
+        assert_eq!(ctx.resource::<u32>().as_deref(), Some(&2));
     }
 }

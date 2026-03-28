@@ -17,6 +17,7 @@ members = [
     "plugins/ffmpeg-executor",
     "plugins/job-manager",
     "plugins/web-server",
+    "plugins/bus-tracer",
     "crates/voom-process",
     "crates/voom-cli",
 ]
@@ -59,6 +60,7 @@ voom-ffmpeg-executor = { path = "plugins/ffmpeg-executor" }
 voom-backup-manager = { path = "plugins/backup-manager" }
 voom-job-manager = { path = "plugins/job-manager" }
 voom-web-server = { path = "plugins/web-server" }
+voom-bus-tracer = { path = "plugins/bus-tracer" }
 
 # Async
 tokio = { version = "1", features = ["full"] }

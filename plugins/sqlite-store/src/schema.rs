@@ -121,6 +121,18 @@ CREATE TABLE IF NOT EXISTS bad_files (
     last_seen_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS discovered_files (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    size INTEGER NOT NULL,
+    content_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    discovered_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_discovered_status ON discovered_files(status);
+
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 CREATE INDEX IF NOT EXISTS idx_files_hash ON files(content_hash);
 CREATE INDEX IF NOT EXISTS idx_tracks_file ON tracks(file_id);
@@ -149,6 +161,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "file_history",
         "plugin_data",
         "bad_files",
+        "discovered_files",
     ];
     let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
         assert!(KNOWN_TABLES.contains(&table), "unknown table: {table}");
@@ -167,6 +180,27 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     }
     if !has_column("plans", "evaluated_at")? {
         conn.execute_batch("ALTER TABLE plans ADD COLUMN evaluated_at TEXT")?;
+    }
+
+    // Create discovered_files table if missing (added in sprint 13).
+    let has_discovered: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='discovered_files'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_discovered {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS discovered_files (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                size INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                discovered_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_discovered_status ON discovered_files(status);",
+        )?;
     }
 
     Ok(())
@@ -210,6 +244,7 @@ mod tests {
         assert!(tables.contains(&"plugin_data".to_string()));
         assert!(tables.contains(&"file_history".to_string()));
         assert!(tables.contains(&"bad_files".to_string()));
+        assert!(tables.contains(&"discovered_files".to_string()));
     }
 
     #[test]

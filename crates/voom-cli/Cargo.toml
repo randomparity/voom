@@ -29,6 +29,7 @@ voom-ffmpeg-executor.workspace = true
 voom-backup-manager.workspace = true
 voom-job-manager.workspace = true
 voom-web-server.workspace = true
+voom-bus-tracer.workspace = true
 
 # CLI
 clap = { version = "4", features = ["derive"] }

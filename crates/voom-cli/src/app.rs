@@ -11,9 +11,11 @@ use crate::config::AppConfig;
 // Plugin priority scheme (lower number = runs first during event dispatch).
 // mkvtoolnix at 39 runs before ffmpeg at 40 so it gets first crack at
 // MKV-specific plans (metadata, convert-to-MKV).
+const PRIORITY_BUS_TRACER: i32 = 1;
 const PRIORITY_STORAGE: i32 = 100;
 const PRIORITY_TOOL_DETECTOR: i32 = 90;
 const PRIORITY_DISCOVERY: i32 = 80;
+const PRIORITY_FFPROBE_INTROSPECTOR: i32 = 60;
 const PRIORITY_FFMPEG_EXECUTOR: i32 = 40;
 const PRIORITY_MKVTOOLNIX_EXECUTOR: i32 = 39;
 const PRIORITY_BACKUP_MANAGER: i32 = 30;
@@ -23,12 +25,12 @@ const PRIORITY_JOB_MANAGER: i32 = 20;
 ///
 /// All plugins go through `init_and_register` for consistent lifecycle management.
 pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
-    let (kernel, _store) = bootstrap_kernel_with_store(config)?;
+    let (kernel, _store, _queue) = bootstrap_kernel_with_store(config)?;
     Ok(kernel)
 }
 
-/// Bootstrap the kernel with all native plugins and return both the kernel
-/// and the storage handle.
+/// Bootstrap the kernel with all native plugins and return the kernel,
+/// storage handle, and shared job queue.
 ///
 /// The store is always returned (not `Option`): if the sqlite-store plugin is
 /// enabled its handle is reused so there is no second pool; if the plugin is
@@ -36,7 +38,11 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
 /// helper used by store-only commands.
 pub fn bootstrap_kernel_with_store(
     config: &AppConfig,
-) -> Result<(Kernel, Arc<dyn voom_domain::storage::StorageTrait>)> {
+) -> Result<(
+    Kernel,
+    Arc<dyn voom_domain::storage::StorageTrait>,
+    Arc<voom_job_manager::queue::JobQueue>,
+)> {
     let mut kernel = Kernel::new();
     let data_dir = &config.data_dir;
 
@@ -65,6 +71,13 @@ pub fn bootstrap_kernel_with_store(
                 let ctx = voom_kernel::PluginContext::new(plugin_json($name), data_dir.clone());
                 kernel
                     .init_and_register(Arc::new($plugin), $priority, &ctx)
+                    .with_context(|| format!("Failed to initialize {}", $label))?;
+            }
+        };
+        ($name:expr, $plugin:expr, $priority:expr, $label:expr, $ctx:expr) => {
+            if !disabled.iter().any(|d| d == $name) {
+                kernel
+                    .init_and_register(Arc::new($plugin), $priority, $ctx)
                     .with_context(|| format!("Failed to initialize {}", $label))?;
             }
         };
@@ -99,6 +112,22 @@ pub fn bootstrap_kernel_with_store(
             open_store_in(data_dir).context("Failed to open storage")?
         };
 
+    // Create a shared job queue for plugins that need to enqueue work.
+    let job_queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
+
+    // Bus tracer — priority 1 (first to see events, before any state changes).
+    {
+        let mut ctx = voom_kernel::PluginContext::new(plugin_json("bus-tracer"), data_dir.clone());
+        ctx.register_resource(job_queue.clone());
+        register_if_enabled!(
+            "bus-tracer",
+            voom_bus_tracer::BusTracerPlugin::new(),
+            PRIORITY_BUS_TRACER,
+            "bus tracer",
+            &ctx
+        );
+    }
+
     // Tool detector
     register_if_enabled!(
         "tool-detector",
@@ -114,6 +143,21 @@ pub fn bootstrap_kernel_with_store(
         PRIORITY_DISCOVERY,
         "discovery"
     );
+
+    // FFprobe introspector — subscribes to FileDiscovered, enqueues introspect jobs.
+    // Registered after sqlite-store (100) so discovered files are persisted first.
+    {
+        let mut ctx =
+            voom_kernel::PluginContext::new(plugin_json("ffprobe-introspector"), data_dir.clone());
+        ctx.register_resource(job_queue.clone());
+        register_if_enabled!(
+            "ffprobe-introspector",
+            voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new(),
+            PRIORITY_FFPROBE_INTROSPECTOR,
+            "ffprobe introspector",
+            &ctx
+        );
+    }
 
     // Executor — mkvtoolnix (MKV metadata, track removal/reorder, convert-to-MKV)
     register_if_enabled!(
@@ -189,7 +233,7 @@ pub fn bootstrap_kernel_with_store(
         }
     }
 
-    Ok((kernel, store))
+    Ok((kernel, store, job_queue))
 }
 
 /// Open a standalone storage handle for commands that need only storage,
@@ -229,7 +273,7 @@ mod tests {
         // Bootstrap with all plugins enabled, then verify every registered
         // plugin name appears in KNOWN_PLUGIN_NAMES and vice versa.
         let config = AppConfig::default();
-        let (kernel, _store) =
+        let (kernel, _store, _queue) =
             bootstrap_kernel_with_store(&config).expect("bootstrap should succeed with defaults");
         let registered = kernel.registry.plugin_names();
         for name in KNOWN_PLUGIN_NAMES {
@@ -266,7 +310,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             ..AppConfig::default()
         };
-        let (_kernel, store) =
+        let (_kernel, store, _queue) =
             bootstrap_kernel_with_store(&config).expect("bootstrap should succeed");
         // Verify the store is functional
         assert!(store
