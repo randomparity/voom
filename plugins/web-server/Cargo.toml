@@ -13,7 +13,6 @@ description = "Web server plugin for VOOM — REST API and web dashboard"
 [dependencies]
 voom-domain.workspace = true
 voom-dsl.workspace = true
-voom-kernel.workspace = true
 
 # Web framework
 axum = { version = "0.7", features = ["tokio", "json"] }
@@ -25,7 +24,7 @@ tera = "1"
 
 # Async
 tokio.workspace = true
-tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-stream.workspace = true
 
 # Serialization
 serde.workspace = true
@@ -41,6 +40,9 @@ subtle = "2"
 # Errors & logging
 thiserror.workspace = true
 tracing.workspace = true
+
+[lints]
+workspace = true
 
 [dev-dependencies]
 voom-domain = { workspace = true, features = ["testing"] }

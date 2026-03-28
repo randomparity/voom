@@ -3,8 +3,6 @@
 //! Executes media plans using `FFmpeg` for transcoding, container conversion,
 //! and metadata operations on non-MKV files (or any file requiring transcode).
 
-#![allow(clippy::missing_errors_doc)]
-
 pub mod command;
 pub mod hwaccel;
 pub mod progress;
@@ -26,10 +24,10 @@ use voom_process::run_with_timeout;
 use crate::command::{build_ffmpeg_command, output_extension};
 use crate::hwaccel::HwAccelConfig;
 
-/// Default timeout for FFmpeg operations (4 hours — transcode can be slow).
+/// Default timeout for `FFmpeg` operations (4 hours — transcode can be slow).
 const FFMPEG_TIMEOUT: Duration = Duration::from_secs(4 * 60 * 60);
 
-/// Operations that FFmpeg handles: transcode/synthesize, container conversion,
+/// Operations that `FFmpeg` handles: transcode/synthesize, container conversion,
 /// and metadata edits on non-MKV files.
 ///
 /// This list declares the *capability* the plugin advertises. `can_handle()`
@@ -123,9 +121,9 @@ impl FfmpegExecutorPlugin {
         false
     }
 
-    /// Execute a plan by spawning an FFmpeg subprocess.
+    /// Execute a plan by spawning an `FFmpeg` subprocess.
     ///
-    /// Builds FFmpeg args, runs the command writing to a temp file, then
+    /// Builds `FFmpeg` args, runs the command writing to a temp file, then
     /// renames the temp file over the original (or to the new extension
     /// if converting containers).
     pub fn execute_plan(&self, plan: &Plan) -> Result<Vec<ActionResult>> {
@@ -358,7 +356,7 @@ mod tests {
                 assert!(operations.contains(&OperationType::SetLanguage));
                 assert!(formats.is_empty(), "Should support all formats");
             }
-            other => panic!("Expected Execute capability, got {:?}", other),
+            other => panic!("Expected Execute capability, got {other:?}"),
         }
     }
 

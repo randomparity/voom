@@ -56,7 +56,9 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload).ok()?;
+    let event = deserialize_event(payload).map_err(|e| {
+        host.log("error", &format!("failed to deserialize event: {e}"));
+    }).ok()?;
     let plan = match &event {
         Event::PlanCreated(e) => &e.plan,
         _ => return None,
@@ -78,7 +80,7 @@ pub fn on_event(
         return None;
     }
 
-    let config = load_config(host);
+    let config: Option<HandbrakeConfig> = load_plugin_config(|key| host.get_plugin_data(key));
     let handbrake_bin = config
         .as_ref()
         .map(|c| c.handbrake_binary.as_str())
@@ -137,7 +139,9 @@ pub fn on_event(
                     actions_applied: transcode_actions.len(),
                 },
             );
-            let produced_payload = serialize_event(&completed_event).ok()?;
+            let produced_payload = serialize_event(&completed_event).map_err(|e| {
+                host.log("error", &format!("failed to serialize event: {e}"));
+            }).ok()?;
 
             let data = serde_json::json!({
                 "plugin": "handbrake-executor",
@@ -151,7 +155,9 @@ pub fn on_event(
                     completed_event.event_type().to_string(),
                     produced_payload,
                 )],
-                data: Some(serde_json::to_vec(&data).ok()?),
+                data: Some(serde_json::to_vec(&data).map_err(|e| {
+                    host.log("error", &format!("failed to serialize result data: {e}"));
+                }).ok()?),
             })
         }
         Ok(output) => {
@@ -244,6 +250,7 @@ fn build_handbrake_args(
 // --- Config ---
 
 #[derive(Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct HandbrakeConfig {
     /// Path or name of the HandBrakeCLI binary.
     pub handbrake_binary: String,
@@ -251,10 +258,6 @@ pub struct HandbrakeConfig {
     pub preset: Option<String>,
     /// Timeout in milliseconds for the transcode operation.
     pub timeout_ms: u64,
-}
-
-fn load_config(host: &dyn HostFunctions) -> Option<HandbrakeConfig> {
-    load_plugin_config(|key| host.get_plugin_data(key))
 }
 
 #[cfg(test)]

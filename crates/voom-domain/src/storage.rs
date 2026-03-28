@@ -80,7 +80,7 @@ pub trait JobStorage: Send + Sync {
 /// Methods return `VoomError::Storage` on database failures.
 pub trait PlanStorage: Send + Sync {
     fn save_plan(&self, plan: &Plan) -> Result<Uuid>;
-    fn plans_for_file(&self, file_id: &Uuid) -> Result<Vec<StoredPlan>>;
+    fn plans_for_file(&self, file_id: &Uuid) -> Result<Vec<PlanSummary>>;
     fn update_plan_status(&self, plan_id: &Uuid, status: PlanStatus) -> Result<()>;
 }
 
@@ -208,17 +208,17 @@ impl std::fmt::Display for PlanStatus {
     }
 }
 
-/// A plan as stored in the database, with its own ID and status tracking.
+/// A plan summary with typed actions, suitable for API responses and templates.
 #[non_exhaustive]
-#[derive(Debug, Clone)]
-pub struct StoredPlan {
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanSummary {
     pub id: Uuid,
     pub file_id: Uuid,
     pub policy_name: String,
     pub phase_name: String,
     pub status: PlanStatus,
-    pub actions_json: String,
-    pub warnings: Option<String>,
+    pub actions: Vec<crate::plan::PlannedAction>,
+    pub warnings: Vec<String>,
     pub skip_reason: Option<String>,
     pub policy_hash: Option<String>,
     pub evaluated_at: Option<DateTime<Utc>>,
@@ -227,8 +227,7 @@ pub struct StoredPlan {
     pub result: Option<String>,
 }
 
-impl StoredPlan {
-    /// Create a new `StoredPlan` with the given identifiers and status.
+impl PlanSummary {
     #[must_use]
     pub fn new(
         id: Uuid,
@@ -236,7 +235,8 @@ impl StoredPlan {
         policy_name: impl Into<String>,
         phase_name: impl Into<String>,
         status: PlanStatus,
-        actions_json: impl Into<String>,
+        actions: Vec<crate::plan::PlannedAction>,
+        created_at: DateTime<Utc>,
     ) -> Self {
         Self {
             id,
@@ -244,12 +244,12 @@ impl StoredPlan {
             policy_name: policy_name.into(),
             phase_name: phase_name.into(),
             status,
-            actions_json: actions_json.into(),
-            warnings: None,
+            actions,
+            warnings: Vec::new(),
             skip_reason: None,
             policy_hash: None,
             evaluated_at: None,
-            created_at: Utc::now(),
+            created_at,
             executed_at: None,
             result: None,
         }
@@ -280,13 +280,16 @@ impl FileHistoryEntry {
             path: file.path.clone(),
             content_hash: file.content_hash.clone(),
             container: file.container,
-            track_count: file.tracks.len() as u32,
+            track_count: u32::try_from(file.tracks.len()).unwrap_or(u32::MAX),
             introspected_at: file.introspected_at,
             archived_at,
         }
     }
 
     /// Reconstruct a history entry from stored fields (e.g., database rows).
+    ///
+    /// Accepts many parameters because `#[non_exhaustive]` prevents struct
+    /// literal construction from external crates.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn from_stored(

@@ -20,6 +20,9 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 scopeguard = { workspace = true }
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 tempfile = { workspace = true }
 chrono = { workspace = true }

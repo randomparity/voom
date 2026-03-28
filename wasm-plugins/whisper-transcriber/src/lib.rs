@@ -25,7 +25,7 @@
 //! handles_events = ["file.introspected"]
 //!
 //! [[capabilities]]
-//! Transcribe = {}
+//! [capabilities.Transcribe]
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -56,7 +56,9 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload).ok()?;
+    let event = deserialize_event(payload).map_err(|e| {
+        host.log("error", &format!("failed to deserialize event: {e}"));
+    }).ok()?;
     let file = match &event {
         Event::FileIntrospected(e) => &e.file,
         _ => return None,
@@ -73,10 +75,10 @@ pub fn on_event(
     let cache_key = format!("transcript:{}", file.content_hash);
     if let Some(cached) = host.get_plugin_data(&cache_key) {
         host.log("debug", "using cached transcript");
-        return build_result(file, &cached);
+        return build_result(file, &cached, host);
     }
 
-    let config = load_config(host);
+    let config: Option<WhisperConfig> = load_plugin_config(|key| host.get_plugin_data(key));
 
     // Step 1: Extract audio to a temp WAV file via ffmpeg.
     let file_path = file.path.to_string_lossy().to_string();
@@ -157,14 +159,17 @@ pub fn on_event(
     // Cache the result.
     let _ = host.set_plugin_data(&cache_key, &whisper_output.stdout);
 
-    build_result(file, &whisper_output.stdout)
+    build_result(file, &whisper_output.stdout, host)
 }
 
 fn build_result(
     file: &voom_plugin_sdk::MediaFile,
     transcript_data: &[u8],
+    host: &dyn HostFunctions,
 ) -> Option<OnEventResult> {
-    let transcript_json: serde_json::Value = serde_json::from_slice(transcript_data).ok()?;
+    let transcript_json: serde_json::Value = serde_json::from_slice(transcript_data).map_err(|e| {
+        host.log("error", &format!("failed to parse transcript JSON: {e}"));
+    }).ok()?;
 
     let metadata = serde_json::json!({
         "source": "whisper-transcriber",
@@ -179,7 +184,9 @@ fn build_result(
         },
     );
 
-    let produced_payload = serialize_event(&enriched_event).ok()?;
+    let produced_payload = serialize_event(&enriched_event).map_err(|e| {
+        host.log("error", &format!("failed to serialize event: {e}"));
+    }).ok()?;
 
     Some(OnEventResult {
         plugin_name: "whisper-transcriber".to_string(),
@@ -191,6 +198,7 @@ fn build_result(
 // --- Config ---
 
 #[derive(Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct WhisperConfig {
     /// Path or name of the whisper binary (default: "whisper-cli").
     pub whisper_binary: String,
@@ -198,10 +206,6 @@ pub struct WhisperConfig {
     pub model: String,
     /// Force a specific language (None = auto-detect).
     pub language: Option<String>,
-}
-
-fn load_config(host: &dyn HostFunctions) -> Option<WhisperConfig> {
-    load_plugin_config(|key| host.get_plugin_data(key))
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@
 //! ```
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use uuid::Uuid;
@@ -16,13 +16,49 @@ use uuid::Uuid;
 use crate::bad_file::BadFile;
 use crate::errors::{Result, StorageErrorKind, VoomError};
 use crate::job::{Job, JobStatus, JobUpdate};
-use crate::media::MediaFile;
+use crate::media::{Container, MediaFile, Track, TrackType};
 use crate::plan::Plan;
 use crate::stats::ProcessingStats;
 use crate::storage::{
     BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,
-    JobStorage, MaintenanceStorage, PlanStorage, PluginDataStorage, StatsStorage, StoredPlan,
+    JobStorage, MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage, StatsStorage,
 };
+
+/// Create a standard test `MediaFile` with video, two audio, and one subtitle track.
+///
+/// Useful as a baseline for evaluator, orchestrator, and condition tests.
+#[must_use]
+pub fn test_media_file() -> MediaFile {
+    let mut file = MediaFile::new(PathBuf::from("/test/movie.mkv"));
+    file.container = Container::Mkv;
+    file.tracks = vec![
+        {
+            let mut t = Track::new(0, TrackType::Video, "hevc".into());
+            t.width = Some(1920);
+            t.height = Some(1080);
+            t
+        },
+        {
+            let mut t = Track::new(1, TrackType::AudioMain, "aac".into());
+            t.language = "eng".into();
+            t.channels = Some(6);
+            t.is_default = true;
+            t
+        },
+        {
+            let mut t = Track::new(2, TrackType::AudioAlternate, "aac".into());
+            t.language = "jpn".into();
+            t.channels = Some(2);
+            t
+        },
+        {
+            let mut t = Track::new(3, TrackType::SubtitleMain, "srt".into());
+            t.language = "eng".into();
+            t
+        },
+    ];
+    file
+}
 
 fn matches_filter(file: &MediaFile, filters: &FileFilters) -> bool {
     if let Some(container) = filters.container {
@@ -55,12 +91,18 @@ impl InMemoryStore {
     }
 
     /// Builder: seed the store with a file.
+    ///
+    /// # Panics
+    /// Panics if the internal mutex is poisoned.
     pub fn with_file(self, file: MediaFile) -> Self {
         self.files.lock().unwrap().insert(file.id, file);
         self
     }
 
     /// Builder: seed the store with a job.
+    ///
+    /// # Panics
+    /// Panics if the internal mutex is poisoned.
     pub fn with_job(self, job: Job) -> Self {
         self.jobs.lock().unwrap().insert(job.id, job);
         self
@@ -236,7 +278,7 @@ impl PlanStorage for InMemoryStore {
         Ok(Uuid::new_v4())
     }
 
-    fn plans_for_file(&self, _file_id: &Uuid) -> Result<Vec<StoredPlan>> {
+    fn plans_for_file(&self, _file_id: &Uuid) -> Result<Vec<PlanSummary>> {
         Ok(Vec::new())
     }
 

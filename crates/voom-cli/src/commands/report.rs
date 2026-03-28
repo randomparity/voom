@@ -51,11 +51,8 @@ pub fn run(args: ReportArgs) -> Result<()> {
             println!(
                 "  {} files, {}, {}",
                 style(files.len()).bold(),
-                style(voom_domain::utils::datetime::format_size(total_size)).cyan(),
-                style(voom_domain::utils::datetime::format_duration(
-                    total_duration
-                ))
-                .dim(),
+                style(voom_domain::utils::format::format_size(total_size)).cyan(),
+                style(voom_domain::utils::format::format_duration(total_duration)).dim(),
             );
             println!();
 

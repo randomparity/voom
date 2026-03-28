@@ -181,6 +181,116 @@ impl Default for FfmpegCommand {
     }
 }
 
+fn apply_audio_codec_args(
+    mut cmd: FfmpegCommand,
+    stream: Option<u32>,
+    encoder: &str,
+    bitrate: Option<&str>,
+    channels: Option<u32>,
+) -> FfmpegCommand {
+    if let Some(stream) = stream {
+        cmd = cmd.audio_codec_for_track(stream, encoder);
+    } else {
+        cmd = cmd.audio_codec(encoder);
+    }
+
+    if let Some(brate) = bitrate {
+        cmd = cmd.audio_bitrate(brate);
+    }
+
+    if let Some(ch) = channels {
+        cmd = cmd.arg("-ac").arg(&ch.to_string());
+    }
+
+    cmd
+}
+
+fn apply_transcode_video(
+    mut cmd: FfmpegCommand,
+    action: &PlannedAction,
+    hw_accel: Option<&HwAccelConfig>,
+) -> FfmpegCommand {
+    let ActionParams::Transcode {
+        codec,
+        crf,
+        preset,
+        bitrate,
+        ..
+    } = &action.parameters
+    else {
+        return cmd;
+    };
+
+    let encoder = if let Some(hw) = hw_accel {
+        hw.encoder_name(codec)
+    } else {
+        hwaccel::software_encoder(codec).to_string()
+    };
+
+    if let Some(stream) = action.track_index {
+        cmd = cmd.video_codec_for_track(stream, &encoder);
+    } else {
+        cmd = cmd.video_codec(&encoder);
+    }
+
+    if let Some(crf_val) = crf {
+        cmd = cmd.crf(*crf_val);
+    }
+
+    if let Some(preset_val) = preset {
+        cmd = cmd.preset(preset_val);
+    }
+
+    if let Some(brate) = bitrate {
+        cmd = cmd.arg("-b:v").arg(brate);
+    }
+
+    cmd
+}
+
+fn apply_transcode_audio(cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegCommand {
+    let ActionParams::Transcode {
+        codec,
+        bitrate,
+        channels,
+        ..
+    } = &action.parameters
+    else {
+        return cmd;
+    };
+
+    let encoder = hwaccel::software_encoder(codec).to_string();
+    apply_audio_codec_args(
+        cmd,
+        action.track_index,
+        &encoder,
+        bitrate.as_deref(),
+        *channels,
+    )
+}
+
+fn apply_synthesize_audio(cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegCommand {
+    let ActionParams::Synthesize {
+        codec,
+        bitrate,
+        channels,
+        ..
+    } = &action.parameters
+    else {
+        return cmd;
+    };
+
+    let codec_str = codec.as_deref().unwrap_or("aac");
+    let encoder = hwaccel::software_encoder(codec_str).to_string();
+    apply_audio_codec_args(
+        cmd,
+        action.track_index,
+        &encoder,
+        bitrate.as_deref(),
+        *channels,
+    )
+}
+
 /// Build an `FFmpeg` command from a plan's actions.
 ///
 /// Groups all actions into a single `FFmpeg` invocation where possible.
@@ -212,104 +322,22 @@ pub fn build_ffmpeg_command(
                 // Container conversion is handled by output extension; codecs stay as copy
             }
             OperationType::TranscodeVideo => {
-                let ActionParams::Transcode {
-                    codec,
-                    crf,
-                    preset,
-                    bitrate,
-                    ..
-                } = &action.parameters
-                else {
-                    continue;
-                };
-
-                let encoder = if let Some(hw) = hw_accel {
-                    hw.encoder_name(codec)
-                } else {
-                    hwaccel::software_encoder(codec).to_string()
-                };
-
-                if let Some(stream) = action.track_index {
-                    cmd = cmd.video_codec_for_track(stream, &encoder);
-                } else {
-                    cmd = cmd.video_codec(&encoder);
-                }
-
-                if let Some(crf_val) = crf {
-                    cmd = cmd.crf(*crf_val);
-                }
-
-                if let Some(preset_val) = preset {
-                    cmd = cmd.preset(preset_val);
-                }
-
-                if let Some(brate) = bitrate {
-                    cmd = cmd.arg("-b:v").arg(brate);
-                }
+                cmd = apply_transcode_video(cmd, action, hw_accel);
             }
             OperationType::TranscodeAudio => {
-                let ActionParams::Transcode {
-                    codec,
-                    bitrate,
-                    channels,
-                    ..
-                } = &action.parameters
-                else {
-                    continue;
-                };
-
-                let encoder = hwaccel::software_encoder(codec).to_string();
-
-                if let Some(stream) = action.track_index {
-                    cmd = cmd.audio_codec_for_track(stream, &encoder);
-                } else {
-                    cmd = cmd.audio_codec(&encoder);
-                }
-
-                if let Some(brate) = bitrate {
-                    cmd = cmd.audio_bitrate(brate);
-                }
-
-                if let Some(ch) = channels {
-                    cmd = cmd.arg("-ac").arg(&ch.to_string());
-                }
+                cmd = apply_transcode_audio(cmd, action);
             }
             OperationType::SynthesizeAudio => {
-                let ActionParams::Synthesize {
-                    codec,
-                    bitrate,
-                    channels,
-                    ..
-                } = &action.parameters
-                else {
-                    continue;
-                };
-
-                let codec_str = codec.as_deref().unwrap_or("aac");
-                let bitrate = bitrate.as_deref();
-                let channels = *channels;
-                let encoder = hwaccel::software_encoder(codec_str).to_string();
-
-                if let Some(stream) = action.track_index {
-                    cmd = cmd.audio_codec_for_track(stream, &encoder);
-                } else {
-                    cmd = cmd.audio_codec(&encoder);
-                }
-
-                if let Some(brate) = bitrate {
-                    cmd = cmd.audio_bitrate(brate);
-                }
-
-                if let Some(ch) = channels {
-                    cmd = cmd.arg("-ac").arg(&ch.to_string());
-                }
+                cmd = apply_synthesize_audio(cmd, action);
             }
             OperationType::SetDefault => {
                 if let Some(stream) = action.track_index {
                     cmd = cmd.disposition(stream, "default");
                 }
             }
-            OperationType::ClearDefault => {
+            // Both clear operations use disposition "0" — ffmpeg clears all
+            // disposition flags on the stream when set to 0.
+            OperationType::ClearDefault | OperationType::ClearForced => {
                 if let Some(stream) = action.track_index {
                     cmd = cmd.disposition(stream, "0");
                 }
@@ -317,11 +345,6 @@ pub fn build_ffmpeg_command(
             OperationType::SetForced => {
                 if let Some(stream) = action.track_index {
                     cmd = cmd.disposition(stream, "forced");
-                }
-            }
-            OperationType::ClearForced => {
-                if let Some(stream) = action.track_index {
-                    cmd = cmd.disposition(stream, "0");
                 }
             }
             OperationType::SetTitle => {
@@ -541,7 +564,7 @@ mod tests {
     #[test]
     fn test_build_command_set_metadata() {
         let file = sample_mp4_file();
-        let actions_owned = vec![
+        let actions_owned = [
             PlannedAction::track_op(
                 OperationType::SetTitle,
                 1,
@@ -572,7 +595,7 @@ mod tests {
     #[test]
     fn test_build_command_set_default() {
         let file = sample_mp4_file();
-        let actions_owned = vec![
+        let actions_owned = [
             PlannedAction::track_op(
                 OperationType::SetDefault,
                 1,
@@ -602,7 +625,7 @@ mod tests {
     #[test]
     fn test_build_command_set_forced() {
         let file = sample_mp4_file();
-        let actions_owned = vec![
+        let actions_owned = [
             PlannedAction::track_op(
                 OperationType::SetForced,
                 2,
@@ -632,7 +655,7 @@ mod tests {
     #[test]
     fn test_build_command_combined() {
         let file = sample_mp4_file();
-        let actions_owned = vec![
+        let actions_owned = [
             PlannedAction::track_op(
                 OperationType::TranscodeVideo,
                 0,

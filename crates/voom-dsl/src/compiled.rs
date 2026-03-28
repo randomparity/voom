@@ -144,28 +144,6 @@ pub struct CompiledPhase {
     pub operations: Vec<CompiledOperation>,
 }
 
-impl CompiledPhase {
-    #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        name: String,
-        depends_on: Vec<String>,
-        skip_when: Option<CompiledCondition>,
-        run_if: Option<CompiledRunIf>,
-        on_error: ErrorStrategy,
-        operations: Vec<CompiledOperation>,
-    ) -> Self {
-        Self {
-            name,
-            depends_on,
-            skip_when,
-            run_if,
-            on_error,
-            operations,
-        }
-    }
-}
-
 /// Compiled `run_if` trigger.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]

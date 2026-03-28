@@ -2,10 +2,11 @@
 
 use serde::Serialize;
 use voom_domain::media::MediaFile;
-use voom_domain::utils::datetime::{format_duration, format_size};
+use voom_domain::utils::format::{format_duration, format_size};
 
 /// A template-friendly view of a `MediaFile` with computed display fields.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct FileView {
     /// Extracted filename from path.
     pub filename: String,

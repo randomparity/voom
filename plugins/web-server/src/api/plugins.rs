@@ -7,16 +7,32 @@ use serde::Serialize;
 use crate::errors::WebError;
 use crate::state::AppState;
 
+// Defined here rather than reusing `voom_plugin_sdk::PluginInfoData` because the
+// web-server does not depend on voom-plugin-sdk, and adding that dependency just
+// for one serializable struct would pull in unnecessary WASM-boundary machinery.
 #[derive(Debug, Clone, Serialize)]
-pub struct PluginInfo {
+#[non_exhaustive]
+pub struct PluginInfoResponse {
     pub name: String,
     pub version: String,
     pub capabilities: Vec<String>,
 }
 
+impl PluginInfoResponse {
+    #[must_use]
+    pub fn new(name: String, version: String, capabilities: Vec<String>) -> Self {
+        Self {
+            name,
+            version,
+            capabilities,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct PluginListResponse {
-    pub plugins: Vec<PluginInfo>,
+    pub plugins: Vec<PluginInfoResponse>,
     pub total: usize,
 }
 
@@ -36,7 +52,7 @@ mod tests {
 
     #[test]
     fn test_plugin_info_clone() {
-        let info = PluginInfo {
+        let info = PluginInfoResponse {
             name: "test".into(),
             version: "1.0.0".into(),
             capabilities: vec!["cap1".into()],
@@ -47,7 +63,7 @@ mod tests {
 
     #[test]
     fn test_plugin_list_response_from_empty_state() {
-        let plugins: Vec<PluginInfo> = vec![];
+        let plugins: Vec<PluginInfoResponse> = vec![];
         let total = plugins.len();
         let response = PluginListResponse { plugins, total };
         assert_eq!(response.total, 0);
@@ -57,12 +73,12 @@ mod tests {
     #[test]
     fn test_plugin_list_response_from_populated_state() {
         let plugins = vec![
-            PluginInfo {
+            PluginInfoResponse {
                 name: "sqlite-store".into(),
                 version: "0.1.0".into(),
                 capabilities: vec!["store".into()],
             },
-            PluginInfo {
+            PluginInfoResponse {
                 name: "discovery".into(),
                 version: "0.1.0".into(),
                 capabilities: vec!["discover".into()],
@@ -76,7 +92,7 @@ mod tests {
 
     #[test]
     fn test_plugin_info_serialization() {
-        let info = PluginInfo {
+        let info = PluginInfoResponse {
             name: "test-plugin".into(),
             version: "1.0.0".into(),
             capabilities: vec!["cap1".into(), "cap2".into()],

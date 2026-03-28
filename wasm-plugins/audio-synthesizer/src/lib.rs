@@ -25,7 +25,7 @@
 //! handles_events = ["plan.created"]
 //!
 //! [[capabilities]]
-//! Synthesize = {}
+//! [capabilities.Synthesize]
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -57,7 +57,9 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload).ok()?;
+    let event = deserialize_event(payload).map_err(|e| {
+        host.log("error", &format!("failed to deserialize event: {e}"));
+    }).ok()?;
     let plan = match &event {
         Event::PlanCreated(e) => &e.plan,
         _ => return None,
@@ -74,7 +76,7 @@ pub fn on_event(
         return None;
     }
 
-    let config = load_config(host);
+    let config: Option<SynthConfig> = load_plugin_config(|key| host.get_plugin_data(key));
     let cfg = config.as_ref();
     let tts_engine = cfg.map(|c| c.tts_engine.as_str()).unwrap_or("piper");
     let tts_model = cfg.map(|c| c.tts_model.as_str()).unwrap_or("en_US-lessac-medium");
@@ -190,7 +192,9 @@ pub fn on_event(
     Some(OnEventResult {
         plugin_name: "audio-synthesizer".to_string(),
         produced_events: vec![],
-        data: Some(serde_json::to_vec(&data).ok()?),
+        data: Some(serde_json::to_vec(&data).map_err(|e| {
+            host.log("error", &format!("failed to serialize result data: {e}"));
+        }).ok()?),
     })
 }
 
@@ -206,15 +210,12 @@ fn simple_hash(s: &str) -> u64 {
 // --- Config ---
 
 #[derive(Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SynthConfig {
     /// TTS engine binary name (default: "piper").
     pub tts_engine: String,
     /// TTS model/voice name.
     pub tts_model: String,
-}
-
-fn load_config(host: &dyn HostFunctions) -> Option<SynthConfig> {
-    load_plugin_config(|key| host.get_plugin_data(key))
 }
 
 #[cfg(test)]

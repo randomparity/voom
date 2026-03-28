@@ -173,11 +173,11 @@ async fn test_list_plugins_empty_by_default() {
 async fn test_list_plugins_with_data() {
     let store = Arc::new(InMemoryStore::new());
     let templates = voom_web_server::server::embedded_templates();
-    let plugin_info = vec![voom_web_server::api::plugins::PluginInfo {
-        name: "test-plugin".into(),
-        version: "0.1.0".into(),
-        capabilities: vec!["test".into()],
-    }];
+    let plugin_info = vec![voom_web_server::api::plugins::PluginInfoResponse::new(
+        "test-plugin".into(),
+        "0.1.0".into(),
+        vec!["test".into()],
+    )];
     let state =
         voom_web_server::state::AppState::new(store, templates, None).with_plugin_info(plugin_info);
     let router = voom_web_server::router::build_router(state);

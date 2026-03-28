@@ -22,6 +22,16 @@ pub struct VoomParser;
 /// Maximum allowed policy source size (1 MiB).
 const MAX_POLICY_SIZE: usize = 1_024 * 1_024;
 
+/// Extract the first token from text, splitting on whitespace, ':', or '('.
+///
+/// Used to dispatch on the leading keyword when pest silently consumes
+/// keyword alternations in the grammar.
+fn leading_keyword(text: &str) -> &str {
+    text.split(|c: char| c.is_whitespace() || c == ':' || c == '(')
+        .next()
+        .unwrap_or("")
+}
+
 /// Maximum nesting depth for conditions and filters to prevent stack overflow.
 const MAX_NESTING_DEPTH: usize = 100;
 
@@ -70,7 +80,7 @@ fn build_policy(pair: Pair<'_, Rule>) -> Result<PolicyAst> {
 
     for item in inner {
         match item.as_rule() {
-            Rule::config => config = Some(build_config(item)?),
+            Rule::config => config = Some(build_config(item)),
             Rule::phase => phases.push(build_phase(item)?),
             Rule::EOI => {}
             other => debug_assert!(false, "unexpected rule in policy: {other:?}"),
@@ -85,7 +95,7 @@ fn build_policy(pair: Pair<'_, Rule>) -> Result<PolicyAst> {
     })
 }
 
-fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
+fn build_config(pair: Pair<'_, Rule>) -> ConfigNode {
     let mut audio_languages = Vec::new();
     let mut subtitle_languages = Vec::new();
     let mut on_error = None;
@@ -99,17 +109,13 @@ fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
 
         // pest silently consumes keyword alternations, so we dispatch on the
         // leading keyword extracted from the raw text (stripping trailing colon).
-        let keyword = text
-            .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-            .next()
-            .unwrap_or("");
+        let keyword = leading_keyword(text);
         match keyword {
             "languages" => {
-                let is_audio = text.contains("audio");
-                let list_pair = item
-                    .into_inner()
-                    .find(|p| p.as_rule() == Rule::list)
-                    .unwrap();
+                let mut inner = item.into_inner();
+                let lang_target = inner.find(|p| p.as_rule() == Rule::lang_target).unwrap();
+                let is_audio = lang_target.as_str() == "audio";
+                let list_pair = inner.find(|p| p.as_rule() == Rule::list).unwrap();
                 let values = build_list(list_pair);
                 if is_audio {
                     audio_languages = values;
@@ -135,12 +141,12 @@ fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
         }
     }
 
-    Ok(ConfigNode {
+    ConfigNode {
         audio_languages,
         subtitle_languages,
         on_error,
         commentary_patterns,
-    })
+    }
 }
 
 /// Push a spanned operation with a pre-captured span.
@@ -175,15 +181,18 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
                 depends_on = build_list(list);
             }
             Rule::run_if => {
-                // Grammar: "run_if" ~ ident ~ "." ~ ("modified" | "completed")
-                // Only the ident is a named rule child; extract trigger from text.
-                let text = child.as_str();
-                let phase_name = child.into_inner().next().unwrap().as_str().to_string();
-                let trigger = if text.contains("modified") {
-                    "modified".to_string()
-                } else {
-                    "completed".to_string()
-                };
+                // Grammar: "run_if" ~ ident ~ "." ~ run_if_trigger
+                let mut inner = child.into_inner();
+                let phase_name = inner
+                    .find(|p| p.as_rule() == Rule::ident)
+                    .unwrap()
+                    .as_str()
+                    .to_string();
+                let trigger = inner
+                    .find(|p| p.as_rule() == Rule::run_if_trigger)
+                    .unwrap()
+                    .as_str()
+                    .to_string();
                 run_if = Some(RunIfNode {
                     phase: phase_name,
                     trigger,
@@ -221,15 +230,15 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
             }
             Rule::defaults_op => {
                 let span = span_from_pair(&child);
-                emit_op(&mut operations, span, build_defaults(child)?);
+                emit_op(&mut operations, span, build_defaults(child));
             }
             Rule::actions_op => {
                 let span = span_from_pair(&child);
-                emit_op(&mut operations, span, build_actions(child)?);
+                emit_op(&mut operations, span, build_actions(child));
             }
             Rule::transcode_op => {
                 let span = span_from_pair(&child);
-                emit_op(&mut operations, span, build_transcode(child)?);
+                emit_op(&mut operations, span, build_transcode(child));
             }
             Rule::synthesize_op => {
                 let span = span_from_pair(&child);
@@ -309,15 +318,12 @@ fn build_keep_remove(pair: Pair<'_, Rule>, is_keep: bool) -> Result<OperationNod
     }
 }
 
-fn build_defaults(pair: Pair<'_, Rule>) -> Result<OperationNode> {
+fn build_defaults(pair: Pair<'_, Rule>) -> OperationNode {
     let mut items = Vec::new();
     for child in pair.into_inner() {
         if child.as_rule() == Rule::default_item {
             let text = child.as_str().trim();
-            let keyword = text
-                .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-                .next()
-                .unwrap_or("");
+            let keyword = leading_keyword(text);
             let kind = match keyword {
                 "audio" => "audio".to_string(),
                 _ => "subtitle".to_string(),
@@ -327,10 +333,10 @@ fn build_defaults(pair: Pair<'_, Rule>) -> Result<OperationNode> {
             items.push((kind, value));
         }
     }
-    Ok(OperationNode::Defaults(items))
+    OperationNode::Defaults(items)
 }
 
-fn build_actions(pair: Pair<'_, Rule>) -> Result<OperationNode> {
+fn build_actions(pair: Pair<'_, Rule>) -> OperationNode {
     let text = pair.as_str();
     let target = text.split_whitespace().next().unwrap().to_string();
     let mut settings = Vec::new();
@@ -342,10 +348,10 @@ fn build_actions(pair: Pair<'_, Rule>) -> Result<OperationNode> {
             settings.push((key, val));
         }
     }
-    Ok(OperationNode::Actions { target, settings })
+    OperationNode::Actions { target, settings }
 }
 
-fn build_transcode(pair: Pair<'_, Rule>) -> Result<OperationNode> {
+fn build_transcode(pair: Pair<'_, Rule>) -> OperationNode {
     let text = pair.as_str();
     // "transcode video to hevc { ... }" or "transcode audio to aac { ... }"
     // Use the second word to determine target (grammar guarantees "video" or "audio")
@@ -370,11 +376,11 @@ fn build_transcode(pair: Pair<'_, Rule>) -> Result<OperationNode> {
         }
     }
 
-    Ok(OperationNode::Transcode {
+    OperationNode::Transcode {
         target,
         codec,
         settings,
-    })
+    }
 }
 
 fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {
@@ -391,10 +397,7 @@ fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {
 
         // pest silently consumes keyword alternations, so we dispatch on the
         // leading keyword extracted from the raw text.
-        let keyword = text
-            .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-            .next()
-            .unwrap_or("");
+        let keyword = leading_keyword(text);
         match keyword {
             "codec" => {
                 let val = parts.next().unwrap().as_str().to_string();
@@ -524,10 +527,7 @@ fn build_condition_and(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionNo
 
 fn build_condition_not(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionNode> {
     let text = pair.as_str().trim();
-    let keyword = text
-        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-        .next()
-        .unwrap_or("");
+    let keyword = leading_keyword(text);
     let inner = pair.into_inner().next().unwrap();
     if keyword == "not" {
         Ok(ConditionNode::Not(Box::new(build_condition_atom(
@@ -546,10 +546,7 @@ fn build_condition_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionN
 
     // pest silently consumes keyword alternations, so we dispatch on the
     // leading keyword extracted from the raw text.
-    let keyword = text
-        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-        .next()
-        .unwrap_or("");
+    let keyword = leading_keyword(text);
     match keyword {
         "audio_is_multi_language" => return Ok(ConditionNode::AudioIsMultiLanguage),
         "is_dubbed" => return Ok(ConditionNode::IsDubbed),
@@ -665,10 +662,7 @@ fn build_filter_and(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
 
 fn build_filter_not(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
     let text = pair.as_str().trim();
-    let keyword = text
-        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-        .next()
-        .unwrap_or("");
+    let keyword = leading_keyword(text);
     let inner = pair.into_inner().next().unwrap();
     if keyword == "not" {
         Ok(FilterNode::Not(Box::new(build_filter_atom(inner, depth)?)))
@@ -721,10 +715,7 @@ fn build_filter_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
 
     // pest silently consumes keyword alternations, so we dispatch on the
     // leading keyword extracted from the raw text.
-    let keyword = text
-        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-        .next()
-        .unwrap_or("");
+    let keyword = leading_keyword(text);
     match keyword {
         "lang" => {
             return match build_list_or_compare_filter(&mut inner, span, "lang")? {
@@ -788,10 +779,7 @@ fn build_action(pair: Pair<'_, Rule>) -> Result<ActionNode> {
 
     // pest silently consumes keyword alternations, so we dispatch on the
     // leading keyword extracted from the raw text.
-    let keyword = text
-        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-        .next()
-        .unwrap_or("");
+    let keyword = leading_keyword(text);
     match keyword {
         "skip" => {
             let phase = inner.next().map(|p| p.as_str().to_string());
@@ -892,8 +880,8 @@ fn build_value(pair: Pair<'_, Rule>) -> Value {
             Value::Number(num, raw)
         }
         Rule::boolean => Value::Bool(pair.as_str() == "true"),
-        Rule::ident => Value::Ident(pair.as_str().to_string()),
         Rule::list => Value::List(build_list_values(pair)),
+        // Rule::ident and any other token types are treated as identifiers
         _ => Value::Ident(pair.as_str().to_string()),
     }
 }
@@ -1205,7 +1193,7 @@ mod tests {
                 }}
             }}"#
         );
-        assert!(parse_policy(&input).is_ok(), "failed to parse: {}", input);
+        assert!(parse_policy(&input).is_ok(), "failed to parse: {input}");
     }
 
     #[test]

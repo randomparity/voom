@@ -15,9 +15,13 @@ pest = "2"
 pest_derive = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+regex = { workspace = true }
 thiserror = { workspace = true }
 voom-domain = { workspace = true }
 xxhash-rust = { workspace = true }
+
+[lints]
+workspace = true
 
 [dev-dependencies]
 insta = { workspace = true }

@@ -1,5 +1,5 @@
 pub mod codecs;
-pub mod datetime;
+pub mod format;
 pub mod language;
 pub mod normalize;
 pub mod sanitize;

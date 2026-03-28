@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use voom_domain::compiled::{
+use crate::compiled::{
     ClearActionsSettings, CompiledAction, CompiledCompareOp, CompiledCondition,
     CompiledConditional, CompiledConfig, CompiledDefault, CompiledFilter, CompiledOperation,
     CompiledPhase, CompiledPolicy, CompiledRegex, CompiledRule, CompiledRunIf, CompiledSynthesize,
@@ -95,13 +95,14 @@ fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslErr
         .transpose()?;
 
     let run_if = phase.run_if.as_ref().map(|r| {
-        CompiledRunIf::new(
-            r.phase.clone(),
-            match r.trigger.as_str() {
-                "modified" => RunIfTrigger::Modified,
-                _ => RunIfTrigger::Completed,
-            },
-        )
+        let trigger = match r.trigger.as_str() {
+            "modified" => RunIfTrigger::Modified,
+            "completed" => RunIfTrigger::Completed,
+            other => {
+                unreachable!("grammar restricts run_if_trigger to modified|completed, got: {other}")
+            }
+        };
+        CompiledRunIf::new(r.phase.clone(), trigger)
     });
 
     let operations: Vec<CompiledOperation> = phase
@@ -110,18 +111,18 @@ fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslErr
         .map(|spanned| compile_operation(&spanned.node))
         .collect::<std::result::Result<_, _>>()?;
 
-    Ok(CompiledPhase::new(
-        phase.name.clone(),
-        phase.depends_on.clone(),
+    Ok(CompiledPhase {
+        name: phase.name.clone(),
+        depends_on: phase.depends_on.clone(),
         skip_when,
         run_if,
-        phase
+        on_error: phase
             .on_error
             .as_deref()
             .and_then(parse_error_strategy)
             .unwrap_or(ErrorStrategy::Abort),
         operations,
-    ))
+    })
 }
 
 fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperation, DslError> {
@@ -175,59 +176,7 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
             target,
             codec,
             settings,
-        } => {
-            let canonical = codecs::normalize_codec(codec)
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| codec.clone());
-            let get = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v);
-            let preserve = get("preserve")
-                .and_then(|v| {
-                    if let Value::List(items) = v {
-                        Some(
-                            items
-                                .iter()
-                                .map(|item| match item {
-                                    Value::String(s) | Value::Ident(s) => s.clone(),
-                                    Value::Number(_, s) => s.clone(),
-                                    _ => String::new(),
-                                })
-                                .filter(|s| !s.is_empty())
-                                .collect(),
-                        )
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_default();
-            let crf = get("crf").and_then(|v| {
-                if let Value::Number(n, _) = v {
-                    safe_u32(*n)
-                } else {
-                    None
-                }
-            });
-            let preset = get("preset").and_then(|v| match v {
-                Value::String(s) | Value::Ident(s) => Some(s.clone()),
-                _ => None,
-            });
-            let bitrate = get("bitrate").and_then(|v| match v {
-                Value::String(s) | Value::Ident(s) => Some(s.clone()),
-                Value::Number(_, s) => Some(s.clone()),
-                _ => None,
-            });
-            let channels = get("channels").and_then(|v| {
-                if let Value::Number(n, _) = v {
-                    safe_u32(*n)
-                } else {
-                    None
-                }
-            });
-            Ok(CompiledOperation::Transcode {
-                target: parse_track_target(target),
-                codec: canonical,
-                settings: CompiledTranscodeSettings::new(preserve, crf, preset, bitrate, channels),
-            })
-        }
+        } => Ok(compile_transcode(target, codec, settings)),
         OperationNode::Synthesize { name, settings } => Ok(CompiledOperation::Synthesize(
             Box::new(compile_synthesize(name, settings)?),
         )),
@@ -251,11 +200,59 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
             Ok(CompiledOperation::Rules {
                 mode: match mode.as_str() {
                     "first" => RulesMode::First,
-                    _ => RulesMode::All,
+                    _ => unreachable!("validator rejects unknown rules modes"),
                 },
                 rules: compiled_rules,
             })
         }
+    }
+}
+
+fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) -> CompiledOperation {
+    let canonical = codecs::normalize_codec(codec)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| codec.to_string());
+
+    let get =
+        |key: &str| -> Option<&Value> { settings.iter().find(|(k, _)| k == key).map(|(_, v)| v) };
+
+    let preserve = match get("preserve") {
+        Some(Value::List(items)) => items
+            .iter()
+            .filter_map(|item| match item {
+                Value::String(s) | Value::Ident(s) => Some(s.clone()),
+                Value::Number(_, s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    };
+
+    let crf = match get("crf") {
+        Some(Value::Number(n, _)) => safe_u32(*n),
+        _ => None,
+    };
+
+    let preset = match get("preset") {
+        Some(Value::String(s) | Value::Ident(s)) => Some(s.clone()),
+        _ => None,
+    };
+
+    let bitrate = match get("bitrate") {
+        Some(Value::String(s) | Value::Ident(s)) => Some(s.clone()),
+        Some(Value::Number(_, s)) => Some(s.clone()),
+        _ => None,
+    };
+
+    let channels = match get("channels") {
+        Some(Value::Number(n, _)) => safe_u32(*n),
+        _ => None,
+    };
+
+    CompiledOperation::Transcode {
+        target: parse_track_target(target),
+        codec: canonical,
+        settings: CompiledTranscodeSettings::new(preserve, crf, preset, bitrate, channels),
     }
 }
 
@@ -422,7 +419,7 @@ fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, Ds
         FilterNode::TitleContains(s) => Ok(CompiledFilter::TitleContains(s.clone())),
         FilterNode::TitleMatches(s) => {
             let compiled = CompiledRegex::new(s)
-                .map_err(|e| DslError::compile(format!("invalid regex pattern '{}': {}", s, e)))?;
+                .map_err(|e| DslError::compile(format!("invalid regex pattern '{s}': {e}")))?;
             Ok(CompiledFilter::TitleMatches(compiled))
         }
         FilterNode::And(items) => {
@@ -500,10 +497,9 @@ fn parse_track_target(target: &str) -> TrackTarget {
 
 fn value_to_json(value: &Value) -> serde_json::Value {
     match value {
-        Value::String(s) => serde_json::Value::String(s.clone()),
+        Value::String(s) | Value::Ident(s) => serde_json::Value::String(s.clone()),
         Value::Number(n, _) => serde_json::json!(n),
         Value::Bool(b) => serde_json::Value::Bool(*b),
-        Value::Ident(s) => serde_json::Value::String(s.clone()),
         Value::List(items) => {
             let arr: Vec<serde_json::Value> = items.iter().map(value_to_json).collect();
             serde_json::Value::Array(arr)

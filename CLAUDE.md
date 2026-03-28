@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 VOOM (Video Orchestration Operations Manager) is a policy-driven video library manager being built in Rust. It is a from-scratch rewrite of VPO (Video Policy Orchestrator) with a WASM plugin architecture and a custom block-based DSL for policy configuration.
 
-**Status:** Active development (Sprints 1–12 complete, Sprint 13 next). All core crates, 8 native plugins (kernel-registered) + 3 library-only plugins, CLI, web UI, and WASM plugin SDK are implemented. ~800+ tests. See `docs/INITIAL_DESIGN.md` for the original design and `docs/architecture.md` for current architecture.
+**Status:** Active development (Sprints 1–12 complete, Sprint 13 next). All core crates, 7 native plugins (kernel-registered) + 4 library-only plugins, CLI, web UI, and WASM plugin SDK are implemented. ~800+ tests. See `docs/INITIAL_DESIGN.md` for the original design and `docs/architecture.md` for current architecture.
 
 ## Build & Development Commands
 
@@ -33,9 +33,10 @@ Plugins communicate exclusively through an **event bus** (synchronous priority-o
 - **voom-domain** — Shared types: `MediaFile`, `Track`, `Plan`, `Event`, `Capability` (serde-serializable, exposed to WASM via WIT)
 - **voom-dsl** — PEG grammar (pest), parser, AST, compiler (AST → CompiledPolicy), validator, formatter
 - **voom-cli** — clap-derive CLI binary with subcommands (scan, inspect, process, policy, plugin, serve, doctor, jobs, report, db, config)
+- **voom-process** — Shared subprocess utilities with timeout-aware execution for executor plugins
 - **voom-wit** — WIT interface definitions (plugin.wit, host.wit, types.wit)
 - **voom-plugin-sdk** — SDK crate for third-party plugin authors
-- **plugins/** — Native plugins: 8 kernel-registered (discovery, tool-detector, sqlite-store, policy-evaluator, phase-orchestrator, mkvtoolnix-executor, backup-manager, job-manager) + 3 library-only (ffprobe-introspector: used directly by CLI, ffmpeg-executor: Sprint 13, web-server: started by `serve` command)
+- **plugins/** — Native plugins: 7 kernel-registered (discovery, tool-detector, sqlite-store, mkvtoolnix-executor, ffmpeg-executor, backup-manager, job-manager) + 4 library-only (ffprobe-introspector: used directly by CLI, policy-evaluator: called directly by CLI, phase-orchestrator: called directly by CLI, web-server: started by `serve` command)
 
 ### Key data flow
 1. DSL policy file (`.voom`) → pest parser → AST → CompiledPolicy
@@ -77,6 +78,10 @@ pb.set_message(format!("{prefix}{name}"));
 ```
 
 For indicatif templates with bars/counters (where the overhead is rendered by indicatif, not your format string), estimate the template overhead and pass it to `max_filename_len()`.
+
+## Review Process
+
+When review agents surface pre-existing issues that are out of scope for the current branch, create a GitHub issue for each rather than fixing them in-place. This keeps branches focused and ensures deferred work is tracked.
 
 ## Configuration
 

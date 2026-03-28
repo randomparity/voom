@@ -11,13 +11,17 @@ description = "Policy evaluation plugin for VOOM — applies compiled policies t
 
 [dependencies]
 voom-domain = { workspace = true }
-voom-kernel = { workspace = true }
+voom-dsl = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 insta = { workspace = true }
 voom-dsl = { workspace = true }
+voom-domain = { workspace = true, features = ["testing"] }

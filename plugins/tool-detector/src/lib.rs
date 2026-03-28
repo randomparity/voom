@@ -1,7 +1,5 @@
 //! Tool detector plugin: discovers and caches external tool availability and versions.
 
-#![allow(clippy::missing_errors_doc)]
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
@@ -177,8 +175,8 @@ fn parse_version(tool_name: &str, output: &str) -> String {
         "mediainfo" => {
             // "MediaInfo Command line, MediaInfoLib - v24.01"
             first_line
-                .split("v")
-                .last()
+                .split('v')
+                .next_back()
                 .unwrap_or("unknown")
                 .trim()
                 .to_string()

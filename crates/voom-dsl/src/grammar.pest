@@ -9,10 +9,11 @@ policy = { SOI ~ "policy" ~ string ~ "{" ~ config? ~ phase+ ~ "}" ~ EOI }
 // Config block
 config = { "config" ~ "{" ~ config_item* ~ "}" }
 config_item = {
-    "languages" ~ ("audio" | "subtitle") ~ ":" ~ list
+    "languages" ~ lang_target ~ ":" ~ list
   | "on_error" ~ ":" ~ ident
   | "commentary_patterns" ~ ":" ~ list
 }
+lang_target = { "audio" | "subtitle" }
 
 // Phase block
 phase = { "phase" ~ ident ~ "{" ~ phase_item* ~ "}" }
@@ -27,7 +28,8 @@ phase_item = {
 // Phase control
 skip_when  = { "skip" ~ "when" ~ condition }
 depends_on = { "depends_on" ~ ":" ~ list }
-run_if     = { "run_if" ~ ident ~ "." ~ ("modified" | "completed") }
+run_if         = { "run_if" ~ ident ~ "." ~ run_if_trigger }
+run_if_trigger = { "modified" | "completed" }
 on_error   = { "on_error" ~ ":" ~ ident }
 
 // Operations

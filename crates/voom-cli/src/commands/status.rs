@@ -24,7 +24,7 @@ pub fn run() -> Result<()> {
             println!(
                 "  {} files, {}",
                 style(files.len()).cyan(),
-                style(voom_domain::utils::datetime::format_size(total_size)).cyan()
+                style(voom_domain::utils::format::format_size(total_size)).cyan()
             );
 
             // Bad file count

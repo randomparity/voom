@@ -17,5 +17,8 @@ rayon = { workspace = true }
 xxhash-rust = { workspace = true }
 tracing = { workspace = true }
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 tempfile = { workspace = true }

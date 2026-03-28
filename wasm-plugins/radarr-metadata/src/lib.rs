@@ -35,7 +35,6 @@ use voom_plugin_sdk::{
     OnEventResult, PluginInfoData,
 };
 
-/// Plugin identity and capabilities.
 pub fn get_info() -> PluginInfoData {
     PluginInfoData {
         name: "radarr-metadata".to_string(),
@@ -44,7 +43,6 @@ pub fn get_info() -> PluginInfoData {
     }
 }
 
-/// This plugin handles file introspection events to enrich with movie metadata.
 pub fn handles(event_type: &str) -> bool {
     event_type == "file.introspected"
 }
@@ -62,22 +60,19 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload).ok()?;
+    let event = deserialize_event(payload).map_err(|e| {
+        host.log("error", &format!("failed to deserialize event: {e}"));
+    }).ok()?;
     let file = match &event {
         Event::FileIntrospected(e) => &e.file,
         _ => return None,
     };
 
-    // Log that we're processing this file.
     host.log("info", &format!("looking up Radarr metadata for: {}", file.path.display()));
 
-    // Load config from plugin data.
-    let config = load_config(host)?;
-
-    // Query the Radarr API for movie info matching this file path.
+    let config: RadarrConfig = load_plugin_config(|key| host.get_plugin_data(key))?;
     let movie = lookup_movie(host, &config, &file.path.to_string_lossy())?;
 
-    // Build enrichment metadata.
     let metadata = serde_json::json!({
         "source": "radarr",
         "radarr_id": movie.id,
@@ -97,7 +92,9 @@ pub fn on_event(
         },
     );
 
-    let produced_payload = serialize_event(&enriched_event).ok()?;
+    let produced_payload = serialize_event(&enriched_event).map_err(|e| {
+        host.log("error", &format!("failed to serialize event: {e}"));
+    }).ok()?;
 
     Some(OnEventResult {
         plugin_name: "radarr-metadata".to_string(),
@@ -110,6 +107,7 @@ pub fn on_event(
 
 /// Plugin configuration loaded from plugin data storage.
 #[derive(Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RadarrConfig {
     pub radarr_url: String,
     pub api_key: String,
@@ -117,6 +115,7 @@ pub struct RadarrConfig {
 
 /// A movie record from the Radarr API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RadarrMovie {
     pub id: u64,
     pub title: String,
@@ -130,10 +129,6 @@ pub struct RadarrMovie {
 
 // --- Internal helpers ---
 
-fn load_config(host: &dyn HostFunctions) -> Option<RadarrConfig> {
-    load_plugin_config(|key| host.get_plugin_data(key))
-}
-
 fn lookup_movie(
     host: &dyn HostFunctions,
     config: &RadarrConfig,
@@ -142,13 +137,17 @@ fn lookup_movie(
     let url = format!("{}/api/v3/movie", config.radarr_url);
     let headers = vec![("X-Api-Key".to_string(), config.api_key.clone())];
 
-    let response = host.http_get(&url, &headers).ok()?;
+    let response = host.http_get(&url, &headers).map_err(|e| {
+        host.log("error", &format!("Radarr API request failed: {e}"));
+    }).ok()?;
     if response.status != 200 {
         host.log("warn", &format!("Radarr API returned status {}", response.status));
         return None;
     }
 
-    let movies: Vec<RadarrMovie> = serde_json::from_slice(&response.body).ok()?;
+    let movies: Vec<RadarrMovie> = serde_json::from_slice(&response.body).map_err(|e| {
+        host.log("error", &format!("failed to parse Radarr API response: {e}"));
+    }).ok()?;
 
     // Match by file path — Radarr stores the movie's root path, and the file
     // should be under that directory.
@@ -200,10 +199,7 @@ mod tests {
     impl HostFunctions for MockHost {
         fn http_get(&self, _url: &str, _headers: &[(String, String)]) -> Result<HttpResponse, String> {
             let body = serde_json::to_vec(&self.movies).unwrap();
-            Ok(HttpResponse {
-                status: 200,
-                body,
-            })
+            Ok(HttpResponse::new(200, body))
         }
 
         fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {

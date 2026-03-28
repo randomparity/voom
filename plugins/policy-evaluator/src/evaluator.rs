@@ -6,10 +6,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use voom_domain::compiled::*;
+use voom_domain::errors::VoomError;
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
+use voom_dsl::compiled::*;
 
 use crate::condition::{evaluate_condition, resolve_value_or_field};
 use crate::filter::{track_matches, tracks_for_target};
@@ -19,7 +20,6 @@ use crate::filter::{track_matches, tracks_for_target};
 #[derive(Debug)]
 pub struct EvaluationResult {
     pub plans: Vec<Plan>,
-    pub phase_outcomes: HashMap<String, EvaluationOutcome>,
 }
 
 /// Outcome of a single phase evaluation.
@@ -28,10 +28,9 @@ pub struct EvaluationResult {
 /// which represents execution outcomes. This type tracks evaluation-time outcomes
 /// (e.g., whether a phase produced modifications) for dependency resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EvaluationOutcome {
+enum EvaluationOutcome {
     Executed { modified: bool },
     Skipped,
-    Failed,
 }
 
 /// Evaluate a compiled policy against a media file, producing plans for all phases.
@@ -60,10 +59,7 @@ pub fn evaluate(policy: &CompiledPolicy, file: &MediaFile) -> EvaluationResult {
         plans.push(plan);
     }
 
-    EvaluationResult {
-        plans,
-        phase_outcomes,
-    }
+    EvaluationResult { plans }
 }
 
 /// Evaluate a single phase against a file.
@@ -111,16 +107,9 @@ fn evaluate_phase(
     }
 
     for dep in &phase.depends_on {
-        match phase_outcomes.get(dep) {
-            Some(EvaluationOutcome::Failed) => {
-                plan.skip_reason = Some(format!("dependency '{dep}' failed"));
-                return plan;
-            }
-            None => {
-                plan.skip_reason = Some(format!("dependency '{dep}' not yet executed"));
-                return plan;
-            }
-            _ => {} // Skipped or Executed is OK
+        if phase_outcomes.get(dep).is_none() {
+            plan.skip_reason = Some(format!("dependency '{dep}' not yet executed"));
+            return plan;
         }
     }
 
@@ -243,7 +232,7 @@ struct PhaseContext<'a> {
 }
 
 /// Emit planned actions for a single operation into the plan.
-fn emit_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), String> {
+fn emit_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), VoomError> {
     match op {
         CompiledOperation::SetContainer(container) => {
             emit_set_container(container, ctx);
@@ -450,6 +439,8 @@ fn emit_clear_forced(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext
     ));
 }
 
+/// Emit a "clear title" action. Uses `SetTitle` with an empty string as the
+/// canonical representation — executors treat an empty title as "remove title".
 fn emit_clear_title(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext) {
     ctx.plan.actions.push(PlannedAction::track_op(
         OperationType::SetTitle,
@@ -555,7 +546,14 @@ fn emit_transcode(
 
     let operation = match target {
         TrackTarget::Video => OperationType::TranscodeVideo,
-        _ => OperationType::TranscodeAudio,
+        TrackTarget::Audio => OperationType::TranscodeAudio,
+        TrackTarget::Subtitle | TrackTarget::Attachment | TrackTarget::Any => {
+            tracing::warn!(
+                target = ?target,
+                "transcode not supported for this track target, skipping"
+            );
+            return;
+        }
     };
 
     let crf = settings.crf;
@@ -632,7 +630,16 @@ fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
 
     let channels = synth.channels.as_ref().map(|c| match c {
         SynthChannels::Count(n) => *n,
-        SynthChannels::Named(_) => 2, // default stereo for named presets
+        SynthChannels::Named(s) => match s.as_str() {
+            "mono" => 1,
+            "stereo" => 2,
+            "5.1" | "surround" => 6,
+            "7.1" => 8,
+            other => {
+                tracing::warn!(preset = other, "unknown channel preset, defaulting to 2");
+                2
+            }
+        },
     });
 
     let position = synth.position.as_ref().map(|p| match p {
@@ -677,9 +684,9 @@ fn emit_set_tag(
     tag: &str,
     value: &CompiledValueOrField,
     ctx: &mut PhaseContext,
-) -> Result<(), String> {
+) -> Result<(), VoomError> {
     let val = resolve_value_or_field(value, ctx.file)
-        .ok_or_else(|| format!("Cannot resolve tag value for '{tag}'"))?;
+        .ok_or_else(|| VoomError::Validation(format!("Cannot resolve tag value for '{tag}'")))?;
     ctx.plan.actions.push(PlannedAction::file_op(
         OperationType::SetContainerTag,
         ActionParams::SetTag {
@@ -703,7 +710,7 @@ fn emit_delete_tag(tag: &str, ctx: &mut PhaseContext) {
     }
 }
 
-fn emit_conditional(cond: &CompiledConditional, ctx: &mut PhaseContext) -> Result<(), String> {
+fn emit_conditional(cond: &CompiledConditional, ctx: &mut PhaseContext) -> Result<(), VoomError> {
     let matched = evaluate_condition(&cond.condition, ctx.file);
     let actions = if matched {
         &cond.then_actions
@@ -720,7 +727,7 @@ fn emit_rules(
     mode: &RulesMode,
     rules: &[CompiledRule],
     ctx: &mut PhaseContext,
-) -> Result<(), String> {
+) -> Result<(), VoomError> {
     for rule in rules {
         let matched = evaluate_condition(&rule.conditional.condition, ctx.file);
         if matched {
@@ -739,7 +746,7 @@ fn emit_rules(
     Ok(())
 }
 
-fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), String> {
+fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), VoomError> {
     match action {
         CompiledAction::Skip(phase) => {
             ctx.plan.skip_reason = Some(match phase {
@@ -753,21 +760,22 @@ fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), St
         }
         CompiledAction::Fail(msg) => {
             let expanded = expand_template(msg, ctx.file);
-            return Err(expanded);
+            return Err(VoomError::Validation(expanded));
         }
         CompiledAction::SetDefault { target, filter } => {
-            emit_flag_action(ctx, target, filter, FlagKind::Default)?;
+            emit_flag_action(ctx, target, filter, FlagKind::Default);
         }
         CompiledAction::SetForced { target, filter } => {
-            emit_flag_action(ctx, target, filter, FlagKind::Forced)?;
+            emit_flag_action(ctx, target, filter, FlagKind::Forced);
         }
         CompiledAction::SetLanguage {
             target,
             filter,
             value,
         } => {
-            let lang = resolve_value_or_field(value, ctx.file)
-                .ok_or_else(|| "Cannot resolve language value".to_string())?;
+            let lang = resolve_value_or_field(value, ctx.file).ok_or_else(|| {
+                VoomError::Validation("Cannot resolve language value".to_string())
+            })?;
             let tracks = tracks_for_target(ctx.file, target);
             for track in &tracks {
                 if filter_matches(track, filter) && track.language != lang {
@@ -817,7 +825,7 @@ fn emit_flag_action(
     target: &TrackTarget,
     filter: &Option<CompiledFilter>,
     kind: FlagKind,
-) -> Result<(), String> {
+) {
     let (op, label, is_set_fn): (OperationType, &str, fn(&Track) -> bool) = match kind {
         FlagKind::Default => (OperationType::SetDefault, "default", |t| t.is_default),
         FlagKind::Forced => (OperationType::SetForced, "forced", |t| t.is_forced),
@@ -837,7 +845,6 @@ fn emit_flag_action(
             ));
         }
     }
-    Ok(())
 }
 
 fn file_name(file: &MediaFile) -> String {
@@ -1328,7 +1335,7 @@ mod tests {
         );
         let result = evaluate(&policy, &file);
         // on_error: continue → error recorded but processing continues
-        assert!(result.plans[0].warnings.len() >= 1);
+        assert!(!result.plans[0].warnings.is_empty());
     }
 
     #[test]
@@ -1367,7 +1374,7 @@ mod tests {
         assert_eq!(plan.actions[0].operation, OperationType::ClearContainerTags);
         match &plan.actions[0].parameters {
             ActionParams::ClearTags { tags } => assert_eq!(tags.len(), 2),
-            other => panic!("Expected ClearTags, got {:?}", other),
+            other => panic!("Expected ClearTags, got {other:?}"),
         }
     }
 
@@ -1409,7 +1416,7 @@ mod tests {
                 assert_eq!(tag, "title");
                 assert_eq!(value, "My Movie");
             }
-            other => panic!("Expected SetTag, got {:?}", other),
+            other => panic!("Expected SetTag, got {other:?}"),
         }
     }
 
@@ -1432,7 +1439,7 @@ mod tests {
         assert_eq!(plan.actions[0].operation, OperationType::DeleteContainerTag);
         match &plan.actions[0].parameters {
             ActionParams::DeleteTag { tag } => assert_eq!(tag, "encoder"),
-            other => panic!("Expected DeleteTag, got {:?}", other),
+            other => panic!("Expected DeleteTag, got {other:?}"),
         }
     }
 
@@ -1497,7 +1504,7 @@ mod tests {
                     "ConvertContainer action must specify container"
                 );
             }
-            other => panic!("Expected Container params, got {:?}", other),
+            other => panic!("Expected Container params, got {other:?}"),
         }
     }
 

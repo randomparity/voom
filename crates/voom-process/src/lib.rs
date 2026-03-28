@@ -1,9 +1,10 @@
 //! Shared subprocess utilities for executor plugins.
 //!
-//! Provides timeout-aware process execution used by both the MKVToolNix and
-//! FFmpeg executor plugins.
+//! Provides timeout-aware process execution used by both the `MKVToolNix` and
+//! `FFmpeg` executor plugins.
 
 use std::ffi::OsStr;
+use std::io::Read;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
@@ -11,29 +12,59 @@ use wait_timeout::ChildExt;
 
 use voom_domain::errors::{Result, VoomError};
 
-/// Drain stdout and stderr pipes from a child process into buffers.
+/// Spawn reader threads for stdout and stderr pipes.
 ///
-/// **Precondition**: The child process must have exited or been killed before
-/// calling this. Calling it on a live process will deadlock if either pipe
-/// fills its OS buffer.
-pub fn drain_pipes(child: &mut std::process::Child) -> (Vec<u8>, Vec<u8>) {
-    use std::io::Read;
-    let mut stdout_buf = Vec::new();
-    let mut stderr_buf = Vec::new();
-    if let Some(mut out) = child.stdout.take() {
-        if let Err(e) = out.read_to_end(&mut stdout_buf) {
+/// Returns join handles that yield the collected bytes. Threads are
+/// spawned *before* `wait_timeout` so pipes are drained concurrently,
+/// avoiding deadlock when output exceeds the OS pipe buffer.
+fn spawn_pipe_readers(
+    child: &mut std::process::Child,
+) -> (
+    std::thread::JoinHandle<Vec<u8>>,
+    std::thread::JoinHandle<Vec<u8>>,
+) {
+    let mut stdout = child.stdout.take().expect("stdout piped");
+    let mut stderr = child.stderr.take().expect("stderr piped");
+
+    let stdout_handle = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Err(e) = stdout.read_to_end(&mut buf) {
             tracing::warn!(error = %e, "failed to read child stdout");
         }
-    }
-    if let Some(mut err) = child.stderr.take() {
-        if let Err(e) = err.read_to_end(&mut stderr_buf) {
+        buf
+    });
+
+    let stderr_handle = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Err(e) = stderr.read_to_end(&mut buf) {
             tracing::warn!(error = %e, "failed to read child stderr");
         }
-    }
-    (stdout_buf, stderr_buf)
+        buf
+    });
+
+    (stdout_handle, stderr_handle)
+}
+
+/// Collect results from pipe reader threads.
+fn join_pipe_readers(
+    stdout_handle: std::thread::JoinHandle<Vec<u8>>,
+    stderr_handle: std::thread::JoinHandle<Vec<u8>>,
+) -> (Vec<u8>, Vec<u8>) {
+    let stdout = stdout_handle.join().unwrap_or_else(|e| {
+        tracing::warn!("stdout pipe reader panicked: {e:?}");
+        Vec::new()
+    });
+    let stderr = stderr_handle.join().unwrap_or_else(|e| {
+        tracing::warn!("stderr pipe reader panicked: {e:?}");
+        Vec::new()
+    });
+    (stdout, stderr)
 }
 
 /// Run a subprocess with a timeout, killing it if it exceeds the deadline.
+///
+/// # Errors
+/// Returns `VoomError::ToolExecution` if the process fails or times out.
 pub fn run_with_timeout(
     tool: &str,
     args: &[impl AsRef<OsStr>],
@@ -49,9 +80,12 @@ pub fn run_with_timeout(
             message: format!("failed to spawn {tool}: {e}"),
         })?;
 
+    // Spawn reader threads before waiting so pipes drain concurrently.
+    let (stdout_handle, stderr_handle) = spawn_pipe_readers(&mut child);
+
     match child.wait_timeout(timeout) {
         Ok(Some(status)) => {
-            let (stdout, stderr) = drain_pipes(&mut child);
+            let (stdout, stderr) = join_pipe_readers(stdout_handle, stderr_handle);
             Ok(Output {
                 status,
                 stdout,
@@ -59,18 +93,26 @@ pub fn run_with_timeout(
             })
         }
         Ok(None) => {
-            child.kill().ok();
-            drain_pipes(&mut child);
+            if let Err(e) = child.kill() {
+                tracing::warn!(tool = tool, error = %e, "failed to kill child process");
+            }
             child.wait().ok();
+            join_pipe_readers(stdout_handle, stderr_handle);
             Err(VoomError::ToolExecution {
                 tool: tool.into(),
                 message: format!("{tool} timed out after {}s", timeout.as_secs()),
             })
         }
         Err(e) => {
-            child.kill().ok();
-            drain_pipes(&mut child);
+            if let Err(kill_err) = child.kill() {
+                tracing::warn!(
+                    tool = tool,
+                    error = %kill_err,
+                    "failed to kill child process"
+                );
+            }
             child.wait().ok();
+            join_pipe_readers(stdout_handle, stderr_handle);
             Err(VoomError::ToolExecution {
                 tool: tool.into(),
                 message: format!("error waiting for {tool}: {e}"),

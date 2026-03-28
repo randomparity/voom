@@ -2,8 +2,8 @@
 
 use std::collections::HashSet;
 
-use voom_domain::compiled::{CompiledCompareOp, CompiledCondition};
 use voom_domain::media::MediaFile;
+use voom_dsl::compiled::{CompiledCompareOp, CompiledCondition};
 
 use crate::filter::{compare_f64, track_matches, tracks_for_target};
 
@@ -176,8 +176,9 @@ fn compare_json(
 ) -> bool {
     match (left, right) {
         (serde_json::Value::Number(l), serde_json::Value::Number(r)) => {
-            let lf = l.as_f64().unwrap_or(0.0);
-            let rf = r.as_f64().unwrap_or(0.0);
+            let (Some(lf), Some(rf)) = (l.as_f64(), r.as_f64()) else {
+                return false;
+            };
             compare_f64(lf, op, rf)
         }
         (serde_json::Value::String(l), serde_json::Value::String(r)) => match op {
@@ -187,11 +188,17 @@ fn compare_json(
             CompiledCompareOp::Le => l <= r,
             CompiledCompareOp::Gt => l > r,
             CompiledCompareOp::Ge => l >= r,
-            CompiledCompareOp::In => false,
+            // In is handled before reaching compare_json; see
+            // evaluate_field_compare() which dispatches In early.
+            CompiledCompareOp::In => {
+                debug_assert!(false, "In operator should not reach compare_json");
+                false
+            }
         },
         (serde_json::Value::Bool(l), serde_json::Value::Bool(r)) => match op {
             CompiledCompareOp::Eq => l == r,
             CompiledCompareOp::Ne => l != r,
+            // Ordering and In are not meaningful for booleans
             _ => false,
         },
         _ => false,
@@ -200,9 +207,8 @@ fn compare_json(
 
 fn json_values_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     match (a, b) {
-        (serde_json::Value::String(l), serde_json::Value::String(r)) => l == r,
+        // Numbers need special handling: compare as f64 so 1 == 1.0
         (serde_json::Value::Number(l), serde_json::Value::Number(r)) => l.as_f64() == r.as_f64(),
-        (serde_json::Value::Bool(l), serde_json::Value::Bool(r)) => l == r,
         _ => a == b,
     }
 }
@@ -210,15 +216,15 @@ fn json_values_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
 /// Resolve a `CompiledValueOrField` to a concrete string value.
 #[must_use]
 pub fn resolve_value_or_field(
-    vof: &voom_domain::compiled::CompiledValueOrField,
+    vof: &voom_dsl::compiled::CompiledValueOrField,
     file: &MediaFile,
 ) -> Option<String> {
     match vof {
-        voom_domain::compiled::CompiledValueOrField::Value(v) => match v {
+        voom_dsl::compiled::CompiledValueOrField::Value(v) => match v {
             serde_json::Value::String(s) => Some(s.clone()),
             other => Some(other.to_string()),
         },
-        voom_domain::compiled::CompiledValueOrField::Field(path) => {
+        voom_dsl::compiled::CompiledValueOrField::Field(path) => {
             resolve_field(file, path).map(|v| match v {
                 serde_json::Value::String(s) => s,
                 other => other.to_string(),
@@ -231,39 +237,12 @@ pub fn resolve_value_or_field(
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use voom_domain::compiled::TrackTarget;
-    use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    use voom_domain::media::{MediaFile, Track, TrackType};
+    use voom_domain::test_support::test_media_file;
+    use voom_dsl::compiled::TrackTarget;
 
     fn test_file() -> MediaFile {
-        let mut file = MediaFile::new(PathBuf::from("/test/movie.mkv"));
-        file.container = Container::Mkv;
-        file.tracks = vec![
-            {
-                let mut t = Track::new(0, TrackType::Video, "hevc".into());
-                t.width = Some(1920);
-                t.height = Some(1080);
-                t
-            },
-            {
-                let mut t = Track::new(1, TrackType::AudioMain, "aac".into());
-                t.language = "eng".into();
-                t.channels = Some(6);
-                t.is_default = true;
-                t
-            },
-            {
-                let mut t = Track::new(2, TrackType::AudioAlternate, "aac".into());
-                t.language = "jpn".into();
-                t.channels = Some(2);
-                t
-            },
-            {
-                let mut t = Track::new(3, TrackType::SubtitleMain, "srt".into());
-                t.language = "eng".into();
-                t
-            },
-        ];
-        file
+        test_media_file()
     }
 
     #[test]
@@ -288,7 +267,7 @@ mod tests {
     #[test]
     fn test_exists_with_filter() {
         let file = test_file();
-        use voom_domain::compiled::CompiledFilter;
+        use voom_dsl::compiled::CompiledFilter;
         assert!(evaluate_condition(
             &CompiledCondition::Exists {
                 target: TrackTarget::Audio,
@@ -413,13 +392,13 @@ mod tests {
         let cond = CompiledCondition::And(vec![
             CompiledCondition::Exists {
                 target: TrackTarget::Audio,
-                filter: Some(voom_domain::compiled::CompiledFilter::LangIn(vec![
+                filter: Some(voom_dsl::compiled::CompiledFilter::LangIn(vec![
                     "eng".into()
                 ])),
             },
             CompiledCondition::Exists {
                 target: TrackTarget::Audio,
-                filter: Some(voom_domain::compiled::CompiledFilter::LangIn(vec![
+                filter: Some(voom_dsl::compiled::CompiledFilter::LangIn(vec![
                     "jpn".into()
                 ])),
             },
@@ -429,7 +408,7 @@ mod tests {
         // NOT has french audio
         let not_cond = CompiledCondition::Not(Box::new(CompiledCondition::Exists {
             target: TrackTarget::Audio,
-            filter: Some(voom_domain::compiled::CompiledFilter::LangIn(vec![
+            filter: Some(voom_dsl::compiled::CompiledFilter::LangIn(vec![
                 "fre".into()
             ])),
         }));
@@ -445,7 +424,7 @@ mod tests {
         );
 
         let val = resolve_value_or_field(
-            &voom_domain::compiled::CompiledValueOrField::Field(vec![
+            &voom_dsl::compiled::CompiledValueOrField::Field(vec![
                 "plugin".into(),
                 "radarr".into(),
                 "title".into(),
@@ -459,7 +438,7 @@ mod tests {
     fn test_resolve_value() {
         let file = test_file();
         let val = resolve_value_or_field(
-            &voom_domain::compiled::CompiledValueOrField::Value(serde_json::Value::String(
+            &voom_dsl::compiled::CompiledValueOrField::Value(serde_json::Value::String(
                 "literal".into(),
             )),
             &file,

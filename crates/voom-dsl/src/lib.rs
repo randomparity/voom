@@ -19,9 +19,8 @@
 //! assert_eq!(ast.name, "example");
 //! ```
 
-#![allow(clippy::missing_errors_doc)]
-
 pub mod ast;
+pub mod compiled;
 pub mod compiler;
 pub mod errors;
 pub mod formatter;
@@ -34,11 +33,11 @@ pub use ast::{
     PolicyAst, RuleNode, RunIfNode, Span, SpannedOperation, SynthSetting, TrackQueryNode,
     TrackRefNode, Value, ValueOrField, WhenNode,
 };
+pub use compiled::CompiledPolicy;
 pub use errors::{DslError, DslPipelineError, ValidationErrors};
 pub use formatter::format_policy;
 pub use parser::parse_policy;
 pub use validator::validate;
-pub use voom_domain::compiled::CompiledPolicy;
 
 /// Run the full parse → validate → compile pipeline in one call.
 ///

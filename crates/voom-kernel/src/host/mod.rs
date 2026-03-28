@@ -114,11 +114,11 @@ impl HostState {
     ///
     /// Stores the config as JSON bytes under the `"config"` key in the
     /// in-memory plugin data store. WASM plugins can then retrieve it
-    /// via `resolve_plugin_data("config")`.
+    /// via `get_plugin_data("config")`.
     ///
     /// Note: both `{}` (empty object) and `null` are treated as "no config"
     /// and do **not** seed the store. A plugin that receives no config and one
-    /// that receives `{}` are therefore indistinguishable via `resolve_plugin_data`.
+    /// that receives `{}` are therefore indistinguishable via `get_plugin_data`.
     #[must_use]
     pub fn with_initial_config(mut self, config: serde_json::Value) -> Self {
         if !config.is_null() && config != serde_json::json!({}) {
@@ -138,23 +138,7 @@ impl HostState {
     }
 }
 
-/// Output from running an external tool.
-#[non_exhaustive]
-#[derive(Debug, Clone)]
-pub struct ToolOutput {
-    pub exit_code: i32,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
-}
-
-/// Response from an HTTP request.
-#[non_exhaustive]
-#[derive(Debug, Clone)]
-pub struct HttpResponse {
-    pub status: u16,
-    pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
-}
+pub use voom_domain::host_types::{HttpResponse, ToolOutput};
 
 #[cfg(test)]
 mod tests {
@@ -181,13 +165,13 @@ mod tests {
     fn test_plugin_data_in_memory() {
         let mut state = HostState::new("test".into());
 
-        assert!(state.resolve_plugin_data("key1").is_none());
+        assert!(state.get_plugin_data("key1").is_none());
 
         state.set_plugin_data("key1", b"hello world").unwrap();
-        assert_eq!(state.resolve_plugin_data("key1").unwrap(), b"hello world");
+        assert_eq!(state.get_plugin_data("key1").unwrap(), b"hello world");
 
         state.set_plugin_data("key1", b"updated").unwrap();
-        assert_eq!(state.resolve_plugin_data("key1").unwrap(), b"updated");
+        assert_eq!(state.get_plugin_data("key1").unwrap(), b"updated");
     }
 
     #[test]
@@ -196,7 +180,7 @@ mod tests {
         let mut state = HostState::new("test".into()).with_storage(store.clone());
 
         state.set_plugin_data("key1", b"value1").unwrap();
-        assert_eq!(state.resolve_plugin_data("key1").unwrap(), b"value1");
+        assert_eq!(state.get_plugin_data("key1").unwrap(), b"value1");
 
         // Verify data is in the shared store.
         assert_eq!(store.get("test", "key1").unwrap().unwrap(), b"value1");
@@ -237,14 +221,12 @@ mod tests {
         let get_err = state.http_get("http://example.com", &[]).unwrap_err();
         assert!(
             get_err.contains("HTTP access not enabled"),
-            "expected permission error, got: {}",
-            get_err
+            "expected permission error, got: {get_err}"
         );
         let post_err = state.http_post("http://example.com", &[], b"").unwrap_err();
         assert!(
             post_err.contains("HTTP access not enabled"),
-            "expected permission error, got: {}",
-            post_err
+            "expected permission error, got: {post_err}"
         );
     }
 
@@ -258,8 +240,7 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             err.contains("HTTP GET failed"),
-            "expected connection error, got: {}",
-            err
+            "expected connection error, got: {err}"
         );
     }
 
@@ -271,8 +252,7 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             err.contains("HTTP POST failed"),
-            "expected connection error, got: {}",
-            err
+            "expected connection error, got: {err}"
         );
     }
 
@@ -298,8 +278,7 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             err.contains("timed out"),
-            "expected timeout error, got: {}",
-            err
+            "expected timeout error, got: {err}"
         );
         assert!(err.contains("100ms"));
     }
@@ -337,11 +316,13 @@ mod tests {
     #[test]
     fn test_run_tool_path_allowed() {
         let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("file.txt");
+        // Canonicalize to resolve symlinks (macOS /tmp -> /private/tmp)
+        let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
+        let file_path = canonical_dir.join("file.txt");
         std::fs::write(&file_path, "test").unwrap();
         let state = HostState::new("test".into())
             .with_tools(vec!["echo".into()])
-            .with_paths(vec![dir.path().to_path_buf()])
+            .with_paths(vec![canonical_dir])
             .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         let result = state.run_tool("echo", &[file_path.to_string_lossy().into()], 5000);
         assert!(result.is_ok());
@@ -385,7 +366,7 @@ mod tests {
         let config = serde_json::json!({"api_key": "abc123", "url": "http://localhost"});
         let state = HostState::new("test".into()).with_initial_config(config.clone());
         let data = state
-            .resolve_plugin_data("config")
+            .get_plugin_data("config")
             .expect("config should be seeded");
         let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(loaded, config);
@@ -394,13 +375,13 @@ mod tests {
     #[test]
     fn test_with_initial_config_empty_does_not_seed() {
         let state = HostState::new("test".into()).with_initial_config(serde_json::json!({}));
-        assert!(state.resolve_plugin_data("config").is_none());
+        assert!(state.get_plugin_data("config").is_none());
     }
 
     #[test]
     fn test_with_initial_config_null_does_not_seed() {
         let state = HostState::new("test".into()).with_initial_config(serde_json::Value::Null);
-        assert!(state.resolve_plugin_data("config").is_none());
+        assert!(state.get_plugin_data("config").is_none());
     }
 
     #[test]
@@ -412,9 +393,9 @@ mod tests {
             .with_storage(store.clone())
             .with_initial_config(config.clone());
 
-        // resolve_plugin_data should fall through to in-memory seeded config.
+        // get_plugin_data should fall through to in-memory seeded config.
         let data = state
-            .resolve_plugin_data("config")
+            .get_plugin_data("config")
             .expect("seeded config should be accessible with storage attached");
         let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(loaded, config);
@@ -435,7 +416,7 @@ mod tests {
         state.set_plugin_data("config", &override_bytes).unwrap();
 
         // Should get the storage value, not the seeded one.
-        let data = state.resolve_plugin_data("config").unwrap();
+        let data = state.get_plugin_data("config").unwrap();
         let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(loaded, override_config);
     }

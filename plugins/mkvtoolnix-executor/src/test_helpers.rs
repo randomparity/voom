@@ -8,7 +8,7 @@ pub fn make_action(
     params: ActionParams,
 ) -> PlannedAction {
     match track_index {
-        Some(idx) => PlannedAction::track_op(op, idx, params, format!("{:?} action", op)),
-        None => PlannedAction::file_op(op, params, format!("{:?} action", op)),
+        Some(idx) => PlannedAction::track_op(op, idx, params, format!("{op:?} action")),
+        None => PlannedAction::file_op(op, params, format!("{op:?} action")),
     }
 }

@@ -23,7 +23,7 @@ pub enum Capability {
     DetectTools,
     ManageJobs,
     ServeHttp,
-    Orchestrate,
+    Plan,
     Backup,
     EnrichMetadata {
         source: String,
@@ -45,7 +45,7 @@ impl Capability {
             Capability::DetectTools => "detect_tools",
             Capability::ManageJobs => "manage_jobs",
             Capability::ServeHttp => "serve_http",
-            Capability::Orchestrate => "orchestrate",
+            Capability::Plan => "plan",
             Capability::Backup => "backup",
             Capability::EnrichMetadata { .. } => "enrich_metadata",
             Capability::Transcribe => "transcribe",

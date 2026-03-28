@@ -3,13 +3,15 @@
 //! Converts a [`PolicyAst`] back into formatted source text.
 //! Used for `voom policy fmt` and round-trip testing.
 
+use std::fmt::Write;
+
 use crate::ast::*;
 
 /// Format a [`PolicyAst`] into a pretty-printed source string.
 #[must_use]
 pub fn format_policy(ast: &PolicyAst) -> String {
     let mut out = String::new();
-    out.push_str(&format!("policy \"{}\" {{\n", escape_string(&ast.name)));
+    let _ = writeln!(out, "policy \"{}\" {{", escape_string(&ast.name));
 
     if let Some(config) = &ast.config {
         format_config(config, &mut out, 1);
@@ -38,17 +40,19 @@ fn format_config(config: &ConfigNode, out: &mut String, level: usize) {
 
     if !config.audio_languages.is_empty() {
         indent(out, level + 1);
-        out.push_str(&format!(
-            "languages audio: [{}]\n",
+        let _ = writeln!(
+            out,
+            "languages audio: [{}]",
             config.audio_languages.join(", ")
-        ));
+        );
     }
     if !config.subtitle_languages.is_empty() {
         indent(out, level + 1);
-        out.push_str(&format!(
-            "languages subtitle: [{}]\n",
+        let _ = writeln!(
+            out,
+            "languages subtitle: [{}]",
             config.subtitle_languages.join(", ")
-        ));
+        );
     }
     if !config.commentary_patterns.is_empty() {
         indent(out, level + 1);
@@ -57,11 +61,11 @@ fn format_config(config: &ConfigNode, out: &mut String, level: usize) {
             .iter()
             .map(|p| format!("\"{}\"", escape_string(p)))
             .collect();
-        out.push_str(&format!("commentary_patterns: [{}]\n", patterns.join(", ")));
+        let _ = writeln!(out, "commentary_patterns: [{}]", patterns.join(", "));
     }
     if let Some(on_error) = &config.on_error {
         indent(out, level + 1);
-        out.push_str(&format!("on_error: {on_error}\n"));
+        let _ = writeln!(out, "on_error: {on_error}");
     }
 
     indent(out, level);
@@ -70,11 +74,11 @@ fn format_config(config: &ConfigNode, out: &mut String, level: usize) {
 
 fn format_phase(phase: &PhaseNode, out: &mut String, level: usize) {
     indent(out, level);
-    out.push_str(&format!("phase {} {{\n", phase.name));
+    let _ = writeln!(out, "phase {} {{", phase.name);
 
     if !phase.depends_on.is_empty() {
         indent(out, level + 1);
-        out.push_str(&format!("depends_on: [{}]\n", phase.depends_on.join(", ")));
+        let _ = writeln!(out, "depends_on: [{}]", phase.depends_on.join(", "));
     }
 
     if let Some(skip_when) = &phase.skip_when {
@@ -86,12 +90,12 @@ fn format_phase(phase: &PhaseNode, out: &mut String, level: usize) {
 
     if let Some(run_if) = &phase.run_if {
         indent(out, level + 1);
-        out.push_str(&format!("run_if {}.{}\n", run_if.phase, run_if.trigger));
+        let _ = writeln!(out, "run_if {}.{}", run_if.phase, run_if.trigger);
     }
 
     if let Some(on_error) = &phase.on_error {
         indent(out, level + 1);
-        out.push_str(&format!("on_error: {on_error}\n"));
+        let _ = writeln!(out, "on_error: {on_error}");
     }
 
     for spanned_op in &phase.operations {
@@ -106,11 +110,11 @@ fn format_operation(op: &OperationNode, out: &mut String, level: usize) {
     match op {
         OperationNode::Container(name) => {
             indent(out, level);
-            out.push_str(&format!("container {name}\n"));
+            let _ = writeln!(out, "container {name}");
         }
         OperationNode::Keep { target, filter } => {
             indent(out, level);
-            out.push_str(&format!("keep {target}"));
+            let _ = write!(out, "keep {target}");
             if let Some(f) = filter {
                 out.push_str(" where ");
                 format_filter(f, out);
@@ -119,7 +123,7 @@ fn format_operation(op: &OperationNode, out: &mut String, level: usize) {
         }
         OperationNode::Remove { target, filter } => {
             indent(out, level);
-            out.push_str(&format!("remove {target}"));
+            let _ = write!(out, "remove {target}");
             if let Some(f) = filter {
                 out.push_str(" where ");
                 format_filter(f, out);
@@ -128,24 +132,24 @@ fn format_operation(op: &OperationNode, out: &mut String, level: usize) {
         }
         OperationNode::Order(items) => {
             indent(out, level);
-            out.push_str(&format!("order tracks [{}]\n", items.join(", ")));
+            let _ = writeln!(out, "order tracks [{}]", items.join(", "));
         }
         OperationNode::Defaults(items) => {
             indent(out, level);
             out.push_str("defaults {\n");
             for (kind, value) in items {
                 indent(out, level + 1);
-                out.push_str(&format!("{kind}: {value}\n"));
+                let _ = writeln!(out, "{kind}: {value}");
             }
             indent(out, level);
             out.push_str("}\n");
         }
         OperationNode::Actions { target, settings } => {
             indent(out, level);
-            out.push_str(&format!("{target} actions {{\n"));
+            let _ = writeln!(out, "{target} actions {{");
             for (key, val) in settings {
                 indent(out, level + 1);
-                out.push_str(&format!("{key}: "));
+                let _ = write!(out, "{key}: ");
                 format_value(val, out);
                 out.push('\n');
             }
@@ -156,25 +160,10 @@ fn format_operation(op: &OperationNode, out: &mut String, level: usize) {
             target,
             codec,
             settings,
-        } => {
-            indent(out, level);
-            if settings.is_empty() {
-                out.push_str(&format!("transcode {target} to {codec}\n"));
-            } else {
-                out.push_str(&format!("transcode {target} to {codec} {{\n"));
-                for (key, val) in settings {
-                    indent(out, level + 1);
-                    out.push_str(&format!("{key}: "));
-                    format_value(val, out);
-                    out.push('\n');
-                }
-                indent(out, level);
-                out.push_str("}\n");
-            }
-        }
+        } => format_transcode(target, codec, settings, out, level),
         OperationNode::Synthesize { name, settings } => {
             indent(out, level);
-            out.push_str(&format!("synthesize \"{}\" {{\n", escape_string(name)));
+            let _ = writeln!(out, "synthesize \"{}\" {{", escape_string(name));
             for setting in settings {
                 format_synth_setting(setting, out, level + 1);
             }
@@ -187,37 +176,64 @@ fn format_operation(op: &OperationNode, out: &mut String, level: usize) {
         }
         OperationNode::SetTag { tag, value } => {
             indent(out, level);
-            out.push_str(&format!("set_tag \"{}\" ", escape_string(tag)));
+            let _ = write!(out, "set_tag \"{}\" ", escape_string(tag));
             format_value_or_field(value, out);
             out.push('\n');
         }
         OperationNode::DeleteTag(tag) => {
             indent(out, level);
-            out.push_str(&format!("delete_tag \"{}\"\n", escape_string(tag)));
+            let _ = writeln!(out, "delete_tag \"{}\"", escape_string(tag));
         }
         OperationNode::When(when) => {
             format_when(when, out, level);
         }
-        OperationNode::Rules { mode, rules } => {
-            indent(out, level);
-            out.push_str(&format!("rules {mode} {{\n"));
-            for rule in rules {
-                indent(out, level + 1);
-                out.push_str(&format!("rule \"{}\" {{\n", escape_string(&rule.name)));
-                format_when(&rule.when, out, level + 2);
-                indent(out, level + 1);
-                out.push_str("}\n");
-            }
-            indent(out, level);
-            out.push_str("}\n");
-        }
+        OperationNode::Rules { mode, rules } => format_rules(mode, rules, out, level),
     }
+}
+
+fn format_transcode(
+    target: &str,
+    codec: &str,
+    settings: &[(String, Value)],
+    out: &mut String,
+    level: usize,
+) {
+    indent(out, level);
+    if settings.is_empty() {
+        let _ = writeln!(out, "transcode {target} to {codec}");
+    } else {
+        let _ = writeln!(out, "transcode {target} to {codec} {{");
+        for (key, val) in settings {
+            indent(out, level + 1);
+            let _ = write!(out, "{key}: ");
+            format_value(val, out);
+            out.push('\n');
+        }
+        indent(out, level);
+        out.push_str("}\n");
+    }
+}
+
+fn format_rules(mode: &str, rules: &[RuleNode], out: &mut String, level: usize) {
+    indent(out, level);
+    let _ = writeln!(out, "rules {mode} {{");
+    for rule in rules {
+        indent(out, level + 1);
+        let _ = writeln!(out, "rule \"{}\" {{", escape_string(&rule.name));
+        format_when(&rule.when, out, level + 2);
+        indent(out, level + 1);
+        out.push_str("}\n");
+    }
+    indent(out, level);
+    out.push_str("}\n");
 }
 
 fn format_synth_setting(setting: &SynthSetting, out: &mut String, level: usize) {
     indent(out, level);
     match setting {
-        SynthSetting::Codec(c) => out.push_str(&format!("codec: {c}\n")),
+        SynthSetting::Codec(c) => {
+            let _ = writeln!(out, "codec: {c}");
+        }
         SynthSetting::Channels(v) => {
             out.push_str("channels: ");
             format_value(v, out);
@@ -228,7 +244,9 @@ fn format_synth_setting(setting: &SynthSetting, out: &mut String, level: usize) 
             format_filter(f, out);
             out.push_str(")\n");
         }
-        SynthSetting::Bitrate(b) => out.push_str(&format!("bitrate: \"{}\"\n", escape_string(b))),
+        SynthSetting::Bitrate(b) => {
+            let _ = writeln!(out, "bitrate: \"{}\"", escape_string(b));
+        }
         SynthSetting::SkipIfExists(f) => {
             out.push_str("skip_if_exists { ");
             format_filter(f, out);
@@ -239,8 +257,12 @@ fn format_synth_setting(setting: &SynthSetting, out: &mut String, level: usize) 
             format_condition(c, out);
             out.push('\n');
         }
-        SynthSetting::Title(t) => out.push_str(&format!("title: \"{}\"\n", escape_string(t))),
-        SynthSetting::Language(l) => out.push_str(&format!("language: {l}\n")),
+        SynthSetting::Title(t) => {
+            let _ = writeln!(out, "title: \"{}\"", escape_string(t));
+        }
+        SynthSetting::Language(l) => {
+            let _ = writeln!(out, "language: {l}");
+        }
         SynthSetting::Position(v) => {
             out.push_str("position: ");
             format_value(v, out);
@@ -346,7 +368,7 @@ fn format_track_query(query: &TrackQueryNode, out: &mut String) {
 fn format_filter(filter: &FilterNode, out: &mut String) {
     match filter {
         FilterNode::LangIn(langs) => {
-            out.push_str(&format!("lang in [{}]", langs.join(", ")));
+            let _ = write!(out, "lang in [{}]", langs.join(", "));
         }
         FilterNode::LangCompare(op, lang) => {
             out.push_str("lang ");
@@ -355,7 +377,7 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
             out.push_str(lang);
         }
         FilterNode::CodecIn(codecs) => {
-            out.push_str(&format!("codec in [{}]", codecs.join(", ")));
+            let _ = write!(out, "codec in [{}]", codecs.join(", "));
         }
         FilterNode::CodecCompare(op, codec) => {
             out.push_str("codec ");
@@ -374,10 +396,10 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
         FilterNode::Default => out.push_str("default"),
         FilterNode::Font => out.push_str("font"),
         FilterNode::TitleContains(s) => {
-            out.push_str(&format!("title contains \"{}\"", escape_string(s)))
+            let _ = write!(out, "title contains \"{}\"", escape_string(s));
         }
         FilterNode::TitleMatches(s) => {
-            out.push_str(&format!("title matches \"{}\"", escape_string(s)))
+            let _ = write!(out, "title matches \"{}\"", escape_string(s));
         }
         FilterNode::And(items) => {
             for (i, item) in items.iter().enumerate() {
@@ -422,14 +444,18 @@ fn format_action(action: &ActionNode, out: &mut String, level: usize) {
         ActionNode::Skip(phase) => {
             out.push_str("skip");
             if let Some(p) = phase {
-                out.push_str(&format!(" {p}"));
+                let _ = write!(out, " {p}");
             }
             out.push('\n');
         }
-        ActionNode::Warn(msg) => out.push_str(&format!("warn \"{}\"\n", escape_string(msg))),
-        ActionNode::Fail(msg) => out.push_str(&format!("fail \"{}\"\n", escape_string(msg))),
+        ActionNode::Warn(msg) => {
+            let _ = writeln!(out, "warn \"{}\"", escape_string(msg));
+        }
+        ActionNode::Fail(msg) => {
+            let _ = writeln!(out, "fail \"{}\"", escape_string(msg));
+        }
         ActionNode::SetDefault(track_ref) => {
-            out.push_str(&format!("set_default {}", track_ref.target));
+            let _ = write!(out, "set_default {}", track_ref.target);
             if let Some(f) = &track_ref.filter {
                 out.push_str(" where ");
                 format_filter(f, out);
@@ -437,7 +463,7 @@ fn format_action(action: &ActionNode, out: &mut String, level: usize) {
             out.push('\n');
         }
         ActionNode::SetForced(track_ref) => {
-            out.push_str(&format!("set_forced {}", track_ref.target));
+            let _ = write!(out, "set_forced {}", track_ref.target);
             if let Some(f) = &track_ref.filter {
                 out.push_str(" where ");
                 format_filter(f, out);
@@ -445,7 +471,7 @@ fn format_action(action: &ActionNode, out: &mut String, level: usize) {
             out.push('\n');
         }
         ActionNode::SetLanguage(track_ref, val) => {
-            out.push_str(&format!("set_language {}", track_ref.target));
+            let _ = write!(out, "set_language {}", track_ref.target);
             if let Some(f) = &track_ref.filter {
                 out.push_str(" where ");
                 format_filter(f, out);
@@ -455,7 +481,7 @@ fn format_action(action: &ActionNode, out: &mut String, level: usize) {
             out.push('\n');
         }
         ActionNode::SetTag(tag, val) => {
-            out.push_str(&format!("set_tag \"{}\" ", escape_string(tag)));
+            let _ = write!(out, "set_tag \"{}\" ", escape_string(tag));
             format_value_or_field(val, out);
             out.push('\n');
         }
@@ -468,7 +494,9 @@ fn escape_string(s: &str) -> String {
 
 fn format_value(val: &Value, out: &mut String) {
     match val {
-        Value::String(s) => out.push_str(&format!("\"{}\"", escape_string(s))),
+        Value::String(s) => {
+            let _ = write!(out, "\"{}\"", escape_string(s));
+        }
         Value::Number(_, raw) => out.push_str(raw),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Ident(s) => out.push_str(s),
@@ -506,9 +534,11 @@ fn format_compare_op(op: &CompareOp, out: &mut String) {
 
 fn format_number(n: f64, out: &mut String) {
     if (n - n.floor()).abs() < f64::EPSILON {
-        out.push_str(&format!("{}", n as i64));
+        // DSL numeric literals are small integers; truncation and sign loss are intentional.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let _ = write!(out, "{}", n as i64);
     } else {
-        out.push_str(&format!("{n}"));
+        let _ = write!(out, "{n}");
     }
 }
 

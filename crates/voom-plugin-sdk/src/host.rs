@@ -16,7 +16,7 @@ pub trait HostFunctions {
         Err("read_file_metadata not available".to_string())
     }
 
-    /// List files matching filters (serialized as MessagePack bytes).
+    /// List files matching filters (serialized as `MessagePack` bytes).
     fn list_files(&self, filters: &[u8]) -> Result<Vec<Vec<u8>>, String> {
         let _ = filters;
         Err("list_files not available".to_string())
@@ -55,27 +55,7 @@ pub trait HostFunctions {
     fn log(&self, level: &str, message: &str);
 }
 
-/// HTTP response returned by the host's `http_get` function.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct HttpResponse {
-    /// HTTP status code.
-    pub status: u16,
-    /// Response body bytes.
-    pub body: Vec<u8>,
-}
-
-/// Output from a tool execution via the host's `run_tool` function.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct ToolOutput {
-    /// Process exit code.
-    pub exit_code: i32,
-    /// Standard output bytes.
-    pub stdout: Vec<u8>,
-    /// Standard error bytes.
-    pub stderr: Vec<u8>,
-}
+pub use voom_domain::host_types::{HttpResponse, ToolOutput};
 
 #[cfg(test)]
 mod tests {

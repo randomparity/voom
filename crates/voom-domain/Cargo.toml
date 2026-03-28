@@ -15,10 +15,12 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
-regex = { workspace = true }
 
 [features]
 testing = []
+
+[lints]
+workspace = true
 
 [dev-dependencies]
 insta = { workspace = true }

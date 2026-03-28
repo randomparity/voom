@@ -5,13 +5,8 @@
 //! and provides dry-run formatting. Does not call executors — the CLI's
 //! `process` command handles actual execution and re-introspection.
 
-#![allow(clippy::missing_errors_doc)]
-
-use voom_domain::capabilities::Capability;
-use voom_domain::compiled::{CompiledPolicy, ErrorStrategy};
-use voom_domain::errors::Result;
 use voom_domain::plan::{PhaseOutcome, PhaseResult, Plan};
-use voom_kernel::Plugin;
+use voom_dsl::compiled::{CompiledPolicy, ErrorStrategy};
 
 /// Result of orchestrating all phases of a policy.
 #[non_exhaustive]
@@ -41,16 +36,13 @@ impl OrchestrationResult {
 ///
 /// Manages the execution order and dependencies between phases. In a full
 /// pipeline, it coordinates: evaluate → execute → re-introspect → next phase.
-pub struct PhaseOrchestratorPlugin {
-    capabilities: Vec<Capability>,
-}
+/// Library-only plugin — called directly by the CLI, not registered with the kernel.
+pub struct PhaseOrchestratorPlugin;
 
 impl PhaseOrchestratorPlugin {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            capabilities: vec![Capability::Orchestrate],
-        }
+        Self
     }
 
     /// Orchestrate evaluation of all phases in a policy against a file.
@@ -61,7 +53,7 @@ impl PhaseOrchestratorPlugin {
     ///
     /// The caller is responsible for running policy evaluation first (via
     /// `voom_policy_evaluator::evaluator::evaluate`) and passing the resulting plans.
-    pub fn orchestrate(&self, plans: Vec<Plan>) -> Result<OrchestrationResult> {
+    pub fn orchestrate(&self, plans: Vec<Plan>) -> OrchestrationResult {
         let mut phase_results = Vec::new();
         let mut file_modified = false;
 
@@ -81,11 +73,11 @@ impl PhaseOrchestratorPlugin {
             phase_results.push(phase_result);
         }
 
-        Ok(OrchestrationResult {
+        OrchestrationResult {
             plans,
             phase_results,
             file_modified,
-        })
+        }
     }
 
     /// Build a human-readable dry-run summary.
@@ -146,25 +138,10 @@ impl Default for PhaseOrchestratorPlugin {
     }
 }
 
-impl Plugin for PhaseOrchestratorPlugin {
-    fn name(&self) -> &str {
-        "phase-orchestrator"
-    }
-
-    fn version(&self) -> &str {
-        env!("CARGO_PKG_VERSION")
-    }
-
-    fn capabilities(&self) -> &[Capability] {
-        &self.capabilities
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use voom_domain::events::Event;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
 
     fn eval(policy: &CompiledPolicy, file: &MediaFile) -> Vec<Plan> {
@@ -209,7 +186,7 @@ mod tests {
         let policy =
             voom_dsl::compile_policy(r#"policy "test" { phase init { container mkv } }"#).unwrap();
         let file = test_file();
-        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file));
         assert_eq!(result.plans.len(), 1);
         assert!(!result.file_modified); // Already MKV
     }
@@ -228,7 +205,7 @@ mod tests {
         )
         .unwrap();
         let file = test_file();
-        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file));
         assert_eq!(result.plans.len(), 2);
         // normalize phase should remove jpn audio
         assert!(result.file_modified);
@@ -247,7 +224,7 @@ mod tests {
         )
         .unwrap();
         let file = test_file(); // video is hevc
-        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file));
         assert!(result.plans[0].is_skipped());
         assert!(!result.file_modified);
     }
@@ -267,7 +244,7 @@ mod tests {
         )
         .unwrap();
         let file = test_file();
-        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file));
         let output = PhaseOrchestratorPlugin::format_dry_run(&result);
         assert!(output.contains("Phase: containerize"));
         assert!(output.contains("Phase: normalize"));
@@ -282,7 +259,7 @@ mod tests {
         let policy =
             voom_dsl::compile_policy(r#"policy "test" { phase init { container mkv } }"#).unwrap();
         let file = test_file();
-        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file));
         assert!(!PhaseOrchestratorPlugin::needs_execution(&result));
 
         // Changes needed
@@ -290,7 +267,7 @@ mod tests {
             r#"policy "test" { phase norm { keep audio where lang in [eng] } }"#,
         )
         .unwrap();
-        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file));
         assert!(PhaseOrchestratorPlugin::needs_execution(&result));
     }
 
@@ -335,7 +312,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file));
         assert_eq!(result.plans.len(), 2);
         // containerize does nothing (already MKV), so validate is skipped
         assert!(result.plans[1].is_skipped());
@@ -348,19 +325,10 @@ mod tests {
             include_str!("../../../crates/voom-dsl/tests/fixtures/production-normalize.voom");
         let policy = voom_dsl::compile_policy(source).unwrap();
         let file = test_file();
-        let result = orch.orchestrate(eval(&policy, &file)).unwrap();
+        let result = orch.orchestrate(eval(&policy, &file));
         assert_eq!(result.plans.len(), 6);
 
         let output = PhaseOrchestratorPlugin::format_dry_run(&result);
         assert!(!output.is_empty());
-    }
-
-    #[test]
-    fn test_plugin_trait_impl() {
-        let orch = PhaseOrchestratorPlugin::new();
-        assert_eq!(orch.name(), "phase-orchestrator");
-        // Orchestration is driven via direct API, not through event bus
-        assert!(!orch.handles(Event::FILE_DISCOVERED));
-        assert_eq!(orch.capabilities().len(), 1);
     }
 }

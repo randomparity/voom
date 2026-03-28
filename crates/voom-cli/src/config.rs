@@ -121,8 +121,6 @@ pub const KNOWN_PLUGIN_NAMES: &[&str] = &[
     "sqlite-store",
     "tool-detector",
     "discovery",
-    "policy-evaluator",
-    "phase-orchestrator",
     "mkvtoolnix-executor",
     "ffmpeg-executor",
     "backup-manager",
@@ -153,8 +151,7 @@ pub fn default_config_contents() -> String {
 
 # List of plugin names to disable at startup.
 # Valid names: sqlite-store, tool-detector, discovery,
-#   policy-evaluator, phase-orchestrator, mkvtoolnix-executor,
-#   ffmpeg-executor, backup-manager, job-manager
+#   mkvtoolnix-executor, ffmpeg-executor, backup-manager, job-manager
 # disabled_plugins = ["mkvtoolnix-executor"]
 
 # Per-plugin configuration. Use [plugin.<name>] sections to pass
@@ -244,8 +241,7 @@ mod tests {
         let dir = voom_config_dir();
         assert!(
             dir.ends_with("voom"),
-            "config dir should end with 'voom', got: {:?}",
-            dir
+            "config dir should end with 'voom', got: {dir:?}"
         );
     }
 
@@ -321,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_known_plugin_names_count() {
-        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 9);
+        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 7);
     }
 
     #[test]
@@ -448,8 +444,7 @@ mod tests {
         let mode = meta.permissions().mode() & 0o777;
         assert_eq!(
             mode, 0o600,
-            "config file should be owner-only (0600), got {:o}",
-            mode
+            "config file should be owner-only (0600), got {mode:o}"
         );
     }
 

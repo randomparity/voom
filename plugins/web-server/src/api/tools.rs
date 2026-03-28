@@ -19,6 +19,7 @@ const KNOWN_TOOLS: &[&str] = &[
 ];
 
 #[derive(Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct DetectedTool {
     pub name: String,
     pub version: String,
@@ -26,6 +27,7 @@ pub struct DetectedTool {
 }
 
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct ToolListResponse {
     pub tools: Vec<DetectedTool>,
     pub total: usize,

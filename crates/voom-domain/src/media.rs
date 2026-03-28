@@ -23,7 +23,6 @@ pub struct MediaFile {
 }
 
 impl MediaFile {
-    /// Create a new `MediaFile` with the given path and defaults.
     #[must_use]
     pub fn new(path: PathBuf) -> Self {
         Self {
@@ -41,7 +40,6 @@ impl MediaFile {
         }
     }
 
-    /// Returns tracks of the given type.
     #[must_use]
     pub fn tracks_of_type(&self, track_type: TrackType) -> Vec<&Track> {
         self.tracks
@@ -50,13 +48,11 @@ impl MediaFile {
             .collect()
     }
 
-    /// Returns all video tracks.
     #[must_use]
     pub fn video_tracks(&self) -> Vec<&Track> {
         self.tracks_of_type(TrackType::Video)
     }
 
-    /// Returns all audio tracks (any audio subtype).
     #[must_use]
     pub fn audio_tracks(&self) -> Vec<&Track> {
         self.tracks
@@ -65,7 +61,6 @@ impl MediaFile {
             .collect()
     }
 
-    /// Returns all subtitle tracks (any subtitle subtype).
     #[must_use]
     pub fn subtitle_tracks(&self) -> Vec<&Track> {
         self.tracks
@@ -152,7 +147,6 @@ impl Default for Track {
 }
 
 impl Track {
-    /// Create a new track with minimal required fields.
     #[must_use]
     pub fn new(index: u32, track_type: TrackType, codec: String) -> Self {
         Self {
@@ -241,7 +235,7 @@ impl TrackType {
 }
 
 impl std::str::FromStr for TrackType {
-    type Err = String;
+    type Err = crate::errors::VoomError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
@@ -256,7 +250,9 @@ impl std::str::FromStr for TrackType {
             "subtitle_forced" => Ok(TrackType::SubtitleForced),
             "subtitle_commentary" => Ok(TrackType::SubtitleCommentary),
             "attachment" => Ok(TrackType::Attachment),
-            other => Err(format!("unknown track type: {other}")),
+            other => Err(crate::errors::VoomError::Validation(format!(
+                "unknown track type: {other}"
+            ))),
         }
     }
 }

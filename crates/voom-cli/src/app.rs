@@ -14,8 +14,6 @@ use crate::config::AppConfig;
 const PRIORITY_STORAGE: i32 = 100;
 const PRIORITY_TOOL_DETECTOR: i32 = 90;
 const PRIORITY_DISCOVERY: i32 = 80;
-const PRIORITY_POLICY_EVALUATOR: i32 = 60;
-const PRIORITY_PHASE_ORCHESTRATOR: i32 = 50;
 const PRIORITY_FFMPEG_EXECUTOR: i32 = 40;
 const PRIORITY_MKVTOOLNIX_EXECUTOR: i32 = 39;
 const PRIORITY_BACKUP_MANAGER: i32 = 30;
@@ -117,22 +115,6 @@ pub fn bootstrap_kernel_with_store(
         "discovery"
     );
 
-    // Policy evaluator
-    register_if_enabled!(
-        "policy-evaluator",
-        voom_policy_evaluator::PolicyEvaluatorPlugin::new(),
-        PRIORITY_POLICY_EVALUATOR,
-        "policy evaluator"
-    );
-
-    // Phase orchestrator
-    register_if_enabled!(
-        "phase-orchestrator",
-        voom_phase_orchestrator::PhaseOrchestratorPlugin::new(),
-        PRIORITY_PHASE_ORCHESTRATOR,
-        "phase orchestrator"
-    );
-
     // Executor — mkvtoolnix (MKV metadata, track removal/reorder, convert-to-MKV)
     register_if_enabled!(
         "mkvtoolnix-executor",
@@ -218,7 +200,7 @@ pub fn open_store(config: &AppConfig) -> Result<Arc<dyn voom_domain::storage::St
     open_store_in(&config.data_dir)
 }
 
-/// Open a SQLite store rooted at `data_dir`, creating the directory if needed.
+/// Open a `SQLite` store rooted at `data_dir`, creating the directory if needed.
 ///
 /// This is the single authoritative place that calls
 /// [`voom_sqlite_store::store::SqliteStore::open`].  Both

@@ -134,7 +134,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                     process_single_file(
                         job,
                         &compiled,
-                        &kernel,
+                        kernel,
                         dry_run,
                         flag_size_increase,
                         &token,
@@ -258,24 +258,25 @@ fn create_worker_pool(
 }
 
 /// Extract and deserialize the job payload from a process job.
-fn parse_job_payload(
-    job: &voom_domain::job::Job,
-) -> std::result::Result<ProcessJobPayload, String> {
-    let raw_payload = job.payload.as_ref().ok_or("missing payload")?;
-    serde_json::from_value(raw_payload.clone()).map_err(|e| format!("invalid payload: {e}"))
+fn parse_job_payload(job: &voom_domain::job::Job) -> anyhow::Result<ProcessJobPayload> {
+    let raw_payload = job
+        .payload
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing payload"))?;
+    serde_json::from_value(raw_payload.clone()).context("invalid payload")
 }
 
 /// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
 async fn process_single_file(
     job: voom_domain::job::Job,
     compiled: &voom_dsl::CompiledPolicy,
-    kernel: &voom_kernel::Kernel,
+    kernel: Arc<voom_kernel::Kernel>,
     dry_run: bool,
     flag_size_increase: bool,
     token: &CancellationToken,
     ffprobe_path: Option<&str>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
-    let payload = parse_job_payload(&job)?;
+    let payload = parse_job_payload(&job).map_err(|e| format!("job payload: {e}"))?;
 
     let path = std::path::PathBuf::from(&payload.path);
 
@@ -283,12 +284,13 @@ async fn process_single_file(
         path,
         payload.size,
         payload.content_hash,
-        kernel,
+        &kernel,
         ffprobe_path,
     )
-    .await?;
+    .await
+    .map_err(|e| format!("introspect {}: {e}", payload.path))?;
 
-    let result = orchestrate_plans(compiled, &file)?;
+    let result = orchestrate_plans(compiled, &file);
 
     // Collect safeguard violations across all plans and tag the file
     let violations: Vec<&voom_domain::SafeguardViolation> = result
@@ -340,6 +342,7 @@ async fn process_single_file(
             flag_size_increase,
             token,
         )
+        .await
     }
 }
 
@@ -351,19 +354,23 @@ async fn process_single_file(
 fn orchestrate_plans(
     compiled: &voom_dsl::CompiledPolicy,
     file: &voom_domain::media::MediaFile,
-) -> std::result::Result<voom_phase_orchestrator::OrchestrationResult, String> {
-    let plans = voom_policy_evaluator::evaluator::evaluate(compiled, file).plans;
+) -> voom_phase_orchestrator::OrchestrationResult {
+    let plans = voom_policy_evaluator::PolicyEvaluatorPlugin::new()
+        .evaluate(compiled, file)
+        .plans;
     let orchestrator = voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
-    orchestrator
-        .orchestrate(plans)
-        .map_err(|e| format!("orchestration failed: {e}"))
+    orchestrator.orchestrate(plans)
 }
 
 /// Verify file integrity and publish plan lifecycle events for non-dry-run execution.
-fn execute_plans(
+///
+/// Each plan execution is offloaded to `spawn_blocking` because executor
+/// plugins run subprocesses synchronously via `voom-process`, which would
+/// otherwise block the tokio worker thread.
+async fn execute_plans(
     file: &voom_domain::media::MediaFile,
     result: &voom_phase_orchestrator::OrchestrationResult,
-    kernel: &voom_kernel::Kernel,
+    kernel: Arc<voom_kernel::Kernel>,
     needs_exec: bool,
     flag_size_increase: bool,
     token: &CancellationToken,
@@ -407,7 +414,14 @@ fn execute_plans(
             break;
         }
 
-        execute_single_plan(plan, file, kernel);
+        let plan = plan.clone();
+        let file = file.clone();
+        let kernel = kernel.clone();
+        tokio::task::spawn_blocking(move || {
+            execute_single_plan(&plan, &file, &kernel);
+        })
+        .await
+        .map_err(|e| format!("plan execution join error: {e}"))?;
     }
 
     // Post-execution size check: tag the file if it grew
@@ -452,11 +466,11 @@ fn execute_plans(
     })))
 }
 
-/// Dispatch PlanExecuting + PlanCreated for a single plan, then emit
-/// PlanCompleted, PlanFailed (executor error), or PlanFailed (unclaimed).
+/// Dispatch `PlanExecuting` + `PlanCreated` for a single plan, then emit
+/// `PlanCompleted`, `PlanFailed` (executor error), or `PlanFailed` (unclaimed).
 ///
-/// PlanExecuting is dispatched first so the backup-manager backs up the file
-/// BEFORE any executor modifies it.  PlanCreated then lets executor plugins
+/// `PlanExecuting` is dispatched first so the backup-manager backs up the file
+/// BEFORE any executor modifies it.  `PlanCreated` then lets executor plugins
 /// claim and run the plan.
 fn execute_single_plan(
     plan: &voom_domain::plan::Plan,
@@ -710,7 +724,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_plans_skips_skipped_plans() {
+    async fn test_dispatch_plan_events_skips_skipped_plans() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(PlanRecordingPlugin::new());
         kernel.register_plugin(recorder.clone(), 50);
@@ -723,7 +737,8 @@ mod tests {
             voom_phase_orchestrator::OrchestrationResult::new(vec![skipped_plan], vec![], false);
 
         let token = CancellationToken::new();
-        let _ = execute_plans(&file, &result, &kernel, true, false, &token);
+        let kernel = Arc::new(kernel);
+        let _ = execute_plans(&file, &result, kernel, true, false, &token).await;
 
         // Skipped plans should NOT trigger any lifecycle events
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);

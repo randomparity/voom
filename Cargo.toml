@@ -29,6 +29,9 @@ exclude = [
     "wasm-plugins/handbrake-executor",
 ]
 
+[workspace.lints.clippy]
+missing_errors_doc = "allow"
+
 [workspace.package]
 edition = "2021"
 license = "MIT"
@@ -60,6 +63,7 @@ voom-web-server = { path = "plugins/web-server" }
 # Async
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

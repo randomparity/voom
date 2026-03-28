@@ -87,7 +87,6 @@ pub struct EventResult {
 }
 
 impl EventResult {
-    /// Create a new `EventResult` with the given plugin name and defaults.
     #[must_use]
     pub fn new(plugin_name: impl Into<String>) -> Self {
         Self {
@@ -482,7 +481,7 @@ mod tests {
     fn test_job_progress_missing_optional_fields() {
         // Simulate deserializing from a payload that omits the optional `message` field.
         let id = Uuid::new_v4();
-        let json = format!(r#"{{"job_id":"{}","progress":0.5}}"#, id);
+        let json = format!(r#"{{"job_id":"{id}","progress":0.5}}"#);
         let event: JobProgressEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(event.job_id, id);
         assert!(event.message.is_none());
@@ -545,7 +544,7 @@ mod tests {
     #[test]
     fn test_job_completed_missing_optional_fields() {
         let id = Uuid::new_v4();
-        let json = format!(r#"{{"job_id":"{}","success":true}}"#, id);
+        let json = format!(r#"{{"job_id":"{id}","success":true}}"#);
         let event: JobCompletedEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(event.job_id, id);
         assert!(event.success);

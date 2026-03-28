@@ -23,12 +23,16 @@ VOOM (Video Orchestration Operations Manager) is a policy-driven video library m
 │   │ (pest) │ │ (pest) │ │          │ │          │ │       │    │
 │   └────────┘ └────────┘ └──────────┘ └──────────┘ └───────┘    │
 ├────────────────────────────────────────────────────────────────┤
-│            Native Plugins (compiled into binary)               │
+│     Native Plugins — Kernel-Registered (event bus dispatch)     │
 │                                                                │
-│   Discovery ────── Introspection ────── Storage                │
-│   Evaluator ────── Orchestrator ─────── Jobs                   │
+│   Discovery ────── Tool Detector ───── Storage                 │
 │   MKVToolNix ───── FFmpeg ──────────── Backup                  │
-│   Web Server ───── Tool Detector                               │
+│   Job Manager                                                  │
+│                                                                │
+│     Native Plugins — Library-Only (called directly by CLI)     │
+│                                                                │
+│   Evaluator ────── Orchestrator ─────── Introspection          │
+│   Web Server                                                   │
 ├────────────────────────────────────────────────────────────────┤
 │            WASM Plugins (loaded at runtime via wasmtime)       │
 │                                                                │
@@ -64,6 +68,7 @@ voom/
 │   ├── voom-domain/          # Shared types: MediaFile, Track, Plan, Event, Capability
 │   ├── voom-dsl/             # PEG grammar (pest), parser, AST, compiler, validator, formatter
 │   ├── voom-cli/             # clap-derive CLI binary with 14 subcommands
+│   ├── voom-process/         # Shared subprocess utilities with timeout-aware execution
 │   ├── voom-wit/             # WIT interface definitions + type conversion utilities
 │   └── voom-plugin-sdk/      # SDK crate for WASM plugin authors
 ├── plugins/                  # Native plugins (compiled into binary)
@@ -110,7 +115,7 @@ pub trait Plugin: Send + Sync {
 }
 ```
 
-Plugins that participate in event-driven coordination override `handles()` and `on_event()`. Plugins that only provide direct API calls (policy-evaluator, phase-orchestrator, web-server) use the defaults and don't need stub implementations.
+Plugins that participate in event-driven coordination override `handles()` and `on_event()`. Library-only plugins (policy-evaluator, phase-orchestrator, ffprobe-introspector, web-server) are called directly by the CLI and are not registered with the kernel — they don't participate in event dispatch.
 
 ### WASM Plugins
 
@@ -143,7 +148,7 @@ pub enum Capability {
 }
 ```
 
-Capabilities are used for plugin registration and discovery. Currently, executor routing uses priority-ordered event dispatch: when a `PlanCreated` event is published, the first executor that claims it (via `EventResult.claimed`) handles the plan. Capability-based routing methods exist in the registry but are not yet wired into the dispatch path (planned for Sprint 13).
+Capabilities are used for plugin registration and discovery. Currently, executor routing uses priority-ordered event dispatch: when a `PlanCreated` event is published, the first executor that claims it (via `EventResult.claimed`) handles the plan. Capability-based routing is planned for a future sprint; the registry currently uses name-based lookup only.
 
 ## Event Bus
 

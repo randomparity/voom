@@ -15,7 +15,7 @@ use super::{
 
 impl FileStorage for SqliteStore {
     fn upsert_file(&self, file: &MediaFile) -> Result<()> {
-        let conn = self.conn()?;
+        let mut conn = self.conn()?;
         let now = format_datetime(&Utc::now());
         let tags_json = serde_json::to_string(&file.tags)
             .map_err(other_storage_err("failed to serialize tags"))?;
@@ -40,64 +40,64 @@ impl FileStorage for SqliteStore {
 
         let effective_id = existing_id.clone().unwrap_or_else(|| file.id.to_string());
 
-        // Wrap the delete-insert sequence in a transaction for atomicity
-        conn.execute_batch("BEGIN")
+        let tx = conn
+            .transaction()
             .map_err(storage_err("failed to begin transaction"))?;
 
-        let result = (|| -> Result<()> {
-            // Archive old file state to history before updating
-            if existing_id.is_some() {
-                conn.execute(
-                    "INSERT INTO file_history (id, file_id, path, content_hash, container, track_count, introspected_at, archived_at)
-                     SELECT ?1, f.id, f.path, f.content_hash, f.container,
-                            (SELECT COUNT(*) FROM tracks WHERE file_id = f.id),
-                            f.introspected_at, ?2
-                     FROM files f WHERE f.path = ?3",
-                    params![Uuid::new_v4().to_string(), &now, &path_str],
-                )
-                .map_err(storage_err("failed to archive file history"))?;
-            }
-
-            // Delete old tracks before upserting
-            conn.execute(
-                "DELETE FROM tracks WHERE file_id IN (SELECT id FROM files WHERE path = ?1)",
-                params![&path_str],
+        // Archive old file state to history before updating
+        if existing_id.is_some() {
+            tx.execute(
+                "INSERT INTO file_history (id, file_id, path, content_hash, container, track_count, introspected_at, archived_at)
+                 SELECT ?1, f.id, f.path, f.content_hash, f.container,
+                        (SELECT COUNT(*) FROM tracks WHERE file_id = f.id),
+                        f.introspected_at, ?2
+                 FROM files f WHERE f.path = ?3",
+                params![Uuid::new_v4().to_string(), &now, &path_str],
             )
-            .map_err(storage_err("failed to delete old tracks"))?;
+            .map_err(storage_err("failed to archive file history"))?;
+        }
 
-            conn.execute(
-                "INSERT INTO files (id, path, filename, size, content_hash, container, duration, bitrate, tags, plugin_metadata, introspected_at, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-                 ON CONFLICT(path) DO UPDATE SET
-                    filename = excluded.filename,
-                    size = excluded.size,
-                    content_hash = excluded.content_hash,
-                    container = excluded.container,
-                    duration = excluded.duration,
-                    bitrate = excluded.bitrate,
-                    tags = excluded.tags,
-                    plugin_metadata = excluded.plugin_metadata,
-                    introspected_at = excluded.introspected_at,
-                    updated_at = excluded.updated_at",
-                params![
-                    &effective_id,
-                    &path_str,
-                    filename,
-                    file.size as i64,
-                    file.content_hash,
-                    file.container.as_str(),
-                    file.duration,
-                    file.bitrate.map(|b| b as i32),
-                    tags_json,
-                    meta_json,
-                    format_datetime(&file.introspected_at),
-                    &now,
-                    &now,
-                ],
-            )
-            .map_err(storage_err("failed to upsert file"))?;
+        // Delete old tracks before upserting
+        tx.execute(
+            "DELETE FROM tracks WHERE file_id IN (SELECT id FROM files WHERE path = ?1)",
+            params![&path_str],
+        )
+        .map_err(storage_err("failed to delete old tracks"))?;
 
-            let mut stmt = conn
+        tx.execute(
+            "INSERT INTO files (id, path, filename, size, content_hash, container, duration, bitrate, tags, plugin_metadata, introspected_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(path) DO UPDATE SET
+                filename = excluded.filename,
+                size = excluded.size,
+                content_hash = excluded.content_hash,
+                container = excluded.container,
+                duration = excluded.duration,
+                bitrate = excluded.bitrate,
+                tags = excluded.tags,
+                plugin_metadata = excluded.plugin_metadata,
+                introspected_at = excluded.introspected_at,
+                updated_at = excluded.updated_at",
+            params![
+                &effective_id,
+                &path_str,
+                filename,
+                file.size as i64,
+                file.content_hash,
+                file.container.as_str(),
+                file.duration,
+                file.bitrate.map(i64::from),
+                tags_json,
+                meta_json,
+                format_datetime(&file.introspected_at),
+                &now,
+                &now,
+            ],
+        )
+        .map_err(storage_err("failed to upsert file"))?;
+
+        {
+            let mut stmt = tx
                 .prepare(
                     "INSERT INTO tracks (id, file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
@@ -108,44 +108,31 @@ impl FileStorage for SqliteStore {
                 stmt.execute(params![
                     Uuid::new_v4().to_string(),
                     &effective_id,
-                    track.index as i32,
+                    i64::from(track.index),
                     track.track_type.as_str(),
                     track.codec,
                     track.language,
                     track.title,
-                    track.is_default as i32,
-                    track.is_forced as i32,
-                    track.channels.map(|v| v as i32),
+                    track.is_default as i64,
+                    track.is_forced as i64,
+                    track.channels.map(i64::from),
                     track.channel_layout,
-                    track.sample_rate.map(|v| v as i32),
-                    track.bit_depth.map(|v| v as i32),
-                    track.width.map(|v| v as i32),
-                    track.height.map(|v| v as i32),
+                    track.sample_rate.map(i64::from),
+                    track.bit_depth.map(i64::from),
+                    track.width.map(i64::from),
+                    track.height.map(i64::from),
                     track.frame_rate,
-                    track.is_vfr as i32,
-                    track.is_hdr as i32,
+                    track.is_vfr as i64,
+                    track.is_hdr as i64,
                     track.hdr_format,
                     track.pixel_format,
                 ])
                 .map_err(storage_err("failed to insert track"))?;
             }
-
-            Ok(())
-        })();
-
-        match result {
-            Ok(()) => {
-                conn.execute_batch("COMMIT")
-                    .map_err(storage_err("failed to commit"))?;
-                Ok(())
-            }
-            Err(e) => {
-                if let Err(rollback_err) = conn.execute_batch("ROLLBACK") {
-                    tracing::error!(error = %rollback_err, "ROLLBACK failed");
-                }
-                Err(e)
-            }
         }
+
+        tx.commit().map_err(storage_err("failed to commit"))?;
+        Ok(())
     }
 
     fn file(&self, id: &Uuid) -> Result<Option<MediaFile>> {

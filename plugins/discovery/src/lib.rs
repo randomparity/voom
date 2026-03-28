@@ -1,7 +1,5 @@
 //! Filesystem discovery plugin: parallel directory walking with content hashing.
 
-#![allow(clippy::missing_errors_doc)]
-
 pub mod scanner;
 
 pub use scanner::hash_file;
@@ -43,6 +41,7 @@ pub struct ScanOptions {
 }
 
 impl ScanOptions {
+    #[must_use]
     pub fn new(root: impl Into<std::path::PathBuf>) -> Self {
         Self {
             root: root.into(),
