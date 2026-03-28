@@ -567,7 +567,7 @@ mod tests {
     #[test]
     fn test_build_command_set_metadata() {
         let file = sample_mp4_file();
-        let actions_owned = vec![
+        let actions_owned = [
             PlannedAction::track_op(
                 OperationType::SetTitle,
                 1,
@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn test_build_command_set_default() {
         let file = sample_mp4_file();
-        let actions_owned = vec![
+        let actions_owned = [
             PlannedAction::track_op(
                 OperationType::SetDefault,
                 1,
@@ -628,7 +628,7 @@ mod tests {
     #[test]
     fn test_build_command_set_forced() {
         let file = sample_mp4_file();
-        let actions_owned = vec![
+        let actions_owned = [
             PlannedAction::track_op(
                 OperationType::SetForced,
                 2,
@@ -658,7 +658,7 @@ mod tests {
     #[test]
     fn test_build_command_combined() {
         let file = sample_mp4_file();
-        let actions_owned = vec![
+        let actions_owned = [
             PlannedAction::track_op(
                 OperationType::TranscodeVideo,
                 0,

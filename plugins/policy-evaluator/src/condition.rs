@@ -232,7 +232,7 @@ pub fn resolve_value_or_field(
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    use voom_domain::media::{MediaFile, Track, TrackType};
     use voom_domain::test_support::test_media_file;
     use voom_dsl::compiled::TrackTarget;
 

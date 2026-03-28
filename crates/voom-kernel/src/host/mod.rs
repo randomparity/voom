@@ -332,11 +332,13 @@ mod tests {
     #[test]
     fn test_run_tool_path_allowed() {
         let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("file.txt");
+        // Canonicalize to resolve symlinks (macOS /tmp -> /private/tmp)
+        let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
+        let file_path = canonical_dir.join("file.txt");
         std::fs::write(&file_path, "test").unwrap();
         let state = HostState::new("test".into())
             .with_tools(vec!["echo".into()])
-            .with_paths(vec![dir.path().to_path_buf()])
+            .with_paths(vec![canonical_dir])
             .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         let result = state.run_tool("echo", &[file_path.to_string_lossy().into()], 5000);
         assert!(result.is_ok());
