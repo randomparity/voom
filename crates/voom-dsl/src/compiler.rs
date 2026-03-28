@@ -111,18 +111,18 @@ fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslErr
         .map(|spanned| compile_operation(&spanned.node))
         .collect::<std::result::Result<_, _>>()?;
 
-    Ok(CompiledPhase::new(
-        phase.name.clone(),
-        phase.depends_on.clone(),
+    Ok(CompiledPhase {
+        name: phase.name.clone(),
+        depends_on: phase.depends_on.clone(),
         skip_when,
         run_if,
-        phase
+        on_error: phase
             .on_error
             .as_deref()
             .and_then(parse_error_strategy)
             .unwrap_or(ErrorStrategy::Abort),
         operations,
-    ))
+    })
 }
 
 fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperation, DslError> {

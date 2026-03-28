@@ -354,7 +354,9 @@ fn orchestrate_plans(
     compiled: &voom_dsl::CompiledPolicy,
     file: &voom_domain::media::MediaFile,
 ) -> voom_phase_orchestrator::OrchestrationResult {
-    let plans = voom_policy_evaluator::evaluator::evaluate(compiled, file).plans;
+    let plans = voom_policy_evaluator::PolicyEvaluatorPlugin::new()
+        .evaluate(compiled, file)
+        .plans;
     let orchestrator = voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
     orchestrator.orchestrate(plans)
 }

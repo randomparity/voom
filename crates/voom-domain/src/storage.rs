@@ -287,6 +287,9 @@ impl FileHistoryEntry {
     }
 
     /// Reconstruct a history entry from stored fields (e.g., database rows).
+    ///
+    /// Accepts many parameters because `#[non_exhaustive]` prevents struct
+    /// literal construction from external crates.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn from_stored(

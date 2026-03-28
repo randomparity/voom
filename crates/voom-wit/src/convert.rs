@@ -105,7 +105,7 @@ pub fn capability_from_wit(cap_str: &str) -> Option<Capability> {
         "detect_tools" => Some(Capability::DetectTools),
         "manage_jobs" => Some(Capability::ManageJobs),
         "serve_http" => Some(Capability::ServeHttp),
-        "plan" | "orchestrate" => Some(Capability::Plan),
+        "plan" => Some(Capability::Plan),
         "backup" => Some(Capability::Backup),
         "enrich_metadata" | "enrich-metadata" => Some(Capability::EnrichMetadata {
             source: params.to_string(),
