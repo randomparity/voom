@@ -5,7 +5,7 @@ use rusqlite::params;
 use voom_domain::errors::Result;
 use voom_domain::storage::MaintenanceStorage;
 
-use super::{escape_like, storage_err, SqliteStore};
+use super::{escape_like, storage_err, PruneTarget, SqliteStore};
 
 impl MaintenanceStorage for SqliteStore {
     fn vacuum(&self) -> Result<()> {
@@ -41,7 +41,7 @@ impl MaintenanceStorage for SqliteStore {
                 .filter(|(_, path)| !Path::new(path).exists())
                 .map(|(id, _)| id.as_str())
                 .collect();
-            self.chunked_delete("bad_files", "id", &missing_bad_ids)?;
+            self.chunked_delete(PruneTarget::BadFiles, &missing_bad_ids)?;
         }
 
         // Phase 1: Query file paths under root (release connection after)
@@ -73,9 +73,9 @@ impl MaintenanceStorage for SqliteStore {
         // Phase 3: Delete dependents then files.
         // Explicit deletion of plans and processing_stats ensures cleanup works
         // on existing databases where CASCADE constraints may be missing.
-        self.chunked_delete("plans", "file_id", &missing_ids)?;
-        self.chunked_delete("processing_stats", "file_id", &missing_ids)?;
-        let pruned = self.chunked_delete("files", "id", &missing_ids)?;
+        self.chunked_delete(PruneTarget::Plans, &missing_ids)?;
+        self.chunked_delete(PruneTarget::ProcessingStats, &missing_ids)?;
+        let pruned = self.chunked_delete(PruneTarget::Files, &missing_ids)?;
 
         Ok(pruned)
     }
