@@ -138,6 +138,10 @@ pub struct ProcessArgs {
     /// Re-attempt introspection on previously failed files
     #[arg(long)]
     pub force_rescan: bool,
+
+    /// Tag files whose output is larger than the original (post-execution)
+    #[arg(long)]
+    pub flag_size_increase: bool,
 }
 
 // === Policy ===
@@ -223,6 +227,10 @@ pub struct ReportArgs {
     /// Output format
     #[arg(short, long, default_value = "table")]
     pub format: OutputFormat,
+
+    /// Show only files with safeguard violations (processing issues)
+    #[arg(long)]
+    pub issues: bool,
 }
 
 // === Serve ===

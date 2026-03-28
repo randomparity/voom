@@ -117,6 +117,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let items = build_work_items(&events);
     let compiled = Arc::new(compiled);
     let dry_run = args.dry_run;
+    let flag_size_increase = args.flag_size_increase;
 
     let token_for_workers = token.clone();
     let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
@@ -135,6 +136,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                         &compiled,
                         &kernel,
                         dry_run,
+                        flag_size_increase,
                         &token,
                         ffprobe_path.as_deref(),
                     )
@@ -269,6 +271,7 @@ async fn process_single_file(
     compiled: &voom_dsl::CompiledPolicy,
     kernel: &voom_kernel::Kernel,
     dry_run: bool,
+    flag_size_increase: bool,
     token: &CancellationToken,
     ffprobe_path: Option<&str>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
@@ -287,6 +290,23 @@ async fn process_single_file(
 
     let result = orchestrate_plans(compiled, &file)?;
 
+    // Collect safeguard violations across all plans and tag the file
+    let violations: Vec<&voom_domain::SafeguardViolation> = result
+        .plans
+        .iter()
+        .flat_map(|p| &p.safeguard_violations)
+        .collect();
+    if !violations.is_empty() {
+        let mut tagged_file = file.clone();
+        tagged_file.plugin_metadata.insert(
+            "safeguard_violations".to_string(),
+            serde_json::json!(violations),
+        );
+        kernel.dispatch(Event::FileIntrospected(
+            voom_domain::events::FileIntrospectedEvent::new(tagged_file),
+        ));
+    }
+
     let needs_exec = voom_phase_orchestrator::PhaseOrchestratorPlugin::needs_execution(&result);
 
     if dry_run {
@@ -294,11 +314,15 @@ async fn process_single_file(
             .plans
             .iter()
             .map(|p| {
-                serde_json::json!({
+                let mut summary = serde_json::json!({
                     "phase": p.phase_name,
                     "actions": p.actions.len(),
                     "skipped": p.is_skipped(),
-                })
+                });
+                if !p.safeguard_violations.is_empty() {
+                    summary["safeguard_violations"] = serde_json::json!(p.safeguard_violations);
+                }
+                summary
             })
             .collect();
 
@@ -308,7 +332,14 @@ async fn process_single_file(
             "plans": plan_summaries,
         })))
     } else {
-        execute_plans(&file, &result, kernel, needs_exec, token)
+        execute_plans(
+            &file,
+            &result,
+            kernel,
+            needs_exec,
+            flag_size_increase,
+            token,
+        )
     }
 }
 
@@ -334,6 +365,7 @@ fn execute_plans(
     result: &voom_phase_orchestrator::OrchestrationResult,
     kernel: &voom_kernel::Kernel,
     needs_exec: bool,
+    flag_size_increase: bool,
     token: &CancellationToken,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let file_path_str = file.path.display().to_string();
@@ -376,6 +408,41 @@ fn execute_plans(
         }
 
         execute_single_plan(plan, file, kernel);
+    }
+
+    // Post-execution size check: tag the file if it grew
+    if flag_size_increase && needs_exec {
+        if let Ok(meta) = std::fs::metadata(&file.path) {
+            let new_size = meta.len();
+            if new_size > file.size && file.size > 0 {
+                tracing::warn!(
+                    path = %file.path.display(),
+                    before = file.size,
+                    after = new_size,
+                    "output file is larger than original"
+                );
+                let violation = voom_domain::SafeguardViolation::new(
+                    voom_domain::SafeguardKind::OutputLarger,
+                    format!("Output file grew from {} to {} bytes", file.size, new_size),
+                    "post-execution",
+                );
+                let mut tagged = file.clone();
+                let existing: Vec<voom_domain::SafeguardViolation> = tagged
+                    .plugin_metadata
+                    .get("safeguard_violations")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                let mut all_violations = existing;
+                all_violations.push(violation);
+                tagged.plugin_metadata.insert(
+                    "safeguard_violations".to_string(),
+                    serde_json::json!(all_violations),
+                );
+                kernel.dispatch(Event::FileIntrospected(
+                    voom_domain::events::FileIntrospectedEvent::new(tagged),
+                ));
+            }
+        }
     }
 
     Ok(Some(serde_json::json!({
@@ -656,7 +723,7 @@ mod tests {
             voom_phase_orchestrator::OrchestrationResult::new(vec![skipped_plan], vec![], false);
 
         let token = CancellationToken::new();
-        let _ = execute_plans(&file, &result, &kernel, true, &token);
+        let _ = execute_plans(&file, &result, &kernel, true, false, &token);
 
         // Skipped plans should NOT trigger any lifecycle events
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
