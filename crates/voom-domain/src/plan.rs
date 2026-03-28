@@ -30,7 +30,6 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Create a new `Plan` for the given file and phase.
     #[must_use]
     pub fn new(
         file: MediaFile,
@@ -294,7 +293,6 @@ pub struct PhaseResult {
 }
 
 impl PhaseResult {
-    /// Create a new `PhaseResult` with the given phase name and outcome.
     #[must_use]
     pub fn new(phase_name: impl Into<String>, outcome: PhaseOutcome) -> Self {
         Self {
@@ -328,7 +326,6 @@ pub struct ActionResult {
 }
 
 impl ActionResult {
-    /// Create a successful `ActionResult`.
     #[must_use]
     pub fn success(operation: OperationType, description: impl Into<String>) -> Self {
         Self {
@@ -339,7 +336,6 @@ impl ActionResult {
         }
     }
 
-    /// Create a failed `ActionResult`.
     #[must_use]
     pub fn failure(
         operation: OperationType,

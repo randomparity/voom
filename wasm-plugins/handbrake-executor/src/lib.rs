@@ -56,7 +56,9 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload).ok()?;
+    let event = deserialize_event(payload).map_err(|e| {
+        host.log("error", &format!("failed to deserialize event: {e}"));
+    }).ok()?;
     let plan = match &event {
         Event::PlanCreated(e) => &e.plan,
         _ => return None,
@@ -137,7 +139,9 @@ pub fn on_event(
                     actions_applied: transcode_actions.len(),
                 },
             );
-            let produced_payload = serialize_event(&completed_event).ok()?;
+            let produced_payload = serialize_event(&completed_event).map_err(|e| {
+                host.log("error", &format!("failed to serialize event: {e}"));
+            }).ok()?;
 
             let data = serde_json::json!({
                 "plugin": "handbrake-executor",
@@ -151,7 +155,9 @@ pub fn on_event(
                     completed_event.event_type().to_string(),
                     produced_payload,
                 )],
-                data: Some(serde_json::to_vec(&data).ok()?),
+                data: Some(serde_json::to_vec(&data).map_err(|e| {
+                    host.log("error", &format!("failed to serialize result data: {e}"));
+                }).ok()?),
             })
         }
         Ok(output) => {

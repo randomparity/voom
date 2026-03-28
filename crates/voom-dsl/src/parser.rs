@@ -22,6 +22,16 @@ pub struct VoomParser;
 /// Maximum allowed policy source size (1 MiB).
 const MAX_POLICY_SIZE: usize = 1_024 * 1_024;
 
+/// Extract the first token from text, splitting on whitespace, ':', or '('.
+///
+/// Used to dispatch on the leading keyword when pest silently consumes
+/// keyword alternations in the grammar.
+fn leading_keyword(text: &str) -> &str {
+    text.split(|c: char| c.is_whitespace() || c == ':' || c == '(')
+        .next()
+        .unwrap_or("")
+}
+
 /// Maximum nesting depth for conditions and filters to prevent stack overflow.
 const MAX_NESTING_DEPTH: usize = 100;
 
@@ -99,10 +109,7 @@ fn build_config(pair: Pair<'_, Rule>) -> ConfigNode {
 
         // pest silently consumes keyword alternations, so we dispatch on the
         // leading keyword extracted from the raw text (stripping trailing colon).
-        let keyword = text
-            .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-            .next()
-            .unwrap_or("");
+        let keyword = leading_keyword(text);
         match keyword {
             "languages" => {
                 let mut inner = item.into_inner();
@@ -316,10 +323,7 @@ fn build_defaults(pair: Pair<'_, Rule>) -> OperationNode {
     for child in pair.into_inner() {
         if child.as_rule() == Rule::default_item {
             let text = child.as_str().trim();
-            let keyword = text
-                .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-                .next()
-                .unwrap_or("");
+            let keyword = leading_keyword(text);
             let kind = match keyword {
                 "audio" => "audio".to_string(),
                 _ => "subtitle".to_string(),
@@ -393,10 +397,7 @@ fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {
 
         // pest silently consumes keyword alternations, so we dispatch on the
         // leading keyword extracted from the raw text.
-        let keyword = text
-            .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-            .next()
-            .unwrap_or("");
+        let keyword = leading_keyword(text);
         match keyword {
             "codec" => {
                 let val = parts.next().unwrap().as_str().to_string();
@@ -526,10 +527,7 @@ fn build_condition_and(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionNo
 
 fn build_condition_not(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionNode> {
     let text = pair.as_str().trim();
-    let keyword = text
-        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-        .next()
-        .unwrap_or("");
+    let keyword = leading_keyword(text);
     let inner = pair.into_inner().next().unwrap();
     if keyword == "not" {
         Ok(ConditionNode::Not(Box::new(build_condition_atom(
@@ -548,10 +546,7 @@ fn build_condition_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionN
 
     // pest silently consumes keyword alternations, so we dispatch on the
     // leading keyword extracted from the raw text.
-    let keyword = text
-        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-        .next()
-        .unwrap_or("");
+    let keyword = leading_keyword(text);
     match keyword {
         "audio_is_multi_language" => return Ok(ConditionNode::AudioIsMultiLanguage),
         "is_dubbed" => return Ok(ConditionNode::IsDubbed),
@@ -667,10 +662,7 @@ fn build_filter_and(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
 
 fn build_filter_not(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
     let text = pair.as_str().trim();
-    let keyword = text
-        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-        .next()
-        .unwrap_or("");
+    let keyword = leading_keyword(text);
     let inner = pair.into_inner().next().unwrap();
     if keyword == "not" {
         Ok(FilterNode::Not(Box::new(build_filter_atom(inner, depth)?)))
@@ -723,10 +715,7 @@ fn build_filter_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
 
     // pest silently consumes keyword alternations, so we dispatch on the
     // leading keyword extracted from the raw text.
-    let keyword = text
-        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-        .next()
-        .unwrap_or("");
+    let keyword = leading_keyword(text);
     match keyword {
         "lang" => {
             return match build_list_or_compare_filter(&mut inner, span, "lang")? {
@@ -790,10 +779,7 @@ fn build_action(pair: Pair<'_, Rule>) -> Result<ActionNode> {
 
     // pest silently consumes keyword alternations, so we dispatch on the
     // leading keyword extracted from the raw text.
-    let keyword = text
-        .split(|c: char| c.is_whitespace() || c == ':' || c == '(')
-        .next()
-        .unwrap_or("");
+    let keyword = leading_keyword(text);
     match keyword {
         "skip" => {
             let phase = inner.next().map(|p| p.as_str().to_string());

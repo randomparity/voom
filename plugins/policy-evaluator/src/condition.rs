@@ -188,11 +188,17 @@ fn compare_json(
             CompiledCompareOp::Le => l <= r,
             CompiledCompareOp::Gt => l > r,
             CompiledCompareOp::Ge => l >= r,
-            CompiledCompareOp::In => false,
+            // In is handled before reaching compare_json; see
+            // evaluate_field_compare() which dispatches In early.
+            CompiledCompareOp::In => {
+                debug_assert!(false, "In operator should not reach compare_json");
+                false
+            }
         },
         (serde_json::Value::Bool(l), serde_json::Value::Bool(r)) => match op {
             CompiledCompareOp::Eq => l == r,
             CompiledCompareOp::Ne => l != r,
+            // Ordering and In are not meaningful for booleans
             _ => false,
         },
         _ => false,
@@ -201,9 +207,8 @@ fn compare_json(
 
 fn json_values_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     match (a, b) {
-        (serde_json::Value::String(l), serde_json::Value::String(r)) => l == r,
+        // Numbers need special handling: compare as f64 so 1 == 1.0
         (serde_json::Value::Number(l), serde_json::Value::Number(r)) => l.as_f64() == r.as_f64(),
-        (serde_json::Value::Bool(l), serde_json::Value::Bool(r)) => l == r,
         _ => a == b,
     }
 }

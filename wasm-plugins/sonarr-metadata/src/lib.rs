@@ -57,7 +57,9 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload).ok()?;
+    let event = deserialize_event(payload).map_err(|e| {
+        host.log("error", &format!("failed to deserialize event: {e}"));
+    }).ok()?;
     let file = match &event {
         Event::FileIntrospected(e) => &e.file,
         _ => return None,
@@ -88,7 +90,9 @@ pub fn on_event(
         },
     );
 
-    let produced_payload = serialize_event(&enriched_event).ok()?;
+    let produced_payload = serialize_event(&enriched_event).map_err(|e| {
+        host.log("error", &format!("failed to serialize event: {e}"));
+    }).ok()?;
 
     Some(OnEventResult {
         plugin_name: "sonarr-metadata".to_string(),
@@ -144,13 +148,17 @@ fn lookup_episode(
     let series_url = format!("{}/api/v3/series", config.sonarr_url);
     let headers = vec![("X-Api-Key".to_string(), config.api_key.clone())];
 
-    let response = host.http_get(&series_url, &headers).ok()?;
+    let response = host.http_get(&series_url, &headers).map_err(|e| {
+        host.log("error", &format!("Sonarr series API request failed: {e}"));
+    }).ok()?;
     if response.status != 200 {
         host.log("warn", &format!("Sonarr series API returned status {}", response.status));
         return None;
     }
 
-    let all_series: Vec<SonarrSeries> = serde_json::from_slice(&response.body).ok()?;
+    let all_series: Vec<SonarrSeries> = serde_json::from_slice(&response.body).map_err(|e| {
+        host.log("error", &format!("failed to parse Sonarr series response: {e}"));
+    }).ok()?;
     let series = all_series.into_iter().find(|s| file_path.starts_with(&s.path))?;
 
     // Then look up episode files for this series.
@@ -158,13 +166,18 @@ fn lookup_episode(
         "{}/api/v3/episodefile?seriesId={}",
         config.sonarr_url, series.id
     );
-    let response = host.http_get(&episodes_url, &headers).ok()?;
+    let response = host.http_get(&episodes_url, &headers).map_err(|e| {
+        host.log("error", &format!("Sonarr episode API request failed: {e}"));
+    }).ok()?;
     if response.status != 200 {
+        host.log("warn", &format!("Sonarr episode API returned status {}", response.status));
         return None;
     }
 
     let episode_files: Vec<SonarrEpisodeFile> =
-        serde_json::from_slice(&response.body).ok()?;
+        serde_json::from_slice(&response.body).map_err(|e| {
+            host.log("error", &format!("failed to parse Sonarr episode response: {e}"));
+        }).ok()?;
     let matched = episode_files.into_iter().find(|ef| file_path.ends_with(&ef.relative_path))?;
 
     Some(SonarrEpisode {

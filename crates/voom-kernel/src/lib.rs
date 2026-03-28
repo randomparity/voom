@@ -61,17 +61,22 @@ pub struct PluginContext {
 }
 
 impl PluginContext {
-    /// Create a new plugin context with the given config and data directory.
     #[must_use]
     pub fn new(config: serde_json::Value, data_dir: PathBuf) -> Self {
         Self { config, data_dir }
     }
 
-    /// Deserialize the config into a typed struct, falling back to defaults on error.
-    pub fn parse_config<T: serde::de::DeserializeOwned + Default>(&self) -> T {
-        serde_json::from_value(self.config.clone()).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "plugin config deserialization failed, using defaults");
-            T::default()
+    /// Deserialize the config into a typed struct.
+    ///
+    /// # Errors
+    /// Returns `VoomError::Plugin` if the config JSON cannot be deserialized
+    /// into `T` (e.g. due to a typo in a config key).
+    pub fn parse_config<T: serde::de::DeserializeOwned>(&self) -> Result<T> {
+        serde_json::from_value(self.config.clone()).map_err(|e| {
+            voom_domain::errors::VoomError::Plugin {
+                plugin: "config".into(),
+                message: format!("config deserialization failed: {e}"),
+            }
         })
     }
 }

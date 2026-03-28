@@ -85,7 +85,13 @@ pub fn compare_f64(left: f64, op: &CompiledCompareOp, right: f64) -> bool {
         CompiledCompareOp::Le => left <= right,
         CompiledCompareOp::Gt => left > right,
         CompiledCompareOp::Ge => left >= right,
-        CompiledCompareOp::In => false, // In is not valid for scalar comparison
+        // In is handled before reaching scalar comparison; see
+        // evaluate_field_compare() which dispatches In before calling
+        // compare_json/compare_f64.
+        CompiledCompareOp::In => {
+            debug_assert!(false, "In operator should not reach compare_f64");
+            false
+        }
     }
 }
 

@@ -194,7 +194,7 @@ async fn clean_bad(yes: bool) -> Result<()> {
     println!(
         "Found {} bad files ({}).",
         style(count).bold(),
-        voom_domain::utils::datetime::format_size(total_size)
+        voom_domain::utils::format::format_size(total_size)
     );
 
     if !yes {

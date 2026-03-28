@@ -70,9 +70,11 @@ impl Plugin for SqliteStorePlugin {
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
-        let store = match &self.store {
-            Some(s) => s,
-            None => return Ok(None),
+        let Some(store) = &self.store else {
+            return Err(voom_domain::errors::VoomError::Plugin {
+                plugin: "sqlite-store".into(),
+                message: "store not initialized — call init() first".into(),
+            });
         };
 
         match event {
@@ -230,16 +232,15 @@ mod tests {
     }
 
     #[test]
-    fn test_on_event_returns_none_when_store_not_initialized() {
+    fn test_on_event_returns_error_when_store_not_initialized() {
         let plugin = SqliteStorePlugin::new();
-        // Even for a handled event type, returns None if store is not init'd
         let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent::new(
             "ffprobe",
             "6.0",
             "/usr/bin/ffprobe".into(),
         ));
-        let result = plugin.on_event(&event).unwrap();
-        assert!(result.is_none());
+        let result = plugin.on_event(&event);
+        assert!(result.is_err());
     }
 
     #[test]

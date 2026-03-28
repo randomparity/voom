@@ -3167,13 +3167,11 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "insta",
- "serde",
  "serde_json",
  "tempfile",
  "tracing",
  "uuid",
  "voom-domain",
- "voom-kernel",
  "voom-process",
 ]
 
@@ -3268,7 +3266,6 @@ dependencies = [
  "uuid",
  "voom-domain",
  "voom-dsl",
- "voom-kernel",
 ]
 
 [[package]]

@@ -68,6 +68,7 @@ voom/
 │   ├── voom-domain/          # Shared types: MediaFile, Track, Plan, Event, Capability
 │   ├── voom-dsl/             # PEG grammar (pest), parser, AST, compiler, validator, formatter
 │   ├── voom-cli/             # clap-derive CLI binary with 14 subcommands
+│   ├── voom-process/         # Shared subprocess utilities with timeout-aware execution
 │   ├── voom-wit/             # WIT interface definitions + type conversion utilities
 │   └── voom-plugin-sdk/      # SDK crate for WASM plugin authors
 ├── plugins/                  # Native plugins (compiled into binary)

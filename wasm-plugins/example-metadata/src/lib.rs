@@ -58,12 +58,14 @@ pub fn handles(event_type: &str) -> bool {
     event_type == "file.introspected"
 }
 
-pub fn on_event(event_type: &str, payload: &[u8], _host: &dyn HostFunctions) -> Option<OnEventResult> {
+pub fn on_event(event_type: &str, payload: &[u8], host: &dyn HostFunctions) -> Option<OnEventResult> {
     if event_type != "file.introspected" {
         return None;
     }
 
-    let event = deserialize_event(payload).ok()?;
+    let event = deserialize_event(payload).map_err(|e| {
+        host.log("error", &format!("failed to deserialize event: {e}"));
+    }).ok()?;
 
     match &event {
         Event::FileIntrospected(introspected) => {
@@ -99,7 +101,9 @@ pub fn on_event(event_type: &str, payload: &[u8], _host: &dyn HostFunctions) -> 
                 },
             );
 
-            let produced_payload = serialize_event(&enriched_event).ok()?;
+            let produced_payload = serialize_event(&enriched_event).map_err(|e| {
+                host.log("error", &format!("failed to serialize event: {e}"));
+            }).ok()?;
 
             Some(OnEventResult {
                 plugin_name: "example-metadata".to_string(),

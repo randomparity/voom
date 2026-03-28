@@ -60,7 +60,9 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload).ok()?;
+    let event = deserialize_event(payload).map_err(|e| {
+        host.log("error", &format!("failed to deserialize event: {e}"));
+    }).ok()?;
     let file = match &event {
         Event::FileIntrospected(e) => &e.file,
         _ => return None,
@@ -90,7 +92,9 @@ pub fn on_event(
         },
     );
 
-    let produced_payload = serialize_event(&enriched_event).ok()?;
+    let produced_payload = serialize_event(&enriched_event).map_err(|e| {
+        host.log("error", &format!("failed to serialize event: {e}"));
+    }).ok()?;
 
     Some(OnEventResult {
         plugin_name: "radarr-metadata".to_string(),
@@ -133,13 +137,17 @@ fn lookup_movie(
     let url = format!("{}/api/v3/movie", config.radarr_url);
     let headers = vec![("X-Api-Key".to_string(), config.api_key.clone())];
 
-    let response = host.http_get(&url, &headers).ok()?;
+    let response = host.http_get(&url, &headers).map_err(|e| {
+        host.log("error", &format!("Radarr API request failed: {e}"));
+    }).ok()?;
     if response.status != 200 {
         host.log("warn", &format!("Radarr API returned status {}", response.status));
         return None;
     }
 
-    let movies: Vec<RadarrMovie> = serde_json::from_slice(&response.body).ok()?;
+    let movies: Vec<RadarrMovie> = serde_json::from_slice(&response.body).map_err(|e| {
+        host.log("error", &format!("failed to parse Radarr API response: {e}"));
+    }).ok()?;
 
     // Match by file path — Radarr stores the movie's root path, and the file
     // should be under that directory.

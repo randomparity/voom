@@ -176,59 +176,7 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
             target,
             codec,
             settings,
-        } => {
-            let canonical = codecs::normalize_codec(codec)
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| codec.clone());
-            let get = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v);
-            let preserve = get("preserve")
-                .and_then(|v| {
-                    if let Value::List(items) = v {
-                        Some(
-                            items
-                                .iter()
-                                .map(|item| match item {
-                                    Value::String(s) | Value::Ident(s) => s.clone(),
-                                    Value::Number(_, s) => s.clone(),
-                                    _ => String::new(),
-                                })
-                                .filter(|s| !s.is_empty())
-                                .collect(),
-                        )
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_default();
-            let crf = get("crf").and_then(|v| {
-                if let Value::Number(n, _) = v {
-                    safe_u32(*n)
-                } else {
-                    None
-                }
-            });
-            let preset = get("preset").and_then(|v| match v {
-                Value::String(s) | Value::Ident(s) => Some(s.clone()),
-                _ => None,
-            });
-            let bitrate = get("bitrate").and_then(|v| match v {
-                Value::String(s) | Value::Ident(s) => Some(s.clone()),
-                Value::Number(_, s) => Some(s.clone()),
-                _ => None,
-            });
-            let channels = get("channels").and_then(|v| {
-                if let Value::Number(n, _) = v {
-                    safe_u32(*n)
-                } else {
-                    None
-                }
-            });
-            Ok(CompiledOperation::Transcode {
-                target: parse_track_target(target),
-                codec: canonical,
-                settings: CompiledTranscodeSettings::new(preserve, crf, preset, bitrate, channels),
-            })
-        }
+        } => Ok(compile_transcode(target, codec, settings)),
         OperationNode::Synthesize { name, settings } => Ok(CompiledOperation::Synthesize(
             Box::new(compile_synthesize(name, settings)?),
         )),
@@ -257,6 +205,54 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
                 rules: compiled_rules,
             })
         }
+    }
+}
+
+fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) -> CompiledOperation {
+    let canonical = codecs::normalize_codec(codec)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| codec.to_string());
+
+    let get =
+        |key: &str| -> Option<&Value> { settings.iter().find(|(k, _)| k == key).map(|(_, v)| v) };
+
+    let preserve = match get("preserve") {
+        Some(Value::List(items)) => items
+            .iter()
+            .filter_map(|item| match item {
+                Value::String(s) | Value::Ident(s) => Some(s.clone()),
+                Value::Number(_, s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    };
+
+    let crf = match get("crf") {
+        Some(Value::Number(n, _)) => safe_u32(*n),
+        _ => None,
+    };
+
+    let preset = match get("preset") {
+        Some(Value::String(s) | Value::Ident(s)) => Some(s.clone()),
+        _ => None,
+    };
+
+    let bitrate = match get("bitrate") {
+        Some(Value::String(s) | Value::Ident(s)) => Some(s.clone()),
+        Some(Value::Number(_, s)) => Some(s.clone()),
+        _ => None,
+    };
+
+    let channels = match get("channels") {
+        Some(Value::Number(n, _)) => safe_u32(*n),
+        _ => None,
+    };
+
+    CompiledOperation::Transcode {
+        target: parse_track_target(target),
+        codec: canonical,
+        settings: CompiledTranscodeSettings::new(preserve, crf, preset, bitrate, channels),
     }
 }
 

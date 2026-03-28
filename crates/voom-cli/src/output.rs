@@ -6,7 +6,7 @@ use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, ContentArrangement, Table};
 use console::style;
 use voom_domain::media::{MediaFile, Track};
-use voom_domain::utils::datetime;
+use voom_domain::utils::format;
 
 use crate::cli::OutputFormat;
 
@@ -80,7 +80,7 @@ pub fn format_scan_results(files: &[(std::path::PathBuf, u64, String)], format: 
             for (path, size, hash) in files {
                 table.add_row(vec![
                     Cell::new(path.display()),
-                    Cell::new(datetime::format_size(*size)),
+                    Cell::new(format::format_size(*size)),
                     Cell::new(&hash[..12]),
                 ]);
             }
@@ -97,8 +97,8 @@ pub fn format_file_info(file: &MediaFile, tracks_only: bool) {
         table.set_header(vec!["Property", "Value"]);
         table.add_row(vec!["Path", &file.path.display().to_string()]);
         table.add_row(vec!["Container", file.container.as_str()]);
-        table.add_row(vec!["Size", &datetime::format_size(file.size)]);
-        table.add_row(vec!["Duration", &datetime::format_duration(file.duration)]);
+        table.add_row(vec!["Size", &format::format_size(file.size)]);
+        table.add_row(vec!["Duration", &format::format_duration(file.duration)]);
         if let Some(br) = file.bitrate {
             table.add_row(vec!["Bitrate", &format!("{} kbps", br / 1000)]);
         }

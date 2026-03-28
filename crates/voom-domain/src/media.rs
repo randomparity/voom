@@ -23,7 +23,6 @@ pub struct MediaFile {
 }
 
 impl MediaFile {
-    /// Create a new `MediaFile` with the given path and defaults.
     #[must_use]
     pub fn new(path: PathBuf) -> Self {
         Self {
@@ -41,7 +40,6 @@ impl MediaFile {
         }
     }
 
-    /// Returns tracks of the given type.
     #[must_use]
     pub fn tracks_of_type(&self, track_type: TrackType) -> Vec<&Track> {
         self.tracks
@@ -149,7 +147,6 @@ impl Default for Track {
 }
 
 impl Track {
-    /// Create a new track with minimal required fields.
     #[must_use]
     pub fn new(index: u32, track_type: TrackType, codec: String) -> Self {
         Self {

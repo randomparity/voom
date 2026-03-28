@@ -228,7 +228,6 @@ pub struct PlanSummary {
 }
 
 impl PlanSummary {
-    /// Create a new `PlanSummary` with the given identifiers and status.
     #[must_use]
     pub fn new(
         id: Uuid,

@@ -33,6 +33,7 @@ Plugins communicate exclusively through an **event bus** (synchronous priority-o
 - **voom-domain** — Shared types: `MediaFile`, `Track`, `Plan`, `Event`, `Capability` (serde-serializable, exposed to WASM via WIT)
 - **voom-dsl** — PEG grammar (pest), parser, AST, compiler (AST → CompiledPolicy), validator, formatter
 - **voom-cli** — clap-derive CLI binary with subcommands (scan, inspect, process, policy, plugin, serve, doctor, jobs, report, db, config)
+- **voom-process** — Shared subprocess utilities with timeout-aware execution for executor plugins
 - **voom-wit** — WIT interface definitions (plugin.wit, host.wit, types.wit)
 - **voom-plugin-sdk** — SDK crate for third-party plugin authors
 - **plugins/** — Native plugins: 7 kernel-registered (discovery, tool-detector, sqlite-store, mkvtoolnix-executor, ffmpeg-executor, backup-manager, job-manager) + 4 library-only (ffprobe-introspector: used directly by CLI, policy-evaluator: called directly by CLI, phase-orchestrator: called directly by CLI, web-server: started by `serve` command)

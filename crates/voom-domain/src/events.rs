@@ -87,7 +87,6 @@ pub struct EventResult {
 }
 
 impl EventResult {
-    /// Create a new `EventResult` with the given plugin name and defaults.
     #[must_use]
     pub fn new(plugin_name: impl Into<String>) -> Self {
         Self {

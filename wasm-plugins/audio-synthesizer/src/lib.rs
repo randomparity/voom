@@ -57,7 +57,9 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload).ok()?;
+    let event = deserialize_event(payload).map_err(|e| {
+        host.log("error", &format!("failed to deserialize event: {e}"));
+    }).ok()?;
     let plan = match &event {
         Event::PlanCreated(e) => &e.plan,
         _ => return None,
@@ -190,7 +192,9 @@ pub fn on_event(
     Some(OnEventResult {
         plugin_name: "audio-synthesizer".to_string(),
         produced_events: vec![],
-        data: Some(serde_json::to_vec(&data).ok()?),
+        data: Some(serde_json::to_vec(&data).map_err(|e| {
+            host.log("error", &format!("failed to serialize result data: {e}"));
+        }).ok()?),
     })
 }
 
