@@ -41,8 +41,12 @@ pub trait Plugin: Send + Sync {
     }
 
     /// Called once after the plugin is loaded.
-    fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        Ok(())
+    ///
+    /// Returns a list of events to dispatch through the bus after the plugin
+    /// is registered. This allows plugins to emit initial state (e.g. detected
+    /// tools) that other already-registered plugins can observe.
+    fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
+        Ok(vec![])
     }
 
     /// Called on application shutdown.
@@ -127,15 +131,21 @@ impl Kernel {
                 message: "init_and_register requires exclusive Arc ownership (refcount must be 1)"
                     .into(),
             })?;
-        plugin_mut
-            .init(ctx)
-            .map_err(|e| voom_domain::errors::VoomError::Plugin {
-                plugin: name.clone(),
-                message: format!("init failed: {e}"),
-            })?;
+        let init_events =
+            plugin_mut
+                .init(ctx)
+                .map_err(|e| voom_domain::errors::VoomError::Plugin {
+                    plugin: name.clone(),
+                    message: format!("init failed: {e}"),
+                })?;
         self.registry.register(plugin.clone());
         self.bus.subscribe_plugin(plugin, priority);
         tracing::info!(plugin = %name, "plugin initialized and registered");
+
+        for event in init_events {
+            self.dispatch(event);
+        }
+
         Ok(())
     }
 
@@ -213,9 +223,9 @@ mod tests {
         fn on_event(&self, _: &Event) -> Result<Option<EventResult>> {
             Ok(None)
         }
-        fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
+        fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
             self.init_called.store(true, Ordering::SeqCst);
-            Ok(())
+            Ok(vec![])
         }
         fn shutdown(&self) -> Result<()> {
             self.shutdown_called.store(true, Ordering::SeqCst);
@@ -285,5 +295,80 @@ mod tests {
 
         // Second call should be a no-op (no panic).
         kernel.shutdown();
+    }
+
+    /// Plugin that emits an event from init() and subscribes to it.
+    struct InitEventEmitter;
+
+    impl Plugin for InitEventEmitter {
+        fn name(&self) -> &str {
+            "init-emitter"
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+        fn capabilities(&self) -> &[Capability] {
+            &[]
+        }
+        fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
+            Ok(vec![Event::ToolDetected(
+                voom_domain::events::ToolDetectedEvent::new(
+                    "test-tool",
+                    "1.0.0",
+                    "/usr/bin/test-tool".into(),
+                ),
+            )])
+        }
+    }
+
+    /// Plugin that records whether it received a ToolDetected event.
+    struct EventCapture {
+        received: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Plugin for EventCapture {
+        fn name(&self) -> &str {
+            "event-capture"
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+        fn capabilities(&self) -> &[Capability] {
+            &[]
+        }
+        fn handles(&self, event_type: &str) -> bool {
+            event_type == Event::TOOL_DETECTED
+        }
+        fn on_event(&self, event: &Event) -> Result<Option<voom_domain::events::EventResult>> {
+            if let Event::ToolDetected(e) = event {
+                self.received
+                    .lock()
+                    .expect("lock poisoned")
+                    .push(e.tool_name.clone());
+            }
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn test_init_events_dispatched_after_registration() {
+        let received = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+
+        let mut kernel = Kernel::new();
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+
+        // Register the capture plugin first (lower priority = earlier registration)
+        let capture = Arc::new(EventCapture {
+            received: received.clone(),
+        });
+        kernel.register_plugin(capture, 10);
+
+        // Now init_and_register the emitter — its init events should reach the capture plugin
+        let emitter = Arc::new(InitEventEmitter);
+        kernel.init_and_register(emitter, 20, &ctx).unwrap();
+
+        let captured = received.lock().expect("lock poisoned");
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0], "test-tool");
     }
 }

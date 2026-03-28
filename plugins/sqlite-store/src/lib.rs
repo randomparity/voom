@@ -148,7 +148,7 @@ impl Plugin for SqliteStorePlugin {
         Ok(None)
     }
 
-    fn init(&mut self, ctx: &PluginContext) -> Result<()> {
+    fn init(&mut self, ctx: &PluginContext) -> Result<Vec<voom_domain::events::Event>> {
         let db_path = ctx.data_dir.join("voom.db");
 
         // Ensure data directory exists
@@ -162,7 +162,7 @@ impl Plugin for SqliteStorePlugin {
         let sqlite_store = SqliteStore::open(&db_path)?;
         self.store = Some(Arc::new(sqlite_store));
         tracing::info!(path = %db_path.display(), "sqlite store initialized");
-        Ok(())
+        Ok(vec![])
     }
 
     fn shutdown(&self) -> Result<()> {
