@@ -13,7 +13,6 @@ description = "Web server plugin for VOOM — REST API and web dashboard"
 [dependencies]
 voom-domain.workspace = true
 voom-dsl.workspace = true
-voom-kernel.workspace = true
 
 # Web framework
 axum = { version = "0.7", features = ["tokio", "json"] }

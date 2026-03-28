@@ -3242,7 +3242,6 @@ dependencies = [
  "tracing",
  "voom-domain",
  "voom-dsl",
- "voom-kernel",
  "voom-policy-evaluator",
 ]
 
@@ -3330,7 +3329,6 @@ dependencies = [
  "uuid",
  "voom-domain",
  "voom-dsl",
- "voom-kernel",
 ]
 
 [[package]]

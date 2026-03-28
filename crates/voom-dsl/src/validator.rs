@@ -382,8 +382,7 @@ fn broad_track_category(target: &str) -> &str {
 fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut Vec<DslError>) {
     match op {
         OperationNode::Container(name) => {
-            let valid_containers = ["mkv", "mp4", "avi", "webm", "mov", "ts"];
-            if !valid_containers.contains(&name.as_str()) {
+            if voom_domain::Container::from_extension(name) == voom_domain::Container::Other {
                 errors.push(DslError::validation(
                     line,
                     col,

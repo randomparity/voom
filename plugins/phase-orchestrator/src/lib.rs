@@ -5,10 +5,8 @@
 //! and provides dry-run formatting. Does not call executors — the CLI's
 //! `process` command handles actual execution and re-introspection.
 
-use voom_domain::capabilities::Capability;
 use voom_domain::plan::{PhaseOutcome, PhaseResult, Plan};
 use voom_dsl::compiled::{CompiledPolicy, ErrorStrategy};
-use voom_kernel::Plugin;
 
 /// Result of orchestrating all phases of a policy.
 #[non_exhaustive]
@@ -38,16 +36,13 @@ impl OrchestrationResult {
 ///
 /// Manages the execution order and dependencies between phases. In a full
 /// pipeline, it coordinates: evaluate → execute → re-introspect → next phase.
-pub struct PhaseOrchestratorPlugin {
-    capabilities: Vec<Capability>,
-}
+/// Library-only plugin — called directly by the CLI, not registered with the kernel.
+pub struct PhaseOrchestratorPlugin;
 
 impl PhaseOrchestratorPlugin {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            capabilities: vec![Capability::Plan],
-        }
+        Self
     }
 
     /// Orchestrate evaluation of all phases in a policy against a file.
@@ -143,25 +138,10 @@ impl Default for PhaseOrchestratorPlugin {
     }
 }
 
-impl Plugin for PhaseOrchestratorPlugin {
-    fn name(&self) -> &str {
-        "phase-orchestrator"
-    }
-
-    fn version(&self) -> &str {
-        env!("CARGO_PKG_VERSION")
-    }
-
-    fn capabilities(&self) -> &[Capability] {
-        &self.capabilities
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use voom_domain::events::Event;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
 
     fn eval(policy: &CompiledPolicy, file: &MediaFile) -> Vec<Plan> {
@@ -350,14 +330,5 @@ mod tests {
 
         let output = PhaseOrchestratorPlugin::format_dry_run(&result);
         assert!(!output.is_empty());
-    }
-
-    #[test]
-    fn test_plugin_trait_impl() {
-        let orch = PhaseOrchestratorPlugin::new();
-        assert_eq!(orch.name(), "phase-orchestrator");
-        // Orchestration is driven via direct API, not through event bus
-        assert!(!orch.handles(Event::FILE_DISCOVERED));
-        assert_eq!(orch.capabilities().len(), 1);
     }
 }
