@@ -74,6 +74,8 @@ impl std::fmt::Display for WebError {
     }
 }
 
+impl std::error::Error for WebError {}
+
 impl IntoResponse for WebError {
     fn into_response(self) -> Response {
         let (status, error_msg) = match &self {
