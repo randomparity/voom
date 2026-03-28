@@ -176,6 +176,10 @@ async fn test_list_plugins_with_data() {
     let plugin_info = vec![voom_web_server::api::plugins::PluginInfoResponse::new(
         "test-plugin".into(),
         "0.1.0".into(),
+        "A test plugin".into(),
+        String::new(),
+        String::new(),
+        String::new(),
         vec!["test".into()],
     )];
     let state =

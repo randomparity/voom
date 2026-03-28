@@ -21,6 +21,10 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
                 voom_web_server::api::plugins::PluginInfoResponse::new(
                     p.name().to_string(),
                     p.version().to_string(),
+                    p.description().to_string(),
+                    p.author().to_string(),
+                    p.license().to_string(),
+                    p.homepage().to_string(),
                     p.capabilities()
                         .iter()
                         .map(|c| c.kind().to_string())

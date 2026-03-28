@@ -180,6 +180,22 @@ impl Plugin for BusTracerPlugin {
         env!("CARGO_PKG_VERSION")
     }
 
+    fn description(&self) -> &str {
+        env!("CARGO_PKG_DESCRIPTION")
+    }
+
+    fn author(&self) -> &str {
+        env!("CARGO_PKG_AUTHORS")
+    }
+
+    fn license(&self) -> &str {
+        env!("CARGO_PKG_LICENSE")
+    }
+
+    fn homepage(&self) -> &str {
+        env!("CARGO_PKG_REPOSITORY")
+    }
+
     fn capabilities(&self) -> &[Capability] {
         &[]
     }

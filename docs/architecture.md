@@ -108,6 +108,10 @@ voom/
 pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;
     fn version(&self) -> &str;
+    fn description(&self) -> &str { "" }
+    fn author(&self) -> &str { "" }
+    fn license(&self) -> &str { "" }
+    fn homepage(&self) -> &str { "" }
     fn capabilities(&self) -> &[Capability];
     fn handles(&self, _event_type: &str) -> bool { false }
     fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> { Ok(None) }

@@ -35,11 +35,15 @@ use voom_plugin_sdk::{
 };
 
 pub fn get_info() -> PluginInfoData {
-    PluginInfoData {
-        name: "whisper-transcriber".to_string(),
-        version: "0.1.0".to_string(),
-        capabilities: vec!["transcribe".to_string()],
-    }
+    PluginInfoData::new(
+        "whisper-transcriber",
+        "0.1.0",
+        vec!["transcribe".to_string()],
+    )
+    .with_description("Audio transcription via Whisper")
+    .with_author("David Christensen")
+    .with_license("MIT")
+    .with_homepage("https://github.com/randomparity/voom")
 }
 
 pub fn handles(event_type: &str) -> bool {

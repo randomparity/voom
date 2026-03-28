@@ -1,6 +1,6 @@
 """WIT Guest implementation for the tvdb-metadata WASM plugin.
 
-Implements the three exported functions from voom:plugin@0.1.0/plugin:
+Implements the three exported functions from voom:plugin@0.2.0/plugin:
   - get_info() -> PluginInfo
   - handles(event_type: str) -> bool
   - on_event(event: EventData) -> Option<EventResult>
@@ -82,6 +82,10 @@ def get_info():
             return PluginInfo(
                 name="tvdb-metadata",
                 version="0.1.0",
+                description="TV metadata enrichment via TVDB API v4",
+                author="David Christensen",
+                license="MIT",
+                homepage="https://github.com/randomparity/voom",
                 capabilities=[Capability.enrich_metadata(EnrichCap(source="tvdb"))],
             )
         except ImportError:
@@ -91,6 +95,10 @@ def get_info():
     return {
         "name": "tvdb-metadata",
         "version": "0.1.0",
+        "description": "TV metadata enrichment via TVDB API v4",
+        "author": "David Christensen",
+        "license": "MIT",
+        "homepage": "https://github.com/randomparity/voom",
         "capabilities": ["enrich_metadata:tvdb"],
     }
 

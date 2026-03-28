@@ -1,4 +1,4 @@
-package voom:plugin@0.1.0;
+package voom:plugin@0.2.0;
 
 world voom-plugin {
     import host;

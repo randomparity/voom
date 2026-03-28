@@ -4,6 +4,10 @@ interface plugin {
     record plugin-info {
         name: string,
         version: string,
+        description: option<string>,
+        author: option<string>,
+        license: option<string>,
+        homepage: option<string>,
         capabilities: list<capability>,
     }
 

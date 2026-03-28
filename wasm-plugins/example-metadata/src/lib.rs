@@ -47,11 +47,15 @@ use voom_plugin_sdk::{
 };
 
 pub fn get_info() -> PluginInfoData {
-    PluginInfoData {
-        name: "example-metadata".to_string(),
-        version: "0.1.0".to_string(),
-        capabilities: vec!["enrich_metadata:example".to_string()],
-    }
+    PluginInfoData::new(
+        "example-metadata",
+        "0.1.0",
+        vec!["enrich_metadata:example".to_string()],
+    )
+    .with_description("Example metadata enrichment plugin")
+    .with_author("David Christensen")
+    .with_license("MIT")
+    .with_homepage("https://github.com/randomparity/voom")
 }
 
 pub fn handles(event_type: &str) -> bool {

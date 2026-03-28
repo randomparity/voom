@@ -174,15 +174,24 @@ fn track_details(track: &Track) -> String {
     parts.join(", ")
 }
 
+/// Entry for the plugin list table.
+pub struct PluginListEntry {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub capabilities: Vec<String>,
+}
+
 /// Format a list of plugins as a table.
-pub fn format_plugin_list(plugins: &[(String, String, Vec<String>)]) {
+pub fn format_plugin_list(plugins: &[PluginListEntry]) {
     let mut table = new_table();
-    table.set_header(vec!["Plugin", "Version", "Capabilities"]);
-    for (name, version, caps) in plugins {
+    table.set_header(vec!["Plugin", "Version", "Description", "Capabilities"]);
+    for entry in plugins {
         table.add_row(vec![
-            Cell::new(name),
-            Cell::new(version),
-            Cell::new(caps.join(", ")),
+            Cell::new(&entry.name),
+            Cell::new(&entry.version),
+            Cell::new(&entry.description),
+            Cell::new(entry.capabilities.join(", ")),
         ]);
     }
     println!("{table}");

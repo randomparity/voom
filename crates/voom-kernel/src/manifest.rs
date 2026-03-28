@@ -9,6 +9,12 @@ pub struct PluginManifest {
     pub name: String,
     pub version: String,
     pub description: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub license: String,
+    #[serde(default)]
+    pub homepage: String,
     pub capabilities: Vec<Capability>,
     pub handles_events: Vec<String>,
     #[serde(default)]
@@ -65,6 +71,9 @@ mod tests {
             name: "test-plugin".into(),
             version: "0.1.0".into(),
             description: "A test plugin".into(),
+            author: String::new(),
+            license: String::new(),
+            homepage: String::new(),
             capabilities: vec![Capability::Evaluate],
             handles_events: vec!["plan.created".into()],
             dependencies: vec![],
@@ -80,6 +89,9 @@ mod tests {
             name: "".into(),
             version: "0.1.0".into(),
             description: "".into(),
+            author: String::new(),
+            license: String::new(),
+            homepage: String::new(),
             capabilities: vec![Capability::Evaluate],
             handles_events: vec![],
             dependencies: vec![],
@@ -96,6 +108,9 @@ mod tests {
             name: "empty".into(),
             version: "0.1.0".into(),
             description: "".into(),
+            author: String::new(),
+            license: String::new(),
+            homepage: String::new(),
             capabilities: vec![],
             handles_events: vec![],
             dependencies: vec![],
@@ -111,6 +126,9 @@ mod tests {
             name: "discovery".into(),
             version: "0.1.0".into(),
             description: "File discovery plugin".into(),
+            author: "VOOM Contributors".into(),
+            license: "MIT".into(),
+            homepage: "https://github.com/voom/voom".into(),
             capabilities: vec![Capability::Discover {
                 schemes: vec!["file".into()],
             }],

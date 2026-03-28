@@ -15,15 +15,35 @@ use crate::state::AppState;
 pub struct PluginInfoResponse {
     pub name: String,
     pub version: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub author: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub license: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub homepage: String,
     pub capabilities: Vec<String>,
 }
 
 impl PluginInfoResponse {
     #[must_use]
-    pub fn new(name: String, version: String, capabilities: Vec<String>) -> Self {
+    pub fn new(
+        name: String,
+        version: String,
+        description: String,
+        author: String,
+        license: String,
+        homepage: String,
+        capabilities: Vec<String>,
+    ) -> Self {
         Self {
             name,
             version,
+            description,
+            author,
+            license,
+            homepage,
             capabilities,
         }
     }
@@ -50,13 +70,21 @@ pub async fn list_plugins(
 mod tests {
     use super::*;
 
+    fn test_info(name: &str, caps: Vec<&str>) -> PluginInfoResponse {
+        PluginInfoResponse::new(
+            name.into(),
+            "1.0.0".into(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            caps.into_iter().map(String::from).collect(),
+        )
+    }
+
     #[test]
     fn test_plugin_info_clone() {
-        let info = PluginInfoResponse {
-            name: "test".into(),
-            version: "1.0.0".into(),
-            capabilities: vec!["cap1".into()],
-        };
+        let info = test_info("test", vec!["cap1"]);
         let cloned = info.clone();
         assert_eq!(cloned.name, "test");
     }
@@ -73,16 +101,8 @@ mod tests {
     #[test]
     fn test_plugin_list_response_from_populated_state() {
         let plugins = vec![
-            PluginInfoResponse {
-                name: "sqlite-store".into(),
-                version: "0.1.0".into(),
-                capabilities: vec!["store".into()],
-            },
-            PluginInfoResponse {
-                name: "discovery".into(),
-                version: "0.1.0".into(),
-                capabilities: vec!["discover".into()],
-            },
+            test_info("sqlite-store", vec!["store"]),
+            test_info("discovery", vec!["discover"]),
         ];
         let total = plugins.len();
         let response = PluginListResponse { plugins, total };
@@ -92,15 +112,32 @@ mod tests {
 
     #[test]
     fn test_plugin_info_serialization() {
-        let info = PluginInfoResponse {
-            name: "test-plugin".into(),
-            version: "1.0.0".into(),
-            capabilities: vec!["cap1".into(), "cap2".into()],
-        };
+        let info = test_info("test-plugin", vec!["cap1", "cap2"]);
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["name"], "test-plugin");
         assert_eq!(json["version"], "1.0.0");
         assert_eq!(json["capabilities"], serde_json::json!(["cap1", "cap2"]));
+        // Empty metadata fields should be omitted from JSON
+        assert!(json.get("description").is_none());
+        assert!(json.get("author").is_none());
+    }
+
+    #[test]
+    fn test_plugin_info_serialization_with_metadata() {
+        let info = PluginInfoResponse::new(
+            "test-plugin".into(),
+            "1.0.0".into(),
+            "A test plugin".into(),
+            "Test Author".into(),
+            "MIT".into(),
+            "https://example.com".into(),
+            vec!["cap1".into()],
+        );
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["description"], "A test plugin");
+        assert_eq!(json["author"], "Test Author");
+        assert_eq!(json["license"], "MIT");
+        assert_eq!(json["homepage"], "https://example.com");
     }
 
     #[test]

@@ -36,11 +36,15 @@ use voom_plugin_sdk::{
 };
 
 pub fn get_info() -> PluginInfoData {
-    PluginInfoData {
-        name: "sonarr-metadata".to_string(),
-        version: "0.1.0".to_string(),
-        capabilities: vec!["enrich_metadata:sonarr".to_string()],
-    }
+    PluginInfoData::new(
+        "sonarr-metadata",
+        "0.1.0",
+        vec!["enrich_metadata:sonarr".to_string()],
+    )
+    .with_description("TV metadata enrichment via Sonarr API")
+    .with_author("David Christensen")
+    .with_license("MIT")
+    .with_homepage("https://github.com/randomparity/voom")
 }
 
 pub fn handles(event_type: &str) -> bool {

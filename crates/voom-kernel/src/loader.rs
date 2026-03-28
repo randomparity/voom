@@ -138,6 +138,22 @@ pub mod wasm {
                 .as_ref()
                 .map(|m| m.version.clone())
                 .unwrap_or_else(|| "0.0.0".to_string());
+            let description = manifest
+                .as_ref()
+                .map(|m| m.description.clone())
+                .unwrap_or_default();
+            let author = manifest
+                .as_ref()
+                .map(|m| m.author.clone())
+                .unwrap_or_default();
+            let license = manifest
+                .as_ref()
+                .map(|m| m.license.clone())
+                .unwrap_or_default();
+            let homepage = manifest
+                .as_ref()
+                .map(|m| m.homepage.clone())
+                .unwrap_or_default();
             let capabilities = manifest
                 .as_ref()
                 .map(|m| m.capabilities.clone())
@@ -150,6 +166,10 @@ pub mod wasm {
             Ok(Arc::new(WasmPlugin {
                 name: plugin_name,
                 version,
+                description,
+                author,
+                license,
+                homepage,
                 capabilities,
                 handled_events,
                 inner: Mutex::new(WasmPluginInner {
@@ -276,6 +296,10 @@ pub mod wasm {
     struct WasmPlugin {
         name: String,
         version: String,
+        description: String,
+        author: String,
+        license: String,
+        homepage: String,
         capabilities: Vec<Capability>,
         handled_events: Vec<String>,
         inner: Mutex<WasmPluginInner>,
@@ -293,6 +317,22 @@ pub mod wasm {
 
         fn version(&self) -> &str {
             &self.version
+        }
+
+        fn description(&self) -> &str {
+            &self.description
+        }
+
+        fn author(&self) -> &str {
+            &self.author
+        }
+
+        fn license(&self) -> &str {
+            &self.license
+        }
+
+        fn homepage(&self) -> &str {
+            &self.homepage
         }
 
         fn capabilities(&self) -> &[Capability] {
@@ -368,7 +408,7 @@ pub mod wasm {
         // Try the namespaced interface first, then fall back to a bare export
         // for simpler single-interface components.
         let on_event = instance
-            .get_export(&mut inner.store, None, "voom:plugin/plugin@0.1.0")
+            .get_export(&mut inner.store, None, "voom:plugin/plugin@0.2.0")
             .and_then(|idx| instance.get_export(&mut inner.store, Some(&idx), "on-event"))
             .and_then(|idx| instance.get_func(&mut inner.store, idx))
             .or_else(|| {
@@ -506,7 +546,7 @@ pub mod wasm {
         // The interface name in WIT is "host" in package "voom:plugin".
         let mut root = linker.root();
         let mut host_instance = root
-            .instance("voom:plugin/host@0.1.0")
+            .instance("voom:plugin/host@0.2.0")
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
         host_instance

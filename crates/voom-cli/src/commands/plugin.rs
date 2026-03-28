@@ -24,7 +24,7 @@ fn list() -> Result<()> {
     let kernel = app::bootstrap_kernel(&config)?;
 
     let names = kernel.registry.plugin_names();
-    let mut plugins: Vec<(String, String, Vec<String>)> = Vec::new();
+    let mut plugins: Vec<output::PluginListEntry> = Vec::new();
 
     for name in &names {
         if let Some(plugin) = kernel.registry.get(name) {
@@ -33,7 +33,12 @@ fn list() -> Result<()> {
                 .iter()
                 .map(|c| c.kind().to_string())
                 .collect();
-            plugins.push((name.clone(), plugin.version().to_string(), caps));
+            plugins.push(output::PluginListEntry {
+                name: name.clone(),
+                version: plugin.version().to_string(),
+                description: plugin.description().to_string(),
+                capabilities: caps,
+            });
         }
     }
 
@@ -97,6 +102,18 @@ fn info(name: String) -> Result<()> {
                 style(plugin.name()).cyan()
             );
             println!("{} {}", style("Version:").bold(), plugin.version());
+            if !plugin.description().is_empty() {
+                println!("{} {}", style("Description:").bold(), plugin.description());
+            }
+            if !plugin.author().is_empty() {
+                println!("{} {}", style("Author:").bold(), plugin.author());
+            }
+            if !plugin.license().is_empty() {
+                println!("{} {}", style("License:").bold(), plugin.license());
+            }
+            if !plugin.homepage().is_empty() {
+                println!("{} {}", style("Homepage:").bold(), plugin.homepage());
+            }
             println!("{} {}", style("Status:").bold(), style("enabled").green());
             println!("{}", style("Capabilities:").bold());
             for cap in plugin.capabilities() {

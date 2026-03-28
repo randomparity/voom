@@ -21,6 +21,27 @@ use voom_domain::events::{Event, EventResult};
 pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;
     fn version(&self) -> &str;
+
+    /// Human-readable description of what this plugin does.
+    fn description(&self) -> &str {
+        ""
+    }
+
+    /// Plugin author(s).
+    fn author(&self) -> &str {
+        ""
+    }
+
+    /// License identifier (e.g., "MIT", "Apache-2.0").
+    fn license(&self) -> &str {
+        ""
+    }
+
+    /// Project homepage or repository URL.
+    fn homepage(&self) -> &str {
+        ""
+    }
+
     fn capabilities(&self) -> &[Capability];
     /// Returns `true` if this plugin wants to receive events of the given type.
     ///

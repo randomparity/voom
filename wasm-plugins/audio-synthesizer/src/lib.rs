@@ -35,11 +35,15 @@ use voom_plugin_sdk::{
 };
 
 pub fn get_info() -> PluginInfoData {
-    PluginInfoData {
-        name: "audio-synthesizer".to_string(),
-        version: "0.1.0".to_string(),
-        capabilities: vec!["synthesize".to_string()],
-    }
+    PluginInfoData::new(
+        "audio-synthesizer",
+        "0.1.0",
+        vec!["synthesize".to_string()],
+    )
+    .with_description("Audio synthesis via TTS engines")
+    .with_author("David Christensen")
+    .with_license("MIT")
+    .with_homepage("https://github.com/randomparity/voom")
 }
 
 pub fn handles(event_type: &str) -> bool {

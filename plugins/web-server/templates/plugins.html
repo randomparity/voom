@@ -30,6 +30,7 @@
                 <tr>
                     <th>Name</th>
                     <th>Version</th>
+                    <th>Description</th>
                     <th>Type</th>
                     <th>Capabilities</th>
                 </tr>
@@ -37,8 +38,15 @@
             <tbody>
                 <template x-for="plugin in plugins" :key="plugin.name">
                     <tr>
-                        <td x-text="plugin.name" style="font-weight: 500;"></td>
+                        <td style="font-weight: 500;">
+                            <span x-text="plugin.name"></span>
+                            <template x-if="plugin.license">
+                                <span class="badge" style="margin-left: 0.25rem; font-size: 0.75em;"
+                                      x-text="plugin.license"></span>
+                            </template>
+                        </td>
                         <td class="mono" x-text="plugin.version || '--'"></td>
+                        <td x-text="plugin.description || ''"></td>
                         <td>
                             <span class="badge"
                                   :class="plugin.plugin_type === 'wasm' ? 'badge-info' : 'badge-success'"
