@@ -324,6 +324,11 @@ async fn test_security_headers() {
     // Nonce-based CSP: each response gets a unique nonce for inline scripts/styles
     assert!(csp.contains("style-src 'self' 'nonce-"));
     assert!(csp.contains("script-src 'self' 'nonce-"));
+    // No external CDN references — JS is bundled locally
+    assert!(
+        !csp.contains("unpkg.com"),
+        "CSP should not reference external CDN"
+    );
     assert!(headers.get("x-content-type-options").is_some());
     assert!(headers.get("x-frame-options").is_some());
     assert!(headers.get("referrer-policy").is_some());
@@ -511,4 +516,52 @@ async fn test_request_id_unique_per_request() {
         .unwrap()
         .to_string();
     assert_ne!(id1, id2, "each request should get a unique request ID");
+}
+
+// === Static Asset Tests ===
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_static_htmx_returns_js() {
+    let server = make_server(InMemoryStore::new());
+    let resp = server.get("/static/htmx-2.0.4.min.js").await;
+    resp.assert_status_ok();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(ct, "application/javascript");
+    let cache = resp
+        .headers()
+        .get("cache-control")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(cache.contains("immutable"));
+    let body = resp.text();
+    assert!(body.contains("htmx"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_static_alpine_returns_js() {
+    let server = make_server(InMemoryStore::new());
+    let resp = server.get("/static/alpine-3.14.8.min.js").await;
+    resp.assert_status_ok();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(ct, "application/javascript");
+    let body = resp.text();
+    assert!(!body.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_static_assets_require_auth_when_configured() {
+    let server = make_server_with_auth(InMemoryStore::new(), Some("secret".into()));
+    let resp = server.get("/static/htmx-2.0.4.min.js").await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 }

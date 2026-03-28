@@ -386,8 +386,8 @@
         {% block content %}{% endblock %}
     </main>
 
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-    <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
+    <script src="/static/htmx-2.0.4.min.js"></script>
+    <script defer src="/static/alpine-3.14.8.min.js"></script>
     <script nonce="{{ csp_nonce }}">
         const evtSource = new EventSource('/events');
 

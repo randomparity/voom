@@ -61,9 +61,7 @@ where
 
             let csp = format!(
                 "default-src 'self'; \
-                 script-src 'self' 'nonce-{nonce}' \
-                 https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js \
-                 https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js; \
+                 script-src 'self' 'nonce-{nonce}'; \
                  style-src 'self' 'nonce-{nonce}'; \
                  img-src 'self' data:; \
                  connect-src 'self'; \
