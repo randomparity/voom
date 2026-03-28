@@ -13,3 +13,6 @@ description = "Subprocess utilities for VOOM executor plugins"
 voom-domain = { workspace = true }
 wait-timeout = { workspace = true }
 tracing = { workspace = true }
+
+[lints]
+workspace = true

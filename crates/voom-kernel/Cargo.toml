@@ -27,6 +27,9 @@ wasmtime = { workspace = true, optional = true }
 default = []
 wasm = ["dep:wasmtime", "dep:ureq", "dep:wait-timeout"]
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }

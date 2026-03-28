@@ -3,8 +3,6 @@
 //! Executes media plans using `FFmpeg` for transcoding, container conversion,
 //! and metadata operations on non-MKV files (or any file requiring transcode).
 
-#![allow(clippy::missing_errors_doc)]
-
 pub mod command;
 pub mod hwaccel;
 pub mod progress;

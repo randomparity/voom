@@ -1,7 +1,5 @@
 //! VOOM kernel: event bus, plugin registry, capability routing, and plugin loaders.
 
-#![allow(clippy::missing_errors_doc)]
-
 pub mod bus;
 pub mod errors;
 #[cfg(feature = "wasm")]

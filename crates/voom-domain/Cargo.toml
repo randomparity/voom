@@ -19,8 +19,8 @@ thiserror = { workspace = true }
 [features]
 testing = []
 
-[lints.clippy]
-missing_errors_doc = "allow"
+[lints]
+workspace = true
 
 [dev-dependencies]
 insta = { workspace = true }

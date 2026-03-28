@@ -42,6 +42,9 @@ subtle = "2"
 thiserror.workspace = true
 tracing.workspace = true
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 voom-domain = { workspace = true, features = ["testing"] }
 tempfile.workspace = true

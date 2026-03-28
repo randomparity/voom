@@ -5,8 +5,6 @@
 //! - Web dashboard with Tera templates, htmx, and Alpine.js
 //! - SSE for live job/scan progress updates
 
-#![allow(clippy::missing_errors_doc)]
-
 pub mod api;
 pub mod errors;
 pub mod middleware;

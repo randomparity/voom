@@ -1,7 +1,5 @@
 //! `SQLite` storage plugin: persistent storage for files, tracks, jobs, plans, and plugin data.
 
-#![allow(clippy::missing_errors_doc)]
-
 pub mod schema;
 pub mod store;
 

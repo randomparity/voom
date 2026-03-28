@@ -19,8 +19,6 @@
 //! assert_eq!(ast.name, "example");
 //! ```
 
-#![allow(clippy::missing_errors_doc)]
-
 pub mod ast;
 pub mod compiled;
 pub mod compiler;

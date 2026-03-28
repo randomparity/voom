@@ -20,5 +20,8 @@ thiserror = { workspace = true }
 voom-domain = { workspace = true }
 xxhash-rust = { workspace = true }
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 insta = { workspace = true }

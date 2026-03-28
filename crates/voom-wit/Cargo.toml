@@ -16,6 +16,9 @@ serde_json = { workspace = true }
 rmp-serde = { workspace = true }
 thiserror = { workspace = true }
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 insta = { workspace = true }
 uuid = { workspace = true }

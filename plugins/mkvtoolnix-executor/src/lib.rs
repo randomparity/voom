@@ -1,7 +1,5 @@
 //! `MKVToolNix` executor plugin: mkvmerge and mkvpropedit command building and execution.
 
-#![allow(clippy::missing_errors_doc)]
-
 pub mod merge;
 pub mod propedit;
 #[cfg(test)]

@@ -4,8 +4,6 @@
 //! [`Plan`](voom_domain::plan::Plan) structs describing the operations needed. Pure logic plugin with
 //! no external dependencies.
 
-#![allow(clippy::missing_errors_doc)]
-
 pub mod condition;
 pub mod evaluator;
 pub mod filter;

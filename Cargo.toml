@@ -29,6 +29,9 @@ exclude = [
     "wasm-plugins/handbrake-executor",
 ]
 
+[workspace.lints.clippy]
+missing_errors_doc = "allow"
+
 [workspace.package]
 edition = "2021"
 license = "MIT"

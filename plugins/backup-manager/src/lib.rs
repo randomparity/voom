@@ -8,8 +8,6 @@
 //! - [`backup`] — core backup, restore, remove, and cleanup file operations
 //! - [`space`] — disk space validation via `statvfs`
 
-#![allow(clippy::missing_errors_doc)]
-
 pub mod backup;
 pub mod space;
 

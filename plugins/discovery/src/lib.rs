@@ -1,7 +1,5 @@
 //! Filesystem discovery plugin: parallel directory walking with content hashing.
 
-#![allow(clippy::missing_errors_doc)]
-
 pub mod scanner;
 
 pub use scanner::hash_file;

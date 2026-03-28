@@ -1,7 +1,5 @@
 //! Tool detector plugin: discovers and caches external tool availability and versions.
 
-#![allow(clippy::missing_errors_doc)]
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
