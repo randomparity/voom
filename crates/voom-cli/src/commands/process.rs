@@ -11,9 +11,10 @@ use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::config;
 use crate::output::{max_filename_len, shrink_filename};
 use voom_domain::events::{
-    Event, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
+    Event, JobCompletedEvent, JobProgressEvent, JobStartedEvent, PlanCompletedEvent,
+    PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
 };
-use voom_job_manager::progress::ProgressReporter;
+use voom_job_manager::progress::{CompositeReporter, ProgressReporter};
 use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 
 /// Run the process command.
@@ -112,7 +113,10 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
 
     let (pool, effective_workers) = create_worker_pool(&store, &args, token.clone())?;
 
-    let reporter: Arc<dyn ProgressReporter> = Arc::new(CliProgressReporter::new(file_count));
+    let cli_reporter: Arc<dyn ProgressReporter> = Arc::new(CliProgressReporter::new(file_count));
+    let bus_reporter: Arc<dyn ProgressReporter> = Arc::new(EventBusReporter::new(kernel.clone()));
+    let reporter: Arc<dyn ProgressReporter> =
+        Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]));
 
     let items = build_work_items(&events);
     let compiled = Arc::new(compiled);
@@ -558,6 +562,42 @@ fn print_summary(pool: &WorkerPool, file_count: usize, effective_workers: usize,
     }
 }
 
+/// Reporter that dispatches job lifecycle events through the kernel event bus.
+struct EventBusReporter {
+    kernel: Arc<voom_kernel::Kernel>,
+}
+
+impl EventBusReporter {
+    fn new(kernel: Arc<voom_kernel::Kernel>) -> Self {
+        Self { kernel }
+    }
+}
+
+impl ProgressReporter for EventBusReporter {
+    fn on_batch_start(&self, _total: usize) {}
+
+    fn on_job_start(&self, job: &voom_domain::job::Job) {
+        self.kernel.dispatch(Event::JobStarted(JobStartedEvent::new(
+            job.id,
+            job.job_type.to_string(),
+        )));
+    }
+
+    fn on_job_progress(&self, job_id: uuid::Uuid, progress: f64, message: Option<&str>) {
+        let mut event = JobProgressEvent::new(job_id, progress);
+        event.message = message.map(String::from);
+        self.kernel.dispatch(Event::JobProgress(event));
+    }
+
+    fn on_job_complete(&self, job_id: uuid::Uuid, success: bool, error: Option<&str>) {
+        let mut event = JobCompletedEvent::new(job_id, success);
+        event.message = error.map(String::from);
+        self.kernel.dispatch(Event::JobCompleted(event));
+    }
+
+    fn on_batch_complete(&self, _completed: u64, _failed: u64) {}
+}
+
 /// CLI progress reporter using indicatif progress bars.
 struct CliProgressReporter {
     _multi: MultiProgress,
@@ -762,5 +802,86 @@ mod tests {
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.introspected_count.load(Ordering::SeqCst), 1);
+    }
+
+    /// A test plugin that records job lifecycle events.
+    struct JobEventRecorder {
+        started: AtomicUsize,
+        progress: AtomicUsize,
+        completed: AtomicUsize,
+    }
+
+    impl JobEventRecorder {
+        fn new() -> Self {
+            Self {
+                started: AtomicUsize::new(0),
+                progress: AtomicUsize::new(0),
+                completed: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl voom_kernel::Plugin for JobEventRecorder {
+        fn name(&self) -> &str {
+            "job-recorder"
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+        fn capabilities(&self) -> &[Capability] {
+            &[]
+        }
+        fn handles(&self, event_type: &str) -> bool {
+            matches!(
+                event_type,
+                Event::JOB_STARTED | Event::JOB_PROGRESS | Event::JOB_COMPLETED
+            )
+        }
+        fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
+            match event {
+                Event::JobStarted(_) => {
+                    self.started.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::JobProgress(_) => {
+                    self.progress.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::JobCompleted(_) => {
+                    self.completed.fetch_add(1, Ordering::SeqCst);
+                }
+                _ => {}
+            }
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn test_event_bus_reporter_dispatches_job_events() {
+        let mut kernel = voom_kernel::Kernel::new();
+        let recorder = Arc::new(JobEventRecorder::new());
+        kernel.register_plugin(recorder.clone(), 50);
+        let kernel = Arc::new(kernel);
+
+        let reporter = EventBusReporter::new(kernel);
+
+        let job = voom_domain::job::Job::new(voom_domain::job::JobType::Process);
+        let job_id = job.id;
+
+        reporter.on_job_start(&job);
+        assert_eq!(recorder.started.load(Ordering::SeqCst), 1);
+
+        reporter.on_job_progress(job_id, 0.5, Some("halfway"));
+        assert_eq!(recorder.progress.load(Ordering::SeqCst), 1);
+
+        reporter.on_job_complete(job_id, true, None);
+        assert_eq!(recorder.completed.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_event_bus_reporter_batch_methods_are_noop() {
+        let kernel = Arc::new(voom_kernel::Kernel::new());
+        let reporter = EventBusReporter::new(kernel);
+        // These should not panic
+        reporter.on_batch_start(10);
+        reporter.on_batch_complete(5, 0);
     }
 }
