@@ -39,7 +39,12 @@ use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// the events they care about.
 pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let config = config::load_config()?;
-    let (kernel, store, _job_queue, collector) = app::bootstrap_kernel_with_store(&config)?;
+    let app::BootstrapResult {
+        kernel,
+        store,
+        collector,
+        ..
+    } = app::bootstrap_kernel_with_store(&config)?;
     let kernel = Arc::new(kernel);
     let capabilities = Arc::new(collector.snapshot());
 
@@ -217,25 +222,19 @@ fn discover_files(
     Ok(events)
 }
 
-/// Typed payload for the process worker pool, replacing freeform JSON.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct ProcessJobPayload {
-    path: String,
-    size: u64,
-    content_hash: String,
-}
+use crate::introspect::DiscoveredFilePayload;
 
 /// Build work items from discovery events for the worker pool.
 fn build_work_items(
     events: &[voom_domain::events::FileDiscoveredEvent],
-) -> Vec<voom_job_manager::worker::WorkItem<ProcessJobPayload>> {
+) -> Vec<voom_job_manager::worker::WorkItem<DiscoveredFilePayload>> {
     events
         .iter()
         .map(|evt| {
             voom_job_manager::worker::WorkItem::new(
                 voom_domain::job::JobType::Process,
                 100,
-                Some(ProcessJobPayload {
+                Some(DiscoveredFilePayload {
                     path: evt.path.to_string_lossy().into_owned(),
                     size: evt.size,
                     content_hash: evt.content_hash.clone(),
@@ -264,7 +263,7 @@ fn create_worker_pool(
 }
 
 /// Extract and deserialize the job payload from a process job.
-fn parse_job_payload(job: &voom_domain::job::Job) -> anyhow::Result<ProcessJobPayload> {
+fn parse_job_payload(job: &voom_domain::job::Job) -> anyhow::Result<DiscoveredFilePayload> {
     let raw_payload = job
         .payload
         .as_ref()
@@ -634,7 +633,7 @@ impl ProgressReporter for CliProgressReporter {
 
     fn on_job_start(&self, job: &voom_domain::job::Job) {
         if let Some(ref raw) = job.payload {
-            if let Ok(payload) = serde_json::from_value::<ProcessJobPayload>(raw.clone()) {
+            if let Ok(payload) = serde_json::from_value::<DiscoveredFilePayload>(raw.clone()) {
                 // 57 = spinner + space + [bar:40] + space + pos/len + space
                 let max_name = max_filename_len(57);
                 let filename = std::path::Path::new(&payload.path)

@@ -95,10 +95,11 @@ pub async fn introspect_file(
     }
 }
 
-/// Payload for introspection jobs enqueued by the ffprobe-introspector plugin.
-#[allow(dead_code)] // used by process_introspection_job; will be called from daemon mode (#36)
+/// Shared payload for jobs keyed on a discovered file (introspection, processing).
+///
+/// Used by both the ffprobe-introspector (enqueue) and CLI commands (dequeue).
 #[derive(serde::Serialize, serde::Deserialize)]
-pub struct IntrospectJobPayload {
+pub struct DiscoveredFilePayload {
     pub path: String,
     pub size: u64,
     pub content_hash: String,
@@ -119,7 +120,7 @@ pub async fn process_introspection_job(
         .as_ref()
         .ok_or_else(|| "missing introspection job payload".to_string())?;
 
-    let payload: IntrospectJobPayload = serde_json::from_value(raw_payload.clone())
+    let payload: DiscoveredFilePayload = serde_json::from_value(raw_payload.clone())
         .map_err(|e| format!("invalid introspection payload: {e}"))?;
 
     let path = std::path::PathBuf::from(&payload.path);

@@ -42,6 +42,29 @@ impl HwAccelConfig {
         }
     }
 
+    /// Select the best backend from already-probed hwaccel names,
+    /// avoiding a redundant `ffmpeg -hwaccels` subprocess.
+    #[must_use]
+    pub fn from_probed(hw_accels: &[String]) -> Self {
+        let text: String = hw_accels
+            .iter()
+            .map(|s| s.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let backend = if text.contains("cuda") || text.contains("nvdec") {
+            Some(HwAccelBackend::Nvenc)
+        } else if text.contains("qsv") {
+            Some(HwAccelBackend::Qsv)
+        } else if text.contains("vaapi") {
+            Some(HwAccelBackend::Vaapi)
+        } else if text.contains("videotoolbox") {
+            Some(HwAccelBackend::Videotoolbox)
+        } else {
+            None
+        };
+        Self { backend }
+    }
+
     /// Get the `FFmpeg` encoder name for a codec with this HW backend.
     ///
     /// Falls back to the software encoder when HW accel is disabled or unavailable.

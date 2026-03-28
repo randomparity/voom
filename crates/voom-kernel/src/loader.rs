@@ -134,34 +134,27 @@ pub mod wasm {
             store.limiter(|s| &mut s.store_limits);
             store.set_epoch_deadline(store.data().wasm_limits.epoch_deadline_ticks);
 
-            let version = manifest
-                .as_ref()
-                .map(|m| m.version.clone())
-                .unwrap_or_else(|| "0.0.0".to_string());
-            let description = manifest
-                .as_ref()
-                .map(|m| m.description.clone())
-                .unwrap_or_default();
-            let author = manifest
-                .as_ref()
-                .map(|m| m.author.clone())
-                .unwrap_or_default();
-            let license = manifest
-                .as_ref()
-                .map(|m| m.license.clone())
-                .unwrap_or_default();
-            let homepage = manifest
-                .as_ref()
-                .map(|m| m.homepage.clone())
-                .unwrap_or_default();
-            let capabilities = manifest
-                .as_ref()
-                .map(|m| m.capabilities.clone())
-                .unwrap_or_default();
-            let handled_events = manifest
-                .as_ref()
-                .map(|m| m.handles_events.clone())
-                .unwrap_or_default();
+            let (version, description, author, license, homepage, capabilities, handled_events) =
+                match manifest.as_ref() {
+                    Some(m) => (
+                        m.version.clone(),
+                        m.description.clone(),
+                        m.author.clone(),
+                        m.license.clone(),
+                        m.homepage.clone(),
+                        m.capabilities.clone(),
+                        m.handles_events.clone(),
+                    ),
+                    None => (
+                        "0.0.0".to_string(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        vec![],
+                        vec![],
+                    ),
+                };
 
             Ok(Arc::new(WasmPlugin {
                 name: plugin_name,

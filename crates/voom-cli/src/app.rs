@@ -10,12 +10,13 @@ use crate::capability_collector::CapabilityCollectorPlugin;
 use crate::config::AppConfig;
 
 /// Return type for [`bootstrap_kernel_with_store`].
-pub type BootstrapResult = (
-    Kernel,
-    Arc<dyn voom_domain::storage::StorageTrait>,
-    Arc<voom_job_manager::queue::JobQueue>,
-    Arc<CapabilityCollectorPlugin>,
-);
+#[allow(dead_code)] // job_queue exposed for future daemon mode (#36)
+pub struct BootstrapResult {
+    pub kernel: Kernel,
+    pub store: Arc<dyn voom_domain::storage::StorageTrait>,
+    pub job_queue: Arc<voom_job_manager::queue::JobQueue>,
+    pub collector: Arc<CapabilityCollectorPlugin>,
+}
 
 // Plugin priority scheme (lower number = runs first during event dispatch).
 // mkvtoolnix at 39 runs before ffmpeg at 40 so it gets first crack at
@@ -36,8 +37,8 @@ const PRIORITY_JOB_MANAGER: i32 = 20;
 ///
 /// All plugins go through `init_and_register` for consistent lifecycle management.
 pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
-    let (kernel, _store, _queue, _collector) = bootstrap_kernel_with_store(config)?;
-    Ok(kernel)
+    let result = bootstrap_kernel_with_store(config)?;
+    Ok(result.kernel)
 }
 
 /// Bootstrap the kernel with all native plugins and return the kernel,
@@ -127,17 +128,12 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     let job_queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
 
     // Bus tracer — priority 1 (first to see events, before any state changes).
-    {
-        let mut ctx = voom_kernel::PluginContext::new(plugin_json("bus-tracer"), data_dir.clone());
-        ctx.register_resource(job_queue.clone());
-        register_if_enabled!(
-            "bus-tracer",
-            voom_bus_tracer::BusTracerPlugin::new(),
-            PRIORITY_BUS_TRACER,
-            "bus tracer",
-            &ctx
-        );
-    }
+    register_if_enabled!(
+        "bus-tracer",
+        voom_bus_tracer::BusTracerPlugin::new(),
+        PRIORITY_BUS_TRACER,
+        "bus tracer"
+    );
 
     // Health checker
     register_if_enabled!(
@@ -257,7 +253,12 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
         }
     }
 
-    Ok((kernel, store, job_queue, collector))
+    Ok(BootstrapResult {
+        kernel,
+        store,
+        job_queue,
+        collector,
+    })
 }
 
 /// Open a standalone storage handle for commands that need only storage,
@@ -297,9 +298,9 @@ mod tests {
         // Bootstrap with all plugins enabled, then verify every registered
         // plugin name appears in KNOWN_PLUGIN_NAMES and vice versa.
         let config = AppConfig::default();
-        let (kernel, _store, _queue, _collector) =
+        let result =
             bootstrap_kernel_with_store(&config).expect("bootstrap should succeed with defaults");
-        let registered = kernel.registry.plugin_names();
+        let registered = result.kernel.registry.plugin_names();
         for name in KNOWN_PLUGIN_NAMES {
             assert!(
                 registered.iter().any(|n| n == name),
@@ -334,10 +335,10 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             ..AppConfig::default()
         };
-        let (_kernel, store, _queue, _collector) =
-            bootstrap_kernel_with_store(&config).expect("bootstrap should succeed");
+        let result = bootstrap_kernel_with_store(&config).expect("bootstrap should succeed");
         // Verify the store is functional
-        assert!(store
+        assert!(result
+            .store
             .list_files(&voom_domain::FileFilters::default())
             .is_ok());
     }

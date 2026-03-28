@@ -17,6 +17,28 @@ use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
 
+/// Implements `description`, `author`, `license`, and `homepage` from Cargo.toml metadata.
+///
+/// Place inside a `Plugin` impl block to fill in the four metadata methods
+/// using compile-time `env!()` macros from the plugin crate's Cargo.toml.
+#[macro_export]
+macro_rules! plugin_cargo_metadata {
+    () => {
+        fn description(&self) -> &str {
+            env!("CARGO_PKG_DESCRIPTION")
+        }
+        fn author(&self) -> &str {
+            env!("CARGO_PKG_AUTHORS")
+        }
+        fn license(&self) -> &str {
+            env!("CARGO_PKG_LICENSE")
+        }
+        fn homepage(&self) -> &str {
+            env!("CARGO_PKG_REPOSITORY")
+        }
+    };
+}
+
 /// Universal plugin interface. All native plugins implement this.
 pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;

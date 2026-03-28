@@ -10,7 +10,8 @@ use crate::cli::ServeArgs;
 
 pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     let config = crate::config::load_config()?;
-    let (kernel, store, _job_queue, _collector) = crate::app::bootstrap_kernel_with_store(&config)?;
+    let crate::app::BootstrapResult { kernel, store, .. } =
+        crate::app::bootstrap_kernel_with_store(&config)?;
 
     // Snapshot plugin info from the kernel registry
     let plugin_info: Vec<voom_web_server::api::plugins::PluginInfoResponse> = kernel
@@ -35,25 +36,21 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
         })
         .collect();
 
-    // Start periodic health checks in the background
-    let health_interval = config
+    // Parse health-checker config once (single source of truth for defaults).
+    let health_config: voom_health_checker::HealthCheckerConfig = config
         .plugin
         .get("health-checker")
-        .and_then(|t| t.get("interval_secs"))
-        .and_then(|v| v.as_integer())
-        .unwrap_or(300) as u64;
+        .and_then(|t| serde_json::to_value(t).ok())
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    let health_interval = health_config.interval_secs;
+    let retention_days = i64::from(health_config.retention_days);
 
     // Wrap kernel in Arc so the health-check background task can share it
     // with any future consumers. The kernel is not used after this point
     // by the main task (plugin_info snapshot was taken above).
     let kernel = Arc::new(kernel);
-
-    let retention_days = config
-        .plugin
-        .get("health-checker")
-        .and_then(|t| t.get("retention_days"))
-        .and_then(|v| v.as_integer())
-        .unwrap_or(30) as i64;
 
     if health_interval > 0 {
         let health_token = token.clone();
@@ -63,18 +60,24 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(health_interval));
             interval.tick().await; // skip immediate first tick (init already ran checks)
+            let prune_every = 86_400 / health_interval; // ~once per day
+            let mut tick_count: u64 = 0;
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        // Prune old health check records
-                        let prune_store = health_store.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            let cutoff = chrono::Utc::now()
-                                - chrono::Duration::days(retention_days);
-                            if let Err(e) = prune_store.prune_health_checks(cutoff) {
-                                tracing::warn!(error = %e, "failed to prune health checks");
-                            }
-                        }).await;
+                        tick_count += 1;
+
+                        // Prune old records ~once per day
+                        if tick_count % prune_every == 0 {
+                            let prune_store = health_store.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                let cutoff = chrono::Utc::now()
+                                    - chrono::Duration::days(retention_days);
+                                if let Err(e) = prune_store.prune_health_checks(cutoff) {
+                                    tracing::warn!(error = %e, "failed to prune health checks");
+                                }
+                            }).await;
+                        }
 
                         // Run health checks and dispatch events
                         let k = health_kernel.clone();

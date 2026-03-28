@@ -174,7 +174,7 @@ impl FfmpegExecutorPlugin {
                 }
                 (OperationType::ConvertContainer, ActionParams::Container { container }) => {
                     if let Some(formats) = &self.probed_formats {
-                        if let Some(name) = ffmpeg_format_name(container) {
+                        if let Some(name) = container.ffmpeg_format_name() {
                             if !formats.iter().any(|f| f == name) {
                                 tracing::debug!(
                                     format = %name,
@@ -435,13 +435,6 @@ fn parse_hwaccels(output: &str) -> Vec<String> {
     accels
 }
 
-/// Map a `Container` variant to the FFmpeg muxer format name.
-///
-/// Delegates to [`Container::ffmpeg_format_name`].
-fn ffmpeg_format_name(container: &Container) -> Option<&'static str> {
-    container.ffmpeg_format_name()
-}
-
 impl Default for FfmpegExecutorPlugin {
     fn default() -> Self {
         Self::new()
@@ -457,21 +450,7 @@ impl Plugin for FfmpegExecutorPlugin {
         env!("CARGO_PKG_VERSION")
     }
 
-    fn description(&self) -> &str {
-        env!("CARGO_PKG_DESCRIPTION")
-    }
-
-    fn author(&self) -> &str {
-        env!("CARGO_PKG_AUTHORS")
-    }
-
-    fn license(&self) -> &str {
-        env!("CARGO_PKG_LICENSE")
-    }
-
-    fn homepage(&self) -> &str {
-        env!("CARGO_PKG_REPOSITORY")
-    }
+    voom_kernel::plugin_cargo_metadata!();
 
     fn capabilities(&self) -> &[Capability] {
         &self.capabilities
@@ -520,8 +499,8 @@ impl Plugin for FfmpegExecutorPlugin {
         self.probed_formats = Some(formats.clone());
         self.probed_hw_accels = Some(hw_accels.clone());
 
-        // Detect HW accel backend for use during execution
-        self.hw_accel = HwAccelConfig::detect();
+        // Select HW accel backend from already-probed data (no extra subprocess)
+        self.hw_accel = HwAccelConfig::from_probed(&hw_accels);
 
         let event = ExecutorCapabilitiesEvent::new("ffmpeg-executor", codecs, formats, hw_accels);
 
