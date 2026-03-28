@@ -9,6 +9,7 @@ use crate::plan::{ActionResult, Plan};
 /// All event types that flow through the event bus.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)] // Plan embeds MediaFile — boxing would add indirection on every dispatch
 pub enum Event {
     FileDiscovered(FileDiscoveredEvent),
     FileIntrospected(FileIntrospectedEvent),

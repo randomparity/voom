@@ -6,7 +6,16 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use voom_kernel::{Kernel, Plugin};
 
+use crate::capability_collector::CapabilityCollectorPlugin;
 use crate::config::AppConfig;
+
+/// Return type for [`bootstrap_kernel_with_store`].
+pub type BootstrapResult = (
+    Kernel,
+    Arc<dyn voom_domain::storage::StorageTrait>,
+    Arc<voom_job_manager::queue::JobQueue>,
+    Arc<CapabilityCollectorPlugin>,
+);
 
 // Plugin priority scheme (lower number = runs first during event dispatch).
 // mkvtoolnix at 39 runs before ffmpeg at 40 so it gets first crack at
@@ -19,6 +28,7 @@ const PRIORITY_DISCOVERY: i32 = 80;
 const PRIORITY_FFPROBE_INTROSPECTOR: i32 = 60;
 const PRIORITY_FFMPEG_EXECUTOR: i32 = 40;
 const PRIORITY_MKVTOOLNIX_EXECUTOR: i32 = 39;
+const PRIORITY_CAPABILITY_COLLECTOR: i32 = 35;
 const PRIORITY_BACKUP_MANAGER: i32 = 30;
 const PRIORITY_JOB_MANAGER: i32 = 20;
 
@@ -26,7 +36,7 @@ const PRIORITY_JOB_MANAGER: i32 = 20;
 ///
 /// All plugins go through `init_and_register` for consistent lifecycle management.
 pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
-    let (kernel, _store, _queue) = bootstrap_kernel_with_store(config)?;
+    let (kernel, _store, _queue, _collector) = bootstrap_kernel_with_store(config)?;
     Ok(kernel)
 }
 
@@ -37,13 +47,7 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
 /// enabled its handle is reused so there is no second pool; if the plugin is
 /// disabled a standalone pool is opened via [`open_store_in`] — the same
 /// helper used by store-only commands.
-pub fn bootstrap_kernel_with_store(
-    config: &AppConfig,
-) -> Result<(
-    Kernel,
-    Arc<dyn voom_domain::storage::StorageTrait>,
-    Arc<voom_job_manager::queue::JobQueue>,
-)> {
+pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult> {
     let mut kernel = Kernel::new();
     let data_dir = &config.data_dir;
 
@@ -168,6 +172,11 @@ pub fn bootstrap_kernel_with_store(
         );
     }
 
+    // Capability collector — captures ExecutorCapabilities events for the evaluator.
+    // Registered before executors so it sees their init-time announcements.
+    let collector = Arc::new(CapabilityCollectorPlugin::new());
+    kernel.register_plugin(collector.clone(), PRIORITY_CAPABILITY_COLLECTOR);
+
     // Executor — mkvtoolnix (MKV metadata, track removal/reorder, convert-to-MKV)
     register_if_enabled!(
         "mkvtoolnix-executor",
@@ -242,7 +251,7 @@ pub fn bootstrap_kernel_with_store(
         }
     }
 
-    Ok((kernel, store, job_queue))
+    Ok((kernel, store, job_queue, collector))
 }
 
 /// Open a standalone storage handle for commands that need only storage,
@@ -282,7 +291,7 @@ mod tests {
         // Bootstrap with all plugins enabled, then verify every registered
         // plugin name appears in KNOWN_PLUGIN_NAMES and vice versa.
         let config = AppConfig::default();
-        let (kernel, _store, _queue) =
+        let (kernel, _store, _queue, _collector) =
             bootstrap_kernel_with_store(&config).expect("bootstrap should succeed with defaults");
         let registered = kernel.registry.plugin_names();
         for name in KNOWN_PLUGIN_NAMES {
@@ -319,7 +328,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             ..AppConfig::default()
         };
-        let (_kernel, store, _queue) =
+        let (_kernel, store, _queue, _collector) =
             bootstrap_kernel_with_store(&config).expect("bootstrap should succeed");
         // Verify the store is functional
         assert!(store

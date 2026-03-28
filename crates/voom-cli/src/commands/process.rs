@@ -39,8 +39,9 @@ use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// the events they care about.
 pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let config = config::load_config()?;
-    let (kernel, store, _job_queue) = app::bootstrap_kernel_with_store(&config)?;
+    let (kernel, store, _job_queue, collector) = app::bootstrap_kernel_with_store(&config)?;
     let kernel = Arc::new(kernel);
+    let capabilities = Arc::new(collector.snapshot());
 
     let path = args
         .path
@@ -132,17 +133,18 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                 let kernel = kernel.clone();
                 let token = token_for_workers.clone();
                 let ffprobe_path = ffprobe_path.clone();
+                let capabilities = capabilities.clone();
                 async move {
-                    process_single_file(
-                        job,
-                        &compiled,
+                    let ctx = ProcessContext {
+                        compiled: &compiled,
                         kernel,
                         dry_run,
                         flag_size_increase,
-                        &token,
-                        ffprobe_path.as_deref(),
-                    )
-                    .await
+                        token: &token,
+                        ffprobe_path: ffprobe_path.as_deref(),
+                        capabilities: &capabilities,
+                    };
+                    process_single_file(job, &ctx).await
                 }
             },
             on_error,
@@ -270,15 +272,21 @@ fn parse_job_payload(job: &voom_domain::job::Job) -> anyhow::Result<ProcessJobPa
     serde_json::from_value(raw_payload.clone()).context("invalid payload")
 }
 
-/// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
-async fn process_single_file(
-    job: voom_domain::job::Job,
-    compiled: &voom_dsl::CompiledPolicy,
+/// Shared context for processing a single file.
+struct ProcessContext<'a> {
+    compiled: &'a voom_dsl::CompiledPolicy,
     kernel: Arc<voom_kernel::Kernel>,
     dry_run: bool,
     flag_size_increase: bool,
-    token: &CancellationToken,
-    ffprobe_path: Option<&str>,
+    token: &'a CancellationToken,
+    ffprobe_path: Option<&'a str>,
+    capabilities: &'a voom_domain::CapabilityMap,
+}
+
+/// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
+async fn process_single_file(
+    job: voom_domain::job::Job,
+    ctx: &ProcessContext<'_>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let payload = parse_job_payload(&job).map_err(|e| format!("job payload: {e}"))?;
 
@@ -288,13 +296,13 @@ async fn process_single_file(
         path,
         payload.size,
         payload.content_hash,
-        &kernel,
-        ffprobe_path,
+        &ctx.kernel,
+        ctx.ffprobe_path,
     )
     .await
     .map_err(|e| format!("introspect {}: {e}", payload.path))?;
 
-    let result = orchestrate_plans(compiled, &file);
+    let result = orchestrate_plans(ctx.compiled, &file, ctx.capabilities);
 
     // Collect safeguard violations across all plans and tag the file
     let violations: Vec<&voom_domain::SafeguardViolation> = result
@@ -308,14 +316,14 @@ async fn process_single_file(
             "safeguard_violations".to_string(),
             serde_json::json!(violations),
         );
-        kernel.dispatch(Event::FileIntrospected(
+        ctx.kernel.dispatch(Event::FileIntrospected(
             voom_domain::events::FileIntrospectedEvent::new(tagged_file),
         ));
     }
 
     let needs_exec = voom_phase_orchestrator::PhaseOrchestratorPlugin::needs_execution(&result);
 
-    if dry_run {
+    if ctx.dry_run {
         let plan_summaries: Vec<serde_json::Value> = result
             .plans
             .iter()
@@ -341,10 +349,10 @@ async fn process_single_file(
         execute_plans(
             &file,
             &result,
-            kernel,
+            ctx.kernel.clone(),
             needs_exec,
-            flag_size_increase,
-            token,
+            ctx.flag_size_increase,
+            ctx.token,
         )
         .await
     }
@@ -358,9 +366,10 @@ async fn process_single_file(
 fn orchestrate_plans(
     compiled: &voom_dsl::CompiledPolicy,
     file: &voom_domain::media::MediaFile,
+    capabilities: &voom_domain::CapabilityMap,
 ) -> voom_phase_orchestrator::OrchestrationResult {
     let plans = voom_policy_evaluator::PolicyEvaluatorPlugin::new()
-        .evaluate(compiled, file)
+        .evaluate_with_capabilities(compiled, file, capabilities)
         .plans;
     let orchestrator = voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
     orchestrator.orchestrate(plans)

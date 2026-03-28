@@ -119,6 +119,7 @@ pub fn load_config() -> Result<AppConfig> {
 /// All known native plugin names (used for validation in enable/disable commands).
 pub const KNOWN_PLUGIN_NAMES: &[&str] = &[
     "bus-tracer",
+    "capability-collector",
     "sqlite-store",
     "health-checker",
     "tool-detector",
@@ -322,7 +323,7 @@ mod tests {
 
     #[test]
     fn test_known_plugin_names_count() {
-        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 10);
+        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 11);
     }
 
     #[test]

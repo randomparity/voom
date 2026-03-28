@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use voom_domain::capability_map::CapabilityMap;
 use voom_domain::errors::VoomError;
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
@@ -864,6 +865,74 @@ fn target_str(target: &TrackTarget) -> &'static str {
     }
 }
 
+/// Validate plans against known executor capabilities, adding warnings
+/// for unsupported codecs/formats and setting `executor_hint` when a
+/// single executor clearly matches all operations.
+///
+/// Skips validation entirely when the capability map is empty (no
+/// executors reported capabilities).
+pub fn validate_against_capabilities(plans: &mut [Plan], capabilities: &CapabilityMap) {
+    if capabilities.is_empty() {
+        return;
+    }
+
+    for plan in plans.iter_mut() {
+        if plan.is_skipped() || plan.is_empty() {
+            continue;
+        }
+
+        let mut all_encoders: Option<HashSet<&str>> = None;
+
+        for action in &plan.actions {
+            match &action.parameters {
+                ActionParams::Transcode { codec, .. } => {
+                    let executors = capabilities.encoders_for(codec);
+                    if executors.is_empty() {
+                        plan.warnings
+                            .push(format!("No executor supports encoder '{codec}'"));
+                    }
+                    intersect_executors(&mut all_encoders, &executors);
+                }
+                ActionParams::Synthesize { codec: Some(c), .. } => {
+                    let executors = capabilities.encoders_for(c);
+                    if executors.is_empty() {
+                        plan.warnings
+                            .push(format!("No executor supports encoder '{c}'"));
+                    }
+                    intersect_executors(&mut all_encoders, &executors);
+                }
+                ActionParams::Container { container } => {
+                    let fmt = container.as_str();
+                    if !capabilities.has_format(fmt) {
+                        plan.warnings
+                            .push(format!("No executor supports format '{fmt}'"));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(ref candidates) = all_encoders {
+            if candidates.len() == 1 {
+                plan.executor_hint = candidates.iter().next().map(|s| (*s).to_string());
+            }
+        }
+    }
+}
+
+/// Intersect the running set of candidate executors with a new set.
+fn intersect_executors<'a>(running: &mut Option<HashSet<&'a str>>, new: &[&'a str]) {
+    let new_set: HashSet<&str> = new.iter().copied().collect();
+    match running {
+        Some(existing) => {
+            existing.retain(|e| new_set.contains(e));
+        }
+        None => {
+            *running = Some(new_set);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1653,5 +1722,201 @@ mod tests {
             .iter()
             .any(|v| v.kind == voom_domain::SafeguardKind::NoVideoTrack
                 || v.kind == voom_domain::SafeguardKind::AllTracksRemoved));
+    }
+
+    // --- Capability validation tests ---
+
+    mod capability_validation {
+        use super::*;
+        use voom_domain::capability_map::CapabilityMap;
+        use voom_domain::events::{CodecCapabilities, ExecutorCapabilitiesEvent};
+
+        fn ffmpeg_capabilities() -> CapabilityMap {
+            let mut map = CapabilityMap::new();
+            map.register(ExecutorCapabilitiesEvent::new(
+                "ffmpeg-executor",
+                CodecCapabilities::new(
+                    vec!["h264".into(), "hevc".into(), "aac".into()],
+                    vec!["h264".into(), "hevc".into(), "aac".into()],
+                ),
+                vec!["matroska".into(), "mp4".into()],
+                vec![],
+            ));
+            map
+        }
+
+        #[test]
+        fn test_warns_on_unsupported_transcode_codec() {
+            let file = test_file();
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc { transcode audio to opus {} }
+                }"#,
+            );
+            let mut result = evaluate(&policy, &file);
+            let caps = ffmpeg_capabilities();
+            validate_against_capabilities(&mut result.plans, &caps);
+
+            assert!(
+                result.plans[0].warnings.iter().any(|w| w.contains("opus")),
+                "Expected warning about unsupported codec 'opus', got: {:?}",
+                result.plans[0].warnings
+            );
+        }
+
+        #[test]
+        fn test_no_warning_when_codec_supported() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc { transcode video to hevc { crf: 20 } }
+                }"#,
+            );
+            let mut result = evaluate(&policy, &file);
+            let caps = ffmpeg_capabilities();
+            validate_against_capabilities(&mut result.plans, &caps);
+
+            assert!(
+                !result.plans[0]
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains("No executor")),
+                "Should not warn when codec is supported"
+            );
+        }
+
+        #[test]
+        fn test_warns_on_unsupported_container_format() {
+            let file = test_file();
+            let policy = test_policy(r#"policy "test" { phase init { container webm } }"#);
+            let mut result = evaluate(&policy, &file);
+            let caps = ffmpeg_capabilities();
+            validate_against_capabilities(&mut result.plans, &caps);
+
+            assert!(
+                result.plans[0]
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains("format") && w.contains("webm")),
+                "Expected warning about unsupported format 'webm', got: {:?}",
+                result.plans[0].warnings
+            );
+        }
+
+        #[test]
+        fn test_warns_on_unsupported_synthesize_codec() {
+            let file = test_file();
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase synth {
+                        synthesize "Stereo" {
+                            codec: opus
+                            channels: stereo
+                        }
+                    }
+                }"#,
+            );
+            let mut result = evaluate(&policy, &file);
+            let caps = ffmpeg_capabilities();
+            validate_against_capabilities(&mut result.plans, &caps);
+
+            assert!(
+                result.plans[0].warnings.iter().any(|w| w.contains("opus")),
+                "Expected warning about unsupported synthesize codec, got: {:?}",
+                result.plans[0].warnings
+            );
+        }
+
+        #[test]
+        fn test_skipped_and_empty_plans_not_validated() {
+            let file = test_file();
+            // container mkv on a file already in mkv = empty plan
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase a { container mkv }
+                }"#,
+            );
+            let mut result = evaluate(&policy, &file);
+            assert!(result.plans[0].is_empty());
+
+            // Use an empty capability map — would cause warnings if validation ran
+            let caps = CapabilityMap::new();
+            validate_against_capabilities(&mut result.plans, &caps);
+            assert!(result.plans[0].warnings.is_empty());
+        }
+
+        #[test]
+        fn test_empty_capability_map_skips_validation() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy =
+                test_policy(r#"policy "test" { phase tc { transcode video to hevc {} } }"#);
+            let mut result = evaluate(&policy, &file);
+            assert!(!result.plans[0].is_empty());
+
+            let caps = CapabilityMap::new();
+            validate_against_capabilities(&mut result.plans, &caps);
+
+            assert!(
+                !result.plans[0]
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains("No executor")),
+                "Empty capability map should skip validation entirely"
+            );
+        }
+
+        #[test]
+        fn test_executor_hint_set_when_single_executor_matches() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc { transcode video to hevc { crf: 20 } }
+                }"#,
+            );
+            let mut result = evaluate(&policy, &file);
+            let caps = ffmpeg_capabilities();
+            validate_against_capabilities(&mut result.plans, &caps);
+
+            assert_eq!(
+                result.plans[0].executor_hint.as_deref(),
+                Some("ffmpeg-executor"),
+                "Should set executor_hint when a single executor matches"
+            );
+        }
+
+        #[test]
+        fn test_executor_hint_not_set_with_multiple_matches() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc { transcode video to hevc { crf: 20 } }
+                }"#,
+            );
+            let mut result = evaluate(&policy, &file);
+
+            let mut caps = CapabilityMap::new();
+            caps.register(ExecutorCapabilitiesEvent::new(
+                "executor-a",
+                CodecCapabilities::new(vec![], vec!["hevc".into()]),
+                vec![],
+                vec![],
+            ));
+            caps.register(ExecutorCapabilitiesEvent::new(
+                "executor-b",
+                CodecCapabilities::new(vec![], vec!["hevc".into()]),
+                vec![],
+                vec![],
+            ));
+            validate_against_capabilities(&mut result.plans, &caps);
+
+            assert!(
+                result.plans[0].executor_hint.is_none(),
+                "Should not set hint when multiple executors match"
+            );
+        }
     }
 }

@@ -8,6 +8,7 @@ pub mod condition;
 pub mod evaluator;
 pub mod filter;
 
+use voom_domain::capability_map::CapabilityMap;
 use voom_domain::media::MediaFile;
 use voom_dsl::compiled::CompiledPolicy;
 
@@ -31,6 +32,22 @@ impl PolicyEvaluatorPlugin {
         file: &MediaFile,
     ) -> evaluator::EvaluationResult {
         evaluator::evaluate(policy, file)
+    }
+
+    /// Evaluate a policy and then validate plans against executor capabilities.
+    ///
+    /// This is a convenience wrapper that calls [`evaluate`](Self::evaluate) followed by
+    /// [`evaluator::validate_against_capabilities`]. The original `evaluate()` method
+    /// remains unchanged for callers that don't need capability validation.
+    pub fn evaluate_with_capabilities(
+        &self,
+        policy: &CompiledPolicy,
+        file: &MediaFile,
+        capabilities: &CapabilityMap,
+    ) -> evaluator::EvaluationResult {
+        let mut result = evaluator::evaluate(policy, file);
+        evaluator::validate_against_capabilities(&mut result.plans, capabilities);
+        result
     }
 }
 

@@ -13,7 +13,7 @@ pub fn run() -> Result<()> {
 
     // Database stats
     match app::bootstrap_kernel_with_store(&config) {
-        Ok((kernel, store, _job_queue)) => {
+        Ok((kernel, store, _job_queue, _collector)) => {
             let files = store
                 .list_files(&voom_domain::FileFilters::default())
                 .context("failed to list files from database")?;

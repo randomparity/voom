@@ -40,7 +40,7 @@ fn format_eta(elapsed: Duration, current: usize, total: usize) -> String {
 /// so that subscribers (sqlite-store, SSE, WASM plugins) receive them.
 pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     let config = config::load_config()?;
-    let (kernel, store, _job_queue) = app::bootstrap_kernel_with_store(&config)?;
+    let (kernel, store, _job_queue, _collector) = app::bootstrap_kernel_with_store(&config)?;
 
     let path = args
         .path
