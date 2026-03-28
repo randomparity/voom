@@ -113,6 +113,9 @@ ureq = "2"
 wait-timeout = "0.2"
 scopeguard = "1"
 
+# Rate limiting
+governor = "0.10"
+
 # Testing
 insta = { version = "1", features = ["yaml"] }
 tempfile = "3"

@@ -565,3 +565,59 @@ async fn test_static_assets_require_auth_when_configured() {
     let resp = server.get("/static/htmx-2.0.4.min.js").await;
     resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 }
+
+// === Rate Limit Tests ===
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_rate_limit_cpu_intensive_returns_429() {
+    let server = make_server(InMemoryStore::new());
+    let policy_body = json!({ "source": VALID_POLICY });
+
+    // Send 10 requests (within limit)
+    for _ in 0..10 {
+        let resp = server.post("/api/policy/validate").json(&policy_body).await;
+        resp.assert_status_ok();
+    }
+
+    // 11th request should be rate-limited
+    let resp = server.post("/api/policy/validate").json(&policy_body).await;
+    resp.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_rate_limit_general_api_is_generous() {
+    let server = make_server(InMemoryStore::new());
+
+    // 20 requests should all succeed (limit is 120/min)
+    for _ in 0..20 {
+        let resp = server.get("/api/files").await;
+        resp.assert_status_ok();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_rate_limit_429_response_format() {
+    let server = make_server(InMemoryStore::new());
+    let policy_body = json!({ "source": VALID_POLICY });
+
+    // Exhaust the CPU-intensive limit
+    for _ in 0..10 {
+        server.post("/api/policy/validate").json(&policy_body).await;
+    }
+
+    let resp = server.post("/api/policy/validate").json(&policy_body).await;
+    resp.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+
+    // Verify JSON body format
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"], "Too many requests");
+    assert!(body["details"].as_str().unwrap().contains("Retry after"));
+
+    // Verify Retry-After header is present
+    let retry_after = resp
+        .headers()
+        .get("Retry-After")
+        .expect("Retry-After header should be present");
+    let secs: u64 = retry_after.to_str().unwrap().parse().unwrap();
+    assert!(secs > 0, "Retry-After should be positive");
+}

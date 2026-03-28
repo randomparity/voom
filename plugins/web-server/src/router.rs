@@ -9,7 +9,7 @@ use tower::limit::ConcurrencyLimitLayer;
 
 use crate::api;
 use crate::errors::ApiError;
-use crate::middleware::{auth_middleware, RequestIdLayer, SecurityHeadersLayer};
+use crate::middleware::{auth_middleware, RateLimitLayer, RequestIdLayer, SecurityHeadersLayer};
 use crate::sse;
 use crate::state::AppState;
 use crate::templates;
@@ -59,7 +59,8 @@ pub fn build_router(state: AppState) -> Router {
             state.clone(),
             auth_middleware,
         ))
-        .layer(ConcurrencyLimitLayer::new(100));
+        .layer(ConcurrencyLimitLayer::new(100))
+        .layer(RateLimitLayer::new());
 
     Router::new()
         .merge(authenticated_routes)

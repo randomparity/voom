@@ -82,10 +82,13 @@ pub async fn start_server(
                 source: e,
             })?;
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown)
-        .await
-        .map_err(|e| ServerError::Serve { source: e })?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
+    .map_err(|e| ServerError::Serve { source: e })?;
 
     Ok(())
 }

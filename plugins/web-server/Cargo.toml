@@ -37,6 +37,9 @@ uuid.workspace = true
 # Security
 subtle = "2"
 
+# Rate limiting
+governor = { workspace = true }
+
 # Errors & logging
 thiserror.workspace = true
 tracing.workspace = true
