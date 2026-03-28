@@ -4,6 +4,7 @@ pub mod bad_file;
 pub mod capabilities;
 pub mod errors;
 pub mod events;
+pub mod host_types;
 pub mod job;
 pub mod media;
 pub mod plan;

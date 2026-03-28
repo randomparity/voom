@@ -55,51 +55,7 @@ pub trait HostFunctions {
     fn log(&self, level: &str, message: &str);
 }
 
-/// HTTP response returned by the host's `http_get` function.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct HttpResponse {
-    /// HTTP status code.
-    pub status: u16,
-    /// Response headers as key-value pairs.
-    pub headers: Vec<(String, String)>,
-    /// Response body bytes.
-    pub body: Vec<u8>,
-}
-
-impl HttpResponse {
-    /// Create a new HTTP response.
-    #[must_use]
-    pub fn new(status: u16, body: Vec<u8>) -> Self {
-        Self {
-            status,
-            headers: Vec::new(),
-            body,
-        }
-    }
-
-    /// Create a response with headers.
-    #[must_use]
-    pub fn with_headers(status: u16, headers: Vec<(String, String)>, body: Vec<u8>) -> Self {
-        Self {
-            status,
-            headers,
-            body,
-        }
-    }
-}
-
-/// Output from a tool execution via the host's `run_tool` function.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct ToolOutput {
-    /// Process exit code.
-    pub exit_code: i32,
-    /// Standard output bytes.
-    pub stdout: Vec<u8>,
-    /// Standard error bytes.
-    pub stderr: Vec<u8>,
-}
+pub use voom_domain::host_types::{HttpResponse, ToolOutput};
 
 #[cfg(test)]
 mod tests {

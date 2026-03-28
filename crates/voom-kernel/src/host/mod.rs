@@ -138,23 +138,7 @@ impl HostState {
     }
 }
 
-/// Output from running an external tool.
-#[non_exhaustive]
-#[derive(Debug, Clone)]
-pub struct ToolOutput {
-    pub exit_code: i32,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
-}
-
-/// Response from an HTTP request.
-#[non_exhaustive]
-#[derive(Debug, Clone)]
-pub struct HttpResponse {
-    pub status: u16,
-    pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
-}
+pub use voom_domain::host_types::{HttpResponse, ToolOutput};
 
 #[cfg(test)]
 mod tests {

@@ -161,11 +161,7 @@ impl HostState {
                     .map(|h| h.join().unwrap_or(Ok(Vec::new())))
                     .unwrap_or(Ok(Vec::new()))
                     .map_err(|e| format!("failed to read stderr: {e}"))?;
-                Ok(ToolOutput {
-                    exit_code: status.code().unwrap_or(-1),
-                    stdout,
-                    stderr,
-                })
+                Ok(ToolOutput::new(status.code().unwrap_or(-1), stdout, stderr))
             }
             Ok(None) => {
                 child.kill().ok();
@@ -247,9 +243,5 @@ fn parse_response(response: ureq::Response) -> Result<HttpResponse, String> {
         .read_to_end(&mut body)
         .map_err(|e| format!("failed to read response body: {e}"))?;
 
-    Ok(HttpResponse {
-        status,
-        headers,
-        body,
-    })
+    Ok(HttpResponse::with_headers(status, headers, body))
 }
