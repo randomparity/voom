@@ -28,10 +28,9 @@ pub struct EvaluationResult {
 /// which represents execution outcomes. This type tracks evaluation-time outcomes
 /// (e.g., whether a phase produced modifications) for dependency resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EvaluationOutcome {
+enum EvaluationOutcome {
     Executed { modified: bool },
     Skipped,
-    Failed,
 }
 
 /// Evaluate a compiled policy against a media file, producing plans for all phases.
@@ -108,16 +107,9 @@ fn evaluate_phase(
     }
 
     for dep in &phase.depends_on {
-        match phase_outcomes.get(dep) {
-            Some(EvaluationOutcome::Failed) => {
-                plan.skip_reason = Some(format!("dependency '{dep}' failed"));
-                return plan;
-            }
-            None => {
-                plan.skip_reason = Some(format!("dependency '{dep}' not yet executed"));
-                return plan;
-            }
-            _ => {} // Skipped or Executed is OK
+        if phase_outcomes.get(dep).is_none() {
+            plan.skip_reason = Some(format!("dependency '{dep}' not yet executed"));
+            return plan;
         }
     }
 
