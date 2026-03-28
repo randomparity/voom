@@ -63,7 +63,7 @@ pub mod types;
 /// SDK helper types for building plugin info and returning event results.
 pub use types::{OnEventResult, PluginInfoData};
 
-/// Event serialization/deserialization helpers (MessagePack across WASM boundary).
+/// Event serialization/deserialization helpers (`MessagePack` across WASM boundary).
 pub use event::{
     deserialize_event, deserialize_json, load_plugin_config, load_plugin_config_named,
     serialize_event, serialize_json,

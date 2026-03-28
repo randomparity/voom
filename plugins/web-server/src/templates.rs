@@ -58,6 +58,7 @@ pub async fn dashboard(
 }
 
 #[derive(Debug, Deserialize)]
+#[non_exhaustive]
 pub struct LibraryParams {
     #[serde(flatten)]
     pub filters: FileFilterParams,

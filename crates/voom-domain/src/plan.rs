@@ -132,7 +132,7 @@ impl PlannedAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ActionParams {
-    /// No parameters needed (SetDefault, ClearDefault, SetForced, ClearForced).
+    /// No parameters needed (`SetDefault`, `ClearDefault`, `SetForced`, `ClearForced`).
     Empty,
     /// Container conversion target.
     Container {

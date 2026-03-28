@@ -190,7 +190,7 @@ impl Plugin for MockMkvExecutor {
     }
 }
 
-/// Mock FFmpeg executor that handles all plans and claims them.
+/// Mock `FFmpeg` executor that handles all plans and claims them.
 struct MockFfmpegExecutor;
 
 impl Plugin for MockFfmpegExecutor {

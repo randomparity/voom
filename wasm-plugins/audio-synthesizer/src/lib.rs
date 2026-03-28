@@ -74,7 +74,7 @@ pub fn on_event(
         return None;
     }
 
-    let config = load_config(host);
+    let config: Option<SynthConfig> = load_plugin_config(|key| host.get_plugin_data(key));
     let cfg = config.as_ref();
     let tts_engine = cfg.map(|c| c.tts_engine.as_str()).unwrap_or("piper");
     let tts_model = cfg.map(|c| c.tts_model.as_str()).unwrap_or("en_US-lessac-medium");
@@ -206,15 +206,12 @@ fn simple_hash(s: &str) -> u64 {
 // --- Config ---
 
 #[derive(Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SynthConfig {
     /// TTS engine binary name (default: "piper").
     pub tts_engine: String,
     /// TTS model/voice name.
     pub tts_model: String,
-}
-
-fn load_config(host: &dyn HostFunctions) -> Option<SynthConfig> {
-    load_plugin_config(|key| host.get_plugin_data(key))
 }
 
 #[cfg(test)]

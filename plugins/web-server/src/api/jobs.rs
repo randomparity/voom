@@ -16,6 +16,7 @@ const MAX_JOB_LIMIT: u32 = 10_000;
 const MAX_OFFSET: u32 = 1_000_000;
 
 #[derive(Debug, Deserialize)]
+#[non_exhaustive]
 pub struct ListJobsParams {
     pub status: Option<String>,
     pub limit: Option<u32>,
@@ -23,6 +24,7 @@ pub struct ListJobsParams {
 }
 
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct JobListResponse {
     pub jobs: Vec<Job>,
     pub total: usize,
@@ -34,6 +36,7 @@ pub struct JobStatsResponse {
 }
 
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct JobStatusCount {
     pub status: JobStatus,
     pub count: u64,

@@ -40,8 +40,7 @@ pub async fn validate_policy(
 ) -> Result<Json<ValidateResponse>, WebError> {
     if input.source.len() > MAX_POLICY_SIZE {
         return Err(WebError::BadRequest(format!(
-            "Policy source exceeds maximum size of {} bytes",
-            MAX_POLICY_SIZE
+            "Policy source exceeds maximum size of {MAX_POLICY_SIZE} bytes"
         )));
     }
 
@@ -59,8 +58,7 @@ pub async fn format_policy(
 ) -> Result<Json<FormatResponse>, WebError> {
     if input.source.len() > MAX_POLICY_SIZE {
         return Err(WebError::BadRequest(format!(
-            "Policy source exceeds maximum size of {} bytes",
-            MAX_POLICY_SIZE
+            "Policy source exceeds maximum size of {MAX_POLICY_SIZE} bytes"
         )));
     }
 

@@ -35,7 +35,7 @@ impl HostState {
     /// writes to persistent storage). Once overridden, the storage value takes
     /// precedence on all subsequent reads.
     #[must_use]
-    pub fn resolve_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
+    pub fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
         if let Some(storage) = &self.storage {
             // Check persistent storage first, fall back to in-memory (seeded config).
             match storage.get(&self.plugin_name, key) {
@@ -46,7 +46,7 @@ impl HostState {
                         plugin = %self.plugin_name,
                         key = %key,
                         error = %e,
-                        "storage error in resolve_plugin_data, falling back to in-memory"
+                        "storage error in get_plugin_data, falling back to in-memory"
                     );
                     self.plugin_data.get(key).cloned()
                 }
@@ -133,7 +133,7 @@ impl HostState {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| format!("failed to spawn tool '{}': {}", tool, e))?;
+            .map_err(|e| format!("failed to spawn tool '{tool}': {e}"))?;
 
         // Read stdout/stderr on separate threads BEFORE waiting, to avoid
         // deadlock when pipe buffers fill up.
@@ -156,11 +156,11 @@ impl HostState {
                 let stdout = stdout_handle
                     .map(|h| h.join().unwrap_or(Ok(Vec::new())))
                     .unwrap_or(Ok(Vec::new()))
-                    .map_err(|e| format!("failed to read stdout: {}", e))?;
+                    .map_err(|e| format!("failed to read stdout: {e}"))?;
                 let stderr = stderr_handle
                     .map(|h| h.join().unwrap_or(Ok(Vec::new())))
                     .unwrap_or(Ok(Vec::new()))
-                    .map_err(|e| format!("failed to read stderr: {}", e))?;
+                    .map_err(|e| format!("failed to read stderr: {e}"))?;
                 Ok(ToolOutput {
                     exit_code: status.code().unwrap_or(-1),
                     stdout,
@@ -170,9 +170,9 @@ impl HostState {
             Ok(None) => {
                 child.kill().ok();
                 child.wait().ok();
-                Err(format!("tool '{}' timed out after {}ms", tool, timeout_ms))
+                Err(format!("tool '{tool}' timed out after {timeout_ms}ms"))
             }
-            Err(e) => Err(format!("error waiting for tool '{}': {}", tool, e)),
+            Err(e) => Err(format!("error waiting for tool '{tool}': {e}")),
         }
     }
 

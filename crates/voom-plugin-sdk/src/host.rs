@@ -16,7 +16,7 @@ pub trait HostFunctions {
         Err("read_file_metadata not available".to_string())
     }
 
-    /// List files matching filters (serialized as MessagePack bytes).
+    /// List files matching filters (serialized as `MessagePack` bytes).
     fn list_files(&self, filters: &[u8]) -> Result<Vec<Vec<u8>>, String> {
         let _ = filters;
         Err("list_files not available".to_string())
@@ -61,8 +61,32 @@ pub trait HostFunctions {
 pub struct HttpResponse {
     /// HTTP status code.
     pub status: u16,
+    /// Response headers as key-value pairs.
+    pub headers: Vec<(String, String)>,
     /// Response body bytes.
     pub body: Vec<u8>,
+}
+
+impl HttpResponse {
+    /// Create a new HTTP response.
+    #[must_use]
+    pub fn new(status: u16, body: Vec<u8>) -> Self {
+        Self {
+            status,
+            headers: Vec::new(),
+            body,
+        }
+    }
+
+    /// Create a response with headers.
+    #[must_use]
+    pub fn with_headers(status: u16, headers: Vec<(String, String)>, body: Vec<u8>) -> Self {
+        Self {
+            status,
+            headers,
+            body,
+        }
+    }
 }
 
 /// Output from a tool execution via the host's `run_tool` function.

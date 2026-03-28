@@ -8,13 +8,26 @@ use crate::errors::WebError;
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct PluginInfo {
     pub name: String,
     pub version: String,
     pub capabilities: Vec<String>,
 }
 
+impl PluginInfo {
+    #[must_use]
+    pub fn new(name: String, version: String, capabilities: Vec<String>) -> Self {
+        Self {
+            name,
+            version,
+            capabilities,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct PluginListResponse {
     pub plugins: Vec<PluginInfo>,
     pub total: usize,

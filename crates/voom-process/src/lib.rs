@@ -1,7 +1,7 @@
 //! Shared subprocess utilities for executor plugins.
 //!
-//! Provides timeout-aware process execution used by both the MKVToolNix and
-//! FFmpeg executor plugins.
+//! Provides timeout-aware process execution used by both the `MKVToolNix` and
+//! `FFmpeg` executor plugins.
 
 use std::ffi::OsStr;
 use std::process::{Command, Output, Stdio};
@@ -34,6 +34,9 @@ pub fn drain_pipes(child: &mut std::process::Child) -> (Vec<u8>, Vec<u8>) {
 }
 
 /// Run a subprocess with a timeout, killing it if it exceeds the deadline.
+///
+/// # Errors
+/// Returns `VoomError::ToolExecution` if the process fails or times out.
 pub fn run_with_timeout(
     tool: &str,
     args: &[impl AsRef<OsStr>],

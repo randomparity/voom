@@ -15,7 +15,7 @@ pub fn format_iso(dt: &DateTime<Utc>) -> String {
 /// Format a duration in seconds to a human-readable string (e.g., "1h 23m 45s").
 #[must_use]
 pub fn format_duration(seconds: f64) -> String {
-    #[allow(clippy::cast_sign_loss)] // negative durations aren't meaningful
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     let total = seconds.round() as u64;
     let h = total / 3600;
     let m = (total % 3600) / 60;

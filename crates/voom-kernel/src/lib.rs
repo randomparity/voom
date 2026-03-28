@@ -71,7 +71,10 @@ impl PluginContext {
 
     /// Deserialize the config into a typed struct, falling back to defaults on error.
     pub fn parse_config<T: serde::de::DeserializeOwned + Default>(&self) -> T {
-        serde_json::from_value(self.config.clone()).unwrap_or_default()
+        serde_json::from_value(self.config.clone()).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "plugin config deserialization failed, using defaults");
+            T::default()
+        })
     }
 }
 

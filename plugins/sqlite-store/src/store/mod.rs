@@ -111,7 +111,7 @@ pub(crate) fn storage_err(msg: &str) -> impl FnOnce(rusqlite::Error) -> VoomErro
     }
 }
 
-/// Create a `.map_err` closure for r2d2 pool errors (treated as ConnectionError).
+/// Create a `.map_err` closure for r2d2 pool errors (treated as `ConnectionError`).
 pub(crate) fn pool_err<E: std::fmt::Display>(msg: &str) -> impl FnOnce(E) -> VoomError + '_ {
     move |e| VoomError::Storage {
         kind: StorageErrorKind::ConnectionError,

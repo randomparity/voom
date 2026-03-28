@@ -35,7 +35,6 @@ use voom_plugin_sdk::{
     OnEventResult, PluginInfoData,
 };
 
-/// Plugin identity and capabilities.
 pub fn get_info() -> PluginInfoData {
     PluginInfoData {
         name: "radarr-metadata".to_string(),
@@ -44,7 +43,6 @@ pub fn get_info() -> PluginInfoData {
     }
 }
 
-/// This plugin handles file introspection events to enrich with movie metadata.
 pub fn handles(event_type: &str) -> bool {
     event_type == "file.introspected"
 }
@@ -68,16 +66,11 @@ pub fn on_event(
         _ => return None,
     };
 
-    // Log that we're processing this file.
     host.log("info", &format!("looking up Radarr metadata for: {}", file.path.display()));
 
-    // Load config from plugin data.
-    let config = load_config(host)?;
-
-    // Query the Radarr API for movie info matching this file path.
+    let config: RadarrConfig = load_plugin_config(|key| host.get_plugin_data(key))?;
     let movie = lookup_movie(host, &config, &file.path.to_string_lossy())?;
 
-    // Build enrichment metadata.
     let metadata = serde_json::json!({
         "source": "radarr",
         "radarr_id": movie.id,
@@ -110,6 +103,7 @@ pub fn on_event(
 
 /// Plugin configuration loaded from plugin data storage.
 #[derive(Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RadarrConfig {
     pub radarr_url: String,
     pub api_key: String,
@@ -117,6 +111,7 @@ pub struct RadarrConfig {
 
 /// A movie record from the Radarr API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RadarrMovie {
     pub id: u64,
     pub title: String,
@@ -129,10 +124,6 @@ pub struct RadarrMovie {
 }
 
 // --- Internal helpers ---
-
-fn load_config(host: &dyn HostFunctions) -> Option<RadarrConfig> {
-    load_plugin_config(|key| host.get_plugin_data(key))
-}
 
 fn lookup_movie(
     host: &dyn HostFunctions,
@@ -200,10 +191,7 @@ mod tests {
     impl HostFunctions for MockHost {
         fn http_get(&self, _url: &str, _headers: &[(String, String)]) -> Result<HttpResponse, String> {
             let body = serde_json::to_vec(&self.movies).unwrap();
-            Ok(HttpResponse {
-                status: 200,
-                body,
-            })
+            Ok(HttpResponse::new(200, body))
         }
 
         fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {

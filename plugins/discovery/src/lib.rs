@@ -43,6 +43,7 @@ pub struct ScanOptions {
 }
 
 impl ScanOptions {
+    #[must_use]
     pub fn new(root: impl Into<std::path::PathBuf>) -> Self {
         Self {
             root: root.into(),

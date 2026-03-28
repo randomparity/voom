@@ -167,7 +167,7 @@ fn pipeline_parse_compile_evaluate_produces_correct_plans() {
     );
 }
 
-/// Verify that skip_when correctly prevents phase execution.
+/// Verify that `skip_when` correctly prevents phase execution.
 #[test]
 fn pipeline_skip_when_prevents_phase_execution() {
     // skip when the video codec is hevc (which our sample file has)
@@ -223,7 +223,7 @@ fn pipeline_no_changes_needed_produces_empty_plan() {
     );
 }
 
-/// Verify that run_if modified skips a dependent phase when its
+/// Verify that `run_if` modified skips a dependent phase when its
 /// dependency produced no modifications.
 #[test]
 fn pipeline_run_if_modified_skips_when_no_changes() {

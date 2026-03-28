@@ -78,7 +78,7 @@ pub fn on_event(
         return None;
     }
 
-    let config = load_config(host);
+    let config: Option<HandbrakeConfig> = load_plugin_config(|key| host.get_plugin_data(key));
     let handbrake_bin = config
         .as_ref()
         .map(|c| c.handbrake_binary.as_str())
@@ -244,6 +244,7 @@ fn build_handbrake_args(
 // --- Config ---
 
 #[derive(Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct HandbrakeConfig {
     /// Path or name of the HandBrakeCLI binary.
     pub handbrake_binary: String,
@@ -251,10 +252,6 @@ pub struct HandbrakeConfig {
     pub preset: Option<String>,
     /// Timeout in milliseconds for the transcode operation.
     pub timeout_ms: u64,
-}
-
-fn load_config(host: &dyn HostFunctions) -> Option<HandbrakeConfig> {
-    load_plugin_config(|key| host.get_plugin_data(key))
 }
 
 #[cfg(test)]

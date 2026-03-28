@@ -2,6 +2,7 @@ use thiserror::Error;
 
 /// Classifies the kind of storage failure without exposing rusqlite internals.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum StorageErrorKind {
     /// A UNIQUE or FOREIGN KEY constraint was violated.
     ConstraintViolation,
@@ -14,6 +15,7 @@ pub enum StorageErrorKind {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum VoomError {
     #[error("plugin error: {plugin}: {message}")]
     Plugin { plugin: String, message: String },

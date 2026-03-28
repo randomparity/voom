@@ -48,6 +48,7 @@ pub struct FileFilters {
 ///
 /// # Errors
 /// Methods return `VoomError::Storage` on database failures.
+#[allow(clippy::missing_errors_doc)]
 pub trait FileStorage: Send + Sync {
     fn upsert_file(&self, file: &MediaFile) -> Result<()>;
     fn file(&self, id: &Uuid) -> Result<Option<MediaFile>>;
@@ -62,6 +63,7 @@ pub trait FileStorage: Send + Sync {
 ///
 /// # Errors
 /// Methods return `VoomError::Storage` on database failures.
+#[allow(clippy::missing_errors_doc)]
 pub trait JobStorage: Send + Sync {
     fn create_job(&self, job: &Job) -> Result<Uuid>;
     fn job(&self, id: &Uuid) -> Result<Option<Job>>;
@@ -78,6 +80,7 @@ pub trait JobStorage: Send + Sync {
 ///
 /// # Errors
 /// Methods return `VoomError::Storage` on database failures.
+#[allow(clippy::missing_errors_doc)]
 pub trait PlanStorage: Send + Sync {
     fn save_plan(&self, plan: &Plan) -> Result<Uuid>;
     fn plans_for_file(&self, file_id: &Uuid) -> Result<Vec<StoredPlan>>;
@@ -88,6 +91,7 @@ pub trait PlanStorage: Send + Sync {
 ///
 /// # Errors
 /// Methods return `VoomError::Storage` on database failures.
+#[allow(clippy::missing_errors_doc)]
 pub trait FileHistoryStorage: Send + Sync {
     fn file_history(&self, path: &Path) -> Result<Vec<FileHistoryEntry>>;
 }
@@ -96,6 +100,7 @@ pub trait FileHistoryStorage: Send + Sync {
 ///
 /// # Errors
 /// Methods return `VoomError::Storage` on database failures.
+#[allow(clippy::missing_errors_doc)]
 pub trait StatsStorage: Send + Sync {
     fn record_stats(&self, stats: &ProcessingStats) -> Result<()>;
 }
@@ -104,6 +109,7 @@ pub trait StatsStorage: Send + Sync {
 ///
 /// # Errors
 /// Methods return `VoomError::Storage` on database failures.
+#[allow(clippy::missing_errors_doc)]
 pub trait PluginDataStorage: Send + Sync {
     fn plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>>;
     fn set_plugin_data(&self, plugin: &str, key: &str, value: &[u8]) -> Result<()>;
@@ -114,6 +120,7 @@ pub trait PluginDataStorage: Send + Sync {
 ///
 /// # Errors
 /// Methods return `VoomError::Storage` on database failures.
+#[allow(clippy::missing_errors_doc)]
 pub trait BadFileStorage: Send + Sync {
     fn upsert_bad_file(&self, bad_file: &BadFile) -> Result<()>;
     fn bad_file_by_path(&self, path: &Path) -> Result<Option<BadFile>>;
@@ -127,6 +134,7 @@ pub trait BadFileStorage: Send + Sync {
 ///
 /// # Errors
 /// Methods return `VoomError::Storage` on database failures.
+#[allow(clippy::missing_errors_doc)]
 pub trait MaintenanceStorage: Send + Sync {
     fn vacuum(&self) -> Result<()>;
     fn prune_missing_files(&self) -> Result<u64>;
@@ -280,7 +288,7 @@ impl FileHistoryEntry {
             path: file.path.clone(),
             content_hash: file.content_hash.clone(),
             container: file.container,
-            track_count: file.tracks.len() as u32,
+            track_count: u32::try_from(file.tracks.len()).unwrap_or(u32::MAX),
             introspected_at: file.introspected_at,
             archived_at,
         }

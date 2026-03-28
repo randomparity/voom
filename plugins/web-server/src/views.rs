@@ -6,6 +6,7 @@ use voom_domain::utils::datetime::{format_duration, format_size};
 
 /// A template-friendly view of a `MediaFile` with computed display fields.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct FileView {
     /// Extracted filename from path.
     pub filename: String,

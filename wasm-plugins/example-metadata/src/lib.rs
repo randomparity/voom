@@ -46,7 +46,6 @@ use voom_plugin_sdk::{
     deserialize_event, serialize_event, Event, HostFunctions, OnEventResult, PluginInfoData,
 };
 
-/// Plugin information for the host to query.
 pub fn get_info() -> PluginInfoData {
     PluginInfoData {
         name: "example-metadata".to_string(),
@@ -55,12 +54,10 @@ pub fn get_info() -> PluginInfoData {
     }
 }
 
-/// Check if this plugin handles the given event type.
 pub fn handles(event_type: &str) -> bool {
     event_type == "file.introspected"
 }
 
-/// Process an event and optionally return a result.
 pub fn on_event(event_type: &str, payload: &[u8], _host: &dyn HostFunctions) -> Option<OnEventResult> {
     if event_type != "file.introspected" {
         return None;
@@ -82,7 +79,6 @@ pub fn on_event(event_type: &str, payload: &[u8], _host: &dyn HostFunctions) -> 
                 has_hdr |= t.is_hdr;
             }
 
-            // Create enrichment metadata.
             let metadata = serde_json::json!({
                 "source": "example-metadata",
                 "track_summary": {
@@ -95,7 +91,6 @@ pub fn on_event(event_type: &str, payload: &[u8], _host: &dyn HostFunctions) -> 
                 "has_hdr": has_hdr,
             });
 
-            // Produce a MetadataEnriched event.
             let enriched_event = Event::MetadataEnriched(
                 voom_plugin_sdk::MetadataEnrichedEvent {
                     path: file.path.clone(),

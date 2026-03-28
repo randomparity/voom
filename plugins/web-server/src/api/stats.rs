@@ -12,6 +12,7 @@ use crate::state::AppState;
 use super::jobs::JobStatusCount;
 
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct DashboardStats {
     pub total_files: usize,
     pub job_status_counts: Vec<JobStatusCount>,

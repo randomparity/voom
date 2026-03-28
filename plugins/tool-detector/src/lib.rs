@@ -177,8 +177,8 @@ fn parse_version(tool_name: &str, output: &str) -> String {
         "mediainfo" => {
             // "MediaInfo Command line, MediaInfoLib - v24.01"
             first_line
-                .split("v")
-                .last()
+                .split('v')
+                .next_back()
                 .unwrap_or("unknown")
                 .trim()
                 .to_string()

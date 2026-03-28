@@ -79,7 +79,7 @@ mod tests {
 
     #[test]
     fn test_default_creates_same_as_new() {
-        let plugin = PolicyEvaluatorPlugin::default();
+        let plugin = PolicyEvaluatorPlugin;
         assert!(plugin.capabilities().is_empty());
         assert_eq!(plugin.name(), "policy-evaluator");
     }

@@ -13,6 +13,7 @@ use crate::state::AppState;
 
 /// Shared filter fields used by both API and page handlers.
 #[derive(Debug, Default, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct FileFilterParams {
     pub container: Option<String>,
     pub codec: Option<String>,
@@ -21,6 +22,7 @@ pub struct FileFilterParams {
 }
 
 #[derive(Debug, Deserialize)]
+#[non_exhaustive]
 pub struct ListFilesParams {
     #[serde(flatten)]
     pub filters: FileFilterParams,
@@ -34,6 +36,7 @@ pub struct DeleteResponse {
 }
 
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct FileListResponse {
     pub files: Vec<MediaFile>,
     pub total: usize,

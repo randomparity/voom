@@ -218,7 +218,7 @@ pub fn open_store(config: &AppConfig) -> Result<Arc<dyn voom_domain::storage::St
     open_store_in(&config.data_dir)
 }
 
-/// Open a SQLite store rooted at `data_dir`, creating the directory if needed.
+/// Open a `SQLite` store rooted at `data_dir`, creating the directory if needed.
 ///
 /// This is the single authoritative place that calls
 /// [`voom_sqlite_store::store::SqliteStore::open`].  Both

@@ -55,12 +55,18 @@ impl InMemoryStore {
     }
 
     /// Builder: seed the store with a file.
+    ///
+    /// # Panics
+    /// Panics if the internal mutex is poisoned.
     pub fn with_file(self, file: MediaFile) -> Self {
         self.files.lock().unwrap().insert(file.id, file);
         self
     }
 
     /// Builder: seed the store with a job.
+    ///
+    /// # Panics
+    /// Panics if the internal mutex is poisoned.
     pub fn with_job(self, job: Job) -> Self {
         self.jobs.lock().unwrap().insert(job.id, job);
         self

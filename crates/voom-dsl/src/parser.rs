@@ -1205,7 +1205,7 @@ mod tests {
                 }}
             }}"#
         );
-        assert!(parse_policy(&input).is_ok(), "failed to parse: {}", input);
+        assert!(parse_policy(&input).is_ok(), "failed to parse: {input}");
     }
 
     #[test]

@@ -244,8 +244,7 @@ mod tests {
         let dir = voom_config_dir();
         assert!(
             dir.ends_with("voom"),
-            "config dir should end with 'voom', got: {:?}",
-            dir
+            "config dir should end with 'voom', got: {dir:?}"
         );
     }
 
@@ -448,8 +447,7 @@ mod tests {
         let mode = meta.permissions().mode() & 0o777;
         assert_eq!(
             mode, 0o600,
-            "config file should be owner-only (0600), got {:o}",
-            mode
+            "config file should be owner-only (0600), got {mode:o}"
         );
     }
 

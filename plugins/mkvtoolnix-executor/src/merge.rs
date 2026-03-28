@@ -175,7 +175,7 @@ pub fn build_merge_args(
                 let track_order: Vec<String> = order
                     .iter()
                     .filter_map(|v| v.parse::<u64>().ok())
-                    .map(|idx| format!("0:{}", idx))
+                    .map(|idx| format!("0:{idx}"))
                     .collect();
                 if !track_order.is_empty() {
                     args.push("--track-order".into());

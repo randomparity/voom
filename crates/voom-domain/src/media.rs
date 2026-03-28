@@ -241,7 +241,7 @@ impl TrackType {
 }
 
 impl std::str::FromStr for TrackType {
-    type Err = String;
+    type Err = crate::errors::VoomError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
@@ -256,7 +256,9 @@ impl std::str::FromStr for TrackType {
             "subtitle_forced" => Ok(TrackType::SubtitleForced),
             "subtitle_commentary" => Ok(TrackType::SubtitleCommentary),
             "attachment" => Ok(TrackType::Attachment),
-            other => Err(format!("unknown track type: {other}")),
+            other => Err(crate::errors::VoomError::Validation(format!(
+                "unknown track type: {other}"
+            ))),
         }
     }
 }

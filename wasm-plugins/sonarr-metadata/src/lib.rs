@@ -65,7 +65,7 @@ pub fn on_event(
 
     host.log("info", &format!("looking up Sonarr metadata for: {}", file.path.display()));
 
-    let config = load_config(host)?;
+    let config: SonarrConfig = load_plugin_config(|key| host.get_plugin_data(key))?;
     let episode = lookup_episode(host, &config, &file.path.to_string_lossy())?;
 
     let metadata = serde_json::json!({
@@ -100,6 +100,7 @@ pub fn on_event(
 // --- Sonarr data types ---
 
 #[derive(Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SonarrConfig {
     pub sonarr_url: String,
     pub api_key: String,
@@ -107,6 +108,7 @@ pub struct SonarrConfig {
 
 /// A series record from Sonarr, with episode file info.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SonarrSeries {
     pub id: u64,
     pub title: String,
@@ -118,6 +120,7 @@ pub struct SonarrSeries {
 
 /// An episode file record matched from Sonarr.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SonarrEpisode {
     pub series_id: u64,
     pub series_title: String,
@@ -131,10 +134,6 @@ pub struct SonarrEpisode {
 }
 
 // --- Internal helpers ---
-
-fn load_config(host: &dyn HostFunctions) -> Option<SonarrConfig> {
-    load_plugin_config(|key| host.get_plugin_data(key))
-}
 
 fn lookup_episode(
     host: &dyn HostFunctions,
@@ -244,7 +243,7 @@ mod tests {
             } else {
                 serde_json::to_vec(&self.series).unwrap()
             };
-            Ok(HttpResponse { status: 200, body })
+            Ok(HttpResponse::new(200, body))
         }
 
         fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {

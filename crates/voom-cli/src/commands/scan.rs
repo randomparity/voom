@@ -118,7 +118,7 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
                     .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
                     .unwrap_or_default();
                 pb_clone.set_position(current as u64);
-                pb_clone.set_message(format!("{} {}{}", prefix, name, eta));
+                pb_clone.set_message(format!("{prefix} {name}{eta}"));
                 file_count_clone.store(total as u64, Ordering::Relaxed);
             }
         }
@@ -195,7 +195,7 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
             .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
             .unwrap_or_default();
 
-        pb.set_message(format!("Probing {}{}", name, eta));
+        pb.set_message(format!("Probing {name}{eta}"));
 
         match crate::introspect::introspect_file(
             event.path.clone(),

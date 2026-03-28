@@ -15,18 +15,16 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
         .plugin_names()
         .iter()
         .filter_map(|name| {
-            kernel
-                .registry
-                .get(name)
-                .map(|p| voom_web_server::api::plugins::PluginInfo {
-                    name: p.name().to_string(),
-                    version: p.version().to_string(),
-                    capabilities: p
-                        .capabilities()
+            kernel.registry.get(name).map(|p| {
+                voom_web_server::api::plugins::PluginInfo::new(
+                    p.name().to_string(),
+                    p.version().to_string(),
+                    p.capabilities()
                         .iter()
                         .map(|c| c.kind().to_string())
                         .collect(),
-                })
+                )
+            })
         })
         .collect();
 

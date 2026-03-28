@@ -76,7 +76,7 @@ pub fn on_event(
         return build_result(file, &cached);
     }
 
-    let config = load_config(host);
+    let config: Option<WhisperConfig> = load_plugin_config(|key| host.get_plugin_data(key));
 
     // Step 1: Extract audio to a temp WAV file via ffmpeg.
     let file_path = file.path.to_string_lossy().to_string();
@@ -191,6 +191,7 @@ fn build_result(
 // --- Config ---
 
 #[derive(Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct WhisperConfig {
     /// Path or name of the whisper binary (default: "whisper-cli").
     pub whisper_binary: String,
@@ -198,10 +199,6 @@ pub struct WhisperConfig {
     pub model: String,
     /// Force a specific language (None = auto-detect).
     pub language: Option<String>,
-}
-
-fn load_config(host: &dyn HostFunctions) -> Option<WhisperConfig> {
-    load_plugin_config(|key| host.get_plugin_data(key))
 }
 
 #[cfg(test)]

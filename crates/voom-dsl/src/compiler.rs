@@ -422,7 +422,7 @@ fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, Ds
         FilterNode::TitleContains(s) => Ok(CompiledFilter::TitleContains(s.clone())),
         FilterNode::TitleMatches(s) => {
             let compiled = CompiledRegex::new(s)
-                .map_err(|e| DslError::compile(format!("invalid regex pattern '{}': {}", s, e)))?;
+                .map_err(|e| DslError::compile(format!("invalid regex pattern '{s}': {e}")))?;
             Ok(CompiledFilter::TitleMatches(compiled))
         }
         FilterNode::And(items) => {

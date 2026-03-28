@@ -258,11 +258,12 @@ fn create_worker_pool(
 }
 
 /// Extract and deserialize the job payload from a process job.
-fn parse_job_payload(
-    job: &voom_domain::job::Job,
-) -> std::result::Result<ProcessJobPayload, String> {
-    let raw_payload = job.payload.as_ref().ok_or("missing payload")?;
-    serde_json::from_value(raw_payload.clone()).map_err(|e| format!("invalid payload: {e}"))
+fn parse_job_payload(job: &voom_domain::job::Job) -> anyhow::Result<ProcessJobPayload> {
+    let raw_payload = job
+        .payload
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing payload"))?;
+    serde_json::from_value(raw_payload.clone()).context("invalid payload")
 }
 
 /// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
@@ -275,7 +276,7 @@ async fn process_single_file(
     token: &CancellationToken,
     ffprobe_path: Option<&str>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
-    let payload = parse_job_payload(&job)?;
+    let payload = parse_job_payload(&job).map_err(|e| e.to_string())?;
 
     let path = std::path::PathBuf::from(&payload.path);
 
@@ -286,9 +287,10 @@ async fn process_single_file(
         kernel,
         ffprobe_path,
     )
-    .await?;
+    .await
+    .map_err(|e| e.to_string())?;
 
-    let result = orchestrate_plans(compiled, &file)?;
+    let result = orchestrate_plans(compiled, &file).map_err(|e| e.to_string())?;
 
     // Collect safeguard violations across all plans and tag the file
     let violations: Vec<&voom_domain::SafeguardViolation> = result
@@ -351,12 +353,10 @@ async fn process_single_file(
 fn orchestrate_plans(
     compiled: &voom_dsl::CompiledPolicy,
     file: &voom_domain::media::MediaFile,
-) -> std::result::Result<voom_phase_orchestrator::OrchestrationResult, String> {
+) -> voom_domain::errors::Result<voom_phase_orchestrator::OrchestrationResult> {
     let plans = voom_policy_evaluator::evaluator::evaluate(compiled, file).plans;
     let orchestrator = voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
-    orchestrator
-        .orchestrate(plans)
-        .map_err(|e| format!("orchestration failed: {e}"))
+    orchestrator.orchestrate(plans)
 }
 
 /// Verify file integrity and publish plan lifecycle events for non-dry-run execution.
@@ -452,11 +452,11 @@ fn execute_plans(
     })))
 }
 
-/// Dispatch PlanExecuting + PlanCreated for a single plan, then emit
-/// PlanCompleted, PlanFailed (executor error), or PlanFailed (unclaimed).
+/// Dispatch `PlanExecuting` + `PlanCreated` for a single plan, then emit
+/// `PlanCompleted`, `PlanFailed` (executor error), or `PlanFailed` (unclaimed).
 ///
-/// PlanExecuting is dispatched first so the backup-manager backs up the file
-/// BEFORE any executor modifies it.  PlanCreated then lets executor plugins
+/// `PlanExecuting` is dispatched first so the backup-manager backs up the file
+/// BEFORE any executor modifies it.  `PlanCreated` then lets executor plugins
 /// claim and run the plan.
 fn execute_single_plan(
     plan: &voom_domain::plan::Plan,

@@ -131,7 +131,7 @@ fn test_non_mkv_metadata_routes_to_ffmpeg() {
     assert_eq!(results[0].plugin_name, "ffmpeg-executor");
 }
 
-/// ConvertContainer to MKV should route to mkvtoolnix (higher priority, can handle).
+/// `ConvertContainer` to MKV should route to mkvtoolnix (higher priority, can handle).
 #[test]
 fn test_convert_to_mkv_routes_to_mkvtoolnix() {
     let kernel = make_kernel_with_both_executors();

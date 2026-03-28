@@ -49,7 +49,7 @@ pub mod wasm {
             self.load_with_host_state(wasm_path, None)
         }
 
-        /// Load a WASM plugin with a custom HostState configuration.
+        /// Load a WASM plugin with a custom `HostState` configuration.
         pub fn load_with_host_state(
             &self,
             wasm_path: &Path,
@@ -59,7 +59,7 @@ pub mod wasm {
             self.load_with_manifest(wasm_path, manifest, host_state)
         }
 
-        /// Load a WASM plugin with a pre-loaded manifest and custom HostState.
+        /// Load a WASM plugin with a pre-loaded manifest and custom `HostState`.
         ///
         /// This avoids re-reading the manifest when the caller has already loaded
         /// it (e.g. `load_dir_with_config` reads the manifest to determine the
@@ -420,7 +420,7 @@ pub mod wasm {
         }
     }
 
-    /// Extract bytes from a Val::List of Val::U8 values.
+    /// Extract bytes from a `Val::List` of `Val::U8` values.
     fn val_to_bytes(val: &wasmtime::component::Val) -> Vec<u8> {
         if let wasmtime::component::Val::List(items) = val {
             items
@@ -438,7 +438,7 @@ pub mod wasm {
         }
     }
 
-    /// Parse a Val::Record representing an event-data into (event_type, payload).
+    /// Parse a `Val::Record` representing an event-data into (`event_type`, payload).
     fn parse_event_data(val: &wasmtime::component::Val) -> Option<(String, Vec<u8>)> {
         if let wasmtime::component::Val::Record(fields) = val {
             let mut evt_type = String::new();
@@ -531,7 +531,7 @@ pub mod wasm {
             .func_wrap(
                 "get-plugin-data",
                 |ctx: wasmtime::StoreContextMut<'_, HostState>, (key,): (String,)| {
-                    let result = ctx.data().resolve_plugin_data(&key);
+                    let result = ctx.data().get_plugin_data(&key);
                     Ok((result,))
                 },
             )
@@ -610,8 +610,7 @@ pub mod wasm {
                             .any(|p| file_path.starts_with(p));
                         if !allowed {
                             return Ok((Err(format!(
-                                "path '{}' is not within allowed directories",
-                                path
+                                "path '{path}' is not within allowed directories"
                             )),));
                         }
                     }
@@ -633,10 +632,7 @@ pub mod wasm {
                                 .map_err(|e| format!("failed to serialize metadata: {e}"));
                             Ok((bytes,))
                         }
-                        Err(e) => Ok((Err(format!(
-                            "failed to read metadata for '{}': {}",
-                            path, e
-                        )),)),
+                        Err(e) => Ok((Err(format!("failed to read metadata for '{path}': {e}")),)),
                     }
                 },
             )
@@ -659,8 +655,7 @@ pub mod wasm {
                             .any(|p| dir_path.starts_with(p));
                         if !allowed {
                             return Ok((Err(format!(
-                                "directory '{}' is not within allowed directories",
-                                dir
+                                "directory '{dir}' is not within allowed directories"
                             )),));
                         }
                     }
@@ -680,7 +675,7 @@ pub mod wasm {
                                 .collect();
                             Ok((Ok(files),))
                         }
-                        Err(e) => Ok((Err(format!("failed to list directory '{}': {}", dir, e)),)),
+                        Err(e) => Ok((Err(format!("failed to list directory '{dir}': {e}")),)),
                     }
                 },
             )
@@ -897,8 +892,7 @@ Evaluate = {}
             let err = format!("{}", result.unwrap_err());
             assert!(
                 err.contains("world-writable"),
-                "expected world-writable error, got: {}",
-                err
+                "expected world-writable error, got: {err}"
             );
         }
 

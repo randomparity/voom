@@ -23,7 +23,7 @@ pub fn validate_metadata_value(value: &str) -> Result<&str, VoomError> {
 /// Validates a metadata key (tag name) for safe use in command-line arguments.
 ///
 /// Rejects control characters (like [`validate_metadata_value`]) and additionally
-/// rejects `=` which would confuse FFmpeg's `key=value` metadata argument parsing.
+/// rejects `=` which would confuse `FFmpeg`'s `key=value` metadata argument parsing.
 ///
 /// # Errors
 ///
@@ -113,7 +113,7 @@ mod tests {
         let result = validate_metadata_key("key=value");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("="), "error should mention '=': {err}");
+        assert!(err.contains('='), "error should mention '=': {err}");
     }
 
     #[test]

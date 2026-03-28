@@ -17,6 +17,7 @@
 //! runs on a separate `spawn_blocking` thread and the plugin type is not `Clone`.
 
 use voom_domain::bad_file::BadFileSource;
+use voom_domain::errors::VoomError;
 use voom_domain::events::{Event, FileIntrospectionFailedEvent};
 
 /// Dispatch a `FileIntrospectionFailed` event to the kernel.
@@ -51,7 +52,7 @@ pub async fn introspect_file(
     content_hash: String,
     kernel: &voom_kernel::Kernel,
     ffprobe_path: Option<&str>,
-) -> std::result::Result<voom_domain::media::MediaFile, String> {
+) -> std::result::Result<voom_domain::media::MediaFile, VoomError> {
     let mut introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
     if let Some(fp) = ffprobe_path {
         introspector = introspector.with_ffprobe_path(fp);
@@ -81,10 +82,9 @@ pub async fn introspect_file(
                 hash_for_event,
                 &error_msg,
             );
-            Err(error_msg)
+            Err(VoomError::Other(Box::new(join_err)))
         }
         Ok(Err(e)) => {
-            let error_msg = format!("introspection failed for {path_display}: {e}");
             dispatch_introspection_failure(
                 kernel,
                 path_for_event,
@@ -92,7 +92,10 @@ pub async fn introspect_file(
                 hash_for_event,
                 &e.to_string(),
             );
-            Err(error_msg)
+            Err(VoomError::plugin(
+                "ffprobe",
+                format!("introspection failed for {path_display}: {e}"),
+            ))
         }
     }
 }

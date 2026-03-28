@@ -107,7 +107,7 @@ pub fn build_propedit_args(path: &Path, actions: &[&PlannedAction]) -> Result<Ve
                     args.push("--edit".into());
                     args.push(format!("track:{}", idx + 1));
                     args.push("--set".into());
-                    args.push(format!("name={}", title));
+                    args.push(format!("name={title}"));
                 }
             }
             OperationType::SetLanguage => {
@@ -120,7 +120,7 @@ pub fn build_propedit_args(path: &Path, actions: &[&PlannedAction]) -> Result<Ve
                     args.push("--edit".into());
                     args.push(format!("track:{}", idx + 1));
                     args.push("--set".into());
-                    args.push(format!("language={}", language));
+                    args.push(format!("language={language}"));
                 }
             }
             OperationType::SetContainerTag => {
@@ -134,7 +134,7 @@ pub fn build_propedit_args(path: &Path, actions: &[&PlannedAction]) -> Result<Ve
                     args.push("--edit".into());
                     args.push("info".into());
                     args.push("--set".into());
-                    args.push(format!("{}={}", tag, value));
+                    args.push(format!("{tag}={value}"));
                 } else {
                     tracing::debug!(
                         tag = tag,
