@@ -25,7 +25,7 @@
 //! handles_events = ["plan.created"]
 //!
 //! [[capabilities]]
-//! Synthesize = {}
+//! [capabilities.Synthesize]
 //! ```
 
 use serde::{Deserialize, Serialize};

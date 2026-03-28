@@ -501,10 +501,9 @@ fn parse_track_target(target: &str) -> TrackTarget {
 
 fn value_to_json(value: &Value) -> serde_json::Value {
     match value {
-        Value::String(s) => serde_json::Value::String(s.clone()),
+        Value::String(s) | Value::Ident(s) => serde_json::Value::String(s.clone()),
         Value::Number(n, _) => serde_json::json!(n),
         Value::Bool(b) => serde_json::Value::Bool(*b),
-        Value::Ident(s) => serde_json::Value::String(s.clone()),
         Value::List(items) => {
             let arr: Vec<serde_json::Value> = items.iter().map(value_to_json).collect();
             serde_json::Value::Array(arr)

@@ -20,7 +20,6 @@ use crate::filter::{track_matches, tracks_for_target};
 #[derive(Debug)]
 pub struct EvaluationResult {
     pub plans: Vec<Plan>,
-    pub phase_outcomes: HashMap<String, EvaluationOutcome>,
 }
 
 /// Outcome of a single phase evaluation.
@@ -61,10 +60,7 @@ pub fn evaluate(policy: &CompiledPolicy, file: &MediaFile) -> EvaluationResult {
         plans.push(plan);
     }
 
-    EvaluationResult {
-        plans,
-        phase_outcomes,
-    }
+    EvaluationResult { plans }
 }
 
 /// Evaluate a single phase against a file.
@@ -773,10 +769,10 @@ fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), Vo
             return Err(VoomError::Validation(expanded));
         }
         CompiledAction::SetDefault { target, filter } => {
-            emit_flag_action(ctx, target, filter, FlagKind::Default)?;
+            emit_flag_action(ctx, target, filter, FlagKind::Default);
         }
         CompiledAction::SetForced { target, filter } => {
-            emit_flag_action(ctx, target, filter, FlagKind::Forced)?;
+            emit_flag_action(ctx, target, filter, FlagKind::Forced);
         }
         CompiledAction::SetLanguage {
             target,
@@ -835,7 +831,7 @@ fn emit_flag_action(
     target: &TrackTarget,
     filter: &Option<CompiledFilter>,
     kind: FlagKind,
-) -> Result<(), VoomError> {
+) {
     let (op, label, is_set_fn): (OperationType, &str, fn(&Track) -> bool) = match kind {
         FlagKind::Default => (OperationType::SetDefault, "default", |t| t.is_default),
         FlagKind::Forced => (OperationType::SetForced, "forced", |t| t.is_forced),
@@ -855,7 +851,6 @@ fn emit_flag_action(
             ));
         }
     }
-    Ok(())
 }
 
 fn file_name(file: &MediaFile) -> String {

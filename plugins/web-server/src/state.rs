@@ -42,7 +42,7 @@ pub struct AppState {
     pub templates: Arc<tera::Tera>,
     auth_token: Option<String>,
     pub sse_client_count: Arc<AtomicU32>,
-    pub plugin_info: Arc<Vec<crate::api::plugins::PluginInfo>>,
+    pub plugin_info: Arc<Vec<crate::api::plugins::PluginInfoResponse>>,
 }
 
 impl AppState {
@@ -64,7 +64,7 @@ impl AppState {
 
     /// Set the plugin info snapshot (typically populated from kernel registry at startup).
     #[must_use]
-    pub fn with_plugin_info(mut self, info: Vec<crate::api::plugins::PluginInfo>) -> Self {
+    pub fn with_plugin_info(mut self, info: Vec<crate::api::plugins::PluginInfoResponse>) -> Self {
         self.plugin_info = Arc::new(info);
         self
     }

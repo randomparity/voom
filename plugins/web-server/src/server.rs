@@ -18,7 +18,7 @@ pub struct ServerConfig {
     pub port: u16,
     pub template_dir: Option<String>,
     pub auth_token: Option<String>,
-    pub plugin_info: Vec<crate::api::plugins::PluginInfo>,
+    pub plugin_info: Vec<crate::api::plugins::PluginInfoResponse>,
 }
 
 impl ServerConfig {

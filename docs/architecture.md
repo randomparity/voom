@@ -143,7 +143,7 @@ pub enum Capability {
 }
 ```
 
-Capabilities are used for plugin registration and discovery. Currently, executor routing uses priority-ordered event dispatch: when a `PlanCreated` event is published, the first executor that claims it (via `EventResult.claimed`) handles the plan. Capability-based routing methods exist in the registry but are not yet wired into the dispatch path (planned for Sprint 13).
+Capabilities are used for plugin registration and discovery. Currently, executor routing uses priority-ordered event dispatch: when a `PlanCreated` event is published, the first executor that claims it (via `EventResult.claimed`) handles the plan. Capability-based routing is planned for a future sprint; the registry currently uses name-based lookup only.
 
 ## Event Bus
 

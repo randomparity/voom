@@ -25,7 +25,7 @@
 //! handles_events = ["file.introspected"]
 //!
 //! [[capabilities]]
-//! Transcribe = {}
+//! [capabilities.Transcribe]
 //! ```
 
 use serde::{Deserialize, Serialize};

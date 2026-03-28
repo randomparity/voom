@@ -107,7 +107,6 @@ mod tests {
         let file = MediaFile::new(PathBuf::from("/test/video.mkv"));
         let result = plugin.evaluate(&policy, &file);
         assert_eq!(result.plans.len(), 1);
-        assert_eq!(result.phase_outcomes.len(), 1);
     }
 
     #[test]

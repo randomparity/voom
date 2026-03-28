@@ -70,7 +70,7 @@ fn build_policy(pair: Pair<'_, Rule>) -> Result<PolicyAst> {
 
     for item in inner {
         match item.as_rule() {
-            Rule::config => config = Some(build_config(item)?),
+            Rule::config => config = Some(build_config(item)),
             Rule::phase => phases.push(build_phase(item)?),
             Rule::EOI => {}
             other => debug_assert!(false, "unexpected rule in policy: {other:?}"),
@@ -85,7 +85,7 @@ fn build_policy(pair: Pair<'_, Rule>) -> Result<PolicyAst> {
     })
 }
 
-fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
+fn build_config(pair: Pair<'_, Rule>) -> ConfigNode {
     let mut audio_languages = Vec::new();
     let mut subtitle_languages = Vec::new();
     let mut on_error = None;
@@ -134,12 +134,12 @@ fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
         }
     }
 
-    Ok(ConfigNode {
+    ConfigNode {
         audio_languages,
         subtitle_languages,
         on_error,
         commentary_patterns,
-    })
+    }
 }
 
 /// Push a spanned operation with a pre-captured span.
@@ -223,15 +223,15 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
             }
             Rule::defaults_op => {
                 let span = span_from_pair(&child);
-                emit_op(&mut operations, span, build_defaults(child)?);
+                emit_op(&mut operations, span, build_defaults(child));
             }
             Rule::actions_op => {
                 let span = span_from_pair(&child);
-                emit_op(&mut operations, span, build_actions(child)?);
+                emit_op(&mut operations, span, build_actions(child));
             }
             Rule::transcode_op => {
                 let span = span_from_pair(&child);
-                emit_op(&mut operations, span, build_transcode(child)?);
+                emit_op(&mut operations, span, build_transcode(child));
             }
             Rule::synthesize_op => {
                 let span = span_from_pair(&child);
@@ -311,7 +311,7 @@ fn build_keep_remove(pair: Pair<'_, Rule>, is_keep: bool) -> Result<OperationNod
     }
 }
 
-fn build_defaults(pair: Pair<'_, Rule>) -> Result<OperationNode> {
+fn build_defaults(pair: Pair<'_, Rule>) -> OperationNode {
     let mut items = Vec::new();
     for child in pair.into_inner() {
         if child.as_rule() == Rule::default_item {
@@ -329,10 +329,10 @@ fn build_defaults(pair: Pair<'_, Rule>) -> Result<OperationNode> {
             items.push((kind, value));
         }
     }
-    Ok(OperationNode::Defaults(items))
+    OperationNode::Defaults(items)
 }
 
-fn build_actions(pair: Pair<'_, Rule>) -> Result<OperationNode> {
+fn build_actions(pair: Pair<'_, Rule>) -> OperationNode {
     let text = pair.as_str();
     let target = text.split_whitespace().next().unwrap().to_string();
     let mut settings = Vec::new();
@@ -344,10 +344,10 @@ fn build_actions(pair: Pair<'_, Rule>) -> Result<OperationNode> {
             settings.push((key, val));
         }
     }
-    Ok(OperationNode::Actions { target, settings })
+    OperationNode::Actions { target, settings }
 }
 
-fn build_transcode(pair: Pair<'_, Rule>) -> Result<OperationNode> {
+fn build_transcode(pair: Pair<'_, Rule>) -> OperationNode {
     let text = pair.as_str();
     // "transcode video to hevc { ... }" or "transcode audio to aac { ... }"
     // Use the second word to determine target (grammar guarantees "video" or "audio")
@@ -372,11 +372,11 @@ fn build_transcode(pair: Pair<'_, Rule>) -> Result<OperationNode> {
         }
     }
 
-    Ok(OperationNode::Transcode {
+    OperationNode::Transcode {
         target,
         codec,
         settings,
-    })
+    }
 }
 
 fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {

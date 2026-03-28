@@ -290,7 +290,7 @@ async fn process_single_file(
     .await
     .map_err(|e| e.to_string())?;
 
-    let result = orchestrate_plans(compiled, &file).map_err(|e| e.to_string())?;
+    let result = orchestrate_plans(compiled, &file);
 
     // Collect safeguard violations across all plans and tag the file
     let violations: Vec<&voom_domain::SafeguardViolation> = result
@@ -347,13 +347,13 @@ async fn process_single_file(
 
 /// Run the phase orchestrator to produce plans.
 ///
-/// NOTE: This function does NOT dispatch `PlanCreated` events. The `execute_plans`
+/// NOTE: This function does NOT dispatch `PlanCreated` events. The `dispatch_plan_events`
 /// function dispatches them when it's time to actually execute. Dispatching
 /// here would trigger executor plugins during dry-run mode.
 fn orchestrate_plans(
     compiled: &voom_dsl::CompiledPolicy,
     file: &voom_domain::media::MediaFile,
-) -> voom_domain::errors::Result<voom_phase_orchestrator::OrchestrationResult> {
+) -> voom_phase_orchestrator::OrchestrationResult {
     let plans = voom_policy_evaluator::evaluator::evaluate(compiled, file).plans;
     let orchestrator = voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
     orchestrator.orchestrate(plans)
@@ -710,7 +710,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_plans_skips_skipped_plans() {
+    async fn test_dispatch_plan_events_skips_skipped_plans() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(PlanRecordingPlugin::new());
         kernel.register_plugin(recorder.clone(), 50);

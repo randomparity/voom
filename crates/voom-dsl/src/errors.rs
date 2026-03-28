@@ -154,9 +154,8 @@ impl std::fmt::Display for DslPipelineError {
 impl std::error::Error for DslPipelineError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            DslPipelineError::Parse(e) => Some(e),
+            DslPipelineError::Parse(e) | DslPipelineError::Compile(e) => Some(e),
             DslPipelineError::Validation(e) => Some(e),
-            DslPipelineError::Compile(e) => Some(e),
         }
     }
 }

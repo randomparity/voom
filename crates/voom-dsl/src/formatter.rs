@@ -506,6 +506,8 @@ fn format_compare_op(op: &CompareOp, out: &mut String) {
 
 fn format_number(n: f64, out: &mut String) {
     if (n - n.floor()).abs() < f64::EPSILON {
+        // DSL numeric literals are small integers; truncation and sign loss are intentional.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         out.push_str(&format!("{}", n as i64));
     } else {
         out.push_str(&format!("{n}"));

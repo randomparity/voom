@@ -10,13 +10,13 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     let (kernel, store) = crate::app::bootstrap_kernel_with_store(&config)?;
 
     // Snapshot plugin info from the kernel registry
-    let plugin_info: Vec<voom_web_server::api::plugins::PluginInfo> = kernel
+    let plugin_info: Vec<voom_web_server::api::plugins::PluginInfoResponse> = kernel
         .registry
         .plugin_names()
         .iter()
         .filter_map(|name| {
             kernel.registry.get(name).map(|p| {
-                voom_web_server::api::plugins::PluginInfo::new(
+                voom_web_server::api::plugins::PluginInfoResponse::new(
                     p.name().to_string(),
                     p.version().to_string(),
                     p.capabilities()

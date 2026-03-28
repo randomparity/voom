@@ -50,13 +50,11 @@ impl MediaFile {
             .collect()
     }
 
-    /// Returns all video tracks.
     #[must_use]
     pub fn video_tracks(&self) -> Vec<&Track> {
         self.tracks_of_type(TrackType::Video)
     }
 
-    /// Returns all audio tracks (any audio subtype).
     #[must_use]
     pub fn audio_tracks(&self) -> Vec<&Track> {
         self.tracks
@@ -65,7 +63,6 @@ impl MediaFile {
             .collect()
     }
 
-    /// Returns all subtitle tracks (any subtitle subtype).
     #[must_use]
     pub fn subtitle_tracks(&self) -> Vec<&Track> {
         self.tracks

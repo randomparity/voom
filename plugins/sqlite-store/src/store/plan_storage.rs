@@ -33,7 +33,8 @@ impl StoredPlan {
         let actions: Vec<PlannedAction> = serde_json::from_str(&self.actions_json)
             .map_err(other_storage_err("failed to deserialize plan actions"))?;
         let warnings: Vec<String> = match self.warnings {
-            Some(ref json) => serde_json::from_str(json).unwrap_or_default(),
+            Some(ref json) => serde_json::from_str(json)
+                .map_err(other_storage_err("failed to deserialize plan warnings"))?,
             None => Vec::new(),
         };
         let mut summary = PlanSummary::new(
