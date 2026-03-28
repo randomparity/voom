@@ -50,8 +50,14 @@ fn join_pipe_readers(
     stdout_handle: std::thread::JoinHandle<Vec<u8>>,
     stderr_handle: std::thread::JoinHandle<Vec<u8>>,
 ) -> (Vec<u8>, Vec<u8>) {
-    let stdout = stdout_handle.join().unwrap_or_default();
-    let stderr = stderr_handle.join().unwrap_or_default();
+    let stdout = stdout_handle.join().unwrap_or_else(|e| {
+        tracing::warn!("stdout pipe reader panicked: {e:?}");
+        Vec::new()
+    });
+    let stderr = stderr_handle.join().unwrap_or_else(|e| {
+        tracing::warn!("stderr pipe reader panicked: {e:?}");
+        Vec::new()
+    });
     (stdout, stderr)
 }
 
@@ -87,7 +93,9 @@ pub fn run_with_timeout(
             })
         }
         Ok(None) => {
-            child.kill().ok();
+            if let Err(e) = child.kill() {
+                tracing::warn!(tool = tool, error = %e, "failed to kill child process");
+            }
             child.wait().ok();
             join_pipe_readers(stdout_handle, stderr_handle);
             Err(VoomError::ToolExecution {
@@ -96,7 +104,13 @@ pub fn run_with_timeout(
             })
         }
         Err(e) => {
-            child.kill().ok();
+            if let Err(kill_err) = child.kill() {
+                tracing::warn!(
+                    tool = tool,
+                    error = %kill_err,
+                    "failed to kill child process"
+                );
+            }
             child.wait().ok();
             join_pipe_readers(stdout_handle, stderr_handle);
             Err(VoomError::ToolExecution {

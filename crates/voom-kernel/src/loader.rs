@@ -601,13 +601,20 @@ pub mod wasm {
                  -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
                     let file_path = std::path::Path::new(&path);
 
-                    // Security: check path is within allowed directories.
+                    // Security: canonicalize to defeat symlink traversal,
+                    // then check the resolved path is within allowed dirs.
                     if !ctx.data().allowed_paths.is_empty() {
+                        let canonical = match std::fs::canonicalize(file_path) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                return Ok((Err(format!("cannot resolve path '{path}': {e}")),));
+                            }
+                        };
                         let allowed = ctx
                             .data()
                             .allowed_paths
                             .iter()
-                            .any(|p| file_path.starts_with(p));
+                            .any(|p| canonical.starts_with(p));
                         if !allowed {
                             return Ok((Err(format!(
                                 "path '{path}' is not within allowed directories"
@@ -646,13 +653,20 @@ pub mod wasm {
                  -> Result<(Result<Vec<String>, String>,), wasmtime::Error> {
                     let dir_path = std::path::Path::new(&dir);
 
-                    // Security: check directory is within allowed paths.
+                    // Security: canonicalize to defeat symlink traversal,
+                    // then check the resolved path is within allowed dirs.
                     if !ctx.data().allowed_paths.is_empty() {
+                        let canonical = match std::fs::canonicalize(dir_path) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                return Ok((Err(format!("cannot resolve path '{dir}': {e}")),));
+                            }
+                        };
                         let allowed = ctx
                             .data()
                             .allowed_paths
                             .iter()
-                            .any(|p| dir_path.starts_with(p));
+                            .any(|p| canonical.starts_with(p));
                         if !allowed {
                             return Ok((Err(format!(
                                 "directory '{dir}' is not within allowed directories"

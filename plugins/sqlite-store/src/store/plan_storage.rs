@@ -44,12 +44,12 @@ impl StoredPlan {
             self.phase_name,
             self.status,
             actions,
+            self.created_at,
         );
         summary.warnings = warnings;
         summary.skip_reason = self.skip_reason;
         summary.policy_hash = self.policy_hash;
         summary.evaluated_at = self.evaluated_at;
-        summary.created_at = self.created_at;
         summary.executed_at = self.executed_at;
         summary.result = self.result;
         Ok(summary)
@@ -183,5 +183,111 @@ impl PlanStorage for SqliteStore {
             .into_iter()
             .map(StoredPlan::into_summary)
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    use voom_domain::plan::{ActionParams, OperationType};
+    use voom_domain::storage::FileStorage;
+
+    fn test_store() -> SqliteStore {
+        SqliteStore::in_memory().expect("in-memory store")
+    }
+
+    fn sample_file() -> MediaFile {
+        let mut file = MediaFile::new(PathBuf::from("/media/test.mkv"));
+        file.container = Container::Mkv;
+        file.tracks = vec![
+            Track::new(0, TrackType::Video, "hevc".into()),
+            Track::new(1, TrackType::AudioMain, "aac".into()),
+        ];
+        file
+    }
+
+    #[test]
+    fn plan_round_trip_preserves_diverse_action_params() {
+        let store = test_store();
+        let file = sample_file();
+        store.upsert_file(&file).expect("upsert file");
+
+        let mut plan = Plan::new(file.clone(), "test-policy", "normalize");
+        plan.actions = vec![
+            PlannedAction::file_op(
+                OperationType::ConvertContainer,
+                ActionParams::Container {
+                    container: Container::Mkv,
+                },
+                "convert to mkv",
+            ),
+            PlannedAction::track_op(
+                OperationType::RemoveTrack,
+                1,
+                ActionParams::RemoveTrack {
+                    reason: "unwanted commentary".into(),
+                    track_type: TrackType::AudioMain,
+                },
+                "remove audio track 1",
+            ),
+            PlannedAction::file_op(
+                OperationType::TranscodeVideo,
+                ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    crf: Some(18),
+                    preset: Some("slow".into()),
+                    bitrate: None,
+                    channels: None,
+                },
+                "transcode video to hevc",
+            ),
+            PlannedAction::track_op(
+                OperationType::SetTitle,
+                0,
+                ActionParams::Title {
+                    title: "Main Video".into(),
+                },
+                "set track title",
+            ),
+            PlannedAction::file_op(
+                OperationType::SetDefault,
+                ActionParams::Empty,
+                "set default flag",
+            ),
+        ];
+        plan.warnings = vec!["test warning".to_string()];
+
+        let plan_id = store.save_plan(&plan).expect("save plan");
+
+        let summaries = store.plans_for_file(&file.id).expect("load plans");
+        assert_eq!(summaries.len(), 1);
+
+        let s = &summaries[0];
+        assert_eq!(s.id, plan_id);
+        assert_eq!(s.policy_name, "test-policy");
+        assert_eq!(s.phase_name, "normalize");
+        assert_eq!(s.actions.len(), 5);
+        assert_eq!(s.warnings, vec!["test warning"]);
+
+        // Verify each action params variant survived the round-trip
+        assert!(matches!(
+            s.actions[0].parameters,
+            ActionParams::Container { .. }
+        ));
+        assert!(matches!(
+            s.actions[1].parameters,
+            ActionParams::RemoveTrack { .. }
+        ));
+        assert!(matches!(
+            s.actions[2].parameters,
+            ActionParams::Transcode { .. }
+        ));
+        assert!(matches!(
+            s.actions[3].parameters,
+            ActionParams::Title { .. }
+        ));
+        assert!(matches!(s.actions[4].parameters, ActionParams::Empty));
     }
 }

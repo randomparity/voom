@@ -79,6 +79,10 @@ pb.set_message(format!("{prefix}{name}"));
 
 For indicatif templates with bars/counters (where the overhead is rendered by indicatif, not your format string), estimate the template overhead and pass it to `max_filename_len()`.
 
+## Review Process
+
+When review agents surface pre-existing issues that are out of scope for the current branch, create a GitHub issue for each rather than fixing them in-place. This keeps branches focused and ensures deferred work is tracked.
+
 ## Configuration
 
 - App config: TOML at `~/.config/voom/config.toml`

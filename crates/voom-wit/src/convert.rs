@@ -170,7 +170,7 @@ pub fn capability_to_wit(cap: &Capability) -> String {
         Capability::EnrichMetadata { source } => format!("enrich_metadata:{source}"),
         Capability::Transcribe => "transcribe".to_string(),
         Capability::Synthesize => "synthesize".to_string(),
-        other => format!("unknown:{}", other.kind()),
+        _ => unreachable!("all Capability variants must be handled"),
     }
 }
 

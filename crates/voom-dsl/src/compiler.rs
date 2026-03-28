@@ -200,7 +200,7 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
             Ok(CompiledOperation::Rules {
                 mode: match mode.as_str() {
                     "first" => RulesMode::First,
-                    _ => RulesMode::All,
+                    _ => unreachable!("validator rejects unknown rules modes"),
                 },
                 rules: compiled_rules,
             })

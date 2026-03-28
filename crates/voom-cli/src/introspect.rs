@@ -74,7 +74,7 @@ pub async fn introspect_file(
             Ok(file)
         }
         Err(join_err) => {
-            let error_msg = format!("task join error: {join_err}");
+            let error_msg = format!("task join error for {path_display}: {join_err}");
             dispatch_introspection_failure(
                 kernel,
                 path_for_event,
@@ -82,7 +82,7 @@ pub async fn introspect_file(
                 hash_for_event,
                 &error_msg,
             );
-            Err(VoomError::Other(Box::new(join_err)))
+            Err(VoomError::plugin("ffprobe", &error_msg))
         }
         Ok(Err(e)) => {
             dispatch_introspection_failure(

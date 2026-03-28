@@ -236,6 +236,7 @@ impl PlanSummary {
         phase_name: impl Into<String>,
         status: PlanStatus,
         actions: Vec<crate::plan::PlannedAction>,
+        created_at: DateTime<Utc>,
     ) -> Self {
         Self {
             id,
@@ -248,7 +249,7 @@ impl PlanSummary {
             skip_reason: None,
             policy_hash: None,
             evaluated_at: None,
-            created_at: Utc::now(),
+            created_at,
             executed_at: None,
             result: None,
         }
