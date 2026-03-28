@@ -49,6 +49,8 @@ pub struct MkvtoolnixExecutorPlugin {
 }
 
 impl MkvtoolnixExecutorPlugin {
+    /// Create a new executor plugin. The plugin starts with `available = false`
+    /// and must be initialized via `init()` to probe for mkvmerge on PATH.
     #[must_use]
     pub fn new() -> Self {
         let mut operations: Vec<OperationType> = OperationType::METADATA_OPS.to_vec();
@@ -62,7 +64,8 @@ impl MkvtoolnixExecutorPlugin {
         }
     }
 
-    /// Create a plugin with `available` set to the given value (for testing).
+    /// Create a plugin with `available` set to the given value.
+    /// Bypasses the `init()` probe for testing.
     #[cfg(test)]
     fn with_available(mut self, available: bool) -> Self {
         self.available = available;
@@ -70,6 +73,9 @@ impl MkvtoolnixExecutorPlugin {
     }
 
     /// Check whether this plugin can handle all operations in the given plan.
+    ///
+    /// Requires `init()` to have set `available = true` (mkvmerge found on PATH).
+    /// Returns `false` if the plugin is unavailable.
     ///
     /// Returns true if:
     /// - The file has an MKV container (or the plan includes `ConvertContainer` to MKV)

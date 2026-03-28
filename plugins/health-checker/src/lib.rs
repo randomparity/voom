@@ -20,11 +20,20 @@ pub struct HealthCheckerConfig {
     /// Interval in seconds for periodic re-checks (0 = disabled).
     /// Only meaningful when the serve command runs the periodic loop.
     pub interval_secs: u64,
+    /// Number of days to retain health check records before pruning.
+    pub retention_days: u32,
+}
+
+fn default_retention_days() -> u32 {
+    30
 }
 
 impl Default for HealthCheckerConfig {
     fn default() -> Self {
-        Self { interval_secs: 300 }
+        Self {
+            interval_secs: 300,
+            retention_days: default_retention_days(),
+        }
     }
 }
 
@@ -164,6 +173,7 @@ mod tests {
     fn test_default_config() {
         let config = HealthCheckerConfig::default();
         assert_eq!(config.interval_secs, 300);
+        assert_eq!(config.retention_days, 30);
     }
 
     #[test]
@@ -253,5 +263,13 @@ mod tests {
         let json = serde_json::json!({});
         let config: HealthCheckerConfig = serde_json::from_value(json).expect("parse");
         assert_eq!(config.interval_secs, 300);
+        assert_eq!(config.retention_days, 30);
+    }
+
+    #[test]
+    fn test_config_retention_days() {
+        let json = serde_json::json!({"retention_days": 7});
+        let config: HealthCheckerConfig = serde_json::from_value(json).expect("parse");
+        assert_eq!(config.retention_days, 7);
     }
 }

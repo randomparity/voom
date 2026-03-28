@@ -140,6 +140,9 @@ fn event_summary(event: &Event) -> String {
                 e.hw_accels.len()
             )
         }
+        Event::HealthStatus(e) => {
+            format!("check={} passed={}", e.check_name, e.passed)
+        }
         Event::PluginError(e) => {
             format!(
                 "plugin={} event={} error={}",
