@@ -183,16 +183,16 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     if token.is_cancelled() {
         print_interrupted_summary(&pool, file_count, modified);
     } else {
-        print_summary(
-            &pool,
+        print_summary(&SummaryContext {
+            pool: &pool,
             file_count,
             modified,
             effective_workers,
-            args.dry_run,
+            dry_run: args.dry_run,
             keep_backups,
-            backup_total,
-            &path,
-        );
+            backup_bytes: backup_total,
+            path: &path,
+        });
     }
     print_phase_breakdown(&phase_stats_for_summary.lock(), &phase_order);
 
@@ -481,19 +481,7 @@ async fn process_single_file(
             "plans": plan_summaries,
         })))
     } else {
-        execute_plans(
-            &file,
-            &result,
-            ctx.kernel.clone(),
-            needs_exec,
-            ctx.flag_size_increase,
-            ctx.keep_backups,
-            ctx.token,
-            ctx.ffprobe_path,
-            ctx.backup_bytes,
-            ctx.phase_stats,
-        )
-        .await
+        execute_plans(&file, &result, ctx, needs_exec).await
     }
 }
 
@@ -519,18 +507,11 @@ fn orchestrate_plans(
 /// Each plan execution is offloaded to `spawn_blocking` because executor
 /// plugins run subprocesses synchronously via `voom-process`, which would
 /// otherwise block the tokio worker thread.
-#[allow(clippy::too_many_arguments)]
 async fn execute_plans(
     file: &voom_domain::media::MediaFile,
     result: &voom_phase_orchestrator::OrchestrationResult,
-    kernel: Arc<voom_kernel::Kernel>,
+    ctx: &ProcessContext<'_>,
     needs_exec: bool,
-    flag_size_increase: bool,
-    keep_backups: bool,
-    token: &CancellationToken,
-    ffprobe_path: Option<&str>,
-    backup_bytes: &AtomicU64,
-    phase_stats: &PhaseStatsMap,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let file_path_str = file.path.display().to_string();
 
@@ -568,26 +549,28 @@ async fn execute_plans(
     for plan in &result.plans {
         if let Some(reason) = &plan.skip_reason {
             // Insert the plan row first so update_plan_status has a target.
-            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
-            kernel.dispatch(Event::PlanSkipped(PlanSkippedEvent::new(
-                plan.id,
-                file.path.clone(),
-                plan.phase_name.clone(),
-                reason.clone(),
-            )));
+            ctx.kernel
+                .dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
+            ctx.kernel
+                .dispatch(Event::PlanSkipped(PlanSkippedEvent::new(
+                    plan.id,
+                    file.path.clone(),
+                    plan.phase_name.clone(),
+                    reason.clone(),
+                )));
             continue;
         }
         if plan.is_empty() {
             continue;
         }
 
-        if token.is_cancelled() {
+        if ctx.token.is_cancelled() {
             break;
         }
 
         let plan_clone = plan.clone();
         let file_clone = file.clone();
-        let kernel_clone = kernel.clone();
+        let kernel_clone = ctx.kernel.clone();
         let outcome = tokio::task::spawn_blocking(move || {
             execute_single_plan(&plan_clone, &file_clone, &kernel_clone)
         })
@@ -600,7 +583,7 @@ async fn execute_plans(
 
                 // Size-increase guard: check *before* committing, while
                 // the backup is still on disk.
-                if flag_size_increase {
+                if ctx.flag_size_increase {
                     let check_path = resolve_post_execution_path(file, std::slice::from_ref(plan));
                     if let Ok(meta) = std::fs::metadata(&check_path) {
                         let new_size = meta.len();
@@ -623,14 +606,14 @@ async fn execute_plans(
                                     );
                                 }
                             }
-                            kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
+                            ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
                                 plan.id,
                                 file.path.clone(),
                                 plan.phase_name.clone(),
                                 format!("output grew from {} to {} bytes", file.size, new_size,),
                             )));
                             record_phase_stat(
-                                phase_stats,
+                                ctx.phase_stats,
                                 &plan.phase_name,
                                 PhaseOutcomeKind::Failed,
                             );
@@ -639,26 +622,32 @@ async fn execute_plans(
                     }
                 }
 
-                if keep_backups {
-                    backup_bytes.fetch_add(file.size, AtomicOrdering::Relaxed);
+                if ctx.keep_backups {
+                    ctx.backup_bytes
+                        .fetch_add(file.size, AtomicOrdering::Relaxed);
                     tracing::info!(
                         path = %file.path.display(),
                         phase = %plan.phase_name,
                         "keeping backup per policy"
                     );
                 }
-                kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
-                    plan.id,
-                    file.path.clone(),
-                    plan.phase_name.clone(),
-                    plan.actions.len(),
-                    keep_backups,
-                )));
-                record_phase_stat(phase_stats, &plan.phase_name, PhaseOutcomeKind::Completed);
+                ctx.kernel
+                    .dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
+                        plan.id,
+                        file.path.clone(),
+                        plan.phase_name.clone(),
+                        plan.actions.len(),
+                        ctx.keep_backups,
+                    )));
+                record_phase_stat(
+                    ctx.phase_stats,
+                    &plan.phase_name,
+                    PhaseOutcomeKind::Completed,
+                );
             }
             PlanOutcome::Failed(failed) => {
-                kernel.dispatch(Event::PlanFailed(failed));
-                record_phase_stat(phase_stats, &plan.phase_name, PhaseOutcomeKind::Failed);
+                ctx.kernel.dispatch(Event::PlanFailed(failed));
+                record_phase_stat(ctx.phase_stats, &plan.phase_name, PhaseOutcomeKind::Failed);
             }
         }
     }
@@ -672,8 +661,8 @@ async fn execute_plans(
                 .map(|m| m.len())
                 .unwrap_or(file.size);
             let hash = voom_discovery::hash_file(&current_path).unwrap_or_default();
-            let ffp = ffprobe_path.map(String::from);
-            let kernel_clone = kernel.clone();
+            let ffp = ctx.ffprobe_path.map(String::from);
+            let kernel_clone = ctx.kernel.clone();
             let _ = crate::introspect::introspect_file(
                 current_path,
                 size,
@@ -787,51 +776,57 @@ fn print_interrupted_summary(pool: &WorkerPool, file_count: usize, modified: u64
     );
 }
 
-/// Print the final summary line after processing.
-#[allow(clippy::too_many_arguments)]
-fn print_summary(
-    pool: &WorkerPool,
+/// Grouped arguments for the post-processing summary.
+struct SummaryContext<'a> {
+    pool: &'a WorkerPool,
     file_count: usize,
     modified: u64,
     effective_workers: usize,
     dry_run: bool,
     keep_backups: bool,
     backup_bytes: u64,
-    path: &std::path::Path,
-) {
-    let completed = pool.completed_count();
-    let failed = pool.failed_count();
-    let skipped = (file_count as u64)
+    path: &'a std::path::Path,
+}
+
+/// Print the final summary line after processing.
+fn print_summary(ctx: &SummaryContext<'_>) {
+    let completed = ctx.pool.completed_count();
+    let failed = ctx.pool.failed_count();
+    let skipped = (ctx.file_count as u64)
         .saturating_sub(completed)
         .saturating_sub(failed);
 
-    let modified_label = if dry_run { "would modify" } else { "modified" };
+    let modified_label = if ctx.dry_run {
+        "would modify"
+    } else {
+        "modified"
+    };
 
     println!(
         "\n{} {} processed, {} {modified_label}, {} skipped, {} errors (workers: {})",
         style("Done.").bold().green(),
         style(completed).green(),
-        style(modified).cyan(),
+        style(ctx.modified).cyan(),
         style(skipped).dim(),
         if failed > 0 {
             style(failed).red().to_string()
         } else {
             failed.to_string()
         },
-        effective_workers,
+        ctx.effective_workers,
     );
 
-    if keep_backups && modified > 0 && !dry_run {
+    if ctx.keep_backups && ctx.modified > 0 && !ctx.dry_run {
         println!(
             "{} {} backups retained ({}) \u{2014} delete with: find {} -name '*.vbak' -delete",
             style("Info:").bold(),
-            style(modified).cyan(),
-            style(format_size(backup_bytes)).cyan(),
-            path.display(),
+            style(ctx.modified).cyan(),
+            style(format_size(ctx.backup_bytes)).cyan(),
+            ctx.path.display(),
         );
     }
 
-    if dry_run {
+    if ctx.dry_run {
         println!(
             "\n{}",
             style("This was a dry run. No files were modified.").dim()
@@ -1126,19 +1121,24 @@ mod tests {
         let kernel = Arc::new(kernel);
         let backup_bytes = AtomicU64::new(0);
         let phase_stats: PhaseStatsMap = Arc::new(Mutex::new(HashMap::new()));
-        let _ = execute_plans(
-            &file,
-            &result,
-            kernel,
-            true,
-            false,
-            false,
-            &token,
-            None,
-            &backup_bytes,
-            &phase_stats,
-        )
-        .await;
+        let modified_count = AtomicU64::new(0);
+        let compiled = voom_dsl::compile_policy("policy \"test\" { phase p1 { container mkv } }")
+            .expect("test policy");
+        let capabilities = voom_domain::CapabilityMap::default();
+        let ctx = ProcessContext {
+            compiled: &compiled,
+            kernel: kernel.clone(),
+            dry_run: false,
+            flag_size_increase: false,
+            keep_backups: false,
+            token: &token,
+            ffprobe_path: None,
+            capabilities: &capabilities,
+            modified_count: &modified_count,
+            backup_bytes: &backup_bytes,
+            phase_stats: &phase_stats,
+        };
+        let _ = execute_plans(&file, &result, &ctx, true).await;
 
         // Skipped plans should NOT trigger execution events
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
