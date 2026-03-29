@@ -10,6 +10,7 @@ mod commands;
 mod config;
 mod introspect;
 mod output;
+mod progress;
 mod stats;
 mod tools;
 

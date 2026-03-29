@@ -1,11 +1,9 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::{Context, Result};
 use console::style;
-use indicatif::{HumanDuration, MultiProgress, ProgressBar, ProgressStyle};
 use parking_lot::Mutex;
 
 use tokio_util::sync::CancellationToken;
@@ -13,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::config;
-use crate::output::{max_filename_len, shrink_filename, PROGRESS_FIXED_WIDTH};
+use crate::progress::{BatchProgress, DiscoveryProgress};
 use voom_domain::events::{
     Event, JobCompletedEvent, JobProgressEvent, JobStartedEvent, PlanCompletedEvent,
     PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent, PlanSkippedEvent,
@@ -122,7 +120,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
 
     let (pool, effective_workers) = create_worker_pool(job_queue, &args, token.clone())?;
 
-    let cli_reporter: Arc<dyn ProgressReporter> = Arc::new(CliProgressReporter::new(file_count));
+    let cli_reporter: Arc<dyn ProgressReporter> = Arc::new(BatchProgress::new(file_count));
     let bus_reporter: Arc<dyn ProgressReporter> = Arc::new(EventBusReporter::new(kernel.clone()));
     let reporter: Arc<dyn ProgressReporter> =
         Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]));
@@ -242,54 +240,25 @@ fn discover_files(
     options.hash_files = !args.no_backup;
     options.workers = args.workers;
 
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::with_template("{spinner:.green} {msg}")
-            .expect("valid progress template")
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-    );
-    pb.enable_steady_tick(std::time::Duration::from_millis(80));
-
-    let pb_clone = pb.clone();
+    let progress = DiscoveryProgress::new();
+    let progress_clone = progress.clone();
     let hash_files = options.hash_files;
-    options.on_progress = Some(Box::new(move |progress| match progress {
+    options.on_progress = Some(Box::new(move |p| match p {
         voom_discovery::ScanProgress::Discovered { count, path } => {
-            let prefix = format!("Discovering... {count} files found \u{2014} ");
-            let max_name = max_filename_len(2 + prefix.len());
-            let name = path
-                .file_name()
-                .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
-                .unwrap_or_default();
-            pb_clone.set_message(format!("{prefix}{name}"));
+            progress_clone.on_discovered(count, &path);
         }
         voom_discovery::ScanProgress::Processing {
             current,
             total,
             path,
         } => {
-            if current == 1 {
-                pb_clone.set_length(total as u64);
-                pb_clone.set_style(
-                    ProgressStyle::with_template(
-                        "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}",
-                    )
-                    .expect("valid progress template")
-                    .progress_chars("#>-"),
-                );
-            }
-            let prefix = if hash_files { "Hashing" } else { "Scanning" };
-            let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + prefix.len() + 2);
-            let name = path
-                .file_name()
-                .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
-                .unwrap_or_default();
-            pb_clone.set_position(current as u64);
-            pb_clone.set_message(format!("{prefix} {name}"));
+            let action = if hash_files { "Hashing" } else { "Scanning" };
+            progress_clone.on_processing(current, total, &path, action);
         }
     }));
 
     let events = discovery.scan(&options).context("filesystem scan failed")?;
-    pb.finish_and_clear();
+    progress.finish();
 
     for event in &events {
         kernel.dispatch(Event::FileDiscovered(event.clone()));
@@ -941,92 +910,6 @@ impl ProgressReporter for EventBusReporter {
     }
 
     fn on_batch_complete(&self, _completed: u64, _failed: u64) {}
-}
-
-/// CLI progress reporter using indicatif progress bars.
-struct CliProgressReporter {
-    _multi: MultiProgress,
-    overall: ProgressBar,
-    start: Instant,
-    total: u64,
-}
-
-impl CliProgressReporter {
-    fn new(total: usize) -> Self {
-        let multi = MultiProgress::new();
-        let overall = multi.add(ProgressBar::new(total as u64));
-        overall.set_style(
-            ProgressStyle::with_template(
-                "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}",
-            )
-            .expect("valid progress template")
-            .progress_chars("#>-"),
-        );
-        overall.enable_steady_tick(std::time::Duration::from_millis(200));
-        Self {
-            _multi: multi,
-            overall,
-            start: Instant::now(),
-            total: total as u64,
-        }
-    }
-
-    fn format_eta(&self) -> String {
-        let pos = self.overall.position();
-        if pos == 0 {
-            return String::new();
-        }
-        let elapsed = self.start.elapsed().as_secs_f64();
-        let rate = pos as f64 / elapsed;
-        let remaining = (self.total - pos) as f64 / rate;
-        if remaining.is_finite() && remaining > 0.0 {
-            format!(
-                "ETA {}",
-                HumanDuration(std::time::Duration::from_secs(remaining as u64))
-            )
-        } else {
-            String::new()
-        }
-    }
-}
-
-impl ProgressReporter for CliProgressReporter {
-    fn on_batch_start(&self, _total: usize) {}
-
-    fn on_job_start(&self, job: &voom_domain::job::Job) {
-        if let Some(ref raw) = job.payload {
-            if let Ok(payload) = serde_json::from_value::<DiscoveredFilePayload>(raw.clone()) {
-                let eta = self.format_eta();
-                let eta_suffix = if eta.is_empty() {
-                    String::new()
-                } else {
-                    format!("{eta} ")
-                };
-                let overhead = PROGRESS_FIXED_WIDTH + 13 + eta_suffix.len();
-                let max_name = max_filename_len(overhead);
-                let filename = std::path::Path::new(&payload.path)
-                    .file_name()
-                    .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
-                    .unwrap_or_default();
-                self.overall.set_message(format!("{eta_suffix}{filename}"));
-            }
-        }
-    }
-
-    fn on_job_progress(&self, _id: uuid::Uuid, _progress: f64, _msg: Option<&str>) {}
-
-    fn on_job_complete(&self, _id: uuid::Uuid, _success: bool, error: Option<&str>) {
-        if let Some(err) = error {
-            self.overall.suspend(|| {
-                eprintln!("{} {err}", style("ERROR:").bold().red());
-            });
-        }
-        self.overall.inc(1);
-    }
-
-    fn on_batch_complete(&self, _completed: u64, _failed: u64) {
-        self.overall.finish_and_clear();
-    }
 }
 
 #[cfg(test)]

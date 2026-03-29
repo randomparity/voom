@@ -1,34 +1,16 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::app;
 use crate::cli::ScanArgs;
 use crate::config;
-use crate::output::{self, max_filename_len, shrink_filename, PROGRESS_FIXED_WIDTH};
+use crate::output;
+use crate::progress::{DiscoveryProgress, ProbeProgress};
 use anyhow::{Context, Result};
 use console::style;
-use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
+use indicatif::HumanDuration;
 use tokio_util::sync::CancellationToken;
-
-/// Format an ETA string from elapsed time and progress counts.
-/// Returns an empty string when ETA cannot be meaningfully computed.
-fn format_eta(elapsed: Duration, current: usize, total: usize) -> String {
-    if current == 0 {
-        return String::new();
-    }
-    let elapsed = elapsed.as_secs_f64();
-    let rate = current as f64 / elapsed;
-    let remaining = (total - current) as f64 / rate;
-    if remaining.is_finite() && remaining > 0.0 {
-        format!(
-            ", ETA {}",
-            HumanDuration(std::time::Duration::from_secs(remaining as u64))
-        )
-    } else {
-        String::new()
-    }
-}
 
 /// Run the scan command.
 ///
@@ -59,16 +41,8 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
 
     let discovery = voom_discovery::DiscoveryPlugin::new();
 
-    // Set up a progress bar that transitions from discovery → processing
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::with_template("{spinner:.green} {msg}")
-            .expect("valid progress template")
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-    );
-    pb.enable_steady_tick(std::time::Duration::from_millis(80));
-
-    let pb_clone = pb.clone();
+    let progress = DiscoveryProgress::new();
+    let progress_clone = progress.clone();
     let file_count = Arc::new(AtomicU64::new(0));
     let file_count_clone = file_count.clone();
     let start = Instant::now();
@@ -78,52 +52,24 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     options.recursive = args.recursive;
     options.hash_files = hash_files;
     options.workers = args.workers;
-    options.on_progress = Some(Box::new(move |progress| {
-        match progress {
-            voom_discovery::ScanProgress::Discovered { count, path } => {
-                // 2 = spinner + space; the rest is the message prefix
-                let prefix = format!("Discovering... {count} files found — ");
-                let max_name = max_filename_len(2 + prefix.len());
-                let name = path
-                    .file_name()
-                    .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
-                    .unwrap_or_default();
-                pb_clone.set_message(format!("{prefix}{name}"));
-            }
-            voom_discovery::ScanProgress::Processing {
-                current,
-                total,
-                path,
-            } => {
-                // Switch to determinate progress on first processing event
-                if current == 1 {
-                    pb_clone.set_length(total as u64);
-                    pb_clone.set_style(
-                        ProgressStyle::with_template(
-                            "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}",
-                        )
-                        .expect("valid progress template")
-                        .progress_chars("#>-"),
-                    );
-                }
-                let eta = format_eta(start.elapsed(), current, total);
-                let prefix = if hash_files { "Hashing" } else { "Processing" };
-                let max_name =
-                    max_filename_len(PROGRESS_FIXED_WIDTH + eta.len() + prefix.len() + 3);
-                let name = path
-                    .file_name()
-                    .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
-                    .unwrap_or_default();
-                pb_clone.set_position(current as u64);
-                pb_clone.set_message(format!("{prefix} {name}{eta}"));
-                file_count_clone.store(total as u64, Ordering::Relaxed);
-            }
+    options.on_progress = Some(Box::new(move |progress| match progress {
+        voom_discovery::ScanProgress::Discovered { count, path } => {
+            progress_clone.on_discovered(count, &path);
+        }
+        voom_discovery::ScanProgress::Processing {
+            current,
+            total,
+            path,
+        } => {
+            let action = if hash_files { "Hashing" } else { "Processing" };
+            progress_clone.on_processing(current, total, &path, action);
+            file_count_clone.store(total as u64, Ordering::Relaxed);
         }
     }));
 
     let events = discovery.scan(&options).context("filesystem scan failed")?;
 
-    pb.finish_and_clear();
+    progress.finish();
 
     if events.is_empty() {
         println!("{}", style("No media files found.").yellow());
@@ -164,17 +110,7 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
         kernel.dispatch(voom_domain::events::Event::FileDiscovered(event.clone()));
     }
 
-    let pb = ProgressBar::new(events.len() as u64);
-    pb.set_style(
-        ProgressStyle::with_template(
-            "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}",
-        )
-        .expect("valid progress template")
-        .progress_chars("#>-"),
-    );
-    pb.set_message("Probing...");
-
-    let intro_start = Instant::now();
+    let probe = ProbeProgress::new(events.len());
     let mut introspected = 0u64;
     let mut errors = 0u64;
     let total = events.len() as u64;
@@ -183,15 +119,7 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
         if token.is_cancelled() {
             break;
         }
-        let eta = format_eta(intro_start.elapsed(), i + 1, total as usize);
-        let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len() + 9); // "Probing "
-        let name = event
-            .path
-            .file_name()
-            .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
-            .unwrap_or_default();
-
-        pb.set_message(format!("Probing {name}{eta}"));
+        probe.on_file(i + 1, &event.path);
 
         match crate::introspect::introspect_file(
             event.path.clone(),
@@ -211,10 +139,10 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
             }
         }
 
-        pb.inc(1);
+        probe.inc();
     }
 
-    pb.finish_and_clear();
+    probe.finish();
 
     let total_elapsed = start.elapsed();
     if token.is_cancelled() {
@@ -337,24 +265,6 @@ mod tests {
         kernel.dispatch(Event::FileIntrospected(FileIntrospectedEvent::new(file)));
 
         assert_eq!(recorder.introspected_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn test_format_eta_zero_current_returns_empty() {
-        assert_eq!(format_eta(Duration::from_secs(1), 0, 100), "");
-    }
-
-    #[test]
-    fn test_format_eta_complete_returns_empty() {
-        // When current == total, remaining == 0 so empty string
-        assert_eq!(format_eta(Duration::from_secs(1), 100, 100), "");
-    }
-
-    #[test]
-    fn test_format_eta_in_progress_returns_nonempty() {
-        let eta = format_eta(Duration::from_secs(1), 1, 100);
-        // Should produce something like ", ETA 1s" or similar
-        assert!(eta.starts_with(", ETA "), "expected ETA prefix, got: {eta}");
     }
 
     #[tokio::test]
