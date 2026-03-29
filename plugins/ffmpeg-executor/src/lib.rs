@@ -17,7 +17,7 @@ use voom_domain::events::{
     CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent, PlanCreatedEvent,
 };
 use voom_domain::media::Container;
-use voom_domain::plan::{ActionParams, OperationType, Plan};
+use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 use voom_kernel::{Plugin, PluginContext};
 
 use crate::hwaccel::HwAccelConfig;
@@ -152,6 +152,10 @@ impl FfmpegExecutorPlugin {
                             return false;
                         }
                     }
+                    // Verify the source codec has a decoder
+                    if !self.has_decoder_for_track(plan, action) {
+                        return false;
+                    }
                 }
                 (
                     OperationType::SynthesizeAudio,
@@ -186,6 +190,36 @@ impl FfmpegExecutorPlugin {
             }
         }
         true
+    }
+
+    /// Check that ffmpeg has a decoder for the source track being
+    /// transcoded.  Without one, ffmpeg fails with "no decoder found".
+    fn has_decoder_for_track(&self, plan: &Plan, action: &PlannedAction) -> bool {
+        let caps = match &self.probed_codecs {
+            Some(c) => c,
+            None => return true, // no probed data — optimistic
+        };
+        let idx = match action.track_index {
+            Some(i) => i as usize,
+            None => return true, // global codec override — skip check
+        };
+        let track = match plan.file.tracks.get(idx) {
+            Some(t) => t,
+            None => return true, // index out of range — let ffmpeg report
+        };
+        let source_codec = &track.codec;
+        if caps.decoders.iter().any(|d| d == source_codec) {
+            return true;
+        }
+        tracing::warn!(
+            source_codec = %source_codec,
+            track_index = idx,
+            path = %plan.file.path.display(),
+            "rejecting plan: no decoder for source codec \
+             (ffmpeg may be missing non-free codecs — \
+             install from rpmfusion.org on Fedora)"
+        );
+        false
     }
 
     /// Execute a plan using the ffmpeg executor module.
@@ -729,11 +763,10 @@ mod tests {
     // ── can_handle: probed capability checks ───────────────────
 
     fn plugin_with_probed(encoders: Vec<&str>, formats: Vec<&str>) -> FfmpegExecutorPlugin {
+        let enc: Vec<String> = encoders.into_iter().map(String::from).collect();
         let mut plugin = FfmpegExecutorPlugin::new();
-        plugin.probed_codecs = Some(CodecCapabilities::new(
-            vec![],
-            encoders.into_iter().map(String::from).collect(),
-        ));
+        // Use encoders as decoders too — real ffmpeg typically has both
+        plugin.probed_codecs = Some(CodecCapabilities::new(enc.clone(), enc));
         plugin.probed_formats = Some(formats.into_iter().map(String::from).collect());
         plugin
     }
