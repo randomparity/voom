@@ -104,6 +104,9 @@ fn show(file: std::path::PathBuf) -> Result<()> {
         compiled.config.subtitle_languages.join(", ")
     );
     println!("  On error: {:?}", compiled.config.on_error);
+    if compiled.config.keep_backups {
+        println!("  Keep backups: true");
+    }
     println!();
 
     // Phases
