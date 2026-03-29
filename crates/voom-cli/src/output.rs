@@ -10,6 +10,15 @@ use voom_domain::utils::format;
 
 use crate::cli::OutputFormat;
 
+/// Strip control characters (ANSI escapes, newlines, null bytes, etc.)
+/// from a string before displaying it in the terminal.
+///
+/// Config values and external process output are untrusted input that could
+/// contain injected escape sequences. Call this at the display boundary.
+pub fn sanitize_for_display(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
+}
+
 /// Returns the current terminal width, defaulting to 80 if it cannot be determined.
 pub fn term_width() -> usize {
     console::Term::stdout().size().1 as usize
@@ -257,6 +266,33 @@ pub fn new_table() -> Table {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sanitize_passes_normal_strings() {
+        assert_eq!(sanitize_for_display("hello world"), "hello world");
+        assert_eq!(sanitize_for_display("GPU 0: RTX 4090"), "GPU 0: RTX 4090");
+    }
+
+    #[test]
+    fn test_sanitize_strips_ansi_escapes() {
+        // CSI sequence: ESC [ 31 m (red text)
+        assert_eq!(sanitize_for_display("\x1b[31mred\x1b[0m"), "[31mred[0m");
+    }
+
+    #[test]
+    fn test_sanitize_strips_control_chars() {
+        assert_eq!(sanitize_for_display("a\x00b\nc\rd\te"), "abcde");
+    }
+
+    #[test]
+    fn test_sanitize_empty_string() {
+        assert_eq!(sanitize_for_display(""), "");
+    }
+
+    #[test]
+    fn test_sanitize_only_control_chars() {
+        assert_eq!(sanitize_for_display("\x00\n\r\t\x1b"), "");
+    }
 
     #[test]
     fn test_shrink_no_truncation_needed() {

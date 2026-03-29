@@ -2,6 +2,8 @@
 
 use console::style;
 
+use crate::output::sanitize_for_display;
+
 /// Result of checking required and optional external tools.
 pub struct ToolCheckResult {
     /// Number of required tools that were not found.
@@ -26,7 +28,8 @@ pub fn print_tool_status(detector: &voom_tool_detector::ToolDetectorPlugin) -> T
     for tool in required_tools {
         print!("  {tool} ... ");
         if let Some(t) = detector.tool(tool) {
-            println!("{} ({})", style("OK").green(), style(&t.version).dim());
+            let ver = sanitize_for_display(&t.version);
+            println!("{} ({})", style("OK").green(), style(ver).dim());
         } else {
             println!("{} (required)", style("NOT FOUND").red());
             missing_required += 1;
@@ -36,7 +39,8 @@ pub fn print_tool_status(detector: &voom_tool_detector::ToolDetectorPlugin) -> T
     for tool in optional_tools {
         print!("  {tool} ... ");
         if let Some(t) = detector.tool(tool) {
-            println!("{} ({})", style("OK").green(), style(&t.version).dim());
+            let ver = sanitize_for_display(&t.version);
+            println!("{} ({})", style("OK").green(), style(ver).dim());
         } else {
             println!("{}", style("not found").yellow());
         }

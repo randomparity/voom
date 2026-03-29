@@ -8,6 +8,7 @@ use voom_ffmpeg_executor::probe::{
 
 use crate::app;
 use crate::config;
+use crate::output::sanitize_for_display;
 use crate::tools::print_tool_status;
 
 /// Run the doctor command.
@@ -229,16 +230,17 @@ fn print_hw_accel_status() {
         .and_then(|v| v.as_str())
     {
         let found = devices.iter().any(|d| d.id == device_id);
+        let safe_id = sanitize_for_display(device_id);
         if found {
             println!(
                 "  Configured GPU ... {} {}",
-                style(device_id).cyan(),
+                style(&safe_id).cyan(),
                 style("(found)").green()
             );
         } else {
             println!(
                 "  Configured GPU ... {} {}",
-                style(device_id).cyan(),
+                style(&safe_id).cyan(),
                 style("(NOT FOUND)").red()
             );
         }
