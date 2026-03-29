@@ -168,25 +168,33 @@ fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()
         return Ok(());
     }
 
-    // Group stats by phase name
     let mut phases: Vec<String> = Vec::new();
-    let mut phase_data: HashMap<String, PhaseRow> = HashMap::new();
+    let mut completed: HashMap<String, u64> = HashMap::new();
+    let mut skipped: HashMap<String, u64> = HashMap::new();
+    let mut failed: HashMap<String, u64> = HashMap::new();
+    let mut skip_reasons: HashMap<String, HashMap<String, u64>> = HashMap::new();
+
     for stat in &stats {
-        let row = phase_data
-            .entry(stat.phase_name.clone())
-            .or_insert_with(|| {
-                phases.push(stat.phase_name.clone());
-                PhaseRow::default()
-            });
+        if !completed.contains_key(&stat.phase_name) {
+            phases.push(stat.phase_name.clone());
+        }
         match stat.status {
-            voom_domain::storage::PlanStatus::Completed => row.completed += stat.count,
+            voom_domain::storage::PlanStatus::Completed => {
+                *completed.entry(stat.phase_name.clone()).or_default() += stat.count;
+            }
             voom_domain::storage::PlanStatus::Skipped => {
-                row.skipped += stat.count;
+                *skipped.entry(stat.phase_name.clone()).or_default() += stat.count;
                 if let Some(reason) = &stat.skip_reason {
-                    *row.skip_reasons.entry(reason.clone()).or_insert(0) += stat.count;
+                    *skip_reasons
+                        .entry(stat.phase_name.clone())
+                        .or_default()
+                        .entry(reason.clone())
+                        .or_default() += stat.count;
                 }
             }
-            voom_domain::storage::PlanStatus::Failed => row.failed += stat.count,
+            voom_domain::storage::PlanStatus::Failed => {
+                *failed.entry(stat.phase_name.clone()).or_default() += stat.count;
+            }
             _ => {}
         }
     }
@@ -196,15 +204,14 @@ fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()
             let entries: Vec<serde_json::Value> = phases
                 .iter()
                 .map(|name| {
-                    let row = &phase_data[name];
                     let mut val = serde_json::json!({
                         "phase": name,
-                        "completed": row.completed,
-                        "skipped": row.skipped,
-                        "failed": row.failed,
+                        "completed": completed.get(name).copied().unwrap_or(0),
+                        "skipped": skipped.get(name).copied().unwrap_or(0),
+                        "failed": failed.get(name).copied().unwrap_or(0),
                     });
-                    if !row.skip_reasons.is_empty() {
-                        val["skip_reasons"] = serde_json::json!(row.skip_reasons);
+                    if let Some(reasons) = skip_reasons.get(name) {
+                        val["skip_reasons"] = serde_json::json!(reasons);
                     }
                     val
                 })
@@ -227,13 +234,15 @@ fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()
                 "Top Skip Reasons",
             ]);
             for name in &phases {
-                let row = &phase_data[name];
-                let reasons = format_top_skip_reasons(&row.skip_reasons);
+                let reasons = skip_reasons
+                    .get(name)
+                    .map(|r| output::format_skip_reasons(r, 3))
+                    .unwrap_or_default();
                 table.add_row(vec![
                     Cell::new(name),
-                    Cell::new(row.completed),
-                    Cell::new(row.skipped),
-                    Cell::new(row.failed),
+                    Cell::new(completed.get(name).copied().unwrap_or(0)),
+                    Cell::new(skipped.get(name).copied().unwrap_or(0)),
+                    Cell::new(failed.get(name).copied().unwrap_or(0)),
                     Cell::new(&reasons),
                 ]);
             }
@@ -242,35 +251,6 @@ fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()
     }
 
     Ok(())
-}
-
-#[derive(Default)]
-struct PhaseRow {
-    completed: u64,
-    skipped: u64,
-    failed: u64,
-    skip_reasons: HashMap<String, u64>,
-}
-
-fn format_top_skip_reasons(reasons: &HashMap<String, u64>) -> String {
-    if reasons.is_empty() {
-        return String::new();
-    }
-    let mut sorted: Vec<_> = reasons.iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(a.1));
-    sorted
-        .iter()
-        .take(3)
-        .map(|(reason, count)| {
-            let display = if reason.len() > 30 {
-                format!("{}...", &reason[..27])
-            } else {
-                reason.to_string()
-            };
-            format!("{display} ({count})")
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn codec_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {

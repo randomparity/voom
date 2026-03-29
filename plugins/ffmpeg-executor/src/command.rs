@@ -222,8 +222,6 @@ fn apply_transcode_video(
         return cmd;
     };
 
-    // Per-action hw override: "none" forces software, a specific backend
-    // name uses that backend, otherwise fall through to system-wide config.
     let encoder = match hw.as_deref() {
         Some("none") => hwaccel::software_encoder(codec).to_string(),
         Some(backend) => {

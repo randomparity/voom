@@ -178,7 +178,6 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
 
     let modified = modified_for_summary.load(AtomicOrdering::Relaxed);
     let backup_total = backup_bytes_for_summary.load(AtomicOrdering::Relaxed);
-    let phase_stats_snapshot = phase_stats_for_summary.lock().clone();
     if token.is_cancelled() {
         print_interrupted_summary(&pool, file_count, modified);
     } else {
@@ -193,7 +192,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
             &path,
         );
     }
-    print_phase_breakdown(&phase_stats_snapshot, &phase_order);
+    print_phase_breakdown(&phase_stats_for_summary.lock(), &phase_order);
 
     Ok(())
 }
@@ -302,8 +301,7 @@ fn parse_job_payload(job: &voom_domain::job::Job) -> anyhow::Result<DiscoveredFi
     serde_json::from_value(raw_payload.clone()).context("invalid payload")
 }
 
-/// Per-phase statistics accumulated during processing.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 struct PhaseStats {
     completed: u64,
     skipped: u64,
@@ -311,10 +309,8 @@ struct PhaseStats {
     skip_reasons: HashMap<String, u64>,
 }
 
-/// Thread-safe map of phase name → stats.
 type PhaseStatsMap = Arc<Mutex<HashMap<String, PhaseStats>>>;
 
-/// Record a phase outcome in the shared stats map.
 fn record_phase_stat(stats: &PhaseStatsMap, phase_name: &str, outcome: PhaseOutcomeKind) {
     let mut map = stats.lock();
     let entry = map.entry(phase_name.to_string()).or_default();
@@ -328,7 +324,6 @@ fn record_phase_stat(stats: &PhaseStatsMap, phase_name: &str, outcome: PhaseOutc
     }
 }
 
-/// Classification for phase stats tracking.
 enum PhaseOutcomeKind {
     Completed,
     Skipped(String),
@@ -394,8 +389,6 @@ async fn process_single_file(
         ctx.modified_count.fetch_add(1, AtomicOrdering::Relaxed);
     }
 
-    // Record phase stats for skipped/empty plans (both dry-run and live).
-    // Completed/failed stats for executed plans are recorded in execute_plans.
     for plan in &result.plans {
         if plan.is_skipped() {
             let reason = plan
@@ -407,21 +400,16 @@ async fn process_single_file(
                 &plan.phase_name,
                 PhaseOutcomeKind::Skipped(reason),
             );
+        } else if ctx.dry_run && !plan.is_empty() {
+            record_phase_stat(
+                ctx.phase_stats,
+                &plan.phase_name,
+                PhaseOutcomeKind::Completed,
+            );
         }
     }
 
     if ctx.dry_run {
-        // In dry-run, non-skipped plans count as "completed" for stats
-        for plan in &result.plans {
-            if !plan.is_skipped() && !plan.is_empty() {
-                record_phase_stat(
-                    ctx.phase_stats,
-                    &plan.phase_name,
-                    PhaseOutcomeKind::Completed,
-                );
-            }
-        }
-
         let plan_summaries: Vec<serde_json::Value> = result
             .plans
             .iter()
@@ -814,7 +802,6 @@ fn print_summary(
     }
 }
 
-/// Print per-phase breakdown if any phases recorded stats.
 fn print_phase_breakdown(stats: &HashMap<String, PhaseStats>, phase_order: &[String]) {
     if stats.is_empty() {
         return;
@@ -830,34 +817,17 @@ fn print_phase_breakdown(stats: &HashMap<String, PhaseStats>, phase_order: &[Str
             parts.push(format!("{} completed", ps.completed));
         }
         if ps.skipped > 0 {
-            let reasons: String = if ps.skip_reasons.len() == 1 {
-                let (reason, _) = ps.skip_reasons.iter().next().expect("non-empty");
-                format!(" ({})", truncate_reason(reason))
+            let reasons = crate::output::format_skip_reasons(&ps.skip_reasons, 3);
+            if reasons.is_empty() {
+                parts.push(format!("{} skipped", ps.skipped));
             } else {
-                let mut sorted: Vec<_> = ps.skip_reasons.iter().collect();
-                sorted.sort_by(|a, b| b.1.cmp(a.1));
-                let items: Vec<String> = sorted
-                    .iter()
-                    .take(3)
-                    .map(|(r, c)| format!("{}: {c}", truncate_reason(r)))
-                    .collect();
-                format!(" ({})", items.join(", "))
-            };
-            parts.push(format!("{} skipped{reasons}", ps.skipped));
+                parts.push(format!("{} skipped ({reasons})", ps.skipped));
+            }
         }
         if ps.failed > 0 {
             parts.push(format!("{} errors", ps.failed));
         }
         println!("    {:<20} {}", format!("{phase_name}:"), parts.join(", "));
-    }
-}
-
-/// Truncate a skip reason to a reasonable display length.
-fn truncate_reason(reason: &str) -> &str {
-    if reason.len() <= 40 {
-        reason
-    } else {
-        &reason[..37]
     }
 }
 
