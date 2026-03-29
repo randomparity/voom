@@ -31,7 +31,14 @@ impl FileHistoryStorage for SqliteStore {
                         id: row_uuid(&id_str, "file_history")?,
                         file_id: row_uuid(&file_id_str, "file_history")?,
                         path: PathBuf::from(row.get::<_, String>("path")?),
-                        content_hash: row.get("content_hash")?,
+                        content_hash: {
+                            let h: String = row.get("content_hash")?;
+                            if h.is_empty() {
+                                None
+                            } else {
+                                Some(h)
+                            }
+                        },
                         container: Container::from_extension(&container_str),
                         track_count: u32::try_from(row.get::<_, i32>("track_count")?).unwrap_or(0),
                         introspected_at: parse_optional_datetime(

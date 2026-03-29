@@ -202,9 +202,9 @@ fn build_event(path: &Path, compute_hash: bool) -> Result<FileDiscoveredEvent> {
     let size = metadata.len();
 
     let content_hash = if compute_hash {
-        hash_file(path)?
+        Some(hash_file(path)?)
     } else {
-        String::new()
+        None
     };
 
     tracing::debug!(path = %path.display(), size, "file discovered");
@@ -267,7 +267,7 @@ mod tests {
         let event = build_event(&path, true).unwrap();
         assert_eq!(event.path, path);
         assert_eq!(event.size, 15);
-        assert!(!event.content_hash.is_empty());
+        assert!(event.content_hash.is_some());
     }
 
     #[test]
@@ -303,6 +303,6 @@ mod tests {
         std::fs::write(&path, b"fake video data").unwrap();
 
         let event = build_event(&path, false).unwrap();
-        assert!(event.content_hash.is_empty());
+        assert!(event.content_hash.is_none());
     }
 }

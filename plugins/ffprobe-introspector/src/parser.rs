@@ -34,7 +34,7 @@ pub fn parse_ffprobe_output(
 
     let mut mf = MediaFile::new(path.to_path_buf());
     mf.size = size;
-    mf.content_hash = content_hash.to_string();
+    mf.content_hash = Some(content_hash.to_string());
     mf.container = container;
     mf.duration = duration;
     mf.bitrate = bitrate;
@@ -414,7 +414,7 @@ mod tests {
 
         assert_eq!(file.path, Path::new("/test/movie.mkv"));
         assert_eq!(file.size, 1_000_000);
-        assert_eq!(file.content_hash, "abc123");
+        assert_eq!(file.content_hash, Some("abc123".to_string()));
         assert_eq!(file.container, Container::Mkv);
         assert!((file.duration - 120.5).abs() < 0.01);
         assert_eq!(file.bitrate, Some(5_000_000));

@@ -345,7 +345,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
             PathBuf::from("/media/test.mkv"),
             1024,
-            "abc123".into(),
+            Some("abc123".into()),
         ));
 
         plugin.on_event(&event).unwrap();
@@ -370,7 +370,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
             PathBuf::from("/media/test.mkv"),
             1024,
-            "abc123".into(),
+            Some("abc123".into()),
         ));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());

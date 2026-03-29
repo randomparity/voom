@@ -195,7 +195,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
             PathBuf::from("/media/movies/test.mkv"),
             1_500_000_000,
-            "abc123def456".into(),
+            Some("abc123def456".into()),
         ));
 
         let (event_type, payload) = event_to_wasm(&event).unwrap();
@@ -334,7 +334,7 @@ mod tests {
             Event::FileDiscovered(FileDiscoveredEvent::new(
                 PathBuf::from("/test.mkv"),
                 100,
-                "hash".into(),
+                Some("hash".into()),
             )),
             Event::JobStarted(JobStartedEvent::new(uuid::Uuid::new_v4(), "test job")),
             Event::JobProgress(JobProgressEvent::new(uuid::Uuid::new_v4(), 0.5)),

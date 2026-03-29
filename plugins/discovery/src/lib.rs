@@ -199,7 +199,7 @@ mod tests {
         let events = plugin.scan(&opts).unwrap();
 
         assert_eq!(events.len(), 1);
-        assert!(!events[0].content_hash.is_empty());
+        assert!(events[0].content_hash.is_some());
         assert!(events[0].size > 0);
     }
 
@@ -214,7 +214,7 @@ mod tests {
         let events = plugin.scan(&opts).unwrap();
 
         assert_eq!(events.len(), 1);
-        assert!(events[0].content_hash.is_empty());
+        assert!(events[0].content_hash.is_none());
     }
 
     #[test]

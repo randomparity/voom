@@ -115,7 +115,11 @@ impl FileRow {
         let mut mf = MediaFile::new(PathBuf::from(&self.path));
         mf.id = parse_uuid(&self.id)?;
         mf.size = self.size as u64;
-        mf.content_hash = self.content_hash.clone();
+        mf.content_hash = if self.content_hash.is_empty() {
+            None
+        } else {
+            Some(self.content_hash.clone())
+        };
         mf.container = Container::from_extension(&self.container);
         mf.duration = self.duration.unwrap_or(0.0);
         mf.bitrate = self.bitrate.and_then(|b| u32::try_from(b).ok());

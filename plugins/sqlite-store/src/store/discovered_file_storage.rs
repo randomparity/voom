@@ -54,10 +54,16 @@ pub struct DiscoveredFile {
 impl SqliteStore {
     /// Insert or update a discovered file. On conflict (same path),
     /// update size, hash, status, and timestamps.
-    pub fn upsert_discovered_file(&self, path: &str, size: u64, content_hash: &str) -> Result<()> {
+    pub fn upsert_discovered_file(
+        &self,
+        path: &str,
+        size: u64,
+        content_hash: Option<&str>,
+    ) -> Result<()> {
         let conn = self.conn()?;
         let now = format_datetime(&chrono::Utc::now());
         let id = Uuid::new_v4().to_string();
+        let hash_str = content_hash.unwrap_or("");
 
         conn.execute(
             "INSERT INTO discovered_files (id, path, size, content_hash, status, discovered_at, updated_at)
@@ -67,7 +73,7 @@ impl SqliteStore {
                 content_hash = excluded.content_hash,
                 status = 'pending',
                 updated_at = excluded.updated_at",
-            params![id, path, size as i64, content_hash, now],
+            params![id, path, size as i64, hash_str, now],
         )
         .map_err(storage_err("failed to upsert discovered file"))?;
 
@@ -181,7 +187,7 @@ mod tests {
     fn test_upsert_and_list_discovered() {
         let store = test_store();
         store
-            .upsert_discovered_file("/media/test.mkv", 1024, "abc123")
+            .upsert_discovered_file("/media/test.mkv", 1024, Some("abc123"))
             .unwrap();
 
         let files = store.list_discovered_files(None).unwrap();
@@ -195,10 +201,10 @@ mod tests {
     fn test_upsert_updates_existing() {
         let store = test_store();
         store
-            .upsert_discovered_file("/media/test.mkv", 1024, "abc")
+            .upsert_discovered_file("/media/test.mkv", 1024, Some("abc"))
             .unwrap();
         store
-            .upsert_discovered_file("/media/test.mkv", 2048, "def")
+            .upsert_discovered_file("/media/test.mkv", 2048, Some("def"))
             .unwrap();
 
         let files = store.list_discovered_files(None).unwrap();
@@ -211,7 +217,7 @@ mod tests {
     fn test_update_status() {
         let store = test_store();
         store
-            .upsert_discovered_file("/media/test.mkv", 1024, "abc")
+            .upsert_discovered_file("/media/test.mkv", 1024, Some("abc"))
             .unwrap();
 
         store
@@ -233,7 +239,7 @@ mod tests {
     fn test_delete_discovered() {
         let store = test_store();
         store
-            .upsert_discovered_file("/media/test.mkv", 1024, "abc")
+            .upsert_discovered_file("/media/test.mkv", 1024, Some("abc"))
             .unwrap();
 
         store.delete_discovered_file("/media/test.mkv").unwrap();
@@ -246,10 +252,10 @@ mod tests {
     fn test_list_with_status_filter() {
         let store = test_store();
         store
-            .upsert_discovered_file("/media/a.mkv", 100, "aaa")
+            .upsert_discovered_file("/media/a.mkv", 100, Some("aaa"))
             .unwrap();
         store
-            .upsert_discovered_file("/media/b.mkv", 200, "bbb")
+            .upsert_discovered_file("/media/b.mkv", 200, Some("bbb"))
             .unwrap();
 
         store

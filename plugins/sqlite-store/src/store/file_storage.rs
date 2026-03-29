@@ -83,7 +83,7 @@ impl FileStorage for SqliteStore {
                 &path_str,
                 filename,
                 file.size as i64,
-                file.content_hash,
+                file.content_hash.as_deref().unwrap_or(""),
                 file.container.as_str(),
                 file.duration,
                 file.bitrate.map(i64::from),

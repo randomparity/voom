@@ -89,7 +89,7 @@ impl Plugin for SqliteStorePlugin {
         match event {
             Event::FileDiscovered(e) => {
                 let path_str = e.path.to_string_lossy();
-                store.upsert_discovered_file(&path_str, e.size, &e.content_hash)?;
+                store.upsert_discovered_file(&path_str, e.size, e.content_hash.as_deref())?;
                 tracing::info!(path = %e.path.display(), "stored discovered file");
             }
             Event::FileIntrospected(e) => {
@@ -408,7 +408,7 @@ mod tests {
         let event = Event::FileDiscovered(voom_domain::events::FileDiscoveredEvent::new(
             "/media/test.mkv".into(),
             1_500_000_000,
-            "abc123def456".into(),
+            Some("abc123def456".into()),
         ));
         plugin.on_event(&event).unwrap();
 

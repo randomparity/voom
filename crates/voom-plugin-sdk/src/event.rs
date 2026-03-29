@@ -79,7 +79,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
             PathBuf::from("/test.mkv"),
             42,
-            "abc".into(),
+            Some("abc".into()),
         ));
 
         let bytes = serialize_event(&event).unwrap();

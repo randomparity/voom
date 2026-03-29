@@ -176,7 +176,7 @@ mod tests {
         let event = Event::FileDiscovered(voom_domain::events::FileDiscoveredEvent::new(
             PathBuf::from("/media/test.mkv"),
             1024,
-            "abc123".into(),
+            Some("abc123".into()),
         ));
         let result = plugin
             .on_event(&event)

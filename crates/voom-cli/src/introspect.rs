@@ -20,14 +20,14 @@ pub fn dispatch_introspection_failure(
     kernel: &voom_kernel::Kernel,
     path: std::path::PathBuf,
     size: u64,
-    content_hash: String,
+    content_hash: Option<String>,
     error: &str,
 ) {
     kernel.dispatch(Event::FileIntrospectionFailed(
         FileIntrospectionFailedEvent::new(
             path,
             size,
-            Some(content_hash),
+            content_hash,
             error.to_string(),
             BadFileSource::Introspection,
         ),
@@ -44,7 +44,7 @@ pub fn dispatch_introspection_failure(
 pub async fn introspect_file(
     path: std::path::PathBuf,
     file_size: u64,
-    content_hash: String,
+    content_hash: Option<String>,
     kernel: &voom_kernel::Kernel,
     ffprobe_path: Option<&str>,
 ) -> std::result::Result<voom_domain::media::MediaFile, VoomError> {
@@ -55,10 +55,10 @@ pub async fn introspect_file(
     let path_for_event = path.clone();
     let hash_for_event = content_hash.clone();
     let path_display = path.display().to_string();
-    let intro_result = tokio::task::spawn_blocking(move || {
-        introspector.introspect(&path, file_size, &content_hash)
-    })
-    .await;
+    let hash_str = content_hash.clone().unwrap_or_default();
+    let intro_result =
+        tokio::task::spawn_blocking(move || introspector.introspect(&path, file_size, &hash_str))
+            .await;
 
     match intro_result {
         Ok(Ok(intro_event)) => {
@@ -102,5 +102,5 @@ pub async fn introspect_file(
 pub struct DiscoveredFilePayload {
     pub path: String,
     pub size: u64,
-    pub content_hash: String,
+    pub content_hash: Option<String>,
 }
