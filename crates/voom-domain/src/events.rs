@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::bad_file::BadFileSource;
+use crate::job::JobType;
 use crate::media::MediaFile;
 use crate::plan::{ActionResult, Plan};
 
@@ -24,6 +25,10 @@ pub enum Event {
     JobStarted(JobStartedEvent),
     JobProgress(JobProgressEvent),
     JobCompleted(JobCompletedEvent),
+    /// Emitted by plugins that need to enqueue background jobs without a
+    /// compile-time dependency on the job-manager crate.  The job-manager
+    /// plugin subscribes to this event and performs the actual enqueue.
+    JobEnqueueRequested(JobEnqueueRequestedEvent),
     /// Emitted by the tool-detector plugin. Consumed by the sqlite-store plugin
     /// to persist tool info, exposed via the web server's GET /api/tools endpoint.
     ToolDetected(ToolDetectedEvent),
@@ -49,6 +54,7 @@ impl Event {
     pub const JOB_STARTED: &str = "job.started";
     pub const JOB_PROGRESS: &str = "job.progress";
     pub const JOB_COMPLETED: &str = "job.completed";
+    pub const JOB_ENQUEUE_REQUESTED: &str = "job.enqueue_requested";
     pub const TOOL_DETECTED: &str = "tool.detected";
     pub const EXECUTOR_CAPABILITIES: &str = "executor.capabilities";
     pub const PLUGIN_ERROR: &str = "plugin.error";
@@ -69,6 +75,7 @@ impl Event {
             Event::JobStarted(_) => Self::JOB_STARTED,
             Event::JobProgress(_) => Self::JOB_PROGRESS,
             Event::JobCompleted(_) => Self::JOB_COMPLETED,
+            Event::JobEnqueueRequested(_) => Self::JOB_ENQUEUE_REQUESTED,
             Event::ToolDetected(_) => Self::TOOL_DETECTED,
             Event::ExecutorCapabilities(_) => Self::EXECUTOR_CAPABILITIES,
             Event::PluginError(_) => Self::PLUGIN_ERROR,
@@ -401,6 +408,32 @@ impl JobCompletedEvent {
 
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobEnqueueRequestedEvent {
+    pub job_type: JobType,
+    pub priority: i32,
+    pub payload: Option<serde_json::Value>,
+    pub requester: String,
+}
+
+impl JobEnqueueRequestedEvent {
+    #[must_use]
+    pub fn new(
+        job_type: JobType,
+        priority: i32,
+        payload: Option<serde_json::Value>,
+        requester: impl Into<String>,
+    ) -> Self {
+        Self {
+            job_type,
+            priority,
+            payload,
+            requester: requester.into(),
+        }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDetectedEvent {
     pub tool_name: String,
     pub version: String,
@@ -615,6 +648,27 @@ mod tests {
         let bytes = rmp_serde::to_vec(&event).unwrap();
         let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(deserialized.event_type(), "file.introspection_failed");
+    }
+
+    #[test]
+    fn test_job_enqueue_requested_serde_roundtrip() {
+        use crate::job::JobType;
+
+        let event = Event::JobEnqueueRequested(JobEnqueueRequestedEvent::new(
+            JobType::Introspect,
+            50,
+            Some(serde_json::json!({"path": "/media/test.mkv"})),
+            "ffprobe-introspector",
+        ));
+        assert_eq!(event.event_type(), "job.enqueue_requested");
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.event_type(), "job.enqueue_requested");
+
+        let bytes = rmp_serde::to_vec(&event).unwrap();
+        let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(deserialized.event_type(), "job.enqueue_requested");
     }
 
     #[test]

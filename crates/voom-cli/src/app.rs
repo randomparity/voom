@@ -159,20 +159,14 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
         "discovery"
     );
 
-    // FFprobe introspector — subscribes to FileDiscovered, enqueues introspect jobs.
+    // FFprobe introspector — subscribes to FileDiscovered, emits JobEnqueueRequested.
     // Registered after sqlite-store (100) so discovered files are persisted first.
-    {
-        let mut ctx =
-            voom_kernel::PluginContext::new(plugin_json("ffprobe-introspector"), data_dir.clone());
-        ctx.register_resource(job_queue.clone());
-        register_if_enabled!(
-            "ffprobe-introspector",
-            voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new(),
-            PRIORITY_FFPROBE_INTROSPECTOR,
-            "ffprobe introspector",
-            &ctx
-        );
-    }
+    register_if_enabled!(
+        "ffprobe-introspector",
+        voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new(),
+        PRIORITY_FFPROBE_INTROSPECTOR,
+        "ffprobe introspector"
+    );
 
     // Capability collector — captures ExecutorCapabilities events for the evaluator.
     // Registered before executors so it sees their init-time announcements.
@@ -203,13 +197,19 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
         "backup manager"
     );
 
-    // Job manager
-    register_if_enabled!(
-        "job-manager",
-        voom_job_manager::JobManagerPlugin::new(),
-        PRIORITY_JOB_MANAGER,
-        "job manager"
-    );
+    // Job manager — receives the shared job queue via PluginContext so it can
+    // handle JobEnqueueRequested events from other plugins.
+    {
+        let mut ctx = voom_kernel::PluginContext::new(plugin_json("job-manager"), data_dir.clone());
+        ctx.register_resource(job_queue.clone());
+        register_if_enabled!(
+            "job-manager",
+            voom_job_manager::JobManagerPlugin::new(),
+            PRIORITY_JOB_MANAGER,
+            "job manager",
+            &ctx
+        );
+    }
 
     // WASM plugins — loaded from the configured directory (if it exists).
     #[cfg(feature = "wasm")]

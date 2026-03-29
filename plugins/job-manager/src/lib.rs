@@ -17,16 +17,14 @@ use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
 use voom_domain::storage::JobStorage;
-use voom_kernel::Plugin;
-
-use crate::queue::JobQueue;
+use voom_kernel::{Plugin, PluginContext};
 
 /// The job manager plugin.
 ///
 /// Manages background job processing with a priority queue and worker pool.
 /// Jobs are persisted via `JobStorage`, enabling recovery after crashes.
 pub struct JobManagerPlugin {
-    queue: Option<Arc<JobQueue>>,
+    queue: Option<Arc<queue::JobQueue>>,
     capabilities: Vec<Capability>,
 }
 
@@ -42,13 +40,13 @@ impl JobManagerPlugin {
     /// Initialize with a storage backend.
     pub fn from_store(store: Arc<dyn JobStorage>) -> Self {
         Self {
-            queue: Some(Arc::new(JobQueue::new(store))),
+            queue: Some(Arc::new(queue::JobQueue::new(store))),
             capabilities: vec![Capability::ManageJobs],
         }
     }
 
     #[must_use]
-    pub fn queue(&self) -> Option<&Arc<JobQueue>> {
+    pub fn queue(&self) -> Option<&Arc<queue::JobQueue>> {
         self.queue.as_ref()
     }
 }
@@ -77,12 +75,40 @@ impl Plugin for JobManagerPlugin {
     fn handles(&self, event_type: &str) -> bool {
         matches!(
             event_type,
-            Event::JOB_STARTED | Event::JOB_PROGRESS | Event::JOB_COMPLETED
+            Event::JOB_STARTED
+                | Event::JOB_PROGRESS
+                | Event::JOB_COMPLETED
+                | Event::JOB_ENQUEUE_REQUESTED
         )
+    }
+
+    fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
+        self.queue = ctx.resource::<queue::JobQueue>();
+        tracing::info!(has_queue = self.queue.is_some(), "job-manager initialized");
+        Ok(vec![])
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
         match event {
+            Event::JobEnqueueRequested(e) => {
+                if let Some(queue) = &self.queue {
+                    let job_id =
+                        queue.enqueue(e.job_type.clone(), e.priority, e.payload.clone())?;
+                    tracing::info!(
+                        job_id = %job_id,
+                        job_type = %e.job_type,
+                        requester = %e.requester,
+                        "enqueued job via event"
+                    );
+                } else {
+                    tracing::warn!(
+                        job_type = %e.job_type,
+                        requester = %e.requester,
+                        "no job queue available, cannot enqueue"
+                    );
+                }
+                Ok(None)
+            }
             Event::JobStarted(e) => {
                 tracing::info!(job_id = %e.job_id, desc = %e.description, "Job started");
                 Ok(None)
@@ -182,6 +208,54 @@ mod tests {
             e
         });
         assert!(plugin.on_event(&event).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_handles_job_enqueue_requested() {
+        let plugin = JobManagerPlugin::new();
+        assert!(plugin.handles(Event::JOB_ENQUEUE_REQUESTED));
+    }
+
+    #[test]
+    fn test_on_event_enqueue_requested_with_queue() {
+        use voom_domain::events::JobEnqueueRequestedEvent;
+        use voom_domain::job::JobType;
+        use voom_domain::storage::JobStorage;
+
+        let store = Arc::new(InMemoryStore::new());
+        let plugin = JobManagerPlugin::from_store(store.clone());
+
+        let event = Event::JobEnqueueRequested(JobEnqueueRequestedEvent::new(
+            JobType::Introspect,
+            50,
+            Some(serde_json::json!({"path": "/media/test.mkv"})),
+            "ffprobe-introspector",
+        ));
+        let result = plugin.on_event(&event).unwrap();
+        assert!(result.is_none());
+
+        let jobs = store
+            .list_jobs(&voom_domain::storage::JobFilters::default())
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_type, JobType::Introspect);
+        assert_eq!(jobs[0].priority, 50);
+    }
+
+    #[test]
+    fn test_on_event_enqueue_requested_without_queue() {
+        use voom_domain::events::JobEnqueueRequestedEvent;
+        use voom_domain::job::JobType;
+
+        let plugin = JobManagerPlugin::new();
+        let event = Event::JobEnqueueRequested(JobEnqueueRequestedEvent::new(
+            JobType::Scan,
+            100,
+            None,
+            "test-requester",
+        ));
+        let result = plugin.on_event(&event).unwrap();
+        assert!(result.is_none());
     }
 
     #[test]

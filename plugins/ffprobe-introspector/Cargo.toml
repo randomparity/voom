@@ -13,7 +13,6 @@ description = "FFprobe introspection plugin for VOOM — media metadata extracti
 [dependencies]
 voom-domain = { workspace = true }
 voom-kernel = { workspace = true }
-voom-job-manager = { workspace = true }
 voom-process = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

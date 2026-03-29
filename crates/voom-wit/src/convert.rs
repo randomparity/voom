@@ -383,6 +383,25 @@ mod tests {
     }
 
     #[test]
+    fn test_job_enqueue_requested_event_roundtrip() {
+        use voom_domain::job::JobType;
+
+        let event = Event::JobEnqueueRequested(voom_domain::events::JobEnqueueRequestedEvent::new(
+            JobType::Introspect,
+            50,
+            Some(serde_json::json!({"path": "/media/test.mkv"})),
+            "ffprobe-introspector",
+        ));
+
+        let (event_type, payload) = event_to_wasm(&event).unwrap();
+        assert_eq!(event_type, "job.enqueue_requested");
+        assert!(!payload.is_empty());
+
+        let restored = event_from_wasm(&event_type, &payload).unwrap();
+        assert_eq!(restored.event_type(), "job.enqueue_requested");
+    }
+
+    #[test]
     fn test_event_result_from_wasm_empty() {
         let result = event_result_from_wasm("empty-plugin".into(), vec![], None).unwrap();
         assert_eq!(result.plugin_name, "empty-plugin");

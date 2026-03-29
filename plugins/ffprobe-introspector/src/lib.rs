@@ -9,21 +9,18 @@
 pub mod ffprobe;
 pub mod parser;
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
-use voom_domain::events::{Event, EventResult, FileIntrospectedEvent};
+use voom_domain::events::{Event, EventResult, FileIntrospectedEvent, JobEnqueueRequestedEvent};
 use voom_domain::job::JobType;
-use voom_job_manager::queue::JobQueue;
 use voom_kernel::{Plugin, PluginContext};
 
 /// `FFprobe` introspector: extracts media metadata using ffprobe.
 pub struct FfprobeIntrospectorPlugin {
     ffprobe_path: String,
     timeout: Duration,
-    queue: Option<Arc<JobQueue>>,
     capabilities: Vec<Capability>,
 }
 
@@ -33,7 +30,6 @@ impl FfprobeIntrospectorPlugin {
         Self {
             ffprobe_path: "ffprobe".into(),
             timeout: Duration::from_secs(60),
-            queue: None,
             capabilities: vec![Capability::Introspect {
                 formats: vec![
                     "mkv".into(),
@@ -100,31 +96,29 @@ impl Plugin for FfprobeIntrospectorPlugin {
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
         if let Event::FileDiscovered(e) = event {
-            if let Some(queue) = &self.queue {
-                let payload = serde_json::json!({
-                    "path": e.path.to_string_lossy(),
-                    "size": e.size,
-                    "content_hash": e.content_hash,
-                });
-                queue.enqueue(JobType::Introspect, 50, Some(payload))?;
-                tracing::info!(
-                    path = %e.path.display(),
-                    "enqueued introspection job"
-                );
-            } else {
-                tracing::debug!(
-                    path = %e.path.display(),
-                    "no job queue available, skipping introspection enqueue"
-                );
-            }
+            let payload = serde_json::json!({
+                "path": e.path.to_string_lossy(),
+                "size": e.size,
+                "content_hash": e.content_hash,
+            });
+            let enqueue_event = Event::JobEnqueueRequested(JobEnqueueRequestedEvent::new(
+                JobType::Introspect,
+                50,
+                Some(payload),
+                "ffprobe-introspector",
+            ));
+            let mut result = EventResult::new("ffprobe-introspector");
+            result.produced_events = vec![enqueue_event];
+            tracing::info!(
+                path = %e.path.display(),
+                "produced JobEnqueueRequested for introspection"
+            );
+            return Ok(Some(result));
         }
         Ok(None)
     }
 
     fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
-        // Obtain the shared job queue from the PluginContext resource map
-        self.queue = ctx.resource::<JobQueue>();
-
         // Parse ffprobe path from plugin config if provided
         if let Ok(config) = ctx.parse_config::<serde_json::Value>() {
             if let Some(path) = config.get("ffprobe_path").and_then(|v| v.as_str()) {
@@ -134,7 +128,6 @@ impl Plugin for FfprobeIntrospectorPlugin {
 
         tracing::info!(
             ffprobe_path = %self.ffprobe_path,
-            has_queue = self.queue.is_some(),
             "ffprobe introspector initialized"
         );
         Ok(vec![])
@@ -174,39 +167,41 @@ mod tests {
     }
 
     #[test]
-    fn test_on_event_without_queue_does_not_error() {
+    fn test_on_event_produces_enqueue_event() {
         let plugin = FfprobeIntrospectorPlugin::new();
         let event = Event::FileDiscovered(voom_domain::events::FileDiscoveredEvent::new(
             PathBuf::from("/media/test.mkv"),
             1024,
             "abc123".into(),
         ));
-        let result = plugin.on_event(&event).unwrap();
-        assert!(result.is_none());
+        let result = plugin
+            .on_event(&event)
+            .unwrap()
+            .expect("should produce result");
+        assert_eq!(result.produced_events.len(), 1);
+
+        let produced = &result.produced_events[0];
+        assert_eq!(produced.event_type(), Event::JOB_ENQUEUE_REQUESTED);
+        if let Event::JobEnqueueRequested(e) = produced {
+            assert_eq!(e.job_type, JobType::Introspect);
+            assert_eq!(e.priority, 50);
+            assert_eq!(e.requester, "ffprobe-introspector");
+            assert!(e.payload.is_some());
+        } else {
+            panic!("expected JobEnqueueRequested event");
+        }
     }
 
     #[test]
-    fn test_on_event_with_queue_enqueues_job() {
-        let store = Arc::new(voom_domain::test_support::InMemoryStore::new());
-        let queue = Arc::new(JobQueue::new(store.clone()));
-
-        let mut plugin = FfprobeIntrospectorPlugin::new();
-        plugin.queue = Some(queue);
-
-        let event = Event::FileDiscovered(voom_domain::events::FileDiscoveredEvent::new(
-            PathBuf::from("/media/test.mkv"),
-            1024,
-            "abc123".into(),
+    fn test_on_event_ignores_other_events() {
+        let plugin = FfprobeIntrospectorPlugin::new();
+        let event = Event::ToolDetected(voom_domain::events::ToolDetectedEvent::new(
+            "ffprobe",
+            "6.1",
+            PathBuf::from("/usr/bin/ffprobe"),
         ));
-        plugin.on_event(&event).unwrap();
-
-        // Verify a job was enqueued
-        use voom_domain::storage::JobStorage;
-        let jobs = store
-            .list_jobs(&voom_domain::storage::JobFilters::default())
-            .unwrap();
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].job_type, JobType::Introspect);
+        let result = plugin.on_event(&event).unwrap();
+        assert!(result.is_none());
     }
 
     #[test]

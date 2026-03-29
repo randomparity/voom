@@ -3314,7 +3314,6 @@ dependencies = [
  "tracing",
  "uuid",
  "voom-domain",
- "voom-job-manager",
  "voom-kernel",
  "voom-process",
 ]
