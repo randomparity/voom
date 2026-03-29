@@ -1892,7 +1892,7 @@ mod tests {
             let mut file = test_file();
             file.container = Container::Mkv;
             let policy = test_policy(r#"policy "test" { phase init { container mkv } }"#);
-            let mut result = evaluate(&policy, &file);
+            let result = evaluate(&policy, &file);
             // File is already MKV so no convert action, but verify the mapping
             // works by converting an MP4 file
             file.container = Container::Mp4;
