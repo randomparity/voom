@@ -290,6 +290,10 @@ impl PlanStorage for InMemoryStore {
     ) -> Result<()> {
         Ok(())
     }
+
+    fn plan_stats_by_phase(&self) -> Result<Vec<crate::storage::PlanPhaseStat>> {
+        Ok(Vec::new())
+    }
 }
 
 impl FileHistoryStorage for InMemoryStore {

@@ -13,7 +13,7 @@ use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
 use voom_dsl::compiled::*;
 
-use crate::condition::{evaluate_condition, resolve_value_or_field};
+use crate::condition::{evaluate_condition, resolve_value_or_field, EvalContext};
 use crate::filter::{track_matches, tracks_for_target};
 
 /// Result of evaluating a full policy against a file.
@@ -37,6 +37,17 @@ enum EvaluationOutcome {
 /// Evaluate a compiled policy against a media file, producing plans for all phases.
 #[must_use]
 pub fn evaluate(policy: &CompiledPolicy, file: &MediaFile) -> EvaluationResult {
+    evaluate_with_context(policy, file, None)
+}
+
+/// Evaluate a compiled policy with optional system capabilities context.
+#[must_use]
+pub fn evaluate_with_context(
+    policy: &CompiledPolicy,
+    file: &MediaFile,
+    capabilities: Option<&CapabilityMap>,
+) -> EvaluationResult {
+    let eval_ctx = EvalContext { capabilities };
     let mut plans = Vec::new();
     let mut phase_outcomes: HashMap<String, EvaluationOutcome> = HashMap::new();
 
@@ -46,7 +57,7 @@ pub fn evaluate(policy: &CompiledPolicy, file: &MediaFile) -> EvaluationResult {
             None => continue,
         };
 
-        let plan = evaluate_phase(phase, policy, file, &phase_outcomes);
+        let plan = evaluate_phase(phase, policy, file, &phase_outcomes, &eval_ctx);
 
         let outcome = if plan.is_skipped() {
             EvaluationOutcome::Skipped
@@ -69,6 +80,7 @@ fn evaluate_phase(
     policy: &CompiledPolicy,
     file: &MediaFile,
     phase_outcomes: &HashMap<String, EvaluationOutcome>,
+    eval_ctx: &EvalContext<'_>,
 ) -> Plan {
     let mut plan = Plan::new(file.clone(), policy.name.clone(), phase.name.clone());
     plan.policy_hash = if policy.source_hash.is_empty() {
@@ -78,7 +90,7 @@ fn evaluate_phase(
     };
 
     if let Some(ref cond) = phase.skip_when {
-        if evaluate_condition(cond, file) {
+        if evaluate_condition(cond, file, eval_ctx) {
             plan.skip_reason = Some("skip_when condition met".into());
             return plan;
         }
@@ -117,6 +129,7 @@ fn evaluate_phase(
     let mut ctx = PhaseContext {
         plan: &mut plan,
         file,
+        eval_ctx,
     };
 
     for op in &phase.operations {
@@ -230,6 +243,7 @@ fn apply_safeguard_for_track_type(
 struct PhaseContext<'a> {
     plan: &'a mut Plan,
     file: &'a MediaFile,
+    eval_ctx: &'a EvalContext<'a>,
 }
 
 /// Emit planned actions for a single operation into the plan.
@@ -557,10 +571,31 @@ fn emit_transcode(
         }
     };
 
+    // Check hw_fallback: if a specific HW backend is requested but unavailable,
+    // and hw_fallback is false, skip the entire phase gracefully.
+    if let Some(ref hw) = settings.hw {
+        if hw != "auto" && hw != "none" {
+            let hw_available = ctx
+                .eval_ctx
+                .capabilities
+                .map(|caps| caps.has_hwaccel(hw))
+                .unwrap_or(false);
+            if !hw_available && settings.hw_fallback == Some(false) {
+                ctx.plan.skip_reason = Some(format!(
+                    "hw backend '{hw}' unavailable and hw_fallback is false"
+                ));
+                ctx.plan.actions.clear();
+                return;
+            }
+        }
+    }
+
     let crf = settings.crf;
     let preset = settings.preset.clone();
     let bitrate = settings.bitrate.clone();
     let channels = settings.channels;
+    let hw = settings.hw.clone();
+    let hw_fallback = settings.hw_fallback;
 
     for track in &tracks {
         if track.codec == codec {
@@ -579,6 +614,8 @@ fn emit_transcode(
                 preset: preset.clone(),
                 bitrate: bitrate.clone(),
                 channels,
+                hw: hw.clone(),
+                hw_fallback,
             },
             format!(
                 "Transcode {} track {} from {} to {codec}",
@@ -593,7 +630,7 @@ fn emit_transcode(
 fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
     // Check create_if condition
     if let Some(ref cond) = synth.create_if {
-        if !evaluate_condition(cond, ctx.file) {
+        if !evaluate_condition(cond, ctx.file, ctx.eval_ctx) {
             return;
         }
     }
@@ -686,7 +723,7 @@ fn emit_set_tag(
     value: &CompiledValueOrField,
     ctx: &mut PhaseContext,
 ) -> Result<(), VoomError> {
-    let val = resolve_value_or_field(value, ctx.file)
+    let val = resolve_value_or_field(value, ctx.file, ctx.eval_ctx)
         .ok_or_else(|| VoomError::Validation(format!("Cannot resolve tag value for '{tag}'")))?;
     ctx.plan.actions.push(PlannedAction::file_op(
         OperationType::SetContainerTag,
@@ -712,7 +749,7 @@ fn emit_delete_tag(tag: &str, ctx: &mut PhaseContext) {
 }
 
 fn emit_conditional(cond: &CompiledConditional, ctx: &mut PhaseContext) -> Result<(), VoomError> {
-    let matched = evaluate_condition(&cond.condition, ctx.file);
+    let matched = evaluate_condition(&cond.condition, ctx.file, ctx.eval_ctx);
     let actions = if matched {
         &cond.then_actions
     } else {
@@ -730,7 +767,7 @@ fn emit_rules(
     ctx: &mut PhaseContext,
 ) -> Result<(), VoomError> {
     for rule in rules {
-        let matched = evaluate_condition(&rule.conditional.condition, ctx.file);
+        let matched = evaluate_condition(&rule.conditional.condition, ctx.file, ctx.eval_ctx);
         if matched {
             for action in &rule.conditional.then_actions {
                 emit_action(action, ctx)?;
@@ -774,7 +811,7 @@ fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), Vo
             filter,
             value,
         } => {
-            let lang = resolve_value_or_field(value, ctx.file).ok_or_else(|| {
+            let lang = resolve_value_or_field(value, ctx.file, ctx.eval_ctx).ok_or_else(|| {
                 VoomError::Validation("Cannot resolve language value".to_string())
             })?;
             let tracks = tracks_for_target(ctx.file, target);
@@ -1322,6 +1359,55 @@ mod tests {
         // containerize produces convert action, so modified
         assert!(!result.plans[1].is_skipped());
         assert_eq!(result.plans[1].warnings.len(), 1);
+    }
+
+    #[test]
+    fn test_skipped_phase_does_not_block_depends_on() {
+        let file = test_file(); // has hevc video
+        let policy = test_policy(
+            r#"policy "test" {
+                phase tc {
+                    skip when video.codec == "hevc"
+                    transcode video to hevc { crf: 20 }
+                }
+                phase cleanup {
+                    depends_on: [tc]
+                    when exists(audio where lang == eng) { warn "has eng" }
+                }
+            }"#,
+        );
+        let result = evaluate(&policy, &file);
+        assert!(result.plans[0].is_skipped(), "tc should be skipped");
+        // cleanup depends_on tc, but tc was skipped (not missing) — should still run
+        assert!(!result.plans[1].is_skipped(), "cleanup should run");
+        assert_eq!(result.plans[1].warnings.len(), 1);
+    }
+
+    #[test]
+    fn test_skipped_phase_blocks_run_if_completed() {
+        let file = test_file(); // has hevc video
+        let policy = test_policy(
+            r#"policy "test" {
+                phase tc {
+                    skip when video.codec == "hevc"
+                    transcode video to hevc { crf: 20 }
+                }
+                phase post_tc {
+                    depends_on: [tc]
+                    run_if tc.completed
+                    when exists(audio where lang == eng) { warn "has eng" }
+                }
+            }"#,
+        );
+        let result = evaluate(&policy, &file);
+        assert!(result.plans[0].is_skipped(), "tc should be skipped");
+        // post_tc has run_if tc.completed — tc was skipped not completed, so post_tc skips
+        assert!(result.plans[1].is_skipped(), "post_tc should be skipped");
+        assert!(result.plans[1]
+            .skip_reason
+            .as_ref()
+            .expect("skip reason")
+            .contains("run_if"));
     }
 
     #[test]
@@ -1943,6 +2029,195 @@ mod tests {
                 result.plans[0].executor_hint.is_none(),
                 "Should not set hint when multiple executors match"
             );
+        }
+    }
+
+    mod hw_fallback {
+        use super::*;
+        use voom_domain::capability_map::CapabilityMap;
+        use voom_domain::events::{CodecCapabilities, ExecutorCapabilitiesEvent};
+
+        fn caps_without_gpu() -> CapabilityMap {
+            let mut map = CapabilityMap::new();
+            map.register(ExecutorCapabilitiesEvent::new(
+                "ffmpeg-executor",
+                CodecCapabilities::new(
+                    vec!["h264".into(), "hevc".into()],
+                    vec!["h264".into(), "hevc".into()],
+                ),
+                vec!["matroska".into()],
+                vec![], // no hw_accels
+            ));
+            map
+        }
+
+        fn caps_with_nvenc() -> CapabilityMap {
+            let mut map = CapabilityMap::new();
+            map.register(ExecutorCapabilitiesEvent::new(
+                "ffmpeg-executor",
+                CodecCapabilities::new(
+                    vec!["h264".into(), "hevc".into()],
+                    vec!["h264".into(), "hevc".into()],
+                ),
+                vec!["matroska".into()],
+                vec!["cuda".into()],
+            ));
+            map
+        }
+
+        #[test]
+        fn test_hw_fallback_false_skips_when_backend_unavailable() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc {
+                        transcode video to hevc {
+                            crf: 20
+                            hw: nvenc
+                            hw_fallback: false
+                        }
+                    }
+                }"#,
+            );
+            let caps = caps_without_gpu();
+            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            assert!(
+                result.plans[0].is_skipped(),
+                "Should skip when nvenc unavailable and hw_fallback is false"
+            );
+            assert!(result.plans[0]
+                .skip_reason
+                .as_ref()
+                .expect("skip reason")
+                .contains("nvenc"));
+        }
+
+        #[test]
+        fn test_hw_fallback_true_falls_through_to_software() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc {
+                        transcode video to hevc {
+                            crf: 20
+                            hw: nvenc
+                            hw_fallback: true
+                        }
+                    }
+                }"#,
+            );
+            let caps = caps_without_gpu();
+            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            assert!(
+                !result.plans[0].is_skipped(),
+                "Should fall through to software when hw_fallback is true"
+            );
+            assert_eq!(result.plans[0].actions.len(), 1);
+        }
+
+        #[test]
+        fn test_hw_fallback_default_falls_through() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc {
+                        transcode video to hevc {
+                            crf: 20
+                            hw: nvenc
+                        }
+                    }
+                }"#,
+            );
+            let caps = caps_without_gpu();
+            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            assert!(
+                !result.plans[0].is_skipped(),
+                "Default hw_fallback (None) should allow software fallback"
+            );
+        }
+
+        #[test]
+        fn test_hw_available_runs_normally() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc {
+                        transcode video to hevc {
+                            crf: 20
+                            hw: nvenc
+                            hw_fallback: false
+                        }
+                    }
+                }"#,
+            );
+            let caps = caps_with_nvenc();
+            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            assert!(
+                !result.plans[0].is_skipped(),
+                "Should run normally when nvenc is available"
+            );
+            assert_eq!(result.plans[0].actions.len(), 1);
+        }
+
+        #[test]
+        fn test_hw_fallback_skip_allows_downstream_depends_on() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc {
+                        transcode video to hevc {
+                            crf: 20
+                            hw: nvenc
+                            hw_fallback: false
+                        }
+                    }
+                    phase cleanup {
+                        depends_on: [tc]
+                        when exists(audio where lang == eng) { warn "has eng" }
+                    }
+                }"#,
+            );
+            let caps = caps_without_gpu();
+            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            assert!(result.plans[0].is_skipped(), "tc should be skipped");
+            assert!(
+                !result.plans[1].is_skipped(),
+                "cleanup should still run via depends_on"
+            );
+        }
+
+        #[test]
+        fn test_hw_fields_threaded_to_action_params() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc {
+                        transcode video to hevc {
+                            crf: 20
+                            hw: nvenc
+                            hw_fallback: true
+                        }
+                    }
+                }"#,
+            );
+            let caps = caps_without_gpu();
+            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            let action = &result.plans[0].actions[0];
+            match &action.parameters {
+                ActionParams::Transcode {
+                    hw, hw_fallback, ..
+                } => {
+                    assert_eq!(hw.as_deref(), Some("nvenc"));
+                    assert_eq!(*hw_fallback, Some(true));
+                }
+                other => panic!("Expected Transcode params, got {other:?}"),
+            }
         }
     }
 }

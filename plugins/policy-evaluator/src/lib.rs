@@ -34,18 +34,19 @@ impl PolicyEvaluatorPlugin {
         evaluator::evaluate(policy, file)
     }
 
-    /// Evaluate a policy and then validate plans against executor capabilities.
+    /// Evaluate a policy with system capabilities available to conditions,
+    /// then validate plans against executor capabilities.
     ///
-    /// This is a convenience wrapper that calls [`evaluate`](Self::evaluate) followed by
-    /// [`evaluator::apply_capability_hints`]. The original `evaluate()` method
-    /// remains unchanged for callers that don't need capability validation.
+    /// This is a convenience wrapper that calls [`evaluator::evaluate_with_context`]
+    /// followed by [`evaluator::apply_capability_hints`]. The original `evaluate()`
+    /// method remains unchanged for callers that don't need capability context.
     pub fn evaluate_with_capabilities(
         &self,
         policy: &CompiledPolicy,
         file: &MediaFile,
         capabilities: &CapabilityMap,
     ) -> evaluator::EvaluationResult {
-        let mut result = evaluator::evaluate(policy, file);
+        let mut result = evaluator::evaluate_with_context(policy, file, Some(capabilities));
         evaluator::apply_capability_hints(&mut result.plans, capabilities);
         result
     }

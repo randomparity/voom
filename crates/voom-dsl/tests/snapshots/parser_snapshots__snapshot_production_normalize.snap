@@ -15,6 +15,7 @@ config:
     - commentary
     - director
     - cast
+  keep_backups: ~
 phases:
   - name: containerize
     skip_when: ~

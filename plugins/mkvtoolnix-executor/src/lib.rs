@@ -386,6 +386,8 @@ mod tests {
                 preset: None,
                 bitrate: None,
                 channels: None,
+                hw: None,
+                hw_fallback: None,
             },
         )]);
         assert!(!plugin.can_handle(&plan));

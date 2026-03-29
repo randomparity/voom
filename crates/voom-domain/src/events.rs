@@ -21,6 +21,7 @@ pub enum Event {
     PlanCreated(PlanCreatedEvent),
     PlanExecuting(PlanExecutingEvent),
     PlanCompleted(PlanCompletedEvent),
+    PlanSkipped(PlanSkippedEvent),
     PlanFailed(PlanFailedEvent),
     JobStarted(JobStartedEvent),
     JobProgress(JobProgressEvent),
@@ -50,6 +51,7 @@ impl Event {
     pub const PLAN_CREATED: &str = "plan.created";
     pub const PLAN_EXECUTING: &str = "plan.executing";
     pub const PLAN_COMPLETED: &str = "plan.completed";
+    pub const PLAN_SKIPPED: &str = "plan.skipped";
     pub const PLAN_FAILED: &str = "plan.failed";
     pub const JOB_STARTED: &str = "job.started";
     pub const JOB_PROGRESS: &str = "job.progress";
@@ -71,6 +73,7 @@ impl Event {
             Event::PlanCreated(_) => Self::PLAN_CREATED,
             Event::PlanExecuting(_) => Self::PLAN_EXECUTING,
             Event::PlanCompleted(_) => Self::PLAN_COMPLETED,
+            Event::PlanSkipped(_) => Self::PLAN_SKIPPED,
             Event::PlanFailed(_) => Self::PLAN_FAILED,
             Event::JobStarted(_) => Self::JOB_STARTED,
             Event::JobProgress(_) => Self::JOB_PROGRESS,
@@ -293,6 +296,10 @@ pub struct PlanCompletedEvent {
     pub path: PathBuf,
     pub phase_name: String,
     pub actions_applied: usize,
+    /// When `true`, the backup-manager should retain the `.vbak` file
+    /// instead of deleting it on completion.
+    #[serde(default)]
+    pub keep_backups: bool,
 }
 
 impl PlanCompletedEvent {
@@ -302,12 +309,40 @@ impl PlanCompletedEvent {
         path: PathBuf,
         phase_name: impl Into<String>,
         actions_applied: usize,
+        keep_backups: bool,
     ) -> Self {
         Self {
             plan_id,
             path,
             phase_name: phase_name.into(),
             actions_applied,
+            keep_backups,
+        }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanSkippedEvent {
+    pub plan_id: Uuid,
+    pub path: PathBuf,
+    pub phase_name: String,
+    pub skip_reason: String,
+}
+
+impl PlanSkippedEvent {
+    #[must_use]
+    pub fn new(
+        plan_id: Uuid,
+        path: PathBuf,
+        phase_name: impl Into<String>,
+        skip_reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            plan_id,
+            path,
+            phase_name: phase_name.into(),
+            skip_reason: skip_reason.into(),
         }
     }
 }
@@ -456,12 +491,23 @@ impl ToolDetectedEvent {
 pub struct CodecCapabilities {
     pub decoders: Vec<String>,
     pub encoders: Vec<String>,
+    /// Hardware-accelerated decoders (e.g. `hevc_cuvid`, `h264_qsv`).
+    #[serde(default)]
+    pub hw_decoders: Vec<String>,
+    /// Hardware-accelerated encoders (e.g. `av1_nvenc`, `hevc_vaapi`).
+    #[serde(default)]
+    pub hw_encoders: Vec<String>,
 }
 
 impl CodecCapabilities {
     #[must_use]
     pub fn new(decoders: Vec<String>, encoders: Vec<String>) -> Self {
-        Self { decoders, encoders }
+        Self {
+            decoders,
+            encoders,
+            hw_decoders: vec![],
+            hw_encoders: vec![],
+        }
     }
 
     #[must_use]
@@ -469,6 +515,8 @@ impl CodecCapabilities {
         Self {
             decoders: vec![],
             encoders: vec![],
+            hw_decoders: vec![],
+            hw_encoders: vec![],
         }
     }
 }
@@ -717,5 +765,33 @@ mod tests {
         assert_eq!(event.job_id, id);
         assert!(event.success);
         assert!(event.message.is_none());
+    }
+
+    #[test]
+    fn test_plan_skipped_event_type() {
+        let event = Event::PlanSkipped(PlanSkippedEvent::new(
+            Uuid::new_v4(),
+            PathBuf::from("/test.mkv"),
+            "transcode",
+            "no GPU available",
+        ));
+        assert_eq!(event.event_type(), "plan.skipped");
+    }
+
+    #[test]
+    fn test_plan_skipped_serde_roundtrip() {
+        let event = Event::PlanSkipped(PlanSkippedEvent::new(
+            Uuid::new_v4(),
+            PathBuf::from("/test.mkv"),
+            "transcode",
+            "skip_when condition met",
+        ));
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.event_type(), "plan.skipped");
+
+        let bytes = rmp_serde::to_vec(&event).unwrap();
+        let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(deserialized.event_type(), "plan.skipped");
     }
 }

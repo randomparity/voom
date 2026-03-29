@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use comfy_table::Cell;
 use console::style;
@@ -7,10 +9,15 @@ use crate::cli::{OutputFormat, ReportArgs};
 use crate::config;
 use crate::output;
 use crate::stats;
+use voom_domain::storage::PlanStorage;
 
 pub fn run(args: ReportArgs) -> Result<()> {
     let config = config::load_config()?;
     let store = app::open_store(&config)?;
+
+    if args.plans {
+        return run_plans_report(&*store, &args.format);
+    }
 
     let files = store
         .list_files(&voom_domain::FileFilters::default())
@@ -140,6 +147,105 @@ fn run_issues_report(files: &[voom_domain::MediaFile], format: &OutputFormat) ->
                         Cell::new(&v.message),
                     ]);
                 }
+            }
+            println!("{table}");
+        }
+    }
+
+    Ok(())
+}
+
+fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()> {
+    let stats = store
+        .plan_stats_by_phase()
+        .context("failed to query plan stats")?;
+
+    if stats.is_empty() {
+        println!(
+            "{}",
+            style("No plan data. Run 'voom process' first.").yellow()
+        );
+        return Ok(());
+    }
+
+    #[derive(Default)]
+    struct PhaseAgg {
+        completed: u64,
+        skipped: u64,
+        failed: u64,
+        skip_reasons: HashMap<String, u64>,
+    }
+
+    let mut phases: Vec<String> = Vec::new();
+    let mut by_phase: HashMap<String, PhaseAgg> = HashMap::new();
+
+    for stat in &stats {
+        if !by_phase.contains_key(&stat.phase_name) {
+            phases.push(stat.phase_name.clone());
+        }
+        let entry = by_phase.entry(stat.phase_name.clone()).or_default();
+        match stat.status {
+            voom_domain::storage::PlanStatus::Completed => {
+                entry.completed += stat.count;
+            }
+            voom_domain::storage::PlanStatus::Skipped => {
+                entry.skipped += stat.count;
+                if let Some(reason) = &stat.skip_reason {
+                    *entry.skip_reasons.entry(reason.clone()).or_default() += stat.count;
+                }
+            }
+            voom_domain::storage::PlanStatus::Failed => {
+                entry.failed += stat.count;
+            }
+            _ => {}
+        }
+    }
+
+    match format {
+        OutputFormat::Json => {
+            let entries: Vec<serde_json::Value> = phases
+                .iter()
+                .map(|name| {
+                    let ps = by_phase.get(name).expect("phase exists");
+                    let mut val = serde_json::json!({
+                        "phase": name,
+                        "completed": ps.completed,
+                        "skipped": ps.skipped,
+                        "failed": ps.failed,
+                    });
+                    if !ps.skip_reasons.is_empty() {
+                        val["skip_reasons"] = serde_json::json!(ps.skip_reasons);
+                    }
+                    val
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&entries).expect("report is serializable")
+            );
+        }
+        OutputFormat::Table => {
+            println!("{}", style("Plan Processing Summary").bold().underlined());
+            println!();
+
+            let mut table = output::new_table();
+            table.set_header(vec![
+                "Phase",
+                "Completed",
+                "Skipped",
+                "Failed",
+                "Top Skip Reasons",
+            ]);
+            for name in &phases {
+                let ps = by_phase.get(name).expect("phase exists");
+                let reasons = output::format_skip_reasons(&ps.skip_reasons, 3);
+                table.add_row(vec![
+                    Cell::new(name),
+                    Cell::new(ps.completed),
+                    Cell::new(ps.skipped),
+                    Cell::new(ps.failed),
+                    Cell::new(&reasons),
+                ]);
             }
             println!("{table}");
         }

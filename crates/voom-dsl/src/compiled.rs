@@ -105,6 +105,8 @@ pub struct CompiledConfig {
     pub subtitle_languages: Vec<String>,
     pub on_error: ErrorStrategy,
     pub commentary_patterns: Vec<String>,
+    #[serde(default)]
+    pub keep_backups: bool,
 }
 
 impl CompiledConfig {
@@ -114,12 +116,14 @@ impl CompiledConfig {
         subtitle_languages: Vec<String>,
         on_error: ErrorStrategy,
         commentary_patterns: Vec<String>,
+        keep_backups: bool,
     ) -> Self {
         Self {
             audio_languages,
             subtitle_languages,
             on_error,
             commentary_patterns,
+            keep_backups,
         }
     }
 }
@@ -266,6 +270,14 @@ pub struct CompiledTranscodeSettings {
     pub preset: Option<String>,
     pub bitrate: Option<String>,
     pub channels: Option<u32>,
+    /// Hardware acceleration backend preference.
+    /// Values: "auto", "nvenc", "qsv", "vaapi", "videotoolbox", "none".
+    #[serde(default)]
+    pub hw: Option<String>,
+    /// Whether to fall back to software encoding when the requested
+    /// HW backend is unavailable. Defaults to `true` when absent.
+    #[serde(default)]
+    pub hw_fallback: Option<bool>,
 }
 
 impl CompiledTranscodeSettings {
@@ -283,6 +295,8 @@ impl CompiledTranscodeSettings {
             preset,
             bitrate,
             channels,
+            hw: None,
+            hw_fallback: None,
         }
     }
 }

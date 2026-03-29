@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use voom_domain::errors::Result;
 use voom_domain::plan::{Plan, PlannedAction};
-use voom_domain::storage::{PlanStatus, PlanStorage, PlanSummary};
+use voom_domain::storage::{PlanPhaseStat, PlanStatus, PlanStorage, PlanSummary};
 
 use super::{
     format_datetime, other_storage_err, parse_optional_datetime, row_uuid, storage_err,
@@ -184,6 +184,41 @@ impl PlanStorage for SqliteStore {
             .map(StoredPlan::into_summary)
             .collect()
     }
+
+    fn plan_stats_by_phase(&self) -> Result<Vec<PlanPhaseStat>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT phase_name, status, skip_reason, COUNT(*) as count
+                 FROM plans
+                 GROUP BY phase_name, status, skip_reason
+                 ORDER BY phase_name, count DESC",
+            )
+            .map_err(storage_err("failed to prepare plan stats query"))?;
+
+        let stats = stmt
+            .query_map([], |row| {
+                let status_str: String = row.get("status")?;
+                let status = PlanStatus::parse(&status_str).ok_or_else(|| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        format!("unknown plan status: {status_str}").into(),
+                    )
+                })?;
+                Ok(PlanPhaseStat::new(
+                    row.get("phase_name")?,
+                    status,
+                    row.get("skip_reason")?,
+                    row.get::<_, i64>("count")? as u64,
+                ))
+            })
+            .map_err(storage_err("failed to query plan stats"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err("failed to collect plan stats"))?;
+
+        Ok(stats)
+    }
 }
 
 #[cfg(test)]
@@ -240,6 +275,8 @@ mod tests {
                     preset: Some("slow".into()),
                     bitrate: None,
                     channels: None,
+                    hw: None,
+                    hw_fallback: None,
                 },
                 "transcode video to hevc",
             ),

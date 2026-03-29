@@ -1,19 +1,25 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use console::style;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{HumanDuration, MultiProgress, ProgressBar, ProgressStyle};
+use parking_lot::Mutex;
 
 use tokio_util::sync::CancellationToken;
 
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::config;
-use crate::output::{max_filename_len, shrink_filename};
+use crate::output::{max_filename_len, shrink_filename, PROGRESS_FIXED_WIDTH};
 use voom_domain::events::{
     Event, JobCompletedEvent, JobProgressEvent, JobStartedEvent, PlanCompletedEvent,
-    PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
+    PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent, PlanSkippedEvent,
 };
+use voom_domain::plan::OperationType;
+use voom_domain::utils::format::format_size;
 use voom_job_manager::progress::{CompositeReporter, ProgressReporter};
 use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 
@@ -123,13 +129,21 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]));
 
     let items = build_work_items(&events);
+    let keep_backups = compiled.config.keep_backups;
+    let phase_order = compiled.phase_order.clone();
     let compiled = Arc::new(compiled);
     let dry_run = args.dry_run;
     let flag_size_increase = args.flag_size_increase;
+    let modified_count = Arc::new(AtomicU64::new(0));
+    let backup_bytes = Arc::new(AtomicU64::new(0));
+    let phase_stats: PhaseStatsMap = Arc::new(Mutex::new(HashMap::new()));
 
     let token_for_workers = token.clone();
     let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
     let ffprobe_path = Arc::new(ffprobe_path);
+    let modified_for_summary = modified_count.clone();
+    let backup_bytes_for_summary = backup_bytes.clone();
+    let phase_stats_for_summary = phase_stats.clone();
     let _results = pool
         .process_batch(
             items,
@@ -139,15 +153,22 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                 let token = token_for_workers.clone();
                 let ffprobe_path = ffprobe_path.clone();
                 let capabilities = capabilities.clone();
+                let modified_count = modified_count.clone();
+                let backup_bytes = backup_bytes.clone();
+                let phase_stats = phase_stats.clone();
                 async move {
                     let ctx = ProcessContext {
                         compiled: &compiled,
                         kernel,
                         dry_run,
                         flag_size_increase,
+                        keep_backups,
                         token: &token,
                         ffprobe_path: ffprobe_path.as_deref(),
                         capabilities: &capabilities,
+                        modified_count: &modified_count,
+                        backup_bytes: &backup_bytes,
+                        phase_stats: &phase_stats,
                     };
                     process_single_file(job, &ctx).await
                 }
@@ -157,19 +178,32 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         )
         .await;
 
+    let modified = modified_for_summary.load(AtomicOrdering::Relaxed);
+    let backup_total = backup_bytes_for_summary.load(AtomicOrdering::Relaxed);
     if token.is_cancelled() {
-        print_interrupted_summary(&pool, file_count);
+        print_interrupted_summary(&pool, file_count, modified);
     } else {
-        print_summary(&pool, file_count, effective_workers, args.dry_run);
+        print_summary(&SummaryContext {
+            pool: &pool,
+            file_count,
+            modified,
+            effective_workers,
+            dry_run: args.dry_run,
+            keep_backups,
+            backup_bytes: backup_total,
+            path: &path,
+        });
     }
+    print_phase_breakdown(&phase_stats_for_summary.lock(), &phase_order);
 
     Ok(())
 }
 
 /// Load and compile the DSL policy file.
 fn load_and_compile_policy(args: &ProcessArgs) -> Result<voom_dsl::CompiledPolicy> {
-    let policy_source = std::fs::read_to_string(&args.policy)
-        .with_context(|| format!("Failed to read policy: {}", args.policy.display()))?;
+    let resolved = crate::config::resolve_policy_path(&args.policy);
+    let policy_source = std::fs::read_to_string(&resolved)
+        .with_context(|| format!("Failed to read policy: {}", resolved.display()))?;
 
     voom_dsl::compile_policy(&policy_source).context("policy compilation failed")
 }
@@ -213,7 +247,54 @@ fn discover_files(
     options.hash_files = !args.no_backup;
     options.workers = args.workers;
 
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::with_template("{spinner:.green} {msg}")
+            .expect("valid progress template")
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+    );
+    pb.enable_steady_tick(std::time::Duration::from_millis(80));
+
+    let pb_clone = pb.clone();
+    let hash_files = options.hash_files;
+    options.on_progress = Some(Box::new(move |progress| match progress {
+        voom_discovery::ScanProgress::Discovered { count, path } => {
+            let prefix = format!("Discovering... {count} files found \u{2014} ");
+            let max_name = max_filename_len(2 + prefix.len());
+            let name = path
+                .file_name()
+                .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
+                .unwrap_or_default();
+            pb_clone.set_message(format!("{prefix}{name}"));
+        }
+        voom_discovery::ScanProgress::Processing {
+            current,
+            total,
+            path,
+        } => {
+            if current == 1 {
+                pb_clone.set_length(total as u64);
+                pb_clone.set_style(
+                    ProgressStyle::with_template(
+                        "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}",
+                    )
+                    .expect("valid progress template")
+                    .progress_chars("#>-"),
+                );
+            }
+            let prefix = if hash_files { "Hashing" } else { "Scanning" };
+            let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + prefix.len() + 2);
+            let name = path
+                .file_name()
+                .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
+                .unwrap_or_default();
+            pb_clone.set_position(current as u64);
+            pb_clone.set_message(format!("{prefix} {name}"));
+        }
+    }));
+
     let events = discovery.scan(&options).context("filesystem scan failed")?;
+    pb.finish_and_clear();
 
     for event in &events {
         kernel.dispatch(Event::FileDiscovered(event.clone()));
@@ -269,15 +350,48 @@ fn parse_job_payload(job: &voom_domain::job::Job) -> anyhow::Result<DiscoveredFi
     serde_json::from_value(raw_payload.clone()).context("invalid payload")
 }
 
+#[derive(Debug, Default)]
+struct PhaseStats {
+    completed: u64,
+    skipped: u64,
+    failed: u64,
+    skip_reasons: HashMap<String, u64>,
+}
+
+type PhaseStatsMap = Arc<Mutex<HashMap<String, PhaseStats>>>;
+
+fn record_phase_stat(stats: &PhaseStatsMap, phase_name: &str, outcome: PhaseOutcomeKind) {
+    let mut map = stats.lock();
+    let entry = map.entry(phase_name.to_string()).or_default();
+    match outcome {
+        PhaseOutcomeKind::Completed => entry.completed += 1,
+        PhaseOutcomeKind::Skipped(reason) => {
+            entry.skipped += 1;
+            *entry.skip_reasons.entry(reason).or_insert(0) += 1;
+        }
+        PhaseOutcomeKind::Failed => entry.failed += 1,
+    }
+}
+
+enum PhaseOutcomeKind {
+    Completed,
+    Skipped(String),
+    Failed,
+}
+
 /// Shared context for processing a single file.
 struct ProcessContext<'a> {
     compiled: &'a voom_dsl::CompiledPolicy,
     kernel: Arc<voom_kernel::Kernel>,
     dry_run: bool,
     flag_size_increase: bool,
+    keep_backups: bool,
     token: &'a CancellationToken,
     ffprobe_path: Option<&'a str>,
     capabilities: &'a voom_domain::CapabilityMap,
+    modified_count: &'a AtomicU64,
+    backup_bytes: &'a AtomicU64,
+    phase_stats: &'a PhaseStatsMap,
 }
 
 /// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
@@ -320,6 +434,30 @@ async fn process_single_file(
 
     let needs_exec = voom_phase_orchestrator::PhaseOrchestratorPlugin::needs_execution(&result);
 
+    if needs_exec {
+        ctx.modified_count.fetch_add(1, AtomicOrdering::Relaxed);
+    }
+
+    for plan in &result.plans {
+        if plan.is_skipped() {
+            let reason = plan
+                .skip_reason
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            record_phase_stat(
+                ctx.phase_stats,
+                &plan.phase_name,
+                PhaseOutcomeKind::Skipped(reason),
+            );
+        } else if ctx.dry_run && !plan.is_empty() {
+            record_phase_stat(
+                ctx.phase_stats,
+                &plan.phase_name,
+                PhaseOutcomeKind::Completed,
+            );
+        }
+    }
+
     if ctx.dry_run {
         let plan_summaries: Vec<serde_json::Value> = result
             .plans
@@ -343,15 +481,7 @@ async fn process_single_file(
             "plans": plan_summaries,
         })))
     } else {
-        execute_plans(
-            &file,
-            &result,
-            ctx.kernel.clone(),
-            needs_exec,
-            ctx.flag_size_increase,
-            ctx.token,
-        )
-        .await
+        execute_plans(&file, &result, ctx, needs_exec).await
     }
 }
 
@@ -380,10 +510,8 @@ fn orchestrate_plans(
 async fn execute_plans(
     file: &voom_domain::media::MediaFile,
     result: &voom_phase_orchestrator::OrchestrationResult,
-    kernel: Arc<voom_kernel::Kernel>,
+    ctx: &ProcessContext<'_>,
     needs_exec: bool,
-    flag_size_increase: bool,
-    token: &CancellationToken,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let file_path_str = file.path.display().to_string();
 
@@ -411,61 +539,138 @@ async fn execute_plans(
         }
     }
 
-    // Publish lifecycle events for each non-skipped plan.
-    // PlanExecuting is dispatched first so the backup-manager can create a
-    // backup before any executor modifies the file. Then PlanCreated triggers
-    // the actual execution.
+    // Execute each non-skipped plan. PlanExecuting is dispatched first so
+    // the backup-manager creates a backup before any executor modifies the
+    // file. PlanCreated then triggers the actual execution.
+    //
+    // PlanCompleted/PlanFailed are dispatched *after* post-execution checks
+    // (size-increase guard) so the backup is still available for restore.
+    let mut any_executed = false;
     for plan in &result.plans {
-        if plan.is_skipped() || plan.is_empty() {
+        if let Some(reason) = &plan.skip_reason {
+            // Insert the plan row first so update_plan_status has a target.
+            ctx.kernel
+                .dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
+            ctx.kernel
+                .dispatch(Event::PlanSkipped(PlanSkippedEvent::new(
+                    plan.id,
+                    file.path.clone(),
+                    plan.phase_name.clone(),
+                    reason.clone(),
+                )));
+            continue;
+        }
+        if plan.is_empty() {
             continue;
         }
 
-        if token.is_cancelled() {
+        if ctx.token.is_cancelled() {
             break;
         }
 
-        let plan = plan.clone();
-        let file = file.clone();
-        let kernel = kernel.clone();
-        tokio::task::spawn_blocking(move || {
-            execute_single_plan(&plan, &file, &kernel);
+        let plan_clone = plan.clone();
+        let file_clone = file.clone();
+        let kernel_clone = ctx.kernel.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            execute_single_plan(&plan_clone, &file_clone, &kernel_clone)
         })
         .await
         .map_err(|e| format!("plan execution join error: {e}"))?;
+
+        match outcome {
+            PlanOutcome::Success => {
+                any_executed = true;
+
+                // Size-increase guard: check *before* committing, while
+                // the backup is still on disk.
+                if ctx.flag_size_increase {
+                    let check_path = resolve_post_execution_path(file, std::slice::from_ref(plan));
+                    if let Ok(meta) = std::fs::metadata(&check_path) {
+                        let new_size = meta.len();
+                        if new_size > file.size && file.size > 0 {
+                            tracing::warn!(
+                                path = %check_path.display(),
+                                before = file.size,
+                                after = new_size,
+                                "output larger than original, restoring"
+                            );
+                            // Remove the converted output before
+                            // restoring so no orphan file is left
+                            // behind (e.g. .mkv after mp4→mkv).
+                            if check_path != file.path {
+                                if let Err(e) = std::fs::remove_file(&check_path) {
+                                    tracing::warn!(
+                                        path = %check_path.display(),
+                                        error = %e,
+                                        "failed to remove converted output"
+                                    );
+                                }
+                            }
+                            ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
+                                plan.id,
+                                file.path.clone(),
+                                plan.phase_name.clone(),
+                                format!("output grew from {} to {} bytes", file.size, new_size,),
+                            )));
+                            record_phase_stat(
+                                ctx.phase_stats,
+                                &plan.phase_name,
+                                PhaseOutcomeKind::Failed,
+                            );
+                            continue;
+                        }
+                    }
+                }
+
+                if ctx.keep_backups {
+                    ctx.backup_bytes
+                        .fetch_add(file.size, AtomicOrdering::Relaxed);
+                    tracing::info!(
+                        path = %file.path.display(),
+                        phase = %plan.phase_name,
+                        "keeping backup per policy"
+                    );
+                }
+                ctx.kernel
+                    .dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
+                        plan.id,
+                        file.path.clone(),
+                        plan.phase_name.clone(),
+                        plan.actions.len(),
+                        ctx.keep_backups,
+                    )));
+                record_phase_stat(
+                    ctx.phase_stats,
+                    &plan.phase_name,
+                    PhaseOutcomeKind::Completed,
+                );
+            }
+            PlanOutcome::Failed(failed) => {
+                ctx.kernel.dispatch(Event::PlanFailed(failed));
+                record_phase_stat(ctx.phase_stats, &plan.phase_name, PhaseOutcomeKind::Failed);
+            }
+        }
     }
 
-    // Post-execution size check: tag the file if it grew
-    if flag_size_increase && needs_exec {
-        if let Ok(meta) = std::fs::metadata(&file.path) {
-            let new_size = meta.len();
-            if new_size > file.size && file.size > 0 {
-                tracing::warn!(
-                    path = %file.path.display(),
-                    before = file.size,
-                    after = new_size,
-                    "output file is larger than original"
-                );
-                let violation = voom_domain::SafeguardViolation::new(
-                    voom_domain::SafeguardKind::OutputLarger,
-                    format!("Output file grew from {} to {} bytes", file.size, new_size),
-                    "post-execution",
-                );
-                let mut tagged = file.clone();
-                let existing: Vec<voom_domain::SafeguardViolation> = tagged
-                    .plugin_metadata
-                    .get("safeguard_violations")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok())
-                    .unwrap_or_default();
-                let mut all_violations = existing;
-                all_violations.push(violation);
-                tagged.plugin_metadata.insert(
-                    "safeguard_violations".to_string(),
-                    serde_json::json!(all_violations),
-                );
-                kernel.dispatch(Event::FileIntrospected(
-                    voom_domain::events::FileIntrospectedEvent::new(tagged),
-                ));
-            }
+    // Re-introspect after execution so the database reflects the actual
+    // file on disk (new container, path, tracks, etc.).
+    if any_executed {
+        let current_path = resolve_post_execution_path(file, &result.plans);
+        if current_path.exists() {
+            let size = std::fs::metadata(&current_path)
+                .map(|m| m.len())
+                .unwrap_or(file.size);
+            let hash = voom_discovery::hash_file(&current_path).unwrap_or_default();
+            let ffp = ctx.ffprobe_path.map(String::from);
+            let kernel_clone = ctx.kernel.clone();
+            let _ = crate::introspect::introspect_file(
+                current_path,
+                size,
+                hash,
+                &kernel_clone,
+                ffp.as_deref(),
+            )
+            .await;
         }
     }
 
@@ -476,8 +681,47 @@ async fn execute_plans(
     })))
 }
 
-/// Dispatch `PlanExecuting` + `PlanCreated` for a single plan, then emit
-/// `PlanCompleted`, `PlanFailed` (executor error), or `PlanFailed` (unclaimed).
+/// Determine the file path after plan execution.
+///
+/// If a `ConvertContainer` action changed the container, the file extension
+/// will have changed on disk (e.g. `.mp4` → `.mkv`). Derive the new path
+/// from the plan actions; fall back to the original path if unchanged.
+fn resolve_post_execution_path(
+    file: &voom_domain::media::MediaFile,
+    plans: &[voom_domain::plan::Plan],
+) -> std::path::PathBuf {
+    // Find the last ConvertContainer action across all executed plans
+    for plan in plans.iter().rev() {
+        if plan.is_skipped() || plan.is_empty() {
+            continue;
+        }
+        for action in &plan.actions {
+            if action.operation == OperationType::ConvertContainer {
+                if let voom_domain::plan::ActionParams::Container { container } = &action.parameters
+                {
+                    let new_path = file.path.with_extension(container.as_str());
+                    if new_path.exists() {
+                        return new_path;
+                    }
+                }
+            }
+        }
+    }
+    file.path.clone()
+}
+
+/// Result of executing a single plan via the event bus.
+enum PlanOutcome {
+    /// An executor claimed and completed the plan.
+    Success,
+    /// Execution failed (executor error or unclaimed).
+    Failed(PlanFailedEvent),
+}
+
+/// Dispatch `PlanExecuting` + `PlanCreated` for a single plan.
+///
+/// Returns the outcome without dispatching `PlanCompleted` or `PlanFailed`
+/// — the caller decides when to commit the result (e.g. after size checks).
 ///
 /// `PlanExecuting` is dispatched first so the backup-manager backs up the file
 /// BEFORE any executor modifies it.  `PlanCreated` then lets executor plugins
@@ -486,7 +730,7 @@ fn execute_single_plan(
     plan: &voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
     kernel: &voom_kernel::Kernel,
-) {
+) -> PlanOutcome {
     kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent::new(
         file.path.clone(),
         plan.phase_name.clone(),
@@ -499,72 +743,123 @@ fn execute_single_plan(
     let exec_error = results.iter().find_map(|r| r.execution_error.clone());
 
     if claimed && exec_error.is_none() {
-        // An executor plugin claimed and successfully executed the plan
-        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
-            plan.id,
-            file.path.clone(),
-            plan.phase_name.clone(),
-            plan.actions.len(),
-        )));
+        PlanOutcome::Success
     } else if let Some(error) = exec_error {
-        // An executor claimed the plan but failed
         let mut failed =
             PlanFailedEvent::new(plan.id, file.path.clone(), plan.phase_name.clone(), error);
         failed.plugin_name = results
             .iter()
             .find(|r| r.claimed)
             .map(|r| r.plugin_name.clone());
-        kernel.dispatch(Event::PlanFailed(failed));
+        PlanOutcome::Failed(failed)
     } else {
-        // No executor claimed the plan — emit PlanFailed
-        kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
+        PlanOutcome::Failed(PlanFailedEvent::new(
             plan.id,
             file.path.clone(),
             plan.phase_name.clone(),
             "no executor available for plan",
-        )));
+        ))
     }
 }
 
 /// Print a summary when interrupted by CTRL-C.
-fn print_interrupted_summary(pool: &WorkerPool, file_count: usize) {
+fn print_interrupted_summary(pool: &WorkerPool, file_count: usize, modified: u64) {
     let completed = pool.completed_count();
     let failed = pool.failed_count();
     println!(
-        "\n{} {}/{} processed, {} errors",
+        "\n{} {}/{} processed, {} modified, {} errors",
         style("Interrupted.").bold().yellow(),
         completed,
         file_count,
+        modified,
         failed,
     );
 }
 
+/// Grouped arguments for the post-processing summary.
+struct SummaryContext<'a> {
+    pool: &'a WorkerPool,
+    file_count: usize,
+    modified: u64,
+    effective_workers: usize,
+    dry_run: bool,
+    keep_backups: bool,
+    backup_bytes: u64,
+    path: &'a std::path::Path,
+}
+
 /// Print the final summary line after processing.
-fn print_summary(pool: &WorkerPool, file_count: usize, effective_workers: usize, dry_run: bool) {
-    let completed = pool.completed_count();
-    let failed = pool.failed_count();
-    let skipped = (file_count as u64)
+fn print_summary(ctx: &SummaryContext<'_>) {
+    let completed = ctx.pool.completed_count();
+    let failed = ctx.pool.failed_count();
+    let skipped = (ctx.file_count as u64)
         .saturating_sub(completed)
         .saturating_sub(failed);
 
+    let modified_label = if ctx.dry_run {
+        "would modify"
+    } else {
+        "modified"
+    };
+
     println!(
-        "\n{} {} processed, {} skipped, {} errors (workers: {})",
+        "\n{} {} processed, {} {modified_label}, {} skipped, {} errors (workers: {})",
         style("Done.").bold().green(),
         style(completed).green(),
+        style(ctx.modified).cyan(),
         style(skipped).dim(),
         if failed > 0 {
             style(failed).red().to_string()
         } else {
             failed.to_string()
         },
-        effective_workers,
+        ctx.effective_workers,
     );
 
-    if dry_run {
+    if ctx.keep_backups && ctx.modified > 0 && !ctx.dry_run {
+        println!(
+            "{} {} backups retained ({}) \u{2014} delete with: find {} -name '*.vbak' -delete",
+            style("Info:").bold(),
+            style(ctx.modified).cyan(),
+            style(format_size(ctx.backup_bytes)).cyan(),
+            ctx.path.display(),
+        );
+    }
+
+    if ctx.dry_run {
         println!(
             "\n{}",
             style("This was a dry run. No files were modified.").dim()
         );
+    }
+}
+
+fn print_phase_breakdown(stats: &HashMap<String, PhaseStats>, phase_order: &[String]) {
+    if stats.is_empty() {
+        return;
+    }
+
+    println!("\n  {}", style("Phase breakdown:").bold());
+    for phase_name in phase_order {
+        let Some(ps) = stats.get(phase_name) else {
+            continue;
+        };
+        let mut parts: Vec<String> = Vec::new();
+        if ps.completed > 0 {
+            parts.push(format!("{} completed", ps.completed));
+        }
+        if ps.skipped > 0 {
+            let reasons = crate::output::format_skip_reasons(&ps.skip_reasons, 3);
+            if reasons.is_empty() {
+                parts.push(format!("{} skipped", ps.skipped));
+            } else {
+                parts.push(format!("{} skipped ({reasons})", ps.skipped));
+            }
+        }
+        if ps.failed > 0 {
+            parts.push(format!("{} errors", ps.failed));
+        }
+        println!("    {:<20} {}", format!("{phase_name}:"), parts.join(", "));
     }
 }
 
@@ -608,6 +903,8 @@ impl ProgressReporter for EventBusReporter {
 struct CliProgressReporter {
     _multi: MultiProgress,
     overall: ProgressBar,
+    start: Instant,
+    total: u64,
 }
 
 impl CliProgressReporter {
@@ -615,13 +912,36 @@ impl CliProgressReporter {
         let multi = MultiProgress::new();
         let overall = multi.add(ProgressBar::new(total as u64));
         overall.set_style(
-            ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                .expect("valid progress template")
-                .progress_chars("#>-"),
+            ProgressStyle::with_template(
+                "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}",
+            )
+            .expect("valid progress template")
+            .progress_chars("#>-"),
         );
+        overall.enable_steady_tick(std::time::Duration::from_millis(200));
         Self {
             _multi: multi,
             overall,
+            start: Instant::now(),
+            total: total as u64,
+        }
+    }
+
+    fn format_eta(&self) -> String {
+        let pos = self.overall.position();
+        if pos == 0 {
+            return String::new();
+        }
+        let elapsed = self.start.elapsed().as_secs_f64();
+        let rate = pos as f64 / elapsed;
+        let remaining = (self.total - pos) as f64 / rate;
+        if remaining.is_finite() && remaining > 0.0 {
+            format!(
+                "ETA {}",
+                HumanDuration(std::time::Duration::from_secs(remaining as u64))
+            )
+        } else {
+            String::new()
         }
     }
 }
@@ -632,13 +952,19 @@ impl ProgressReporter for CliProgressReporter {
     fn on_job_start(&self, job: &voom_domain::job::Job) {
         if let Some(ref raw) = job.payload {
             if let Ok(payload) = serde_json::from_value::<DiscoveredFilePayload>(raw.clone()) {
-                // 57 = spinner + space + [bar:40] + space + pos/len + space
-                let max_name = max_filename_len(57);
+                let eta = self.format_eta();
+                let eta_suffix = if eta.is_empty() {
+                    String::new()
+                } else {
+                    format!("{eta} ")
+                };
+                let overhead = PROGRESS_FIXED_WIDTH + 13 + eta_suffix.len();
+                let max_name = max_filename_len(overhead);
                 let filename = std::path::Path::new(&payload.path)
                     .file_name()
                     .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
                     .unwrap_or_default();
-                self.overall.set_message(filename);
+                self.overall.set_message(format!("{eta_suffix}{filename}"));
             }
         }
     }
@@ -676,6 +1002,7 @@ mod tests {
         plan_created_count: AtomicUsize,
         plan_executing_count: AtomicUsize,
         plan_completed_count: AtomicUsize,
+        plan_skipped_count: AtomicUsize,
     }
 
     impl PlanRecordingPlugin {
@@ -686,6 +1013,7 @@ mod tests {
                 plan_created_count: AtomicUsize::new(0),
                 plan_executing_count: AtomicUsize::new(0),
                 plan_completed_count: AtomicUsize::new(0),
+                plan_skipped_count: AtomicUsize::new(0),
             }
         }
     }
@@ -708,6 +1036,7 @@ mod tests {
                     | Event::PLAN_CREATED
                     | Event::PLAN_EXECUTING
                     | Event::PLAN_COMPLETED
+                    | Event::PLAN_SKIPPED
             )
         }
         fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
@@ -726,6 +1055,9 @@ mod tests {
                 }
                 Event::PlanCompleted(_) => {
                     self.plan_completed_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::PlanSkipped(_) => {
+                    self.plan_skipped_count.fetch_add(1, Ordering::SeqCst);
                 }
                 _ => {}
             }
@@ -760,12 +1092,15 @@ mod tests {
         let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
         let plan = test_plan("normalize", false);
 
-        // Call the actual production function
-        execute_single_plan(&plan, &file, &kernel);
+        // Call the actual production function — returns outcome, caller
+        // dispatches PlanCompleted/PlanFailed.
+        let outcome = execute_single_plan(&plan, &file, &kernel);
 
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
-        // Plan is unclaimed (no executor registered), so PlanFailed is dispatched instead of PlanCompleted
+        // No executor registered — outcome is Failed (unclaimed)
+        assert!(matches!(outcome, PlanOutcome::Failed(_)));
+        // PlanCompleted is NOT dispatched by execute_single_plan
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
     }
 
@@ -784,12 +1119,34 @@ mod tests {
 
         let token = CancellationToken::new();
         let kernel = Arc::new(kernel);
-        let _ = execute_plans(&file, &result, kernel, true, false, &token).await;
+        let backup_bytes = AtomicU64::new(0);
+        let phase_stats: PhaseStatsMap = Arc::new(Mutex::new(HashMap::new()));
+        let modified_count = AtomicU64::new(0);
+        let compiled = voom_dsl::compile_policy("policy \"test\" { phase p1 { container mkv } }")
+            .expect("test policy");
+        let capabilities = voom_domain::CapabilityMap::default();
+        let ctx = ProcessContext {
+            compiled: &compiled,
+            kernel: kernel.clone(),
+            dry_run: false,
+            flag_size_increase: false,
+            keep_backups: false,
+            token: &token,
+            ffprobe_path: None,
+            capabilities: &capabilities,
+            modified_count: &modified_count,
+            backup_bytes: &backup_bytes,
+            phase_stats: &phase_stats,
+        };
+        let _ = execute_plans(&file, &result, &ctx, true).await;
 
-        // Skipped plans should NOT trigger any lifecycle events
+        // Skipped plans should NOT trigger execution events
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
-        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
+        // PlanCreated IS dispatched (so sqlite-store can persist the row)
+        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
+        // PlanSkipped IS dispatched (to update status to skipped)
+        assert_eq!(recorder.plan_skipped_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

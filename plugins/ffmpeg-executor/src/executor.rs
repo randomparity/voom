@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::plan::{ActionResult, Plan, PlannedAction};
-use voom_process::run_with_timeout;
+use voom_process::run_with_timeout_env;
 
 use crate::command::{build_ffmpeg_command, output_extension};
 use crate::hwaccel::HwAccelConfig;
@@ -52,8 +52,10 @@ pub fn execute_plan(plan: &Plan, hw_accel: &HwAccelConfig) -> Result<Vec<ActionR
         output = %output_path.display(),
         "executing ffmpeg"
     );
+    tracing::debug!(args = ?ffmpeg_args, "ffmpeg command");
 
-    let output = run_with_timeout("ffmpeg", &ffmpeg_args, FFMPEG_TIMEOUT);
+    let env_vars: Vec<(&str, &str)> = hw_accel.device_env().into_iter().collect();
+    let output = run_with_timeout_env("ffmpeg", &ffmpeg_args, FFMPEG_TIMEOUT, &env_vars);
 
     match output {
         Ok(output) if output.status.success() => {
@@ -73,6 +75,11 @@ pub fn execute_plan(plan: &Plan, hw_accel: &HwAccelConfig) -> Result<Vec<ActionR
         Ok(output) => {
             let _ = std::fs::remove_file(&output_path);
             let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::debug!(
+                stderr = %stderr,
+                args = ?ffmpeg_args,
+                "ffmpeg failed"
+            );
             Err(VoomError::ToolExecution {
                 tool: "ffmpeg".into(),
                 message: format!(

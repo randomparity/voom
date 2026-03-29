@@ -100,6 +100,7 @@ fn build_config(pair: Pair<'_, Rule>) -> ConfigNode {
     let mut subtitle_languages = Vec::new();
     let mut on_error = None;
     let mut commentary_patterns = Vec::new();
+    let mut keep_backups = None;
 
     for item in pair.into_inner() {
         if item.as_rule() != Rule::config_item {
@@ -137,6 +138,13 @@ fn build_config(pair: Pair<'_, Rule>) -> ConfigNode {
                     .unwrap();
                 commentary_patterns = build_list(list_pair);
             }
+            "keep_backups" => {
+                let bool_pair = item
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::boolean)
+                    .unwrap();
+                keep_backups = Some(bool_pair.as_str() == "true");
+            }
             other => debug_assert!(false, "unexpected config keyword: {other}"),
         }
     }
@@ -146,6 +154,7 @@ fn build_config(pair: Pair<'_, Rule>) -> ConfigNode {
         subtitle_languages,
         on_error,
         commentary_patterns,
+        keep_backups,
     }
 }
 

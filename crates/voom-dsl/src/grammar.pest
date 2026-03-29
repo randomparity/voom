@@ -12,6 +12,7 @@ config_item = {
     "languages" ~ lang_target ~ ":" ~ list
   | "on_error" ~ ":" ~ ident
   | "commentary_patterns" ~ ":" ~ list
+  | "keep_backups" ~ ":" ~ boolean
 }
 lang_target = { "audio" | "subtitle" }
 

@@ -9,4 +9,5 @@
 | [quickstart.md](quickstart.md) | Getting started guide |
 | [plugin-development.md](plugin-development.md) | Guide for writing native and WASM plugins |
 | [functional-test-plan.md](functional-test-plan.md) | QA test plan covering all user-facing features |
+| [troubleshooting.md](troubleshooting.md) | Troubleshooting guide for common issues |
 | [TODO.md](TODO.md) | Outstanding work items |

@@ -69,6 +69,7 @@ impl Plugin for SqliteStorePlugin {
                 | Event::FILE_INTROSPECTION_FAILED
                 | Event::PLAN_CREATED
                 | Event::PLAN_COMPLETED
+                | Event::PLAN_SKIPPED
                 | Event::PLAN_FAILED
                 | Event::METADATA_ENRICHED
                 | Event::TOOL_DETECTED
@@ -116,6 +117,15 @@ impl Plugin for SqliteStorePlugin {
                 tracing::info!(path = %e.path.display(), phase = %e.phase_name, "plan completed");
                 store
                     .update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Completed)?;
+            }
+            Event::PlanSkipped(e) => {
+                tracing::info!(
+                    path = %e.path.display(),
+                    phase = %e.phase_name,
+                    reason = %e.skip_reason,
+                    "plan skipped"
+                );
+                store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Skipped)?;
             }
             Event::PlanFailed(e) => {
                 tracing::info!(path = %e.path.display(), phase = %e.phase_name, error = %e.error, "plan failed");
@@ -275,6 +285,12 @@ mod tests {
     fn test_handles_executor_capabilities() {
         let plugin = SqliteStorePlugin::new();
         assert!(plugin.handles(Event::EXECUTOR_CAPABILITIES));
+    }
+
+    #[test]
+    fn test_handles_plan_skipped() {
+        let plugin = SqliteStorePlugin::new();
+        assert!(plugin.handles(Event::PLAN_SKIPPED));
     }
 
     #[test]

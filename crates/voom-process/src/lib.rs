@@ -70,15 +70,28 @@ pub fn run_with_timeout(
     args: &[impl AsRef<OsStr>],
     timeout: Duration,
 ) -> Result<Output> {
-    let mut child = Command::new(tool)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| VoomError::ToolExecution {
-            tool: tool.into(),
-            message: format!("failed to spawn {tool}: {e}"),
-        })?;
+    run_with_timeout_env(tool, args, timeout, &[])
+}
+
+/// Run a subprocess with a timeout and extra environment variables.
+///
+/// # Errors
+/// Returns `VoomError::ToolExecution` if the process fails or times out.
+pub fn run_with_timeout_env(
+    tool: &str,
+    args: &[impl AsRef<OsStr>],
+    timeout: Duration,
+    env_vars: &[(&str, &str)],
+) -> Result<Output> {
+    let mut cmd = Command::new(tool);
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    for (key, val) in env_vars {
+        cmd.env(key, val);
+    }
+    let mut child = cmd.spawn().map_err(|e| VoomError::ToolExecution {
+        tool: tool.into(),
+        message: format!("failed to spawn {tool}: {e}"),
+    })?;
 
     // Spawn reader threads before waiting so pipes drain concurrently.
     let (stdout_handle, stderr_handle) = spawn_pipe_readers(&mut child);
@@ -143,6 +156,23 @@ mod tests {
             }
             other => panic!("expected ToolExecution, got: {other}"),
         }
+    }
+
+    #[test]
+    fn test_run_with_timeout_env() {
+        let output = run_with_timeout_env(
+            "env",
+            &[] as &[&str],
+            Duration::from_secs(5),
+            &[("VOOM_TEST_VAR", "hello_gpu")],
+        )
+        .unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("VOOM_TEST_VAR=hello_gpu"),
+            "env output should contain the set var, got: {stdout}"
+        );
     }
 
     #[test]

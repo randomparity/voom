@@ -164,5 +164,5 @@ pub fn backup_path_for(config: &BackupConfig, path: &Path, unique_id: Uuid) -> P
     let timestamp = Utc::now().format("%Y%m%d%H%M%S");
     parent
         .join(".voom-backup")
-        .join(format!("{file_name}.{timestamp}.bak"))
+        .join(format!("{file_name}.{timestamp}.vbak"))
 }

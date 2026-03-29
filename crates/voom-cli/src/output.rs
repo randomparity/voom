@@ -45,6 +45,14 @@ pub fn shrink_filename(name: &str, max_len: usize) -> String {
     }
 }
 
+/// Fixed-width overhead of the standard progress bar template:
+/// `{spinner} [{bar:40}] {pos}/{len} ({percent}%) {msg}`
+///
+/// Breakdown: spinner(1) + space(1) + bracket(1) + bar(40) + bracket(1)
+///   + space(1) + pos/len(≤11) + space(1) + percent(≤7) + space(1)
+///   + safety margin(2) = 67, rounded up to 68.
+pub const PROGRESS_FIXED_WIDTH: usize = 68;
+
 /// Compute the max filename length that keeps a progress line on one terminal row.
 ///
 /// `fixed_width` is the number of characters used by the non-filename parts of
@@ -52,6 +60,37 @@ pub fn shrink_filename(name: &str, max_len: usize) -> String {
 pub fn max_filename_len(fixed_width: usize) -> usize {
     let width = term_width();
     width.saturating_sub(fixed_width).max(12)
+}
+
+/// Truncate a string to `max_len` characters, appending "..." if truncated.
+pub fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        let end = max_len.saturating_sub(3);
+        format!("{}...", &s[..end])
+    }
+}
+
+/// Format skip reasons sorted by frequency, showing at most `limit` entries.
+pub fn format_skip_reasons(
+    reasons: &std::collections::HashMap<String, u64>,
+    limit: usize,
+) -> String {
+    if reasons.is_empty() {
+        return String::new();
+    }
+    let mut sorted: Vec<_> = reasons.iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(a.1));
+    sorted
+        .iter()
+        .take(limit)
+        .map(|(reason, count)| {
+            let display = truncate_with_ellipsis(reason, 30);
+            format!("{display} ({count})")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Format a list of discovered files as a table.

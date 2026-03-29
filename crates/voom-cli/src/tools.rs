@@ -13,7 +13,13 @@ pub struct ToolCheckResult {
 /// tools are missing.
 pub fn print_tool_status(detector: &voom_tool_detector::ToolDetectorPlugin) -> ToolCheckResult {
     let required_tools = ["ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit"];
-    let optional_tools = ["mkvextract", "mediainfo", "HandBrakeCLI"];
+    let optional_tools = [
+        "mkvextract",
+        "mediainfo",
+        "HandBrakeCLI",
+        "nvidia-smi",
+        "vainfo",
+    ];
 
     let mut missing_required = 0u32;
 

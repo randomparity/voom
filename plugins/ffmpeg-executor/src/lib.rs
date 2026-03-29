@@ -17,11 +17,21 @@ use voom_domain::events::{
     CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent, PlanCreatedEvent,
 };
 use voom_domain::media::Container;
-use voom_domain::plan::{ActionParams, OperationType, Plan};
+use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 use voom_kernel::{Plugin, PluginContext};
 
 use crate::hwaccel::HwAccelConfig;
-use crate::probe::{parse_codecs, parse_formats, parse_hwaccels};
+use crate::probe::{
+    enumerate_gpus, parse_codecs, parse_formats, parse_hw_implementations, parse_hwaccels,
+    validate_hw_encoder, validate_hw_encoder_on_device, GpuDevice,
+};
+
+/// Per-plugin configuration from `[plugin.ffmpeg-executor]` in config.toml.
+#[derive(Debug, Default, serde::Deserialize)]
+struct FfmpegExecutorConfig {
+    #[serde(default)]
+    gpu_device: Option<String>,
+}
 
 pub(crate) fn plugin_err(message: impl Into<String>) -> VoomError {
     VoomError::plugin("ffmpeg-executor", message)
@@ -152,6 +162,10 @@ impl FfmpegExecutorPlugin {
                             return false;
                         }
                     }
+                    // Verify the source codec has a decoder
+                    if !self.has_decoder_for_track(plan, action) {
+                        return false;
+                    }
                 }
                 (
                     OperationType::SynthesizeAudio,
@@ -186,6 +200,36 @@ impl FfmpegExecutorPlugin {
             }
         }
         true
+    }
+
+    /// Check that ffmpeg has a decoder for the source track being
+    /// transcoded.  Without one, ffmpeg fails with "no decoder found".
+    fn has_decoder_for_track(&self, plan: &Plan, action: &PlannedAction) -> bool {
+        let caps = match &self.probed_codecs {
+            Some(c) => c,
+            None => return true, // no probed data — optimistic
+        };
+        let idx = match action.track_index {
+            Some(i) => i as usize,
+            None => return true, // global codec override — skip check
+        };
+        let track = match plan.file.tracks.get(idx) {
+            Some(t) => t,
+            None => return true, // index out of range — let ffmpeg report
+        };
+        let source_codec = &track.codec;
+        if caps.decoders.iter().any(|d| d == source_codec) {
+            return true;
+        }
+        tracing::warn!(
+            source_codec = %source_codec,
+            track_index = idx,
+            path = %plan.file.path.display(),
+            "rejecting plan: no decoder for source codec \
+             (ffmpeg may be missing non-free codecs — \
+             install from rpmfusion.org on Fedora)"
+        );
+        false
     }
 
     /// Execute a plan using the ffmpeg executor module.
@@ -252,8 +296,8 @@ impl Plugin for FfmpegExecutorPlugin {
         }
     }
 
-    fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
-        let codecs = Command::new("ffmpeg")
+    fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
+        let mut codecs = Command::new("ffmpeg")
             .args(["-codecs", "-hide_banner"])
             .output()
             .map(|o| parse_codecs(&String::from_utf8_lossy(&o.stdout)))
@@ -280,12 +324,85 @@ impl Plugin for FfmpegExecutorPlugin {
                 Vec::new()
             });
 
+        // Probe HW encoder/decoder implementations
+        codecs.hw_encoders = Command::new("ffmpeg")
+            .args(["-encoders", "-hide_banner"])
+            .output()
+            .map(|o| parse_hw_implementations(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to probe ffmpeg hw encoders");
+                Vec::new()
+            });
+
+        codecs.hw_decoders = Command::new("ffmpeg")
+            .args(["-decoders", "-hide_banner"])
+            .output()
+            .map(|o| parse_hw_implementations(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to probe ffmpeg hw decoders");
+                Vec::new()
+            });
+
         self.probed_codecs = Some(codecs.clone());
         self.probed_formats = Some(formats.clone());
         self.probed_hw_accels = Some(hw_accels.clone());
 
         // Select HW accel backend from already-probed data (no extra subprocess)
-        self.hw_accel = HwAccelConfig::from_probed(&hw_accels);
+        let mut hw_config = HwAccelConfig::from_probed(&hw_accels);
+
+        // Read per-plugin config for GPU device selection
+        let plugin_config = ctx
+            .parse_config::<FfmpegExecutorConfig>()
+            .unwrap_or_default();
+
+        // Resolve configured GPU device
+        let target_device: Option<GpuDevice> = if let (Some(backend), Some(device_id)) =
+            (hw_config.backend, &plugin_config.gpu_device)
+        {
+            let gpus = enumerate_gpus(backend);
+            let found = gpus.into_iter().find(|g| g.id == *device_id);
+            if found.is_some() {
+                tracing::info!(
+                    device = %device_id,
+                    "using configured GPU device"
+                );
+                hw_config = hw_config.with_device(Some(device_id.clone()));
+            } else {
+                tracing::warn!(
+                    device = %device_id,
+                    "configured gpu_device not found, using system default"
+                );
+            }
+            found
+        } else {
+            None
+        };
+
+        // Validate which HW encoders actually work on the target device.
+        // ffmpeg -encoders lists all compiled-in encoders, but the GPU may
+        // not support all of them (e.g. av1_nvenc on a GPU without AV1).
+        let validated_encoders: Vec<String> = match (&hw_config.backend, &target_device) {
+            (Some(backend), Some(device)) => codecs
+                .hw_encoders
+                .iter()
+                .filter(|enc| validate_hw_encoder_on_device(enc, *backend, device))
+                .cloned()
+                .collect(),
+            _ => codecs
+                .hw_encoders
+                .iter()
+                .filter(|enc| validate_hw_encoder(enc))
+                .cloned()
+                .collect(),
+        };
+
+        tracing::info!(
+            validated = ?validated_encoders,
+            total = codecs.hw_encoders.len(),
+            "validated HW encoders"
+        );
+
+        self.hw_accel = hw_config.with_validated_encoders(validated_encoders);
 
         let event = ExecutorCapabilitiesEvent::new("ffmpeg-executor", codecs, formats, hw_accels);
 
@@ -381,6 +498,8 @@ mod tests {
                     preset: None,
                     bitrate: None,
                     channels: None,
+                    hw: None,
+                    hw_fallback: None,
                 },
                 "Transcode to HEVC",
             )],
@@ -402,6 +521,8 @@ mod tests {
                     preset: None,
                     bitrate: None,
                     channels: None,
+                    hw: None,
+                    hw_fallback: None,
                 },
                 "Transcode to Opus",
             )],
@@ -482,6 +603,8 @@ mod tests {
                         preset: None,
                         bitrate: None,
                         channels: None,
+                        hw: None,
+                        hw_fallback: None,
                     },
                     "Transcode to H.264",
                 ),
@@ -545,6 +668,8 @@ mod tests {
                     preset: None,
                     bitrate: None,
                     channels: None,
+                    hw: None,
+                    hw_fallback: None,
                 },
                 "Transcode",
             )],
@@ -585,6 +710,8 @@ mod tests {
                     preset: None,
                     bitrate: None,
                     channels: None,
+                    hw: None,
+                    hw_fallback: None,
                 },
                 "Transcode to HEVC",
             )],
@@ -612,6 +739,8 @@ mod tests {
                     preset: None,
                     bitrate: None,
                     channels: None,
+                    hw: None,
+                    hw_fallback: None,
                 },
                 "Transcode to HEVC",
             )],
@@ -677,6 +806,8 @@ mod tests {
                     preset: None,
                     bitrate: None,
                     channels: None,
+                    hw: None,
+                    hw_fallback: None,
                 },
                 "Transcode",
             )],
@@ -696,11 +827,10 @@ mod tests {
     // ── can_handle: probed capability checks ───────────────────
 
     fn plugin_with_probed(encoders: Vec<&str>, formats: Vec<&str>) -> FfmpegExecutorPlugin {
+        let enc: Vec<String> = encoders.into_iter().map(String::from).collect();
         let mut plugin = FfmpegExecutorPlugin::new();
-        plugin.probed_codecs = Some(CodecCapabilities::new(
-            vec![],
-            encoders.into_iter().map(String::from).collect(),
-        ));
+        // Use encoders as decoders too — real ffmpeg typically has both
+        plugin.probed_codecs = Some(CodecCapabilities::new(enc.clone(), enc));
         plugin.probed_formats = Some(formats.into_iter().map(String::from).collect());
         plugin
     }
@@ -719,6 +849,8 @@ mod tests {
                     preset: None,
                     bitrate: None,
                     channels: None,
+                    hw: None,
+                    hw_fallback: None,
                 },
                 "Transcode to HEVC",
             )],
@@ -740,6 +872,8 @@ mod tests {
                     preset: None,
                     bitrate: None,
                     channels: None,
+                    hw: None,
+                    hw_fallback: None,
                 },
                 "Transcode to HEVC",
             )],
@@ -777,11 +911,26 @@ mod tests {
                     preset: None,
                     bitrate: None,
                     channels: None,
+                    hw: None,
+                    hw_fallback: None,
                 },
                 "Transcode to AV1",
             )],
         );
         assert!(plugin.can_handle(&plan));
+    }
+
+    #[test]
+    fn test_ffmpeg_executor_config_deserialize() {
+        let json = serde_json::json!({"gpu_device": "1"});
+        let config: FfmpegExecutorConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.gpu_device.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn test_ffmpeg_executor_config_default() {
+        let config = FfmpegExecutorConfig::default();
+        assert!(config.gpu_device.is_none());
     }
 
     #[test]

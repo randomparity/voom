@@ -48,7 +48,7 @@ pub fn run() -> Result<()> {
     }
 
     // 3. Create policies directory and starter policy
-    let policies_dir = config_dir.join("policies");
+    let policies_dir = config::policies_dir();
     if !policies_dir.exists() {
         std::fs::create_dir_all(&policies_dir)?;
         println!(
@@ -71,6 +71,20 @@ pub fn run() -> Result<()> {
     // 4. Create default config if missing
     if !config_path.exists() {
         let contents = config::default_config_contents();
+
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&config_path)
+                .and_then(|mut f| f.write_all(contents.as_bytes()))?;
+        }
+        #[cfg(not(unix))]
         std::fs::write(&config_path, &contents)?;
         println!(
             "  {} Created {}",

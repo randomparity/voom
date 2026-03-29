@@ -55,6 +55,63 @@ impl CapabilityMap {
     pub fn is_empty(&self) -> bool {
         self.executors.is_empty()
     }
+
+    /// Direct access to an executor's capabilities by plugin name.
+    #[must_use]
+    pub fn executor_capabilities(&self, name: &str) -> Option<&ExecutorCapabilitiesEvent> {
+        self.executors.get(name)
+    }
+
+    /// Deduplicated list of hardware acceleration backends across
+    /// all executors, normalized to canonical names.
+    #[must_use]
+    pub fn hw_accels(&self) -> Vec<&str> {
+        let mut seen = std::collections::HashSet::new();
+        let mut result = Vec::new();
+        for event in self.executors.values() {
+            for raw in &event.hw_accels {
+                let name = normalize_hwaccel(raw);
+                if seen.insert(name) {
+                    result.push(name);
+                }
+            }
+        }
+        result
+    }
+
+    /// Returns `true` if any registered executor supports the named HW backend.
+    #[must_use]
+    pub fn has_hwaccel(&self, backend: &str) -> bool {
+        self.hw_accels().contains(&backend)
+    }
+
+    /// Returns the highest-priority hwaccel backend name, or `"none"`.
+    ///
+    /// Priority order matches `HwAccelConfig::from_probed()` in the
+    /// ffmpeg-executor: nvenc > qsv > vaapi > videotoolbox.
+    #[must_use]
+    pub fn best_hwaccel(&self) -> &str {
+        let accels = self.hw_accels();
+        for candidate in &["nvenc", "qsv", "vaapi", "videotoolbox"] {
+            if accels.contains(candidate) {
+                return candidate;
+            }
+        }
+        "none"
+    }
+}
+
+/// Normalize raw ffmpeg hwaccel names to canonical backend names.
+fn normalize_hwaccel(raw: &str) -> &'static str {
+    // Compare case-insensitively without allocating
+    let lower: String = raw.to_ascii_lowercase();
+    match lower.as_str() {
+        "cuda" | "nvdec" | "nvenc" => "nvenc",
+        "qsv" => "qsv",
+        "vaapi" => "vaapi",
+        "videotoolbox" => "videotoolbox",
+        _ => "unknown",
+    }
 }
 
 #[cfg(test)]
@@ -130,6 +187,84 @@ mod tests {
 
         // Both support matroska
         assert!(map.has_format("matroska"));
+    }
+
+    #[test]
+    fn test_executor_capabilities_lookup() {
+        let mut map = CapabilityMap::new();
+        assert!(map.executor_capabilities("ffmpeg-executor").is_none());
+        map.register(ExecutorCapabilitiesEvent::new(
+            "ffmpeg-executor",
+            CodecCapabilities::empty(),
+            vec![],
+            vec!["cuda".into()],
+        ));
+        let caps = map.executor_capabilities("ffmpeg-executor").unwrap();
+        assert_eq!(caps.hw_accels, vec!["cuda"]);
+        assert!(map.executor_capabilities("other").is_none());
+    }
+
+    #[test]
+    fn test_hw_accels_normalized_and_deduped() {
+        let mut map = CapabilityMap::new();
+        map.register(ExecutorCapabilitiesEvent::new(
+            "exec-a",
+            CodecCapabilities::empty(),
+            vec![],
+            vec!["cuda".into(), "nvdec".into(), "vaapi".into()],
+        ));
+        map.register(ExecutorCapabilitiesEvent::new(
+            "exec-b",
+            CodecCapabilities::empty(),
+            vec![],
+            vec!["cuda".into(), "qsv".into()],
+        ));
+        let mut accels = map.hw_accels();
+        accels.sort();
+        assert_eq!(accels, vec!["nvenc", "qsv", "vaapi"]);
+    }
+
+    #[test]
+    fn test_best_hwaccel_priority() {
+        let mut map = CapabilityMap::new();
+        // vaapi + qsv → qsv wins
+        map.register(ExecutorCapabilitiesEvent::new(
+            "exec",
+            CodecCapabilities::empty(),
+            vec![],
+            vec!["vaapi".into(), "qsv".into()],
+        ));
+        assert_eq!(map.best_hwaccel(), "qsv");
+    }
+
+    #[test]
+    fn test_best_hwaccel_nvenc_highest() {
+        let mut map = CapabilityMap::new();
+        map.register(ExecutorCapabilitiesEvent::new(
+            "exec",
+            CodecCapabilities::empty(),
+            vec![],
+            vec!["vaapi".into(), "cuda".into()],
+        ));
+        assert_eq!(map.best_hwaccel(), "nvenc");
+    }
+
+    #[test]
+    fn test_best_hwaccel_none() {
+        let map = CapabilityMap::new();
+        assert_eq!(map.best_hwaccel(), "none");
+    }
+
+    #[test]
+    fn test_best_hwaccel_no_recognized() {
+        let mut map = CapabilityMap::new();
+        map.register(ExecutorCapabilitiesEvent::new(
+            "exec",
+            CodecCapabilities::empty(),
+            vec![],
+            vec!["drm".into()],
+        ));
+        assert_eq!(map.best_hwaccel(), "none");
     }
 
     #[test]

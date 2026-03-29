@@ -82,6 +82,8 @@ pub trait PlanStorage: Send + Sync {
     fn save_plan(&self, plan: &Plan) -> Result<Uuid>;
     fn plans_for_file(&self, file_id: &Uuid) -> Result<Vec<PlanSummary>>;
     fn update_plan_status(&self, plan_id: &Uuid, status: PlanStatus) -> Result<()>;
+    /// Aggregate plan counts grouped by phase name, status, and skip reason.
+    fn plan_stats_by_phase(&self) -> Result<Vec<PlanPhaseStat>>;
 }
 
 /// File history snapshots.
@@ -272,6 +274,32 @@ impl PlanStatus {
 impl std::fmt::Display for PlanStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// Aggregated plan statistics for a single (phase_name, status, skip_reason) group.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanPhaseStat {
+    pub phase_name: String,
+    pub status: PlanStatus,
+    pub skip_reason: Option<String>,
+    pub count: u64,
+}
+
+impl PlanPhaseStat {
+    #[must_use]
+    pub fn new(
+        phase_name: String,
+        status: PlanStatus,
+        skip_reason: Option<String>,
+        count: u64,
+    ) -> Self {
+        Self {
+            phase_name,
+            status,
+            skip_reason,
+            count,
+        }
     }
 }
 
