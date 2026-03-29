@@ -168,33 +168,34 @@ fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()
         return Ok(());
     }
 
+    #[derive(Default)]
+    struct PhaseAgg {
+        completed: u64,
+        skipped: u64,
+        failed: u64,
+        skip_reasons: HashMap<String, u64>,
+    }
+
     let mut phases: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut completed: HashMap<String, u64> = HashMap::new();
-    let mut skipped: HashMap<String, u64> = HashMap::new();
-    let mut failed: HashMap<String, u64> = HashMap::new();
-    let mut skip_reasons: HashMap<String, HashMap<String, u64>> = HashMap::new();
+    let mut by_phase: HashMap<String, PhaseAgg> = HashMap::new();
 
     for stat in &stats {
-        if seen.insert(stat.phase_name.clone()) {
+        if !by_phase.contains_key(&stat.phase_name) {
             phases.push(stat.phase_name.clone());
         }
+        let entry = by_phase.entry(stat.phase_name.clone()).or_default();
         match stat.status {
             voom_domain::storage::PlanStatus::Completed => {
-                *completed.entry(stat.phase_name.clone()).or_default() += stat.count;
+                entry.completed += stat.count;
             }
             voom_domain::storage::PlanStatus::Skipped => {
-                *skipped.entry(stat.phase_name.clone()).or_default() += stat.count;
+                entry.skipped += stat.count;
                 if let Some(reason) = &stat.skip_reason {
-                    *skip_reasons
-                        .entry(stat.phase_name.clone())
-                        .or_default()
-                        .entry(reason.clone())
-                        .or_default() += stat.count;
+                    *entry.skip_reasons.entry(reason.clone()).or_default() += stat.count;
                 }
             }
             voom_domain::storage::PlanStatus::Failed => {
-                *failed.entry(stat.phase_name.clone()).or_default() += stat.count;
+                entry.failed += stat.count;
             }
             _ => {}
         }
@@ -205,14 +206,15 @@ fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()
             let entries: Vec<serde_json::Value> = phases
                 .iter()
                 .map(|name| {
+                    let ps = by_phase.get(name).expect("phase exists");
                     let mut val = serde_json::json!({
                         "phase": name,
-                        "completed": completed.get(name).copied().unwrap_or(0),
-                        "skipped": skipped.get(name).copied().unwrap_or(0),
-                        "failed": failed.get(name).copied().unwrap_or(0),
+                        "completed": ps.completed,
+                        "skipped": ps.skipped,
+                        "failed": ps.failed,
                     });
-                    if let Some(reasons) = skip_reasons.get(name) {
-                        val["skip_reasons"] = serde_json::json!(reasons);
+                    if !ps.skip_reasons.is_empty() {
+                        val["skip_reasons"] = serde_json::json!(ps.skip_reasons);
                     }
                     val
                 })
@@ -235,15 +237,13 @@ fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()
                 "Top Skip Reasons",
             ]);
             for name in &phases {
-                let reasons = skip_reasons
-                    .get(name)
-                    .map(|r| output::format_skip_reasons(r, 3))
-                    .unwrap_or_default();
+                let ps = by_phase.get(name).expect("phase exists");
+                let reasons = output::format_skip_reasons(&ps.skip_reasons, 3);
                 table.add_row(vec![
                     Cell::new(name),
-                    Cell::new(completed.get(name).copied().unwrap_or(0)),
-                    Cell::new(skipped.get(name).copied().unwrap_or(0)),
-                    Cell::new(failed.get(name).copied().unwrap_or(0)),
+                    Cell::new(ps.completed),
+                    Cell::new(ps.skipped),
+                    Cell::new(ps.failed),
                     Cell::new(&reasons),
                 ]);
             }

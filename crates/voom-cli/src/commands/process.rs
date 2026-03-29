@@ -19,6 +19,7 @@ use voom_domain::events::{
     PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent, PlanSkippedEvent,
 };
 use voom_domain::plan::OperationType;
+use voom_domain::utils::format::format_size;
 use voom_job_manager::progress::{CompositeReporter, ProgressReporter};
 use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 
@@ -784,18 +785,6 @@ fn print_interrupted_summary(pool: &WorkerPool, file_count: usize, modified: u64
         modified,
         failed,
     );
-}
-
-/// Format a byte count as a human-readable size string.
-fn format_size(bytes: u64) -> String {
-    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-    const MIB: f64 = 1024.0 * 1024.0;
-    let b = bytes as f64;
-    if b >= GIB {
-        format!("{:.1} GiB", b / GIB)
-    } else {
-        format!("{:.1} MiB", b / MIB)
-    }
 }
 
 /// Print the final summary line after processing.
