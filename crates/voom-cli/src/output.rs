@@ -45,6 +45,14 @@ pub fn shrink_filename(name: &str, max_len: usize) -> String {
     }
 }
 
+/// Fixed-width overhead of the standard progress bar template:
+/// `{spinner} [{bar:40}] {pos}/{len} ({percent}%) {msg}`
+///
+/// Breakdown: spinner(1) + space(1) + bracket(1) + bar(40) + bracket(1)
+///   + space(1) + pos/len(≤11) + space(1) + percent(≤7) + space(1)
+///   + safety margin(2) = 67, rounded up to 68.
+pub const PROGRESS_FIXED_WIDTH: usize = 68;
+
 /// Compute the max filename length that keeps a progress line on one terminal row.
 ///
 /// `fixed_width` is the number of characters used by the non-filename parts of

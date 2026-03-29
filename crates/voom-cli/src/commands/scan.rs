@@ -5,14 +5,11 @@ use std::time::{Duration, Instant};
 use crate::app;
 use crate::cli::ScanArgs;
 use crate::config;
-use crate::output::{self, max_filename_len, shrink_filename};
+use crate::output::{self, max_filename_len, shrink_filename, PROGRESS_FIXED_WIDTH};
 use anyhow::{Context, Result};
 use console::style;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use tokio_util::sync::CancellationToken;
-
-/// Fixed-width overhead of the progress bar line (spinner + bar + counters + percent + padding).
-const PROGRESS_FIXED_WIDTH: usize = 77;
 
 /// Format an ETA string from elapsed time and progress counts.
 /// Returns an empty string when ETA cannot be meaningfully computed.

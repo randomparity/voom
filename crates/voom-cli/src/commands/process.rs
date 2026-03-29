@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::config;
-use crate::output::{max_filename_len, shrink_filename};
+use crate::output::{max_filename_len, shrink_filename, PROGRESS_FIXED_WIDTH};
 use voom_domain::events::{
     Event, JobCompletedEvent, JobProgressEvent, JobStartedEvent, PlanCompletedEvent,
     PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
@@ -616,9 +616,11 @@ impl CliProgressReporter {
         let multi = MultiProgress::new();
         let overall = multi.add(ProgressBar::new(total as u64));
         overall.set_style(
-            ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                .expect("valid progress template")
-                .progress_chars("#>-"),
+            ProgressStyle::with_template(
+                "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}",
+            )
+            .expect("valid progress template")
+            .progress_chars("#>-"),
         );
         Self {
             _multi: multi,
@@ -633,8 +635,7 @@ impl ProgressReporter for CliProgressReporter {
     fn on_job_start(&self, job: &voom_domain::job::Job) {
         if let Some(ref raw) = job.payload {
             if let Ok(payload) = serde_json::from_value::<DiscoveredFilePayload>(raw.clone()) {
-                // 57 = spinner + space + [bar:40] + space + pos/len + space
-                let max_name = max_filename_len(57);
+                let max_name = max_filename_len(PROGRESS_FIXED_WIDTH);
                 let filename = std::path::Path::new(&payload.path)
                     .file_name()
                     .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
