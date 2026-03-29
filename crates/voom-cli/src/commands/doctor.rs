@@ -1,7 +1,10 @@
 use anyhow::Result;
 use console::style;
 use voom_ffmpeg_executor::hwaccel::{HwAccelBackend, HwAccelConfig};
-use voom_ffmpeg_executor::probe::{parse_hw_implementations, parse_hwaccels, validate_hw_encoder};
+use voom_ffmpeg_executor::probe::{
+    enumerate_gpus, parse_hw_implementations, parse_hwaccels, validate_hw_encoder,
+    validate_hw_encoder_on_device, GpuDevice,
+};
 
 use crate::app;
 use crate::config;
@@ -108,6 +111,55 @@ fn backend_label(backend: HwAccelBackend) -> &'static str {
     }
 }
 
+fn gpu_section_header(backend: HwAccelBackend) -> &'static str {
+    match backend {
+        HwAccelBackend::Nvenc => "GPUs",
+        HwAccelBackend::Vaapi | HwAccelBackend::Qsv => "Render devices",
+        HwAccelBackend::Videotoolbox => "Devices",
+    }
+}
+
+fn gpu_display_label(device: &GpuDevice, backend: HwAccelBackend) -> String {
+    match backend {
+        HwAccelBackend::Nvenc => {
+            let vram = device
+                .vram_mib
+                .map(|m| format!(" ({m} MiB)"))
+                .unwrap_or_default();
+            format!("GPU {}: {}{}", device.id, device.name, vram)
+        }
+        _ => {
+            if device.name == device.id {
+                device.id.clone()
+            } else {
+                format!("{} ({})", device.id, device.name)
+            }
+        }
+    }
+}
+
+fn encoder_block_label(device: &GpuDevice, backend: HwAccelBackend) -> String {
+    match backend {
+        HwAccelBackend::Nvenc => {
+            format!("GPU {} — {}", device.id, device.name)
+        }
+        _ => device.id.clone(),
+    }
+}
+
+fn print_encoder_block(hw_encoders: &[String], backend: HwAccelBackend, device: &GpuDevice) {
+    let label = encoder_block_label(device, backend);
+    println!();
+    println!("  HW Encoders ({label}):");
+    for enc in hw_encoders {
+        if validate_hw_encoder_on_device(enc, backend, device) {
+            println!("    {:<20}{}", enc, style("OK (device validated)").green());
+        } else {
+            println!("    {:<20}{}", enc, style("UNSUPPORTED").yellow());
+        }
+    }
+}
+
 fn print_hw_accel_status() {
     println!();
     println!("{}", style("Hardware acceleration:").bold());
@@ -125,13 +177,23 @@ fn print_hw_accel_status() {
     };
 
     let config = HwAccelConfig::from_probed(&hw_accels);
-    match config.backend {
+    let backend = match config.backend {
         Some(backend) => {
             println!("  Backend ... {}", style(backend_label(backend)).green());
+            backend
         }
         None => {
             println!("  Backend ... {}", style("none detected").yellow());
             return;
+        }
+    };
+
+    let devices = enumerate_gpus(backend);
+    if !devices.is_empty() {
+        println!();
+        println!("  {}:", gpu_section_header(backend));
+        for device in &devices {
+            println!("    {}", gpu_display_label(device, backend));
         }
     }
 
@@ -146,17 +208,20 @@ fn print_hw_accel_status() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let hw_encoders = parse_hw_implementations(&stdout);
         if !hw_encoders.is_empty() {
-            println!();
-            println!("  HW Encoders:");
-            for enc in &hw_encoders {
-                if validate_hw_encoder(enc) {
-                    println!("    {:<20}{}", enc, style("OK (device validated)").green());
-                } else {
-                    println!(
-                        "    {:<20}{}",
-                        enc,
-                        style("UNSUPPORTED (not available on this device)").yellow()
-                    );
+            if devices.is_empty() {
+                // Fallback: no GPU enumeration, single block
+                println!();
+                println!("  HW Encoders:");
+                for enc in &hw_encoders {
+                    if validate_hw_encoder(enc) {
+                        println!("    {:<20}{}", enc, style("OK (device validated)").green());
+                    } else {
+                        println!("    {:<20}{}", enc, style("UNSUPPORTED").yellow());
+                    }
+                }
+            } else {
+                for device in &devices {
+                    print_encoder_block(&hw_encoders, backend, device);
                 }
             }
         }

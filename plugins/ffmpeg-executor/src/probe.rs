@@ -1,5 +1,6 @@
 //! FFmpeg capability probing: parse output from `ffmpeg -codecs`, `-formats`, `-hwaccels`.
 
+use crate::hwaccel::HwAccelBackend;
 use voom_domain::events::CodecCapabilities;
 
 /// Parse `ffmpeg -codecs` output into decoder and encoder lists.
@@ -192,6 +193,249 @@ pub fn validate_hw_encoder(encoder: &str) -> bool {
     ok
 }
 
+/// A detected GPU or render device, backend-agnostic.
+#[derive(Debug, Clone)]
+pub struct GpuDevice {
+    /// Device identifier (e.g. "0" for NVIDIA, "/dev/dri/renderD128" for VA-API).
+    pub id: String,
+    /// Human-readable device name.
+    pub name: String,
+    /// VRAM in MiB, if known.
+    pub vram_mib: Option<u64>,
+}
+
+/// Enumerate GPUs for the given HW acceleration backend.
+///
+/// Returns an empty vec if the required tool is missing or enumeration fails.
+pub fn enumerate_gpus(backend: HwAccelBackend) -> Vec<GpuDevice> {
+    match backend {
+        HwAccelBackend::Nvenc => enumerate_nvidia_gpus(),
+        HwAccelBackend::Vaapi | HwAccelBackend::Qsv => enumerate_vaapi_devices(),
+        HwAccelBackend::Videotoolbox => {
+            vec![GpuDevice {
+                id: "default".to_string(),
+                name: "macOS GPU".to_string(),
+                vram_mib: None,
+            }]
+        }
+    }
+}
+
+fn enumerate_nvidia_gpus() -> Vec<GpuDevice> {
+    let output = std::process::Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=index,name,memory.total",
+            "--format=csv,noheader,nounits",
+        ])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            parse_nvidia_smi(&stdout)
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn enumerate_vaapi_devices() -> Vec<GpuDevice> {
+    let entries = match std::fs::read_dir("/dev/dri") {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut devices: Vec<GpuDevice> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.starts_with("renderD") {
+            continue;
+        }
+        let path = entry.path();
+        let path_str = path.to_string_lossy().to_string();
+
+        let device_name = std::process::Command::new("vainfo")
+            .args(["--display", "drm", "--device", &path_str])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                parse_vainfo_device_name(&stdout)
+            })
+            .unwrap_or_else(|| name_str.to_string());
+
+        devices.push(GpuDevice {
+            id: path_str,
+            name: device_name,
+            vram_mib: None,
+        });
+    }
+    devices.sort_by(|a, b| a.id.cmp(&b.id));
+    devices
+}
+
+/// Parse `nvidia-smi` CSV output into GPU devices.
+///
+/// Expected format (one line per GPU):
+/// ```text
+/// 0, NVIDIA RTX A6000, 49140
+/// 1, Quadro RTX 4000, 8192
+/// ```
+pub fn parse_nvidia_smi(output: &str) -> Vec<GpuDevice> {
+    let mut devices = Vec::new();
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(3, ',').collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        let id = parts[0].trim().to_string();
+        let name = parts[1].trim().to_string();
+        let vram_mib = parts.get(2).and_then(|v| v.trim().parse::<u64>().ok());
+
+        devices.push(GpuDevice { id, name, vram_mib });
+    }
+    devices
+}
+
+/// Extract the device name from `vainfo` output.
+///
+/// Looks for a line like `Driver version: Intel iHD driver - 24.1.0`
+/// or `vainfo: Driver version: Mesa Gallium driver 23.3.1 ...`
+pub fn parse_vainfo_device_name(output: &str) -> Option<String> {
+    for line in output.lines() {
+        if line.contains("Driver version") {
+            let after_colon = line.rsplit(':').next()?.trim();
+            if !after_colon.is_empty() {
+                return Some(after_colon.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Test whether an ffmpeg HW encoder works on a specific device.
+///
+/// Like [`validate_hw_encoder`] but targets a specific GPU/render device:
+/// - **Nvenc**: sets `CUDA_VISIBLE_DEVICES` env var
+/// - **Vaapi**: adds `-vaapi_device <path> -vf format=nv12,hwupload`
+/// - **Qsv**: adds `-qsv_device <path>`
+/// - **Videotoolbox**: delegates to [`validate_hw_encoder`]
+pub fn validate_hw_encoder_on_device(
+    encoder: &str,
+    backend: HwAccelBackend,
+    device: &GpuDevice,
+) -> bool {
+    match backend {
+        HwAccelBackend::Nvenc => {
+            let ok = std::process::Command::new("ffmpeg")
+                .env("CUDA_VISIBLE_DEVICES", &device.id)
+                .args([
+                    "-hide_banner",
+                    "-nostdin",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "nullsrc=s=256x256:d=0.04",
+                    "-frames:v",
+                    "1",
+                    "-c:v",
+                    encoder,
+                    "-f",
+                    "null",
+                    "-",
+                ])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                tracing::debug!(
+                    encoder, gpu = %device.id,
+                    "HW encoder validated on device"
+                );
+            }
+            ok
+        }
+        HwAccelBackend::Vaapi => {
+            let filter = "format=nv12,hwupload";
+            let ok = std::process::Command::new("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-nostdin",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "nullsrc=s=256x256:d=0.04",
+                    "-vaapi_device",
+                    &device.id,
+                    "-vf",
+                    filter,
+                    "-frames:v",
+                    "1",
+                    "-c:v",
+                    encoder,
+                    "-f",
+                    "null",
+                    "-",
+                ])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                tracing::debug!(
+                    encoder, device = %device.id,
+                    "HW encoder validated on device"
+                );
+            }
+            ok
+        }
+        HwAccelBackend::Qsv => {
+            let ok = std::process::Command::new("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-nostdin",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "nullsrc=s=256x256:d=0.04",
+                    "-qsv_device",
+                    &device.id,
+                    "-frames:v",
+                    "1",
+                    "-c:v",
+                    encoder,
+                    "-f",
+                    "null",
+                    "-",
+                ])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                tracing::debug!(
+                    encoder, device = %device.id,
+                    "HW encoder validated on device"
+                );
+            }
+            ok
+        }
+        HwAccelBackend::Videotoolbox => validate_hw_encoder(encoder),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +568,71 @@ Decoders:
     fn test_parse_hw_implementations_empty() {
         let hw = parse_hw_implementations("");
         assert!(hw.is_empty());
+    }
+
+    #[test]
+    fn test_parse_nvidia_smi() {
+        let output = "\
+0, NVIDIA RTX A6000, 49140
+1, Quadro RTX 4000, 8192
+";
+        let gpus = parse_nvidia_smi(output);
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].id, "0");
+        assert_eq!(gpus[0].name, "NVIDIA RTX A6000");
+        assert_eq!(gpus[0].vram_mib, Some(49140));
+        assert_eq!(gpus[1].id, "1");
+        assert_eq!(gpus[1].name, "Quadro RTX 4000");
+        assert_eq!(gpus[1].vram_mib, Some(8192));
+    }
+
+    #[test]
+    fn test_parse_nvidia_smi_empty() {
+        let gpus = parse_nvidia_smi("");
+        assert!(gpus.is_empty());
+    }
+
+    #[test]
+    fn test_parse_nvidia_smi_no_vram() {
+        let output = "\
+0, NVIDIA RTX A6000
+1, Quadro RTX 4000
+";
+        let gpus = parse_nvidia_smi(output);
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].name, "NVIDIA RTX A6000");
+        assert!(gpus[0].vram_mib.is_none());
+        assert_eq!(gpus[1].name, "Quadro RTX 4000");
+        assert!(gpus[1].vram_mib.is_none());
+    }
+
+    #[test]
+    fn test_parse_nvidia_smi_malformed() {
+        let output = "\
+garbage line
+0, NVIDIA RTX A6000, 49140
+just-one-field
+";
+        let gpus = parse_nvidia_smi(output);
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].name, "NVIDIA RTX A6000");
+    }
+
+    #[test]
+    fn test_parse_vainfo_device_name() {
+        let output = "\
+vainfo: VA-API version: 1.20 (libva 2.20.1)
+vainfo: Driver version: Intel iHD driver - 24.1.0
+vainfo: Supported profile and entrypoint
+";
+        let name = parse_vainfo_device_name(output);
+        assert_eq!(name.as_deref(), Some("Intel iHD driver - 24.1.0"));
+    }
+
+    #[test]
+    fn test_parse_vainfo_device_name_not_found() {
+        let output = "some random output\nwithout driver info\n";
+        let name = parse_vainfo_device_name(output);
+        assert!(name.is_none());
     }
 }

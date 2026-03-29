@@ -27,6 +27,8 @@ const KNOWN_TOOLS: &[(&str, &[&str])] = &[
     ("mkvextract", &["--version"]),
     ("mediainfo", &["--version"]),
     ("HandBrakeCLI", &["--version"]),
+    ("nvidia-smi", &["--version"]),
+    ("vainfo", &["--version"]),
 ];
 
 /// Tool detector plugin: finds external tools (ffprobe, ffmpeg, mkvtoolnix) on PATH.
@@ -194,6 +196,24 @@ fn parse_version(tool_name: &str, output: &str) -> String {
                 .unwrap_or("unknown")
                 .to_string()
         }
+        "nvidia-smi" => {
+            // "NVIDIA-SMI version  : 580.126.18"
+            first_line
+                .split(':')
+                .next_back()
+                .map(str::trim)
+                .unwrap_or("unknown")
+                .to_string()
+        }
+        "vainfo" => {
+            // "vainfo: VA-API version: 1.20"
+            first_line
+                .split(':')
+                .next_back()
+                .map(str::trim)
+                .unwrap_or("unknown")
+                .to_string()
+        }
         _ => first_line.to_string(),
     }
 }
@@ -282,6 +302,18 @@ mod tests {
             parse_version("HandBrakeCLI", "HandBrake 20240621000000-e9ff2bd-unknown"),
             "20240621000000-e9ff2bd-unknown"
         );
+    }
+
+    #[test]
+    fn test_parse_version_nvidia_smi() {
+        let output = "NVIDIA-SMI version  : 580.126.18";
+        assert_eq!(parse_version("nvidia-smi", output), "580.126.18");
+    }
+
+    #[test]
+    fn test_parse_version_vainfo() {
+        let output = "vainfo: VA-API version: 1.20";
+        assert_eq!(parse_version("vainfo", output), "1.20");
     }
 
     #[test]
