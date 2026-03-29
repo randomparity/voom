@@ -52,6 +52,7 @@ pub fn execute_plan(plan: &Plan, hw_accel: &HwAccelConfig) -> Result<Vec<ActionR
         output = %output_path.display(),
         "executing ffmpeg"
     );
+    tracing::debug!(args = ?ffmpeg_args, "ffmpeg command");
 
     let output = run_with_timeout("ffmpeg", &ffmpeg_args, FFMPEG_TIMEOUT);
 
@@ -73,6 +74,11 @@ pub fn execute_plan(plan: &Plan, hw_accel: &HwAccelConfig) -> Result<Vec<ActionR
         Ok(output) => {
             let _ = std::fs::remove_file(&output_path);
             let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::debug!(
+                stderr = %stderr,
+                args = ?ffmpeg_args,
+                "ffmpeg failed"
+            );
             Err(VoomError::ToolExecution {
                 tool: "ffmpeg".into(),
                 message: format!(

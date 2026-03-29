@@ -348,57 +348,6 @@ fn apply_synthesize_audio(cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegC
     )
 }
 
-/// Pre-scan actions for a per-action `hw:` override that needs
-/// `-hwaccel` input args not already covered by the global config.
-///
-/// Returns `Some(config)` when an action requests a HW backend that
-/// differs from (or is absent in) the global `hw_accel`.
-fn effective_input_hw_accel(
-    actions: &[&PlannedAction],
-    global_hw: Option<&HwAccelConfig>,
-) -> Option<HwAccelConfig> {
-    let mut found: Option<HwAccelConfig> = None;
-
-    for action in actions {
-        if action.operation != OperationType::TranscodeVideo {
-            continue;
-        }
-        let ActionParams::Transcode {
-            hw: Some(backend), ..
-        } = &action.parameters
-        else {
-            continue;
-        };
-        if backend == "none" {
-            continue;
-        }
-        let cfg = hwaccel::config_from_backend_name(backend);
-        if !cfg.enabled() {
-            continue;
-        }
-        // Skip if the global config already covers this backend
-        if let Some(g) = global_hw {
-            if g.backend == cfg.backend {
-                continue;
-            }
-        }
-        if let Some(ref prev) = found {
-            if prev.backend != cfg.backend {
-                tracing::warn!(
-                    first = ?prev.backend,
-                    second = ?cfg.backend,
-                    "Multiple different per-action hw backends; \
-                     using the first"
-                );
-                continue;
-            }
-        }
-        found = Some(cfg);
-    }
-
-    found
-}
-
 /// Build an `FFmpeg` command from a plan's actions.
 ///
 /// Groups all actions into a single `FFmpeg` invocation where possible.
@@ -410,15 +359,13 @@ pub fn build_ffmpeg_command(
 ) -> Result<Vec<String>> {
     let mut cmd = FfmpegCommand::new();
 
-    // Add HW accel input args: per-action override wins when global
-    // is absent, but global is preserved if it already matches.
-    let action_hw = effective_input_hw_accel(actions, hw_accel);
-    let effective_hw = action_hw.as_ref().or(hw_accel);
-    if let Some(hw) = effective_hw {
-        for arg in hw.input_args() {
-            cmd = cmd.arg(&arg);
-        }
-    }
+    // NOTE: we intentionally do NOT emit `-hwaccel <backend>` input
+    // args.  That flag requests hardware-accelerated *decoding* (e.g.
+    // hevc_cuvid), which requires the matching cuvid/vaapi/qsv decoder
+    // to be compiled into ffmpeg.  When it's absent ffmpeg hard-fails
+    // instead of falling back to software decode.  HW *encoding* (e.g.
+    // av1_nvenc) works fine with software-decoded frames, so omitting
+    // the flag is safe and maximally compatible.
 
     cmd = cmd.input(&file.path);
     cmd = cmd.map_all();
@@ -916,8 +863,8 @@ mod tests {
         };
         let args = build_ffmpeg_command(&file, &actions, output, Some(&hw)).unwrap();
 
-        assert!(args.contains(&"-hwaccel".to_string()));
-        assert!(args.contains(&"cuda".to_string()));
+        // No -hwaccel flag (HW decode not emitted; encoding-only)
+        assert!(!args.contains(&"-hwaccel".to_string()));
         assert!(args.contains(&"hevc_nvenc".to_string()));
         // NVENC uses -cq, not -crf
         assert!(
@@ -1090,14 +1037,11 @@ mod tests {
             args.contains(&"hevc_nvenc".to_string()),
             "hw: nvenc should use NVENC encoder, got: {args:?}"
         );
-        // -hwaccel cuda must appear before -i
-        let hwaccel_pos = args.iter().position(|a| a == "-hwaccel").unwrap();
-        let i_pos = args.iter().position(|a| a == "-i").unwrap();
+        // No -hwaccel flag (HW decode not emitted)
         assert!(
-            hwaccel_pos < i_pos,
-            "-hwaccel must precede -i, got: {args:?}"
+            !args.contains(&"-hwaccel".to_string()),
+            "should not emit -hwaccel: {args:?}"
         );
-        assert_eq!(args[hwaccel_pos + 1], "cuda");
     }
 
     #[test]
@@ -1121,10 +1065,10 @@ mod tests {
         let output = Path::new("/tmp/output.mp4");
 
         let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
-        let hwaccel_pos = args.iter().position(|a| a == "-hwaccel").unwrap();
-        let i_pos = args.iter().position(|a| a == "-i").unwrap();
-        assert!(hwaccel_pos < i_pos);
-        assert_eq!(args[hwaccel_pos + 1], "qsv");
+        assert!(
+            !args.contains(&"-hwaccel".to_string()),
+            "should not emit -hwaccel: {args:?}"
+        );
         assert!(args.contains(&"hevc_qsv".to_string()));
     }
 
@@ -1152,9 +1096,11 @@ mod tests {
         };
 
         let args = build_ffmpeg_command(&file, &actions, output, Some(&hw)).unwrap();
-        // Should have exactly one -hwaccel flag
-        let count = args.iter().filter(|a| *a == "-hwaccel").count();
-        assert_eq!(count, 1, "no duplicate -hwaccel: {args:?}");
+        // No -hwaccel flag (HW decode not emitted)
+        assert!(
+            !args.contains(&"-hwaccel".to_string()),
+            "should not emit -hwaccel: {args:?}"
+        );
         assert!(args.contains(&"hevc_nvenc".to_string()));
     }
 
@@ -1210,14 +1156,12 @@ mod tests {
         };
 
         let args = build_ffmpeg_command(&file, &actions, output, Some(&hw)).unwrap();
-        // Global -hwaccel cuda should still be present (other streams
-        // may benefit from HW decode even if this action encodes in SW)
+        // No -hwaccel flag even with global config (HW decode not emitted)
         assert!(
-            args.contains(&"-hwaccel".to_string()),
-            "global -hwaccel should be preserved: {args:?}"
+            !args.contains(&"-hwaccel".to_string()),
+            "should not emit -hwaccel: {args:?}"
         );
-        assert!(args.contains(&"cuda".to_string()));
-        // But the encoder should be software
+        // Encoder should be software (hw: none override)
         assert!(args.contains(&"libx265".to_string()));
     }
 
