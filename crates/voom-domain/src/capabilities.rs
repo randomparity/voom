@@ -30,6 +30,7 @@ pub enum Capability {
     },
     Transcribe,
     Synthesize,
+    HealthCheck,
 }
 
 impl Capability {
@@ -50,6 +51,7 @@ impl Capability {
             Capability::EnrichMetadata { .. } => "enrich_metadata",
             Capability::Transcribe => "transcribe",
             Capability::Synthesize => "synthesize",
+            Capability::HealthCheck => "health_check",
         }
     }
 }

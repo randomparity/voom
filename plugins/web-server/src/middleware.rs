@@ -1,16 +1,23 @@
 //! Tower middleware for the web server.
 
 use std::future::Future;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::num::NonZeroU32;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderValue, Request, Response, StatusCode};
 use axum::response::IntoResponse;
+use governor::clock::{Clock, DefaultClock};
+use governor::state::keyed::DashMapStateStore;
+use governor::{Quota, RateLimiter};
 use tower::{Layer, Service};
 
 use uuid::Uuid;
 
+use crate::errors::ApiError;
 use crate::state::AppState;
 
 /// Per-request CSP nonce, injected by [`SecurityHeadersLayer`] and extracted
@@ -61,9 +68,7 @@ where
 
             let csp = format!(
                 "default-src 'self'; \
-                 script-src 'self' 'nonce-{nonce}' \
-                 https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js \
-                 https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js; \
+                 script-src 'self' 'nonce-{nonce}'; \
                  style-src 'self' 'nonce-{nonce}'; \
                  img-src 'self' data:; \
                  connect-src 'self'; \
@@ -160,4 +165,122 @@ pub async fn auth_middleware(
     }
 
     next.run(request).await
+}
+
+type KeyedLimiter = RateLimiter<IpAddr, DashMapStateStore<IpAddr>, DefaultClock>;
+
+/// Per-IP rate limiting layer with two tiers:
+/// - General API: 120 requests/minute per IP
+/// - CPU-intensive endpoints (`/api/policy/validate`, `/api/policy/format`):
+///   10 requests/minute per IP
+///
+/// Designed for LAN deployment where abuse risk is low — this is
+/// defense-in-depth, not a substitute for network-level controls.
+#[derive(Clone)]
+pub struct RateLimitLayer {
+    general: Arc<KeyedLimiter>,
+    cpu_intensive: Arc<KeyedLimiter>,
+}
+
+impl Default for RateLimitLayer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RateLimitLayer {
+    #[must_use]
+    pub fn new() -> Self {
+        let general_quota = Quota::per_minute(NonZeroU32::new(120).expect("non-zero"));
+        let cpu_quota = Quota::per_minute(NonZeroU32::new(10).expect("non-zero"));
+
+        Self {
+            general: Arc::new(RateLimiter::keyed(general_quota)),
+            cpu_intensive: Arc::new(RateLimiter::keyed(cpu_quota)),
+        }
+    }
+}
+
+impl<S> Layer<S> for RateLimitLayer {
+    type Service = RateLimitService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        RateLimitService {
+            inner,
+            general: Arc::clone(&self.general),
+            cpu_intensive: Arc::clone(&self.cpu_intensive),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RateLimitService<S> {
+    inner: S,
+    general: Arc<KeyedLimiter>,
+    cpu_intensive: Arc<KeyedLimiter>,
+}
+
+/// CPU-intensive paths that get the stricter rate limit.
+const CPU_INTENSIVE_PATHS: &[&str] = &["/api/policy/validate", "/api/policy/format"];
+
+fn extract_ip<B>(req: &Request<B>) -> IpAddr {
+    req.extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip())
+        .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
+}
+
+fn rate_limit_response(retry_after_secs: u64) -> Response<axum::body::Body> {
+    let body = ApiError {
+        error: "Too many requests".into(),
+        details: Some(format!(
+            "Rate limit exceeded. Retry after {retry_after_secs} seconds."
+        )),
+    };
+    let mut response = (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
+    if let Ok(val) = HeaderValue::from_str(&retry_after_secs.to_string()) {
+        response.headers_mut().insert("Retry-After", val);
+    }
+    response
+}
+
+impl<S, B> Service<Request<B>> for RateLimitService<S>
+where
+    S: Service<Request<B>, Response = Response<axum::body::Body>> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+    B: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request<B>) -> Self::Future {
+        let ip = extract_ip(&req);
+        let path = req.uri().path().to_owned();
+
+        let is_cpu_intensive = CPU_INTENSIVE_PATHS.iter().any(|p| path == *p);
+
+        // Check CPU-intensive limit first (stricter)
+        if is_cpu_intensive {
+            if let Err(not_until) = self.cpu_intensive.check_key(&ip) {
+                let retry_after = not_until.wait_time_from(DefaultClock::default().now());
+                let secs = retry_after.as_secs() + 1;
+                return Box::pin(async move { Ok(rate_limit_response(secs)) });
+            }
+        }
+
+        // Check general limit
+        if let Err(not_until) = self.general.check_key(&ip) {
+            let retry_after = not_until.wait_time_from(DefaultClock::default().now());
+            let secs = retry_after.as_secs() + 1;
+            return Box::pin(async move { Ok(rate_limit_response(secs)) });
+        }
+
+        let mut inner = self.inner.clone();
+        Box::pin(async move { inner.call(req).await })
+    }
 }

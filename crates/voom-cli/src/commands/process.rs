@@ -11,20 +11,19 @@ use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::config;
 use crate::output::{max_filename_len, shrink_filename};
 use voom_domain::events::{
-    Event, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
+    Event, JobCompletedEvent, JobProgressEvent, JobStartedEvent, PlanCompletedEvent,
+    PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
 };
-use voom_job_manager::progress::ProgressReporter;
-use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
+use voom_job_manager::progress::{CompositeReporter, ProgressReporter};
+use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 
 /// Run the process command.
 ///
-/// Uses the dual-dispatch pattern (direct-call + event-publish) throughout:
+/// Uses the event-driven + direct-call pattern throughout:
 ///
 /// - **Discovery** — called directly for progress/filtering control, then each
-///   `FileDiscovered` event IS dispatched so sqlite-store tracks the file.
-///   (Unlike `scan`, process can safely dispatch these because it does not
-///   register the ffprobe-introspector as a kernel plugin listening for
-///   discovery events.)
+///   `FileDiscovered` event is dispatched so sqlite-store records the file in
+///   `discovered_files` and ffprobe-introspector enqueues introspection jobs.
 /// - **Introspection** — called directly via `introspect_file()` for
 ///   deterministic worker-pool concurrency. The result `FileIntrospected`
 ///   event is dispatched for persistence.
@@ -40,8 +39,14 @@ use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// the events they care about.
 pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let config = config::load_config()?;
-    let (kernel, store) = app::bootstrap_kernel_with_store(&config)?;
+    let app::BootstrapResult {
+        kernel,
+        store,
+        collector,
+        job_queue,
+    } = app::bootstrap_kernel_with_store(&config)?;
     let kernel = Arc::new(kernel);
+    let capabilities = Arc::new(collector.snapshot());
 
     let path = args
         .path
@@ -101,8 +106,8 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     println!("Found {} media files.", style(file_count).bold());
 
     let on_error = match args.on_error {
-        ErrorHandling::Fail => ErrorStrategy::Fail,
-        ErrorHandling::Continue => ErrorStrategy::Continue,
+        ErrorHandling::Fail => JobErrorStrategy::Fail,
+        ErrorHandling::Continue => JobErrorStrategy::Continue,
     };
 
     if token.is_cancelled() {
@@ -110,9 +115,12 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         return Ok(());
     }
 
-    let (pool, effective_workers) = create_worker_pool(&store, &args, token.clone())?;
+    let (pool, effective_workers) = create_worker_pool(job_queue, &args, token.clone())?;
 
-    let reporter: Arc<dyn ProgressReporter> = Arc::new(CliProgressReporter::new(file_count));
+    let cli_reporter: Arc<dyn ProgressReporter> = Arc::new(CliProgressReporter::new(file_count));
+    let bus_reporter: Arc<dyn ProgressReporter> = Arc::new(EventBusReporter::new(kernel.clone()));
+    let reporter: Arc<dyn ProgressReporter> =
+        Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]));
 
     let items = build_work_items(&events);
     let compiled = Arc::new(compiled);
@@ -130,17 +138,18 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                 let kernel = kernel.clone();
                 let token = token_for_workers.clone();
                 let ffprobe_path = ffprobe_path.clone();
+                let capabilities = capabilities.clone();
                 async move {
-                    process_single_file(
-                        job,
-                        &compiled,
+                    let ctx = ProcessContext {
+                        compiled: &compiled,
                         kernel,
                         dry_run,
                         flag_size_increase,
-                        &token,
-                        ffprobe_path.as_deref(),
-                    )
-                    .await
+                        token: &token,
+                        ffprobe_path: ffprobe_path.as_deref(),
+                        capabilities: &capabilities,
+                    };
+                    process_single_file(job, &ctx).await
                 }
             },
             on_error,
@@ -184,14 +193,16 @@ fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
     );
 }
 
-/// Walk the filesystem and discover media files (dual-dispatch: direct + event-publish).
+/// Walk the filesystem and discover media files, dispatching events through the kernel.
 ///
 /// Creates a standalone `DiscoveryPlugin` for direct API access (scan options,
 /// progress callbacks) that the event-bus path does not support. `FileDiscovered`
-/// events are dispatched to the kernel so that subscribers (storage, SSE) track
-/// the files. This is safe here because process does not register an introspector
-/// plugin that would react to discovery events — introspection is driven
-/// separately by `process_single_file`.
+/// events are dispatched to the kernel so that subscribers react:
+/// - sqlite-store records each file in `discovered_files`
+/// - ffprobe-introspector enqueues `JobType::Introspect` jobs
+///
+/// Introspection is still driven directly by `process_single_file` for
+/// deterministic progress reporting.
 fn discover_files(
     path: &std::path::Path,
     args: &ProcessArgs,
@@ -211,25 +222,19 @@ fn discover_files(
     Ok(events)
 }
 
-/// Typed payload for the process worker pool, replacing freeform JSON.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct ProcessJobPayload {
-    path: String,
-    size: u64,
-    content_hash: String,
-}
+use crate::introspect::DiscoveredFilePayload;
 
 /// Build work items from discovery events for the worker pool.
 fn build_work_items(
     events: &[voom_domain::events::FileDiscoveredEvent],
-) -> Vec<voom_job_manager::worker::WorkItem<ProcessJobPayload>> {
+) -> Vec<voom_job_manager::worker::WorkItem<DiscoveredFilePayload>> {
     events
         .iter()
         .map(|evt| {
             voom_job_manager::worker::WorkItem::new(
                 voom_domain::job::JobType::Process,
                 100,
-                Some(ProcessJobPayload {
+                Some(DiscoveredFilePayload {
                     path: evt.path.to_string_lossy().into_owned(),
                     size: evt.size,
                     content_hash: evt.content_hash.clone(),
@@ -239,14 +244,12 @@ fn build_work_items(
         .collect()
 }
 
-/// Set up the job queue and worker pool.
+/// Set up the worker pool using the provided job queue.
 fn create_worker_pool(
-    store: &Arc<dyn voom_domain::storage::StorageTrait>,
+    queue: Arc<voom_job_manager::queue::JobQueue>,
     args: &ProcessArgs,
     token: CancellationToken,
 ) -> Result<(WorkerPool, usize)> {
-    let queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
-
     let mut config = WorkerPoolConfig::default();
     config.max_workers = args.workers;
     config.worker_prefix = "voom".to_string();
@@ -258,7 +261,7 @@ fn create_worker_pool(
 }
 
 /// Extract and deserialize the job payload from a process job.
-fn parse_job_payload(job: &voom_domain::job::Job) -> anyhow::Result<ProcessJobPayload> {
+fn parse_job_payload(job: &voom_domain::job::Job) -> anyhow::Result<DiscoveredFilePayload> {
     let raw_payload = job
         .payload
         .as_ref()
@@ -266,15 +269,21 @@ fn parse_job_payload(job: &voom_domain::job::Job) -> anyhow::Result<ProcessJobPa
     serde_json::from_value(raw_payload.clone()).context("invalid payload")
 }
 
-/// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
-async fn process_single_file(
-    job: voom_domain::job::Job,
-    compiled: &voom_dsl::CompiledPolicy,
+/// Shared context for processing a single file.
+struct ProcessContext<'a> {
+    compiled: &'a voom_dsl::CompiledPolicy,
     kernel: Arc<voom_kernel::Kernel>,
     dry_run: bool,
     flag_size_increase: bool,
-    token: &CancellationToken,
-    ffprobe_path: Option<&str>,
+    token: &'a CancellationToken,
+    ffprobe_path: Option<&'a str>,
+    capabilities: &'a voom_domain::CapabilityMap,
+}
+
+/// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
+async fn process_single_file(
+    job: voom_domain::job::Job,
+    ctx: &ProcessContext<'_>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let payload = parse_job_payload(&job).map_err(|e| format!("job payload: {e}"))?;
 
@@ -284,13 +293,13 @@ async fn process_single_file(
         path,
         payload.size,
         payload.content_hash,
-        &kernel,
-        ffprobe_path,
+        &ctx.kernel,
+        ctx.ffprobe_path,
     )
     .await
     .map_err(|e| format!("introspect {}: {e}", payload.path))?;
 
-    let result = orchestrate_plans(compiled, &file);
+    let result = orchestrate_plans(ctx.compiled, &file, ctx.capabilities);
 
     // Collect safeguard violations across all plans and tag the file
     let violations: Vec<&voom_domain::SafeguardViolation> = result
@@ -304,14 +313,14 @@ async fn process_single_file(
             "safeguard_violations".to_string(),
             serde_json::json!(violations),
         );
-        kernel.dispatch(Event::FileIntrospected(
+        ctx.kernel.dispatch(Event::FileIntrospected(
             voom_domain::events::FileIntrospectedEvent::new(tagged_file),
         ));
     }
 
     let needs_exec = voom_phase_orchestrator::PhaseOrchestratorPlugin::needs_execution(&result);
 
-    if dry_run {
+    if ctx.dry_run {
         let plan_summaries: Vec<serde_json::Value> = result
             .plans
             .iter()
@@ -337,10 +346,10 @@ async fn process_single_file(
         execute_plans(
             &file,
             &result,
-            kernel,
+            ctx.kernel.clone(),
             needs_exec,
-            flag_size_increase,
-            token,
+            ctx.flag_size_increase,
+            ctx.token,
         )
         .await
     }
@@ -354,9 +363,10 @@ async fn process_single_file(
 fn orchestrate_plans(
     compiled: &voom_dsl::CompiledPolicy,
     file: &voom_domain::media::MediaFile,
+    capabilities: &voom_domain::CapabilityMap,
 ) -> voom_phase_orchestrator::OrchestrationResult {
     let plans = voom_policy_evaluator::PolicyEvaluatorPlugin::new()
-        .evaluate(compiled, file)
+        .evaluate_with_capabilities(compiled, file, capabilities)
         .plans;
     let orchestrator = voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
     orchestrator.orchestrate(plans)
@@ -558,6 +568,42 @@ fn print_summary(pool: &WorkerPool, file_count: usize, effective_workers: usize,
     }
 }
 
+/// Reporter that dispatches job lifecycle events through the kernel event bus.
+struct EventBusReporter {
+    kernel: Arc<voom_kernel::Kernel>,
+}
+
+impl EventBusReporter {
+    fn new(kernel: Arc<voom_kernel::Kernel>) -> Self {
+        Self { kernel }
+    }
+}
+
+impl ProgressReporter for EventBusReporter {
+    fn on_batch_start(&self, _total: usize) {}
+
+    fn on_job_start(&self, job: &voom_domain::job::Job) {
+        self.kernel.dispatch(Event::JobStarted(JobStartedEvent::new(
+            job.id,
+            job.job_type.to_string(),
+        )));
+    }
+
+    fn on_job_progress(&self, job_id: uuid::Uuid, progress: f64, message: Option<&str>) {
+        let mut event = JobProgressEvent::new(job_id, progress);
+        event.message = message.map(String::from);
+        self.kernel.dispatch(Event::JobProgress(event));
+    }
+
+    fn on_job_complete(&self, job_id: uuid::Uuid, success: bool, error: Option<&str>) {
+        let mut event = JobCompletedEvent::new(job_id, success);
+        event.message = error.map(String::from);
+        self.kernel.dispatch(Event::JobCompleted(event));
+    }
+
+    fn on_batch_complete(&self, _completed: u64, _failed: u64) {}
+}
+
 /// CLI progress reporter using indicatif progress bars.
 struct CliProgressReporter {
     _multi: MultiProgress,
@@ -585,7 +631,7 @@ impl ProgressReporter for CliProgressReporter {
 
     fn on_job_start(&self, job: &voom_domain::job::Job) {
         if let Some(ref raw) = job.payload {
-            if let Ok(payload) = serde_json::from_value::<ProcessJobPayload>(raw.clone()) {
+            if let Ok(payload) = serde_json::from_value::<DiscoveredFilePayload>(raw.clone()) {
                 // 57 = spinner + space + [bar:40] + space + pos/len + space
                 let max_name = max_filename_len(57);
                 let filename = std::path::Path::new(&payload.path)
@@ -762,5 +808,86 @@ mod tests {
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.introspected_count.load(Ordering::SeqCst), 1);
+    }
+
+    /// A test plugin that records job lifecycle events.
+    struct JobEventRecorder {
+        started: AtomicUsize,
+        progress: AtomicUsize,
+        completed: AtomicUsize,
+    }
+
+    impl JobEventRecorder {
+        fn new() -> Self {
+            Self {
+                started: AtomicUsize::new(0),
+                progress: AtomicUsize::new(0),
+                completed: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl voom_kernel::Plugin for JobEventRecorder {
+        fn name(&self) -> &str {
+            "job-recorder"
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+        fn capabilities(&self) -> &[Capability] {
+            &[]
+        }
+        fn handles(&self, event_type: &str) -> bool {
+            matches!(
+                event_type,
+                Event::JOB_STARTED | Event::JOB_PROGRESS | Event::JOB_COMPLETED
+            )
+        }
+        fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
+            match event {
+                Event::JobStarted(_) => {
+                    self.started.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::JobProgress(_) => {
+                    self.progress.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::JobCompleted(_) => {
+                    self.completed.fetch_add(1, Ordering::SeqCst);
+                }
+                _ => {}
+            }
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn test_event_bus_reporter_dispatches_job_events() {
+        let mut kernel = voom_kernel::Kernel::new();
+        let recorder = Arc::new(JobEventRecorder::new());
+        kernel.register_plugin(recorder.clone(), 50);
+        let kernel = Arc::new(kernel);
+
+        let reporter = EventBusReporter::new(kernel);
+
+        let job = voom_domain::job::Job::new(voom_domain::job::JobType::Process);
+        let job_id = job.id;
+
+        reporter.on_job_start(&job);
+        assert_eq!(recorder.started.load(Ordering::SeqCst), 1);
+
+        reporter.on_job_progress(job_id, 0.5, Some("halfway"));
+        assert_eq!(recorder.progress.load(Ordering::SeqCst), 1);
+
+        reporter.on_job_complete(job_id, true, None);
+        assert_eq!(recorder.completed.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_event_bus_reporter_batch_methods_are_noop() {
+        let kernel = Arc::new(voom_kernel::Kernel::new());
+        let reporter = EventBusReporter::new(kernel);
+        // These should not panic
+        reporter.on_batch_start(10);
+        reporter.on_batch_complete(5, 0);
     }
 }

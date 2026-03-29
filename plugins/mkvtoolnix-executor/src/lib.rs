@@ -5,12 +5,14 @@ pub mod propedit;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 
+use std::process::Command;
+
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::events::{Event, EventResult};
+use voom_domain::events::{CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent};
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, ActionResult, OperationType, Plan, PlannedAction};
-use voom_kernel::Plugin;
+use voom_kernel::{Plugin, PluginContext};
 
 // Propedit (in-place metadata) operations are identified by
 // `OperationType::is_metadata_op()` — defined once in voom-domain.
@@ -35,11 +37,20 @@ fn is_supported_op(op: OperationType) -> bool {
 ///
 /// Propedit actions are always run first since they operate in-place and are much faster.
 /// Merge actions run second and produce a new file that replaces the original.
+/// Known input containers that MKVToolNix can remux.
+const MKVTOOLNIX_FORMATS: &[&str] = &[
+    "ass", "avi", "flac", "flv", "matroska", "mov", "mp4", "mpeg", "ogm", "srt", "ssa", "wav",
+    "webm",
+];
+
 pub struct MkvtoolnixExecutorPlugin {
     capabilities: Vec<Capability>,
+    available: bool,
 }
 
 impl MkvtoolnixExecutorPlugin {
+    /// Create a new executor plugin. The plugin starts with `available = false`
+    /// and must be initialized via `init()` to probe for mkvmerge on PATH.
     #[must_use]
     pub fn new() -> Self {
         let mut operations: Vec<OperationType> = OperationType::METADATA_OPS.to_vec();
@@ -49,16 +60,32 @@ impl MkvtoolnixExecutorPlugin {
                 operations,
                 formats: vec!["mkv".into()],
             }],
+            available: false,
         }
     }
 
+    /// Create a plugin with `available` set to the given value.
+    /// Bypasses the `init()` probe for testing.
+    #[cfg(test)]
+    fn with_available(mut self, available: bool) -> Self {
+        self.available = available;
+        self
+    }
+
     /// Check whether this plugin can handle all operations in the given plan.
+    ///
+    /// Requires `init()` to have set `available = true` (mkvmerge found on PATH).
+    /// Returns `false` if the plugin is unavailable.
     ///
     /// Returns true if:
     /// - The file has an MKV container (or the plan includes `ConvertContainer` to MKV)
     /// - All actions use supported operation types
     #[must_use]
     pub fn can_handle(&self, plan: &Plan) -> bool {
+        if !self.available {
+            return false;
+        }
+
         let is_mkv = plan.file.container == Container::Mkv;
         let is_convert_to_mkv = plan.actions.iter().any(|a| {
             a.operation == OperationType::ConvertContainer
@@ -192,6 +219,8 @@ impl Plugin for MkvtoolnixExecutorPlugin {
         env!("CARGO_PKG_VERSION")
     }
 
+    voom_kernel::plugin_cargo_metadata!();
+
     fn capabilities(&self) -> &[Capability] {
         &self.capabilities
     }
@@ -205,6 +234,34 @@ impl Plugin for MkvtoolnixExecutorPlugin {
             Event::PlanCreated(plan_event) => self.handle_plan_created(plan_event),
             _ => Ok(None),
         }
+    }
+
+    fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
+        let available = Command::new("mkvmerge")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+
+        self.available = available;
+
+        if !available {
+            tracing::warn!("mkvmerge not found; mkvtoolnix executor disabled");
+            return Ok(vec![]);
+        }
+
+        let formats: Vec<String> = MKVTOOLNIX_FORMATS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+
+        let event = ExecutorCapabilitiesEvent::new(
+            "mkvtoolnix-executor",
+            CodecCapabilities::empty(),
+            formats,
+            vec![],
+        );
+
+        Ok(vec![Event::ExecutorCapabilities(event)])
     }
 }
 
@@ -260,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_plugin_metadata() {
-        let plugin = MkvtoolnixExecutorPlugin::new();
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
         assert_eq!(plugin.name(), "mkvtoolnix-executor");
         assert_eq!(plugin.version(), env!("CARGO_PKG_VERSION"));
         assert_eq!(plugin.capabilities().len(), 1);
@@ -278,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_mkv() {
-        let plugin = MkvtoolnixExecutorPlugin::new();
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
         let plan = make_mkv_plan(vec![
             make_action(OperationType::SetDefault, Some(1), ActionParams::Empty),
             make_action(
@@ -295,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_non_mkv() {
-        let plugin = MkvtoolnixExecutorPlugin::new();
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
         let plan = make_mp4_plan(vec![make_action(
             OperationType::SetDefault,
             Some(1),
@@ -306,7 +363,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_convert_to_mkv() {
-        let plugin = MkvtoolnixExecutorPlugin::new();
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
         let plan = make_mp4_plan(vec![make_action(
             OperationType::ConvertContainer,
             None,
@@ -319,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_unsupported_op() {
-        let plugin = MkvtoolnixExecutorPlugin::new();
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
         let plan = make_mkv_plan(vec![make_action(
             OperationType::TranscodeVideo,
             Some(0),
@@ -330,6 +387,17 @@ mod tests {
                 bitrate: None,
                 channels: None,
             },
+        )]);
+        assert!(!plugin.can_handle(&plan));
+    }
+
+    #[test]
+    fn test_can_handle_unavailable() {
+        let plugin = MkvtoolnixExecutorPlugin::new(); // available defaults to false
+        let plan = make_mkv_plan(vec![make_action(
+            OperationType::SetDefault,
+            Some(1),
+            ActionParams::Empty,
         )]);
         assert!(!plugin.can_handle(&plan));
     }

@@ -117,18 +117,23 @@ impl Plugin for ToolDetectorPlugin {
         env!("CARGO_PKG_VERSION")
     }
 
+    voom_kernel::plugin_cargo_metadata!();
+
     fn capabilities(&self) -> &[Capability] {
         &self.capabilities
     }
 
-    fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        self.populate_cache();
+    fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<voom_domain::events::Event>> {
+        let events = self.detect_all();
         tracing::info!(
-            found = self.cache.len(),
+            found = events.len(),
             total = KNOWN_TOOLS.len(),
             "tool detection complete"
         );
-        Ok(())
+        Ok(events
+            .into_iter()
+            .map(voom_domain::events::Event::ToolDetected)
+            .collect())
     }
 }
 

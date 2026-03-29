@@ -21,6 +21,17 @@ pub mod wasm {
     /// A loaded plugin paired with its manifest-declared priority.
     pub type PluginWithPriority = (Arc<dyn Plugin>, i32);
 
+    /// Derive the plugin name from its manifest (if present) or the WASM file stem.
+    fn plugin_name_from_manifest(manifest: Option<&PluginManifest>, wasm_path: &Path) -> String {
+        manifest.map(|m| m.name.clone()).unwrap_or_else(|| {
+            wasm_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        })
+    }
+
     /// Loads WASM component plugins from `.wasm` files.
     ///
     /// The loader compiles WASM components and instantiates them with host
@@ -101,16 +112,7 @@ pub mod wasm {
             register_host_functions(&mut linker)
                 .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-            let plugin_name = manifest
-                .as_ref()
-                .map(|m| m.name.clone())
-                .unwrap_or_else(|| {
-                    wasm_path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown")
-                        .to_string()
-                });
+            let plugin_name = plugin_name_from_manifest(manifest.as_ref(), wasm_path);
 
             let mut state = host_state.unwrap_or_else(|| HostState::new(plugin_name.clone()));
 
@@ -134,22 +136,35 @@ pub mod wasm {
             store.limiter(|s| &mut s.store_limits);
             store.set_epoch_deadline(store.data().wasm_limits.epoch_deadline_ticks);
 
-            let version = manifest
-                .as_ref()
-                .map(|m| m.version.clone())
-                .unwrap_or_else(|| "0.0.0".to_string());
-            let capabilities = manifest
-                .as_ref()
-                .map(|m| m.capabilities.clone())
-                .unwrap_or_default();
-            let handled_events = manifest
-                .as_ref()
-                .map(|m| m.handles_events.clone())
-                .unwrap_or_default();
+            let (version, description, author, license, homepage, capabilities, handled_events) =
+                match manifest.as_ref() {
+                    Some(m) => (
+                        m.version.clone(),
+                        m.description.clone(),
+                        m.author.clone(),
+                        m.license.clone(),
+                        m.homepage.clone(),
+                        m.capabilities.clone(),
+                        m.handles_events.clone(),
+                    ),
+                    None => (
+                        "0.0.0".to_string(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        vec![],
+                        vec![],
+                    ),
+                };
 
             Ok(Arc::new(WasmPlugin {
                 name: plugin_name,
                 version,
+                description,
+                author,
+                license,
+                homepage,
                 capabilities,
                 handled_events,
                 inner: Mutex::new(WasmPluginInner {
@@ -219,16 +234,8 @@ pub mod wasm {
                         Err(e) => return Some(Err(e)),
                     };
 
-                    let plugin_name = manifest
-                        .as_ref()
-                        .map(|m| m.name.clone())
-                        .unwrap_or_else(|| {
-                            wasm_path
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("unknown")
-                                .to_string()
-                        });
+                    let plugin_name =
+                        plugin_name_from_manifest(manifest.as_ref(), &wasm_path);
 
                     if skip_plugins.contains(&plugin_name) {
                         tracing::info!(plugin = %plugin_name, "WASM plugin disabled, skipping load");
@@ -276,6 +283,10 @@ pub mod wasm {
     struct WasmPlugin {
         name: String,
         version: String,
+        description: String,
+        author: String,
+        license: String,
+        homepage: String,
         capabilities: Vec<Capability>,
         handled_events: Vec<String>,
         inner: Mutex<WasmPluginInner>,
@@ -293,6 +304,22 @@ pub mod wasm {
 
         fn version(&self) -> &str {
             &self.version
+        }
+
+        fn description(&self) -> &str {
+            &self.description
+        }
+
+        fn author(&self) -> &str {
+            &self.author
+        }
+
+        fn license(&self) -> &str {
+            &self.license
+        }
+
+        fn homepage(&self) -> &str {
+            &self.homepage
         }
 
         fn capabilities(&self) -> &[Capability] {
@@ -365,10 +392,10 @@ pub mod wasm {
 
         let instance = inner.instance.as_ref().unwrap();
 
-        // Try the namespaced interface first, then fall back to a bare export
-        // for simpler single-interface components.
+        // Try the namespaced @0.2.0 interface first, then fall back to a bare
+        // export for simpler single-interface components.
         let on_event = instance
-            .get_export(&mut inner.store, None, "voom:plugin/plugin@0.1.0")
+            .get_export(&mut inner.store, None, "voom:plugin/plugin@0.2.0")
             .and_then(|idx| instance.get_export(&mut inner.store, Some(&idx), "on-event"))
             .and_then(|idx| instance.get_func(&mut inner.store, idx))
             .or_else(|| {
@@ -506,7 +533,7 @@ pub mod wasm {
         // The interface name in WIT is "host" in package "voom:plugin".
         let mut root = linker.root();
         let mut host_instance = root
-            .instance("voom:plugin/host@0.1.0")
+            .instance("voom:plugin/host@0.2.0")
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
         host_instance

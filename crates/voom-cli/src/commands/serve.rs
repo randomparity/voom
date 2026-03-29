@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::Result;
 use console::style;
 use tokio_util::sync::CancellationToken;
@@ -7,7 +10,8 @@ use crate::cli::ServeArgs;
 
 pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     let config = crate::config::load_config()?;
-    let (kernel, store) = crate::app::bootstrap_kernel_with_store(&config)?;
+    let crate::app::BootstrapResult { kernel, store, .. } =
+        crate::app::bootstrap_kernel_with_store(&config)?;
 
     // Snapshot plugin info from the kernel registry
     let plugin_info: Vec<voom_web_server::api::plugins::PluginInfoResponse> = kernel
@@ -19,6 +23,10 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
                 voom_web_server::api::plugins::PluginInfoResponse::new(
                     p.name().to_string(),
                     p.version().to_string(),
+                    p.description().to_string(),
+                    p.author().to_string(),
+                    p.license().to_string(),
+                    p.homepage().to_string(),
                     p.capabilities()
                         .iter()
                         .map(|c| c.kind().to_string())
@@ -27,6 +35,65 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
             })
         })
         .collect();
+
+    // Parse health-checker config once (single source of truth for defaults).
+    let health_config: voom_health_checker::HealthCheckerConfig = config
+        .plugin
+        .get("health-checker")
+        .and_then(|t| t.clone().try_into().ok())
+        .unwrap_or_default();
+
+    let health_interval = health_config.interval_secs;
+    let retention_days = i64::from(health_config.retention_days);
+
+    // Wrap kernel in Arc so the health-check background task can share it
+    // with any future consumers. The kernel is not used after this point
+    // by the main task (plugin_info snapshot was taken above).
+    let kernel = Arc::new(kernel);
+
+    if health_interval > 0 {
+        let health_token = token.clone();
+        let data_dir = config.data_dir.clone();
+        let health_kernel = kernel.clone();
+        let health_store = store.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(health_interval));
+            interval.tick().await; // skip immediate first tick (init already ran checks)
+            let prune_every = 86_400 / health_interval; // ~once per day
+            let mut tick_count: u64 = 0;
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        tick_count += 1;
+
+                        // Prune old records ~once per day
+                        if tick_count % prune_every == 0 {
+                            let prune_store = health_store.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                let cutoff = chrono::Utc::now()
+                                    - chrono::Duration::days(retention_days);
+                                if let Err(e) = prune_store.prune_health_checks(cutoff) {
+                                    tracing::warn!(error = %e, "failed to prune health checks");
+                                }
+                            }).await;
+                        }
+
+                        // Run health checks and dispatch events
+                        let k = health_kernel.clone();
+                        let d = data_dir.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            let checker = voom_health_checker::HealthCheckerPlugin::new();
+                            let events = checker.run_checks(&d);
+                            for event in events {
+                                k.dispatch(event);
+                            }
+                        }).await;
+                    }
+                    _ = health_token.cancelled() => break,
+                }
+            }
+        });
+    }
 
     println!(
         "{} Starting VOOM web server on {}:{}",

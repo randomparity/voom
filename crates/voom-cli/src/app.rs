@@ -6,16 +6,30 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use voom_kernel::{Kernel, Plugin};
 
+use crate::capability_collector::CapabilityCollectorPlugin;
 use crate::config::AppConfig;
+
+/// Return type for [`bootstrap_kernel_with_store`].
+#[allow(dead_code)] // job_queue exposed for future daemon mode (#36)
+pub struct BootstrapResult {
+    pub kernel: Kernel,
+    pub store: Arc<dyn voom_domain::storage::StorageTrait>,
+    pub job_queue: Arc<voom_job_manager::queue::JobQueue>,
+    pub collector: Arc<CapabilityCollectorPlugin>,
+}
 
 // Plugin priority scheme (lower number = runs first during event dispatch).
 // mkvtoolnix at 39 runs before ffmpeg at 40 so it gets first crack at
 // MKV-specific plans (metadata, convert-to-MKV).
+const PRIORITY_BUS_TRACER: i32 = 1;
 const PRIORITY_STORAGE: i32 = 100;
+const PRIORITY_HEALTH_CHECKER: i32 = 95;
 const PRIORITY_TOOL_DETECTOR: i32 = 90;
 const PRIORITY_DISCOVERY: i32 = 80;
+const PRIORITY_FFPROBE_INTROSPECTOR: i32 = 60;
 const PRIORITY_FFMPEG_EXECUTOR: i32 = 40;
 const PRIORITY_MKVTOOLNIX_EXECUTOR: i32 = 39;
+const PRIORITY_CAPABILITY_COLLECTOR: i32 = 35;
 const PRIORITY_BACKUP_MANAGER: i32 = 30;
 const PRIORITY_JOB_MANAGER: i32 = 20;
 
@@ -23,20 +37,18 @@ const PRIORITY_JOB_MANAGER: i32 = 20;
 ///
 /// All plugins go through `init_and_register` for consistent lifecycle management.
 pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
-    let (kernel, _store) = bootstrap_kernel_with_store(config)?;
-    Ok(kernel)
+    let result = bootstrap_kernel_with_store(config)?;
+    Ok(result.kernel)
 }
 
-/// Bootstrap the kernel with all native plugins and return both the kernel
-/// and the storage handle.
+/// Bootstrap the kernel with all native plugins and return the kernel,
+/// storage handle, and shared job queue.
 ///
 /// The store is always returned (not `Option`): if the sqlite-store plugin is
 /// enabled its handle is reused so there is no second pool; if the plugin is
 /// disabled a standalone pool is opened via [`open_store_in`] — the same
 /// helper used by store-only commands.
-pub fn bootstrap_kernel_with_store(
-    config: &AppConfig,
-) -> Result<(Kernel, Arc<dyn voom_domain::storage::StorageTrait>)> {
+pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult> {
     let mut kernel = Kernel::new();
     let data_dir = &config.data_dir;
 
@@ -68,6 +80,13 @@ pub fn bootstrap_kernel_with_store(
                     .with_context(|| format!("Failed to initialize {}", $label))?;
             }
         };
+        ($name:expr, $plugin:expr, $priority:expr, $label:expr, $ctx:expr) => {
+            if !disabled.iter().any(|d| d == $name) {
+                kernel
+                    .init_and_register(Arc::new($plugin), $priority, $ctx)
+                    .with_context(|| format!("Failed to initialize {}", $label))?;
+            }
+        };
     }
 
     // Storage plugin (highest priority — stores everything).
@@ -79,7 +98,7 @@ pub fn bootstrap_kernel_with_store(
             let mut plugin = voom_sqlite_store::SqliteStorePlugin::new();
             let ctx =
                 voom_kernel::PluginContext::new(plugin_json("sqlite-store"), data_dir.clone());
-            plugin.init(&ctx).context("Failed to initialize storage")?;
+            let init_events = plugin.init(&ctx).context("Failed to initialize storage")?;
 
             // Capture the store handle before moving the plugin into an Arc.
             // `plugin.store()` is always Some after a successful init().
@@ -91,6 +110,12 @@ pub fn bootstrap_kernel_with_store(
             let plugin_arc: Arc<dyn voom_kernel::Plugin> = Arc::new(plugin);
             kernel.register_plugin(plugin_arc, PRIORITY_STORAGE);
 
+            // Dispatch init events after registration so bus subscribers can
+            // see them (e.g. health status events from other init'd plugins).
+            for event in init_events {
+                kernel.dispatch(event);
+            }
+
             handle
         } else {
             // sqlite-store disabled: open a standalone pool so callers always
@@ -98,6 +123,25 @@ pub fn bootstrap_kernel_with_store(
             // not be persisted, but read-only CLI commands still work.
             open_store_in(data_dir).context("Failed to open storage")?
         };
+
+    // Create a shared job queue for plugins that need to enqueue work.
+    let job_queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
+
+    // Bus tracer — priority 1 (first to see events, before any state changes).
+    register_if_enabled!(
+        "bus-tracer",
+        voom_bus_tracer::BusTracerPlugin::new(),
+        PRIORITY_BUS_TRACER,
+        "bus tracer"
+    );
+
+    // Health checker
+    register_if_enabled!(
+        "health-checker",
+        voom_health_checker::HealthCheckerPlugin::new(),
+        PRIORITY_HEALTH_CHECKER,
+        "health checker"
+    );
 
     // Tool detector
     register_if_enabled!(
@@ -114,6 +158,20 @@ pub fn bootstrap_kernel_with_store(
         PRIORITY_DISCOVERY,
         "discovery"
     );
+
+    // FFprobe introspector — subscribes to FileDiscovered, emits JobEnqueueRequested.
+    // Registered after sqlite-store (100) so discovered files are persisted first.
+    register_if_enabled!(
+        "ffprobe-introspector",
+        voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new(),
+        PRIORITY_FFPROBE_INTROSPECTOR,
+        "ffprobe introspector"
+    );
+
+    // Capability collector — captures ExecutorCapabilities events for the evaluator.
+    // Registered before executors so it sees their init-time announcements.
+    let collector = Arc::new(CapabilityCollectorPlugin::new());
+    kernel.register_plugin(collector.clone(), PRIORITY_CAPABILITY_COLLECTOR);
 
     // Executor — mkvtoolnix (MKV metadata, track removal/reorder, convert-to-MKV)
     register_if_enabled!(
@@ -139,13 +197,19 @@ pub fn bootstrap_kernel_with_store(
         "backup manager"
     );
 
-    // Job manager
-    register_if_enabled!(
-        "job-manager",
-        voom_job_manager::JobManagerPlugin::new(),
-        PRIORITY_JOB_MANAGER,
-        "job manager"
-    );
+    // Job manager — receives the shared job queue via PluginContext so it can
+    // handle JobEnqueueRequested events from other plugins.
+    {
+        let mut ctx = voom_kernel::PluginContext::new(plugin_json("job-manager"), data_dir.clone());
+        ctx.register_resource(job_queue.clone());
+        register_if_enabled!(
+            "job-manager",
+            voom_job_manager::JobManagerPlugin::new(),
+            PRIORITY_JOB_MANAGER,
+            "job manager",
+            &ctx
+        );
+    }
 
     // WASM plugins — loaded from the configured directory (if it exists).
     #[cfg(feature = "wasm")]
@@ -189,7 +253,12 @@ pub fn bootstrap_kernel_with_store(
         }
     }
 
-    Ok((kernel, store))
+    Ok(BootstrapResult {
+        kernel,
+        store,
+        job_queue,
+        collector,
+    })
 }
 
 /// Open a standalone storage handle for commands that need only storage,
@@ -229,9 +298,9 @@ mod tests {
         // Bootstrap with all plugins enabled, then verify every registered
         // plugin name appears in KNOWN_PLUGIN_NAMES and vice versa.
         let config = AppConfig::default();
-        let (kernel, _store) =
+        let result =
             bootstrap_kernel_with_store(&config).expect("bootstrap should succeed with defaults");
-        let registered = kernel.registry.plugin_names();
+        let registered = result.kernel.registry.plugin_names();
         for name in KNOWN_PLUGIN_NAMES {
             assert!(
                 registered.iter().any(|n| n == name),
@@ -266,10 +335,10 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             ..AppConfig::default()
         };
-        let (_kernel, store) =
-            bootstrap_kernel_with_store(&config).expect("bootstrap should succeed");
+        let result = bootstrap_kernel_with_store(&config).expect("bootstrap should succeed");
         // Verify the store is functional
-        assert!(store
+        assert!(result
+            .store
             .list_files(&voom_domain::FileFilters::default())
             .is_ok());
     }

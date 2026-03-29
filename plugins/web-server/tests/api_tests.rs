@@ -25,7 +25,7 @@ fn make_server(store: InMemoryStore) -> TestServer {
 
 fn make_server_with_auth(store: InMemoryStore, auth_token: Option<String>) -> TestServer {
     let store = Arc::new(store);
-    let templates = voom_web_server::server::embedded_templates();
+    let templates = voom_web_server::server::embedded_templates().unwrap();
     let state = voom_web_server::state::AppState::new(store, templates, auth_token);
     let router = voom_web_server::router::build_router(state);
     TestServer::new(router).unwrap()
@@ -172,10 +172,14 @@ async fn test_list_plugins_empty_by_default() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_list_plugins_with_data() {
     let store = Arc::new(InMemoryStore::new());
-    let templates = voom_web_server::server::embedded_templates();
+    let templates = voom_web_server::server::embedded_templates().unwrap();
     let plugin_info = vec![voom_web_server::api::plugins::PluginInfoResponse::new(
         "test-plugin".into(),
         "0.1.0".into(),
+        "A test plugin".into(),
+        String::new(),
+        String::new(),
+        String::new(),
         vec!["test".into()],
     )];
     let state =
@@ -324,6 +328,11 @@ async fn test_security_headers() {
     // Nonce-based CSP: each response gets a unique nonce for inline scripts/styles
     assert!(csp.contains("style-src 'self' 'nonce-"));
     assert!(csp.contains("script-src 'self' 'nonce-"));
+    // No external CDN references — JS is bundled locally
+    assert!(
+        !csp.contains("unpkg.com"),
+        "CSP should not reference external CDN"
+    );
     assert!(headers.get("x-content-type-options").is_some());
     assert!(headers.get("x-frame-options").is_some());
     assert!(headers.get("referrer-policy").is_some());
@@ -453,7 +462,7 @@ async fn test_format_oversized_policy_returns_error() {
 async fn test_sse_client_limit_enforced() {
     use std::sync::atomic::Ordering;
     let store = Arc::new(InMemoryStore::new());
-    let templates = voom_web_server::server::embedded_templates();
+    let templates = voom_web_server::server::embedded_templates().unwrap();
     let state = voom_web_server::state::AppState::new(store, templates, None);
     // Simulate 64 clients already connected
     state.sse_client_count.store(64, Ordering::Relaxed);
@@ -467,7 +476,7 @@ async fn test_sse_client_limit_enforced() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_request_id_header_present() {
     let store = Arc::new(InMemoryStore::new());
-    let templates = voom_web_server::server::embedded_templates();
+    let templates = voom_web_server::server::embedded_templates().unwrap();
     let state = voom_web_server::state::AppState::new(store, templates, None);
     let router = voom_web_server::router::build_router(state);
     let server = TestServer::new(router).unwrap();
@@ -488,7 +497,7 @@ async fn test_request_id_header_present() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_request_id_unique_per_request() {
     let store = Arc::new(InMemoryStore::new());
-    let templates = voom_web_server::server::embedded_templates();
+    let templates = voom_web_server::server::embedded_templates().unwrap();
     let state = voom_web_server::state::AppState::new(store, templates, None);
     let router = voom_web_server::router::build_router(state);
     let server = TestServer::new(router).unwrap();
@@ -511,4 +520,108 @@ async fn test_request_id_unique_per_request() {
         .unwrap()
         .to_string();
     assert_ne!(id1, id2, "each request should get a unique request ID");
+}
+
+// === Static Asset Tests ===
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_static_htmx_returns_js() {
+    let server = make_server(InMemoryStore::new());
+    let resp = server.get("/static/htmx-2.0.4.min.js").await;
+    resp.assert_status_ok();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(ct, "application/javascript");
+    let cache = resp
+        .headers()
+        .get("cache-control")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(cache.contains("immutable"));
+    let body = resp.text();
+    assert!(body.contains("htmx"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_static_alpine_returns_js() {
+    let server = make_server(InMemoryStore::new());
+    let resp = server.get("/static/alpine-3.14.8.min.js").await;
+    resp.assert_status_ok();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(ct, "application/javascript");
+    let body = resp.text();
+    assert!(!body.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_static_assets_require_auth_when_configured() {
+    let server = make_server_with_auth(InMemoryStore::new(), Some("secret".into()));
+    let resp = server.get("/static/htmx-2.0.4.min.js").await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+}
+
+// === Rate Limit Tests ===
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_rate_limit_cpu_intensive_returns_429() {
+    let server = make_server(InMemoryStore::new());
+    let policy_body = json!({ "source": VALID_POLICY });
+
+    // Send 10 requests (within limit)
+    for _ in 0..10 {
+        let resp = server.post("/api/policy/validate").json(&policy_body).await;
+        resp.assert_status_ok();
+    }
+
+    // 11th request should be rate-limited
+    let resp = server.post("/api/policy/validate").json(&policy_body).await;
+    resp.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_rate_limit_general_api_is_generous() {
+    let server = make_server(InMemoryStore::new());
+
+    // 20 requests should all succeed (limit is 120/min)
+    for _ in 0..20 {
+        let resp = server.get("/api/files").await;
+        resp.assert_status_ok();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_rate_limit_429_response_format() {
+    let server = make_server(InMemoryStore::new());
+    let policy_body = json!({ "source": VALID_POLICY });
+
+    // Exhaust the CPU-intensive limit
+    for _ in 0..10 {
+        server.post("/api/policy/validate").json(&policy_body).await;
+    }
+
+    let resp = server.post("/api/policy/validate").json(&policy_body).await;
+    resp.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+
+    // Verify JSON body format
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"], "Too many requests");
+    assert!(body["details"].as_str().unwrap().contains("Retry after"));
+
+    // Verify Retry-After header is present
+    let retry_after = resp
+        .headers()
+        .get("Retry-After")
+        .expect("Retry-After header should be present");
+    let secs: u64 = retry_after.to_str().unwrap().parse().unwrap();
+    assert!(secs > 0, "Retry-After should be positive");
 }

@@ -35,6 +35,20 @@ fn prune() -> Result<()> {
         );
     }
 
+    // Prune health checks using the default retention period
+    let retention = i64::from(voom_health_checker::HealthCheckerConfig::default().retention_days);
+    let health_pruned = store
+        .prune_health_checks(chrono::Utc::now() - chrono::Duration::days(retention))
+        .context("failed to prune old health checks")?;
+
+    if health_pruned > 0 {
+        println!(
+            "{} Pruned {} old health check records.",
+            style("OK").bold().green(),
+            style(health_pruned).bold()
+        );
+    }
+
     Ok(())
 }
 

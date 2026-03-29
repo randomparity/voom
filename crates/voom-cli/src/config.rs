@@ -68,8 +68,14 @@ impl Default for AppConfig {
 }
 
 /// Base VOOM configuration directory (e.g. `~/.config/voom`).
+///
+/// Respects `XDG_CONFIG_HOME` when set, falling back to the
+/// platform default via `dirs::config_dir()`.
 pub fn voom_config_dir() -> PathBuf {
-    dirs::config_dir()
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(dirs::config_dir)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("voom")
 }
@@ -118,9 +124,13 @@ pub fn load_config() -> Result<AppConfig> {
 
 /// All known native plugin names (used for validation in enable/disable commands).
 pub const KNOWN_PLUGIN_NAMES: &[&str] = &[
+    "bus-tracer",
+    "capability-collector",
     "sqlite-store",
+    "health-checker",
     "tool-detector",
     "discovery",
+    "ffprobe-introspector",
     "mkvtoolnix-executor",
     "ffmpeg-executor",
     "backup-manager",
@@ -141,6 +151,7 @@ pub fn default_config_contents() -> String {
 
 # Optional bearer token for authenticating REST API and SSE requests.
 # When set, all API requests must include an "Authorization: Bearer <token>" header.
+# Generate a strong token (≥32 chars): openssl rand -base64 32
 # auth_token = "your-secret-token"
 
 [plugins]
@@ -311,13 +322,14 @@ mod tests {
         assert!(KNOWN_PLUGIN_NAMES.contains(&"discovery"));
         assert!(KNOWN_PLUGIN_NAMES.contains(&"job-manager"));
         assert!(KNOWN_PLUGIN_NAMES.contains(&"ffmpeg-executor"));
+        assert!(KNOWN_PLUGIN_NAMES.contains(&"ffprobe-introspector"));
+        assert!(KNOWN_PLUGIN_NAMES.contains(&"bus-tracer"));
         assert!(!KNOWN_PLUGIN_NAMES.contains(&"web-server"));
-        assert!(!KNOWN_PLUGIN_NAMES.contains(&"ffprobe-introspector"));
     }
 
     #[test]
     fn test_known_plugin_names_count() {
-        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 7);
+        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 11);
     }
 
     #[test]

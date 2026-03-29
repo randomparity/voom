@@ -1,20 +1,15 @@
 //! Shared introspection helpers used by both `scan` and `process` commands.
 //!
-//! # Dual-dispatch pattern (direct-call + event-publish)
+//! # Event-driven introspection pipeline
 //!
-//! CLI commands call plugin APIs directly (e.g. `FfprobeIntrospectorPlugin::introspect`)
-//! rather than dispatching a `FileDiscovered` event and letting the kernel route it to
-//! the introspector. Direct calls give the CLI deterministic control over ordering,
-//! concurrency, and progress reporting — things the fire-and-forget event bus cannot
-//! provide.
+//! When `FileDiscovered` events are dispatched through the kernel:
+//! 1. sqlite-store persists the discovered file in the staging table
+//! 2. ffprobe-introspector enqueues a `JobType::Introspect` job
+//! 3. The CLI processes these jobs via `process_introspection_job`
 //!
-//! After the direct call completes, the result is published as a `FileIntrospected`
-//! event through the kernel so that downstream subscribers (sqlite-store, SSE, WASM
-//! plugins) still receive it. This is the "direct-call + event-publish" pattern used
-//! throughout the CLI layer.
-//!
-//! A fresh `FfprobeIntrospectorPlugin` is created per call because each invocation
-//! runs on a separate `spawn_blocking` thread and the plugin type is not `Clone`.
+//! The CLI still drives introspection directly (not via the event bus) for
+//! deterministic progress reporting and concurrency control, but the event
+//! dispatch ensures all subscribers are notified.
 
 use voom_domain::bad_file::BadFileSource;
 use voom_domain::errors::VoomError;
@@ -98,4 +93,51 @@ pub async fn introspect_file(
             ))
         }
     }
+}
+
+/// Shared payload for jobs keyed on a discovered file (introspection, processing).
+///
+/// Used by both the ffprobe-introspector (enqueue) and CLI commands (dequeue).
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct DiscoveredFilePayload {
+    pub path: String,
+    pub size: u64,
+    pub content_hash: String,
+}
+
+/// Process a single introspection job from the job queue.
+///
+/// Deserializes the job payload, runs ffprobe via `introspect_file`, and
+/// returns the result for the worker pool to mark as completed or failed.
+#[allow(dead_code)] // will be called from daemon mode (#36)
+pub async fn process_introspection_job(
+    job: &voom_domain::job::Job,
+    kernel: &voom_kernel::Kernel,
+    ffprobe_path: Option<&str>,
+) -> std::result::Result<Option<serde_json::Value>, String> {
+    let raw_payload = job
+        .payload
+        .as_ref()
+        .ok_or_else(|| "missing introspection job payload".to_string())?;
+
+    let payload: DiscoveredFilePayload = serde_json::from_value(raw_payload.clone())
+        .map_err(|e| format!("invalid introspection payload: {e}"))?;
+
+    let path = std::path::PathBuf::from(&payload.path);
+
+    let file = introspect_file(
+        path,
+        payload.size,
+        payload.content_hash,
+        kernel,
+        ffprobe_path,
+    )
+    .await
+    .map_err(|e| format!("introspect {}: {e}", payload.path))?;
+
+    Ok(Some(serde_json::json!({
+        "path": file.path.display().to_string(),
+        "tracks": file.tracks.len(),
+        "container": format!("{:?}", file.container),
+    })))
 }

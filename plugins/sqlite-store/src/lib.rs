@@ -8,7 +8,10 @@ use std::sync::Arc;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
-use voom_domain::storage::{BadFileStorage, FileStorage, PlanStorage, PluginDataStorage};
+use voom_domain::storage::{
+    BadFileStorage, FileStorage, HealthCheckRecord, HealthCheckStorage, PlanStorage,
+    PluginDataStorage,
+};
 use voom_kernel::{Plugin, PluginContext};
 
 use crate::store::SqliteStore;
@@ -52,6 +55,8 @@ impl Plugin for SqliteStorePlugin {
         env!("CARGO_PKG_VERSION")
     }
 
+    voom_kernel::plugin_cargo_metadata!();
+
     fn capabilities(&self) -> &[Capability] {
         &self.capabilities
     }
@@ -59,13 +64,16 @@ impl Plugin for SqliteStorePlugin {
     fn handles(&self, event_type: &str) -> bool {
         matches!(
             event_type,
-            Event::FILE_INTROSPECTED
+            Event::FILE_DISCOVERED
+                | Event::FILE_INTROSPECTED
                 | Event::FILE_INTROSPECTION_FAILED
                 | Event::PLAN_CREATED
                 | Event::PLAN_COMPLETED
                 | Event::PLAN_FAILED
                 | Event::METADATA_ENRICHED
                 | Event::TOOL_DETECTED
+                | Event::EXECUTOR_CAPABILITIES
+                | Event::HEALTH_STATUS
         )
     }
 
@@ -78,6 +86,11 @@ impl Plugin for SqliteStorePlugin {
         };
 
         match event {
+            Event::FileDiscovered(e) => {
+                let path_str = e.path.to_string_lossy();
+                store.upsert_discovered_file(&path_str, e.size, &e.content_hash)?;
+                tracing::info!(path = %e.path.display(), "stored discovered file");
+            }
             Event::FileIntrospected(e) => {
                 store.upsert_file(&e.file)?;
                 // Auto-clear any bad file entry when introspection succeeds
@@ -142,13 +155,46 @@ impl Plugin for SqliteStorePlugin {
                     "stored detected tool"
                 );
             }
+            Event::ExecutorCapabilities(e) => {
+                let key = format!("executor_capabilities:{}", e.plugin_name);
+                let bytes =
+                    serde_json::to_vec(e).map_err(|err| voom_domain::VoomError::Storage {
+                        kind: voom_domain::errors::StorageErrorKind::Other,
+                        message: format!("failed to serialize executor capabilities: {err}"),
+                    })?;
+                store.set_plugin_data(&e.plugin_name, &key, &bytes)?;
+                tracing::info!(
+                    plugin = %e.plugin_name,
+                    codecs_decoders = e.codecs.decoders.len(),
+                    codecs_encoders = e.codecs.encoders.len(),
+                    formats = e.formats.len(),
+                    hw_accels = e.hw_accels.len(),
+                    "stored executor capabilities"
+                );
+            }
+            Event::HealthStatus(e) => {
+                let record = HealthCheckRecord::new(&e.check_name, e.passed, e.details.clone());
+                store.insert_health_check(&record)?;
+                if e.passed {
+                    tracing::info!(
+                        check = %e.check_name,
+                        "stored health check (passed)"
+                    );
+                } else {
+                    tracing::warn!(
+                        check = %e.check_name,
+                        details = ?e.details,
+                        "stored health check (FAILED)"
+                    );
+                }
+            }
             _ => {}
         }
 
         Ok(None)
     }
 
-    fn init(&mut self, ctx: &PluginContext) -> Result<()> {
+    fn init(&mut self, ctx: &PluginContext) -> Result<Vec<voom_domain::events::Event>> {
         let db_path = ctx.data_dir.join("voom.db");
 
         // Ensure data directory exists
@@ -162,7 +208,7 @@ impl Plugin for SqliteStorePlugin {
         let sqlite_store = SqliteStore::open(&db_path)?;
         self.store = Some(Arc::new(sqlite_store));
         tracing::info!(path = %db_path.display(), "sqlite store initialized");
-        Ok(())
+        Ok(vec![])
     }
 
     fn shutdown(&self) -> Result<()> {
@@ -214,6 +260,7 @@ mod tests {
     #[test]
     fn test_handles_expected_event_types() {
         let plugin = SqliteStorePlugin::new();
+        assert!(plugin.handles(Event::FILE_DISCOVERED));
         assert!(plugin.handles(Event::FILE_INTROSPECTED));
         assert!(plugin.handles(Event::FILE_INTROSPECTION_FAILED));
         assert!(plugin.handles(Event::PLAN_CREATED));
@@ -221,12 +268,18 @@ mod tests {
         assert!(plugin.handles(Event::PLAN_FAILED));
         assert!(plugin.handles(Event::METADATA_ENRICHED));
         assert!(plugin.handles(Event::TOOL_DETECTED));
+        assert!(plugin.handles(Event::HEALTH_STATUS));
+    }
+
+    #[test]
+    fn test_handles_executor_capabilities() {
+        let plugin = SqliteStorePlugin::new();
+        assert!(plugin.handles(Event::EXECUTOR_CAPABILITIES));
     }
 
     #[test]
     fn test_does_not_handle_unrelated_event_types() {
         let plugin = SqliteStorePlugin::new();
-        assert!(!plugin.handles(Event::FILE_DISCOVERED));
         assert!(!plugin.handles(Event::JOB_STARTED));
         assert!(!plugin.handles(""));
     }
@@ -327,6 +380,61 @@ mod tests {
             .bad_file_by_path(std::path::Path::new("/media/recovered.mkv"))
             .unwrap();
         assert!(bf.is_none());
+    }
+
+    #[test]
+    fn test_on_event_handles_file_discovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut plugin = SqliteStorePlugin::new();
+        let ctx = PluginContext::new(serde_json::Value::Null, tmp.path().to_path_buf());
+        plugin.init(&ctx).unwrap();
+
+        let event = Event::FileDiscovered(voom_domain::events::FileDiscoveredEvent::new(
+            "/media/test.mkv".into(),
+            1_500_000_000,
+            "abc123def456".into(),
+        ));
+        plugin.on_event(&event).unwrap();
+
+        // Verify discovered file was stored
+        let store = plugin.store().unwrap();
+        let files = store.list_discovered_files(None).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "/media/test.mkv");
+        assert_eq!(files[0].size, 1_500_000_000);
+    }
+
+    #[test]
+    fn test_on_event_handles_executor_capabilities() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut plugin = SqliteStorePlugin::new();
+        let ctx = PluginContext::new(serde_json::Value::Null, tmp.path().to_path_buf());
+        plugin.init(&ctx).unwrap();
+
+        let event =
+            Event::ExecutorCapabilities(voom_domain::events::ExecutorCapabilitiesEvent::new(
+                "ffmpeg-executor",
+                voom_domain::events::CodecCapabilities::new(
+                    vec!["h264".into(), "hevc".into()],
+                    vec!["libx264".into()],
+                ),
+                vec!["matroska".into(), "mp4".into()],
+                vec!["videotoolbox".into()],
+            ));
+        let result = plugin.on_event(&event).unwrap();
+        assert!(result.is_none());
+
+        // Verify data was stored
+        let store = plugin.store().unwrap();
+        let data = store
+            .plugin_data("ffmpeg-executor", "executor_capabilities:ffmpeg-executor")
+            .unwrap();
+        assert!(data.is_some());
+        let value: serde_json::Value = serde_json::from_slice(&data.unwrap()).unwrap();
+        assert_eq!(value["plugin_name"], "ffmpeg-executor");
+        assert_eq!(value["codecs"]["decoders"][0], "h264");
+        assert_eq!(value["formats"][0], "matroska");
+        assert_eq!(value["hw_accels"][0], "videotoolbox");
     }
 
     #[test]

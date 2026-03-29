@@ -1,6 +1,9 @@
 name = "tvdb-metadata"
 version = "0.1.0"
 description = "TV metadata enrichment via TVDB API v4"
+author = "David Christensen"
+license = "MIT"
+homepage = "https://github.com/randomparity/voom"
 handles_events = ["file.introspected"]
 
 [[capabilities]]

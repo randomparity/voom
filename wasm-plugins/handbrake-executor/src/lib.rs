@@ -35,11 +35,15 @@ use voom_plugin_sdk::{
 };
 
 pub fn get_info() -> PluginInfoData {
-    PluginInfoData {
-        name: "handbrake-executor".to_string(),
-        version: "0.1.0".to_string(),
-        capabilities: vec!["execute:transcode_video+transcode_audio:mkv,mp4".to_string()],
-    }
+    PluginInfoData::new(
+        "handbrake-executor",
+        "0.1.0",
+        vec!["execute:transcode_video+transcode_audio:mkv,mp4".to_string()],
+    )
+    .with_description("Video transcoding via HandBrakeCLI")
+    .with_author("David Christensen")
+    .with_license("MIT")
+    .with_homepage("https://github.com/randomparity/voom")
 }
 
 pub fn handles(event_type: &str) -> bool {

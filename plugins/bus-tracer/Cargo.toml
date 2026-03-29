@@ -1,0 +1,26 @@
+[package]
+name = "voom-bus-tracer"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Event bus tracer plugin for VOOM — configurable event logging for development"
+
+[dependencies]
+voom-domain = { workspace = true }
+voom-kernel = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true }

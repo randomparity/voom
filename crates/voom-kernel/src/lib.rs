@@ -8,6 +8,8 @@ pub mod loader;
 pub mod manifest;
 pub mod registry;
 
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -15,10 +17,53 @@ use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
 
+/// Implements `description`, `author`, `license`, and `homepage` from Cargo.toml metadata.
+///
+/// Place inside a `Plugin` impl block to fill in the four metadata methods
+/// using compile-time `env!()` macros from the plugin crate's Cargo.toml.
+#[macro_export]
+macro_rules! plugin_cargo_metadata {
+    () => {
+        fn description(&self) -> &str {
+            env!("CARGO_PKG_DESCRIPTION")
+        }
+        fn author(&self) -> &str {
+            env!("CARGO_PKG_AUTHORS")
+        }
+        fn license(&self) -> &str {
+            env!("CARGO_PKG_LICENSE")
+        }
+        fn homepage(&self) -> &str {
+            env!("CARGO_PKG_REPOSITORY")
+        }
+    };
+}
+
 /// Universal plugin interface. All native plugins implement this.
 pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;
     fn version(&self) -> &str;
+
+    /// Human-readable description of what this plugin does.
+    fn description(&self) -> &str {
+        ""
+    }
+
+    /// Plugin author(s).
+    fn author(&self) -> &str {
+        ""
+    }
+
+    /// License identifier (e.g., "MIT", "Apache-2.0").
+    fn license(&self) -> &str {
+        ""
+    }
+
+    /// Project homepage or repository URL.
+    fn homepage(&self) -> &str {
+        ""
+    }
+
     fn capabilities(&self) -> &[Capability];
     /// Returns `true` if this plugin wants to receive events of the given type.
     ///
@@ -41,8 +86,12 @@ pub trait Plugin: Send + Sync {
     }
 
     /// Called once after the plugin is loaded.
-    fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
-        Ok(())
+    ///
+    /// Returns a list of events to dispatch through the bus after the plugin
+    /// is registered. This allows plugins to emit initial state (e.g. detected
+    /// tools) that other already-registered plugins can observe.
+    fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
+        Ok(vec![])
     }
 
     /// Called on application shutdown.
@@ -58,12 +107,29 @@ pub trait Plugin: Send + Sync {
 pub struct PluginContext {
     config: serde_json::Value,
     pub data_dir: PathBuf,
+    resources: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
 impl PluginContext {
     #[must_use]
     pub fn new(config: serde_json::Value, data_dir: PathBuf) -> Self {
-        Self { config, data_dir }
+        Self {
+            config,
+            data_dir,
+            resources: HashMap::new(),
+        }
+    }
+
+    /// Register a shared resource that plugins can retrieve during init.
+    pub fn register_resource<T: Send + Sync + 'static>(&mut self, resource: Arc<T>) {
+        self.resources.insert(TypeId::of::<T>(), resource);
+    }
+
+    /// Retrieve a shared resource by type.
+    pub fn resource<T: Send + Sync + 'static>(&self) -> Option<Arc<T>> {
+        self.resources
+            .get(&TypeId::of::<T>())
+            .and_then(|r| r.clone().downcast::<T>().ok())
     }
 
     /// Deserialize the config into a typed struct.
@@ -127,15 +193,21 @@ impl Kernel {
                 message: "init_and_register requires exclusive Arc ownership (refcount must be 1)"
                     .into(),
             })?;
-        plugin_mut
-            .init(ctx)
-            .map_err(|e| voom_domain::errors::VoomError::Plugin {
-                plugin: name.clone(),
-                message: format!("init failed: {e}"),
-            })?;
+        let init_events =
+            plugin_mut
+                .init(ctx)
+                .map_err(|e| voom_domain::errors::VoomError::Plugin {
+                    plugin: name.clone(),
+                    message: format!("init failed: {e}"),
+                })?;
         self.registry.register(plugin.clone());
         self.bus.subscribe_plugin(plugin, priority);
         tracing::info!(plugin = %name, "plugin initialized and registered");
+
+        for event in init_events {
+            self.dispatch(event);
+        }
+
         Ok(())
     }
 
@@ -213,9 +285,9 @@ mod tests {
         fn on_event(&self, _: &Event) -> Result<Option<EventResult>> {
             Ok(None)
         }
-        fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
+        fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
             self.init_called.store(true, Ordering::SeqCst);
-            Ok(())
+            Ok(vec![])
         }
         fn shutdown(&self) -> Result<()> {
             self.shutdown_called.store(true, Ordering::SeqCst);
@@ -253,10 +325,7 @@ mod tests {
                 shutdown_called: shutdown_called.clone(),
             });
 
-            let ctx = PluginContext {
-                config: serde_json::json!({}),
-                data_dir: PathBuf::from("/tmp"),
-            };
+            let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
 
             let mut kernel = Kernel::new();
             kernel.init_and_register(plugin, 50, &ctx).unwrap();
@@ -285,5 +354,106 @@ mod tests {
 
         // Second call should be a no-op (no panic).
         kernel.shutdown();
+    }
+
+    /// Plugin that emits an event from init() and subscribes to it.
+    struct InitEventEmitter;
+
+    impl Plugin for InitEventEmitter {
+        fn name(&self) -> &str {
+            "init-emitter"
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+        fn capabilities(&self) -> &[Capability] {
+            &[]
+        }
+        fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
+            Ok(vec![Event::ToolDetected(
+                voom_domain::events::ToolDetectedEvent::new(
+                    "test-tool",
+                    "1.0.0",
+                    "/usr/bin/test-tool".into(),
+                ),
+            )])
+        }
+    }
+
+    /// Plugin that records whether it received a ToolDetected event.
+    struct EventCapture {
+        received: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Plugin for EventCapture {
+        fn name(&self) -> &str {
+            "event-capture"
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+        fn capabilities(&self) -> &[Capability] {
+            &[]
+        }
+        fn handles(&self, event_type: &str) -> bool {
+            event_type == Event::TOOL_DETECTED
+        }
+        fn on_event(&self, event: &Event) -> Result<Option<voom_domain::events::EventResult>> {
+            if let Event::ToolDetected(e) = event {
+                self.received
+                    .lock()
+                    .expect("lock poisoned")
+                    .push(e.tool_name.clone());
+            }
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn test_init_events_dispatched_after_registration() {
+        let received = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+
+        let mut kernel = Kernel::new();
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+
+        // Register the capture plugin first (lower priority = earlier registration)
+        let capture = Arc::new(EventCapture {
+            received: received.clone(),
+        });
+        kernel.register_plugin(capture, 10);
+
+        // Now init_and_register the emitter — its init events should reach the capture plugin
+        let emitter = Arc::new(InitEventEmitter);
+        kernel.init_and_register(emitter, 20, &ctx).unwrap();
+
+        let captured = received.lock().expect("lock poisoned");
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0], "test-tool");
+    }
+
+    #[test]
+    fn test_plugin_context_resource_map() {
+        let mut ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+
+        let value = Arc::new(42_u64);
+        ctx.register_resource(value);
+
+        let retrieved = ctx.resource::<u64>();
+        assert_eq!(retrieved.as_deref(), Some(&42));
+    }
+
+    #[test]
+    fn test_plugin_context_resource_missing_type() {
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+        let result = ctx.resource::<String>();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_plugin_context_resource_overwrite() {
+        let mut ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+        ctx.register_resource(Arc::new(1_u32));
+        ctx.register_resource(Arc::new(2_u32));
+        assert_eq!(ctx.resource::<u32>().as_deref(), Some(&2));
     }
 }

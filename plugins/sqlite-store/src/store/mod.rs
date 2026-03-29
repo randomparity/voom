@@ -1,6 +1,8 @@
 mod bad_file_storage;
+pub mod discovered_file_storage;
 mod file_history_storage;
 mod file_storage;
+mod health_check_storage;
 mod job_storage;
 mod maintenance_storage;
 mod plan_storage;
@@ -197,14 +199,45 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
     }
 }
 
+/// Allowed (table, column) pairs for bulk deletion.
+/// Each variant maps to exactly one static pair, making SQL
+/// interpolation safe by construction.
+pub(crate) enum PruneTarget {
+    BadFiles,
+    Plans,
+    ProcessingStats,
+    Files,
+}
+
+impl PruneTarget {
+    fn table(&self) -> &'static str {
+        match self {
+            Self::BadFiles => "bad_files",
+            Self::Plans => "plans",
+            Self::ProcessingStats => "processing_stats",
+            Self::Files => "files",
+        }
+    }
+
+    fn column(&self) -> &'static str {
+        match self {
+            Self::BadFiles | Self::Files => "id",
+            Self::Plans | Self::ProcessingStats => "file_id",
+        }
+    }
+}
+
 // Private helper methods
 impl SqliteStore {
-    /// Delete rows from `table` where `column` matches any of `ids`, in chunks of 500.
+    /// Delete rows matching `target`'s (table, column) where the column
+    /// value is in `ids`, processing in chunks of 500.
     /// Returns the total number of rows deleted.
-    pub(crate) fn chunked_delete(&self, table: &str, column: &str, ids: &[&str]) -> Result<u64> {
+    pub(crate) fn chunked_delete(&self, target: PruneTarget, ids: &[&str]) -> Result<u64> {
         if ids.is_empty() {
             return Ok(0);
         }
+        let table = target.table();
+        let column = target.column();
         let conn = self.conn()?;
         let mut total = 0u64;
         for chunk in ids.chunks(500) {

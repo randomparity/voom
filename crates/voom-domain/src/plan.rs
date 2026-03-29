@@ -27,6 +27,10 @@ pub struct Plan {
     pub policy_hash: Option<String>,
     #[serde(default = "epoch")]
     pub evaluated_at: DateTime<Utc>,
+    /// Hint indicating which executor plugin should handle this plan,
+    /// set by capability-aware validation when a single executor matches.
+    #[serde(default)]
+    pub executor_hint: Option<String>,
 }
 
 impl Plan {
@@ -47,6 +51,7 @@ impl Plan {
             skip_reason: None,
             policy_hash: None,
             evaluated_at: Utc::now(),
+            executor_hint: None,
         }
     }
 
@@ -374,6 +379,7 @@ mod tests {
             skip_reason: None,
             policy_hash: None,
             evaluated_at: Utc::now(),
+            executor_hint: None,
         }
     }
 

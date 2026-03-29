@@ -27,11 +27,11 @@ VOOM (Video Orchestration Operations Manager) is a policy-driven video library m
 │                                                                │
 │   Discovery ────── Tool Detector ───── Storage                 │
 │   MKVToolNix ───── FFmpeg ──────────── Backup                  │
-│   Job Manager                                                  │
+│   Job Manager ──── Introspection ───── Bus Tracer              │
 │                                                                │
 │     Native Plugins — Library-Only (called directly by CLI)     │
 │                                                                │
-│   Evaluator ────── Orchestrator ─────── Introspection          │
+│   Evaluator ────── Orchestrator                                │
 │   Web Server                                                   │
 ├────────────────────────────────────────────────────────────────┤
 │            WASM Plugins (loaded at runtime via wasmtime)       │
@@ -73,7 +73,7 @@ voom/
 │   └── voom-plugin-sdk/      # SDK crate for WASM plugin authors
 ├── plugins/                  # Native plugins (compiled into binary)
 │   ├── discovery/            # Filesystem walking (walkdir + rayon), content hashing (xxHash64)
-│   ├── ffprobe-introspector/ # ffprobe JSON parsing, codec/HDR/VFR detection
+│   ├── ffprobe-introspector/ # ffprobe JSON parsing, codec/HDR/VFR detection (kernel-registered)
 │   ├── tool-detector/        # PATH lookup, version parsing for external tools
 │   ├── sqlite-store/         # SQLite persistence (r2d2 pool, WAL mode)
 │   ├── policy-evaluator/     # Track filtering, condition evaluation, Plan generation
@@ -82,6 +82,7 @@ voom/
 │   ├── ffmpeg-executor/      # FFmpeg command builder, HW accel, progress parsing
 │   ├── backup-manager/       # File backup/restore with disk space validation
 │   ├── job-manager/          # Priority queue, concurrent worker pool (tokio + Semaphore)
+│   ├── bus-tracer/           # Event bus tracer — configurable event logging for development
 │   └── web-server/           # axum REST API + htmx/Alpine.js web UI + SSE
 └── wasm-plugins/             # WASM plugins (excluded from workspace, target wasm32)
     ├── example-metadata/     # Example plugin demonstrating the SDK
@@ -107,6 +108,10 @@ voom/
 pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;
     fn version(&self) -> &str;
+    fn description(&self) -> &str { "" }
+    fn author(&self) -> &str { "" }
+    fn license(&self) -> &str { "" }
+    fn homepage(&self) -> &str { "" }
     fn capabilities(&self) -> &[Capability];
     fn handles(&self, _event_type: &str) -> bool { false }
     fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> { Ok(None) }
@@ -115,7 +120,9 @@ pub trait Plugin: Send + Sync {
 }
 ```
 
-Plugins that participate in event-driven coordination override `handles()` and `on_event()`. Library-only plugins (policy-evaluator, phase-orchestrator, ffprobe-introspector, web-server) are called directly by the CLI and are not registered with the kernel — they don't participate in event dispatch.
+Plugins that participate in event-driven coordination override `handles()` and `on_event()`. Library-only plugins (policy-evaluator, phase-orchestrator, web-server) are called directly by the CLI and are not registered with the kernel — they don't participate in event dispatch.
+
+The ffprobe-introspector is both kernel-registered (subscribes to `FileDiscovered` to enqueue introspection jobs) and called directly by the CLI (for deterministic progress reporting). The bus-tracer is a development tool that logs events to a file with configurable glob-pattern filtering.
 
 ### WASM Plugins
 
@@ -201,10 +208,10 @@ There is no duplication of side effects. CLI commands never call storage methods
 
 | Command | Direct calls | Events dispatched |
 |---------|-------------|-------------------|
-| `scan` | `discovery.scan()`, `introspect_file()` | `FileIntrospected`, `FileIntrospectionFailed` |
+| `scan` | `discovery.scan()`, `introspect_file()` | `FileDiscovered`, `FileIntrospected`, `FileIntrospectionFailed` |
 | `process` | `discovery.scan()`, `introspect_file()`, `evaluate()`, `orchestrate()` | `FileDiscovered`, `FileIntrospected`, `PlanExecuting`, `PlanCreated`, `PlanCompleted`/`PlanFailed` |
 
-Note: `scan` intentionally does **not** dispatch `FileDiscovered` events to avoid triggering a second introspection via the ffprobe-introspector's event handler.
+Both commands dispatch `FileDiscovered` events so sqlite-store records files in the `discovered_files` staging table and ffprobe-introspector enqueues introspection jobs. Introspection is still driven directly by the CLI for deterministic progress reporting; the enqueued jobs exist for future daemon-mode use.
 
 ## Data Flow
 
@@ -216,15 +223,21 @@ DSL Policy File (.voom)              Media Files on Disk
   + compiler                         (rayon + walkdir)
       │                                     │
       ▼                              FileDiscovered events
-  CompiledPolicy                            │
-      │                              Introspector Plugin
-      │                              (ffprobe JSON parsing)
-      │                                     │
-      │                              FileIntrospected events
-      │                                     │
-      │                              Storage Plugin (SQLite)
-      │                                     │
-      ▼                                     ▼
+  CompiledPolicy                       ┌────┴────┐
+      │                                │         │
+      │                          Storage      Introspector
+      │                          Plugin       Plugin
+      │                         (staging)   (enqueue job)
+      │                                │
+      │                         Introspection
+      │                        (ffprobe, direct)
+      │                                │
+      │                        FileIntrospected events
+      │                                │
+      │                          Storage Plugin
+      │                           (persist file)
+      │                                │
+      ▼                                ▼
   Phase Orchestrator ──── sequences phases, checks skip/run_if
       │
       ▼
@@ -255,7 +268,7 @@ DSL Policy File (.voom)              Media Files on Disk
 
 ### Storage
 
-SQLite database in WAL mode with r2d2 connection pool. Tables: `files`, `tracks`, `jobs`, `plans`, `processing_stats`, `plugin_data`, `bad_files`. All domain types are serde-serializable (JSON + MessagePack). The `bad_files` table tracks files that failed introspection, with upsert semantics that increment `attempt_count` on repeated failures.
+SQLite database in WAL mode with r2d2 connection pool. Tables: `files`, `tracks`, `jobs`, `plans`, `processing_stats`, `plugin_data`, `bad_files`, `discovered_files`. All domain types are serde-serializable (JSON + MessagePack). The `bad_files` table tracks files that failed introspection, with upsert semantics that increment `attempt_count` on repeated failures. The `discovered_files` table is a staging table that tracks files from discovery through introspection (statuses: `pending` → `introspecting` → `completed` | `failed`).
 
 ## DSL Pipeline
 

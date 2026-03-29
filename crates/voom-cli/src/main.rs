@@ -4,6 +4,7 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 mod app;
+mod capability_collector;
 mod cli;
 mod commands;
 mod config;
@@ -21,6 +22,7 @@ async fn main() -> Result<()> {
     // Set up tracing based on verbosity
     let filter = verbosity_filter(cli.verbose);
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)),
         )

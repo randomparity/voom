@@ -207,6 +207,8 @@ impl Plugin for BackupManagerPlugin {
         env!("CARGO_PKG_VERSION")
     }
 
+    voom_kernel::plugin_cargo_metadata!();
+
     fn capabilities(&self) -> &[Capability] {
         &self.capabilities
     }

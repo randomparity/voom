@@ -2,6 +2,7 @@
 name = "voom-cli"
 version = "0.1.0"
 edition.workspace = true
+authors.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
@@ -29,6 +30,8 @@ voom-ffmpeg-executor.workspace = true
 voom-backup-manager.workspace = true
 voom-job-manager.workspace = true
 voom-web-server.workspace = true
+voom-health-checker.workspace = true
+voom-bus-tracer.workspace = true
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -51,6 +54,9 @@ serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+# Concurrency
+parking_lot.workspace = true
 
 # Other
 uuid.workspace = true

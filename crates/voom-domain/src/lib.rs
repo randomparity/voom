@@ -2,6 +2,7 @@
 
 pub mod bad_file;
 pub mod capabilities;
+pub mod capability_map;
 pub mod errors;
 pub mod events;
 pub mod host_types;
@@ -22,6 +23,7 @@ pub mod utils;
 
 pub use bad_file::{BadFile, BadFileSource};
 pub use capabilities::Capability;
+pub use capability_map::CapabilityMap;
 pub use errors::{Result, VoomError};
 pub use events::Event;
 pub use job::{Job, JobStatus, JobUpdate};
@@ -32,7 +34,7 @@ pub use plan::{
 pub use safeguard::{SafeguardKind, SafeguardViolation};
 pub use stats::{ProcessingOutcome, ProcessingStats};
 pub use storage::{
-    BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,
-    JobStorage, MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage, StatsStorage,
-    StorageTrait,
+    BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage,
+    HealthCheckFilters, HealthCheckRecord, HealthCheckStorage, JobFilters, JobStorage,
+    MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage, StatsStorage, StorageTrait,
 };

@@ -140,7 +140,7 @@ impl WorkerPool {
         &self,
         items: Vec<WorkItem<P>>,
         processor: F,
-        on_error: ErrorStrategy,
+        on_error: JobErrorStrategy,
         reporter: Arc<dyn ProgressReporter>,
     ) -> Vec<JobResult>
     where
@@ -255,7 +255,7 @@ struct WorkerContext<F> {
     reporter: Arc<dyn ProgressReporter>,
     result_tx: mpsc::Sender<JobResult>,
     worker_id: String,
-    on_error: ErrorStrategy,
+    on_error: JobErrorStrategy,
 }
 
 /// Execute a single job: claim it, run the processor, and record the result.
@@ -326,7 +326,7 @@ where
         }
     };
 
-    // Re-check cancellation after claiming (closes race with ErrorStrategy::Fail)
+    // Re-check cancellation after claiming (closes race with JobErrorStrategy::Fail)
     if ctx.token.is_cancelled() {
         let q = ctx.queue.clone();
         let jid = job.id;
@@ -390,7 +390,7 @@ where
                 tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
             }
 
-            if ctx.on_error == ErrorStrategy::Fail {
+            if ctx.on_error == JobErrorStrategy::Fail {
                 ctx.token.cancel();
             }
         }
@@ -399,7 +399,7 @@ where
 
 /// How to handle errors during batch processing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ErrorStrategy {
+pub enum JobErrorStrategy {
     /// Stop all processing on first error.
     Fail,
     /// Skip the failed item and continue processing remaining items.
@@ -455,7 +455,7 @@ mod tests {
                     Ok(None)
                 }
             },
-            ErrorStrategy::Continue,
+            JobErrorStrategy::Continue,
             Arc::new(NoopReporter),
         )
         .await;
@@ -496,7 +496,7 @@ mod tests {
                     Ok(None)
                 }
             },
-            ErrorStrategy::Continue,
+            JobErrorStrategy::Continue,
             Arc::new(NoopReporter),
         )
         .await;
@@ -539,7 +539,7 @@ mod tests {
                     Ok(None)
                 }
             },
-            ErrorStrategy::Fail,
+            JobErrorStrategy::Fail,
             Arc::new(NoopReporter),
         )
         .await;
@@ -610,7 +610,7 @@ mod tests {
                         }
                     }
                 },
-                ErrorStrategy::Skip,
+                JobErrorStrategy::Skip,
                 Arc::new(NoopReporter),
             )
             .await;
@@ -666,7 +666,7 @@ mod tests {
                         }
                     }
                 },
-                ErrorStrategy::Continue,
+                JobErrorStrategy::Continue,
                 Arc::new(NoopReporter),
             )
             .await;
@@ -734,7 +734,7 @@ mod tests {
                     Ok(None)
                 }
             },
-            ErrorStrategy::Continue,
+            JobErrorStrategy::Continue,
             Arc::new(NoopReporter),
         )
         .await;

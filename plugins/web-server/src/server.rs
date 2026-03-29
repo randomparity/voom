@@ -42,8 +42,21 @@ pub async fn start_server(
     store: Arc<dyn StorageTrait>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
-    if config.auth_token.is_none() {
-        tracing::warn!("Web server starting without authentication — all requests will be allowed");
+    match &config.auth_token {
+        None => {
+            tracing::warn!(
+                "Web server starting without authentication \
+                 — all requests will be allowed"
+            );
+        }
+        Some(token) if token.len() < 32 => {
+            tracing::warn!(
+                "Auth token is short ({} chars); consider using \
+                 a stronger token: openssl rand -base64 32",
+                token.len()
+            );
+        }
+        Some(_) => {}
     }
 
     let templates = load_templates(config.template_dir.as_deref())?;
@@ -69,10 +82,13 @@ pub async fn start_server(
                 source: e,
             })?;
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown)
-        .await
-        .map_err(|e| ServerError::Serve { source: e })?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
+    .map_err(|e| ServerError::Serve { source: e })?;
 
     Ok(())
 }
@@ -89,7 +105,7 @@ fn load_templates(template_dir: Option<&str>) -> Result<tera::Tera, ServerError>
         }
         _ => {
             tracing::info!("Using embedded templates");
-            Ok(embedded_templates())
+            embedded_templates()
         }
     }
 }
@@ -98,8 +114,7 @@ fn load_templates(template_dir: Option<&str>) -> Result<tera::Tera, ServerError>
 ///
 /// Public so that integration tests and other crates can obtain the same
 /// template set without starting the full server.
-#[must_use]
-pub fn embedded_templates() -> tera::Tera {
+pub fn embedded_templates() -> Result<tera::Tera, ServerError> {
     macro_rules! register_templates {
         ($tera:expr, $( $name:literal ),+ $(,)?) => {
             $(
@@ -108,7 +123,9 @@ pub fn embedded_templates() -> tera::Tera {
                         $name,
                         include_str!(concat!("../templates/", $name)),
                     )
-                    .expect(concat!("Failed to add template: ", $name));
+                    .map_err(|e| ServerError::Template(
+                        format!("failed to add template {}: {e}", $name)
+                    ))?;
             )+
         };
     }
@@ -128,7 +145,7 @@ pub fn embedded_templates() -> tera::Tera {
         "settings.html",
     );
 
-    tera
+    Ok(tera)
 }
 
 #[cfg(test)]
@@ -168,7 +185,7 @@ mod tests {
 
     #[test]
     fn test_embedded_templates_contains_all_expected_templates() {
-        let tera = embedded_templates();
+        let tera = embedded_templates().unwrap();
         let names: Vec<&str> = tera.get_template_names().collect();
         let expected = [
             "base.html",
@@ -188,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_embedded_templates_returns_same_as_direct_call() {
-        let tera = embedded_templates();
+        let tera = embedded_templates().unwrap();
         let names: Vec<&str> = tera.get_template_names().collect();
         assert!(names.contains(&"dashboard.html"));
         assert!(names.contains(&"base.html"));

@@ -761,6 +761,39 @@ mod test_plugin {
     }
 
     #[test]
+    fn plugin_list_shows_descriptions() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["plugin", "list"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Description"));
+    }
+
+    #[test]
+    fn plugin_info_shows_metadata() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["plugin", "info", "sqlite-store"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Plugin:"))
+            .stdout(predicate::str::contains("Version:"))
+            .stdout(predicate::str::contains("Status:"))
+            .stdout(predicate::str::contains("Capabilities:"));
+    }
+
+    #[test]
+    fn plugin_info_unknown_fails() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["plugin", "info", "nonexistent-plugin"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("not found"));
+    }
+
+    #[test]
     fn plugin_disable_and_enable() {
         let env = TestEnv::new();
         env.voom()
@@ -772,6 +805,45 @@ mod test_plugin {
             .args(["plugin", "enable", "backup-manager"])
             .assert()
             .success();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_report (--issues)
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_report_issues {
+    use super::*;
+
+    #[test]
+    fn report_issues_on_empty_db() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["report", "--issues"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No files in database"));
+    }
+
+    #[test]
+    fn report_issues_no_violations_after_scan() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        env.voom()
+            .args(["report", "--issues"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "No files with safeguard violations",
+            ));
     }
 }
 

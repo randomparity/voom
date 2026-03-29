@@ -4,28 +4,28 @@
 //! and metadata operations on non-MKV files (or any file requiring transcode).
 
 pub mod command;
+pub mod executor;
 pub mod hwaccel;
+pub mod probe;
 pub mod progress;
 
-use std::time::Duration;
+use std::process::Command;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::events::{Event, EventResult, PlanCreatedEvent};
+use voom_domain::events::{
+    CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent, PlanCreatedEvent,
+};
+use voom_domain::media::Container;
+use voom_domain::plan::{ActionParams, OperationType, Plan};
+use voom_kernel::{Plugin, PluginContext};
 
-fn plugin_err(message: impl Into<String>) -> VoomError {
+use crate::hwaccel::HwAccelConfig;
+use crate::probe::{parse_codecs, parse_formats, parse_hwaccels};
+
+pub(crate) fn plugin_err(message: impl Into<String>) -> VoomError {
     VoomError::plugin("ffmpeg-executor", message)
 }
-use voom_domain::media::Container;
-use voom_domain::plan::{ActionResult, OperationType, Plan, PlannedAction};
-use voom_kernel::Plugin;
-use voom_process::run_with_timeout;
-
-use crate::command::{build_ffmpeg_command, output_extension};
-use crate::hwaccel::HwAccelConfig;
-
-/// Default timeout for `FFmpeg` operations (4 hours — transcode can be slow).
-const FFMPEG_TIMEOUT: Duration = Duration::from_secs(4 * 60 * 60);
 
 /// Operations that `FFmpeg` handles: transcode/synthesize, container conversion,
 /// and metadata edits on non-MKV files.
@@ -56,6 +56,9 @@ const FFMPEG_OPS: &[OperationType] = &[
 pub struct FfmpegExecutorPlugin {
     capabilities: Vec<Capability>,
     hw_accel: HwAccelConfig,
+    probed_codecs: Option<CodecCapabilities>,
+    probed_formats: Option<Vec<String>>,
+    probed_hw_accels: Option<Vec<String>>,
 }
 
 impl FfmpegExecutorPlugin {
@@ -68,6 +71,9 @@ impl FfmpegExecutorPlugin {
                 formats: vec![], // Supports all formats
             }],
             hw_accel: HwAccelConfig::new(),
+            probed_codecs: None,
+            probed_formats: None,
+            probed_hw_accels: None,
         }
     }
 
@@ -87,6 +93,7 @@ impl FfmpegExecutorPlugin {
     /// Returns `false` for:
     /// - Empty or skipped plans
     /// - MKV files with only metadata operations (deferred to mkvtoolnix)
+    /// - Plans requiring codecs/formats the probed FFmpeg doesn't support
     #[must_use]
     pub fn can_handle(&self, plan: &Plan) -> bool {
         if plan.is_empty() || plan.is_skipped() {
@@ -108,6 +115,10 @@ impl FfmpegExecutorPlugin {
 
         // FFmpeg always handles transcode/synthesize/convert-container
         if has_transcode || has_convert {
+            // When probed data exists, verify the required codecs/formats
+            if !self.can_handle_probed(plan) {
+                return false;
+            }
             return true;
         }
 
@@ -121,124 +132,68 @@ impl FfmpegExecutorPlugin {
         false
     }
 
-    /// Execute a plan by spawning an `FFmpeg` subprocess.
+    /// Check probed codec/format data against the plan's requirements.
     ///
-    /// Builds `FFmpeg` args, runs the command writing to a temp file, then
-    /// renames the temp file over the original (or to the new extension
-    /// if converting containers).
-    pub fn execute_plan(&self, plan: &Plan) -> Result<Vec<ActionResult>> {
+    /// Returns `true` if probing wasn't performed (graceful fallback)
+    /// or if all required codecs and formats are supported.
+    fn can_handle_probed(&self, plan: &Plan) -> bool {
+        for action in &plan.actions {
+            match (&action.operation, &action.parameters) {
+                (
+                    OperationType::TranscodeVideo | OperationType::TranscodeAudio,
+                    ActionParams::Transcode { codec, .. },
+                ) => {
+                    if let Some(caps) = &self.probed_codecs {
+                        if !caps.encoders.iter().any(|e| e == codec) {
+                            tracing::debug!(
+                                codec = %codec,
+                                "rejecting plan: codec not in probed encoders"
+                            );
+                            return false;
+                        }
+                    }
+                }
+                (
+                    OperationType::SynthesizeAudio,
+                    ActionParams::Synthesize {
+                        codec: Some(codec), ..
+                    },
+                ) => {
+                    if let Some(caps) = &self.probed_codecs {
+                        if !caps.encoders.iter().any(|e| e == codec) {
+                            tracing::debug!(
+                                codec = %codec,
+                                "rejecting plan: synthesize codec not in probed encoders"
+                            );
+                            return false;
+                        }
+                    }
+                }
+                (OperationType::ConvertContainer, ActionParams::Container { container }) => {
+                    if let Some(formats) = &self.probed_formats {
+                        if let Some(name) = container.ffmpeg_format_name() {
+                            if !formats.iter().any(|f| f == name) {
+                                tracing::debug!(
+                                    format = %name,
+                                    "rejecting plan: format not in probed formats"
+                                );
+                                return false;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
+    }
+
+    /// Execute a plan using the ffmpeg executor module.
+    pub fn execute_plan(&self, plan: &Plan) -> Result<Vec<voom_domain::plan::ActionResult>> {
         if !self.can_handle(plan) {
             return Err(plugin_err("Plan cannot be handled by FFmpeg executor"));
         }
-
-        if !plan.file.path.exists() {
-            return Err(VoomError::ToolExecution {
-                tool: "ffmpeg".into(),
-                message: format!("file not found: {}", plan.file.path.display()),
-            });
-        }
-
-        let actions: Vec<&PlannedAction> = plan.actions.iter().collect();
-        let ext = output_extension(&plan.file, &actions);
-
-        // Build the output path (temp file next to original)
-        let parent = plan
-            .file
-            .path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("/tmp"));
-        let stem = plan
-            .file
-            .path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output");
-        let output_path = parent.join(format!("{stem}.voom_tmp_{}.{ext}", plan.id));
-
-        let hw_accel = self.hw_accel.enabled().then_some(&self.hw_accel);
-        let ffmpeg_args = build_ffmpeg_command(&plan.file, &actions, &output_path, hw_accel)?;
-
-        tracing::info!(
-            path = %plan.file.path.display(),
-            phase = %plan.phase_name,
-            actions = actions.len(),
-            output = %output_path.display(),
-            "executing ffmpeg"
-        );
-
-        let output = run_with_timeout("ffmpeg", &ffmpeg_args, FFMPEG_TIMEOUT);
-
-        match output {
-            Ok(output) if output.status.success() => {
-                // Determine final path: if container changed, use new extension
-                let final_path = if ext
-                    != plan
-                        .file
-                        .path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("")
-                {
-                    // Container conversion: rename to new extension
-                    let new_path = plan.file.path.with_extension(&ext);
-                    std::fs::rename(&output_path, &new_path).map_err(|e| {
-                        let _ = std::fs::remove_file(&output_path);
-                        VoomError::ToolExecution {
-                            tool: "ffmpeg".into(),
-                            message: format!(
-                                "failed to rename temp file to {}: {e}",
-                                new_path.display()
-                            ),
-                        }
-                    })?;
-                    // Remove old file if extension changed
-                    if new_path != plan.file.path {
-                        let _ = std::fs::remove_file(&plan.file.path);
-                    }
-                    new_path
-                } else {
-                    // Same extension: rename temp over original
-                    std::fs::rename(&output_path, &plan.file.path).map_err(|e| {
-                        let _ = std::fs::remove_file(&output_path);
-                        VoomError::ToolExecution {
-                            tool: "ffmpeg".into(),
-                            message: format!(
-                                "failed to rename temp file to {}: {e}",
-                                plan.file.path.display()
-                            ),
-                        }
-                    })?;
-                    plan.file.path.clone()
-                };
-
-                tracing::info!(
-                    path = %final_path.display(),
-                    actions = actions.len(),
-                    "ffmpeg execution complete"
-                );
-
-                Ok(actions
-                    .iter()
-                    .map(|a| ActionResult::success(a.operation, a.description.clone()))
-                    .collect())
-            }
-            Ok(output) => {
-                let _ = std::fs::remove_file(&output_path);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(VoomError::ToolExecution {
-                    tool: "ffmpeg".into(),
-                    message: format!(
-                        "ffmpeg exited with {}: {}",
-                        output.status,
-                        stderr.lines().last().unwrap_or("(no output)")
-                    ),
-                })
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&output_path);
-                Err(e)
-            }
-        }
+        executor::execute_plan(plan, &self.hw_accel)
     }
 
     /// Handle a `plan.created` event.
@@ -280,6 +235,8 @@ impl Plugin for FfmpegExecutorPlugin {
         env!("CARGO_PKG_VERSION")
     }
 
+    voom_kernel::plugin_cargo_metadata!();
+
     fn capabilities(&self) -> &[Capability] {
         &self.capabilities
     }
@@ -294,6 +251,46 @@ impl Plugin for FfmpegExecutorPlugin {
             _ => Ok(None),
         }
     }
+
+    fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
+        let codecs = Command::new("ffmpeg")
+            .args(["-codecs", "-hide_banner"])
+            .output()
+            .map(|o| parse_codecs(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to probe ffmpeg codecs");
+                CodecCapabilities::empty()
+            });
+
+        let formats = Command::new("ffmpeg")
+            .args(["-formats", "-hide_banner"])
+            .output()
+            .map(|o| parse_formats(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to probe ffmpeg formats");
+                Vec::new()
+            });
+
+        let hw_accels = Command::new("ffmpeg")
+            .args(["-hwaccels", "-hide_banner"])
+            .output()
+            .map(|o| parse_hwaccels(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to probe ffmpeg hwaccels");
+                Vec::new()
+            });
+
+        self.probed_codecs = Some(codecs.clone());
+        self.probed_formats = Some(formats.clone());
+        self.probed_hw_accels = Some(hw_accels.clone());
+
+        // Select HW accel backend from already-probed data (no extra subprocess)
+        self.hw_accel = HwAccelConfig::from_probed(&hw_accels);
+
+        let event = ExecutorCapabilitiesEvent::new("ffmpeg-executor", codecs, formats, hw_accels);
+
+        Ok(vec![Event::ExecutorCapabilities(event)])
+    }
 }
 
 #[cfg(test)]
@@ -302,7 +299,7 @@ mod tests {
     use std::path::PathBuf;
     use voom_domain::events::PlanExecutingEvent;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
-    use voom_domain::plan::ActionParams;
+    use voom_domain::plan::{ActionParams, PlannedAction};
 
     fn sample_mp4_file() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/media/video.mp4"));
@@ -694,5 +691,121 @@ mod tests {
     fn test_default_impl() {
         let plugin = FfmpegExecutorPlugin::default();
         assert_eq!(plugin.name(), "ffmpeg-executor");
+    }
+
+    // ── can_handle: probed capability checks ───────────────────
+
+    fn plugin_with_probed(encoders: Vec<&str>, formats: Vec<&str>) -> FfmpegExecutorPlugin {
+        let mut plugin = FfmpegExecutorPlugin::new();
+        plugin.probed_codecs = Some(CodecCapabilities::new(
+            vec![],
+            encoders.into_iter().map(String::from).collect(),
+        ));
+        plugin.probed_formats = Some(formats.into_iter().map(String::from).collect());
+        plugin
+    }
+
+    #[test]
+    fn test_can_handle_rejects_unsupported_codec() {
+        let plugin = plugin_with_probed(vec!["h264", "aac"], vec!["mp4"]);
+        let plan = plan_with_actions(
+            sample_mp4_file(),
+            vec![PlannedAction::track_op(
+                OperationType::TranscodeVideo,
+                0,
+                ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    crf: None,
+                    preset: None,
+                    bitrate: None,
+                    channels: None,
+                },
+                "Transcode to HEVC",
+            )],
+        );
+        assert!(!plugin.can_handle(&plan));
+    }
+
+    #[test]
+    fn test_can_handle_accepts_supported_codec() {
+        let plugin = plugin_with_probed(vec!["h264", "hevc", "aac"], vec!["mp4"]);
+        let plan = plan_with_actions(
+            sample_mp4_file(),
+            vec![PlannedAction::track_op(
+                OperationType::TranscodeVideo,
+                0,
+                ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    crf: None,
+                    preset: None,
+                    bitrate: None,
+                    channels: None,
+                },
+                "Transcode to HEVC",
+            )],
+        );
+        assert!(plugin.can_handle(&plan));
+    }
+
+    #[test]
+    fn test_can_handle_rejects_unsupported_format() {
+        let plugin = plugin_with_probed(vec!["h264"], vec!["mp4", "matroska"]);
+        let plan = plan_with_actions(
+            sample_mp4_file(),
+            vec![PlannedAction::file_op(
+                OperationType::ConvertContainer,
+                ActionParams::Container {
+                    container: Container::Webm,
+                },
+                "Convert to WebM",
+            )],
+        );
+        assert!(!plugin.can_handle(&plan));
+    }
+
+    #[test]
+    fn test_can_handle_fallback_when_not_probed() {
+        let plugin = FfmpegExecutorPlugin::new(); // no probed data
+        let plan = plan_with_actions(
+            sample_mp4_file(),
+            vec![PlannedAction::track_op(
+                OperationType::TranscodeVideo,
+                0,
+                ActionParams::Transcode {
+                    codec: "av1".into(),
+                    crf: None,
+                    preset: None,
+                    bitrate: None,
+                    channels: None,
+                },
+                "Transcode to AV1",
+            )],
+        );
+        assert!(plugin.can_handle(&plan));
+    }
+
+    #[test]
+    fn test_can_handle_synthesize_checks_codec() {
+        let plugin = plugin_with_probed(vec!["h264", "aac"], vec!["mp4"]);
+        let plan = plan_with_actions(
+            sample_mp4_file(),
+            vec![PlannedAction::track_op(
+                OperationType::SynthesizeAudio,
+                1,
+                ActionParams::Synthesize {
+                    name: "stereo".into(),
+                    codec: Some("opus".into()),
+                    language: None,
+                    text: None,
+                    bitrate: None,
+                    channels: None,
+                    title: None,
+                    position: None,
+                    source_track: None,
+                },
+                "Synthesize audio (opus)",
+            )],
+        );
+        assert!(!plugin.can_handle(&plan));
     }
 }

@@ -39,7 +39,7 @@ pub fn run() -> Result<()> {
     let config = config::load_config().unwrap_or_default();
     let kernel_result = app::bootstrap_kernel_with_store(&config);
     match &kernel_result {
-        Ok((_kernel, store)) => {
+        Ok(app::BootstrapResult { store, .. }) => {
             let mut doctor_filters = voom_domain::FileFilters::default();
             doctor_filters.limit = Some(1);
             match store.list_files(&doctor_filters) {
@@ -69,7 +69,7 @@ pub fn run() -> Result<()> {
     // 4. Plugins
     println!();
     println!("{}", style("Plugins:").bold());
-    if let Ok((kernel, _)) = &kernel_result {
+    if let Ok(app::BootstrapResult { kernel, .. }) = &kernel_result {
         let names = kernel.registry.plugin_names();
         println!("  {} plugins registered", style(names.len()).green());
         for name in &names {

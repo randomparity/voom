@@ -112,6 +112,7 @@ pub fn capability_from_wit(cap_str: &str) -> Option<Capability> {
         }),
         "transcribe" => Some(Capability::Transcribe),
         "synthesize" => Some(Capability::Synthesize),
+        "health_check" => Some(Capability::HealthCheck),
         _ => None,
     }
 }
@@ -170,7 +171,8 @@ pub fn capability_to_wit(cap: &Capability) -> String {
         Capability::EnrichMetadata { source } => format!("enrich_metadata:{source}"),
         Capability::Transcribe => "transcribe".to_string(),
         Capability::Synthesize => "synthesize".to_string(),
-        _ => unreachable!("all Capability variants must be handled"),
+        Capability::HealthCheck => "health_check".to_string(),
+        other => other.kind().to_string(),
     }
 }
 
@@ -285,6 +287,7 @@ mod tests {
             (Capability::Backup, "backup"),
             (Capability::Transcribe, "transcribe"),
             (Capability::Synthesize, "synthesize"),
+            (Capability::HealthCheck, "health_check"),
             (Capability::Evaluate, "evaluate"),
         ] {
             let s = capability_to_wit(&cap);
@@ -328,6 +331,12 @@ mod tests {
                 e
             }),
             Event::PlanCreated(PlanCreatedEvent::new(plan)),
+            Event::ExecutorCapabilities(ExecutorCapabilitiesEvent::new(
+                "test",
+                CodecCapabilities::empty(),
+                vec![],
+                vec![],
+            )),
         ];
 
         for event in &events {
@@ -335,6 +344,61 @@ mod tests {
             let restored = event_from_wasm(&evt_type, &payload).unwrap();
             assert_eq!(restored.event_type(), event.event_type());
         }
+    }
+
+    #[test]
+    fn test_executor_capabilities_event_roundtrip() {
+        let event = Event::ExecutorCapabilities(ExecutorCapabilitiesEvent::new(
+            "ffmpeg-executor",
+            CodecCapabilities::new(
+                vec!["h264".into(), "hevc".into(), "aac".into()],
+                vec!["libx264".into(), "libx265".into(), "aac".into()],
+            ),
+            vec!["matroska".into(), "mp4".into(), "avi".into()],
+            vec!["videotoolbox".into(), "cuda".into()],
+        ));
+
+        let (event_type, payload) = event_to_wasm(&event).unwrap();
+        assert_eq!(event_type, "executor.capabilities");
+        assert!(!payload.is_empty());
+
+        let restored = event_from_wasm(&event_type, &payload).unwrap();
+        assert_eq!(restored.event_type(), "executor.capabilities");
+    }
+
+    #[test]
+    fn test_health_status_event_roundtrip() {
+        let event = Event::HealthStatus(HealthStatusEvent::new(
+            "data_dir_exists",
+            true,
+            Some("/data/voom".into()),
+        ));
+
+        let (event_type, payload) = event_to_wasm(&event).unwrap();
+        assert_eq!(event_type, "health.status");
+        assert!(!payload.is_empty());
+
+        let restored = event_from_wasm(&event_type, &payload).unwrap();
+        assert_eq!(restored.event_type(), "health.status");
+    }
+
+    #[test]
+    fn test_job_enqueue_requested_event_roundtrip() {
+        use voom_domain::job::JobType;
+
+        let event = Event::JobEnqueueRequested(voom_domain::events::JobEnqueueRequestedEvent::new(
+            JobType::Introspect,
+            50,
+            Some(serde_json::json!({"path": "/media/test.mkv"})),
+            "ffprobe-introspector",
+        ));
+
+        let (event_type, payload) = event_to_wasm(&event).unwrap();
+        assert_eq!(event_type, "job.enqueue_requested");
+        assert!(!payload.is_empty());
+
+        let restored = event_from_wasm(&event_type, &payload).unwrap();
+        assert_eq!(restored.event_type(), "job.enqueue_requested");
     }
 
     #[test]

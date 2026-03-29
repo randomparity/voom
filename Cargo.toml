@@ -17,6 +17,8 @@ members = [
     "plugins/ffmpeg-executor",
     "plugins/job-manager",
     "plugins/web-server",
+    "plugins/health-checker",
+    "plugins/bus-tracer",
     "crates/voom-process",
     "crates/voom-cli",
 ]
@@ -34,6 +36,7 @@ missing_errors_doc = "allow"
 
 [workspace.package]
 edition = "2021"
+authors = ["David Christensen"]
 license = "MIT"
 rust-version = "1.75"
 repository = "https://github.com/randomparity/voom"
@@ -59,6 +62,8 @@ voom-ffmpeg-executor = { path = "plugins/ffmpeg-executor" }
 voom-backup-manager = { path = "plugins/backup-manager" }
 voom-job-manager = { path = "plugins/job-manager" }
 voom-web-server = { path = "plugins/web-server" }
+voom-health-checker = { path = "plugins/health-checker" }
+voom-bus-tracer = { path = "plugins/bus-tracer" }
 
 # Async
 tokio = { version = "1", features = ["full"] }
@@ -110,6 +115,9 @@ ureq = "2"
 # Subprocess & cleanup
 wait-timeout = "0.2"
 scopeguard = "1"
+
+# Rate limiting
+governor = "0.10"
 
 # Testing
 insta = { version = "1", features = ["yaml"] }

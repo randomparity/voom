@@ -3,12 +3,14 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::bad_file::BadFileSource;
+use crate::job::JobType;
 use crate::media::MediaFile;
 use crate::plan::{ActionResult, Plan};
 
 /// All event types that flow through the event bus.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)] // Plan embeds MediaFile — boxing would add indirection on every dispatch
 pub enum Event {
     FileDiscovered(FileDiscoveredEvent),
     FileIntrospected(FileIntrospectedEvent),
@@ -23,10 +25,18 @@ pub enum Event {
     JobStarted(JobStartedEvent),
     JobProgress(JobProgressEvent),
     JobCompleted(JobCompletedEvent),
+    /// Emitted by plugins that need to enqueue background jobs without a
+    /// compile-time dependency on the job-manager crate.  The job-manager
+    /// plugin subscribes to this event and performs the actual enqueue.
+    JobEnqueueRequested(JobEnqueueRequestedEvent),
     /// Emitted by the tool-detector plugin. Consumed by the sqlite-store plugin
     /// to persist tool info, exposed via the web server's GET /api/tools endpoint.
     ToolDetected(ToolDetectedEvent),
+    /// Emitted by executor plugins during init(). Reports probed codec,
+    /// format, and hardware acceleration support for the underlying tool.
+    ExecutorCapabilities(ExecutorCapabilitiesEvent),
     PluginError(PluginErrorEvent),
+    HealthStatus(HealthStatusEvent),
 }
 
 impl Event {
@@ -44,8 +54,11 @@ impl Event {
     pub const JOB_STARTED: &str = "job.started";
     pub const JOB_PROGRESS: &str = "job.progress";
     pub const JOB_COMPLETED: &str = "job.completed";
+    pub const JOB_ENQUEUE_REQUESTED: &str = "job.enqueue_requested";
     pub const TOOL_DETECTED: &str = "tool.detected";
+    pub const EXECUTOR_CAPABILITIES: &str = "executor.capabilities";
     pub const PLUGIN_ERROR: &str = "plugin.error";
+    pub const HEALTH_STATUS: &str = "health.status";
 
     /// Returns the event type string used for subscription matching.
     #[must_use]
@@ -62,8 +75,11 @@ impl Event {
             Event::JobStarted(_) => Self::JOB_STARTED,
             Event::JobProgress(_) => Self::JOB_PROGRESS,
             Event::JobCompleted(_) => Self::JOB_COMPLETED,
+            Event::JobEnqueueRequested(_) => Self::JOB_ENQUEUE_REQUESTED,
             Event::ToolDetected(_) => Self::TOOL_DETECTED,
+            Event::ExecutorCapabilities(_) => Self::EXECUTOR_CAPABILITIES,
             Event::PluginError(_) => Self::PLUGIN_ERROR,
+            Event::HealthStatus(_) => Self::HEALTH_STATUS,
         }
     }
 }
@@ -392,6 +408,32 @@ impl JobCompletedEvent {
 
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobEnqueueRequestedEvent {
+    pub job_type: JobType,
+    pub priority: i32,
+    pub payload: Option<serde_json::Value>,
+    pub requester: String,
+}
+
+impl JobEnqueueRequestedEvent {
+    #[must_use]
+    pub fn new(
+        job_type: JobType,
+        priority: i32,
+        payload: Option<serde_json::Value>,
+        requester: impl Into<String>,
+    ) -> Self {
+        Self {
+            job_type,
+            priority,
+            payload,
+            requester: requester.into(),
+        }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDetectedEvent {
     pub tool_name: String,
     pub version: String,
@@ -405,6 +447,54 @@ impl ToolDetectedEvent {
             tool_name: tool_name.into(),
             version: version.into(),
             path,
+        }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodecCapabilities {
+    pub decoders: Vec<String>,
+    pub encoders: Vec<String>,
+}
+
+impl CodecCapabilities {
+    #[must_use]
+    pub fn new(decoders: Vec<String>, encoders: Vec<String>) -> Self {
+        Self { decoders, encoders }
+    }
+
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            decoders: vec![],
+            encoders: vec![],
+        }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutorCapabilitiesEvent {
+    pub plugin_name: String,
+    pub codecs: CodecCapabilities,
+    pub formats: Vec<String>,
+    pub hw_accels: Vec<String>,
+}
+
+impl ExecutorCapabilitiesEvent {
+    #[must_use]
+    pub fn new(
+        plugin_name: impl Into<String>,
+        codecs: CodecCapabilities,
+        formats: Vec<String>,
+        hw_accels: Vec<String>,
+    ) -> Self {
+        Self {
+            plugin_name: plugin_name.into(),
+            codecs,
+            formats,
+            hw_accels,
         }
     }
 }
@@ -428,6 +518,25 @@ impl PluginErrorEvent {
             plugin_name: plugin_name.into(),
             event_type: event_type.into(),
             error: error.into(),
+        }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthStatusEvent {
+    pub check_name: String,
+    pub passed: bool,
+    pub details: Option<String>,
+}
+
+impl HealthStatusEvent {
+    #[must_use]
+    pub fn new(check_name: impl Into<String>, passed: bool, details: Option<String>) -> Self {
+        Self {
+            check_name: check_name.into(),
+            passed,
+            details,
         }
     }
 }
@@ -539,6 +648,65 @@ mod tests {
         let bytes = rmp_serde::to_vec(&event).unwrap();
         let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(deserialized.event_type(), "file.introspection_failed");
+    }
+
+    #[test]
+    fn test_job_enqueue_requested_serde_roundtrip() {
+        use crate::job::JobType;
+
+        let event = Event::JobEnqueueRequested(JobEnqueueRequestedEvent::new(
+            JobType::Introspect,
+            50,
+            Some(serde_json::json!({"path": "/media/test.mkv"})),
+            "ffprobe-introspector",
+        ));
+        assert_eq!(event.event_type(), "job.enqueue_requested");
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.event_type(), "job.enqueue_requested");
+
+        let bytes = rmp_serde::to_vec(&event).unwrap();
+        let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(deserialized.event_type(), "job.enqueue_requested");
+    }
+
+    #[test]
+    fn test_executor_capabilities_serde_roundtrip() {
+        let event = Event::ExecutorCapabilities(ExecutorCapabilitiesEvent::new(
+            "ffmpeg-executor",
+            CodecCapabilities::new(
+                vec!["h264".into(), "hevc".into()],
+                vec!["libx264".into(), "libx265".into()],
+            ),
+            vec!["matroska".into(), "mp4".into()],
+            vec!["videotoolbox".into()],
+        ));
+        assert_eq!(event.event_type(), "executor.capabilities");
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.event_type(), "executor.capabilities");
+
+        let bytes = rmp_serde::to_vec(&event).unwrap();
+        let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(deserialized.event_type(), "executor.capabilities");
+    }
+
+    #[test]
+    fn test_executor_capabilities_empty_codecs() {
+        let caps = CodecCapabilities::empty();
+        assert!(caps.decoders.is_empty());
+        assert!(caps.encoders.is_empty());
+
+        let event = ExecutorCapabilitiesEvent::new(
+            "mkvtoolnix-executor",
+            caps,
+            vec!["matroska".into()],
+            vec![],
+        );
+        assert_eq!(event.plugin_name, "mkvtoolnix-executor");
+        assert!(event.hw_accels.is_empty());
     }
 
     #[test]

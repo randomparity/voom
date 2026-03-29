@@ -37,10 +37,10 @@ fn format_eta(elapsed: Duration, current: usize, total: usize) -> String {
 ///
 /// Discovery and introspection are driven directly for deterministic progress
 /// reporting, but all events are also published through the kernel's event bus
-/// so that subscribers (sqlite-store, SSE, WASM plugins) receive them.
+/// so that subscribers (sqlite-store, WASM plugins) receive them.
 pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     let config = config::load_config()?;
-    let (kernel, store) = app::bootstrap_kernel_with_store(&config)?;
+    let app::BootstrapResult { kernel, store, .. } = app::bootstrap_kernel_with_store(&config)?;
 
     let path = args
         .path
@@ -156,18 +156,17 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
         );
     }
 
-    // Introspect each discovered file using the dual-dispatch pattern:
+    // Dispatch FileDiscovered events through the kernel so subscribers react:
+    // - sqlite-store records each file in the discovered_files staging table
+    // - ffprobe-introspector enqueues JobType::Introspect jobs
     //
-    // 1. Direct call — introspect_file() calls FfprobeIntrospectorPlugin::introspect
-    //    directly so scan can drive the progress bar deterministically.
-    // 2. Event publish — introspect_file() dispatches the resulting FileIntrospected
-    //    event through the kernel for persistence (sqlite-store) and other subscribers.
-    //
-    // FileDiscovered events are intentionally NOT dispatched here. The
-    // ffprobe-introspector plugin's on_event handler also listens for
-    // "file.discovered", so dispatching it would trigger a second introspection
-    // of every file. The scan command owns the full discovery→introspection
-    // pipeline directly; only the results are published.
+    // The CLI still drives introspection directly (below) for deterministic
+    // progress reporting. The enqueued introspect jobs are not consumed here;
+    // they exist for future daemon-mode use (issue #36).
+    for event in &events {
+        kernel.dispatch(voom_domain::events::Event::FileDiscovered(event.clone()));
+    }
+
     let pb = ProgressBar::new(events.len() as u64);
     pb.set_style(
         ProgressStyle::with_template(

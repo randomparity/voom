@@ -1,17 +1,21 @@
 //! Axum router construction.
 
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::middleware;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
 use tower::limit::ConcurrencyLimitLayer;
 
 use crate::api;
 use crate::errors::ApiError;
-use crate::middleware::{auth_middleware, RequestIdLayer, SecurityHeadersLayer};
+use crate::middleware::{auth_middleware, RateLimitLayer, RequestIdLayer, SecurityHeadersLayer};
 use crate::sse;
 use crate::state::AppState;
 use crate::templates;
+
+static HTMX_JS: &[u8] = include_bytes!("../static/htmx-2.0.4.min.js");
+static ALPINE_JS: &[u8] = include_bytes!("../static/alpine-3.14.8.min.js");
 
 /// Build the complete application router.
 pub fn build_router(state: AppState) -> Router {
@@ -28,7 +32,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/stats", get(api::stats::get_stats))
         .route("/policy/validate", post(api::policy::validate_policy))
         .route("/policy/format", post(api::policy::format_policy))
-        .route("/tools", get(api::tools::list_tools));
+        .route("/tools", get(api::tools::list_tools))
+        .route(
+            "/executor-capabilities",
+            get(api::tools::list_executor_capabilities),
+        )
+        .route("/health", get(api::health::get_health));
 
     let page_routes = Router::new()
         .route("/", get(templates::dashboard))
@@ -40,17 +49,23 @@ pub fn build_router(state: AppState) -> Router {
         .route("/plugins", get(templates::plugins))
         .route("/settings", get(templates::settings));
 
+    let static_routes = Router::new()
+        .route("/static/htmx-2.0.4.min.js", get(static_htmx))
+        .route("/static/alpine-3.14.8.min.js", get(static_alpine));
+
     // Auth middleware protects all routes (API, SSE, and HTML pages) when
     // an auth_token is configured. Without a token, all routes are public.
     let authenticated_routes = Router::new()
         .nest("/api", api_routes)
         .route("/events", get(sse::events_handler))
         .merge(page_routes)
+        .merge(static_routes)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
         ))
-        .layer(ConcurrencyLimitLayer::new(100));
+        .layer(ConcurrencyLimitLayer::new(100))
+        .layer(RateLimitLayer::new());
 
     Router::new()
         .merge(authenticated_routes)
@@ -66,6 +81,26 @@ pub fn build_router(state: AppState) -> Router {
         .layer(RequestIdLayer)
         .layer(SecurityHeadersLayer)
         .with_state(state)
+}
+
+async fn static_htmx() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/javascript"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        HTMX_JS,
+    )
+}
+
+async fn static_alpine() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/javascript"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        ALPINE_JS,
+    )
 }
 
 #[cfg(test)]

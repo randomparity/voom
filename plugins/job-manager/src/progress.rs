@@ -4,6 +4,8 @@
 //! - CLI mode: indicatif progress bars on stderr
 //! - Database mode: progress stored via `StorageTrait` for daemon/web UI polling
 
+use std::sync::Arc;
+
 use uuid::Uuid;
 use voom_domain::job::Job;
 
@@ -23,6 +25,49 @@ pub trait ProgressReporter: Send + Sync {
 
     /// Called when all jobs in a batch are done.
     fn on_batch_complete(&self, completed: u64, failed: u64);
+}
+
+/// Combines multiple reporters, delegating each callback to all of them.
+pub struct CompositeReporter {
+    reporters: Vec<Arc<dyn ProgressReporter>>,
+}
+
+impl CompositeReporter {
+    pub fn new(reporters: Vec<Arc<dyn ProgressReporter>>) -> Self {
+        Self { reporters }
+    }
+}
+
+impl ProgressReporter for CompositeReporter {
+    fn on_batch_start(&self, total_jobs: usize) {
+        for r in &self.reporters {
+            r.on_batch_start(total_jobs);
+        }
+    }
+
+    fn on_job_start(&self, job: &Job) {
+        for r in &self.reporters {
+            r.on_job_start(job);
+        }
+    }
+
+    fn on_job_progress(&self, job_id: Uuid, progress: f64, message: Option<&str>) {
+        for r in &self.reporters {
+            r.on_job_progress(job_id, progress, message);
+        }
+    }
+
+    fn on_job_complete(&self, job_id: Uuid, success: bool, error: Option<&str>) {
+        for r in &self.reporters {
+            r.on_job_complete(job_id, success, error);
+        }
+    }
+
+    fn on_batch_complete(&self, completed: u64, failed: u64) {
+        for r in &self.reporters {
+            r.on_batch_complete(completed, failed);
+        }
+    }
 }
 
 /// No-op reporter for testing and quiet mode.
@@ -194,5 +239,26 @@ mod tests {
         let loaded = store.job(&job_id).unwrap().unwrap();
         assert_eq!(loaded.progress, 0.75);
         assert_eq!(loaded.progress_message.as_deref(), Some("Processing"));
+    }
+
+    #[test]
+    fn test_composite_reporter_delegates_to_all() {
+        let a = Arc::new(CountingReporter::new());
+        let b = Arc::new(CountingReporter::new());
+        let composite = CompositeReporter::new(vec![a.clone(), b.clone()]);
+
+        composite.on_batch_start(5);
+        let job = voom_domain::job::Job::new(voom_domain::job::JobType::Custom("test".into()));
+        composite.on_job_start(&job);
+        composite.on_job_progress(Uuid::new_v4(), 0.5, Some("half"));
+        composite.on_job_complete(Uuid::new_v4(), true, None);
+        composite.on_batch_complete(1, 0);
+
+        for r in [&a, &b] {
+            assert_eq!(r.batch_starts.load(Ordering::SeqCst), 1);
+            assert_eq!(r.job_starts.load(Ordering::SeqCst), 1);
+            assert_eq!(r.job_completes.load(Ordering::SeqCst), 1);
+            assert_eq!(r.batch_completes.load(Ordering::SeqCst), 1);
+        }
     }
 }

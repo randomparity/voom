@@ -123,6 +123,71 @@ pub trait BadFileStorage: Send + Sync {
     fn delete_bad_file_by_path(&self, path: &Path) -> Result<()>;
 }
 
+/// A single health check result with timestamp.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthCheckRecord {
+    pub id: Uuid,
+    pub check_name: String,
+    pub passed: bool,
+    pub details: Option<String>,
+    pub checked_at: DateTime<Utc>,
+}
+
+impl HealthCheckRecord {
+    #[must_use]
+    pub fn new(check_name: impl Into<String>, passed: bool, details: Option<String>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            check_name: check_name.into(),
+            passed,
+            details,
+            checked_at: Utc::now(),
+        }
+    }
+
+    /// Reconstruct a record from stored fields (e.g., database rows).
+    #[must_use]
+    pub fn from_stored(
+        id: Uuid,
+        check_name: String,
+        passed: bool,
+        details: Option<String>,
+        checked_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            id,
+            check_name,
+            passed,
+            details,
+            checked_at,
+        }
+    }
+}
+
+/// Filters for querying health check history.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct HealthCheckFilters {
+    pub check_name: Option<String>,
+    pub passed: Option<bool>,
+    pub since: Option<DateTime<Utc>>,
+    pub limit: Option<u32>,
+}
+
+/// Health check history storage operations.
+///
+/// # Errors
+/// Methods return `VoomError::Storage` on database failures.
+pub trait HealthCheckStorage: Send + Sync {
+    fn insert_health_check(&self, record: &HealthCheckRecord) -> Result<()>;
+    fn list_health_checks(&self, filters: &HealthCheckFilters) -> Result<Vec<HealthCheckRecord>>;
+    /// Latest result per `check_name` (for the `/api/health` summary).
+    fn latest_health_checks(&self) -> Result<Vec<HealthCheckRecord>>;
+    /// Delete records older than `before`. Returns the number of rows deleted.
+    fn prune_health_checks(&self, before: DateTime<Utc>) -> Result<u64>;
+}
+
 /// Database maintenance operations.
 ///
 /// # Errors
@@ -150,6 +215,7 @@ pub trait StorageTrait:
     + PluginDataStorage
     + BadFileStorage
     + MaintenanceStorage
+    + HealthCheckStorage
 {
 }
 
@@ -163,6 +229,7 @@ impl<T> StorageTrait for T where
         + PluginDataStorage
         + BadFileStorage
         + MaintenanceStorage
+        + HealthCheckStorage
 {
 }
 
