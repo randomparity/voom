@@ -45,6 +45,7 @@ pub struct ConfigNode {
     pub subtitle_languages: Vec<String>,
     pub on_error: Option<String>,
     pub commentary_patterns: Vec<String>,
+    pub keep_backups: Option<bool>,
 }
 
 /// A single phase within a policy.

@@ -59,8 +59,9 @@ fn compile_config(config: Option<&ConfigNode>) -> CompiledConfig {
                 .and_then(parse_error_strategy)
                 .unwrap_or(ErrorStrategy::Abort),
             c.commentary_patterns.clone(),
+            c.keep_backups.unwrap_or(false),
         ),
-        None => CompiledConfig::new(vec![], vec![], ErrorStrategy::Abort, vec![]),
+        None => CompiledConfig::new(vec![], vec![], ErrorStrategy::Abort, vec![], false),
     }
 }
 

@@ -14,6 +14,7 @@ config:
   commentary_patterns:
     - commentary
     - director
+  keep_backups: ~
 phases:
   - name: init
     skip_when: ~

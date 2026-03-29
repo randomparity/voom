@@ -330,7 +330,7 @@ mod tests {
         assert!(backup
             .to_string_lossy()
             .starts_with("/media/movies/.voom-backup/Movie.mkv."));
-        assert!(backup.to_string_lossy().ends_with(".bak"));
+        assert!(backup.to_string_lossy().ends_with(".vbak"));
     }
 
     #[test]

@@ -125,15 +125,18 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]));
 
     let items = build_work_items(&events);
+    let keep_backups = compiled.config.keep_backups;
     let compiled = Arc::new(compiled);
     let dry_run = args.dry_run;
     let flag_size_increase = args.flag_size_increase;
     let modified_count = Arc::new(AtomicU64::new(0));
+    let backup_bytes = Arc::new(AtomicU64::new(0));
 
     let token_for_workers = token.clone();
     let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
     let ffprobe_path = Arc::new(ffprobe_path);
     let modified_for_summary = modified_count.clone();
+    let backup_bytes_for_summary = backup_bytes.clone();
     let _results = pool
         .process_batch(
             items,
@@ -144,16 +147,19 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                 let ffprobe_path = ffprobe_path.clone();
                 let capabilities = capabilities.clone();
                 let modified_count = modified_count.clone();
+                let backup_bytes = backup_bytes.clone();
                 async move {
                     let ctx = ProcessContext {
                         compiled: &compiled,
                         kernel,
                         dry_run,
                         flag_size_increase,
+                        keep_backups,
                         token: &token,
                         ffprobe_path: ffprobe_path.as_deref(),
                         capabilities: &capabilities,
                         modified_count: &modified_count,
+                        backup_bytes: &backup_bytes,
                     };
                     process_single_file(job, &ctx).await
                 }
@@ -164,10 +170,20 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         .await;
 
     let modified = modified_for_summary.load(AtomicOrdering::Relaxed);
+    let backup_total = backup_bytes_for_summary.load(AtomicOrdering::Relaxed);
     if token.is_cancelled() {
         print_interrupted_summary(&pool, file_count, modified);
     } else {
-        print_summary(&pool, file_count, modified, effective_workers, args.dry_run);
+        print_summary(
+            &pool,
+            file_count,
+            modified,
+            effective_workers,
+            args.dry_run,
+            keep_backups,
+            backup_total,
+            &path,
+        );
     }
 
     Ok(())
@@ -283,10 +299,12 @@ struct ProcessContext<'a> {
     kernel: Arc<voom_kernel::Kernel>,
     dry_run: bool,
     flag_size_increase: bool,
+    keep_backups: bool,
     token: &'a CancellationToken,
     ffprobe_path: Option<&'a str>,
     capabilities: &'a voom_domain::CapabilityMap,
     modified_count: &'a AtomicU64,
+    backup_bytes: &'a AtomicU64,
 }
 
 /// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
@@ -362,8 +380,10 @@ async fn process_single_file(
             ctx.kernel.clone(),
             needs_exec,
             ctx.flag_size_increase,
+            ctx.keep_backups,
             ctx.token,
             ctx.ffprobe_path,
+            ctx.backup_bytes,
         )
         .await
     }
@@ -391,14 +411,17 @@ fn orchestrate_plans(
 /// Each plan execution is offloaded to `spawn_blocking` because executor
 /// plugins run subprocesses synchronously via `voom-process`, which would
 /// otherwise block the tokio worker thread.
+#[allow(clippy::too_many_arguments)]
 async fn execute_plans(
     file: &voom_domain::media::MediaFile,
     result: &voom_phase_orchestrator::OrchestrationResult,
     kernel: Arc<voom_kernel::Kernel>,
     needs_exec: bool,
     flag_size_increase: bool,
+    keep_backups: bool,
     token: &CancellationToken,
     ffprobe_path: Option<&str>,
+    backup_bytes: &AtomicU64,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let file_path_str = file.path.display().to_string();
 
@@ -491,12 +514,21 @@ async fn execute_plans(
                     }
                 }
 
-                kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
-                    plan.id,
-                    file.path.clone(),
-                    plan.phase_name.clone(),
-                    plan.actions.len(),
-                )));
+                if keep_backups {
+                    backup_bytes.fetch_add(file.size, AtomicOrdering::Relaxed);
+                    tracing::info!(
+                        path = %file.path.display(),
+                        phase = %plan.phase_name,
+                        "keeping backup per policy"
+                    );
+                } else {
+                    kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
+                        plan.id,
+                        file.path.clone(),
+                        plan.phase_name.clone(),
+                        plan.actions.len(),
+                    )));
+                }
             }
             PlanOutcome::Failed(failed) => {
                 kernel.dispatch(Event::PlanFailed(failed));
@@ -628,13 +660,29 @@ fn print_interrupted_summary(pool: &WorkerPool, file_count: usize, modified: u64
     );
 }
 
+/// Format a byte count as a human-readable size string.
+fn format_size(bytes: u64) -> String {
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= GIB {
+        format!("{:.1} GiB", b / GIB)
+    } else {
+        format!("{:.1} MiB", b / MIB)
+    }
+}
+
 /// Print the final summary line after processing.
+#[allow(clippy::too_many_arguments)]
 fn print_summary(
     pool: &WorkerPool,
     file_count: usize,
     modified: u64,
     effective_workers: usize,
     dry_run: bool,
+    keep_backups: bool,
+    backup_bytes: u64,
+    path: &std::path::Path,
 ) {
     let completed = pool.completed_count();
     let failed = pool.failed_count();
@@ -657,6 +705,16 @@ fn print_summary(
         },
         effective_workers,
     );
+
+    if keep_backups && modified > 0 && !dry_run {
+        println!(
+            "{} {} backups retained ({}) \u{2014} delete with: find {} -name '*.vbak' -delete",
+            style("Info:").bold(),
+            style(modified).cyan(),
+            style(format_size(backup_bytes)).cyan(),
+            path.display(),
+        );
+    }
 
     if dry_run {
         println!(
@@ -886,7 +944,19 @@ mod tests {
 
         let token = CancellationToken::new();
         let kernel = Arc::new(kernel);
-        let _ = execute_plans(&file, &result, kernel, true, false, &token, None).await;
+        let backup_bytes = AtomicU64::new(0);
+        let _ = execute_plans(
+            &file,
+            &result,
+            kernel,
+            true,
+            false,
+            false,
+            &token,
+            None,
+            &backup_bytes,
+        )
+        .await;
 
         // Skipped plans should NOT trigger any lifecycle events
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
