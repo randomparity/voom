@@ -48,7 +48,7 @@ pub fn run() -> Result<()> {
     }
 
     // 3. Create policies directory and starter policy
-    let policies_dir = config_dir.join("policies");
+    let policies_dir = config::policies_dir();
     if !policies_dir.exists() {
         std::fs::create_dir_all(&policies_dir)?;
         println!(

@@ -168,8 +168,9 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
 
 /// Load and compile the DSL policy file.
 fn load_and_compile_policy(args: &ProcessArgs) -> Result<voom_dsl::CompiledPolicy> {
-    let policy_source = std::fs::read_to_string(&args.policy)
-        .with_context(|| format!("Failed to read policy: {}", args.policy.display()))?;
+    let resolved = crate::config::resolve_policy_path(&args.policy);
+    let policy_source = std::fs::read_to_string(&resolved)
+        .with_context(|| format!("Failed to read policy: {}", resolved.display()))?;
 
     voom_dsl::compile_policy(&policy_source).context("policy compilation failed")
 }

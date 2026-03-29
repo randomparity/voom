@@ -14,7 +14,7 @@ pub fn run(cmd: PolicyCommands) -> Result<()> {
 
 fn list() -> Result<()> {
     // Scan standard policy directories
-    let config_dir = crate::config::voom_config_dir().join("policies");
+    let config_dir = crate::config::policies_dir();
 
     if !config_dir.exists() {
         println!("{}", style("No policies directory found.").dim());
@@ -56,6 +56,7 @@ fn list() -> Result<()> {
 }
 
 fn validate(file: std::path::PathBuf) -> Result<()> {
+    let file = crate::config::resolve_policy_path(&file);
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
@@ -79,6 +80,7 @@ fn validate(file: std::path::PathBuf) -> Result<()> {
 }
 
 fn show(file: std::path::PathBuf) -> Result<()> {
+    let file = crate::config::resolve_policy_path(&file);
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
@@ -136,6 +138,7 @@ fn show(file: std::path::PathBuf) -> Result<()> {
 }
 
 fn format(file: std::path::PathBuf) -> Result<()> {
+    let file = crate::config::resolve_policy_path(&file);
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
