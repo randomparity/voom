@@ -205,6 +205,47 @@ fn apply_audio_codec_args(
     cmd
 }
 
+/// Emit the correct quality parameter for the chosen encoder.
+///
+/// Software encoders (libx264, libx265, libsvtav1, libvpx-vp9) accept
+/// `-crf`.  Hardware encoders use backend-specific flags:
+///   - NVENC: `-cq <val>` (VBR constant-quality mode)
+///   - QSV:  `-global_quality <val>`
+///   - VAAPI: `-rc_mode CQP -qp <val>`
+///   - VideoToolbox: `-q:v <val>`
+fn apply_quality(encoder: &str, mut cmd: FfmpegCommand, crf: u32) -> FfmpegCommand {
+    if encoder.ends_with("_nvenc") {
+        cmd = cmd.arg("-cq").arg(&crf.to_string());
+    } else if encoder.ends_with("_qsv") {
+        cmd = cmd.arg("-global_quality").arg(&crf.to_string());
+    } else if encoder.ends_with("_vaapi") {
+        cmd = cmd
+            .arg("-rc_mode")
+            .arg("CQP")
+            .arg("-qp")
+            .arg(&crf.to_string());
+    } else if encoder.ends_with("_videotoolbox") {
+        cmd = cmd.arg("-q:v").arg(&crf.to_string());
+    } else {
+        cmd = cmd.crf(crf);
+    }
+    cmd
+}
+
+/// Emit the correct preset flag for the chosen encoder.
+///
+/// VAAPI encoders do not support presets at all (flag is silently dropped).
+/// All other encoders accept `-preset` directly — NVENC maps legacy names
+/// (slow, medium, fast) to its own p1–p7 presets internally.
+fn apply_preset(encoder: &str, mut cmd: FfmpegCommand, preset: &str) -> FfmpegCommand {
+    if encoder.ends_with("_vaapi") {
+        // VAAPI has no preset support; skip silently.
+    } else {
+        cmd = cmd.preset(preset);
+    }
+    cmd
+}
+
 fn apply_transcode_video(
     mut cmd: FfmpegCommand,
     action: &PlannedAction,
@@ -250,11 +291,11 @@ fn apply_transcode_video(
     }
 
     if let Some(crf_val) = crf {
-        cmd = cmd.crf(*crf_val);
+        cmd = apply_quality(&encoder, cmd, *crf_val);
     }
 
     if let Some(preset_val) = preset {
-        cmd = cmd.preset(preset_val);
+        cmd = apply_preset(&encoder, cmd, preset_val);
     }
 
     if let Some(brate) = bitrate {
@@ -878,6 +919,16 @@ mod tests {
         assert!(args.contains(&"-hwaccel".to_string()));
         assert!(args.contains(&"cuda".to_string()));
         assert!(args.contains(&"hevc_nvenc".to_string()));
+        // NVENC uses -cq, not -crf
+        assert!(
+            args.contains(&"-cq".to_string()),
+            "NVENC should use -cq, got: {args:?}"
+        );
+        assert!(
+            !args.contains(&"-crf".to_string()),
+            "NVENC should not use -crf, got: {args:?}"
+        );
+        assert!(args.contains(&"23".to_string()));
     }
 
     #[test]
@@ -1168,5 +1219,120 @@ mod tests {
         assert!(args.contains(&"cuda".to_string()));
         // But the encoder should be software
         assert!(args.contains(&"libx265".to_string()));
+    }
+
+    #[test]
+    fn test_nvenc_uses_cq_not_crf() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "av1".into(),
+                crf: Some(30),
+                preset: Some("slow".into()),
+                bitrate: None,
+                channels: None,
+                hw: Some("nvenc".into()),
+                hw_fallback: None,
+            },
+            "Transcode AV1 with NVENC",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        assert!(args.contains(&"av1_nvenc".to_string()));
+        assert!(args.contains(&"-cq".to_string()));
+        assert!(!args.contains(&"-crf".to_string()));
+        assert!(args.contains(&"30".to_string()));
+        assert!(args.contains(&"-preset".to_string()));
+        assert!(args.contains(&"slow".to_string()));
+    }
+
+    #[test]
+    fn test_qsv_uses_global_quality() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                crf: Some(25),
+                preset: None,
+                bitrate: None,
+                channels: None,
+                hw: Some("qsv".into()),
+                hw_fallback: None,
+            },
+            "Transcode HEVC with QSV",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        assert!(args.contains(&"hevc_qsv".to_string()));
+        assert!(args.contains(&"-global_quality".to_string()));
+        assert!(!args.contains(&"-crf".to_string()));
+        assert!(args.contains(&"25".to_string()));
+    }
+
+    #[test]
+    fn test_vaapi_uses_rc_mode_cqp() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "h264".into(),
+                crf: Some(20),
+                preset: Some("medium".into()),
+                bitrate: None,
+                channels: None,
+                hw: Some("vaapi".into()),
+                hw_fallback: None,
+            },
+            "Transcode H.264 with VAAPI",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        assert!(args.contains(&"h264_vaapi".to_string()));
+        assert!(args.contains(&"-rc_mode".to_string()));
+        assert!(args.contains(&"CQP".to_string()));
+        assert!(args.contains(&"-qp".to_string()));
+        assert!(!args.contains(&"-crf".to_string()));
+        // VAAPI doesn't support presets — should be omitted
+        assert!(
+            !args.contains(&"-preset".to_string()),
+            "VAAPI should not emit -preset: {args:?}"
+        );
+    }
+
+    #[test]
+    fn test_software_encoder_still_uses_crf() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "av1".into(),
+                crf: Some(28),
+                preset: Some("6".into()),
+                bitrate: None,
+                channels: None,
+                hw: None,
+                hw_fallback: None,
+            },
+            "Transcode AV1 software",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        assert!(args.contains(&"libsvtav1".to_string()));
+        assert!(args.contains(&"-crf".to_string()));
+        assert!(args.contains(&"28".to_string()));
     }
 }
