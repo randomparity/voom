@@ -21,6 +21,13 @@ fn mkvmerge_available() -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+fn ffmpeg_available() -> bool {
+    Command::new("ffmpeg")
+        .arg("-version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
 fn make_kernel_with_both_executors() -> Kernel {
     let mut kernel = Kernel::new();
     let ctx = PluginContext::new(serde_json::json!({}), std::env::temp_dir());
@@ -67,6 +74,10 @@ fn make_plan(file: MediaFile, actions: Vec<PlannedAction>) -> Plan {
 /// Transcode plans should be routed to ffmpeg-executor (mkvtoolnix cannot transcode).
 #[test]
 fn test_transcode_routes_to_ffmpeg() {
+    if !ffmpeg_available() {
+        eprintln!("skipping: ffmpeg not found on PATH");
+        return;
+    }
     let kernel = make_kernel_with_both_executors();
 
     let plan = make_plan(
@@ -177,6 +188,10 @@ fn test_convert_to_mkv_routes_to_mkvtoolnix() {
 /// MKV transcode plans route to ffmpeg, not mkvtoolnix (mkvtoolnix can't transcode).
 #[test]
 fn test_mkv_transcode_routes_to_ffmpeg() {
+    if !ffmpeg_available() {
+        eprintln!("skipping: ffmpeg not found on PATH");
+        return;
+    }
     let kernel = make_kernel_with_both_executors();
 
     let plan = make_plan(
