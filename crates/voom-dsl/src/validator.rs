@@ -406,6 +406,7 @@ fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut 
             for (_, val) in settings {
                 validate_value(val, line, col, errors);
             }
+            validate_hw_settings(settings, line, col, errors);
         }
         OperationNode::Synthesize { settings, .. } => {
             for setting in settings {
@@ -618,6 +619,96 @@ fn validate_number_suffix(raw: &str, line: usize, col: usize, errors: &mut Vec<D
                 "unknown number suffix \"{suffix}\" in \"{raw}\", expected one of: {}",
                 valid_suffixes.join(", ")
             ),
+        ));
+    }
+}
+
+const VALID_HW_VALUES: &[&str] = &["auto", "nvenc", "qsv", "vaapi", "videotoolbox", "none"];
+
+fn hw_edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut dp = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in dp.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, val) in dp[0].iter_mut().enumerate() {
+        *val = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            dp[i][j] = (dp[i - 1][j] + 1)
+                .min(dp[i][j - 1] + 1)
+                .min(dp[i - 1][j - 1] + cost);
+        }
+    }
+    dp[a.len()][b.len()]
+}
+
+fn suggest_hw_value(input: &str) -> Option<&'static str> {
+    let lower = input.to_ascii_lowercase();
+    let mut best: Option<(&str, usize)> = None;
+    for &valid in VALID_HW_VALUES {
+        let dist = hw_edit_distance(&lower, valid);
+        if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
+            best = Some((valid, dist));
+        }
+    }
+    best.map(|(s, _)| s)
+}
+
+fn validate_hw_settings(
+    settings: &[(String, Value)],
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    let mut has_hw = false;
+    let mut has_hw_fallback = false;
+
+    for (key, val) in settings {
+        if key == "hw" {
+            has_hw = true;
+            let hw_str = match val {
+                Value::Ident(s) | Value::String(s) => Some(s.as_str()),
+                _ => None,
+            };
+            if let Some(name) = hw_str {
+                if !VALID_HW_VALUES.contains(&name) {
+                    let valid_list = VALID_HW_VALUES.join(", ");
+                    if let Some(suggestion) = suggest_hw_value(name) {
+                        errors.push(DslError::validation_with_suggestion(
+                            line,
+                            col,
+                            format!(
+                                "unknown hw value \"{name}\", \
+                                 expected one of: {valid_list}"
+                            ),
+                            format!("did you mean \"{suggestion}\"?"),
+                        ));
+                    } else {
+                        errors.push(DslError::validation(
+                            line,
+                            col,
+                            format!(
+                                "unknown hw value \"{name}\", \
+                                 expected one of: {valid_list}"
+                            ),
+                        ));
+                    }
+                }
+            }
+        } else if key == "hw_fallback" {
+            has_hw_fallback = true;
+        }
+    }
+
+    if has_hw_fallback && !has_hw {
+        errors.push(DslError::validation(
+            line,
+            col,
+            "hw_fallback has no effect without hw".to_string(),
         ));
     }
 }
@@ -907,5 +998,68 @@ mod tests {
         }"#;
         let ast = parse_policy(input).unwrap();
         assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_invalid_hw_value() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    hw: nvencc
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        let msg = format!("{}", err.errors[0]);
+        assert!(
+            msg.contains("unknown hw value \"nvencc\""),
+            "expected hw error, got: {msg}"
+        );
+        match &err.errors[0] {
+            DslError::Validation { suggestion, .. } => {
+                assert!(suggestion.is_some(), "expected did-you-mean suggestion");
+                let s = suggestion.as_ref().unwrap();
+                assert!(s.contains("nvenc"), "expected nvenc suggestion, got: {s}");
+            }
+            _ => panic!("expected validation error"),
+        }
+    }
+
+    #[test]
+    fn test_hw_fallback_without_hw() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    hw_fallback: true
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("hw_fallback has no effect without hw")),
+            "expected hw_fallback warning, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_valid_hw_values() {
+        for hw in &["auto", "nvenc", "qsv", "vaapi", "videotoolbox", "none"] {
+            let input = format!(
+                r#"policy "test" {{
+                    phase tc {{
+                        transcode video to hevc {{
+                            hw: {hw}
+                        }}
+                    }}
+                }}"#
+            );
+            let ast = parse_policy(&input).unwrap();
+            assert!(validate(&ast).is_ok(), "hw value \"{hw}\" should be valid");
+        }
     }
 }
