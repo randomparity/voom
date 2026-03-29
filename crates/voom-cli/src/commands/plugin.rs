@@ -151,6 +151,22 @@ fn info(name: String) -> Result<()> {
                             caps.codecs.encoders.join(", ")
                         );
                     }
+                    if !caps.codecs.hw_decoders.is_empty() {
+                        println!(
+                            "  {} ({}): {}",
+                            style("HW Decoders").bold(),
+                            caps.codecs.hw_decoders.len(),
+                            caps.codecs.hw_decoders.join(", ")
+                        );
+                    }
+                    if !caps.codecs.hw_encoders.is_empty() {
+                        println!(
+                            "  {} ({}): {}",
+                            style("HW Encoders").bold(),
+                            caps.codecs.hw_encoders.len(),
+                            caps.codecs.hw_encoders.join(", ")
+                        );
+                    }
                 }
                 if !caps.formats.is_empty() {
                     println!(

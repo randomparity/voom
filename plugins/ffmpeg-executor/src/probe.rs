@@ -79,6 +79,53 @@ pub fn parse_formats(output: &str) -> Vec<String> {
     formats
 }
 
+/// Known suffixes that identify hardware-accelerated encoder/decoder
+/// implementations in ffmpeg's `-encoders` / `-decoders` output.
+const HW_SUFFIXES: &[&str] = &[
+    "_nvenc",
+    "_cuvid",
+    "_qsv",
+    "_vaapi",
+    "_videotoolbox",
+    "_amf",
+    "_mf",
+    "_v4l2m2m",
+];
+
+/// Parse names from `ffmpeg -encoders` or `ffmpeg -decoders` output,
+/// returning only hardware-accelerated implementations.
+///
+/// The format mirrors `-codecs`: a flag block, then a name, after a
+/// `------` separator.
+pub fn parse_hw_implementations(output: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut past_separator = false;
+
+    for line in output.lines() {
+        if line.starts_with(" ------") {
+            past_separator = true;
+            continue;
+        }
+        if !past_separator {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.len() < 8 {
+            continue;
+        }
+        let rest = trimmed[6..].trim_start();
+        let name = rest.split_whitespace().next().unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        if HW_SUFFIXES.iter().any(|s| name.ends_with(s)) {
+            result.push(name.to_string());
+        }
+    }
+
+    result
+}
+
 /// Parse `ffmpeg -hwaccels` output into a list of hardware acceleration names.
 ///
 /// Lines after "Hardware acceleration methods:" are individual backend names.
@@ -182,5 +229,57 @@ vaapi
         let output = "Hardware acceleration methods:\n";
         let accels = parse_hwaccels(output);
         assert!(accels.is_empty());
+    }
+
+    #[test]
+    fn test_parse_hw_implementations_encoders() {
+        let output = "\
+Encoders:
+ V..... = Video
+ ------
+ V....D libx264              libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (codec h264)
+ V....D h264_nvenc           NVIDIA NVENC H.264 encoder (codec h264)
+ V....D h264_vaapi           H.264/AVC (VAAPI) (codec h264)
+ V....D hevc_nvenc           NVIDIA NVENC hevc encoder (codec hevc)
+ V..... hevc_qsv             HEVC (Intel Quick Sync Video acceleration) (codec hevc)
+ V....D av1_nvenc            NVIDIA NVENC av1 encoder (codec av1)
+ V....D av1_amf              AMD AMF AV1 encoder (codec av1)
+ A....D aac                  AAC (Advanced Audio Coding)
+";
+        let hw = parse_hw_implementations(output);
+        assert_eq!(
+            hw,
+            vec![
+                "h264_nvenc",
+                "h264_vaapi",
+                "hevc_nvenc",
+                "hevc_qsv",
+                "av1_nvenc",
+                "av1_amf",
+            ]
+        );
+        // Software encoders excluded
+        assert!(!hw.contains(&"libx264".to_string()));
+        assert!(!hw.contains(&"aac".to_string()));
+    }
+
+    #[test]
+    fn test_parse_hw_implementations_decoders() {
+        let output = "\
+Decoders:
+ ------
+ V....D h264                 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10
+ V....D h264_cuvid           Nvidia CUVID H264 decoder (codec h264)
+ V....D h264_qsv             H264 video (Intel Quick Sync Video acceleration) (codec h264)
+ V....D hevc                 HEVC (High Efficiency Video Coding)
+";
+        let hw = parse_hw_implementations(output);
+        assert_eq!(hw, vec!["h264_cuvid", "h264_qsv"]);
+    }
+
+    #[test]
+    fn test_parse_hw_implementations_empty() {
+        let hw = parse_hw_implementations("");
+        assert!(hw.is_empty());
     }
 }

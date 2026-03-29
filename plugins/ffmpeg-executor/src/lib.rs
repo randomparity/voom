@@ -21,7 +21,7 @@ use voom_domain::plan::{ActionParams, OperationType, Plan};
 use voom_kernel::{Plugin, PluginContext};
 
 use crate::hwaccel::HwAccelConfig;
-use crate::probe::{parse_codecs, parse_formats, parse_hwaccels};
+use crate::probe::{parse_codecs, parse_formats, parse_hw_implementations, parse_hwaccels};
 
 pub(crate) fn plugin_err(message: impl Into<String>) -> VoomError {
     VoomError::plugin("ffmpeg-executor", message)
@@ -253,7 +253,7 @@ impl Plugin for FfmpegExecutorPlugin {
     }
 
     fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
-        let codecs = Command::new("ffmpeg")
+        let mut codecs = Command::new("ffmpeg")
             .args(["-codecs", "-hide_banner"])
             .output()
             .map(|o| parse_codecs(&String::from_utf8_lossy(&o.stdout)))
@@ -277,6 +277,25 @@ impl Plugin for FfmpegExecutorPlugin {
             .map(|o| parse_hwaccels(&String::from_utf8_lossy(&o.stdout)))
             .unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "failed to probe ffmpeg hwaccels");
+                Vec::new()
+            });
+
+        // Probe HW encoder/decoder implementations
+        codecs.hw_encoders = Command::new("ffmpeg")
+            .args(["-encoders", "-hide_banner"])
+            .output()
+            .map(|o| parse_hw_implementations(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to probe ffmpeg hw encoders");
+                Vec::new()
+            });
+
+        codecs.hw_decoders = Command::new("ffmpeg")
+            .args(["-decoders", "-hide_banner"])
+            .output()
+            .map(|o| parse_hw_implementations(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to probe ffmpeg hw decoders");
                 Vec::new()
             });
 

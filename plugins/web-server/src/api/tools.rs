@@ -50,6 +50,10 @@ pub struct ExecutorCapabilitiesResponse {
 pub struct CodecCapabilitiesDto {
     pub decoders: Vec<String>,
     pub encoders: Vec<String>,
+    #[serde(default)]
+    pub hw_decoders: Vec<String>,
+    #[serde(default)]
+    pub hw_encoders: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -180,6 +184,8 @@ mod tests {
             codecs: CodecCapabilitiesDto {
                 decoders: vec!["h264".into(), "hevc".into()],
                 encoders: vec!["libx264".into()],
+                hw_decoders: vec![],
+                hw_encoders: vec!["h264_nvenc".into()],
             },
             formats: vec!["matroska".into(), "mp4".into()],
             hw_accels: vec!["videotoolbox".into()],

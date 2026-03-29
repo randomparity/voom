@@ -491,12 +491,23 @@ impl ToolDetectedEvent {
 pub struct CodecCapabilities {
     pub decoders: Vec<String>,
     pub encoders: Vec<String>,
+    /// Hardware-accelerated decoders (e.g. `hevc_cuvid`, `h264_qsv`).
+    #[serde(default)]
+    pub hw_decoders: Vec<String>,
+    /// Hardware-accelerated encoders (e.g. `av1_nvenc`, `hevc_vaapi`).
+    #[serde(default)]
+    pub hw_encoders: Vec<String>,
 }
 
 impl CodecCapabilities {
     #[must_use]
     pub fn new(decoders: Vec<String>, encoders: Vec<String>) -> Self {
-        Self { decoders, encoders }
+        Self {
+            decoders,
+            encoders,
+            hw_decoders: vec![],
+            hw_encoders: vec![],
+        }
     }
 
     #[must_use]
@@ -504,6 +515,8 @@ impl CodecCapabilities {
         Self {
             decoders: vec![],
             encoders: vec![],
+            hw_decoders: vec![],
+            hw_encoders: vec![],
         }
     }
 }
