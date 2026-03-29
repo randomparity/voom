@@ -13,7 +13,7 @@ use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
 use voom_dsl::compiled::*;
 
-use crate::condition::{evaluate_condition, resolve_value_or_field};
+use crate::condition::{evaluate_condition, resolve_value_or_field, EvalContext};
 use crate::filter::{track_matches, tracks_for_target};
 
 /// Result of evaluating a full policy against a file.
@@ -37,6 +37,17 @@ enum EvaluationOutcome {
 /// Evaluate a compiled policy against a media file, producing plans for all phases.
 #[must_use]
 pub fn evaluate(policy: &CompiledPolicy, file: &MediaFile) -> EvaluationResult {
+    evaluate_with_context(policy, file, None)
+}
+
+/// Evaluate a compiled policy with optional system capabilities context.
+#[must_use]
+pub fn evaluate_with_context(
+    policy: &CompiledPolicy,
+    file: &MediaFile,
+    capabilities: Option<&CapabilityMap>,
+) -> EvaluationResult {
+    let eval_ctx = EvalContext { capabilities };
     let mut plans = Vec::new();
     let mut phase_outcomes: HashMap<String, EvaluationOutcome> = HashMap::new();
 
@@ -46,7 +57,7 @@ pub fn evaluate(policy: &CompiledPolicy, file: &MediaFile) -> EvaluationResult {
             None => continue,
         };
 
-        let plan = evaluate_phase(phase, policy, file, &phase_outcomes);
+        let plan = evaluate_phase(phase, policy, file, &phase_outcomes, &eval_ctx);
 
         let outcome = if plan.is_skipped() {
             EvaluationOutcome::Skipped
@@ -69,6 +80,7 @@ fn evaluate_phase(
     policy: &CompiledPolicy,
     file: &MediaFile,
     phase_outcomes: &HashMap<String, EvaluationOutcome>,
+    eval_ctx: &EvalContext<'_>,
 ) -> Plan {
     let mut plan = Plan::new(file.clone(), policy.name.clone(), phase.name.clone());
     plan.policy_hash = if policy.source_hash.is_empty() {
@@ -78,7 +90,7 @@ fn evaluate_phase(
     };
 
     if let Some(ref cond) = phase.skip_when {
-        if evaluate_condition(cond, file) {
+        if evaluate_condition(cond, file, eval_ctx) {
             plan.skip_reason = Some("skip_when condition met".into());
             return plan;
         }
@@ -117,6 +129,7 @@ fn evaluate_phase(
     let mut ctx = PhaseContext {
         plan: &mut plan,
         file,
+        eval_ctx,
     };
 
     for op in &phase.operations {
@@ -230,6 +243,7 @@ fn apply_safeguard_for_track_type(
 struct PhaseContext<'a> {
     plan: &'a mut Plan,
     file: &'a MediaFile,
+    eval_ctx: &'a EvalContext<'a>,
 }
 
 /// Emit planned actions for a single operation into the plan.
@@ -593,7 +607,7 @@ fn emit_transcode(
 fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
     // Check create_if condition
     if let Some(ref cond) = synth.create_if {
-        if !evaluate_condition(cond, ctx.file) {
+        if !evaluate_condition(cond, ctx.file, ctx.eval_ctx) {
             return;
         }
     }
@@ -686,7 +700,7 @@ fn emit_set_tag(
     value: &CompiledValueOrField,
     ctx: &mut PhaseContext,
 ) -> Result<(), VoomError> {
-    let val = resolve_value_or_field(value, ctx.file)
+    let val = resolve_value_or_field(value, ctx.file, ctx.eval_ctx)
         .ok_or_else(|| VoomError::Validation(format!("Cannot resolve tag value for '{tag}'")))?;
     ctx.plan.actions.push(PlannedAction::file_op(
         OperationType::SetContainerTag,
@@ -712,7 +726,7 @@ fn emit_delete_tag(tag: &str, ctx: &mut PhaseContext) {
 }
 
 fn emit_conditional(cond: &CompiledConditional, ctx: &mut PhaseContext) -> Result<(), VoomError> {
-    let matched = evaluate_condition(&cond.condition, ctx.file);
+    let matched = evaluate_condition(&cond.condition, ctx.file, ctx.eval_ctx);
     let actions = if matched {
         &cond.then_actions
     } else {
@@ -730,7 +744,7 @@ fn emit_rules(
     ctx: &mut PhaseContext,
 ) -> Result<(), VoomError> {
     for rule in rules {
-        let matched = evaluate_condition(&rule.conditional.condition, ctx.file);
+        let matched = evaluate_condition(&rule.conditional.condition, ctx.file, ctx.eval_ctx);
         if matched {
             for action in &rule.conditional.then_actions {
                 emit_action(action, ctx)?;
@@ -774,7 +788,7 @@ fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), Vo
             filter,
             value,
         } => {
-            let lang = resolve_value_or_field(value, ctx.file).ok_or_else(|| {
+            let lang = resolve_value_or_field(value, ctx.file, ctx.eval_ctx).ok_or_else(|| {
                 VoomError::Validation("Cannot resolve language value".to_string())
             })?;
             let tracks = tracks_for_target(ctx.file, target);

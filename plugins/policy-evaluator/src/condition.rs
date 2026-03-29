@@ -2,14 +2,25 @@
 
 use std::collections::HashSet;
 
+use voom_domain::capability_map::CapabilityMap;
 use voom_domain::media::MediaFile;
 use voom_dsl::compiled::{CompiledCompareOp, CompiledCondition};
 
 use crate::filter::{compare_f64, track_matches, tracks_for_target};
 
+/// Evaluation context carrying system-level information (e.g. hwaccel
+/// capabilities) into condition evaluation.
+pub struct EvalContext<'a> {
+    pub capabilities: Option<&'a CapabilityMap>,
+}
+
 /// Evaluate a condition against a media file.
 #[must_use]
-pub fn evaluate_condition(cond: &CompiledCondition, file: &MediaFile) -> bool {
+pub fn evaluate_condition(
+    cond: &CompiledCondition,
+    file: &MediaFile,
+    ctx: &EvalContext<'_>,
+) -> bool {
     match cond {
         CompiledCondition::Exists { target, filter } => {
             let tracks = tracks_for_target(file, target);
@@ -32,24 +43,30 @@ pub fn evaluate_condition(cond: &CompiledCondition, file: &MediaFile) -> bool {
             compare_f64(count as f64, op, *value)
         }
         CompiledCondition::FieldCompare { path, op, value } => {
-            evaluate_field_compare(file, path, op, value)
+            evaluate_field_compare(file, path, op, value, ctx)
         }
-        CompiledCondition::FieldExists { path } => resolve_field(file, path).is_some(),
+        CompiledCondition::FieldExists { path } => resolve_field(file, path, ctx).is_some(),
         CompiledCondition::AudioIsMultiLanguage => audio_lang_count(file) > 1,
         CompiledCondition::IsDubbed => {
             audio_lang_count(file) > 1 && !file.subtitle_tracks().is_empty()
         }
         CompiledCondition::IsOriginal => audio_lang_count(file) <= 1,
         CompiledCondition::And(conditions) => {
-            conditions.iter().all(|c| evaluate_condition(c, file))
+            conditions.iter().all(|c| evaluate_condition(c, file, ctx))
         }
-        CompiledCondition::Or(conditions) => conditions.iter().any(|c| evaluate_condition(c, file)),
-        CompiledCondition::Not(inner) => !evaluate_condition(inner, file),
+        CompiledCondition::Or(conditions) => {
+            conditions.iter().any(|c| evaluate_condition(c, file, ctx))
+        }
+        CompiledCondition::Not(inner) => !evaluate_condition(inner, file, ctx),
     }
 }
 
-/// Resolve a field path against the media file.
-fn resolve_field(file: &MediaFile, path: &[String]) -> Option<serde_json::Value> {
+/// Resolve a field path against the media file (and optionally system context).
+fn resolve_field(
+    file: &MediaFile,
+    path: &[String],
+    ctx: &EvalContext<'_>,
+) -> Option<serde_json::Value> {
     if path.is_empty() {
         return None;
     }
@@ -59,6 +76,28 @@ fn resolve_field(file: &MediaFile, path: &[String]) -> Option<serde_json::Value>
         "audio" => resolve_audio_field(file, &path[1..]),
         "plugin" => resolve_plugin_field(file, &path[1..]),
         "file" => resolve_file_field(file, &path[1..]),
+        "system" => resolve_system_field(&path[1..], ctx),
+        _ => None,
+    }
+}
+
+/// Resolve `system.*` fields from the capability map.
+fn resolve_system_field(path: &[String], ctx: &EvalContext<'_>) -> Option<serde_json::Value> {
+    if path.is_empty() {
+        return None;
+    }
+    let caps = ctx.capabilities?;
+    match path[0].as_str() {
+        "hwaccel" => Some(serde_json::Value::String(caps.best_hwaccel().to_string())),
+        "has_hwaccel" => Some(serde_json::json!(caps.best_hwaccel() != "none")),
+        "hwaccels" => {
+            let accels: Vec<serde_json::Value> = caps
+                .hw_accels()
+                .into_iter()
+                .map(|s| serde_json::Value::String(s.to_string()))
+                .collect();
+            Some(serde_json::Value::Array(accels))
+        }
         _ => None,
     }
 }
@@ -151,8 +190,9 @@ fn evaluate_field_compare(
     path: &[String],
     op: &CompiledCompareOp,
     value: &serde_json::Value,
+    ctx: &EvalContext<'_>,
 ) -> bool {
-    let resolved = match resolve_field(file, path) {
+    let resolved = match resolve_field(file, path, ctx) {
         Some(v) => v,
         None => return false,
     };
@@ -218,18 +258,18 @@ fn json_values_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
 pub fn resolve_value_or_field(
     vof: &voom_dsl::compiled::CompiledValueOrField,
     file: &MediaFile,
+    ctx: &EvalContext<'_>,
 ) -> Option<String> {
     match vof {
         voom_dsl::compiled::CompiledValueOrField::Value(v) => match v {
             serde_json::Value::String(s) => Some(s.clone()),
             other => Some(other.to_string()),
         },
-        voom_dsl::compiled::CompiledValueOrField::Field(path) => {
-            resolve_field(file, path).map(|v| match v {
+        voom_dsl::compiled::CompiledValueOrField::Field(path) => resolve_field(file, path, ctx)
+            .map(|v| match v {
                 serde_json::Value::String(s) => s,
                 other => other.to_string(),
-            })
-        }
+            }),
     }
 }
 
@@ -245,48 +285,59 @@ mod tests {
         test_media_file()
     }
 
+    fn no_ctx() -> EvalContext<'static> {
+        EvalContext { capabilities: None }
+    }
+
     #[test]
     fn test_exists_condition() {
         let file = test_file();
+        let ctx = no_ctx();
         assert!(evaluate_condition(
             &CompiledCondition::Exists {
                 target: TrackTarget::Audio,
                 filter: None,
             },
-            &file
+            &file,
+            &ctx,
         ));
         assert!(!evaluate_condition(
             &CompiledCondition::Exists {
                 target: TrackTarget::Attachment,
                 filter: None,
             },
-            &file
+            &file,
+            &ctx,
         ));
     }
 
     #[test]
     fn test_exists_with_filter() {
         let file = test_file();
+        let ctx = no_ctx();
         use voom_dsl::compiled::CompiledFilter;
         assert!(evaluate_condition(
             &CompiledCondition::Exists {
                 target: TrackTarget::Audio,
                 filter: Some(CompiledFilter::LangIn(vec!["jpn".into()])),
             },
-            &file
+            &file,
+            &ctx,
         ));
         assert!(!evaluate_condition(
             &CompiledCondition::Exists {
                 target: TrackTarget::Audio,
                 filter: Some(CompiledFilter::LangIn(vec!["fre".into()])),
             },
-            &file
+            &file,
+            &ctx,
         ));
     }
 
     #[test]
     fn test_count_condition() {
         let file = test_file();
+        let ctx = no_ctx();
         assert!(evaluate_condition(
             &CompiledCondition::Count {
                 target: TrackTarget::Audio,
@@ -294,7 +345,8 @@ mod tests {
                 op: CompiledCompareOp::Eq,
                 value: 2.0,
             },
-            &file
+            &file,
+            &ctx,
         ));
         assert!(evaluate_condition(
             &CompiledCondition::Count {
@@ -303,13 +355,15 @@ mod tests {
                 op: CompiledCompareOp::Gt,
                 value: 1.0,
             },
-            &file
+            &file,
+            &ctx,
         ));
     }
 
     #[test]
     fn test_field_compare_video_codec() {
         let file = test_file();
+        let ctx = no_ctx();
         // video.codec == "hevc"
         assert!(evaluate_condition(
             &CompiledCondition::FieldCompare {
@@ -317,13 +371,15 @@ mod tests {
                 op: CompiledCompareOp::Eq,
                 value: serde_json::Value::String("hevc".into()),
             },
-            &file
+            &file,
+            &ctx,
         ));
     }
 
     #[test]
     fn test_field_compare_in_list() {
         let file = test_file();
+        let ctx = no_ctx();
         // video.codec in [hevc, h264]
         assert!(evaluate_condition(
             &CompiledCondition::FieldCompare {
@@ -331,7 +387,8 @@ mod tests {
                 op: CompiledCompareOp::In,
                 value: serde_json::json!(["hevc", "h264"]),
             },
-            &file
+            &file,
+            &ctx,
         ));
         // video.codec in [h264, vp9]
         assert!(!evaluate_condition(
@@ -340,13 +397,15 @@ mod tests {
                 op: CompiledCompareOp::In,
                 value: serde_json::json!(["h264", "vp9"]),
             },
-            &file
+            &file,
+            &ctx,
         ));
     }
 
     #[test]
     fn test_field_exists() {
         let mut file = test_file();
+        let ctx = no_ctx();
         file.plugin_metadata.insert(
             "radarr".into(),
             serde_json::json!({"original_language": "eng"}),
@@ -355,22 +414,26 @@ mod tests {
             &CompiledCondition::FieldExists {
                 path: vec!["plugin".into(), "radarr".into(), "original_language".into()],
             },
-            &file
+            &file,
+            &ctx,
         ));
         assert!(!evaluate_condition(
             &CompiledCondition::FieldExists {
                 path: vec!["plugin".into(), "sonarr".into(), "title".into()],
             },
-            &file
+            &file,
+            &ctx,
         ));
     }
 
     #[test]
     fn test_audio_is_multi_language() {
         let file = test_file(); // eng + jpn
+        let ctx = no_ctx();
         assert!(evaluate_condition(
             &CompiledCondition::AudioIsMultiLanguage,
-            &file
+            &file,
+            &ctx,
         ));
 
         let mut mono = MediaFile::new(PathBuf::from("/test.mkv"));
@@ -381,13 +444,15 @@ mod tests {
         }];
         assert!(!evaluate_condition(
             &CompiledCondition::AudioIsMultiLanguage,
-            &mono
+            &mono,
+            &ctx,
         ));
     }
 
     #[test]
     fn test_and_or_not_conditions() {
         let file = test_file();
+        let ctx = no_ctx();
         // Has eng audio AND jpn audio
         let cond = CompiledCondition::And(vec![
             CompiledCondition::Exists {
@@ -403,7 +468,7 @@ mod tests {
                 ])),
             },
         ]);
-        assert!(evaluate_condition(&cond, &file));
+        assert!(evaluate_condition(&cond, &file, &ctx));
 
         // NOT has french audio
         let not_cond = CompiledCondition::Not(Box::new(CompiledCondition::Exists {
@@ -412,12 +477,13 @@ mod tests {
                 "fre".into()
             ])),
         }));
-        assert!(evaluate_condition(&not_cond, &file));
+        assert!(evaluate_condition(&not_cond, &file, &ctx));
     }
 
     #[test]
     fn test_resolve_plugin_field() {
         let mut file = test_file();
+        let ctx = no_ctx();
         file.plugin_metadata.insert(
             "radarr".into(),
             serde_json::json!({"title": "Test Movie", "original_language": "eng"}),
@@ -430,6 +496,7 @@ mod tests {
                 "title".into(),
             ]),
             &file,
+            &ctx,
         );
         assert_eq!(val, Some("Test Movie".into()));
     }
@@ -437,12 +504,111 @@ mod tests {
     #[test]
     fn test_resolve_value() {
         let file = test_file();
+        let ctx = no_ctx();
         let val = resolve_value_or_field(
             &voom_dsl::compiled::CompiledValueOrField::Value(serde_json::Value::String(
                 "literal".into(),
             )),
             &file,
+            &ctx,
         );
         assert_eq!(val, Some("literal".into()));
+    }
+
+    #[test]
+    fn test_system_hwaccel_with_capabilities() {
+        use voom_domain::capability_map::CapabilityMap;
+        use voom_domain::events::{CodecCapabilities, ExecutorCapabilitiesEvent};
+
+        let file = test_file();
+        let mut map = CapabilityMap::new();
+        map.register(ExecutorCapabilitiesEvent::new(
+            "ffmpeg",
+            CodecCapabilities::empty(),
+            vec![],
+            vec!["cuda".into(), "vaapi".into()],
+        ));
+        let ctx = EvalContext {
+            capabilities: Some(&map),
+        };
+
+        // system.hwaccel == "nvenc"
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["system".into(), "hwaccel".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("nvenc".into()),
+            },
+            &file,
+            &ctx,
+        ));
+
+        // system.has_hwaccel == true
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["system".into(), "has_hwaccel".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(true),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn test_system_hwaccel_none_without_capabilities() {
+        let file = test_file();
+        let ctx = no_ctx();
+
+        // system.hwaccel resolves to None when no capabilities
+        assert!(!evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["system".into(), "hwaccel".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("nvenc".into()),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn test_system_hwaccel_no_hwaccel() {
+        use voom_domain::capability_map::CapabilityMap;
+        use voom_domain::events::{CodecCapabilities, ExecutorCapabilitiesEvent};
+
+        let file = test_file();
+        let mut map = CapabilityMap::new();
+        map.register(ExecutorCapabilitiesEvent::new(
+            "ffmpeg",
+            CodecCapabilities::empty(),
+            vec![],
+            vec![], // no hwaccels
+        ));
+        let ctx = EvalContext {
+            capabilities: Some(&map),
+        };
+
+        // system.hwaccel == "none"
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["system".into(), "hwaccel".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("none".into()),
+            },
+            &file,
+            &ctx,
+        ));
+
+        // system.has_hwaccel == false
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["system".into(), "has_hwaccel".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(false),
+            },
+            &file,
+            &ctx,
+        ));
     }
 }
