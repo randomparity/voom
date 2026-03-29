@@ -571,10 +571,30 @@ fn emit_transcode(
         }
     };
 
+    // Check hw_fallback: if a specific HW backend is requested but unavailable,
+    // and hw_fallback is false, skip the entire phase gracefully.
+    if let Some(ref hw) = settings.hw {
+        if hw != "auto" && hw != "none" {
+            let hw_available = ctx
+                .eval_ctx
+                .capabilities
+                .map(|caps| caps.has_hwaccel(hw))
+                .unwrap_or(false);
+            if !hw_available && settings.hw_fallback == Some(false) {
+                ctx.plan.skip_reason = Some(format!(
+                    "hw backend '{hw}' unavailable and hw_fallback is false"
+                ));
+                return;
+            }
+        }
+    }
+
     let crf = settings.crf;
     let preset = settings.preset.clone();
     let bitrate = settings.bitrate.clone();
     let channels = settings.channels;
+    let hw = settings.hw.clone();
+    let hw_fallback = settings.hw_fallback;
 
     for track in &tracks {
         if track.codec == codec {
@@ -593,6 +613,8 @@ fn emit_transcode(
                 preset: preset.clone(),
                 bitrate: bitrate.clone(),
                 channels,
+                hw: hw.clone(),
+                hw_fallback,
             },
             format!(
                 "Transcode {} track {} from {} to {codec}",
@@ -1339,6 +1361,55 @@ mod tests {
     }
 
     #[test]
+    fn test_skipped_phase_does_not_block_depends_on() {
+        let file = test_file(); // has hevc video
+        let policy = test_policy(
+            r#"policy "test" {
+                phase tc {
+                    skip when video.codec == "hevc"
+                    transcode video to hevc { crf: 20 }
+                }
+                phase cleanup {
+                    depends_on: [tc]
+                    when exists(audio where lang == eng) { warn "has eng" }
+                }
+            }"#,
+        );
+        let result = evaluate(&policy, &file);
+        assert!(result.plans[0].is_skipped(), "tc should be skipped");
+        // cleanup depends_on tc, but tc was skipped (not missing) — should still run
+        assert!(!result.plans[1].is_skipped(), "cleanup should run");
+        assert_eq!(result.plans[1].warnings.len(), 1);
+    }
+
+    #[test]
+    fn test_skipped_phase_blocks_run_if_completed() {
+        let file = test_file(); // has hevc video
+        let policy = test_policy(
+            r#"policy "test" {
+                phase tc {
+                    skip when video.codec == "hevc"
+                    transcode video to hevc { crf: 20 }
+                }
+                phase post_tc {
+                    depends_on: [tc]
+                    run_if tc.completed
+                    when exists(audio where lang == eng) { warn "has eng" }
+                }
+            }"#,
+        );
+        let result = evaluate(&policy, &file);
+        assert!(result.plans[0].is_skipped(), "tc should be skipped");
+        // post_tc has run_if tc.completed — tc was skipped not completed, so post_tc skips
+        assert!(result.plans[1].is_skipped(), "post_tc should be skipped");
+        assert!(result.plans[1]
+            .skip_reason
+            .as_ref()
+            .expect("skip reason")
+            .contains("run_if"));
+    }
+
+    #[test]
     fn test_synthesize_basic() {
         let file = test_file();
         let policy = test_policy(
@@ -1957,6 +2028,195 @@ mod tests {
                 result.plans[0].executor_hint.is_none(),
                 "Should not set hint when multiple executors match"
             );
+        }
+    }
+
+    mod hw_fallback {
+        use super::*;
+        use voom_domain::capability_map::CapabilityMap;
+        use voom_domain::events::{CodecCapabilities, ExecutorCapabilitiesEvent};
+
+        fn caps_without_gpu() -> CapabilityMap {
+            let mut map = CapabilityMap::new();
+            map.register(ExecutorCapabilitiesEvent::new(
+                "ffmpeg-executor",
+                CodecCapabilities::new(
+                    vec!["h264".into(), "hevc".into()],
+                    vec!["h264".into(), "hevc".into()],
+                ),
+                vec!["matroska".into()],
+                vec![], // no hw_accels
+            ));
+            map
+        }
+
+        fn caps_with_nvenc() -> CapabilityMap {
+            let mut map = CapabilityMap::new();
+            map.register(ExecutorCapabilitiesEvent::new(
+                "ffmpeg-executor",
+                CodecCapabilities::new(
+                    vec!["h264".into(), "hevc".into()],
+                    vec!["h264".into(), "hevc".into()],
+                ),
+                vec!["matroska".into()],
+                vec!["cuda".into()],
+            ));
+            map
+        }
+
+        #[test]
+        fn test_hw_fallback_false_skips_when_backend_unavailable() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc {
+                        transcode video to hevc {
+                            crf: 20
+                            hw: nvenc
+                            hw_fallback: false
+                        }
+                    }
+                }"#,
+            );
+            let caps = caps_without_gpu();
+            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            assert!(
+                result.plans[0].is_skipped(),
+                "Should skip when nvenc unavailable and hw_fallback is false"
+            );
+            assert!(result.plans[0]
+                .skip_reason
+                .as_ref()
+                .expect("skip reason")
+                .contains("nvenc"));
+        }
+
+        #[test]
+        fn test_hw_fallback_true_falls_through_to_software() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc {
+                        transcode video to hevc {
+                            crf: 20
+                            hw: nvenc
+                            hw_fallback: true
+                        }
+                    }
+                }"#,
+            );
+            let caps = caps_without_gpu();
+            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            assert!(
+                !result.plans[0].is_skipped(),
+                "Should fall through to software when hw_fallback is true"
+            );
+            assert_eq!(result.plans[0].actions.len(), 1);
+        }
+
+        #[test]
+        fn test_hw_fallback_default_falls_through() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc {
+                        transcode video to hevc {
+                            crf: 20
+                            hw: nvenc
+                        }
+                    }
+                }"#,
+            );
+            let caps = caps_without_gpu();
+            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            assert!(
+                !result.plans[0].is_skipped(),
+                "Default hw_fallback (None) should allow software fallback"
+            );
+        }
+
+        #[test]
+        fn test_hw_available_runs_normally() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc {
+                        transcode video to hevc {
+                            crf: 20
+                            hw: nvenc
+                            hw_fallback: false
+                        }
+                    }
+                }"#,
+            );
+            let caps = caps_with_nvenc();
+            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            assert!(
+                !result.plans[0].is_skipped(),
+                "Should run normally when nvenc is available"
+            );
+            assert_eq!(result.plans[0].actions.len(), 1);
+        }
+
+        #[test]
+        fn test_hw_fallback_skip_allows_downstream_depends_on() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc {
+                        transcode video to hevc {
+                            crf: 20
+                            hw: nvenc
+                            hw_fallback: false
+                        }
+                    }
+                    phase cleanup {
+                        depends_on: [tc]
+                        when exists(audio where lang == eng) { warn "has eng" }
+                    }
+                }"#,
+            );
+            let caps = caps_without_gpu();
+            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            assert!(result.plans[0].is_skipped(), "tc should be skipped");
+            assert!(
+                !result.plans[1].is_skipped(),
+                "cleanup should still run via depends_on"
+            );
+        }
+
+        #[test]
+        fn test_hw_fields_threaded_to_action_params() {
+            let mut file = test_file();
+            file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase tc {
+                        transcode video to hevc {
+                            crf: 20
+                            hw: nvenc
+                            hw_fallback: true
+                        }
+                    }
+                }"#,
+            );
+            let caps = caps_without_gpu();
+            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            let action = &result.plans[0].actions[0];
+            match &action.parameters {
+                ActionParams::Transcode {
+                    hw, hw_fallback, ..
+                } => {
+                    assert_eq!(hw.as_deref(), Some("nvenc"));
+                    assert_eq!(*hw_fallback, Some(true));
+                }
+                other => panic!("Expected Transcode params, got {other:?}"),
+            }
         }
     }
 }

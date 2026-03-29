@@ -166,6 +166,12 @@ pub enum ActionParams {
         preset: Option<String>,
         bitrate: Option<String>,
         channels: Option<u32>,
+        /// Per-action HW acceleration preference (overrides system-wide detection).
+        #[serde(default)]
+        hw: Option<String>,
+        /// Whether to fall back to software encoding when HW is unavailable.
+        #[serde(default)]
+        hw_fallback: Option<bool>,
     },
     /// Audio synthesis parameters.
     Synthesize {

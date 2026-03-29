@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use comfy_table::Cell;
 use console::style;
@@ -7,10 +9,15 @@ use crate::cli::{OutputFormat, ReportArgs};
 use crate::config;
 use crate::output;
 use crate::stats;
+use voom_domain::storage::PlanStorage;
 
 pub fn run(args: ReportArgs) -> Result<()> {
     let config = config::load_config()?;
     let store = app::open_store(&config)?;
+
+    if args.plans {
+        return run_plans_report(&*store, &args.format);
+    }
 
     let files = store
         .list_files(&voom_domain::FileFilters::default())
@@ -146,6 +153,124 @@ fn run_issues_report(files: &[voom_domain::MediaFile], format: &OutputFormat) ->
     }
 
     Ok(())
+}
+
+fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()> {
+    let stats = store
+        .plan_stats_by_phase()
+        .context("failed to query plan stats")?;
+
+    if stats.is_empty() {
+        println!(
+            "{}",
+            style("No plan data. Run 'voom process' first.").yellow()
+        );
+        return Ok(());
+    }
+
+    // Group stats by phase name
+    let mut phases: Vec<String> = Vec::new();
+    let mut phase_data: HashMap<String, PhaseRow> = HashMap::new();
+    for stat in &stats {
+        let row = phase_data
+            .entry(stat.phase_name.clone())
+            .or_insert_with(|| {
+                phases.push(stat.phase_name.clone());
+                PhaseRow::default()
+            });
+        match stat.status {
+            voom_domain::storage::PlanStatus::Completed => row.completed += stat.count,
+            voom_domain::storage::PlanStatus::Skipped => {
+                row.skipped += stat.count;
+                if let Some(reason) = &stat.skip_reason {
+                    *row.skip_reasons.entry(reason.clone()).or_insert(0) += stat.count;
+                }
+            }
+            voom_domain::storage::PlanStatus::Failed => row.failed += stat.count,
+            _ => {}
+        }
+    }
+
+    match format {
+        OutputFormat::Json => {
+            let entries: Vec<serde_json::Value> = phases
+                .iter()
+                .map(|name| {
+                    let row = &phase_data[name];
+                    let mut val = serde_json::json!({
+                        "phase": name,
+                        "completed": row.completed,
+                        "skipped": row.skipped,
+                        "failed": row.failed,
+                    });
+                    if !row.skip_reasons.is_empty() {
+                        val["skip_reasons"] = serde_json::json!(row.skip_reasons);
+                    }
+                    val
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&entries).expect("report is serializable")
+            );
+        }
+        OutputFormat::Table => {
+            println!("{}", style("Plan Processing Summary").bold().underlined());
+            println!();
+
+            let mut table = output::new_table();
+            table.set_header(vec![
+                "Phase",
+                "Completed",
+                "Skipped",
+                "Failed",
+                "Top Skip Reasons",
+            ]);
+            for name in &phases {
+                let row = &phase_data[name];
+                let reasons = format_top_skip_reasons(&row.skip_reasons);
+                table.add_row(vec![
+                    Cell::new(name),
+                    Cell::new(row.completed),
+                    Cell::new(row.skipped),
+                    Cell::new(row.failed),
+                    Cell::new(&reasons),
+                ]);
+            }
+            println!("{table}");
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Default)]
+struct PhaseRow {
+    completed: u64,
+    skipped: u64,
+    failed: u64,
+    skip_reasons: HashMap<String, u64>,
+}
+
+fn format_top_skip_reasons(reasons: &HashMap<String, u64>) -> String {
+    if reasons.is_empty() {
+        return String::new();
+    }
+    let mut sorted: Vec<_> = reasons.iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(a.1));
+    sorted
+        .iter()
+        .take(3)
+        .map(|(reason, count)| {
+            let display = if reason.len() > 30 {
+                format!("{}...", &reason[..27])
+            } else {
+                reason.to_string()
+            };
+            format!("{display} ({count})")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn codec_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {

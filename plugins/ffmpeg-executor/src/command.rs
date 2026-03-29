@@ -215,16 +215,34 @@ fn apply_transcode_video(
         crf,
         preset,
         bitrate,
+        hw,
         ..
     } = &action.parameters
     else {
         return cmd;
     };
 
-    let encoder = if let Some(hw) = hw_accel {
-        hw.encoder_name(codec)
-    } else {
-        hwaccel::software_encoder(codec).to_string()
+    // Per-action hw override: "none" forces software, a specific backend
+    // name uses that backend, otherwise fall through to system-wide config.
+    let encoder = match hw.as_deref() {
+        Some("none") => hwaccel::software_encoder(codec).to_string(),
+        Some(backend) => {
+            let override_config = hwaccel::config_from_backend_name(backend);
+            if override_config.enabled() {
+                override_config.encoder_name(codec)
+            } else if let Some(hw_cfg) = hw_accel {
+                hw_cfg.encoder_name(codec)
+            } else {
+                hwaccel::software_encoder(codec).to_string()
+            }
+        }
+        None => {
+            if let Some(hw_cfg) = hw_accel {
+                hw_cfg.encoder_name(codec)
+            } else {
+                hwaccel::software_encoder(codec).to_string()
+            }
+        }
     };
 
     if let Some(stream) = action.track_index {
@@ -491,6 +509,8 @@ mod tests {
                 preset: Some("medium".into()),
                 bitrate: None,
                 channels: None,
+                hw: None,
+                hw_fallback: None,
             },
             "Transcode video to HEVC CRF 23",
         );
@@ -519,6 +539,8 @@ mod tests {
                 preset: None,
                 bitrate: Some("5M".into()),
                 channels: None,
+                hw: None,
+                hw_fallback: None,
             },
             "Transcode video to H.264 at 5M",
         );
@@ -545,6 +567,8 @@ mod tests {
                 preset: None,
                 bitrate: Some("128k".into()),
                 channels: Some(2),
+                hw: None,
+                hw_fallback: None,
             },
             "Transcode audio to Opus",
         );
@@ -665,6 +689,8 @@ mod tests {
                     preset: None,
                     bitrate: None,
                     channels: None,
+                    hw: None,
+                    hw_fallback: None,
                 },
                 "Transcode to HEVC",
             ),
@@ -784,6 +810,8 @@ mod tests {
                 preset: None,
                 bitrate: None,
                 channels: None,
+                hw: None,
+                hw_fallback: None,
             },
             "Transcode with NVENC",
         );
@@ -900,5 +928,64 @@ mod tests {
         let args = cmd.build();
         assert!(args.contains(&"-metadata".to_string()));
         assert!(args.contains(&"title=".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_hw_none_forces_software() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                crf: Some(23),
+                preset: None,
+                bitrate: None,
+                channels: None,
+                hw: Some("none".into()),
+                hw_fallback: None,
+            },
+            "Transcode with software",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mp4");
+
+        // Even with hw_accel config available, hw: "none" forces software
+        let hw = HwAccelConfig {
+            backend: Some(crate::hwaccel::HwAccelBackend::Nvenc),
+        };
+        let args = build_ffmpeg_command(&file, &actions, output, Some(&hw)).unwrap();
+        assert!(
+            args.contains(&"libx265".to_string()),
+            "hw: none should force software encoder, got: {args:?}"
+        );
+    }
+
+    #[test]
+    fn test_build_command_hw_specific_backend_override() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                crf: Some(23),
+                preset: None,
+                bitrate: None,
+                channels: None,
+                hw: Some("nvenc".into()),
+                hw_fallback: None,
+            },
+            "Transcode with NVENC override",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mp4");
+
+        // No system-wide hw_accel, but per-action hw: nvenc
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        assert!(
+            args.contains(&"hevc_nvenc".to_string()),
+            "hw: nvenc should use NVENC encoder, got: {args:?}"
+        );
     }
 }

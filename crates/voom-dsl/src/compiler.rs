@@ -251,10 +251,24 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
         _ => None,
     };
 
+    let hw = match get("hw") {
+        Some(Value::String(s) | Value::Ident(s)) => Some(s.clone()),
+        _ => None,
+    };
+
+    let hw_fallback = match get("hw_fallback") {
+        Some(Value::Bool(b)) => Some(*b),
+        _ => None,
+    };
+
+    let mut settings = CompiledTranscodeSettings::new(preserve, crf, preset, bitrate, channels);
+    settings.hw = hw;
+    settings.hw_fallback = hw_fallback;
+
     CompiledOperation::Transcode {
         target: parse_track_target(target),
         codec: canonical,
-        settings: CompiledTranscodeSettings::new(preserve, crf, preset, bitrate, channels),
+        settings,
     }
 }
 

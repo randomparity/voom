@@ -231,6 +231,10 @@ pub struct ReportArgs {
     /// Show only files with safeguard violations (processing issues)
     #[arg(long)]
     pub issues: bool,
+
+    /// Show per-phase plan processing summary
+    #[arg(long)]
+    pub plans: bool,
 }
 
 // === Serve ===

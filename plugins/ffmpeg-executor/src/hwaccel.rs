@@ -145,6 +145,20 @@ impl Default for HwAccelConfig {
     }
 }
 
+/// Create an `HwAccelConfig` from a canonical backend name (as used in
+/// the DSL `hw:` setting). Returns a disabled config for unrecognized names.
+#[must_use]
+pub fn config_from_backend_name(name: &str) -> HwAccelConfig {
+    let backend = match name {
+        "nvenc" => Some(HwAccelBackend::Nvenc),
+        "qsv" => Some(HwAccelBackend::Qsv),
+        "vaapi" => Some(HwAccelBackend::Vaapi),
+        "videotoolbox" => Some(HwAccelBackend::Videotoolbox),
+        _ => None,
+    };
+    HwAccelConfig { backend }
+}
+
 /// Map a codec name to the `FFmpeg` software encoder name.
 #[must_use]
 pub fn software_encoder(codec: &str) -> &str {

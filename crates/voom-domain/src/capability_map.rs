@@ -79,6 +79,12 @@ impl CapabilityMap {
         result
     }
 
+    /// Returns `true` if any registered executor supports the named HW backend.
+    #[must_use]
+    pub fn has_hwaccel(&self, backend: &str) -> bool {
+        self.hw_accels().contains(&backend)
+    }
+
     /// Returns the highest-priority hwaccel backend name, or `"none"`.
     ///
     /// Priority order matches `HwAccelConfig::from_probed()` in the

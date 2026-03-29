@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use parking_lot::Mutex;
 
 use tokio_util::sync::CancellationToken;
 
@@ -13,7 +15,7 @@ use crate::config;
 use crate::output::{max_filename_len, shrink_filename, PROGRESS_FIXED_WIDTH};
 use voom_domain::events::{
     Event, JobCompletedEvent, JobProgressEvent, JobStartedEvent, PlanCompletedEvent,
-    PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
+    PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent, PlanSkippedEvent,
 };
 use voom_domain::plan::OperationType;
 use voom_job_manager::progress::{CompositeReporter, ProgressReporter};
@@ -126,17 +128,20 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
 
     let items = build_work_items(&events);
     let keep_backups = compiled.config.keep_backups;
+    let phase_order = compiled.phase_order.clone();
     let compiled = Arc::new(compiled);
     let dry_run = args.dry_run;
     let flag_size_increase = args.flag_size_increase;
     let modified_count = Arc::new(AtomicU64::new(0));
     let backup_bytes = Arc::new(AtomicU64::new(0));
+    let phase_stats: PhaseStatsMap = Arc::new(Mutex::new(HashMap::new()));
 
     let token_for_workers = token.clone();
     let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
     let ffprobe_path = Arc::new(ffprobe_path);
     let modified_for_summary = modified_count.clone();
     let backup_bytes_for_summary = backup_bytes.clone();
+    let phase_stats_for_summary = phase_stats.clone();
     let _results = pool
         .process_batch(
             items,
@@ -148,6 +153,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                 let capabilities = capabilities.clone();
                 let modified_count = modified_count.clone();
                 let backup_bytes = backup_bytes.clone();
+                let phase_stats = phase_stats.clone();
                 async move {
                     let ctx = ProcessContext {
                         compiled: &compiled,
@@ -160,6 +166,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                         capabilities: &capabilities,
                         modified_count: &modified_count,
                         backup_bytes: &backup_bytes,
+                        phase_stats: &phase_stats,
                     };
                     process_single_file(job, &ctx).await
                 }
@@ -171,6 +178,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
 
     let modified = modified_for_summary.load(AtomicOrdering::Relaxed);
     let backup_total = backup_bytes_for_summary.load(AtomicOrdering::Relaxed);
+    let phase_stats_snapshot = phase_stats_for_summary.lock().clone();
     if token.is_cancelled() {
         print_interrupted_summary(&pool, file_count, modified);
     } else {
@@ -185,6 +193,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
             &path,
         );
     }
+    print_phase_breakdown(&phase_stats_snapshot, &phase_order);
 
     Ok(())
 }
@@ -293,6 +302,39 @@ fn parse_job_payload(job: &voom_domain::job::Job) -> anyhow::Result<DiscoveredFi
     serde_json::from_value(raw_payload.clone()).context("invalid payload")
 }
 
+/// Per-phase statistics accumulated during processing.
+#[derive(Debug, Default, Clone)]
+struct PhaseStats {
+    completed: u64,
+    skipped: u64,
+    failed: u64,
+    skip_reasons: HashMap<String, u64>,
+}
+
+/// Thread-safe map of phase name → stats.
+type PhaseStatsMap = Arc<Mutex<HashMap<String, PhaseStats>>>;
+
+/// Record a phase outcome in the shared stats map.
+fn record_phase_stat(stats: &PhaseStatsMap, phase_name: &str, outcome: PhaseOutcomeKind) {
+    let mut map = stats.lock();
+    let entry = map.entry(phase_name.to_string()).or_default();
+    match outcome {
+        PhaseOutcomeKind::Completed => entry.completed += 1,
+        PhaseOutcomeKind::Skipped(reason) => {
+            entry.skipped += 1;
+            *entry.skip_reasons.entry(reason).or_insert(0) += 1;
+        }
+        PhaseOutcomeKind::Failed => entry.failed += 1,
+    }
+}
+
+/// Classification for phase stats tracking.
+enum PhaseOutcomeKind {
+    Completed,
+    Skipped(String),
+    Failed,
+}
+
 /// Shared context for processing a single file.
 struct ProcessContext<'a> {
     compiled: &'a voom_dsl::CompiledPolicy,
@@ -305,6 +347,7 @@ struct ProcessContext<'a> {
     capabilities: &'a voom_domain::CapabilityMap,
     modified_count: &'a AtomicU64,
     backup_bytes: &'a AtomicU64,
+    phase_stats: &'a PhaseStatsMap,
 }
 
 /// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
@@ -351,7 +394,34 @@ async fn process_single_file(
         ctx.modified_count.fetch_add(1, AtomicOrdering::Relaxed);
     }
 
+    // Record phase stats for skipped/empty plans (both dry-run and live).
+    // Completed/failed stats for executed plans are recorded in execute_plans.
+    for plan in &result.plans {
+        if plan.is_skipped() {
+            let reason = plan
+                .skip_reason
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            record_phase_stat(
+                ctx.phase_stats,
+                &plan.phase_name,
+                PhaseOutcomeKind::Skipped(reason),
+            );
+        }
+    }
+
     if ctx.dry_run {
+        // In dry-run, non-skipped plans count as "completed" for stats
+        for plan in &result.plans {
+            if !plan.is_skipped() && !plan.is_empty() {
+                record_phase_stat(
+                    ctx.phase_stats,
+                    &plan.phase_name,
+                    PhaseOutcomeKind::Completed,
+                );
+            }
+        }
+
         let plan_summaries: Vec<serde_json::Value> = result
             .plans
             .iter()
@@ -384,6 +454,7 @@ async fn process_single_file(
             ctx.token,
             ctx.ffprobe_path,
             ctx.backup_bytes,
+            ctx.phase_stats,
         )
         .await
     }
@@ -422,6 +493,7 @@ async fn execute_plans(
     token: &CancellationToken,
     ffprobe_path: Option<&str>,
     backup_bytes: &AtomicU64,
+    phase_stats: &PhaseStatsMap,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let file_path_str = file.path.display().to_string();
 
@@ -457,7 +529,18 @@ async fn execute_plans(
     // (size-increase guard) so the backup is still available for restore.
     let mut any_executed = false;
     for plan in &result.plans {
-        if plan.is_skipped() || plan.is_empty() {
+        if plan.is_skipped() {
+            if let Some(reason) = &plan.skip_reason {
+                kernel.dispatch(Event::PlanSkipped(PlanSkippedEvent::new(
+                    plan.id,
+                    file.path.clone(),
+                    plan.phase_name.clone(),
+                    reason.clone(),
+                )));
+            }
+            continue;
+        }
+        if plan.is_empty() {
             continue;
         }
 
@@ -509,6 +592,11 @@ async fn execute_plans(
                                 plan.phase_name.clone(),
                                 format!("output grew from {} to {} bytes", file.size, new_size,),
                             )));
+                            record_phase_stat(
+                                phase_stats,
+                                &plan.phase_name,
+                                PhaseOutcomeKind::Failed,
+                            );
                             continue;
                         }
                     }
@@ -529,9 +617,11 @@ async fn execute_plans(
                         plan.actions.len(),
                     )));
                 }
+                record_phase_stat(phase_stats, &plan.phase_name, PhaseOutcomeKind::Completed);
             }
             PlanOutcome::Failed(failed) => {
                 kernel.dispatch(Event::PlanFailed(failed));
+                record_phase_stat(phase_stats, &plan.phase_name, PhaseOutcomeKind::Failed);
             }
         }
     }
@@ -724,6 +814,53 @@ fn print_summary(
     }
 }
 
+/// Print per-phase breakdown if any phases recorded stats.
+fn print_phase_breakdown(stats: &HashMap<String, PhaseStats>, phase_order: &[String]) {
+    if stats.is_empty() {
+        return;
+    }
+
+    println!("\n  {}", style("Phase breakdown:").bold());
+    for phase_name in phase_order {
+        let Some(ps) = stats.get(phase_name) else {
+            continue;
+        };
+        let mut parts: Vec<String> = Vec::new();
+        if ps.completed > 0 {
+            parts.push(format!("{} completed", ps.completed));
+        }
+        if ps.skipped > 0 {
+            let reasons: String = if ps.skip_reasons.len() == 1 {
+                let (reason, _) = ps.skip_reasons.iter().next().expect("non-empty");
+                format!(" ({})", truncate_reason(reason))
+            } else {
+                let mut sorted: Vec<_> = ps.skip_reasons.iter().collect();
+                sorted.sort_by(|a, b| b.1.cmp(a.1));
+                let items: Vec<String> = sorted
+                    .iter()
+                    .take(3)
+                    .map(|(r, c)| format!("{}: {c}", truncate_reason(r)))
+                    .collect();
+                format!(" ({})", items.join(", "))
+            };
+            parts.push(format!("{} skipped{reasons}", ps.skipped));
+        }
+        if ps.failed > 0 {
+            parts.push(format!("{} errors", ps.failed));
+        }
+        println!("    {:<20} {}", format!("{phase_name}:"), parts.join(", "));
+    }
+}
+
+/// Truncate a skip reason to a reasonable display length.
+fn truncate_reason(reason: &str) -> &str {
+    if reason.len() <= 40 {
+        reason
+    } else {
+        &reason[..37]
+    }
+}
+
 /// Reporter that dispatches job lifecycle events through the kernel event bus.
 struct EventBusReporter {
     kernel: Arc<voom_kernel::Kernel>,
@@ -834,6 +971,7 @@ mod tests {
         plan_created_count: AtomicUsize,
         plan_executing_count: AtomicUsize,
         plan_completed_count: AtomicUsize,
+        plan_skipped_count: AtomicUsize,
     }
 
     impl PlanRecordingPlugin {
@@ -844,6 +982,7 @@ mod tests {
                 plan_created_count: AtomicUsize::new(0),
                 plan_executing_count: AtomicUsize::new(0),
                 plan_completed_count: AtomicUsize::new(0),
+                plan_skipped_count: AtomicUsize::new(0),
             }
         }
     }
@@ -866,6 +1005,7 @@ mod tests {
                     | Event::PLAN_CREATED
                     | Event::PLAN_EXECUTING
                     | Event::PLAN_COMPLETED
+                    | Event::PLAN_SKIPPED
             )
         }
         fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
@@ -884,6 +1024,9 @@ mod tests {
                 }
                 Event::PlanCompleted(_) => {
                     self.plan_completed_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::PlanSkipped(_) => {
+                    self.plan_skipped_count.fetch_add(1, Ordering::SeqCst);
                 }
                 _ => {}
             }
@@ -946,6 +1089,7 @@ mod tests {
         let token = CancellationToken::new();
         let kernel = Arc::new(kernel);
         let backup_bytes = AtomicU64::new(0);
+        let phase_stats: PhaseStatsMap = Arc::new(Mutex::new(HashMap::new()));
         let _ = execute_plans(
             &file,
             &result,
@@ -956,13 +1100,16 @@ mod tests {
             &token,
             None,
             &backup_bytes,
+            &phase_stats,
         )
         .await;
 
-        // Skipped plans should NOT trigger any lifecycle events
+        // Skipped plans should NOT trigger execution lifecycle events
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
         assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
+        // But PlanSkipped IS dispatched
+        assert_eq!(recorder.plan_skipped_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

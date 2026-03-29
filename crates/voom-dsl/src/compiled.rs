@@ -270,6 +270,14 @@ pub struct CompiledTranscodeSettings {
     pub preset: Option<String>,
     pub bitrate: Option<String>,
     pub channels: Option<u32>,
+    /// Hardware acceleration backend preference.
+    /// Values: "auto", "nvenc", "qsv", "vaapi", "videotoolbox", "none".
+    #[serde(default)]
+    pub hw: Option<String>,
+    /// Whether to fall back to software encoding when the requested
+    /// HW backend is unavailable. Defaults to `true` when absent.
+    #[serde(default)]
+    pub hw_fallback: Option<bool>,
 }
 
 impl CompiledTranscodeSettings {
@@ -287,6 +295,8 @@ impl CompiledTranscodeSettings {
             preset,
             bitrate,
             channels,
+            hw: None,
+            hw_fallback: None,
         }
     }
 }

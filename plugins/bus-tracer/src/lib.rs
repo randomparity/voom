@@ -107,6 +107,14 @@ fn event_summary(event: &Event) -> String {
         Event::PlanCompleted(e) => {
             format!("path={} phase={}", e.path.display(), e.phase_name)
         }
+        Event::PlanSkipped(e) => {
+            format!(
+                "path={} phase={} reason={}",
+                e.path.display(),
+                e.phase_name,
+                e.skip_reason
+            )
+        }
         Event::PlanFailed(e) => {
             format!(
                 "path={} phase={} error={}",
