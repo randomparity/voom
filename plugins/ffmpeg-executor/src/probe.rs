@@ -149,6 +149,49 @@ pub fn parse_hwaccels(output: &str) -> Vec<String> {
     accels
 }
 
+/// Test whether an ffmpeg HW encoder actually works on the current device.
+///
+/// Tries to encode a single frame from a synthetic source. Returns `false`
+/// when the encoder is compiled into ffmpeg but the GPU/device doesn't
+/// support it (e.g. `av1_nvenc` on a GPU without AV1 NVENC capability).
+///
+/// Uses 256x256 to satisfy NVENC minimum resolution requirements.
+pub fn validate_hw_encoder(encoder: &str) -> bool {
+    let ok = std::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-nostdin",
+            "-f",
+            "lavfi",
+            "-i",
+            "nullsrc=s=256x256:d=0.04",
+            "-frames:v",
+            "1",
+            "-c:v",
+            encoder,
+            "-f",
+            "null",
+            "-",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if ok {
+        tracing::debug!(encoder, "HW encoder validated");
+    } else {
+        tracing::info!(
+            encoder,
+            "HW encoder not supported by device, will use software fallback"
+        );
+    }
+
+    ok
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

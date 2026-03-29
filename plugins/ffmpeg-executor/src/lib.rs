@@ -21,7 +21,9 @@ use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 use voom_kernel::{Plugin, PluginContext};
 
 use crate::hwaccel::HwAccelConfig;
-use crate::probe::{parse_codecs, parse_formats, parse_hw_implementations, parse_hwaccels};
+use crate::probe::{
+    parse_codecs, parse_formats, parse_hw_implementations, parse_hwaccels, validate_hw_encoder,
+};
 
 pub(crate) fn plugin_err(message: impl Into<String>) -> VoomError {
     VoomError::plugin("ffmpeg-executor", message)
@@ -337,8 +339,25 @@ impl Plugin for FfmpegExecutorPlugin {
         self.probed_formats = Some(formats.clone());
         self.probed_hw_accels = Some(hw_accels.clone());
 
+        // Validate which HW encoders actually work on this device.
+        // ffmpeg -encoders lists all compiled-in encoders, but the GPU may
+        // not support all of them (e.g. av1_nvenc on a GPU without AV1).
+        let validated_encoders: Vec<String> = codecs
+            .hw_encoders
+            .iter()
+            .filter(|enc| validate_hw_encoder(enc))
+            .cloned()
+            .collect();
+
+        tracing::info!(
+            validated = ?validated_encoders,
+            total = codecs.hw_encoders.len(),
+            "validated HW encoders"
+        );
+
         // Select HW accel backend from already-probed data (no extra subprocess)
-        self.hw_accel = HwAccelConfig::from_probed(&hw_accels);
+        self.hw_accel =
+            HwAccelConfig::from_probed(&hw_accels).with_validated_encoders(validated_encoders);
 
         let event = ExecutorCapabilitiesEvent::new("ffmpeg-executor", codecs, formats, hw_accels);
 

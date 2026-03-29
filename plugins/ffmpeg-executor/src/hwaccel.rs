@@ -19,13 +19,29 @@ pub enum HwAccelBackend {
 #[derive(Debug, Clone)]
 pub struct HwAccelConfig {
     pub backend: Option<HwAccelBackend>,
+    /// HW encoders validated to work on this device. When `Some`, only
+    /// encoders in the list are used; missing ones fall back to software.
+    /// `None` means no validation was performed (all are trusted).
+    validated_encoders: Option<Vec<String>>,
 }
 
 impl HwAccelConfig {
     /// Create a new config with no detected backend (HW accel disabled).
     #[must_use]
     pub fn new() -> Self {
-        Self { backend: None }
+        Self {
+            backend: None,
+            validated_encoders: None,
+        }
+    }
+
+    /// Create a config with a specific backend (no validation).
+    #[must_use]
+    pub fn with_backend(backend: HwAccelBackend) -> Self {
+        Self {
+            backend: Some(backend),
+            validated_encoders: None,
+        }
     }
 
     /// Whether hardware acceleration is available.
@@ -39,6 +55,7 @@ impl HwAccelConfig {
     pub fn detect() -> Self {
         Self {
             backend: Self::detect_backend(),
+            validated_encoders: None,
         }
     }
 
@@ -53,7 +70,18 @@ impl HwAccelConfig {
             .join(" ");
         Self {
             backend: detect_backend_from_text(&text),
+            validated_encoders: None,
         }
+    }
+
+    /// Set the list of HW encoders validated to work on this device.
+    ///
+    /// When set, `encoder_name()` will only return a HW encoder if it
+    /// appears in this list; otherwise it falls back to the software encoder.
+    #[must_use]
+    pub fn with_validated_encoders(mut self, encoders: Vec<String>) -> Self {
+        self.validated_encoders = Some(encoders);
+        self
     }
 
     /// Get the `FFmpeg` encoder name for a codec with this HW backend.
@@ -81,7 +109,22 @@ impl HwAccelConfig {
         };
 
         if supported_codecs.contains(&canonical) {
-            format!("{canonical}{suffix}")
+            let hw_name = format!("{canonical}{suffix}");
+            // If we validated encoders at init, only use ones that work
+            if let Some(validated) = &self.validated_encoders {
+                if validated.iter().any(|e| e == &hw_name) {
+                    hw_name
+                } else {
+                    tracing::info!(
+                        encoder = %hw_name,
+                        "HW encoder not available on this device, \
+                         falling back to software"
+                    );
+                    software_encoder(codec).to_string()
+                }
+            } else {
+                hw_name
+            }
         } else {
             software_encoder(codec).to_string()
         }
@@ -156,7 +199,10 @@ pub fn config_from_backend_name(name: &str) -> HwAccelConfig {
         "videotoolbox" => Some(HwAccelBackend::Videotoolbox),
         _ => None,
     };
-    HwAccelConfig { backend }
+    HwAccelConfig {
+        backend,
+        validated_encoders: None,
+    }
 }
 
 /// Map a codec name to the `FFmpeg` software encoder name.
@@ -198,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_hwaccel_config_disabled() {
-        let config = HwAccelConfig { backend: None };
+        let config = HwAccelConfig::new();
         // When disabled, should return software encoder names
         assert_eq!(config.encoder_name("hevc"), "libx265");
         assert_eq!(config.encoder_name("h264"), "libx264");
@@ -208,9 +254,7 @@ mod tests {
 
     #[test]
     fn test_encoder_name_with_nvenc() {
-        let config = HwAccelConfig {
-            backend: Some(HwAccelBackend::Nvenc),
-        };
+        let config = HwAccelConfig::with_backend(HwAccelBackend::Nvenc);
         assert_eq!(config.encoder_name("hevc"), "hevc_nvenc");
         assert_eq!(config.encoder_name("h265"), "hevc_nvenc");
         assert_eq!(config.encoder_name("h264"), "h264_nvenc");
@@ -225,9 +269,7 @@ mod tests {
 
     #[test]
     fn test_encoder_name_with_qsv() {
-        let config = HwAccelConfig {
-            backend: Some(HwAccelBackend::Qsv),
-        };
+        let config = HwAccelConfig::with_backend(HwAccelBackend::Qsv);
         assert_eq!(config.encoder_name("h264"), "h264_qsv");
         assert_eq!(config.encoder_name("hevc"), "hevc_qsv");
         assert_eq!(config.encoder_name("av1"), "av1_qsv");
@@ -237,9 +279,7 @@ mod tests {
 
     #[test]
     fn test_encoder_name_with_vaapi() {
-        let config = HwAccelConfig {
-            backend: Some(HwAccelBackend::Vaapi),
-        };
+        let config = HwAccelConfig::with_backend(HwAccelBackend::Vaapi);
         assert_eq!(config.encoder_name("hevc"), "hevc_vaapi");
         assert_eq!(config.encoder_name("h264"), "h264_vaapi");
         assert_eq!(config.input_args(), vec!["-hwaccel", "vaapi"]);
@@ -247,9 +287,7 @@ mod tests {
 
     #[test]
     fn test_encoder_name_with_videotoolbox() {
-        let config = HwAccelConfig {
-            backend: Some(HwAccelBackend::Videotoolbox),
-        };
+        let config = HwAccelConfig::with_backend(HwAccelBackend::Videotoolbox);
         assert_eq!(config.encoder_name("hevc"), "hevc_videotoolbox");
         assert_eq!(config.encoder_name("h264"), "h264_videotoolbox");
         // AV1 not supported by VideoToolbox, falls back
@@ -259,7 +297,7 @@ mod tests {
 
     #[test]
     fn test_no_backend() {
-        let config = HwAccelConfig { backend: None };
+        let config = HwAccelConfig::new();
         assert_eq!(config.encoder_name("hevc"), "libx265");
         assert!(config.input_args().is_empty());
     }
@@ -269,5 +307,23 @@ mod tests {
         let config = HwAccelConfig::default();
         assert!(config.backend.is_none());
         assert!(!config.enabled());
+    }
+
+    #[test]
+    fn test_validated_encoders_fallback() {
+        // NVENC backend detected, but only h264_nvenc and hevc_nvenc validated
+        let config = HwAccelConfig::with_backend(HwAccelBackend::Nvenc)
+            .with_validated_encoders(vec!["h264_nvenc".into(), "hevc_nvenc".into()]);
+        assert_eq!(config.encoder_name("h264"), "h264_nvenc");
+        assert_eq!(config.encoder_name("hevc"), "hevc_nvenc");
+        // av1_nvenc NOT validated — should fall back to software
+        assert_eq!(config.encoder_name("av1"), "libsvtav1");
+    }
+
+    #[test]
+    fn test_unvalidated_trusts_all() {
+        // No validation performed — all HW encoders trusted (backward compat)
+        let config = HwAccelConfig::with_backend(HwAccelBackend::Nvenc);
+        assert_eq!(config.encoder_name("av1"), "av1_nvenc");
     }
 }

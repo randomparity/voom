@@ -858,9 +858,7 @@ mod tests {
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
 
-        let hw = HwAccelConfig {
-            backend: Some(crate::hwaccel::HwAccelBackend::Nvenc),
-        };
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Nvenc);
         let args = build_ffmpeg_command(&file, &actions, output, Some(&hw)).unwrap();
 
         // No -hwaccel flag (HW decode not emitted; encoding-only)
@@ -1001,9 +999,7 @@ mod tests {
         let output = Path::new("/tmp/output.mp4");
 
         // Even with hw_accel config available, hw: "none" forces software
-        let hw = HwAccelConfig {
-            backend: Some(crate::hwaccel::HwAccelBackend::Nvenc),
-        };
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Nvenc);
         let args = build_ffmpeg_command(&file, &actions, output, Some(&hw)).unwrap();
         assert!(
             args.contains(&"libx265".to_string()),
@@ -1091,9 +1087,7 @@ mod tests {
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
-        let hw = HwAccelConfig {
-            backend: Some(crate::hwaccel::HwAccelBackend::Nvenc),
-        };
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Nvenc);
 
         let args = build_ffmpeg_command(&file, &actions, output, Some(&hw)).unwrap();
         // No -hwaccel flag (HW decode not emitted)
@@ -1151,9 +1145,7 @@ mod tests {
         );
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mp4");
-        let hw = HwAccelConfig {
-            backend: Some(crate::hwaccel::HwAccelBackend::Nvenc),
-        };
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Nvenc);
 
         let args = build_ffmpeg_command(&file, &actions, output, Some(&hw)).unwrap();
         // No -hwaccel flag even with global config (HW decode not emitted)
