@@ -119,10 +119,14 @@ impl Plugin for FfprobeIntrospectorPlugin {
     }
 
     fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
-        // Parse ffprobe path from plugin config if provided
-        if let Ok(config) = ctx.parse_config::<serde_json::Value>() {
-            if let Some(path) = config.get("ffprobe_path").and_then(|v| v.as_str()) {
-                self.ffprobe_path = path.to_string();
+        match ctx.parse_config::<serde_json::Value>() {
+            Ok(config) => {
+                if let Some(path) = config.get("ffprobe_path").and_then(|v| v.as_str()) {
+                    self.ffprobe_path = path.to_string();
+                }
+            }
+            Err(e) => {
+                tracing::warn!("ffprobe-introspector config parse failed, using defaults: {e}");
             }
         }
 

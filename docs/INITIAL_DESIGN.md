@@ -1012,7 +1012,7 @@ Source text (.voom file)
 | `sonarr-metadata` | `EnrichMetadata { source: "sonarr" }` | Sonarr API (via host HTTP) | Rust→WASM |
 | `whisper-transcriber` | `Transcribe` | Whisper (via host tool runner) | Rust→WASM |
 | `audio-synthesizer` | `Synthesize` | ffmpeg (via host tool runner) | Rust→WASM |
-| `tvdb-metadata` | `EnrichMetadata { source: "tvdb" }` | TVDB API (via host HTTP) | Rust→WASM |
+| `tvdb-metadata` | `EnrichMetadata { source: "tvdb" }` | TVDB API (via host HTTP) | Python→WASM |
 
 ### 7.3 Example future community plugins
 

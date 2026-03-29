@@ -147,7 +147,7 @@ pub enum Capability {
     DetectTools,
     ManageJobs,
     ServeHttp,
-    Orchestrate,
+    Plan,
     Backup,
     EnrichMetadata { source: String },        // e.g., "radarr", "sonarr"
     Transcribe,
