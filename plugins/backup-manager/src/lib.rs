@@ -249,7 +249,13 @@ impl Plugin for BackupManagerPlugin {
                 }))))
             }
             Event::PlanCompleted(evt) => {
-                if self.has_backup(&evt.path)? {
+                if evt.keep_backups {
+                    tracing::info!(
+                        path = %evt.path.display(),
+                        "keeping backup per policy"
+                    );
+                    Ok(None)
+                } else if self.has_backup(&evt.path)? {
                     tracing::info!(
                         path = %evt.path.display(),
                         phase = %evt.phase_name,
@@ -547,6 +553,7 @@ mod tests {
             file_path.clone(),
             "normalize",
             3,
+            false,
         ));
 
         let result = plugin.on_event(&event).unwrap();
@@ -555,6 +562,42 @@ mod tests {
         assert_eq!(result.plugin_name, "backup-manager");
         assert!(!plugin.has_backup(&file_path).unwrap());
         assert!(!record.backup_path.exists());
+    }
+
+    #[test]
+    fn test_on_event_plan_completed_keeps_backup_when_requested() {
+        use voom_domain::events::PlanCompletedEvent;
+
+        let dir = TempDir::new().unwrap();
+        let file_path = create_test_file(dir.path(), "movie.mkv", b"movie data");
+
+        let config = BackupConfig {
+            backup_dir: Some(dir.path().join("backups")),
+            use_global_dir: true,
+            min_free_space: 0,
+        };
+        let plugin = BackupManagerPlugin::from_config(config);
+
+        // Create a backup first
+        let record = plugin.backup_file(&file_path).unwrap();
+        assert!(record.backup_path.exists());
+        assert!(plugin.has_backup(&file_path).unwrap());
+
+        // Simulate plan.completed with keep_backups=true
+        let event = Event::PlanCompleted(PlanCompletedEvent::new(
+            uuid::Uuid::new_v4(),
+            file_path.clone(),
+            "normalize",
+            3,
+            true,
+        ));
+
+        let result = plugin.on_event(&event).unwrap();
+        // Should return None (no action taken)
+        assert!(result.is_none());
+        // Backup should still exist
+        assert!(plugin.has_backup(&file_path).unwrap());
+        assert!(record.backup_path.exists());
     }
 
     #[test]

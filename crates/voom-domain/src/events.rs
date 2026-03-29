@@ -296,6 +296,10 @@ pub struct PlanCompletedEvent {
     pub path: PathBuf,
     pub phase_name: String,
     pub actions_applied: usize,
+    /// When `true`, the backup-manager should retain the `.vbak` file
+    /// instead of deleting it on completion.
+    #[serde(default)]
+    pub keep_backups: bool,
 }
 
 impl PlanCompletedEvent {
@@ -305,12 +309,14 @@ impl PlanCompletedEvent {
         path: PathBuf,
         phase_name: impl Into<String>,
         actions_applied: usize,
+        keep_backups: bool,
     ) -> Self {
         Self {
             plan_id,
             path,
             phase_name: phase_name.into(),
             actions_applied,
+            keep_backups,
         }
     }
 }

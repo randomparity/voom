@@ -597,14 +597,14 @@ async fn execute_plans(
                         phase = %plan.phase_name,
                         "keeping backup per policy"
                     );
-                } else {
-                    kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
-                        plan.id,
-                        file.path.clone(),
-                        plan.phase_name.clone(),
-                        plan.actions.len(),
-                    )));
                 }
+                kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
+                    plan.id,
+                    file.path.clone(),
+                    plan.phase_name.clone(),
+                    plan.actions.len(),
+                    keep_backups,
+                )));
                 record_phase_stat(phase_stats, &plan.phase_name, PhaseOutcomeKind::Completed);
             }
             PlanOutcome::Failed(failed) => {
