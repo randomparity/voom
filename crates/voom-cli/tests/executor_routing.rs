@@ -6,24 +6,34 @@
 //! their production priorities.
 
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 
 use voom_domain::events::{Event, PlanCreatedEvent};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
-use voom_kernel::Kernel;
+use voom_kernel::{Kernel, PluginContext};
+
+fn mkvmerge_available() -> bool {
+    Command::new("mkvmerge")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
 
 fn make_kernel_with_both_executors() -> Kernel {
     let mut kernel = Kernel::new();
-    // Register mkvtoolnix at priority 39 (same as production)
-    kernel.register_plugin(
+    let ctx = PluginContext::new(serde_json::json!({}), std::env::temp_dir());
+    // init_and_register probes for tools and sets availability
+    let _ = kernel.init_and_register(
         Arc::new(voom_mkvtoolnix_executor::MkvtoolnixExecutorPlugin::new()),
         39,
+        &ctx,
     );
-    // Register ffmpeg at priority 40 (same as production)
-    kernel.register_plugin(
+    let _ = kernel.init_and_register(
         Arc::new(voom_ffmpeg_executor::FfmpegExecutorPlugin::new()),
         40,
+        &ctx,
     );
     kernel
 }
@@ -88,6 +98,10 @@ fn test_transcode_routes_to_ffmpeg() {
 /// MKV metadata-only plans should route to mkvtoolnix-executor.
 #[test]
 fn test_mkv_metadata_routes_to_mkvtoolnix() {
+    if !mkvmerge_available() {
+        eprintln!("skipping: mkvmerge not found on PATH");
+        return;
+    }
     let kernel = make_kernel_with_both_executors();
 
     let plan = make_plan(
@@ -134,6 +148,10 @@ fn test_non_mkv_metadata_routes_to_ffmpeg() {
 /// `ConvertContainer` to MKV should route to mkvtoolnix (higher priority, can handle).
 #[test]
 fn test_convert_to_mkv_routes_to_mkvtoolnix() {
+    if !mkvmerge_available() {
+        eprintln!("skipping: mkvmerge not found on PATH");
+        return;
+    }
     let kernel = make_kernel_with_both_executors();
 
     let plan = make_plan(
