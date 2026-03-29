@@ -71,6 +71,20 @@ pub fn run() -> Result<()> {
     // 4. Create default config if missing
     if !config_path.exists() {
         let contents = config::default_config_contents();
+
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&config_path)
+                .and_then(|mut f| f.write_all(contents.as_bytes()))?;
+        }
+        #[cfg(not(unix))]
         std::fs::write(&config_path, &contents)?;
         println!(
             "  {} Created {}",
