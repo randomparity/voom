@@ -5,9 +5,8 @@
 //! When `FileDiscovered` events are dispatched through the kernel:
 //! 1. sqlite-store persists the discovered file in the staging table
 //! 2. ffprobe-introspector enqueues a `JobType::Introspect` job
-//! 3. The CLI processes these jobs via `process_introspection_job`
 //!
-//! The CLI still drives introspection directly (not via the event bus) for
+//! The CLI drives introspection directly (not via the event bus) for
 //! deterministic progress reporting and concurrency control, but the event
 //! dispatch ensures all subscribers are notified.
 

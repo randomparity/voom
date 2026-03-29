@@ -45,7 +45,7 @@ pub struct DiscoveredFile {
     pub id: Uuid,
     pub path: String,
     pub size: u64,
-    pub content_hash: String,
+    pub content_hash: Option<String>,
     pub status: DiscoveredStatus,
     pub discovered_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -136,7 +136,14 @@ impl SqliteStore {
                     id,
                     path: row.get("path")?,
                     size: row.get::<_, i64>("size")? as u64,
-                    content_hash: row.get("content_hash")?,
+                    content_hash: {
+                        let h: String = row.get("content_hash")?;
+                        if h.is_empty() {
+                            None
+                        } else {
+                            Some(h)
+                        }
+                    },
                     status: DiscoveredStatus::parse(&status_str).ok_or_else(|| {
                         rusqlite::Error::FromSqlConversionFailure(
                             0,
@@ -210,7 +217,7 @@ mod tests {
         let files = store.list_discovered_files(None).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].size, 2048);
-        assert_eq!(files[0].content_hash, "def");
+        assert_eq!(files[0].content_hash.as_deref(), Some("def"));
     }
 
     #[test]
@@ -273,5 +280,17 @@ mod tests {
             .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].path, "/media/b.mkv");
+    }
+
+    #[test]
+    fn test_upsert_with_no_hash_round_trips_as_none() {
+        let store = test_store();
+        store
+            .upsert_discovered_file("/media/no-hash.mkv", 512, None)
+            .unwrap();
+
+        let files = store.list_discovered_files(None).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].content_hash.is_none());
     }
 }
