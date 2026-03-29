@@ -25,7 +25,7 @@ fn make_server(store: InMemoryStore) -> TestServer {
 
 fn make_server_with_auth(store: InMemoryStore, auth_token: Option<String>) -> TestServer {
     let store = Arc::new(store);
-    let templates = voom_web_server::server::embedded_templates();
+    let templates = voom_web_server::server::embedded_templates().unwrap();
     let state = voom_web_server::state::AppState::new(store, templates, auth_token);
     let router = voom_web_server::router::build_router(state);
     TestServer::new(router).unwrap()
@@ -172,7 +172,7 @@ async fn test_list_plugins_empty_by_default() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_list_plugins_with_data() {
     let store = Arc::new(InMemoryStore::new());
-    let templates = voom_web_server::server::embedded_templates();
+    let templates = voom_web_server::server::embedded_templates().unwrap();
     let plugin_info = vec![voom_web_server::api::plugins::PluginInfoResponse::new(
         "test-plugin".into(),
         "0.1.0".into(),
@@ -462,7 +462,7 @@ async fn test_format_oversized_policy_returns_error() {
 async fn test_sse_client_limit_enforced() {
     use std::sync::atomic::Ordering;
     let store = Arc::new(InMemoryStore::new());
-    let templates = voom_web_server::server::embedded_templates();
+    let templates = voom_web_server::server::embedded_templates().unwrap();
     let state = voom_web_server::state::AppState::new(store, templates, None);
     // Simulate 64 clients already connected
     state.sse_client_count.store(64, Ordering::Relaxed);
@@ -476,7 +476,7 @@ async fn test_sse_client_limit_enforced() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_request_id_header_present() {
     let store = Arc::new(InMemoryStore::new());
-    let templates = voom_web_server::server::embedded_templates();
+    let templates = voom_web_server::server::embedded_templates().unwrap();
     let state = voom_web_server::state::AppState::new(store, templates, None);
     let router = voom_web_server::router::build_router(state);
     let server = TestServer::new(router).unwrap();
@@ -497,7 +497,7 @@ async fn test_request_id_header_present() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_request_id_unique_per_request() {
     let store = Arc::new(InMemoryStore::new());
-    let templates = voom_web_server::server::embedded_templates();
+    let templates = voom_web_server::server::embedded_templates().unwrap();
     let state = voom_web_server::state::AppState::new(store, templates, None);
     let router = voom_web_server::router::build_router(state);
     let server = TestServer::new(router).unwrap();

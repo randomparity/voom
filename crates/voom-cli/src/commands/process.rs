@@ -15,7 +15,7 @@ use voom_domain::events::{
     PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
 };
 use voom_job_manager::progress::{CompositeReporter, ProgressReporter};
-use voom_job_manager::worker::{ErrorStrategy, WorkerPool, WorkerPoolConfig};
+use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 
 /// Run the process command.
 ///
@@ -43,7 +43,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         kernel,
         store,
         collector,
-        ..
+        job_queue,
     } = app::bootstrap_kernel_with_store(&config)?;
     let kernel = Arc::new(kernel);
     let capabilities = Arc::new(collector.snapshot());
@@ -106,8 +106,8 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     println!("Found {} media files.", style(file_count).bold());
 
     let on_error = match args.on_error {
-        ErrorHandling::Fail => ErrorStrategy::Fail,
-        ErrorHandling::Continue => ErrorStrategy::Continue,
+        ErrorHandling::Fail => JobErrorStrategy::Fail,
+        ErrorHandling::Continue => JobErrorStrategy::Continue,
     };
 
     if token.is_cancelled() {
@@ -115,7 +115,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         return Ok(());
     }
 
-    let (pool, effective_workers) = create_worker_pool(&store, &args, token.clone())?;
+    let (pool, effective_workers) = create_worker_pool(job_queue, &args, token.clone())?;
 
     let cli_reporter: Arc<dyn ProgressReporter> = Arc::new(CliProgressReporter::new(file_count));
     let bus_reporter: Arc<dyn ProgressReporter> = Arc::new(EventBusReporter::new(kernel.clone()));
@@ -244,14 +244,12 @@ fn build_work_items(
         .collect()
 }
 
-/// Set up the job queue and worker pool.
+/// Set up the worker pool using the provided job queue.
 fn create_worker_pool(
-    store: &Arc<dyn voom_domain::storage::StorageTrait>,
+    queue: Arc<voom_job_manager::queue::JobQueue>,
     args: &ProcessArgs,
     token: CancellationToken,
 ) -> Result<(WorkerPool, usize)> {
-    let queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
-
     let mut config = WorkerPoolConfig::default();
     config.max_workers = args.workers;
     config.worker_prefix = "voom".to_string();

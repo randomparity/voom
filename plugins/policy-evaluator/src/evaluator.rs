@@ -137,7 +137,7 @@ fn evaluate_phase(
         }
     }
 
-    validate_plan(&mut plan, file);
+    apply_safeguards(&mut plan, file);
 
     plan
 }
@@ -146,7 +146,7 @@ fn evaluate_phase(
 /// are not entirely removed across all operations in the plan. This catches
 /// multi-operation scenarios where individual keep/remove operations each
 /// leave some tracks, but the combination removes all.
-fn validate_plan(plan: &mut Plan, file: &MediaFile) {
+fn apply_safeguards(plan: &mut Plan, file: &MediaFile) {
     if plan.is_skipped() {
         return;
     }
@@ -164,7 +164,7 @@ fn validate_plan(plan: &mut Plan, file: &MediaFile) {
 
     let filename = file_name(file);
 
-    validate_track_type(
+    apply_safeguard_for_track_type(
         plan,
         file,
         &removed_indices,
@@ -173,7 +173,7 @@ fn validate_plan(plan: &mut Plan, file: &MediaFile) {
         SafeguardKind::NoVideoTrack,
         "video",
     );
-    validate_track_type(
+    apply_safeguard_for_track_type(
         plan,
         file,
         &removed_indices,
@@ -184,7 +184,7 @@ fn validate_plan(plan: &mut Plan, file: &MediaFile) {
     );
 }
 
-fn validate_track_type(
+fn apply_safeguard_for_track_type(
     plan: &mut Plan,
     file: &MediaFile,
     removed_indices: &HashSet<u32>,
@@ -871,7 +871,7 @@ fn target_str(target: &TrackTarget) -> &'static str {
 ///
 /// Skips validation entirely when the capability map is empty (no
 /// executors reported capabilities).
-pub(crate) fn validate_against_capabilities(plans: &mut [Plan], capabilities: &CapabilityMap) {
+pub(crate) fn apply_capability_hints(plans: &mut [Plan], capabilities: &CapabilityMap) {
     if capabilities.is_empty() {
         return;
     }
@@ -1677,7 +1677,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_plan_no_safeguard_when_tracks_survive() {
+    fn test_apply_safeguards_no_safeguard_when_tracks_survive() {
         let file = test_file();
         // keep audio where lang in [eng] — track 1 (eng) and track 3 (eng commentary) kept
         // track 2 (jpn) removed. Multiple tracks survive, no safeguard.
@@ -1692,7 +1692,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_plan_retracts_when_all_video_removed() {
+    fn test_apply_safeguards_retracts_when_all_video_removed() {
         // File with one video track — removing it should trigger safeguard
         let mut file = test_file();
         file.tracks[0] = {
@@ -1709,7 +1709,7 @@ mod tests {
         );
         let result = evaluate(&policy, &file);
         let plan = &result.plans[0];
-        // validate_plan should catch this since emit_remove doesn't guard video
+        // apply_safeguards should catch this since emit_remove doesn't guard video
         // (emit_remove guards audio/video at the per-operation level)
         let removes: Vec<_> = plan
             .actions
@@ -1755,7 +1755,7 @@ mod tests {
             );
             let mut result = evaluate(&policy, &file);
             let caps = ffmpeg_capabilities();
-            validate_against_capabilities(&mut result.plans, &caps);
+            apply_capability_hints(&mut result.plans, &caps);
 
             assert!(
                 result.plans[0].warnings.iter().any(|w| w.contains("opus")),
@@ -1775,7 +1775,7 @@ mod tests {
             );
             let mut result = evaluate(&policy, &file);
             let caps = ffmpeg_capabilities();
-            validate_against_capabilities(&mut result.plans, &caps);
+            apply_capability_hints(&mut result.plans, &caps);
 
             assert!(
                 !result.plans[0]
@@ -1792,7 +1792,7 @@ mod tests {
             let policy = test_policy(r#"policy "test" { phase init { container webm } }"#);
             let mut result = evaluate(&policy, &file);
             let caps = ffmpeg_capabilities();
-            validate_against_capabilities(&mut result.plans, &caps);
+            apply_capability_hints(&mut result.plans, &caps);
 
             assert!(
                 result.plans[0]
@@ -1819,7 +1819,7 @@ mod tests {
             );
             let mut result = evaluate(&policy, &file);
             let caps = ffmpeg_capabilities();
-            validate_against_capabilities(&mut result.plans, &caps);
+            apply_capability_hints(&mut result.plans, &caps);
 
             assert!(
                 result.plans[0].warnings.iter().any(|w| w.contains("opus")),
@@ -1842,7 +1842,7 @@ mod tests {
 
             // Use an empty capability map — would cause warnings if validation ran
             let caps = CapabilityMap::new();
-            validate_against_capabilities(&mut result.plans, &caps);
+            apply_capability_hints(&mut result.plans, &caps);
             assert!(result.plans[0].warnings.is_empty());
         }
 
@@ -1856,7 +1856,7 @@ mod tests {
             assert!(!result.plans[0].is_empty());
 
             let caps = CapabilityMap::new();
-            validate_against_capabilities(&mut result.plans, &caps);
+            apply_capability_hints(&mut result.plans, &caps);
 
             assert!(
                 !result.plans[0]
@@ -1878,7 +1878,7 @@ mod tests {
             );
             let mut result = evaluate(&policy, &file);
             let caps = ffmpeg_capabilities();
-            validate_against_capabilities(&mut result.plans, &caps);
+            apply_capability_hints(&mut result.plans, &caps);
 
             assert_eq!(
                 result.plans[0].executor_hint.as_deref(),
@@ -1898,7 +1898,7 @@ mod tests {
             file.container = Container::Mp4;
             let mut result2 = evaluate(&policy, &file);
             let caps = ffmpeg_capabilities();
-            validate_against_capabilities(&mut result2.plans, &caps);
+            apply_capability_hints(&mut result2.plans, &caps);
             // ffmpeg_capabilities includes "matroska", and Container::Mkv
             // maps to "matroska" via ffmpeg_format_name(), so no warning
             assert!(
@@ -1937,7 +1937,7 @@ mod tests {
                 vec![],
                 vec![],
             ));
-            validate_against_capabilities(&mut result.plans, &caps);
+            apply_capability_hints(&mut result.plans, &caps);
 
             assert!(
                 result.plans[0].executor_hint.is_none(),

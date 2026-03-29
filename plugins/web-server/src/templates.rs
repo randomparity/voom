@@ -209,7 +209,7 @@ mod tests {
     use super::*;
 
     fn make_tera() -> tera::Tera {
-        crate::server::embedded_templates()
+        crate::server::embedded_templates().unwrap()
     }
 
     fn test_nonce() -> CspNonce {

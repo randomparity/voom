@@ -37,7 +37,7 @@ fn format_eta(elapsed: Duration, current: usize, total: usize) -> String {
 ///
 /// Discovery and introspection are driven directly for deterministic progress
 /// reporting, but all events are also published through the kernel's event bus
-/// so that subscribers (sqlite-store, SSE, WASM plugins) receive them.
+/// so that subscribers (sqlite-store, WASM plugins) receive them.
 pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     let config = config::load_config()?;
     let app::BootstrapResult { kernel, store, .. } = app::bootstrap_kernel_with_store(&config)?;

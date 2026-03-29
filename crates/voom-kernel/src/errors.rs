@@ -24,6 +24,9 @@ pub enum WasmLoadError {
     ComponentCompilation { path: String, message: String },
 
     /// Failed to configure the wasmtime engine.
+    ///
+    /// Stores the wasmtime error as a string because `wasmtime::Error`
+    /// wraps `anyhow::Error` which does not implement `std::error::Error`.
     #[error("failed to create WASM engine: {0}")]
     EngineCreation(String),
 

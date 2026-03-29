@@ -40,8 +40,7 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     let health_config: voom_health_checker::HealthCheckerConfig = config
         .plugin
         .get("health-checker")
-        .and_then(|t| serde_json::to_value(t).ok())
-        .and_then(|v| serde_json::from_value(v).ok())
+        .and_then(|t| t.clone().try_into().ok())
         .unwrap_or_default();
 
     let health_interval = health_config.interval_secs;

@@ -52,29 +52,20 @@ pub struct ApiError {
 }
 
 /// Web server error type.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum WebError {
+    #[error("not found: {0}")]
     NotFound(String),
+    #[error("bad request: {0}")]
     BadRequest(String),
     /// A constraint was violated (e.g. duplicate unique key). Maps to HTTP 409.
+    #[error("conflict: {0}")]
     Conflict(String),
+    #[error("internal error: {0}")]
     Internal(String),
+    #[error("storage error: {0}")]
     Storage(String),
 }
-
-impl std::fmt::Display for WebError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            WebError::NotFound(msg) => write!(f, "not found: {msg}"),
-            WebError::BadRequest(msg) => write!(f, "bad request: {msg}"),
-            WebError::Conflict(msg) => write!(f, "conflict: {msg}"),
-            WebError::Internal(msg) => write!(f, "internal error: {msg}"),
-            WebError::Storage(msg) => write!(f, "storage error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for WebError {}
 
 impl IntoResponse for WebError {
     fn into_response(self) -> Response {

@@ -26,19 +26,13 @@ impl DiscoveredStatus {
         }
     }
 
-    fn from_str(s: &str) -> Self {
+    fn parse(s: &str) -> Option<Self> {
         match s {
-            "pending" => Self::Pending,
-            "introspecting" => Self::Introspecting,
-            "completed" => Self::Completed,
-            "failed" => Self::Failed,
-            other => {
-                tracing::warn!(
-                    status = other,
-                    "unknown discovered file status, defaulting to Pending"
-                );
-                Self::Pending
-            }
+            "pending" => Some(Self::Pending),
+            "introspecting" => Some(Self::Introspecting),
+            "completed" => Some(Self::Completed),
+            "failed" => Some(Self::Failed),
+            _ => None,
         }
     }
 }
@@ -133,7 +127,13 @@ impl SqliteStore {
                     path: row.get("path")?,
                     size: row.get::<_, i64>("size")? as u64,
                     content_hash: row.get("content_hash")?,
-                    status: DiscoveredStatus::from_str(&status_str),
+                    status: DiscoveredStatus::parse(&status_str).ok_or_else(|| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            format!("unknown discovered file status: {status_str}").into(),
+                        )
+                    })?,
                     discovered_at: row.get("discovered_at")?,
                     updated_at: row.get("updated_at")?,
                 })

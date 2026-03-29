@@ -21,6 +21,17 @@ pub mod wasm {
     /// A loaded plugin paired with its manifest-declared priority.
     pub type PluginWithPriority = (Arc<dyn Plugin>, i32);
 
+    /// Derive the plugin name from its manifest (if present) or the WASM file stem.
+    fn plugin_name_from_manifest(manifest: Option<&PluginManifest>, wasm_path: &Path) -> String {
+        manifest.map(|m| m.name.clone()).unwrap_or_else(|| {
+            wasm_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        })
+    }
+
     /// Loads WASM component plugins from `.wasm` files.
     ///
     /// The loader compiles WASM components and instantiates them with host
@@ -101,16 +112,7 @@ pub mod wasm {
             register_host_functions(&mut linker)
                 .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-            let plugin_name = manifest
-                .as_ref()
-                .map(|m| m.name.clone())
-                .unwrap_or_else(|| {
-                    wasm_path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown")
-                        .to_string()
-                });
+            let plugin_name = plugin_name_from_manifest(manifest.as_ref(), wasm_path);
 
             let mut state = host_state.unwrap_or_else(|| HostState::new(plugin_name.clone()));
 
@@ -232,16 +234,8 @@ pub mod wasm {
                         Err(e) => return Some(Err(e)),
                     };
 
-                    let plugin_name = manifest
-                        .as_ref()
-                        .map(|m| m.name.clone())
-                        .unwrap_or_else(|| {
-                            wasm_path
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("unknown")
-                                .to_string()
-                        });
+                    let plugin_name =
+                        plugin_name_from_manifest(manifest.as_ref(), &wasm_path);
 
                     if skip_plugins.contains(&plugin_name) {
                         tracing::info!(plugin = %plugin_name, "WASM plugin disabled, skipping load");
@@ -398,18 +392,12 @@ pub mod wasm {
 
         let instance = inner.instance.as_ref().unwrap();
 
-        // Try the namespaced interface first, then fall back to a bare export
-        // for simpler single-interface components.
+        // Try the namespaced @0.2.0 interface first, then fall back to a bare
+        // export for simpler single-interface components.
         let on_event = instance
             .get_export(&mut inner.store, None, "voom:plugin/plugin@0.2.0")
             .and_then(|idx| instance.get_export(&mut inner.store, Some(&idx), "on-event"))
             .and_then(|idx| instance.get_func(&mut inner.store, idx))
-            .or_else(|| {
-                instance
-                    .get_export(&mut inner.store, None, "voom:plugin/plugin@0.1.0")
-                    .and_then(|idx| instance.get_export(&mut inner.store, Some(&idx), "on-event"))
-                    .and_then(|idx| instance.get_func(&mut inner.store, idx))
-            })
             .or_else(|| {
                 let idx = instance.get_export(&mut inner.store, None, "on-event")?;
                 instance.get_func(&mut inner.store, idx)

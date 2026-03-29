@@ -172,7 +172,7 @@ pub fn capability_to_wit(cap: &Capability) -> String {
         Capability::Transcribe => "transcribe".to_string(),
         Capability::Synthesize => "synthesize".to_string(),
         Capability::HealthCheck => "health_check".to_string(),
-        _ => unreachable!("all Capability variants must be handled"),
+        other => other.kind().to_string(),
     }
 }
 

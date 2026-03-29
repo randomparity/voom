@@ -51,18 +51,9 @@ impl HwAccelConfig {
             .map(|s| s.to_ascii_lowercase())
             .collect::<Vec<_>>()
             .join(" ");
-        let backend = if text.contains("cuda") || text.contains("nvdec") {
-            Some(HwAccelBackend::Nvenc)
-        } else if text.contains("qsv") {
-            Some(HwAccelBackend::Qsv)
-        } else if text.contains("vaapi") {
-            Some(HwAccelBackend::Vaapi)
-        } else if text.contains("videotoolbox") {
-            Some(HwAccelBackend::Videotoolbox)
-        } else {
-            None
-        };
-        Self { backend }
+        Self {
+            backend: detect_backend_from_text(&text),
+        }
     }
 
     /// Get the `FFmpeg` encoder name for a codec with this HW backend.
@@ -129,21 +120,21 @@ impl HwAccelConfig {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let text = stdout.to_ascii_lowercase();
+        detect_backend_from_text(&text)
+    }
+}
 
-        // Check in order of preference
-        if text.contains("cuda") || text.contains("nvdec") {
-            return Some(HwAccelBackend::Nvenc);
-        }
-        if text.contains("qsv") {
-            return Some(HwAccelBackend::Qsv);
-        }
-        if text.contains("vaapi") {
-            return Some(HwAccelBackend::Vaapi);
-        }
-        if text.contains("videotoolbox") {
-            return Some(HwAccelBackend::Videotoolbox);
-        }
-
+/// Match lowercased hwaccel text to a backend in priority order.
+fn detect_backend_from_text(text: &str) -> Option<HwAccelBackend> {
+    if text.contains("cuda") || text.contains("nvdec") {
+        Some(HwAccelBackend::Nvenc)
+    } else if text.contains("qsv") {
+        Some(HwAccelBackend::Qsv)
+    } else if text.contains("vaapi") {
+        Some(HwAccelBackend::Vaapi)
+    } else if text.contains("videotoolbox") {
+        Some(HwAccelBackend::Videotoolbox)
+    } else {
         None
     }
 }
