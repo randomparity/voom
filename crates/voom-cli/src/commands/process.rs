@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use console::style;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{HumanDuration, MultiProgress, ProgressBar, ProgressStyle};
 use parking_lot::Mutex;
 
 use tokio_util::sync::CancellationToken;
@@ -918,6 +919,8 @@ impl ProgressReporter for EventBusReporter {
 struct CliProgressReporter {
     _multi: MultiProgress,
     overall: ProgressBar,
+    start: Instant,
+    total: u64,
 }
 
 impl CliProgressReporter {
@@ -926,7 +929,7 @@ impl CliProgressReporter {
         let overall = multi.add(ProgressBar::new(total as u64));
         overall.set_style(
             ProgressStyle::with_template(
-                "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) ETA {eta} {msg}",
+                "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}",
             )
             .expect("valid progress template")
             .progress_chars("#>-"),
@@ -935,6 +938,26 @@ impl CliProgressReporter {
         Self {
             _multi: multi,
             overall,
+            start: Instant::now(),
+            total: total as u64,
+        }
+    }
+
+    fn format_eta(&self) -> String {
+        let pos = self.overall.position();
+        if pos == 0 {
+            return String::new();
+        }
+        let elapsed = self.start.elapsed().as_secs_f64();
+        let rate = pos as f64 / elapsed;
+        let remaining = (self.total - pos) as f64 / rate;
+        if remaining.is_finite() && remaining > 0.0 {
+            format!(
+                "ETA {}",
+                HumanDuration(std::time::Duration::from_secs(remaining as u64))
+            )
+        } else {
+            String::new()
         }
     }
 }
@@ -945,12 +968,19 @@ impl ProgressReporter for CliProgressReporter {
     fn on_job_start(&self, job: &voom_domain::job::Job) {
         if let Some(ref raw) = job.payload {
             if let Ok(payload) = serde_json::from_value::<DiscoveredFilePayload>(raw.clone()) {
-                let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + 13);
+                let eta = self.format_eta();
+                let eta_suffix = if eta.is_empty() {
+                    String::new()
+                } else {
+                    format!("{eta} ")
+                };
+                let overhead = PROGRESS_FIXED_WIDTH + 13 + eta_suffix.len();
+                let max_name = max_filename_len(overhead);
                 let filename = std::path::Path::new(&payload.path)
                     .file_name()
                     .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
                     .unwrap_or_default();
-                self.overall.set_message(filename);
+                self.overall.set_message(format!("{eta_suffix}{filename}"));
             }
         }
     }
