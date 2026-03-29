@@ -23,6 +23,9 @@ pub struct HwAccelConfig {
     /// encoders in the list are used; missing ones fall back to software.
     /// `None` means no validation was performed (all are trusted).
     validated_encoders: Option<Vec<String>>,
+    /// Target GPU/render device. NVIDIA: "0", "1", etc.
+    /// VA-API/QSV: "/dev/dri/renderD128", etc.
+    device: Option<String>,
 }
 
 impl HwAccelConfig {
@@ -32,6 +35,7 @@ impl HwAccelConfig {
         Self {
             backend: None,
             validated_encoders: None,
+            device: None,
         }
     }
 
@@ -41,6 +45,7 @@ impl HwAccelConfig {
         Self {
             backend: Some(backend),
             validated_encoders: None,
+            device: None,
         }
     }
 
@@ -56,6 +61,7 @@ impl HwAccelConfig {
         Self {
             backend: Self::detect_backend(),
             validated_encoders: None,
+            device: None,
         }
     }
 
@@ -71,6 +77,7 @@ impl HwAccelConfig {
         Self {
             backend: detect_backend_from_text(&text),
             validated_encoders: None,
+            device: None,
         }
     }
 
@@ -82,6 +89,55 @@ impl HwAccelConfig {
     pub fn with_validated_encoders(mut self, encoders: Vec<String>) -> Self {
         self.validated_encoders = Some(encoders);
         self
+    }
+
+    /// Set the target GPU/render device for HW encoding.
+    #[must_use]
+    pub fn with_device(mut self, device: Option<String>) -> Self {
+        self.device = device;
+        self
+    }
+
+    /// Get the configured device identifier, if any.
+    #[must_use]
+    pub fn device(&self) -> Option<&str> {
+        self.device.as_deref()
+    }
+
+    /// Return ffmpeg CLI args for device targeting.
+    ///
+    /// - Vaapi: `["-vaapi_device", "<path>"]`
+    /// - Qsv: `["-qsv_device", "<path>"]`
+    /// - Nvenc/VideoToolbox: `[]` (handled via env var or no targeting)
+    #[must_use]
+    pub fn device_args(&self) -> Vec<String> {
+        let device = match (&self.backend, &self.device) {
+            (Some(backend), Some(dev)) => (*backend, dev.as_str()),
+            _ => return Vec::new(),
+        };
+        match device {
+            (HwAccelBackend::Vaapi, path) => {
+                vec!["-vaapi_device".to_string(), path.to_string()]
+            }
+            (HwAccelBackend::Qsv, path) => {
+                vec!["-qsv_device".to_string(), path.to_string()]
+            }
+            (HwAccelBackend::Nvenc | HwAccelBackend::Videotoolbox, _) => Vec::new(),
+        }
+    }
+
+    /// Return an environment variable for device targeting in subprocess.
+    ///
+    /// - Nvenc: `Some(("CUDA_VISIBLE_DEVICES", "<id>"))`
+    /// - Others: `None`
+    #[must_use]
+    pub fn device_env(&self) -> Option<(&str, &str)> {
+        match (&self.backend, &self.device) {
+            (Some(HwAccelBackend::Nvenc), Some(dev)) => {
+                Some(("CUDA_VISIBLE_DEVICES", dev.as_str()))
+            }
+            _ => None,
+        }
     }
 
     /// Get the `FFmpeg` encoder name for a codec with this HW backend.
@@ -202,6 +258,7 @@ pub fn config_from_backend_name(name: &str) -> HwAccelConfig {
     HwAccelConfig {
         backend,
         validated_encoders: None,
+        device: None,
     }
 }
 
@@ -325,5 +382,57 @@ mod tests {
         // No validation performed — all HW encoders trusted (backward compat)
         let config = HwAccelConfig::with_backend(HwAccelBackend::Nvenc);
         assert_eq!(config.encoder_name("av1"), "av1_nvenc");
+    }
+
+    // ── device targeting ────────────────────────────────────────
+
+    #[test]
+    fn test_device_args_nvenc() {
+        let config =
+            HwAccelConfig::with_backend(HwAccelBackend::Nvenc).with_device(Some("1".into()));
+        // NVENC uses env var, not CLI args
+        assert!(config.device_args().is_empty());
+    }
+
+    #[test]
+    fn test_device_args_vaapi() {
+        let path = "/dev/dri/renderD129";
+        let config =
+            HwAccelConfig::with_backend(HwAccelBackend::Vaapi).with_device(Some(path.into()));
+        assert_eq!(config.device_args(), vec!["-vaapi_device", path]);
+    }
+
+    #[test]
+    fn test_device_args_qsv() {
+        let path = "/dev/dri/renderD128";
+        let config =
+            HwAccelConfig::with_backend(HwAccelBackend::Qsv).with_device(Some(path.into()));
+        assert_eq!(config.device_args(), vec!["-qsv_device", path]);
+    }
+
+    #[test]
+    fn test_device_args_none() {
+        let config = HwAccelConfig::with_backend(HwAccelBackend::Nvenc);
+        assert!(config.device_args().is_empty());
+    }
+
+    #[test]
+    fn test_device_env_nvenc() {
+        let config =
+            HwAccelConfig::with_backend(HwAccelBackend::Nvenc).with_device(Some("1".into()));
+        assert_eq!(config.device_env(), Some(("CUDA_VISIBLE_DEVICES", "1")));
+    }
+
+    #[test]
+    fn test_device_env_vaapi() {
+        let config = HwAccelConfig::with_backend(HwAccelBackend::Vaapi)
+            .with_device(Some("/dev/dri/renderD129".into()));
+        assert!(config.device_env().is_none());
+    }
+
+    #[test]
+    fn test_device_env_no_device() {
+        let config = HwAccelConfig::with_backend(HwAccelBackend::Nvenc);
+        assert!(config.device_env().is_none());
     }
 }

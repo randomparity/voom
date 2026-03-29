@@ -367,6 +367,14 @@ pub fn build_ffmpeg_command(
     // av1_nvenc) works fine with software-decoded frames, so omitting
     // the flag is safe and maximally compatible.
 
+    // Inject device-targeting args (e.g. -vaapi_device, -qsv_device)
+    // before the input file so ffmpeg opens the device first.
+    if let Some(hw) = hw_accel {
+        for arg in hw.device_args() {
+            cmd = cmd.arg(&arg);
+        }
+    }
+
     cmd = cmd.input(&file.path);
     cmd = cmd.map_all();
 
@@ -836,6 +844,43 @@ mod tests {
         );
         let actions: Vec<&PlannedAction> = vec![&convert];
         assert_eq!(output_extension(&file, &actions), "mp4");
+    }
+
+    #[test]
+    fn test_build_command_with_vaapi_device() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                crf: None,
+                preset: None,
+                bitrate: None,
+                channels: None,
+                hw: None,
+                hw_fallback: None,
+            },
+            "Transcode with VAAPI device",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mp4");
+
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Vaapi)
+            .with_device(Some("/dev/dri/renderD129".into()));
+        let args = build_ffmpeg_command(&file, &actions, output, Some(&hw)).unwrap();
+
+        // -vaapi_device must appear before -i
+        let vaapi_pos = args
+            .iter()
+            .position(|a| a == "-vaapi_device")
+            .expect("-vaapi_device not found");
+        let input_pos = args.iter().position(|a| a == "-i").expect("-i not found");
+        assert!(
+            vaapi_pos < input_pos,
+            "-vaapi_device ({vaapi_pos}) must come before -i ({input_pos})"
+        );
+        assert_eq!(args[vaapi_pos + 1], "/dev/dri/renderD129");
     }
 
     #[test]

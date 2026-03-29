@@ -195,6 +195,11 @@ pub fn default_config_contents() -> String {
 # [plugin.ffprobe-introspector]
 # ffprobe_path = "/usr/local/bin/ffprobe"
 #
+# [plugin.ffmpeg-executor]
+# # GPU device for HW encoding. NVIDIA: "0", "1". VA-API/QSV: "/dev/dri/renderD128".
+# # Omit to use system default.
+# # gpu_device = "0"
+#
 # [plugin.tvdb-metadata]
 # api_key = "your-tvdb-api-key"
 #

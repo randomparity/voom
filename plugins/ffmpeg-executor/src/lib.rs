@@ -22,8 +22,16 @@ use voom_kernel::{Plugin, PluginContext};
 
 use crate::hwaccel::HwAccelConfig;
 use crate::probe::{
-    parse_codecs, parse_formats, parse_hw_implementations, parse_hwaccels, validate_hw_encoder,
+    enumerate_gpus, parse_codecs, parse_formats, parse_hw_implementations, parse_hwaccels,
+    validate_hw_encoder, validate_hw_encoder_on_device, GpuDevice,
 };
+
+/// Per-plugin configuration from `[plugin.ffmpeg-executor]` in config.toml.
+#[derive(Debug, Default, serde::Deserialize)]
+struct FfmpegExecutorConfig {
+    #[serde(default)]
+    gpu_device: Option<String>,
+}
 
 pub(crate) fn plugin_err(message: impl Into<String>) -> VoomError {
     VoomError::plugin("ffmpeg-executor", message)
@@ -288,7 +296,7 @@ impl Plugin for FfmpegExecutorPlugin {
         }
     }
 
-    fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
+    fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
         let mut codecs = Command::new("ffmpeg")
             .args(["-codecs", "-hide_banner"])
             .output()
@@ -339,15 +347,54 @@ impl Plugin for FfmpegExecutorPlugin {
         self.probed_formats = Some(formats.clone());
         self.probed_hw_accels = Some(hw_accels.clone());
 
-        // Validate which HW encoders actually work on this device.
+        // Select HW accel backend from already-probed data (no extra subprocess)
+        let mut hw_config = HwAccelConfig::from_probed(&hw_accels);
+
+        // Read per-plugin config for GPU device selection
+        let plugin_config = ctx
+            .parse_config::<FfmpegExecutorConfig>()
+            .unwrap_or_default();
+
+        // Resolve configured GPU device
+        let target_device: Option<GpuDevice> = if let (Some(backend), Some(device_id)) =
+            (hw_config.backend, &plugin_config.gpu_device)
+        {
+            let gpus = enumerate_gpus(backend);
+            let found = gpus.into_iter().find(|g| g.id == *device_id);
+            if found.is_some() {
+                tracing::info!(
+                    device = %device_id,
+                    "using configured GPU device"
+                );
+                hw_config = hw_config.with_device(Some(device_id.clone()));
+            } else {
+                tracing::warn!(
+                    device = %device_id,
+                    "configured gpu_device not found, using system default"
+                );
+            }
+            found
+        } else {
+            None
+        };
+
+        // Validate which HW encoders actually work on the target device.
         // ffmpeg -encoders lists all compiled-in encoders, but the GPU may
         // not support all of them (e.g. av1_nvenc on a GPU without AV1).
-        let validated_encoders: Vec<String> = codecs
-            .hw_encoders
-            .iter()
-            .filter(|enc| validate_hw_encoder(enc))
-            .cloned()
-            .collect();
+        let validated_encoders: Vec<String> = match (&hw_config.backend, &target_device) {
+            (Some(backend), Some(device)) => codecs
+                .hw_encoders
+                .iter()
+                .filter(|enc| validate_hw_encoder_on_device(enc, *backend, device))
+                .cloned()
+                .collect(),
+            _ => codecs
+                .hw_encoders
+                .iter()
+                .filter(|enc| validate_hw_encoder(enc))
+                .cloned()
+                .collect(),
+        };
 
         tracing::info!(
             validated = ?validated_encoders,
@@ -355,9 +402,7 @@ impl Plugin for FfmpegExecutorPlugin {
             "validated HW encoders"
         );
 
-        // Select HW accel backend from already-probed data (no extra subprocess)
-        self.hw_accel =
-            HwAccelConfig::from_probed(&hw_accels).with_validated_encoders(validated_encoders);
+        self.hw_accel = hw_config.with_validated_encoders(validated_encoders);
 
         let event = ExecutorCapabilitiesEvent::new("ffmpeg-executor", codecs, formats, hw_accels);
 
@@ -873,6 +918,19 @@ mod tests {
             )],
         );
         assert!(plugin.can_handle(&plan));
+    }
+
+    #[test]
+    fn test_ffmpeg_executor_config_deserialize() {
+        let json = serde_json::json!({"gpu_device": "1"});
+        let config: FfmpegExecutorConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.gpu_device.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn test_ffmpeg_executor_config_default() {
+        let config = FfmpegExecutorConfig::default();
+        assert!(config.gpu_device.is_none());
     }
 
     #[test]

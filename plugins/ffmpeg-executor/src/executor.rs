@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::plan::{ActionResult, Plan, PlannedAction};
-use voom_process::run_with_timeout;
+use voom_process::run_with_timeout_env;
 
 use crate::command::{build_ffmpeg_command, output_extension};
 use crate::hwaccel::HwAccelConfig;
@@ -54,7 +54,8 @@ pub fn execute_plan(plan: &Plan, hw_accel: &HwAccelConfig) -> Result<Vec<ActionR
     );
     tracing::debug!(args = ?ffmpeg_args, "ffmpeg command");
 
-    let output = run_with_timeout("ffmpeg", &ffmpeg_args, FFMPEG_TIMEOUT);
+    let env_vars: Vec<(&str, &str)> = hw_accel.device_env().into_iter().collect();
+    let output = run_with_timeout_env("ffmpeg", &ffmpeg_args, FFMPEG_TIMEOUT, &env_vars);
 
     match output {
         Ok(output) if output.status.success() => {

@@ -197,6 +197,30 @@ fn print_hw_accel_status() {
         }
     }
 
+    // Show configured GPU device from config
+    let app_config = config::load_config().unwrap_or_default();
+    if let Some(device_id) = app_config
+        .plugin
+        .get("ffmpeg-executor")
+        .and_then(|t| t.get("gpu_device"))
+        .and_then(|v| v.as_str())
+    {
+        let found = devices.iter().any(|d| d.id == device_id);
+        if found {
+            println!(
+                "  Configured GPU ... {} {}",
+                style(device_id).cyan(),
+                style("(found)").green()
+            );
+        } else {
+            println!(
+                "  Configured GPU ... {} {}",
+                style(device_id).cyan(),
+                style("(NOT FOUND)").red()
+            );
+        }
+    }
+
     let encoders_output = std::process::Command::new("ffmpeg")
         .args(["-encoders", "-hide_banner"])
         .output();
