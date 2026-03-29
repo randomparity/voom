@@ -277,9 +277,6 @@ fn enumerate_vaapi_devices() -> Vec<GpuDevice> {
 
 /// Check whether NVIDIA GPU hardware is present.
 pub fn has_nvidia_hardware() -> bool {
-    if std::path::Path::new("/dev/nvidia0").exists() {
-        return true;
-    }
     std::process::Command::new("nvidia-smi")
         .arg("--list-gpus")
         .stdin(std::process::Stdio::null())

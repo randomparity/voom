@@ -1,6 +1,6 @@
 use anyhow::Result;
 use console::style;
-use voom_ffmpeg_executor::hwaccel::{config_from_backend_name, HwAccelBackend, HwAccelConfig};
+use voom_ffmpeg_executor::hwaccel::{resolve_hw_config, HwAccelBackend};
 use voom_ffmpeg_executor::probe::{
     enumerate_gpus, parse_hw_implementations, parse_hwaccels, validate_hw_encoder,
     validate_hw_encoder_on_device, GpuDevice,
@@ -180,7 +180,6 @@ fn print_hw_accel_status() {
         println!("  Available ... {}", hw_accels.join(", "));
     }
 
-    // Check for config override before auto-detection
     let app_config = config::load_config().unwrap_or_default();
     let hw_accel_override = app_config
         .plugin
@@ -188,29 +187,7 @@ fn print_hw_accel_status() {
         .and_then(|t| t.get("hw_accel"))
         .and_then(|v| v.as_str());
 
-    let (config, source) = if let Some(name) = hw_accel_override {
-        if name == "none" {
-            println!(
-                "  Backend ... {} {}",
-                style("disabled").yellow(),
-                style("(config override)").dim()
-            );
-            return;
-        }
-        let cfg = config_from_backend_name(name);
-        if cfg.enabled() {
-            (cfg, "config override")
-        } else {
-            println!(
-                "  {} unrecognized hw_accel {:?}, falling back to auto-detect",
-                style("WARNING").bold().yellow(),
-                name
-            );
-            (HwAccelConfig::from_probed(&hw_accels), "auto-detected")
-        }
-    } else {
-        (HwAccelConfig::from_probed(&hw_accels), "auto-detected")
-    };
+    let (config, source) = resolve_hw_config(hw_accel_override, &hw_accels);
 
     let backend = match config.backend {
         Some(backend) => {
@@ -222,7 +199,15 @@ fn print_hw_accel_status() {
             backend
         }
         None => {
-            println!("  Backend ... {}", style("none detected").yellow());
+            if source == "disabled" {
+                println!(
+                    "  Backend ... {} {}",
+                    style("disabled").yellow(),
+                    style("(config override)").dim()
+                );
+            } else {
+                println!("  Backend ... {}", style("none detected").yellow());
+            }
             return;
         }
     };

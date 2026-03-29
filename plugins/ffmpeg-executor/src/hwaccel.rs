@@ -324,6 +324,38 @@ pub fn config_from_backend_name(name: &str) -> HwAccelConfig {
     }
 }
 
+/// Resolve the HW accel config from a user override name or auto-detection.
+///
+/// Returns `(config, source_label)` where `source_label` describes where
+/// the config came from ("config override", "auto-detected", or "disabled").
+/// Unrecognized override names warn and fall back to auto-detection.
+#[must_use]
+pub fn resolve_hw_config(
+    override_name: Option<&str>,
+    hw_accels: &[String],
+) -> (HwAccelConfig, &'static str) {
+    match override_name {
+        Some("none") => {
+            tracing::info!("hw_accel disabled by config");
+            (HwAccelConfig::new(), "disabled")
+        }
+        Some(name) => {
+            let cfg = config_from_backend_name(name);
+            if cfg.enabled() {
+                tracing::info!(backend = name, "using configured hw_accel override");
+                (cfg, "config override")
+            } else {
+                tracing::warn!(
+                    backend = name,
+                    "unrecognized hw_accel value, falling back to auto-detection"
+                );
+                (HwAccelConfig::from_probed(hw_accels), "auto-detected")
+            }
+        }
+        None => (HwAccelConfig::from_probed(hw_accels), "auto-detected"),
+    }
+}
+
 /// Create an override config that inherits validated encoders from the
 /// system-wide config when the backends match. This prevents per-action
 /// `hw:` overrides from bypassing encoder validation.

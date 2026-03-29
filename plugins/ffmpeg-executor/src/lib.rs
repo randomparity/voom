@@ -20,7 +20,7 @@ use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 use voom_kernel::{Plugin, PluginContext};
 
-use crate::hwaccel::{config_from_backend_name, HwAccelConfig};
+use crate::hwaccel::{resolve_hw_config, HwAccelConfig};
 use crate::probe::{
     enumerate_gpus, parse_codecs, parse_formats, parse_hw_implementations, parse_hwaccels,
     validate_hw_encoder, validate_hw_encoder_on_device, GpuDevice,
@@ -359,24 +359,8 @@ impl Plugin for FfmpegExecutorPlugin {
         };
 
         // Select HW accel backend: config override or auto-detect
-        let mut hw_config = if let Some(ref name) = plugin_config.hw_accel {
-            let cfg = config_from_backend_name(name);
-            if cfg.enabled() {
-                tracing::info!(backend = name, "using configured hw_accel override");
-                cfg
-            } else if name == "none" {
-                tracing::info!("hw_accel disabled by config");
-                HwAccelConfig::new()
-            } else {
-                tracing::warn!(
-                    backend = name,
-                    "unrecognized hw_accel value, falling back to auto-detection"
-                );
-                HwAccelConfig::from_probed(&hw_accels)
-            }
-        } else {
-            HwAccelConfig::from_probed(&hw_accels)
-        };
+        let (mut hw_config, _source) =
+            resolve_hw_config(plugin_config.hw_accel.as_deref(), &hw_accels);
 
         // Resolve configured GPU device
         let target_device: Option<GpuDevice> = if let (Some(backend), Some(device_id)) =
