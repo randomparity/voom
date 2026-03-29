@@ -48,7 +48,11 @@ pub fn event_result_from_wasm(
 }
 
 /// Serialized form of an `EventResult` for the WASM boundary.
-pub type WasmEventResult = (String, Vec<(String, Vec<u8>)>, Option<Vec<u8>>);
+pub struct WasmEventResult {
+    pub plugin_name: String,
+    pub produced_events: Vec<(String, Vec<u8>)>,
+    pub data: Option<Vec<u8>>,
+}
 
 /// Serialize a domain `EventResult` into WASM boundary format.
 pub fn event_result_to_wasm(result: &EventResult) -> Result<WasmEventResult> {
@@ -65,7 +69,11 @@ pub fn event_result_to_wasm(result: &EventResult) -> Result<WasmEventResult> {
         .transpose()
         .map_err(|e| VoomError::Wasm(format!("failed to serialize JSON: {e}")))?;
 
-    Ok((result.plugin_name.clone(), produced, data))
+    Ok(WasmEventResult {
+        plugin_name: result.plugin_name.clone(),
+        produced_events: produced,
+        data,
+    })
 }
 
 /// Convert a WIT capability string (e.g., "discover:file,smb") to a domain Capability.

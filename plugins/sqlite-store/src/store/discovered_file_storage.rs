@@ -1,11 +1,12 @@
 //! CRUD operations for the `discovered_files` staging table.
 
+use chrono::{DateTime, Utc};
 use rusqlite::params;
 use uuid::Uuid;
 
 use voom_domain::errors::Result;
 
-use super::{format_datetime, storage_err, SqliteStore};
+use super::{format_datetime, parse_optional_datetime, storage_err, SqliteStore};
 
 /// Status of a discovered file in the staging pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,8 +46,8 @@ pub struct DiscoveredFile {
     pub size: u64,
     pub content_hash: String,
     pub status: DiscoveredStatus,
-    pub discovered_at: String,
-    pub updated_at: String,
+    pub discovered_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 impl SqliteStore {
@@ -122,6 +123,8 @@ impl SqliteStore {
                         Box::new(e),
                     )
                 })?;
+                let discovered_str: String = row.get("discovered_at")?;
+                let updated_str: String = row.get("updated_at")?;
                 Ok(DiscoveredFile {
                     id,
                     path: row.get("path")?,
@@ -134,8 +137,16 @@ impl SqliteStore {
                             format!("unknown discovered file status: {status_str}").into(),
                         )
                     })?,
-                    discovered_at: row.get("discovered_at")?,
-                    updated_at: row.get("updated_at")?,
+                    discovered_at: parse_optional_datetime(
+                        Some(discovered_str),
+                        "discovered_files.discovered_at",
+                    )?
+                    .unwrap_or_default(),
+                    updated_at: parse_optional_datetime(
+                        Some(updated_str),
+                        "discovered_files.updated_at",
+                    )?
+                    .unwrap_or_default(),
                 })
             })
             .map_err(storage_err("failed to query discovered files"))?

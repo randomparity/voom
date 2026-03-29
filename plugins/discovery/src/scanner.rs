@@ -47,7 +47,12 @@ const HASH_CHUNK_SIZE: usize = 1024 * 1024; // 1 MB
 /// combined with the file size. This keeps hashing fast for multi-GB video
 /// files while still reliably detecting duplicates and content changes.
 pub fn hash_file(path: &Path) -> Result<String> {
-    let mut file = fs::File::open(path)?;
+    let mut file = fs::File::open(path).map_err(|e| {
+        VoomError::Io(std::io::Error::new(
+            e.kind(),
+            format!("{}: {e}", path.display()),
+        ))
+    })?;
     let file_size = file.metadata()?.len();
 
     if file_size <= PARTIAL_HASH_THRESHOLD {
@@ -187,7 +192,12 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
 
 /// Build a `FileDiscoveredEvent` for a single file.
 fn build_event(path: &Path, compute_hash: bool) -> Result<FileDiscoveredEvent> {
-    let metadata = fs::metadata(path)?;
+    let metadata = fs::metadata(path).map_err(|e| {
+        VoomError::Io(std::io::Error::new(
+            e.kind(),
+            format!("{}: {e}", path.display()),
+        ))
+    })?;
     let size = metadata.len();
 
     let content_hash = if compute_hash {
