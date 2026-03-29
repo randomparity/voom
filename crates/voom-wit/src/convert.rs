@@ -216,12 +216,17 @@ mod tests {
         ))];
         result.data = Some(serde_json::json!({"status": "ok"}));
 
-        let (name, produced, data) = event_result_to_wasm(&result).unwrap();
-        assert_eq!(name, "test-plugin");
-        assert_eq!(produced.len(), 1);
-        assert!(data.is_some());
+        let wasm_result = event_result_to_wasm(&result).unwrap();
+        assert_eq!(wasm_result.plugin_name, "test-plugin");
+        assert_eq!(wasm_result.produced_events.len(), 1);
+        assert!(wasm_result.data.is_some());
 
-        let restored = event_result_from_wasm(name, produced, data).unwrap();
+        let restored = event_result_from_wasm(
+            wasm_result.plugin_name,
+            wasm_result.produced_events,
+            wasm_result.data,
+        )
+        .unwrap();
         assert_eq!(restored.plugin_name, "test-plugin");
         assert_eq!(restored.produced_events.len(), 1);
         assert_eq!(restored.data.unwrap()["status"].as_str().unwrap(), "ok");
