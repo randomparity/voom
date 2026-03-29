@@ -176,6 +176,10 @@ fn print_hw_accel_status() {
         Err(_) => return,
     };
 
+    if !hw_accels.is_empty() {
+        println!("  Available ... {}", hw_accels.join(", "));
+    }
+
     let config = HwAccelConfig::from_probed(&hw_accels);
     let backend = match config.backend {
         Some(backend) => {

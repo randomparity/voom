@@ -275,6 +275,57 @@ fn enumerate_vaapi_devices() -> Vec<GpuDevice> {
     devices
 }
 
+/// Check whether NVIDIA GPU hardware is present.
+pub fn has_nvidia_hardware() -> bool {
+    if std::path::Path::new("/dev/nvidia0").exists() {
+        return true;
+    }
+    std::process::Command::new("nvidia-smi")
+        .arg("--list-gpus")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Check whether any VA-API render device exists.
+pub fn has_vaapi_devices() -> bool {
+    std::fs::read_dir("/dev/dri")
+        .map(|entries| {
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with("renderD"))
+        })
+        .unwrap_or(false)
+}
+
+/// Check whether Intel GPU hardware is present (for QSV).
+///
+/// Reads `/sys/class/drm/card*/device/vendor` looking for Intel's
+/// PCI vendor ID (`0x8086`).
+pub fn has_intel_gpu() -> bool {
+    let entries = match std::fs::read_dir("/sys/class/drm") {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.starts_with("card") || name_str.contains('-') {
+            continue;
+        }
+        let vendor_path = entry.path().join("device/vendor");
+        if let Ok(vendor) = std::fs::read_to_string(&vendor_path) {
+            if vendor.trim() == "0x8086" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Parse `nvidia-smi` CSV output into GPU devices.
 ///
 /// Expected format (one line per GPU):

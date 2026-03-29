@@ -255,19 +255,49 @@ fn hw_encoder_for_backend(backend: HwAccelBackend, codec: &str) -> Option<String
     }
 }
 
-/// Match lowercased hwaccel text to a backend in priority order.
-fn detect_backend_from_text(text: &str) -> Option<HwAccelBackend> {
+/// Collect all matching backends from lowercased hwaccel text, in
+/// priority order.
+fn candidates_from_text(text: &str) -> Vec<HwAccelBackend> {
+    let mut candidates = Vec::new();
     if text.contains("cuda") || text.contains("nvdec") {
-        Some(HwAccelBackend::Nvenc)
-    } else if text.contains("qsv") {
-        Some(HwAccelBackend::Qsv)
-    } else if text.contains("vaapi") {
-        Some(HwAccelBackend::Vaapi)
-    } else if text.contains("videotoolbox") {
-        Some(HwAccelBackend::Videotoolbox)
-    } else {
-        None
+        candidates.push(HwAccelBackend::Nvenc);
     }
+    if text.contains("qsv") {
+        candidates.push(HwAccelBackend::Qsv);
+    }
+    if text.contains("vaapi") {
+        candidates.push(HwAccelBackend::Vaapi);
+    }
+    if text.contains("videotoolbox") {
+        candidates.push(HwAccelBackend::Videotoolbox);
+    }
+    candidates
+}
+
+/// Check whether the actual hardware for a backend is present.
+fn verify_backend(backend: HwAccelBackend) -> bool {
+    match backend {
+        HwAccelBackend::Nvenc => crate::probe::has_nvidia_hardware(),
+        HwAccelBackend::Qsv => crate::probe::has_intel_gpu(),
+        HwAccelBackend::Vaapi => crate::probe::has_vaapi_devices(),
+        HwAccelBackend::Videotoolbox => true,
+    }
+}
+
+/// Pick the best backend: first candidate whose hardware is present.
+fn detect_backend_with_verifier(
+    text: &str,
+    verifier: fn(HwAccelBackend) -> bool,
+) -> Option<HwAccelBackend> {
+    candidates_from_text(text)
+        .into_iter()
+        .find(|b| verifier(*b))
+}
+
+/// Match lowercased hwaccel text to a backend, verifying hardware
+/// is actually present before committing.
+fn detect_backend_from_text(text: &str) -> Option<HwAccelBackend> {
+    detect_backend_with_verifier(text, verify_backend)
 }
 
 impl Default for HwAccelConfig {
@@ -544,5 +574,68 @@ mod tests {
         let over = config_from_backend_with_system("nvenc", None);
         // No system config — trusts all (backward compat)
         assert_eq!(over.encoder_name("av1"), "av1_nvenc");
+    }
+
+    // ── candidates + verifier ─────────────────────────────────────
+
+    #[test]
+    fn test_candidates_cuda_and_vaapi() {
+        let c = candidates_from_text("cuda vaapi");
+        assert_eq!(c, vec![HwAccelBackend::Nvenc, HwAccelBackend::Vaapi]);
+    }
+
+    #[test]
+    fn test_candidates_vaapi_only() {
+        let c = candidates_from_text("vaapi");
+        assert_eq!(c, vec![HwAccelBackend::Vaapi]);
+    }
+
+    #[test]
+    fn test_candidates_all() {
+        let c = candidates_from_text("cuda qsv vaapi videotoolbox");
+        assert_eq!(
+            c,
+            vec![
+                HwAccelBackend::Nvenc,
+                HwAccelBackend::Qsv,
+                HwAccelBackend::Vaapi,
+                HwAccelBackend::Videotoolbox,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_candidates_empty() {
+        assert!(candidates_from_text("").is_empty());
+        assert!(candidates_from_text("vulkan opencl").is_empty());
+    }
+
+    #[test]
+    fn test_verifier_skips_nvenc_picks_vaapi() {
+        // AMD scenario: cuda compiled in but no NVIDIA hardware
+        fn reject_nvenc(b: HwAccelBackend) -> bool {
+            b != HwAccelBackend::Nvenc
+        }
+        let result = detect_backend_with_verifier("cuda vaapi", reject_nvenc);
+        assert_eq!(result, Some(HwAccelBackend::Vaapi));
+    }
+
+    #[test]
+    fn test_verifier_accepts_nvenc() {
+        // NVIDIA scenario: real hardware present
+        fn accept_all(_: HwAccelBackend) -> bool {
+            true
+        }
+        let result = detect_backend_with_verifier("cuda vaapi", accept_all);
+        assert_eq!(result, Some(HwAccelBackend::Nvenc));
+    }
+
+    #[test]
+    fn test_verifier_rejects_all() {
+        fn reject_all(_: HwAccelBackend) -> bool {
+            false
+        }
+        let result = detect_backend_with_verifier("cuda vaapi qsv", reject_all);
+        assert_eq!(result, None);
     }
 }
