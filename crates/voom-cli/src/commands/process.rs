@@ -15,6 +15,7 @@ use voom_domain::events::{
     Event, JobCompletedEvent, JobProgressEvent, JobStartedEvent, PlanCompletedEvent,
     PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
 };
+use voom_domain::plan::OperationType;
 use voom_job_manager::progress::{CompositeReporter, ProgressReporter};
 use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 
@@ -362,6 +363,7 @@ async fn process_single_file(
             needs_exec,
             ctx.flag_size_increase,
             ctx.token,
+            ctx.ffprobe_path,
         )
         .await
     }
@@ -396,6 +398,7 @@ async fn execute_plans(
     needs_exec: bool,
     flag_size_increase: bool,
     token: &CancellationToken,
+    ffprobe_path: Option<&str>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let file_path_str = file.path.display().to_string();
 
@@ -423,10 +426,13 @@ async fn execute_plans(
         }
     }
 
-    // Publish lifecycle events for each non-skipped plan.
-    // PlanExecuting is dispatched first so the backup-manager can create a
-    // backup before any executor modifies the file. Then PlanCreated triggers
-    // the actual execution.
+    // Execute each non-skipped plan. PlanExecuting is dispatched first so
+    // the backup-manager creates a backup before any executor modifies the
+    // file. PlanCreated then triggers the actual execution.
+    //
+    // PlanCompleted/PlanFailed are dispatched *after* post-execution checks
+    // (size-increase guard) so the backup is still available for restore.
+    let mut any_executed = false;
     for plan in &result.plans {
         if plan.is_skipped() || plan.is_empty() {
             continue;
@@ -436,48 +442,87 @@ async fn execute_plans(
             break;
         }
 
-        let plan = plan.clone();
-        let file = file.clone();
-        let kernel = kernel.clone();
-        tokio::task::spawn_blocking(move || {
-            execute_single_plan(&plan, &file, &kernel);
+        let plan_clone = plan.clone();
+        let file_clone = file.clone();
+        let kernel_clone = kernel.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            execute_single_plan(&plan_clone, &file_clone, &kernel_clone)
         })
         .await
         .map_err(|e| format!("plan execution join error: {e}"))?;
+
+        match outcome {
+            PlanOutcome::Success => {
+                any_executed = true;
+
+                // Size-increase guard: check *before* committing, while
+                // the backup is still on disk.
+                if flag_size_increase {
+                    let check_path = resolve_post_execution_path(file, std::slice::from_ref(plan));
+                    if let Ok(meta) = std::fs::metadata(&check_path) {
+                        let new_size = meta.len();
+                        if new_size > file.size && file.size > 0 {
+                            tracing::warn!(
+                                path = %check_path.display(),
+                                before = file.size,
+                                after = new_size,
+                                "output larger than original, restoring"
+                            );
+                            // Remove the converted output before
+                            // restoring so no orphan file is left
+                            // behind (e.g. .mkv after mp4→mkv).
+                            if check_path != file.path {
+                                if let Err(e) = std::fs::remove_file(&check_path) {
+                                    tracing::warn!(
+                                        path = %check_path.display(),
+                                        error = %e,
+                                        "failed to remove converted output"
+                                    );
+                                }
+                            }
+                            kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
+                                plan.id,
+                                file.path.clone(),
+                                plan.phase_name.clone(),
+                                format!("output grew from {} to {} bytes", file.size, new_size,),
+                            )));
+                            continue;
+                        }
+                    }
+                }
+
+                kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
+                    plan.id,
+                    file.path.clone(),
+                    plan.phase_name.clone(),
+                    plan.actions.len(),
+                )));
+            }
+            PlanOutcome::Failed(failed) => {
+                kernel.dispatch(Event::PlanFailed(failed));
+            }
+        }
     }
 
-    // Post-execution size check: tag the file if it grew
-    if flag_size_increase && needs_exec {
-        if let Ok(meta) = std::fs::metadata(&file.path) {
-            let new_size = meta.len();
-            if new_size > file.size && file.size > 0 {
-                tracing::warn!(
-                    path = %file.path.display(),
-                    before = file.size,
-                    after = new_size,
-                    "output file is larger than original"
-                );
-                let violation = voom_domain::SafeguardViolation::new(
-                    voom_domain::SafeguardKind::OutputLarger,
-                    format!("Output file grew from {} to {} bytes", file.size, new_size),
-                    "post-execution",
-                );
-                let mut tagged = file.clone();
-                let existing: Vec<voom_domain::SafeguardViolation> = tagged
-                    .plugin_metadata
-                    .get("safeguard_violations")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok())
-                    .unwrap_or_default();
-                let mut all_violations = existing;
-                all_violations.push(violation);
-                tagged.plugin_metadata.insert(
-                    "safeguard_violations".to_string(),
-                    serde_json::json!(all_violations),
-                );
-                kernel.dispatch(Event::FileIntrospected(
-                    voom_domain::events::FileIntrospectedEvent::new(tagged),
-                ));
-            }
+    // Re-introspect after execution so the database reflects the actual
+    // file on disk (new container, path, tracks, etc.).
+    if any_executed {
+        let current_path = resolve_post_execution_path(file, &result.plans);
+        if current_path.exists() {
+            let size = std::fs::metadata(&current_path)
+                .map(|m| m.len())
+                .unwrap_or(file.size);
+            let hash = voom_discovery::hash_file(&current_path).unwrap_or_default();
+            let ffp = ffprobe_path.map(String::from);
+            let kernel_clone = kernel.clone();
+            let _ = crate::introspect::introspect_file(
+                current_path,
+                size,
+                hash,
+                &kernel_clone,
+                ffp.as_deref(),
+            )
+            .await;
         }
     }
 
@@ -488,8 +533,47 @@ async fn execute_plans(
     })))
 }
 
-/// Dispatch `PlanExecuting` + `PlanCreated` for a single plan, then emit
-/// `PlanCompleted`, `PlanFailed` (executor error), or `PlanFailed` (unclaimed).
+/// Determine the file path after plan execution.
+///
+/// If a `ConvertContainer` action changed the container, the file extension
+/// will have changed on disk (e.g. `.mp4` → `.mkv`). Derive the new path
+/// from the plan actions; fall back to the original path if unchanged.
+fn resolve_post_execution_path(
+    file: &voom_domain::media::MediaFile,
+    plans: &[voom_domain::plan::Plan],
+) -> std::path::PathBuf {
+    // Find the last ConvertContainer action across all executed plans
+    for plan in plans.iter().rev() {
+        if plan.is_skipped() || plan.is_empty() {
+            continue;
+        }
+        for action in &plan.actions {
+            if action.operation == OperationType::ConvertContainer {
+                if let voom_domain::plan::ActionParams::Container { container } = &action.parameters
+                {
+                    let new_path = file.path.with_extension(container.as_str());
+                    if new_path.exists() {
+                        return new_path;
+                    }
+                }
+            }
+        }
+    }
+    file.path.clone()
+}
+
+/// Result of executing a single plan via the event bus.
+enum PlanOutcome {
+    /// An executor claimed and completed the plan.
+    Success,
+    /// Execution failed (executor error or unclaimed).
+    Failed(PlanFailedEvent),
+}
+
+/// Dispatch `PlanExecuting` + `PlanCreated` for a single plan.
+///
+/// Returns the outcome without dispatching `PlanCompleted` or `PlanFailed`
+/// — the caller decides when to commit the result (e.g. after size checks).
 ///
 /// `PlanExecuting` is dispatched first so the backup-manager backs up the file
 /// BEFORE any executor modifies it.  `PlanCreated` then lets executor plugins
@@ -498,7 +582,7 @@ fn execute_single_plan(
     plan: &voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
     kernel: &voom_kernel::Kernel,
-) {
+) -> PlanOutcome {
     kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent::new(
         file.path.clone(),
         plan.phase_name.clone(),
@@ -511,30 +595,22 @@ fn execute_single_plan(
     let exec_error = results.iter().find_map(|r| r.execution_error.clone());
 
     if claimed && exec_error.is_none() {
-        // An executor plugin claimed and successfully executed the plan
-        kernel.dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
-            plan.id,
-            file.path.clone(),
-            plan.phase_name.clone(),
-            plan.actions.len(),
-        )));
+        PlanOutcome::Success
     } else if let Some(error) = exec_error {
-        // An executor claimed the plan but failed
         let mut failed =
             PlanFailedEvent::new(plan.id, file.path.clone(), plan.phase_name.clone(), error);
         failed.plugin_name = results
             .iter()
             .find(|r| r.claimed)
             .map(|r| r.plugin_name.clone());
-        kernel.dispatch(Event::PlanFailed(failed));
+        PlanOutcome::Failed(failed)
     } else {
-        // No executor claimed the plan — emit PlanFailed
-        kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
+        PlanOutcome::Failed(PlanFailedEvent::new(
             plan.id,
             file.path.clone(),
             plan.phase_name.clone(),
             "no executor available for plan",
-        )));
+        ))
     }
 }
 
@@ -783,12 +859,15 @@ mod tests {
         let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
         let plan = test_plan("normalize", false);
 
-        // Call the actual production function
-        execute_single_plan(&plan, &file, &kernel);
+        // Call the actual production function — returns outcome, caller
+        // dispatches PlanCompleted/PlanFailed.
+        let outcome = execute_single_plan(&plan, &file, &kernel);
 
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 1);
         assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
-        // Plan is unclaimed (no executor registered), so PlanFailed is dispatched instead of PlanCompleted
+        // No executor registered — outcome is Failed (unclaimed)
+        assert!(matches!(outcome, PlanOutcome::Failed(_)));
+        // PlanCompleted is NOT dispatched by execute_single_plan
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
     }
 
@@ -807,7 +886,7 @@ mod tests {
 
         let token = CancellationToken::new();
         let kernel = Arc::new(kernel);
-        let _ = execute_plans(&file, &result, kernel, true, false, &token).await;
+        let _ = execute_plans(&file, &result, kernel, true, false, &token, None).await;
 
         // Skipped plans should NOT trigger any lifecycle events
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
