@@ -772,11 +772,12 @@ impl CliProgressReporter {
         let overall = multi.add(ProgressBar::new(total as u64));
         overall.set_style(
             ProgressStyle::with_template(
-                "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}",
+                "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) ETA {eta} {msg}",
             )
             .expect("valid progress template")
             .progress_chars("#>-"),
         );
+        overall.enable_steady_tick(std::time::Duration::from_millis(200));
         Self {
             _multi: multi,
             overall,
@@ -790,7 +791,7 @@ impl ProgressReporter for CliProgressReporter {
     fn on_job_start(&self, job: &voom_domain::job::Job) {
         if let Some(ref raw) = job.payload {
             if let Ok(payload) = serde_json::from_value::<DiscoveredFilePayload>(raw.clone()) {
-                let max_name = max_filename_len(PROGRESS_FIXED_WIDTH);
+                let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + 13);
                 let filename = std::path::Path::new(&payload.path)
                     .file_name()
                     .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
