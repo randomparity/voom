@@ -245,7 +245,54 @@ fn discover_files(
     options.hash_files = !args.no_backup;
     options.workers = args.workers;
 
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::with_template("{spinner:.green} {msg}")
+            .expect("valid progress template")
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+    );
+    pb.enable_steady_tick(std::time::Duration::from_millis(80));
+
+    let pb_clone = pb.clone();
+    let hash_files = options.hash_files;
+    options.on_progress = Some(Box::new(move |progress| match progress {
+        voom_discovery::ScanProgress::Discovered { count, path } => {
+            let prefix = format!("Discovering... {count} files found \u{2014} ");
+            let max_name = max_filename_len(2 + prefix.len());
+            let name = path
+                .file_name()
+                .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
+                .unwrap_or_default();
+            pb_clone.set_message(format!("{prefix}{name}"));
+        }
+        voom_discovery::ScanProgress::Processing {
+            current,
+            total,
+            path,
+        } => {
+            if current == 1 {
+                pb_clone.set_length(total as u64);
+                pb_clone.set_style(
+                    ProgressStyle::with_template(
+                        "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}",
+                    )
+                    .expect("valid progress template")
+                    .progress_chars("#>-"),
+                );
+            }
+            let prefix = if hash_files { "Hashing" } else { "Scanning" };
+            let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + prefix.len() + 2);
+            let name = path
+                .file_name()
+                .map(|n| shrink_filename(&n.to_string_lossy(), max_name))
+                .unwrap_or_default();
+            pb_clone.set_position(current as u64);
+            pb_clone.set_message(format!("{prefix} {name}"));
+        }
+    }));
+
     let events = discovery.scan(&options).context("filesystem scan failed")?;
+    pb.finish_and_clear();
 
     for event in &events {
         kernel.dispatch(Event::FileDiscovered(event.clone()));
