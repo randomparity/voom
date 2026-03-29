@@ -278,7 +278,7 @@ impl std::fmt::Display for PlanStatus {
 }
 
 /// Aggregated plan statistics for a single (phase_name, status, skip_reason) group.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanPhaseStat {
     pub phase_name: String,
     pub status: PlanStatus,

@@ -517,15 +517,15 @@ async fn execute_plans(
     // (size-increase guard) so the backup is still available for restore.
     let mut any_executed = false;
     for plan in &result.plans {
-        if plan.is_skipped() {
-            if let Some(reason) = &plan.skip_reason {
-                kernel.dispatch(Event::PlanSkipped(PlanSkippedEvent::new(
-                    plan.id,
-                    file.path.clone(),
-                    plan.phase_name.clone(),
-                    reason.clone(),
-                )));
-            }
+        if let Some(reason) = &plan.skip_reason {
+            // Insert the plan row first so update_plan_status has a target.
+            kernel.dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
+            kernel.dispatch(Event::PlanSkipped(PlanSkippedEvent::new(
+                plan.id,
+                file.path.clone(),
+                plan.phase_name.clone(),
+                reason.clone(),
+            )));
             continue;
         }
         if plan.is_empty() {
@@ -1074,11 +1074,12 @@ mod tests {
         )
         .await;
 
-        // Skipped plans should NOT trigger execution lifecycle events
+        // Skipped plans should NOT trigger execution events
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
-        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
-        // But PlanSkipped IS dispatched
+        // PlanCreated IS dispatched (so sqlite-store can persist the row)
+        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
+        // PlanSkipped IS dispatched (to update status to skipped)
         assert_eq!(recorder.plan_skipped_count.load(Ordering::SeqCst), 1);
     }
 

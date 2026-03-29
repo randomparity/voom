@@ -584,6 +584,7 @@ fn emit_transcode(
                 ctx.plan.skip_reason = Some(format!(
                     "hw backend '{hw}' unavailable and hw_fallback is false"
                 ));
+                ctx.plan.actions.clear();
                 return;
             }
         }

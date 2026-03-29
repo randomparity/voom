@@ -169,13 +169,14 @@ fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()
     }
 
     let mut phases: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut completed: HashMap<String, u64> = HashMap::new();
     let mut skipped: HashMap<String, u64> = HashMap::new();
     let mut failed: HashMap<String, u64> = HashMap::new();
     let mut skip_reasons: HashMap<String, HashMap<String, u64>> = HashMap::new();
 
     for stat in &stats {
-        if !completed.contains_key(&stat.phase_name) {
+        if seen.insert(stat.phase_name.clone()) {
             phases.push(stat.phase_name.clone());
         }
         match stat.status {
