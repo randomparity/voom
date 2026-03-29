@@ -1,6 +1,6 @@
 use anyhow::Result;
 use console::style;
-use voom_ffmpeg_executor::hwaccel::{HwAccelBackend, HwAccelConfig};
+use voom_ffmpeg_executor::hwaccel::{config_from_backend_name, HwAccelBackend, HwAccelConfig};
 use voom_ffmpeg_executor::probe::{
     enumerate_gpus, parse_hw_implementations, parse_hwaccels, validate_hw_encoder,
     validate_hw_encoder_on_device, GpuDevice,
@@ -180,10 +180,45 @@ fn print_hw_accel_status() {
         println!("  Available ... {}", hw_accels.join(", "));
     }
 
-    let config = HwAccelConfig::from_probed(&hw_accels);
+    // Check for config override before auto-detection
+    let app_config = config::load_config().unwrap_or_default();
+    let hw_accel_override = app_config
+        .plugin
+        .get("ffmpeg-executor")
+        .and_then(|t| t.get("hw_accel"))
+        .and_then(|v| v.as_str());
+
+    let (config, source) = if let Some(name) = hw_accel_override {
+        if name == "none" {
+            println!(
+                "  Backend ... {} {}",
+                style("disabled").yellow(),
+                style("(config override)").dim()
+            );
+            return;
+        }
+        let cfg = config_from_backend_name(name);
+        if cfg.enabled() {
+            (cfg, "config override")
+        } else {
+            println!(
+                "  {} unrecognized hw_accel {:?}, falling back to auto-detect",
+                style("WARNING").bold().yellow(),
+                name
+            );
+            (HwAccelConfig::from_probed(&hw_accels), "auto-detected")
+        }
+    } else {
+        (HwAccelConfig::from_probed(&hw_accels), "auto-detected")
+    };
+
     let backend = match config.backend {
         Some(backend) => {
-            println!("  Backend ... {}", style(backend_label(backend)).green());
+            println!(
+                "  Backend ... {} {}",
+                style(backend_label(backend)).green(),
+                style(format!("({source})")).dim()
+            );
             backend
         }
         None => {
@@ -202,7 +237,6 @@ fn print_hw_accel_status() {
     }
 
     // Show configured GPU device from config
-    let app_config = config::load_config().unwrap_or_default();
     if let Some(device_id) = app_config
         .plugin
         .get("ffmpeg-executor")

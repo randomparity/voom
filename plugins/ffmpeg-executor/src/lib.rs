@@ -20,7 +20,7 @@ use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 use voom_kernel::{Plugin, PluginContext};
 
-use crate::hwaccel::HwAccelConfig;
+use crate::hwaccel::{config_from_backend_name, HwAccelConfig};
 use crate::probe::{
     enumerate_gpus, parse_codecs, parse_formats, parse_hw_implementations, parse_hwaccels,
     validate_hw_encoder, validate_hw_encoder_on_device, GpuDevice,
@@ -29,6 +29,8 @@ use crate::probe::{
 /// Per-plugin configuration from `[plugin.ffmpeg-executor]` in config.toml.
 #[derive(Debug, Default, serde::Deserialize)]
 struct FfmpegExecutorConfig {
+    #[serde(default)]
+    hw_accel: Option<String>,
     #[serde(default)]
     gpu_device: Option<String>,
 }
@@ -347,16 +349,33 @@ impl Plugin for FfmpegExecutorPlugin {
         self.probed_formats = Some(formats.clone());
         self.probed_hw_accels = Some(hw_accels.clone());
 
-        // Select HW accel backend from already-probed data (no extra subprocess)
-        let mut hw_config = HwAccelConfig::from_probed(&hw_accels);
-
-        // Read per-plugin config for GPU device selection
+        // Read per-plugin config for GPU device selection and hw_accel override
         let plugin_config = match ctx.parse_config::<FfmpegExecutorConfig>() {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("ffmpeg-executor config parse failed, using defaults: {e}");
                 FfmpegExecutorConfig::default()
             }
+        };
+
+        // Select HW accel backend: config override or auto-detect
+        let mut hw_config = if let Some(ref name) = plugin_config.hw_accel {
+            let cfg = config_from_backend_name(name);
+            if cfg.enabled() {
+                tracing::info!(backend = name, "using configured hw_accel override");
+                cfg
+            } else if name == "none" {
+                tracing::info!("hw_accel disabled by config");
+                HwAccelConfig::new()
+            } else {
+                tracing::warn!(
+                    backend = name,
+                    "unrecognized hw_accel value, falling back to auto-detection"
+                );
+                HwAccelConfig::from_probed(&hw_accels)
+            }
+        } else {
+            HwAccelConfig::from_probed(&hw_accels)
         };
 
         // Resolve configured GPU device
@@ -929,12 +948,22 @@ mod tests {
         let json = serde_json::json!({"gpu_device": "1"});
         let config: FfmpegExecutorConfig = serde_json::from_value(json).unwrap();
         assert_eq!(config.gpu_device.as_deref(), Some("1"));
+        assert!(config.hw_accel.is_none());
+    }
+
+    #[test]
+    fn test_ffmpeg_executor_config_hw_accel() {
+        let json = serde_json::json!({"hw_accel": "vaapi", "gpu_device": "/dev/dri/renderD128"});
+        let config: FfmpegExecutorConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.hw_accel.as_deref(), Some("vaapi"));
+        assert_eq!(config.gpu_device.as_deref(), Some("/dev/dri/renderD128"));
     }
 
     #[test]
     fn test_ffmpeg_executor_config_default() {
         let config = FfmpegExecutorConfig::default();
         assert!(config.gpu_device.is_none());
+        assert!(config.hw_accel.is_none());
     }
 
     #[test]

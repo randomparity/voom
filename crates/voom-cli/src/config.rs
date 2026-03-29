@@ -196,6 +196,9 @@ pub fn default_config_contents() -> String {
 # ffprobe_path = "/usr/local/bin/ffprobe"
 #
 # [plugin.ffmpeg-executor]
+# # Override detected HW accel backend. Values: nvenc, qsv, vaapi, videotoolbox, none.
+# # Omit to auto-detect.
+# # hw_accel = "vaapi"
 # # GPU device for HW encoding. NVIDIA: "0", "1". VA-API/QSV: "/dev/dri/renderD128".
 # # Omit to use system default.
 # # gpu_device = "0"
