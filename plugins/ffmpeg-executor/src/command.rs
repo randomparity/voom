@@ -238,9 +238,7 @@ fn apply_quality(encoder: &str, mut cmd: FfmpegCommand, crf: u32) -> FfmpegComma
 /// All other encoders accept `-preset` directly — NVENC maps legacy names
 /// (slow, medium, fast) to its own p1–p7 presets internally.
 fn apply_preset(encoder: &str, mut cmd: FfmpegCommand, preset: &str) -> FfmpegCommand {
-    if encoder.ends_with("_vaapi") {
-        // VAAPI has no preset support; skip silently.
-    } else {
+    if !encoder.ends_with("_vaapi") {
         cmd = cmd.preset(preset);
     }
     cmd

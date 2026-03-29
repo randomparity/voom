@@ -40,6 +40,7 @@ impl DiscoveredStatus {
 
 /// A row from the `discovered_files` table.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DiscoveredFile {
     pub id: Uuid,
     pub path: String,

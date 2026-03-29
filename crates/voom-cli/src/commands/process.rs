@@ -75,7 +75,6 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         return Ok(());
     }
 
-    // Discover files
     let mut events = discover_files(&path, &args, &kernel)?;
     if events.is_empty() {
         println!("{}", style("No media files found.").yellow());
