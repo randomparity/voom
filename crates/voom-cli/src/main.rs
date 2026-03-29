@@ -22,6 +22,7 @@ async fn main() -> Result<()> {
     // Set up tracing based on verbosity
     let filter = verbosity_filter(cli.verbose);
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)),
         )
