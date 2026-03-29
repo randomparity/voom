@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use voom_domain::errors::Result;
+use voom_domain::errors::{Result, VoomError};
 use voom_domain::media::{Container, MediaFile};
 use voom_domain::plan::{ActionParams, OperationType, PlannedAction};
 use voom_domain::utils::sanitize::{validate_metadata_key, validate_metadata_value};
@@ -250,38 +250,66 @@ fn apply_transcode_video(
     mut cmd: FfmpegCommand,
     action: &PlannedAction,
     hw_accel: Option<&HwAccelConfig>,
-) -> FfmpegCommand {
+) -> Result<FfmpegCommand> {
     let ActionParams::Transcode {
         codec,
         crf,
         preset,
         bitrate,
         hw,
+        hw_fallback,
         ..
     } = &action.parameters
     else {
-        return cmd;
+        return Ok(cmd);
     };
 
-    let encoder = match hw.as_deref() {
-        Some("none") => hwaccel::software_encoder(codec).to_string(),
+    // Resolve effective HW config: per-action override or system-wide.
+    // Per-action overrides inherit validated encoders from the system
+    // config so we don't bypass startup validation.
+    let effective_config: Option<HwAccelConfig>;
+    let effective_hw: Option<&HwAccelConfig> = match hw.as_deref() {
+        Some("none") => None,
         Some(backend) => {
-            let override_config = hwaccel::config_from_backend_name(backend);
-            if override_config.enabled() {
-                override_config.encoder_name(codec)
-            } else if let Some(hw_cfg) = hw_accel {
-                hw_cfg.encoder_name(codec)
+            let cfg = hwaccel::config_from_backend_with_system(backend, hw_accel);
+            if cfg.enabled() {
+                effective_config = Some(cfg);
+                effective_config.as_ref()
             } else {
-                hwaccel::software_encoder(codec).to_string()
+                hw_accel
             }
         }
-        None => {
-            if let Some(hw_cfg) = hw_accel {
-                hw_cfg.encoder_name(codec)
-            } else {
-                hwaccel::software_encoder(codec).to_string()
+        None => hw_accel,
+    };
+
+    // Check hw_fallback: when false, error if HW encoder isn't available
+    let hw_requested = hw.as_deref() != Some("none");
+    if hw_requested && hw_fallback == &Some(false) {
+        if let Some(hw_cfg) = effective_hw {
+            if !hw_cfg.has_hw_encoder(codec) {
+                return Err(VoomError::ToolExecution {
+                    tool: "ffmpeg".into(),
+                    message: format!(
+                        "HW encoder for {codec} not available on \
+                         this device and hw_fallback is disabled"
+                    ),
+                });
             }
+        } else {
+            return Err(VoomError::ToolExecution {
+                tool: "ffmpeg".into(),
+                message: format!(
+                    "no HW acceleration backend available for \
+                     {codec} and hw_fallback is disabled"
+                ),
+            });
         }
+    }
+
+    let encoder = if let Some(hw_cfg) = effective_hw {
+        hw_cfg.encoder_name(codec)
+    } else {
+        hwaccel::software_encoder(codec).to_string()
     };
 
     if let Some(stream) = action.track_index {
@@ -302,7 +330,7 @@ fn apply_transcode_video(
         cmd = cmd.arg("-b:v").arg(brate);
     }
 
-    cmd
+    Ok(cmd)
 }
 
 fn apply_transcode_audio(cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegCommand {
@@ -388,7 +416,7 @@ pub fn build_ffmpeg_command(
                 // Container conversion is handled by output extension; codecs stay as copy
             }
             OperationType::TranscodeVideo => {
-                cmd = apply_transcode_video(cmd, action, hw_accel);
+                cmd = apply_transcode_video(cmd, action, hw_accel)?;
             }
             OperationType::TranscodeAudio => {
                 cmd = apply_transcode_audio(cmd, action);
@@ -1315,5 +1343,132 @@ mod tests {
         assert!(args.contains(&"libsvtav1".to_string()));
         assert!(args.contains(&"-crf".to_string()));
         assert!(args.contains(&"28".to_string()));
+    }
+
+    #[test]
+    fn test_hw_override_inherits_validated_encoders() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "av1".into(),
+                crf: Some(32),
+                preset: Some("medium".into()),
+                bitrate: None,
+                channels: None,
+                hw: Some("nvenc".into()),
+                hw_fallback: None,
+            },
+            "Transcode AV1 with NVENC override",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        // System config validated only h264/hevc — av1_nvenc not available
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Nvenc)
+            .with_validated_encoders(vec!["h264_nvenc".into(), "hevc_nvenc".into()]);
+
+        let args = build_ffmpeg_command(&file, &actions, output, Some(&hw)).unwrap();
+        // Should fall back to software since av1_nvenc not validated
+        assert!(
+            args.contains(&"libsvtav1".to_string()),
+            "should fall back to libsvtav1, got: {args:?}"
+        );
+        assert!(
+            !args.contains(&"av1_nvenc".to_string()),
+            "should not use av1_nvenc: {args:?}"
+        );
+    }
+
+    #[test]
+    fn test_hw_fallback_false_errors_when_encoder_unavailable() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "av1".into(),
+                crf: Some(32),
+                preset: None,
+                bitrate: None,
+                channels: None,
+                hw: Some("nvenc".into()),
+                hw_fallback: Some(false),
+            },
+            "Transcode AV1 with NVENC, no fallback",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        // av1_nvenc not in validated list
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Nvenc)
+            .with_validated_encoders(vec!["h264_nvenc".into(), "hevc_nvenc".into()]);
+
+        let result = build_ffmpeg_command(&file, &actions, output, Some(&hw));
+        assert!(result.is_err(), "should error when hw_fallback: false");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("hw_fallback"),
+            "error should mention hw_fallback: {err}"
+        );
+    }
+
+    #[test]
+    fn test_hw_fallback_false_ok_when_encoder_available() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                crf: Some(23),
+                preset: None,
+                bitrate: None,
+                channels: None,
+                hw: Some("nvenc".into()),
+                hw_fallback: Some(false),
+            },
+            "Transcode HEVC with NVENC, no fallback",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Nvenc)
+            .with_validated_encoders(vec!["h264_nvenc".into(), "hevc_nvenc".into()]);
+
+        let args = build_ffmpeg_command(&file, &actions, output, Some(&hw)).unwrap();
+        assert!(
+            args.contains(&"hevc_nvenc".to_string()),
+            "should use hevc_nvenc: {args:?}"
+        );
+    }
+
+    #[test]
+    fn test_hw_fallback_false_no_backend_errors() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "av1".into(),
+                crf: Some(32),
+                preset: None,
+                bitrate: None,
+                channels: None,
+                hw: None,
+                hw_fallback: Some(false),
+            },
+            "Transcode AV1, no fallback, no HW",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        // No HW accel at all
+        let result = build_ffmpeg_command(&file, &actions, output, None);
+        assert!(
+            result.is_err(),
+            "should error with no HW and hw_fallback: false"
+        );
     }
 }
