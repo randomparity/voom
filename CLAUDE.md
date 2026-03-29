@@ -81,7 +81,7 @@ For indicatif templates with bars/counters (where the overhead is rendered by in
 
 ## Review Process
 
-When review agents surface pre-existing issues that are out of scope for the current branch, create a GitHub issue for each rather than fixing them in-place. This keeps branches focused and ensures deferred work is tracked.
+When review agents surface pre-existing issues that are out of scope for the current branch, or a plan chooses to defer issues that might be out-of-scope, create a GitHub issue for each rather than fixing them in-place. This keeps branches focused and ensures deferred work is tracked.
 
 ## Configuration
 
