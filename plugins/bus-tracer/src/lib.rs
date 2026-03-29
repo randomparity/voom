@@ -224,7 +224,13 @@ impl Plugin for BusTracerPlugin {
     }
 
     fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
-        let config: BusTracerConfig = ctx.parse_config().unwrap_or_default();
+        let config: BusTracerConfig = match ctx.parse_config() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("bus-tracer config parse failed, using defaults: {e}");
+                BusTracerConfig::default()
+            }
+        };
 
         self.filters = config.filters;
 

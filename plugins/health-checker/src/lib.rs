@@ -64,7 +64,6 @@ impl HealthCheckerPlugin {
     pub fn run_checks(&self, data_dir: &Path) -> Vec<Event> {
         let mut events = Vec::new();
 
-        // Check: data directory exists
         let dir_exists = data_dir.is_dir();
         events.push(Event::HealthStatus(HealthStatusEvent::new(
             "data_dir_exists",
@@ -76,7 +75,6 @@ impl HealthCheckerPlugin {
             },
         )));
 
-        // Check: data directory is writable (only if it exists)
         if dir_exists {
             let writable = check_writable(data_dir);
             events.push(Event::HealthStatus(HealthStatusEvent::new(
@@ -116,7 +114,13 @@ impl Plugin for HealthCheckerPlugin {
     }
 
     fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
-        self.config = ctx.parse_config().unwrap_or_default();
+        self.config = match ctx.parse_config() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("health-checker config parse failed, using defaults: {e}");
+                HealthCheckerConfig::default()
+            }
+        };
 
         tracing::info!(
             interval_secs = self.config.interval_secs,

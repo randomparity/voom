@@ -351,9 +351,13 @@ impl Plugin for FfmpegExecutorPlugin {
         let mut hw_config = HwAccelConfig::from_probed(&hw_accels);
 
         // Read per-plugin config for GPU device selection
-        let plugin_config = ctx
-            .parse_config::<FfmpegExecutorConfig>()
-            .unwrap_or_default();
+        let plugin_config = match ctx.parse_config::<FfmpegExecutorConfig>() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("ffmpeg-executor config parse failed, using defaults: {e}");
+                FfmpegExecutorConfig::default()
+            }
+        };
 
         // Resolve configured GPU device
         let target_device: Option<GpuDevice> = if let (Some(backend), Some(device_id)) =

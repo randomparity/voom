@@ -124,6 +124,7 @@ impl EventResult {
     /// Lifecycle events (`PlanExecuting`, `PlanCompleted`) are dispatched by the
     /// orchestrator in `process.rs`, not produced by executors, to avoid
     /// duplicate dispatches.
+    #[must_use]
     pub fn plan_succeeded(plugin_name: impl Into<String>, data: Option<serde_json::Value>) -> Self {
         Self {
             plugin_name: plugin_name.into(),
@@ -139,6 +140,7 @@ impl EventResult {
     /// Lifecycle events (`PlanExecuting`, `PlanFailed`) are dispatched by the
     /// orchestrator in `process.rs`, not produced by executors, to avoid
     /// duplicate dispatches.
+    #[must_use]
     pub fn plan_failed(plugin_name: impl Into<String>, error: impl Into<String>) -> Self {
         Self {
             plugin_name: plugin_name.into(),

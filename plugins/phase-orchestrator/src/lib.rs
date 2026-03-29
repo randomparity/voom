@@ -37,19 +37,16 @@ impl OrchestrationResult {
 /// Manages the execution order and dependencies between phases. In a full
 /// pipeline, it coordinates: evaluate → execute → re-introspect → next phase.
 /// Library-only plugin — called directly by the CLI, not registered with the kernel.
-pub struct PhaseOrchestratorPlugin;
+pub struct PhaseOrchestrator;
 
-impl PhaseOrchestratorPlugin {
+impl PhaseOrchestrator {
     #[must_use]
     pub fn new() -> Self {
         Self
     }
 
-    /// Orchestrate evaluation of all phases in a policy against a file.
-    ///
-    /// This is a "dry run" orchestration that produces plans without executing them.
-    /// In a full pipeline, the orchestrator would also invoke executors between phases
-    /// and re-introspect the file after modifications.
+    /// Produce phase outcomes from pre-evaluated plans, computing skip/completion
+    /// state and dry-run summary.
     ///
     /// The caller is responsible for running policy evaluation first (via
     /// `voom_policy_evaluator::evaluator::evaluate`) and passing the resulting plans.
@@ -132,7 +129,7 @@ impl PhaseOrchestratorPlugin {
     }
 }
 
-impl Default for PhaseOrchestratorPlugin {
+impl Default for PhaseOrchestrator {
     fn default() -> Self {
         Self::new()
     }
@@ -182,7 +179,7 @@ mod tests {
 
     #[test]
     fn test_orchestrate_simple_policy() {
-        let orch = PhaseOrchestratorPlugin::new();
+        let orch = PhaseOrchestrator::new();
         let policy =
             voom_dsl::compile_policy(r#"policy "test" { phase init { container mkv } }"#).unwrap();
         let file = test_file();
@@ -193,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_orchestrate_multi_phase() {
-        let orch = PhaseOrchestratorPlugin::new();
+        let orch = PhaseOrchestrator::new();
         let policy = voom_dsl::compile_policy(
             r#"policy "test" {
                 phase containerize { container mkv }
@@ -213,7 +210,7 @@ mod tests {
 
     #[test]
     fn test_orchestrate_skipped_phases() {
-        let orch = PhaseOrchestratorPlugin::new();
+        let orch = PhaseOrchestrator::new();
         let policy = voom_dsl::compile_policy(
             r#"policy "test" {
                 phase tc {
@@ -231,7 +228,7 @@ mod tests {
 
     #[test]
     fn test_format_dry_run() {
-        let orch = PhaseOrchestratorPlugin::new();
+        let orch = PhaseOrchestrator::new();
         let policy = voom_dsl::compile_policy(
             r#"policy "test" {
                 config { on_error: continue }
@@ -245,7 +242,7 @@ mod tests {
         .unwrap();
         let file = test_file();
         let result = orch.orchestrate(eval(&policy, &file));
-        let output = PhaseOrchestratorPlugin::format_dry_run(&result);
+        let output = PhaseOrchestrator::format_dry_run(&result);
         assert!(output.contains("Phase: containerize"));
         assert!(output.contains("Phase: normalize"));
         assert!(output.contains("Remove audio track"));
@@ -253,14 +250,14 @@ mod tests {
 
     #[test]
     fn test_needs_execution() {
-        let orch = PhaseOrchestratorPlugin::new();
+        let orch = PhaseOrchestrator::new();
 
         // No changes needed
         let policy =
             voom_dsl::compile_policy(r#"policy "test" { phase init { container mkv } }"#).unwrap();
         let file = test_file();
         let result = orch.orchestrate(eval(&policy, &file));
-        assert!(!PhaseOrchestratorPlugin::needs_execution(&result));
+        assert!(!PhaseOrchestrator::needs_execution(&result));
 
         // Changes needed
         let policy = voom_dsl::compile_policy(
@@ -268,7 +265,7 @@ mod tests {
         )
         .unwrap();
         let result = orch.orchestrate(eval(&policy, &file));
-        assert!(PhaseOrchestratorPlugin::needs_execution(&result));
+        assert!(PhaseOrchestrator::needs_execution(&result));
     }
 
     #[test]
@@ -285,19 +282,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            PhaseOrchestratorPlugin::phase_error_strategy(&policy, "a"),
+            PhaseOrchestrator::phase_error_strategy(&policy, "a"),
             ErrorStrategy::Skip
         );
         // Phase b has no explicit on_error, so compiler defaults to Abort
         assert_eq!(
-            PhaseOrchestratorPlugin::phase_error_strategy(&policy, "b"),
+            PhaseOrchestrator::phase_error_strategy(&policy, "b"),
             ErrorStrategy::Abort
         );
     }
 
     #[test]
     fn test_orchestrate_run_if() {
-        let orch = PhaseOrchestratorPlugin::new();
+        let orch = PhaseOrchestrator::new();
         let file = test_file(); // already MKV
 
         let policy = voom_dsl::compile_policy(
@@ -320,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_orchestrate_production_policy() {
-        let orch = PhaseOrchestratorPlugin::new();
+        let orch = PhaseOrchestrator::new();
         let source =
             include_str!("../../../crates/voom-dsl/tests/fixtures/production-normalize.voom");
         let policy = voom_dsl::compile_policy(source).unwrap();
@@ -328,7 +325,7 @@ mod tests {
         let result = orch.orchestrate(eval(&policy, &file));
         assert_eq!(result.plans.len(), 6);
 
-        let output = PhaseOrchestratorPlugin::format_dry_run(&result);
+        let output = PhaseOrchestrator::format_dry_run(&result);
         assert!(!output.is_empty());
     }
 }

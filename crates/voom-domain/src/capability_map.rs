@@ -103,7 +103,6 @@ impl CapabilityMap {
 
 /// Normalize raw ffmpeg hwaccel names to canonical backend names.
 fn normalize_hwaccel(raw: &str) -> &'static str {
-    // Compare case-insensitively without allocating
     let lower: String = raw.to_ascii_lowercase();
     match lower.as_str() {
         "cuda" | "nvdec" | "nvenc" => "nvenc",

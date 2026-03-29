@@ -432,7 +432,7 @@ async fn process_single_file(
         ));
     }
 
-    let needs_exec = voom_phase_orchestrator::PhaseOrchestratorPlugin::needs_execution(&result);
+    let needs_exec = voom_phase_orchestrator::PhaseOrchestrator::needs_execution(&result);
 
     if needs_exec {
         ctx.modified_count.fetch_add(1, AtomicOrdering::Relaxed);
@@ -495,10 +495,10 @@ fn orchestrate_plans(
     file: &voom_domain::media::MediaFile,
     capabilities: &voom_domain::CapabilityMap,
 ) -> voom_phase_orchestrator::OrchestrationResult {
-    let plans = voom_policy_evaluator::PolicyEvaluatorPlugin::new()
+    let plans = voom_policy_evaluator::PolicyEvaluator::new()
         .evaluate_with_capabilities(compiled, file, capabilities)
         .plans;
-    let orchestrator = voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
+    let orchestrator = voom_phase_orchestrator::PhaseOrchestrator::new();
     orchestrator.orchestrate(plans)
 }
 

@@ -283,7 +283,7 @@ fn apply_transcode_video(
     };
 
     // Check hw_fallback: when false, error if HW encoder isn't available
-    let hw_requested = hw.as_deref() != Some("none");
+    let hw_requested = hw.as_deref().is_some_and(|v| v != "none");
     if hw_requested && hw_fallback == &Some(false) {
         if let Some(hw_cfg) = effective_hw {
             if !hw_cfg.has_hw_encoder(codec) {
@@ -1445,7 +1445,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hw_fallback_false_no_backend_errors() {
+    fn test_hw_fallback_false_no_hw_requested_succeeds() {
         let file = sample_mp4_file();
         let action = PlannedAction::track_op(
             OperationType::TranscodeVideo,
@@ -1464,11 +1464,41 @@ mod tests {
         let actions: Vec<&PlannedAction> = vec![&action];
         let output = Path::new("/tmp/output.mkv");
 
-        // No HW accel at all
+        // hw: None means HW was never requested, so hw_fallback is irrelevant
         let result = build_ffmpeg_command(&file, &actions, output, None);
         assert!(
+            result.is_ok(),
+            "hw: None should succeed regardless of hw_fallback: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_hw_fallback_false_hw_requested_but_encoder_unavailable_errors() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                crf: Some(23),
+                preset: None,
+                bitrate: None,
+                channels: None,
+                hw: Some("nvenc".into()),
+                hw_fallback: Some(false),
+            },
+            "Transcode HEVC, nvenc requested, no fallback",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        // System HW validated but encoder NOT in validated list
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Nvenc)
+            .with_validated_encoders(vec!["h264_nvenc".into()]);
+        let result = build_ffmpeg_command(&file, &actions, output, Some(&hw));
+        assert!(
             result.is_err(),
-            "should error with no HW and hw_fallback: false"
+            "hevc_nvenc not in validated list should error when hw_fallback: false"
         );
     }
 }
