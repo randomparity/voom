@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -126,10 +127,12 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let compiled = Arc::new(compiled);
     let dry_run = args.dry_run;
     let flag_size_increase = args.flag_size_increase;
+    let modified_count = Arc::new(AtomicU64::new(0));
 
     let token_for_workers = token.clone();
     let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
     let ffprobe_path = Arc::new(ffprobe_path);
+    let modified_for_summary = modified_count.clone();
     let _results = pool
         .process_batch(
             items,
@@ -139,6 +142,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                 let token = token_for_workers.clone();
                 let ffprobe_path = ffprobe_path.clone();
                 let capabilities = capabilities.clone();
+                let modified_count = modified_count.clone();
                 async move {
                     let ctx = ProcessContext {
                         compiled: &compiled,
@@ -148,6 +152,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                         token: &token,
                         ffprobe_path: ffprobe_path.as_deref(),
                         capabilities: &capabilities,
+                        modified_count: &modified_count,
                     };
                     process_single_file(job, &ctx).await
                 }
@@ -157,10 +162,11 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         )
         .await;
 
+    let modified = modified_for_summary.load(AtomicOrdering::Relaxed);
     if token.is_cancelled() {
-        print_interrupted_summary(&pool, file_count);
+        print_interrupted_summary(&pool, file_count, modified);
     } else {
-        print_summary(&pool, file_count, effective_workers, args.dry_run);
+        print_summary(&pool, file_count, modified, effective_workers, args.dry_run);
     }
 
     Ok(())
@@ -279,6 +285,7 @@ struct ProcessContext<'a> {
     token: &'a CancellationToken,
     ffprobe_path: Option<&'a str>,
     capabilities: &'a voom_domain::CapabilityMap,
+    modified_count: &'a AtomicU64,
 }
 
 /// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
@@ -320,6 +327,10 @@ async fn process_single_file(
     }
 
     let needs_exec = voom_phase_orchestrator::PhaseOrchestratorPlugin::needs_execution(&result);
+
+    if needs_exec {
+        ctx.modified_count.fetch_add(1, AtomicOrdering::Relaxed);
+    }
 
     if ctx.dry_run {
         let plan_summaries: Vec<serde_json::Value> = result
@@ -528,30 +539,40 @@ fn execute_single_plan(
 }
 
 /// Print a summary when interrupted by CTRL-C.
-fn print_interrupted_summary(pool: &WorkerPool, file_count: usize) {
+fn print_interrupted_summary(pool: &WorkerPool, file_count: usize, modified: u64) {
     let completed = pool.completed_count();
     let failed = pool.failed_count();
     println!(
-        "\n{} {}/{} processed, {} errors",
+        "\n{} {}/{} processed, {} modified, {} errors",
         style("Interrupted.").bold().yellow(),
         completed,
         file_count,
+        modified,
         failed,
     );
 }
 
 /// Print the final summary line after processing.
-fn print_summary(pool: &WorkerPool, file_count: usize, effective_workers: usize, dry_run: bool) {
+fn print_summary(
+    pool: &WorkerPool,
+    file_count: usize,
+    modified: u64,
+    effective_workers: usize,
+    dry_run: bool,
+) {
     let completed = pool.completed_count();
     let failed = pool.failed_count();
     let skipped = (file_count as u64)
         .saturating_sub(completed)
         .saturating_sub(failed);
 
+    let modified_label = if dry_run { "would modify" } else { "modified" };
+
     println!(
-        "\n{} {} processed, {} skipped, {} errors (workers: {})",
+        "\n{} {} processed, {} {modified_label}, {} skipped, {} errors (workers: {})",
         style("Done.").bold().green(),
         style(completed).green(),
+        style(modified).cyan(),
         style(skipped).dim(),
         if failed > 0 {
             style(failed).red().to_string()
