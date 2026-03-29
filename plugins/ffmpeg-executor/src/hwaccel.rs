@@ -334,7 +334,8 @@ pub fn resolve_hw_config(
     override_name: Option<&str>,
     hw_accels: &[String],
 ) -> (HwAccelConfig, &'static str) {
-    match override_name {
+    let name = override_name.map(|s| s.trim().to_ascii_lowercase());
+    match name.as_deref() {
         Some("none") => {
             tracing::info!("hw_accel disabled by config");
             (HwAccelConfig::new(), "disabled")
@@ -342,6 +343,15 @@ pub fn resolve_hw_config(
         Some(name) => {
             let cfg = config_from_backend_name(name);
             if cfg.enabled() {
+                if let Some(be) = cfg.backend {
+                    if !verify_backend(be) {
+                        tracing::warn!(
+                            backend = name,
+                            "configured hw_accel backend not detected on this system; \
+                             encoding will fail if hardware is absent"
+                        );
+                    }
+                }
                 tracing::info!(backend = name, "using configured hw_accel override");
                 (cfg, "config override")
             } else {
@@ -669,5 +679,49 @@ mod tests {
         }
         let result = detect_backend_with_verifier("cuda vaapi qsv", reject_all);
         assert_eq!(result, None);
+    }
+
+    // ── resolve_hw_config ─────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_auto_detect_empty() {
+        let (cfg, src) = resolve_hw_config(None, &[]);
+        assert!(cfg.backend.is_none());
+        assert_eq!(src, "auto-detected");
+    }
+
+    #[test]
+    fn test_resolve_disabled() {
+        let (cfg, src) = resolve_hw_config(Some("none"), &[]);
+        assert!(cfg.backend.is_none());
+        assert_eq!(src, "disabled");
+    }
+
+    #[test]
+    fn test_resolve_valid_override() {
+        let (cfg, src) = resolve_hw_config(Some("vaapi"), &[]);
+        assert_eq!(cfg.backend, Some(HwAccelBackend::Vaapi));
+        assert_eq!(src, "config override");
+    }
+
+    #[test]
+    fn test_resolve_unrecognized_falls_back() {
+        let (cfg, src) = resolve_hw_config(Some("d3d11va"), &[]);
+        assert!(cfg.backend.is_none());
+        assert_eq!(src, "auto-detected");
+    }
+
+    #[test]
+    fn test_resolve_case_insensitive() {
+        let (cfg, src) = resolve_hw_config(Some("VAAPI"), &[]);
+        assert_eq!(cfg.backend, Some(HwAccelBackend::Vaapi));
+        assert_eq!(src, "config override");
+    }
+
+    #[test]
+    fn test_resolve_trims_whitespace() {
+        let (cfg, src) = resolve_hw_config(Some(" nvenc "), &[]);
+        assert_eq!(cfg.backend, Some(HwAccelBackend::Nvenc));
+        assert_eq!(src, "config override");
     }
 }
