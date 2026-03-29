@@ -287,15 +287,48 @@ pub fn has_nvidia_hardware() -> bool {
         .unwrap_or(false)
 }
 
-/// Check whether any VA-API render device exists.
+/// Check whether a working VA-API device exists.
+///
+/// Finds the first `/dev/dri/renderD*` node and runs `vainfo` against it
+/// to confirm the VA-API userspace stack is functional. A render node can
+/// exist without working VA-API (e.g., AMD GPU without `mesa-va-drivers`).
+///
+/// Returns `false` if no render nodes exist or `vainfo` is not installed.
+/// Users can bypass this check with `hw_accel = "vaapi"` in config.
 pub fn has_vaapi_devices() -> bool {
-    std::fs::read_dir("/dev/dri")
-        .map(|entries| {
-            entries
-                .flatten()
-                .any(|e| e.file_name().to_string_lossy().starts_with("renderD"))
-        })
-        .unwrap_or(false)
+    let first_render_node = std::fs::read_dir("/dev/dri")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().starts_with("renderD"));
+
+    let Some(entry) = first_render_node else {
+        return false;
+    };
+
+    let path = entry.path();
+    let path_str = path.to_string_lossy();
+
+    let ok = std::process::Command::new("vainfo")
+        .args(["--display", "drm", "--device", &path_str])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if ok {
+        tracing::debug!(device = %path_str, "VA-API device verified via vainfo");
+    } else {
+        tracing::info!(
+            device = %path_str,
+            "VA-API render node exists but vainfo failed — \
+             missing drivers or vainfo not installed"
+        );
+    }
+
+    ok
 }
 
 /// Check whether Intel GPU hardware is present (for QSV).
