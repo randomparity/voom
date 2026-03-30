@@ -175,6 +175,79 @@ impl MkvtoolnixExecutorPlugin {
         Ok(results)
     }
 
+    /// Handle a `subtitle.generated` event by muxing the SRT into the MKV.
+    fn handle_subtitle_generated(
+        &self,
+        event: &voom_domain::events::SubtitleGeneratedEvent,
+    ) -> Result<Option<EventResult>> {
+        if !self.available {
+            return Ok(None);
+        }
+
+        // Only handle MKV files
+        let ext = event
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if Container::from_extension(ext) != Container::Mkv {
+            return Ok(None);
+        }
+
+        let temp_path = event.path.with_extension("tmp.mkv");
+        let mut args = vec![
+            "-o".to_string(),
+            temp_path.to_string_lossy().into_owned(),
+            "--language".to_string(),
+            format!("0:{}", event.language),
+            "--forced-display-flag".to_string(),
+            format!("0:{}", if event.forced { 1 } else { 0 }),
+        ];
+        if let Some(title) = &event.title {
+            args.push("--track-name".to_string());
+            args.push(format!("0:{title}"));
+        }
+        args.push(event.path.to_string_lossy().into_owned());
+        args.push(event.subtitle_path.to_string_lossy().into_owned());
+
+        let output = Command::new("mkvmerge").args(&args).output();
+
+        match output {
+            Ok(o) if o.status.success() || o.status.code() == Some(1) => {
+                // mkvmerge returns 1 for warnings, which is still success
+                if let Err(e) = std::fs::rename(&temp_path, &event.path) {
+                    if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
+                        tracing::warn!(error = %cleanup_err, "failed to clean up temp file");
+                    }
+                    return Err(VoomError::ToolExecution {
+                        tool: "mkvmerge".into(),
+                        message: format!("failed to rename temp file: {e}"),
+                    });
+                }
+                let mut result = EventResult::new(self.name());
+                result.claimed = true;
+                Ok(Some(result))
+            }
+            Ok(o) => {
+                if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
+                    tracing::warn!(error = %cleanup_err, "failed to clean up temp file");
+                }
+                Err(VoomError::ToolExecution {
+                    tool: "mkvmerge".into(),
+                    message: format!(
+                        "mkvmerge failed (exit {}): {}",
+                        o.status.code().unwrap_or(-1),
+                        String::from_utf8_lossy(&o.stderr)
+                    ),
+                })
+            }
+            Err(e) => Err(VoomError::ToolExecution {
+                tool: "mkvmerge".into(),
+                message: format!("failed to run mkvmerge: {e}"),
+            }),
+        }
+    }
+
     /// Handle a `plan.created` event.
     fn handle_plan_created(
         &self,
@@ -230,12 +303,13 @@ impl Plugin for MkvtoolnixExecutorPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == Event::PLAN_CREATED
+        event_type == Event::PLAN_CREATED || event_type == Event::SUBTITLE_GENERATED
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
         match event {
             Event::PlanCreated(plan_event) => self.handle_plan_created(plan_event),
+            Event::SubtitleGenerated(e) => self.handle_subtitle_generated(e),
             _ => Ok(None),
         }
     }
@@ -335,6 +409,25 @@ mod tests {
         assert!(!plugin.handles(Event::FILE_DISCOVERED));
         assert!(!plugin.handles(Event::PLAN_COMPLETED));
         assert!(!plugin.handles(Event::PLAN_EXECUTING));
+    }
+
+    #[test]
+    fn test_handles_subtitle_generated() {
+        let plugin = MkvtoolnixExecutorPlugin::new();
+        assert!(plugin.handles(Event::SUBTITLE_GENERATED));
+    }
+
+    #[test]
+    fn test_subtitle_generated_non_mkv_returns_none() {
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
+        let event = Event::SubtitleGenerated(voom_domain::events::SubtitleGeneratedEvent::new(
+            PathBuf::from("/media/movie.mp4"),
+            PathBuf::from("/media/movie.forced-eng.srt"),
+            "eng",
+            true,
+        ));
+        let result = plugin.on_event(&event).unwrap();
+        assert!(result.is_none());
     }
 
     #[test]

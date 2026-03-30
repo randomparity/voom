@@ -152,7 +152,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]))
     };
 
-    let items = build_work_items(&events);
+    let items = build_work_items(&events, args.priority_by_date);
     let keep_backups = compiled.config.keep_backups;
     let phase_order = compiled.phase_order.clone();
     let compiled = Arc::new(compiled);
@@ -323,16 +323,55 @@ fn log_plugin_errors(results: &[voom_domain::events::EventResult]) {
 
 use crate::introspect::DiscoveredFilePayload;
 
+/// Compute job priority based on file modification date.
+///
+/// More recently modified files get higher priority (lower number).
+/// - Modified within 7 days: 10
+/// - Modified within 30 days: 50
+/// - Modified within 1 year: 100
+/// - Older or metadata unavailable: 200
+fn compute_file_date_priority(path: &std::path::Path) -> i32 {
+    let metadata = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return 200,
+    };
+    let modified = match metadata.modified() {
+        Ok(t) => t,
+        Err(_) => return 200,
+    };
+    let elapsed = match std::time::SystemTime::now().duration_since(modified) {
+        Ok(d) => d,
+        Err(_) => return 200,
+    };
+    const SECS_PER_DAY: u64 = 86_400;
+    let days = elapsed.as_secs() / SECS_PER_DAY;
+    if days < 7 {
+        10
+    } else if days < 30 {
+        50
+    } else if days < 365 {
+        100
+    } else {
+        200
+    }
+}
+
 /// Build work items from discovery events for the worker pool.
 fn build_work_items(
     events: &[voom_domain::events::FileDiscoveredEvent],
+    priority_by_date: bool,
 ) -> Vec<voom_job_manager::worker::WorkItem<DiscoveredFilePayload>> {
     events
         .iter()
         .map(|evt| {
+            let priority = if priority_by_date {
+                compute_file_date_priority(&evt.path)
+            } else {
+                100
+            };
             voom_job_manager::worker::WorkItem::new(
                 voom_domain::job::JobType::Process,
-                100,
+                priority,
                 Some(DiscoveredFilePayload {
                     path: evt.path.to_string_lossy().into_owned(),
                     size: evt.size,
@@ -1315,6 +1354,21 @@ mod tests {
 
         reporter.on_job_complete(job_id, true, None);
         assert_eq!(recorder.completed.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_compute_file_date_priority_recent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent.mkv");
+        std::fs::write(&path, "test").unwrap();
+        // Just created -> within 7 days -> priority 10
+        assert_eq!(compute_file_date_priority(&path), 10);
+    }
+
+    #[test]
+    fn test_compute_file_date_priority_nonexistent() {
+        let path = std::path::PathBuf::from("/nonexistent/file.mkv");
+        assert_eq!(compute_file_date_priority(&path), 200);
     }
 
     #[test]

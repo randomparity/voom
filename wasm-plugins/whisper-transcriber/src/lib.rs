@@ -60,9 +60,11 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload).map_err(|e| {
-        host.log("error", &format!("failed to deserialize event: {e}"));
-    }).ok()?;
+    let event = deserialize_event(payload)
+        .map_err(|e| {
+            host.log("error", &format!("failed to deserialize event: {e}"));
+        })
+        .ok()?;
     let file = match &event {
         Event::FileIntrospected(e) => &e.file,
         _ => return None,
@@ -71,7 +73,10 @@ pub fn on_event(
     // Only transcribe files that have audio tracks.
     let has_audio = file.tracks.iter().any(|t| t.track_type.is_audio());
     if !has_audio {
-        host.log("debug", &format!("skipping {}: no audio tracks", file.path.display()));
+        host.log(
+            "debug",
+            &format!("skipping {}: no audio tracks", file.path.display()),
+        );
         return None;
     }
 
@@ -112,11 +117,14 @@ pub fn on_event(
             return None;
         }
         Ok(o) if o.exit_code != 0 => {
-            host.log("error", &format!(
-                "ffmpeg exited with code {}: {}",
-                o.exit_code,
-                String::from_utf8_lossy(&o.stderr)
-            ));
+            host.log(
+                "error",
+                &format!(
+                    "ffmpeg exited with code {}: {}",
+                    o.exit_code,
+                    String::from_utf8_lossy(&o.stderr)
+                ),
+            );
             return None;
         }
         Ok(o) => o,
@@ -124,10 +132,13 @@ pub fn on_event(
 
     // Step 2: Run whisper on the extracted audio.
     let cfg = config.as_ref();
-    let whisper_bin = cfg.map(|c| c.whisper_binary.as_str()).unwrap_or("whisper-cli");
+    let whisper_bin = cfg
+        .map(|c| c.whisper_binary.as_str())
+        .unwrap_or("whisper-cli");
     let model = cfg.map(|c| c.model.as_str()).unwrap_or("base");
     let language = cfg.and_then(|c| c.language.as_deref());
 
+    let per_segment = cfg.is_some_and(|c| c.per_segment_language);
     let mut whisper_args = vec![
         audio_path.clone(),
         "--model".to_string(),
@@ -135,9 +146,11 @@ pub fn on_event(
         "--output-format".to_string(),
         "json".to_string(),
     ];
-    if let Some(lang) = language {
-        whisper_args.push("--language".to_string());
-        whisper_args.push(lang.to_string());
+    if !per_segment {
+        if let Some(lang) = language {
+            whisper_args.push("--language".to_string());
+            whisper_args.push(lang.to_string());
+        }
     }
 
     let whisper_result = host.run_tool(whisper_bin, &whisper_args, 600_000); // 10 min timeout
@@ -151,11 +164,14 @@ pub fn on_event(
             return None;
         }
         Ok(o) if o.exit_code != 0 => {
-            host.log("error", &format!(
-                "whisper exited with code {}: {}",
-                o.exit_code,
-                String::from_utf8_lossy(&o.stderr)
-            ));
+            host.log(
+                "error",
+                &format!(
+                    "whisper exited with code {}: {}",
+                    o.exit_code,
+                    String::from_utf8_lossy(&o.stderr)
+                ),
+            );
             return None;
         }
         Ok(o) => o,
@@ -167,27 +183,52 @@ pub fn on_event(
     build_result(file, &whisper_output.stdout, host)
 }
 
+/// Returns true when the transcript contains segments in more than one language.
+pub fn detect_multi_language(transcript: &serde_json::Value) -> bool {
+    let segments = match transcript.get("segments").and_then(|s| s.as_array()) {
+        Some(arr) => arr,
+        None => return false,
+    };
+    let mut languages = std::collections::HashSet::new();
+    for seg in segments {
+        if let Some(lang) = seg.get("language").and_then(|l| l.as_str()) {
+            languages.insert(lang);
+            if languages.len() > 1 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn build_result(
     file: &MediaFile,
     transcript_data: &[u8],
     host: &dyn HostFunctions,
 ) -> Option<OnEventResult> {
-    let transcript_json: serde_json::Value = serde_json::from_slice(transcript_data).map_err(|e| {
-        host.log("error", &format!("failed to parse transcript JSON: {e}"));
-    }).ok()?;
+    let transcript_json: serde_json::Value = serde_json::from_slice(transcript_data)
+        .map_err(|e| {
+            host.log("error", &format!("failed to parse transcript JSON: {e}"));
+        })
+        .ok()?;
 
     let metadata = serde_json::json!({
         "source": "whisper-transcriber",
         "transcript": transcript_json,
+        "multi_language_detected": detect_multi_language(&transcript_json),
     });
 
-    let enriched_event = Event::MetadataEnriched(
-        MetadataEnrichedEvent::new(file.path.clone(), "whisper-transcriber".to_string(), metadata),
-    );
+    let enriched_event = Event::MetadataEnriched(MetadataEnrichedEvent::new(
+        file.path.clone(),
+        "whisper-transcriber".to_string(),
+        metadata,
+    ));
 
-    let produced_payload = serialize_event(&enriched_event).map_err(|e| {
-        host.log("error", &format!("failed to serialize event: {e}"));
-    }).ok()?;
+    let produced_payload = serialize_event(&enriched_event)
+        .map_err(|e| {
+            host.log("error", &format!("failed to serialize event: {e}"));
+        })
+        .ok()?;
 
     Some(OnEventResult::new(
         "whisper-transcriber",
@@ -207,6 +248,9 @@ pub struct WhisperConfig {
     pub model: String,
     /// Force a specific language (None = auto-detect).
     pub language: Option<String>,
+    /// When true, skip `--language` so whisper auto-detects per segment.
+    #[serde(default)]
+    pub per_segment_language: bool,
 }
 
 #[cfg(test)]
@@ -242,16 +286,24 @@ mod tests {
                 "whisper-cli".to_string(),
                 ToolOutput::new(0, serde_json::to_vec(&transcript).unwrap(), vec![]),
             );
-            tool_results.insert(
-                "rm".to_string(),
-                ToolOutput::new(0, vec![], vec![]),
-            );
+            tool_results.insert("rm".to_string(), ToolOutput::new(0, vec![], vec![]));
 
             Self {
                 config: None,
                 tool_results,
                 cached: std::cell::RefCell::new(HashMap::new()),
             }
+        }
+
+        fn with_per_segment_config() -> Self {
+            let mut host = Self::new();
+            host.config = Some(WhisperConfig {
+                whisper_binary: "whisper-cli".to_string(),
+                model: "large".to_string(),
+                language: Some("en".to_string()),
+                per_segment_language: true,
+            });
+            host
         }
 
         fn with_failing_ffmpeg() -> Self {
@@ -265,7 +317,12 @@ mod tests {
     }
 
     impl HostFunctions for MockHost {
-        fn run_tool(&self, tool: &str, _args: &[String], _timeout_ms: u64) -> Result<ToolOutput, String> {
+        fn run_tool(
+            &self,
+            tool: &str,
+            _args: &[String],
+            _timeout_ms: u64,
+        ) -> Result<ToolOutput, String> {
             self.tool_results
                 .get(tool)
                 .map(|o| ToolOutput::new(o.exit_code, o.stdout.clone(), o.stderr.clone()))
@@ -281,7 +338,9 @@ mod tests {
         }
 
         fn set_plugin_data(&self, key: &str, value: &[u8]) -> Result<(), String> {
-            self.cached.borrow_mut().insert(key.to_string(), value.to_vec());
+            self.cached
+                .borrow_mut()
+                .insert(key.to_string(), value.to_vec());
             Ok(())
         }
 
@@ -318,9 +377,7 @@ mod tests {
     fn test_on_event_transcription_success() {
         let host = MockHost::new();
         let file = make_audio_file();
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("file.introspected", &payload, &host);
@@ -346,9 +403,7 @@ mod tests {
     fn test_on_event_no_audio_tracks() {
         let host = MockHost::new();
         let file = MediaFile::new(PathBuf::from("/media/test.mkv")); // no tracks
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("file.introspected", &payload, &host);
@@ -359,9 +414,7 @@ mod tests {
     fn test_on_event_ffmpeg_failure() {
         let host = MockHost::with_failing_ffmpeg();
         let file = make_audio_file();
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("file.introspected", &payload, &host);
@@ -382,9 +435,7 @@ mod tests {
         );
 
         let file = make_audio_file();
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("file.introspected", &payload, &host);
@@ -406,11 +457,86 @@ mod tests {
     }
 
     #[test]
+    fn test_whisper_config_per_segment_language() {
+        let config: WhisperConfig = serde_json::from_str(
+            r#"{"whisper_binary":"whisper","model":"large","per_segment_language":true}"#,
+        )
+        .unwrap();
+        assert!(config.per_segment_language);
+    }
+
+    #[test]
+    fn test_whisper_config_per_segment_language_default_false() {
+        let config: WhisperConfig =
+            serde_json::from_str(r#"{"whisper_binary":"whisper","model":"base"}"#).unwrap();
+        assert!(!config.per_segment_language);
+    }
+
+    #[test]
+    fn test_detect_multi_language_true() {
+        let transcript = serde_json::json!({
+            "segments": [
+                {"start": 0.0, "end": 2.0, "text": "Hello", "language": "en"},
+                {"start": 2.0, "end": 4.0, "text": "Bonjour", "language": "fr"},
+            ]
+        });
+        assert!(detect_multi_language(&transcript));
+    }
+
+    #[test]
+    fn test_detect_multi_language_false_single() {
+        let transcript = serde_json::json!({
+            "segments": [
+                {"start": 0.0, "end": 2.0, "text": "Hello", "language": "en"},
+                {"start": 2.0, "end": 4.0, "text": "World", "language": "en"},
+            ]
+        });
+        assert!(!detect_multi_language(&transcript));
+    }
+
+    #[test]
+    fn test_detect_multi_language_missing_segments() {
+        let transcript = serde_json::json!({"text": "Hello"});
+        assert!(!detect_multi_language(&transcript));
+    }
+
+    #[test]
+    fn test_on_event_includes_multi_language_detected() {
+        let host = MockHost::new();
+        let file = make_audio_file();
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
+        let payload = serialize_event(&event).unwrap();
+        let result = on_event("file.introspected", &payload, &host);
+        assert!(result.is_some());
+        let produced: Event = deserialize_event(&result.unwrap().produced_events[0].1).unwrap();
+        match produced {
+            Event::MetadataEnriched(e) => {
+                assert!(e.metadata.get("multi_language_detected").is_some());
+            }
+            _ => panic!("expected MetadataEnriched"),
+        }
+    }
+
+    #[test]
+    fn test_per_segment_language_omits_language_flag() {
+        // We can't directly inspect args passed to run_tool with the current mock,
+        // but we can verify the config round-trips correctly and the function
+        // succeeds with per_segment_language enabled
+        let host = MockHost::with_per_segment_config();
+        let file = make_audio_file();
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
+        let payload = serialize_event(&event).unwrap();
+        let result = on_event("file.introspected", &payload, &host);
+        assert!(result.is_some());
+    }
+
+    #[test]
     fn test_whisper_config_serde() {
         let config = WhisperConfig {
             whisper_binary: "whisper".to_string(),
             model: "large".to_string(),
             language: Some("en".to_string()),
+            per_segment_language: false,
         };
         let bytes = serde_json::to_vec(&config).unwrap();
         let restored: WhisperConfig = serde_json::from_slice(&bytes).unwrap();

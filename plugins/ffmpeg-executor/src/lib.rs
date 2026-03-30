@@ -242,6 +242,69 @@ impl FfmpegExecutorPlugin {
         executor::execute_plan(plan, &self.hw_accel)
     }
 
+    /// Handle a `subtitle.generated` event for non-MKV files.
+    fn handle_subtitle_generated(
+        &self,
+        event: &voom_domain::events::SubtitleGeneratedEvent,
+    ) -> Result<Option<EventResult>> {
+        // Defer MKV files to mkvtoolnix
+        let ext = event
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if Container::from_extension(ext) == Container::Mkv {
+            return Ok(None);
+        }
+
+        let temp_path = event.path.with_extension("tmp.mp4");
+        let mut args = vec![
+            "-i".to_string(),
+            event.path.to_string_lossy().into_owned(),
+            "-i".to_string(),
+            event.subtitle_path.to_string_lossy().into_owned(),
+            "-c".to_string(),
+            "copy".to_string(),
+            "-c:s".to_string(),
+            "srt".to_string(),
+            "-metadata:s:s:0".to_string(),
+            format!("language={}", event.language),
+        ];
+        if event.forced {
+            args.push("-disposition:s:0".to_string());
+            args.push("forced".to_string());
+        }
+        args.push("-y".to_string());
+        args.push(temp_path.to_string_lossy().into_owned());
+
+        let output = Command::new("ffmpeg").args(&args).output();
+
+        match output {
+            Ok(o) if o.status.success() => {
+                if let Err(e) = std::fs::rename(&temp_path, &event.path) {
+                    if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
+                        tracing::warn!(error = %cleanup_err, "failed to clean up temp file");
+                    }
+                    return Err(plugin_err(format!("failed to rename temp file: {e}")));
+                }
+                let mut result = EventResult::new("ffmpeg-executor");
+                result.claimed = true;
+                Ok(Some(result))
+            }
+            Ok(o) => {
+                if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
+                    tracing::warn!(error = %cleanup_err, "failed to clean up temp file");
+                }
+                Err(plugin_err(format!(
+                    "ffmpeg failed (exit {}): {}",
+                    o.status.code().unwrap_or(-1),
+                    String::from_utf8_lossy(&o.stderr)
+                )))
+            }
+            Err(e) => Err(plugin_err(format!("failed to run ffmpeg: {e}"))),
+        }
+    }
+
     /// Handle a `plan.created` event.
     fn handle_plan_created(&self, event: &PlanCreatedEvent) -> Result<Option<EventResult>> {
         let plan = &event.plan;
@@ -288,12 +351,13 @@ impl Plugin for FfmpegExecutorPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == Event::PLAN_CREATED
+        event_type == Event::PLAN_CREATED || event_type == Event::SUBTITLE_GENERATED
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
         match event {
             Event::PlanCreated(plan_event) => self.handle_plan_created(plan_event),
+            Event::SubtitleGenerated(e) => self.handle_subtitle_generated(e),
             _ => Ok(None),
         }
     }
@@ -487,6 +551,25 @@ mod tests {
         assert!(plugin.handles(Event::PLAN_CREATED));
         assert!(!plugin.handles(Event::FILE_DISCOVERED));
         assert!(!plugin.handles(Event::PLAN_COMPLETED));
+    }
+
+    #[test]
+    fn test_handles_subtitle_generated() {
+        let plugin = FfmpegExecutorPlugin::new();
+        assert!(plugin.handles(Event::SUBTITLE_GENERATED));
+    }
+
+    #[test]
+    fn test_subtitle_generated_mkv_returns_none() {
+        let plugin = FfmpegExecutorPlugin::new();
+        let event = Event::SubtitleGenerated(voom_domain::events::SubtitleGeneratedEvent::new(
+            PathBuf::from("/media/movie.mkv"),
+            PathBuf::from("/media/movie.forced-eng.srt"),
+            "eng",
+            true,
+        ));
+        let result = plugin.on_event(&event).unwrap();
+        assert!(result.is_none());
     }
 
     // ── can_handle: positive cases ──────────────────────────────

@@ -85,7 +85,8 @@ pub use voom_domain::utils::language::{from_iso639_1, language_code_from_name};
 // These let plugins write `use voom_plugin_sdk::MediaFile` etc.
 pub use voom_domain::capabilities::Capability;
 pub use voom_domain::events::{
-    EventResult, FileIntrospectedEvent, MetadataEnrichedEvent, PlanCompletedEvent, PlanCreatedEvent,
+    EventResult, FileIntrospectedEvent, MetadataEnrichedEvent, PlanCompletedEvent,
+    PlanCreatedEvent, SubtitleGeneratedEvent,
 };
 pub use voom_domain::media::{Container, MediaFile, Track, TrackType};
 pub use voom_domain::plan::{ActionResult, PhaseOutcome, PhaseResult, Plan, PlannedAction};
@@ -98,7 +99,7 @@ pub mod domain {
     pub use voom_domain::capabilities::Capability;
     pub use voom_domain::events::{
         EventResult, FileIntrospectedEvent, MetadataEnrichedEvent, PlanCompletedEvent,
-        PlanCreatedEvent,
+        PlanCreatedEvent, SubtitleGeneratedEvent,
     };
     pub use voom_domain::media::{Container, MediaFile, Track, TrackType};
     pub use voom_domain::plan::{ActionResult, PhaseOutcome, PhaseResult, Plan, PlannedAction};

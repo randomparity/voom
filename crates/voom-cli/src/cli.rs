@@ -173,6 +173,10 @@ pub struct ProcessArgs {
     /// Output raw plans as JSON to stdout without executing (implies --dry-run)
     #[arg(long)]
     pub plan_only: bool,
+
+    /// Assign job priority based on file modification date
+    #[arg(long)]
+    pub priority_by_date: bool,
 }
 
 // === Policy ===
@@ -1320,6 +1324,31 @@ mod tests {
     #[test]
     fn test_invalid_output_format_rejected() {
         assert!(try_parse(&["voom", "inspect", "f.mkv", "--format", "xml"]).is_err());
+    }
+
+    #[test]
+    fn test_process_priority_by_date_flag() {
+        let cli = parse(&[
+            "voom",
+            "process",
+            "/media",
+            "--policy",
+            "p.voom",
+            "--priority-by-date",
+        ]);
+        match cli.command {
+            Commands::Process(args) => assert!(args.priority_by_date),
+            _ => panic!("expected Process"),
+        }
+    }
+
+    #[test]
+    fn test_process_priority_by_date_default_false() {
+        let cli = parse(&["voom", "process", "/media", "--policy", "p.voom"]);
+        match cli.command {
+            Commands::Process(args) => assert!(!args.priority_by_date),
+            _ => panic!("expected Process"),
+        }
     }
 
     #[test]
