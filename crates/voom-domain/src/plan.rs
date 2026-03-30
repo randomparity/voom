@@ -141,6 +141,24 @@ pub enum TranscodeChannels {
     Count(u32),
 }
 
+impl TranscodeChannels {
+    /// Resolve to a concrete channel count.
+    /// Returns `None` for "preserve" or unrecognized named presets.
+    #[must_use]
+    pub fn to_count(&self) -> Option<u32> {
+        match self {
+            Self::Count(n) => Some(*n),
+            Self::Named(name) => match name.as_str() {
+                "mono" => Some(1),
+                "stereo" => Some(2),
+                "5.1" | "surround" => Some(6),
+                "7.1" => Some(8),
+                _ => None,
+            },
+        }
+    }
+}
+
 /// Transcode quality/encoding settings, separate from the codec choice.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -539,6 +557,41 @@ mod tests {
         assert!(plan.is_skipped());
         assert_eq!(plan.skip_reason.as_deref(), Some("no changes needed"));
         assert!(plan.actions.is_empty());
+    }
+
+    #[test]
+    fn test_transcode_channels_to_count_named() {
+        assert_eq!(TranscodeChannels::Named("mono".into()).to_count(), Some(1));
+        assert_eq!(
+            TranscodeChannels::Named("stereo".into()).to_count(),
+            Some(2)
+        );
+        assert_eq!(TranscodeChannels::Named("5.1".into()).to_count(), Some(6));
+        assert_eq!(
+            TranscodeChannels::Named("surround".into()).to_count(),
+            Some(6)
+        );
+        assert_eq!(TranscodeChannels::Named("7.1".into()).to_count(), Some(8));
+    }
+
+    #[test]
+    fn test_transcode_channels_to_count_numeric() {
+        assert_eq!(TranscodeChannels::Count(1).to_count(), Some(1));
+        assert_eq!(TranscodeChannels::Count(2).to_count(), Some(2));
+        assert_eq!(TranscodeChannels::Count(6).to_count(), Some(6));
+    }
+
+    #[test]
+    fn test_transcode_channels_to_count_preserve_returns_none() {
+        assert_eq!(TranscodeChannels::Named("preserve".into()).to_count(), None);
+    }
+
+    #[test]
+    fn test_transcode_channels_to_count_unknown_returns_none() {
+        assert_eq!(
+            TranscodeChannels::Named("quadraphonic".into()).to_count(),
+            None
+        );
     }
 
     #[test]

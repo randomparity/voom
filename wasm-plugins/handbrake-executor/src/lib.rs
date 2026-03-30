@@ -232,15 +232,11 @@ fn build_handbrake_args(
                         args.push(b.clone());
                     }
                     if let Some(ref ch) = settings.channels {
-                        let mixdown = match ch {
-                            TranscodeChannels::Count(1) => "mono",
-                            TranscodeChannels::Count(2) => "stereo",
-                            TranscodeChannels::Count(6) => "5point1",
-                            TranscodeChannels::Count(8) => "7point1",
-                            TranscodeChannels::Named(ref n) if n == "mono" => "mono",
-                            TranscodeChannels::Named(ref n) if n == "5.1" => "5point1",
-                            TranscodeChannels::Named(ref n) if n == "7.1" => "7point1",
-                            // "stereo", "preserve", unknown counts/names
+                        let mixdown = match ch.to_count() {
+                            Some(1) => "mono",
+                            Some(6) => "5point1",
+                            Some(8) => "7point1",
+                            // 2, None ("preserve"), or unknown
                             _ => "stereo",
                         };
                         args.push("--mixdown".to_string());

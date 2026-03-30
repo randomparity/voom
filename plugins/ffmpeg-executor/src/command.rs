@@ -322,20 +322,6 @@ fn apply_transcode_video(
     Ok(cmd)
 }
 
-fn resolve_transcode_channels(ch: &TranscodeChannels) -> Option<u32> {
-    match ch {
-        TranscodeChannels::Count(n) => Some(*n),
-        TranscodeChannels::Named(name) => match name.as_str() {
-            "mono" => Some(1),
-            "stereo" => Some(2),
-            "5.1" => Some(6),
-            "7.1" => Some(8),
-            // "preserve" and unknown names: don't set -ac, let ffmpeg decide
-            _ => None,
-        },
-    }
-}
-
 fn apply_transcode_audio(cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegCommand {
     let ActionParams::Transcode { codec, settings } = &action.parameters else {
         return cmd;
@@ -344,7 +330,7 @@ fn apply_transcode_audio(cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegCo
     let resolved = settings
         .channels
         .as_ref()
-        .and_then(resolve_transcode_channels);
+        .and_then(TranscodeChannels::to_count);
     let encoder = hwaccel::software_encoder(codec).to_string();
     apply_audio_codec_args(
         cmd,

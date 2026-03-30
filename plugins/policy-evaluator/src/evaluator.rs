@@ -661,18 +661,13 @@ fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
         None => None,
     };
 
-    let channels = synth.channels.as_ref().map(|c| match c {
-        TranscodeChannels::Count(n) => *n,
-        TranscodeChannels::Named(s) => match s.as_str() {
-            "mono" => 1,
-            "stereo" => 2,
-            "5.1" | "surround" => 6,
-            "7.1" => 8,
-            other => {
-                tracing::warn!(preset = other, "unknown channel preset, defaulting to 2");
-                2
+    let channels = synth.channels.as_ref().map(|c| {
+        c.to_count().unwrap_or_else(|| {
+            if let TranscodeChannels::Named(name) = c {
+                tracing::warn!(preset = name, "unknown channel preset, defaulting to 2");
             }
-        },
+            2
+        })
     });
 
     let position = synth.position.as_ref().map(|p| match p {
