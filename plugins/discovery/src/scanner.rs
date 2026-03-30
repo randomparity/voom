@@ -47,8 +47,14 @@ const HASH_CHUNK_SIZE: usize = 1024 * 1024; // 1 MB
 /// combined with the file size. This keeps hashing fast for multi-GB video
 /// files while still reliably detecting duplicates and content changes.
 pub fn hash_file(path: &Path) -> Result<String> {
-    let mut file = fs::File::open(path)?;
-    let file_size = file.metadata()?.len();
+    let io_err = |e: std::io::Error| {
+        VoomError::Io(std::io::Error::new(
+            e.kind(),
+            format!("{}: {e}", path.display()),
+        ))
+    };
+    let mut file = fs::File::open(path).map_err(io_err)?;
+    let file_size = file.metadata().map_err(io_err)?.len();
 
     if file_size <= PARTIAL_HASH_THRESHOLD {
         return hash_file_full(&mut file);
@@ -62,19 +68,19 @@ pub fn hash_file(path: &Path) -> Result<String> {
     hasher.update(&file_size.to_le_bytes());
 
     // First chunk
-    let n = file.read(&mut buf)?;
+    let n = file.read(&mut buf).map_err(io_err)?;
     hasher.update(&buf[..n]);
 
     // Middle chunk
     let mid = file_size / 2;
-    file.seek(SeekFrom::Start(mid))?;
-    let n = file.read(&mut buf)?;
+    file.seek(SeekFrom::Start(mid)).map_err(io_err)?;
+    let n = file.read(&mut buf).map_err(io_err)?;
     hasher.update(&buf[..n]);
 
     // Last chunk
     let tail_offset = file_size.saturating_sub(HASH_CHUNK_SIZE as u64);
-    file.seek(SeekFrom::Start(tail_offset))?;
-    let n = file.read(&mut buf)?;
+    file.seek(SeekFrom::Start(tail_offset)).map_err(io_err)?;
+    let n = file.read(&mut buf).map_err(io_err)?;
     hasher.update(&buf[..n]);
 
     Ok(format!("{:016x}", hasher.digest()))
@@ -187,13 +193,18 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
 
 /// Build a `FileDiscoveredEvent` for a single file.
 fn build_event(path: &Path, compute_hash: bool) -> Result<FileDiscoveredEvent> {
-    let metadata = fs::metadata(path)?;
+    let metadata = fs::metadata(path).map_err(|e| {
+        VoomError::Io(std::io::Error::new(
+            e.kind(),
+            format!("{}: {e}", path.display()),
+        ))
+    })?;
     let size = metadata.len();
 
     let content_hash = if compute_hash {
-        hash_file(path)?
+        Some(hash_file(path)?)
     } else {
-        String::new()
+        None
     };
 
     tracing::debug!(path = %path.display(), size, "file discovered");
@@ -256,7 +267,7 @@ mod tests {
         let event = build_event(&path, true).unwrap();
         assert_eq!(event.path, path);
         assert_eq!(event.size, 15);
-        assert!(!event.content_hash.is_empty());
+        assert!(event.content_hash.is_some());
     }
 
     #[test]
@@ -292,6 +303,6 @@ mod tests {
         std::fs::write(&path, b"fake video data").unwrap();
 
         let event = build_event(&path, false).unwrap();
-        assert!(event.content_hash.is_empty());
+        assert!(event.content_hash.is_none());
     }
 }

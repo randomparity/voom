@@ -207,3 +207,11 @@ mod tests {
         assert_eq!(deserialized.status, JobStatus::Pending);
     }
 }
+
+/// Shared payload for jobs keyed on a discovered file (introspection, processing).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveredFilePayload {
+    pub path: String,
+    pub size: u64,
+    pub content_hash: Option<String>,
+}

@@ -11,7 +11,7 @@ pub fn parse_ffprobe_output(
     json: &serde_json::Value,
     path: &Path,
     size: u64,
-    content_hash: &str,
+    content_hash: Option<&str>,
 ) -> Result<MediaFile> {
     let container = path
         .extension()
@@ -34,7 +34,8 @@ pub fn parse_ffprobe_output(
 
     let mut mf = MediaFile::new(path.to_path_buf());
     mf.size = size;
-    mf.content_hash = content_hash.to_string();
+    // Caller guarantees None for absent hashes; no empty-string sentinel at this layer.
+    mf.content_hash = content_hash.map(str::to_string);
     mf.container = container;
     mf.duration = duration;
     mf.bitrate = bitrate;
@@ -409,12 +410,17 @@ mod tests {
             subtitle_stream("eng", false),
         ]);
 
-        let file =
-            parse_ffprobe_output(&json, Path::new("/test/movie.mkv"), 1_000_000, "abc123").unwrap();
+        let file = parse_ffprobe_output(
+            &json,
+            Path::new("/test/movie.mkv"),
+            1_000_000,
+            Some("abc123"),
+        )
+        .unwrap();
 
         assert_eq!(file.path, Path::new("/test/movie.mkv"));
         assert_eq!(file.size, 1_000_000);
-        assert_eq!(file.content_hash, "abc123");
+        assert_eq!(file.content_hash, Some("abc123".to_string()));
         assert_eq!(file.container, Container::Mkv);
         assert!((file.duration - 120.5).abs() < 0.01);
         assert_eq!(file.bitrate, Some(5_000_000));
@@ -424,7 +430,7 @@ mod tests {
     #[test]
     fn test_parse_video_track() {
         let json = make_ffprobe_json(&[video_stream()]);
-        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, "").unwrap();
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
 
         let track = &file.tracks[0];
         assert_eq!(track.track_type, TrackType::Video);
@@ -441,7 +447,7 @@ mod tests {
     #[test]
     fn test_parse_audio_track() {
         let json = make_ffprobe_json(&[audio_stream("eng", true)]);
-        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, "").unwrap();
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
 
         let track = &file.tracks[0];
         assert_eq!(track.track_type, TrackType::AudioMain);
@@ -457,7 +463,7 @@ mod tests {
     #[test]
     fn test_parse_subtitle_track() {
         let json = make_ffprobe_json(&[subtitle_stream("eng", false)]);
-        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, "").unwrap();
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
 
         let track = &file.tracks[0];
         assert_eq!(track.track_type, TrackType::SubtitleMain);
@@ -468,7 +474,7 @@ mod tests {
     #[test]
     fn test_parse_forced_subtitle() {
         let json = make_ffprobe_json(&[subtitle_stream("eng", true)]);
-        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, "").unwrap();
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
 
         assert_eq!(file.tracks[0].track_type, TrackType::SubtitleForced);
         assert!(file.tracks[0].is_forced);
@@ -486,7 +492,7 @@ mod tests {
             "tags": {"language": "eng", "title": "Director's Commentary"}
         });
         let json = make_ffprobe_json(&[stream]);
-        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, "").unwrap();
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
 
         assert_eq!(file.tracks[0].track_type, TrackType::AudioCommentary);
     }
@@ -505,7 +511,7 @@ mod tests {
             "tags": {}
         });
         let json = make_ffprobe_json(&[stream]);
-        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, "").unwrap();
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
 
         // h265 should be normalized to hevc
         assert_eq!(file.tracks[0].codec, "hevc");
@@ -523,7 +529,7 @@ mod tests {
             "tags": {"language": "ja"}  // 2-letter code
         });
         let json = make_ffprobe_json(&[stream]);
-        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, "").unwrap();
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
 
         // "ja" should be normalized to "jpn"
         assert_eq!(file.tracks[0].language, "jpn");
@@ -532,7 +538,7 @@ mod tests {
     #[test]
     fn test_parse_format_tags() {
         let json = make_ffprobe_json(&[]);
-        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, "").unwrap();
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
 
         assert_eq!(
             file.tags.get("title").map(|s| s.as_str()),
@@ -544,7 +550,7 @@ mod tests {
     #[test]
     fn test_parse_empty_streams() {
         let json = serde_json::json!({"format": {}, "streams": []});
-        let file = parse_ffprobe_output(&json, Path::new("/test.mp4"), 500, "hash").unwrap();
+        let file = parse_ffprobe_output(&json, Path::new("/test.mp4"), 500, Some("hash")).unwrap();
 
         assert!(file.tracks.is_empty());
         assert_eq!(file.container, Container::Mp4);
@@ -618,7 +624,7 @@ mod tests {
             "tags": {}
         });
         let json = make_ffprobe_json(&[stream]);
-        let file = parse_ffprobe_output(&json, Path::new("/test.mp4"), 0, "").unwrap();
+        let file = parse_ffprobe_output(&json, Path::new("/test.mp4"), 0, None).unwrap();
 
         assert_eq!(file.tracks[0].track_type, TrackType::Attachment);
     }
@@ -626,7 +632,7 @@ mod tests {
     #[test]
     fn test_non_default_audio_is_alternate() {
         let json = make_ffprobe_json(&[audio_stream("jpn", false)]);
-        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, "").unwrap();
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
 
         assert_eq!(file.tracks[0].track_type, TrackType::AudioAlternate);
     }

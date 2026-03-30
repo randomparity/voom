@@ -14,7 +14,7 @@ fn make_test_file(name: &str) -> MediaFile {
     let mut file = MediaFile::new(format!("/media/{name}").into());
     file.container = Container::Mkv;
     file.size = 1_000_000;
-    file.content_hash = "abc123".into();
+    file.content_hash = Some("abc123".into());
     file.duration = 3600.0;
     file
 }

@@ -78,7 +78,6 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
                             }).await;
                         }
 
-                        // Run health checks and dispatch events
                         let k = health_kernel.clone();
                         let d = data_dir.clone();
                         let _ = tokio::task::spawn_blocking(move || {

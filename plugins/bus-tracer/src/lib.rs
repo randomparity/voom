@@ -157,6 +157,12 @@ fn event_summary(event: &Event) -> String {
                 e.plugin_name, e.event_type, e.error
             )
         }
+        Event::JobEnqueueRequested(e) => {
+            format!(
+                "job_type={:?} priority={} requester={}",
+                e.job_type, e.priority, e.requester
+            )
+        }
         _ => String::new(),
     }
 }
@@ -224,7 +230,13 @@ impl Plugin for BusTracerPlugin {
     }
 
     fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
-        let config: BusTracerConfig = ctx.parse_config().unwrap_or_default();
+        let config: BusTracerConfig = match ctx.parse_config() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("bus-tracer config parse failed, using defaults: {e}");
+                BusTracerConfig::default()
+            }
+        };
 
         self.filters = config.filters;
 
@@ -339,7 +351,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
             PathBuf::from("/media/test.mkv"),
             1024,
-            "abc123".into(),
+            Some("abc123".into()),
         ));
 
         plugin.on_event(&event).unwrap();
@@ -364,7 +376,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
             PathBuf::from("/media/test.mkv"),
             1024,
-            "abc123".into(),
+            Some("abc123".into()),
         ));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());

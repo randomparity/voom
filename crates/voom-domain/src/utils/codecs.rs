@@ -161,6 +161,32 @@ pub fn suggest_codec(name: &str) -> Option<&'static str> {
     best.map(|(name, _)| name)
 }
 
+/// Track type category for a codec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodecType {
+    Video,
+    Audio,
+    Subtitle,
+}
+
+/// Returns the track type category for a known codec name.
+/// Returns `None` if the codec is not recognized in any map.
+#[must_use]
+pub fn codec_type(name: &str) -> Option<CodecType> {
+    let lower = name.to_ascii_lowercase();
+    let lower = lower.as_str();
+    if VIDEO_CODECS.contains_key(lower) {
+        return Some(CodecType::Video);
+    }
+    if AUDIO_CODECS.contains_key(lower) {
+        return Some(CodecType::Audio);
+    }
+    if SUBTITLE_CODECS.contains_key(lower) {
+        return Some(CodecType::Subtitle);
+    }
+    None
+}
+
 /// Simple Levenshtein edit distance.
 fn edit_distance(a: &str, b: &str) -> usize {
     let a_bytes = a.as_bytes();
@@ -215,6 +241,20 @@ mod tests {
     #[test]
     fn test_unknown_codec() {
         assert_eq!(normalize_codec("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_codec_type() {
+        assert_eq!(codec_type("hevc"), Some(CodecType::Video));
+        assert_eq!(codec_type("h264"), Some(CodecType::Video));
+        assert_eq!(codec_type("aac"), Some(CodecType::Audio));
+        assert_eq!(codec_type("opus"), Some(CodecType::Audio));
+        assert_eq!(codec_type("srt"), Some(CodecType::Subtitle));
+        assert_eq!(codec_type("pgs"), Some(CodecType::Subtitle));
+        assert_eq!(codec_type("nonexistent"), None);
+        // Case insensitive
+        assert_eq!(codec_type("HEVC"), Some(CodecType::Video));
+        assert_eq!(codec_type("AAC"), Some(CodecType::Audio));
     }
 
     #[test]

@@ -10,7 +10,6 @@ use crate::capability_collector::CapabilityCollectorPlugin;
 use crate::config::AppConfig;
 
 /// Return type for [`bootstrap_kernel_with_store`].
-#[allow(dead_code)] // job_queue exposed for future daemon mode (#36)
 pub struct BootstrapResult {
     pub kernel: Kernel,
     pub store: Arc<dyn voom_domain::storage::StorageTrait>,

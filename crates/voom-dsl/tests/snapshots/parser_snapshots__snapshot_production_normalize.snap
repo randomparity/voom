@@ -161,19 +161,13 @@ phases:
                     - "20"
               - - preset
                 - Ident: medium
-              - - max_resolution
-                - Number:
-                    - 1080
-                    - 1080p
-              - - scale_algorithm
-                - Ident: lanczos
               - - hw
                 - Ident: auto
               - - hw_fallback
                 - Bool: true
         span:
           start: 1050
-          end: 1214
+          end: 1155
           line: 49
           col: 5
       - node:
@@ -191,13 +185,13 @@ phases:
                     - 192
                     - 192k
         span:
-          start: 1220
-          end: 1309
-          line: 58
+          start: 1161
+          end: 1250
+          line: 56
           col: 5
     span:
       start: 985
-      end: 1313
+      end: 1254
       line: 46
       col: 3
   - name: audio_compat
@@ -237,14 +231,14 @@ phases:
               - Position:
                   Ident: after_source
         span:
-          start: 1412
-          end: 1735
-          line: 68
+          start: 1353
+          end: 1676
+          line: 66
           col: 5
     span:
-      start: 1358
-      end: 1739
-      line: 65
+      start: 1299
+      end: 1680
+      line: 63
       col: 3
   - name: validate
     skip_when: ~
@@ -275,9 +269,9 @@ phases:
               - Warn: "Japanese audio but no English subtitles in {filename}"
             else_actions: []
         span:
-          start: 1868
-          end: 2028
-          line: 85
+          start: 1809
+          end: 1969
+          line: 83
           col: 5
       - node:
           Rules:
@@ -290,14 +284,14 @@ phases:
                     - Warn: "Multiple audio languages in {filename}"
                   else_actions: []
         span:
-          start: 2028
-          end: 2190
-          line: 89
+          start: 1969
+          end: 2131
+          line: 87
           col: 5
     span:
-      start: 1774
-      end: 2194
-      line: 81
+      start: 1715
+      end: 2135
+      line: 79
       col: 3
   - name: metadata
     skip_when: ~
@@ -328,17 +322,17 @@ phases:
                       - title
             else_actions: []
         span:
-          start: 2249
-          end: 2416
-          line: 100
+          start: 2190
+          end: 2357
+          line: 98
           col: 5
     span:
-      start: 2228
-      end: 2417
-      line: 99
+      start: 2169
+      end: 2358
+      line: 97
       col: 3
 span:
   start: 0
-  end: 2420
+  end: 2361
   line: 1
   col: 1

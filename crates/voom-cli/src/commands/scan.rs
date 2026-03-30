@@ -315,7 +315,7 @@ mod tests {
     fn test_media_file(name: &str) -> MediaFile {
         let mut f = MediaFile::new(PathBuf::from(name));
         f.size = 1024;
-        f.content_hash = "abc123".into();
+        f.content_hash = Some("abc123".into());
         f
     }
 
@@ -327,7 +327,7 @@ mod tests {
 
         // Simulate discovery event
         let discovered =
-            FileDiscoveredEvent::new(PathBuf::from("/tmp/test.mkv"), 1024, "abc123".into());
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/test.mkv"), 1024, Some("abc123".into()));
         kernel.dispatch(Event::FileDiscovered(discovered));
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 1);
@@ -364,9 +364,9 @@ mod tests {
         kernel.register_plugin(recorder.clone(), 50);
 
         let events = vec![
-            FileDiscoveredEvent::new(PathBuf::from("/tmp/a.mkv"), 100, "aaa".into()),
-            FileDiscoveredEvent::new(PathBuf::from("/tmp/b.mp4"), 200, "bbb".into()),
-            FileDiscoveredEvent::new(PathBuf::from("/tmp/c.avi"), 300, "ccc".into()),
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/a.mkv"), 100, Some("aaa".into())),
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/b.mp4"), 200, Some("bbb".into())),
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/c.avi"), 300, Some("ccc".into())),
         ];
 
         for event in &events {

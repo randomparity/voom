@@ -16,9 +16,9 @@ use voom_dsl::compiled::CompiledPolicy;
 ///
 /// Evaluates compiled policies against media files and produces `Plan` structs.
 /// Evaluation is done via direct API call, not through the event bus.
-pub struct PolicyEvaluatorPlugin;
+pub struct PolicyEvaluator;
 
-impl PolicyEvaluatorPlugin {
+impl PolicyEvaluator {
     #[must_use]
     pub fn new() -> Self {
         Self
@@ -52,7 +52,7 @@ impl PolicyEvaluatorPlugin {
     }
 }
 
-impl Default for PolicyEvaluatorPlugin {
+impl Default for PolicyEvaluator {
     fn default() -> Self {
         Self::new()
     }
@@ -65,12 +65,12 @@ mod tests {
 
     #[test]
     fn test_default_creates_same_as_new() {
-        let _plugin = PolicyEvaluatorPlugin;
+        let _plugin = PolicyEvaluator;
     }
 
     #[test]
     fn test_evaluate_returns_result_with_plans() {
-        let plugin = PolicyEvaluatorPlugin::new();
+        let plugin = PolicyEvaluator::new();
         let policy =
             voom_dsl::compile_policy(r#"policy "test" { phase init { container mkv } }"#).unwrap();
         let file = MediaFile::new(PathBuf::from("/test/video.mkv"));

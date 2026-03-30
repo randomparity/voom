@@ -27,19 +27,28 @@ impl FileHistoryStorage for SqliteStore {
                 let introspected_str: String = row.get("introspected_at")?;
                 let archived_str: String = row.get("archived_at")?;
                 Ok(voom_domain::storage::FileHistoryEntry::from_stored(
-                    row_uuid(&id_str, "file_history")?,
-                    row_uuid(&file_id_str, "file_history")?,
-                    PathBuf::from(row.get::<_, String>("path")?),
-                    row.get("content_hash")?,
-                    Container::from_extension(&container_str),
-                    u32::try_from(row.get::<_, i32>("track_count")?).unwrap_or(0),
-                    parse_optional_datetime(
-                        Some(introspected_str),
-                        "file_history.introspected_at",
-                    )?
-                    .unwrap_or_default(),
-                    parse_optional_datetime(Some(archived_str), "file_history.archived_at")?
+                    voom_domain::storage::StoredHistoryRow::new(
+                        row_uuid(&id_str, "file_history")?,
+                        row_uuid(&file_id_str, "file_history")?,
+                        PathBuf::from(row.get::<_, String>("path")?),
+                        {
+                            let h: String = row.get("content_hash")?;
+                            if h.is_empty() {
+                                None
+                            } else {
+                                Some(h)
+                            }
+                        },
+                        Container::from_extension(&container_str),
+                        u32::try_from(row.get::<_, i32>("track_count")?).unwrap_or(0),
+                        parse_optional_datetime(
+                            Some(introspected_str),
+                            "file_history.introspected_at",
+                        )?
                         .unwrap_or_default(),
+                        parse_optional_datetime(Some(archived_str), "file_history.archived_at")?
+                            .unwrap_or_default(),
+                    ),
                 ))
             })
             .map_err(storage_err("failed to query history"))?

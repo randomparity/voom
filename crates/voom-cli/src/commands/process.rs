@@ -75,7 +75,6 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         return Ok(());
     }
 
-    // Discover files
     let mut events = discover_files(&path, &args, &kernel)?;
     if events.is_empty() {
         println!("{}", style("No media files found.").yellow());
@@ -134,16 +133,12 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let compiled = Arc::new(compiled);
     let dry_run = args.dry_run;
     let flag_size_increase = args.flag_size_increase;
-    let modified_count = Arc::new(AtomicU64::new(0));
-    let backup_bytes = Arc::new(AtomicU64::new(0));
-    let phase_stats: PhaseStatsMap = Arc::new(Mutex::new(HashMap::new()));
+    let counters = RunCounters::new();
 
     let token_for_workers = token.clone();
     let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
     let ffprobe_path = Arc::new(ffprobe_path);
-    let modified_for_summary = modified_count.clone();
-    let backup_bytes_for_summary = backup_bytes.clone();
-    let phase_stats_for_summary = phase_stats.clone();
+    let counters_for_summary = counters.clone();
     let _results = pool
         .process_batch(
             items,
@@ -153,9 +148,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                 let token = token_for_workers.clone();
                 let ffprobe_path = ffprobe_path.clone();
                 let capabilities = capabilities.clone();
-                let modified_count = modified_count.clone();
-                let backup_bytes = backup_bytes.clone();
-                let phase_stats = phase_stats.clone();
+                let counters = counters.clone();
                 async move {
                     let ctx = ProcessContext {
                         compiled: &compiled,
@@ -166,9 +159,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                         token: &token,
                         ffprobe_path: ffprobe_path.as_deref(),
                         capabilities: &capabilities,
-                        modified_count: &modified_count,
-                        backup_bytes: &backup_bytes,
-                        phase_stats: &phase_stats,
+                        counters: &counters,
                     };
                     process_single_file(job, &ctx).await
                 }
@@ -178,8 +169,12 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         )
         .await;
 
-    let modified = modified_for_summary.load(AtomicOrdering::Relaxed);
-    let backup_total = backup_bytes_for_summary.load(AtomicOrdering::Relaxed);
+    let modified = counters_for_summary
+        .modified_count
+        .load(AtomicOrdering::Relaxed);
+    let backup_total = counters_for_summary
+        .backup_bytes
+        .load(AtomicOrdering::Relaxed);
     if token.is_cancelled() {
         print_interrupted_summary(&pool, file_count, modified);
     } else {
@@ -194,7 +189,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
             path: &path,
         });
     }
-    print_phase_breakdown(&phase_stats_for_summary.lock(), &phase_order);
+    print_phase_breakdown(&counters_for_summary.phase_stats.lock(), &phase_order);
 
     Ok(())
 }
@@ -379,6 +374,24 @@ enum PhaseOutcomeKind {
     Failed,
 }
 
+/// Shared mutable counters accumulated during a processing run.
+#[derive(Clone)]
+struct RunCounters {
+    modified_count: Arc<AtomicU64>,
+    backup_bytes: Arc<AtomicU64>,
+    phase_stats: PhaseStatsMap,
+}
+
+impl RunCounters {
+    fn new() -> Self {
+        Self {
+            modified_count: Arc::new(AtomicU64::new(0)),
+            backup_bytes: Arc::new(AtomicU64::new(0)),
+            phase_stats: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
 /// Shared context for processing a single file.
 struct ProcessContext<'a> {
     compiled: &'a voom_dsl::CompiledPolicy,
@@ -389,9 +402,7 @@ struct ProcessContext<'a> {
     token: &'a CancellationToken,
     ffprobe_path: Option<&'a str>,
     capabilities: &'a voom_domain::CapabilityMap,
-    modified_count: &'a AtomicU64,
-    backup_bytes: &'a AtomicU64,
-    phase_stats: &'a PhaseStatsMap,
+    counters: &'a RunCounters,
 }
 
 /// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
@@ -432,10 +443,12 @@ async fn process_single_file(
         ));
     }
 
-    let needs_exec = voom_phase_orchestrator::PhaseOrchestratorPlugin::needs_execution(&result);
+    let needs_exec = voom_phase_orchestrator::PhaseOrchestrator::needs_execution(&result);
 
     if needs_exec {
-        ctx.modified_count.fetch_add(1, AtomicOrdering::Relaxed);
+        ctx.counters
+            .modified_count
+            .fetch_add(1, AtomicOrdering::Relaxed);
     }
 
     for plan in &result.plans {
@@ -445,13 +458,13 @@ async fn process_single_file(
                 .clone()
                 .unwrap_or_else(|| "unknown".to_string());
             record_phase_stat(
-                ctx.phase_stats,
+                &ctx.counters.phase_stats,
                 &plan.phase_name,
                 PhaseOutcomeKind::Skipped(reason),
             );
         } else if ctx.dry_run && !plan.is_empty() {
             record_phase_stat(
-                ctx.phase_stats,
+                &ctx.counters.phase_stats,
                 &plan.phase_name,
                 PhaseOutcomeKind::Completed,
             );
@@ -495,10 +508,10 @@ fn orchestrate_plans(
     file: &voom_domain::media::MediaFile,
     capabilities: &voom_domain::CapabilityMap,
 ) -> voom_phase_orchestrator::OrchestrationResult {
-    let plans = voom_policy_evaluator::PolicyEvaluatorPlugin::new()
+    let plans = voom_policy_evaluator::PolicyEvaluator::new()
         .evaluate_with_capabilities(compiled, file, capabilities)
         .plans;
-    let orchestrator = voom_phase_orchestrator::PhaseOrchestratorPlugin::new();
+    let orchestrator = voom_phase_orchestrator::PhaseOrchestrator::new();
     orchestrator.orchestrate(plans)
 }
 
@@ -517,9 +530,12 @@ async fn execute_plans(
 
     // Verify file hasn't changed since introspection (TOCTOU guard)
     let exec_path = file.path.clone();
-    if !file.content_hash.is_empty() {
-        match voom_discovery::hash_file(&exec_path) {
-            Ok(current_hash) if current_hash != file.content_hash => {
+    if let Some(ref stored_hash) = file.content_hash {
+        let hash_path = exec_path.clone();
+        let hash_result =
+            tokio::task::spawn_blocking(move || voom_discovery::hash_file(&hash_path)).await;
+        match hash_result {
+            Ok(Ok(current_hash)) if &current_hash != stored_hash => {
                 tracing::warn!(path = %exec_path.display(), "file changed since introspection, skipping");
                 return Ok(Some(serde_json::json!({
                     "path": file_path_str,
@@ -527,7 +543,7 @@ async fn execute_plans(
                     "reason": "file changed since introspection",
                 })));
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!(path = %exec_path.display(), error = %e, "hash check failed, skipping");
                 return Ok(Some(serde_json::json!({
                     "path": file_path_str,
@@ -535,8 +551,19 @@ async fn execute_plans(
                     "reason": format!("hash check failed: {e}"),
                 })));
             }
+            Err(e) => {
+                tracing::warn!(path = %exec_path.display(), error = %e, "hash task panicked, skipping");
+                return Ok(Some(serde_json::json!({
+                    "path": file_path_str,
+                    "skipped": true,
+                    "reason": format!("hash task panicked: {e}"),
+                })));
+            }
             _ => {} // hash matches, proceed
         }
+    } else {
+        tracing::debug!(path = %exec_path.display(),
+            "no content_hash available, skipping TOCTOU check");
     }
 
     // Execute each non-skipped plan. PlanExecuting is dispatched first so
@@ -613,7 +640,7 @@ async fn execute_plans(
                                 format!("output grew from {} to {} bytes", file.size, new_size,),
                             )));
                             record_phase_stat(
-                                ctx.phase_stats,
+                                &ctx.counters.phase_stats,
                                 &plan.phase_name,
                                 PhaseOutcomeKind::Failed,
                             );
@@ -623,7 +650,8 @@ async fn execute_plans(
                 }
 
                 if ctx.keep_backups {
-                    ctx.backup_bytes
+                    ctx.counters
+                        .backup_bytes
                         .fetch_add(file.size, AtomicOrdering::Relaxed);
                     tracing::info!(
                         path = %file.path.display(),
@@ -640,14 +668,18 @@ async fn execute_plans(
                         ctx.keep_backups,
                     )));
                 record_phase_stat(
-                    ctx.phase_stats,
+                    &ctx.counters.phase_stats,
                     &plan.phase_name,
                     PhaseOutcomeKind::Completed,
                 );
             }
             PlanOutcome::Failed(failed) => {
                 ctx.kernel.dispatch(Event::PlanFailed(failed));
-                record_phase_stat(ctx.phase_stats, &plan.phase_name, PhaseOutcomeKind::Failed);
+                record_phase_stat(
+                    &ctx.counters.phase_stats,
+                    &plan.phase_name,
+                    PhaseOutcomeKind::Failed,
+                );
             }
         }
     }
@@ -657,10 +689,22 @@ async fn execute_plans(
     if any_executed {
         let current_path = resolve_post_execution_path(file, &result.plans);
         if current_path.exists() {
-            let size = std::fs::metadata(&current_path)
-                .map(|m| m.len())
-                .unwrap_or(file.size);
-            let hash = voom_discovery::hash_file(&current_path).unwrap_or_default();
+            let p = current_path.clone();
+            let file_size = file.size;
+            let (size, hash) = tokio::task::spawn_blocking(move || {
+                let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(file_size);
+                let hash = match voom_discovery::hash_file(&p) {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        tracing::warn!(path = %p.display(), error = %e,
+                            "could not hash file after execution");
+                        None
+                    }
+                };
+                (size, hash)
+            })
+            .await
+            .unwrap_or((file.size, None));
             let ffp = ctx.ffprobe_path.map(String::from);
             let kernel_clone = ctx.kernel.clone();
             let _ = crate::introspect::introspect_file(
@@ -1119,9 +1163,7 @@ mod tests {
 
         let token = CancellationToken::new();
         let kernel = Arc::new(kernel);
-        let backup_bytes = AtomicU64::new(0);
-        let phase_stats: PhaseStatsMap = Arc::new(Mutex::new(HashMap::new()));
-        let modified_count = AtomicU64::new(0);
+        let counters = RunCounters::new();
         let compiled = voom_dsl::compile_policy("policy \"test\" { phase p1 { container mkv } }")
             .expect("test policy");
         let capabilities = voom_domain::CapabilityMap::default();
@@ -1134,9 +1176,7 @@ mod tests {
             token: &token,
             ffprobe_path: None,
             capabilities: &capabilities,
-            modified_count: &modified_count,
-            backup_bytes: &backup_bytes,
-            phase_stats: &phase_stats,
+            counters: &counters,
         };
         let _ = execute_plans(&file, &result, &ctx, true).await;
 
@@ -1156,7 +1196,8 @@ mod tests {
         kernel.register_plugin(recorder.clone(), 50);
 
         // Simulate discovery events
-        let discovered = FileDiscoveredEvent::new(PathBuf::from("/tmp/a.mkv"), 1024, "abc".into());
+        let discovered =
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/a.mkv"), 1024, Some("abc".into()));
         kernel.dispatch(Event::FileDiscovered(discovered));
 
         // Simulate introspection event

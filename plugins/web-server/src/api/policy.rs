@@ -193,4 +193,33 @@ mod tests {
     fn test_max_policy_size_is_1mib() {
         assert_eq!(MAX_POLICY_SIZE, 1_024 * 1_024);
     }
+
+    #[test]
+    fn test_validate_response_serialization_with_suggestion() {
+        let response = ValidateResponse {
+            valid: false,
+            errors: vec![service::ErrorInfo::with_suggestion(
+                "unknown codec \"h265\"",
+                Some(3),
+                Some(10),
+                "did you mean \"hevc\"?",
+            )],
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["errors"][0]["suggestion"], "did you mean \"hevc\"?");
+        assert!(!json["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("suggestion"));
+    }
+
+    #[test]
+    fn test_validate_response_serialization_omits_none_suggestion() {
+        let response = ValidateResponse {
+            valid: false,
+            errors: vec![service::ErrorInfo::new("bad syntax", Some(1), Some(5))],
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert!(json["errors"][0].get("suggestion").is_none());
+    }
 }

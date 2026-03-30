@@ -1,11 +1,12 @@
 //! CRUD operations for the `discovered_files` staging table.
 
+use chrono::{DateTime, Utc};
 use rusqlite::params;
 use uuid::Uuid;
 
 use voom_domain::errors::Result;
 
-use super::{format_datetime, storage_err, SqliteStore};
+use super::{format_datetime, parse_required_datetime, storage_err, SqliteStore};
 
 /// Status of a discovered file in the staging pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,23 +40,32 @@ impl DiscoveredStatus {
 
 /// A row from the `discovered_files` table.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DiscoveredFile {
     pub id: Uuid,
     pub path: String,
     pub size: u64,
-    pub content_hash: String,
+    pub content_hash: Option<String>,
     pub status: DiscoveredStatus,
-    pub discovered_at: String,
-    pub updated_at: String,
+    pub discovered_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 impl SqliteStore {
     /// Insert or update a discovered file. On conflict (same path),
     /// update size, hash, status, and timestamps.
-    pub fn upsert_discovered_file(&self, path: &str, size: u64, content_hash: &str) -> Result<()> {
+    pub fn upsert_discovered_file(
+        &self,
+        path: &str,
+        size: u64,
+        content_hash: Option<&str>,
+    ) -> Result<()> {
         let conn = self.conn()?;
         let now = format_datetime(&chrono::Utc::now());
         let id = Uuid::new_v4().to_string();
+        // Schema uses TEXT NOT NULL; empty string is the sentinel for "no hash".
+        // Read paths convert "" back to None (see content_hash block below).
+        let hash_str = content_hash.unwrap_or("");
 
         conn.execute(
             "INSERT INTO discovered_files (id, path, size, content_hash, status, discovered_at, updated_at)
@@ -65,7 +75,7 @@ impl SqliteStore {
                 content_hash = excluded.content_hash,
                 status = 'pending',
                 updated_at = excluded.updated_at",
-            params![id, path, size as i64, content_hash, now],
+            params![id, path, size as i64, hash_str, now],
         )
         .map_err(storage_err("failed to upsert discovered file"))?;
 
@@ -122,11 +132,20 @@ impl SqliteStore {
                         Box::new(e),
                     )
                 })?;
+                let discovered_str: String = row.get("discovered_at")?;
+                let updated_str: String = row.get("updated_at")?;
                 Ok(DiscoveredFile {
                     id,
                     path: row.get("path")?,
                     size: row.get::<_, i64>("size")? as u64,
-                    content_hash: row.get("content_hash")?,
+                    content_hash: {
+                        let h: String = row.get("content_hash")?;
+                        if h.is_empty() {
+                            None
+                        } else {
+                            Some(h)
+                        }
+                    },
                     status: DiscoveredStatus::parse(&status_str).ok_or_else(|| {
                         rusqlite::Error::FromSqlConversionFailure(
                             0,
@@ -134,8 +153,14 @@ impl SqliteStore {
                             format!("unknown discovered file status: {status_str}").into(),
                         )
                     })?,
-                    discovered_at: row.get("discovered_at")?,
-                    updated_at: row.get("updated_at")?,
+                    discovered_at: parse_required_datetime(
+                        discovered_str,
+                        "discovered_files.discovered_at",
+                    )?,
+                    updated_at: parse_required_datetime(
+                        updated_str,
+                        "discovered_files.updated_at",
+                    )?,
                 })
             })
             .map_err(storage_err("failed to query discovered files"))?
@@ -169,7 +194,7 @@ mod tests {
     fn test_upsert_and_list_discovered() {
         let store = test_store();
         store
-            .upsert_discovered_file("/media/test.mkv", 1024, "abc123")
+            .upsert_discovered_file("/media/test.mkv", 1024, Some("abc123"))
             .unwrap();
 
         let files = store.list_discovered_files(None).unwrap();
@@ -183,23 +208,23 @@ mod tests {
     fn test_upsert_updates_existing() {
         let store = test_store();
         store
-            .upsert_discovered_file("/media/test.mkv", 1024, "abc")
+            .upsert_discovered_file("/media/test.mkv", 1024, Some("abc"))
             .unwrap();
         store
-            .upsert_discovered_file("/media/test.mkv", 2048, "def")
+            .upsert_discovered_file("/media/test.mkv", 2048, Some("def"))
             .unwrap();
 
         let files = store.list_discovered_files(None).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].size, 2048);
-        assert_eq!(files[0].content_hash, "def");
+        assert_eq!(files[0].content_hash.as_deref(), Some("def"));
     }
 
     #[test]
     fn test_update_status() {
         let store = test_store();
         store
-            .upsert_discovered_file("/media/test.mkv", 1024, "abc")
+            .upsert_discovered_file("/media/test.mkv", 1024, Some("abc"))
             .unwrap();
 
         store
@@ -221,7 +246,7 @@ mod tests {
     fn test_delete_discovered() {
         let store = test_store();
         store
-            .upsert_discovered_file("/media/test.mkv", 1024, "abc")
+            .upsert_discovered_file("/media/test.mkv", 1024, Some("abc"))
             .unwrap();
 
         store.delete_discovered_file("/media/test.mkv").unwrap();
@@ -234,10 +259,10 @@ mod tests {
     fn test_list_with_status_filter() {
         let store = test_store();
         store
-            .upsert_discovered_file("/media/a.mkv", 100, "aaa")
+            .upsert_discovered_file("/media/a.mkv", 100, Some("aaa"))
             .unwrap();
         store
-            .upsert_discovered_file("/media/b.mkv", 200, "bbb")
+            .upsert_discovered_file("/media/b.mkv", 200, Some("bbb"))
             .unwrap();
 
         store
@@ -255,5 +280,17 @@ mod tests {
             .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].path, "/media/b.mkv");
+    }
+
+    #[test]
+    fn test_upsert_with_no_hash_round_trips_as_none() {
+        let store = test_store();
+        store
+            .upsert_discovered_file("/media/no-hash.mkv", 512, None)
+            .unwrap();
+
+        let files = store.list_discovered_files(None).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].content_hash.is_none());
     }
 }

@@ -94,7 +94,10 @@ pub fn format_skip_reasons(
 }
 
 /// Format a list of discovered files as a table.
-pub fn format_scan_results(files: &[(std::path::PathBuf, u64, String)], format: OutputFormat) {
+pub fn format_scan_results(
+    files: &[(std::path::PathBuf, u64, Option<String>)],
+    format: OutputFormat,
+) {
     match format {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = files
@@ -117,10 +120,16 @@ pub fn format_scan_results(files: &[(std::path::PathBuf, u64, String)], format: 
             let mut table = new_table();
             table.set_header(vec!["Path", "Size", "Hash"]);
             for (path, size, hash) in files {
+                let hash_str = hash.as_deref().unwrap_or("—");
+                let hash_preview = if hash_str.len() >= 12 {
+                    &hash_str[..12]
+                } else {
+                    hash_str
+                };
                 table.add_row(vec![
                     Cell::new(path.display()),
                     Cell::new(format::format_size(*size)),
-                    Cell::new(&hash[..12]),
+                    Cell::new(hash_preview),
                 ]);
             }
             println!("{table}");
@@ -141,7 +150,7 @@ pub fn format_file_info(file: &MediaFile, tracks_only: bool) {
         if let Some(br) = file.bitrate {
             table.add_row(vec!["Bitrate", &format!("{} kbps", br / 1000)]);
         }
-        table.add_row(vec!["Hash", &file.content_hash]);
+        table.add_row(vec!["Hash", file.content_hash.as_deref().unwrap_or("—")]);
         table.add_row(vec!["ID", &file.id.to_string()]);
         println!("{table}");
         println!();

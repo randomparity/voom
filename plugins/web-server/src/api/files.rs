@@ -21,6 +21,21 @@ pub struct FileFilterParams {
     pub path_prefix: Option<String>,
 }
 
+impl FileFilterParams {
+    /// Convert to domain [`FileFilters`] with input truncation.
+    ///
+    /// Does **not** set `limit` or `offset` — callers must set those separately.
+    #[must_use]
+    pub fn to_file_filters(&self) -> FileFilters {
+        let mut f = FileFilters::default();
+        f.container = self.container.as_deref().map(Container::from_extension);
+        f.has_codec = truncate_filter(self.codec.clone());
+        f.has_language = truncate_filter(self.language.clone());
+        f.path_prefix = truncate_filter(self.path_prefix.clone());
+        f
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[non_exhaustive]
 pub struct ListFilesParams {
@@ -71,15 +86,7 @@ pub async fn list_files(
 ) -> Result<Json<FileListResponse>, WebError> {
     let store = state.store.clone();
     let count_store = state.store.clone();
-    let mut filters = FileFilters::default();
-    filters.container = params
-        .filters
-        .container
-        .as_deref()
-        .map(Container::from_extension);
-    filters.has_codec = truncate_filter(params.filters.codec);
-    filters.has_language = truncate_filter(params.filters.language);
-    filters.path_prefix = truncate_filter(params.filters.path_prefix);
+    let mut filters = params.filters.to_file_filters();
     filters.limit = Some(params.limit.unwrap_or(100).min(MAX_LIMIT));
     filters.offset = Some(params.offset.unwrap_or(0).min(MAX_OFFSET));
     let count_filters = filters.clone();

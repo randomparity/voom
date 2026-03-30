@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use voom_domain::utils::{codecs, language};
+use voom_domain::utils::{codecs, codecs::CodecType, language};
 
 use crate::ast::*;
 use crate::errors::{DslError, ValidationErrors};
@@ -403,9 +403,11 @@ fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut 
         } => {
             validate_track_target(target, line, col, errors);
             validate_codec(codec, line, col, errors);
+            validate_codec_track_type(target, codec, line, col, errors);
             for (_, val) in settings {
                 validate_value(val, line, col, errors);
             }
+            validate_transcode_keys(settings, line, col, errors);
             validate_hw_settings(settings, line, col, errors);
         }
         OperationNode::Synthesize { settings, .. } => {
@@ -623,9 +625,106 @@ fn validate_number_suffix(raw: &str, line: usize, col: usize, errors: &mut Vec<D
     }
 }
 
+const KNOWN_TRANSCODE_KEYS: &[&str] = &[
+    "preserve",
+    "crf",
+    "preset",
+    "bitrate",
+    "channels",
+    "hw",
+    "hw_fallback",
+];
+
+fn validate_transcode_keys(
+    settings: &[(String, Value)],
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    for (key, _) in settings {
+        if key.len() > 64 {
+            errors.push(DslError::validation(
+                line,
+                col,
+                format!("transcode setting key too long: \"{key}\""),
+            ));
+            continue;
+        }
+        if !KNOWN_TRANSCODE_KEYS.contains(&key.as_str()) {
+            let mut best: Option<(&str, usize)> = None;
+            for &known in KNOWN_TRANSCODE_KEYS {
+                let dist = edit_distance(key, known);
+                if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
+                    best = Some((known, dist));
+                }
+            }
+            if let Some((suggestion, _)) = best {
+                errors.push(DslError::validation_with_suggestion(
+                    line,
+                    col,
+                    format!(
+                        "unknown transcode setting \"{key}\", \
+                         expected one of: {}",
+                        KNOWN_TRANSCODE_KEYS.join(", ")
+                    ),
+                    format!("did you mean \"{suggestion}\"?"),
+                ));
+            } else {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    format!(
+                        "unknown transcode setting \"{key}\", \
+                         expected one of: {}",
+                        KNOWN_TRANSCODE_KEYS.join(", ")
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn validate_codec_track_type(
+    target: &str,
+    codec: &str,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    let expected_type = match target {
+        "video" => CodecType::Video,
+        "audio" => CodecType::Audio,
+        // Grammar constrains transcode targets to "video" | "audio"
+        _ => return,
+    };
+    let Some(actual_type) = codecs::codec_type(codec) else {
+        return; // Unknown codec already reported by validate_codec
+    };
+    if actual_type != expected_type {
+        let type_name = match actual_type {
+            CodecType::Video => "video",
+            CodecType::Audio => "audio",
+            CodecType::Subtitle => "subtitle",
+        };
+        let article = if type_name.starts_with(['a', 'e', 'i', 'o', 'u']) {
+            "an"
+        } else {
+            "a"
+        };
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!(
+                "codec \"{codec}\" is {article} {type_name} codec \
+                 but target is {target}"
+            ),
+        ));
+    }
+}
+
 const VALID_HW_VALUES: &[&str] = &["auto", "nvenc", "qsv", "vaapi", "videotoolbox", "none"];
 
-fn hw_edit_distance(a: &str, b: &str) -> usize {
+fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let mut dp = vec![vec![0usize; b.len() + 1]; a.len() + 1];
@@ -650,7 +749,7 @@ fn suggest_hw_value(input: &str) -> Option<&'static str> {
     let lower = input.to_ascii_lowercase();
     let mut best: Option<(&str, usize)> = None;
     for &valid in VALID_HW_VALUES {
-        let dist = hw_edit_distance(&lower, valid);
+        let dist = edit_distance(&lower, valid);
         if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
             best = Some((valid, dist));
         }
@@ -675,7 +774,13 @@ fn validate_hw_settings(
                 _ => None,
             };
             if let Some(name) = hw_str {
-                if !VALID_HW_VALUES.contains(&name) {
+                if name.len() > 64 {
+                    errors.push(DslError::validation(
+                        line,
+                        col,
+                        format!("hw value too long: \"{name}\""),
+                    ));
+                } else if !VALID_HW_VALUES.contains(&name) {
                     let valid_list = VALID_HW_VALUES.join(", ");
                     if let Some(suggestion) = suggest_hw_value(name) {
                         errors.push(DslError::validation_with_suggestion(
@@ -698,6 +803,21 @@ fn validate_hw_settings(
                         ));
                     }
                 }
+            } else {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    format!(
+                        "hw value must be a string or identifier, \
+                         got {}",
+                        match val {
+                            Value::Number(_, _) => "number",
+                            Value::Bool(_) => "boolean",
+                            Value::List(_) => "list",
+                            _ => "unknown",
+                        }
+                    ),
+                ));
             }
         } else if key == "hw_fallback" {
             has_hw_fallback = true;
@@ -1043,6 +1163,119 @@ mod tests {
                 .any(|e| format!("{e}").contains("hw_fallback has no effect without hw")),
             "expected hw_fallback warning, got: {:?}",
             err.errors
+        );
+    }
+
+    #[test]
+    fn test_unknown_transcode_key() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    crf: 20
+                    max_resolution: 1080p
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("unknown transcode setting \"max_resolution\"")),
+            "expected unknown key error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_unknown_transcode_key_with_suggestion() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    prset: medium
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        let key_err = err
+            .errors
+            .iter()
+            .find(|e| format!("{e}").contains("unknown transcode setting"))
+            .expect("expected unknown key error");
+        match key_err {
+            DslError::Validation { suggestion, .. } => {
+                assert!(suggestion.is_some(), "expected did-you-mean suggestion");
+                let s = suggestion.as_ref().unwrap();
+                assert!(s.contains("preset"), "expected preset suggestion, got: {s}");
+            }
+            _ => panic!("expected validation error"),
+        }
+    }
+
+    #[test]
+    fn test_codec_track_type_mismatch_video_to_audio_codec() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to aac {
+                    crf: 20
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}")
+                    .contains("codec \"aac\" is an audio codec but target is video")),
+            "expected codec-track mismatch error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_codec_track_type_mismatch_audio_to_video_codec() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode audio to hevc {
+                    crf: 20
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}")
+                    .contains("codec \"hevc\" is a video codec but target is audio")),
+            "expected codec-track mismatch error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_valid_transcode_all_known_keys() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    crf: 20
+                    preset: medium
+                    hw: auto
+                    hw_fallback: true
+                }
+                transcode audio to aac {
+                    preserve: [truehd, dts_hd, flac]
+                    bitrate: 192k
+                    channels: stereo
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(
+            validate(&ast).is_ok(),
+            "all known transcode keys should be valid"
         );
     }
 

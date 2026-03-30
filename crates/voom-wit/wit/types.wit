@@ -2,7 +2,7 @@ interface types {
     record media-file {
         path: string,
         size: u64,
-        content-hash: string,
+        content-hash: option<string>,
         container: string,
         duration: float64,
         bitrate: option<u32>,

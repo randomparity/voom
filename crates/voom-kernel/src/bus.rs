@@ -48,8 +48,8 @@ impl EventBus {
         }
     }
 
-    /// Subscribe a plugin to receive events it handles.
-    /// Lower priority values run first.
+    /// Register a plugin at the given priority (lower = earlier dispatch).
+    /// Plugins with equal priority are dispatched in registration order.
     pub fn subscribe_plugin(&self, plugin: Arc<dyn Plugin>, priority: i32) {
         let mut subs = self.subscribers.write();
         let name = plugin.name().to_string();
@@ -216,7 +216,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
             "/test.mkv".into(),
             1024,
-            "abc123".to_string(),
+            Some("abc123".to_string()),
         ));
 
         let results = bus.publish(event);
@@ -307,7 +307,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
             "/test.mkv".into(),
             1024,
-            "abc123".to_string(),
+            Some("abc123".to_string()),
         ));
 
         let results = bus.publish(event);
@@ -372,7 +372,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
             "/test.mkv".into(),
             1024,
-            "abc123".to_string(),
+            Some("abc123".to_string()),
         ));
 
         let results = bus.publish(event);
@@ -455,7 +455,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
             "/test.mkv".into(),
             1024,
-            "abc123".to_string(),
+            Some("abc123".to_string()),
         ));
 
         let results = bus.publish(event);
@@ -568,7 +568,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
             "/test.mkv".into(),
             1024,
-            "abc".into(),
+            Some("abc".into()),
         ));
 
         let results = bus.publish(event);
@@ -590,7 +590,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
             "/test.mkv".into(),
             1024,
-            "abc".into(),
+            Some("abc".into()),
         ));
 
         let results = bus.publish(event);
@@ -636,7 +636,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
             "/test.mkv".into(),
             1024,
-            "abc".into(),
+            Some("abc".into()),
         ));
 
         let results = bus.publish(event);

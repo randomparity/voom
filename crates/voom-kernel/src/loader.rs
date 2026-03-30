@@ -345,9 +345,13 @@ pub mod wasm {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
             match call_on_event(&mut inner, &event_type, &payload) {
-                Ok(Some((plugin_name, produced, data))) => {
-                    let result = voom_wit::event_result_from_wasm(plugin_name, produced, data)
-                        .map_err(|e| voom_domain::errors::VoomError::Wasm(e.to_string()))?;
+                Ok(Some(wasm_result)) => {
+                    let result = voom_wit::event_result_from_wasm(
+                        wasm_result.plugin_name,
+                        wasm_result.produced_events,
+                        wasm_result.data,
+                    )
+                    .map_err(|e| voom_domain::errors::VoomError::Wasm(e.to_string()))?;
                     Ok(Some(result))
                 }
                 Ok(None) => Ok(None),
@@ -483,8 +487,8 @@ pub mod wasm {
         }
     }
 
-    /// Parse a Val representing an event-result record into the tuple form
-    /// expected by `event_result_from_wasm`.
+    /// Parse a Val representing an event-result record into a
+    /// [`WasmEventResult`](voom_wit::WasmEventResult).
     fn parse_event_result(
         val: &wasmtime::component::Val,
     ) -> Result<voom_wit::WasmEventResult, WasmLoadError> {
@@ -521,7 +525,11 @@ pub mod wasm {
             }
         }
 
-        Ok((plugin_name, produced_events, data))
+        Ok(voom_wit::WasmEventResult {
+            plugin_name,
+            produced_events,
+            data,
+        })
     }
 
     /// Register host function imports in the linker.

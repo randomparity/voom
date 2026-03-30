@@ -156,13 +156,8 @@ policy "full-pipeline" {
     transcode video to hevc {
       crf: 20
       preset: medium
-      max_resolution: 1080p
-      scale_algorithm: lanczos
       hw: auto
       hw_fallback: true
-      hdr_mode: preserve
-      tune: film
-      pixel_format: yuv420p10le
     }
   }
 

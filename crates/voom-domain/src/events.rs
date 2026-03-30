@@ -124,6 +124,7 @@ impl EventResult {
     /// Lifecycle events (`PlanExecuting`, `PlanCompleted`) are dispatched by the
     /// orchestrator in `process.rs`, not produced by executors, to avoid
     /// duplicate dispatches.
+    #[must_use]
     pub fn plan_succeeded(plugin_name: impl Into<String>, data: Option<serde_json::Value>) -> Self {
         Self {
             plugin_name: plugin_name.into(),
@@ -139,6 +140,7 @@ impl EventResult {
     /// Lifecycle events (`PlanExecuting`, `PlanFailed`) are dispatched by the
     /// orchestrator in `process.rs`, not produced by executors, to avoid
     /// duplicate dispatches.
+    #[must_use]
     pub fn plan_failed(plugin_name: impl Into<String>, error: impl Into<String>) -> Self {
         Self {
             plugin_name: plugin_name.into(),
@@ -182,12 +184,12 @@ impl EventResult {
 pub struct FileDiscoveredEvent {
     pub path: PathBuf,
     pub size: u64,
-    pub content_hash: String,
+    pub content_hash: Option<String>,
 }
 
 impl FileDiscoveredEvent {
     #[must_use]
-    pub fn new(path: PathBuf, size: u64, content_hash: String) -> Self {
+    pub fn new(path: PathBuf, size: u64, content_hash: Option<String>) -> Self {
         Self {
             path,
             size,
@@ -598,7 +600,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent {
             path: PathBuf::from("/test.mkv"),
             size: 1024,
-            content_hash: "abc".into(),
+            content_hash: Some("abc".into()),
         });
         assert_eq!(event.event_type(), "file.discovered");
 

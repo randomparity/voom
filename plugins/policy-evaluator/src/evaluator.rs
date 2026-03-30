@@ -235,6 +235,11 @@ fn apply_safeguard_for_track_type(
         "Safeguard: would have removed all {label} tracks in \
          {filename}, keeping them instead"
     );
+    record_safeguard(plan, kind, msg);
+}
+
+/// Record a safeguard warning and violation on a plan.
+fn record_safeguard(plan: &mut Plan, kind: SafeguardKind, msg: String) {
     plan.warnings.push(msg.clone());
     plan.safeguard_violations
         .push(SafeguardViolation::new(kind, msg, &plan.phase_name));
@@ -349,7 +354,6 @@ fn emit_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut Ph
     }
 
     if kept == 0 {
-        // Safeguard: retract all RemoveTrack actions we just added
         ctx.plan.actions.truncate(actions_before);
         let label = target_str(target);
         let filename = file_name(ctx.file);
@@ -357,12 +361,7 @@ fn emit_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut Ph
             "Safeguard: kept all {label} tracks in {filename} \
              — no tracks matched the keep filter, would have removed all"
         );
-        ctx.plan.warnings.push(msg.clone());
-        ctx.plan.safeguard_violations.push(SafeguardViolation::new(
-            SafeguardKind::AllTracksRemoved,
-            msg,
-            &ctx.plan.phase_name,
-        ));
+        record_safeguard(ctx.plan, SafeguardKind::AllTracksRemoved, msg);
     }
 }
 
@@ -388,7 +387,6 @@ fn emit_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut 
     }
 
     if kept == 0 && is_critical {
-        // Safeguard: retract all RemoveTrack actions for critical track types
         ctx.plan.actions.truncate(actions_before);
         let label = target_str(target);
         let filename = file_name(ctx.file);
@@ -396,12 +394,7 @@ fn emit_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut 
             "Safeguard: kept all {label} tracks in {filename} \
              — remove operation would have removed all"
         );
-        ctx.plan.warnings.push(msg.clone());
-        ctx.plan.safeguard_violations.push(SafeguardViolation::new(
-            SafeguardKind::AllTracksRemoved,
-            msg,
-            &ctx.plan.phase_name,
-        ));
+        record_safeguard(ctx.plan, SafeguardKind::AllTracksRemoved, msg);
     }
 }
 

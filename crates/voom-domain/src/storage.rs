@@ -279,6 +279,7 @@ impl std::fmt::Display for PlanStatus {
 
 /// Aggregated plan statistics for a single (phase_name, status, skip_reason) group.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct PlanPhaseStat {
     pub phase_name: String,
     pub status: PlanStatus,
@@ -351,6 +352,46 @@ impl PlanSummary {
     }
 }
 
+/// Row data for reconstructing a [`FileHistoryEntry`] from storage.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct StoredHistoryRow {
+    pub id: Uuid,
+    pub file_id: Uuid,
+    pub path: PathBuf,
+    pub content_hash: Option<String>,
+    pub container: Container,
+    pub track_count: u32,
+    pub introspected_at: DateTime<Utc>,
+    pub archived_at: DateTime<Utc>,
+}
+
+impl StoredHistoryRow {
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: Uuid,
+        file_id: Uuid,
+        path: PathBuf,
+        content_hash: Option<String>,
+        container: Container,
+        track_count: u32,
+        introspected_at: DateTime<Utc>,
+        archived_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            id,
+            file_id,
+            path,
+            content_hash,
+            container,
+            track_count,
+            introspected_at,
+            archived_at,
+        }
+    }
+}
+
 /// A historical snapshot of a file's state before it was updated.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -358,7 +399,7 @@ pub struct FileHistoryEntry {
     pub id: Uuid,
     pub file_id: Uuid,
     pub path: PathBuf,
-    pub content_hash: String,
+    pub content_hash: Option<String>,
     pub container: Container,
     pub track_count: u32,
     pub introspected_at: DateTime<Utc>,
@@ -382,30 +423,17 @@ impl FileHistoryEntry {
     }
 
     /// Reconstruct a history entry from stored fields (e.g., database rows).
-    ///
-    /// Accepts many parameters because `#[non_exhaustive]` prevents struct
-    /// literal construction from external crates.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_stored(
-        id: Uuid,
-        file_id: Uuid,
-        path: PathBuf,
-        content_hash: String,
-        container: Container,
-        track_count: u32,
-        introspected_at: DateTime<Utc>,
-        archived_at: DateTime<Utc>,
-    ) -> Self {
+    pub fn from_stored(row: StoredHistoryRow) -> Self {
         Self {
-            id,
-            file_id,
-            path,
-            content_hash,
-            container,
-            track_count,
-            introspected_at,
-            archived_at,
+            id: row.id,
+            file_id: row.file_id,
+            path: row.path,
+            content_hash: row.content_hash,
+            container: row.container,
+            track_count: row.track_count,
+            introspected_at: row.introspected_at,
+            archived_at: row.archived_at,
         }
     }
 }

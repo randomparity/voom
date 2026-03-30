@@ -1,5 +1,5 @@
 mod bad_file_storage;
-pub mod discovered_file_storage;
+mod discovered_file_storage;
 mod file_history_storage;
 mod file_storage;
 mod health_check_storage;
@@ -23,8 +23,8 @@ use voom_domain::errors::{Result, StorageErrorKind, VoomError};
 use voom_domain::media::Track;
 
 pub(crate) use row_mappers::{
-    parse_optional_datetime, row_to_bad_file, row_to_file, row_to_job, row_to_track, row_uuid,
-    FileRow,
+    parse_optional_datetime, parse_required_datetime, row_to_bad_file, row_to_file, row_to_job,
+    row_to_track, row_uuid, FileRow,
 };
 
 use crate::schema;
@@ -346,7 +346,7 @@ mod tests {
     fn sample_file() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/media/movies/test.mkv"));
         file.size = 1_500_000_000;
-        file.content_hash = "abc123def456".to_string();
+        file.content_hash = Some("abc123def456".to_string());
         file.container = Container::Mkv;
         file.duration = 7200.0;
         file.bitrate = Some(8000);
@@ -487,7 +487,7 @@ mod tests {
 
         let mut file2 = MediaFile::new(PathBuf::from("/media/test2.mp4"));
         file2.container = Container::Mp4;
-        file2.content_hash = "xyz".into();
+        file2.content_hash = Some("xyz".into());
         store.upsert_file(&file2).unwrap();
 
         let filters = {
@@ -507,7 +507,7 @@ mod tests {
         store.upsert_file(&file).unwrap();
 
         let mut file2 = MediaFile::new(PathBuf::from("/other/test2.mkv"));
-        file2.content_hash = "xyz".into();
+        file2.content_hash = Some("xyz".into());
         store.upsert_file(&file2).unwrap();
 
         let filters = {
@@ -547,7 +547,7 @@ mod tests {
         let store = test_store();
         for i in 0..5 {
             let mut file = MediaFile::new(PathBuf::from(format!("/media/file{i}.mkv")));
-            file.content_hash = format!("hash{i}");
+            file.content_hash = Some(format!("hash{i}"));
             store.upsert_file(&file).unwrap();
         }
 
@@ -823,11 +823,11 @@ mod tests {
 
         // Insert files under two different roots
         let mut file_a = MediaFile::new(PathBuf::from("/media/movies/a.mkv"));
-        file_a.content_hash = "aaa".to_string();
+        file_a.content_hash = Some("aaa".to_string());
         store.upsert_file(&file_a).unwrap();
 
         let mut file_b = MediaFile::new(PathBuf::from("/media/tv/b.mkv"));
-        file_b.content_hash = "bbb".to_string();
+        file_b.content_hash = Some("bbb".to_string());
         store.upsert_file(&file_b).unwrap();
 
         // Prune only under /media/movies — both are missing from disk
@@ -846,7 +846,7 @@ mod tests {
         let store = test_store();
 
         let mut file = MediaFile::new(PathBuf::from("/media/movies/dep.mkv"));
-        file.content_hash = "dep".to_string();
+        file.content_hash = Some("dep".to_string());
         store.upsert_file(&file).unwrap();
 
         // Save a plan referencing this file
@@ -886,7 +886,7 @@ mod tests {
         let store = test_store();
 
         let mut file = MediaFile::new(PathBuf::from("/media/tv/show.mkv"));
-        file.content_hash = "show".to_string();
+        file.content_hash = Some("show".to_string());
         store.upsert_file(&file).unwrap();
 
         // Prune under /media/movies — should not touch /media/tv
@@ -913,7 +913,7 @@ mod tests {
             let store = store.clone();
             handles.push(std::thread::spawn(move || {
                 let mut file = MediaFile::new(PathBuf::from(format!("/media/concurrent{i}.mkv")));
-                file.content_hash = format!("hash{i}");
+                file.content_hash = Some(format!("hash{i}"));
                 store.upsert_file(&file).unwrap();
                 let loaded = store.file(&file.id).unwrap().unwrap();
                 assert_eq!(loaded.path, file.path);
@@ -935,7 +935,7 @@ mod tests {
         let store = test_store();
         for i in 0..5 {
             let mut file = MediaFile::new(PathBuf::from(format!("/media/clamp{i}.mkv")));
-            file.content_hash = format!("hash_clamp{i}");
+            file.content_hash = Some(format!("hash_clamp{i}"));
             store.upsert_file(&file).unwrap();
         }
 
@@ -954,7 +954,7 @@ mod tests {
         let store = test_store();
         for i in 0..10 {
             let mut file = MediaFile::new(PathBuf::from(format!("/media/param{i:02}.mkv")));
-            file.content_hash = format!("hash_param{i}");
+            file.content_hash = Some(format!("hash_param{i}"));
             store.upsert_file(&file).unwrap();
         }
 
@@ -1055,7 +1055,7 @@ mod tests {
     fn test_upsert_preserves_id_on_rescan() {
         let store = test_store();
         let mut file = MediaFile::new(PathBuf::from("/media/preserve_id.mkv"));
-        file.content_hash = "hash_v1".into();
+        file.content_hash = Some("hash_v1".into());
         store.upsert_file(&file).unwrap();
 
         let original_id = store
@@ -1066,7 +1066,7 @@ mod tests {
 
         // Re-scan creates a new MediaFile with different UUID
         let mut file2 = MediaFile::new(PathBuf::from("/media/preserve_id.mkv"));
-        file2.content_hash = "hash_v2".into();
+        file2.content_hash = Some("hash_v2".into());
         assert_ne!(file2.id, original_id);
 
         store.upsert_file(&file2).unwrap();
@@ -1077,14 +1077,14 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored.id, original_id);
-        assert_eq!(stored.content_hash, "hash_v2");
+        assert_eq!(stored.content_hash, Some("hash_v2".to_string()));
     }
 
     #[test]
     fn test_upsert_creates_history_on_update() {
         let store = test_store();
         let mut file = MediaFile::new(PathBuf::from("/media/history_test.mkv"));
-        file.content_hash = "hash_v1".into();
+        file.content_hash = Some("hash_v1".into());
         file.container = Container::Mkv;
         store.upsert_file(&file).unwrap();
 
@@ -1096,7 +1096,7 @@ mod tests {
 
         // Update the file
         let mut file2 = MediaFile::new(PathBuf::from("/media/history_test.mkv"));
-        file2.content_hash = "hash_v2".into();
+        file2.content_hash = Some("hash_v2".into());
         file2.container = Container::Mkv;
         store.upsert_file(&file2).unwrap();
 
@@ -1105,7 +1105,7 @@ mod tests {
             .file_history(Path::new("/media/history_test.mkv"))
             .unwrap();
         assert_eq!(history.len(), 1);
-        assert_eq!(history[0].content_hash, "hash_v1");
+        assert_eq!(history[0].content_hash, Some("hash_v1".to_string()));
         assert_eq!(history[0].container, Container::Mkv);
     }
 
@@ -1336,15 +1336,15 @@ mod tests {
 
         // Insert files with LIKE wildcard characters in path
         let mut file1 = MediaFile::new(PathBuf::from("/media/50%_done/video.mkv"));
-        file1.content_hash = "h1".into();
+        file1.content_hash = Some("h1".into());
         store.upsert_file(&file1).unwrap();
 
         let mut file2 = MediaFile::new(PathBuf::from("/media/50X_done/other.mkv"));
-        file2.content_hash = "h2".into();
+        file2.content_hash = Some("h2".into());
         store.upsert_file(&file2).unwrap();
 
         let mut file3 = MediaFile::new(PathBuf::from("/media/my_dir/video.mkv"));
-        file3.content_hash = "h3".into();
+        file3.content_hash = Some("h3".into());
         store.upsert_file(&file3).unwrap();
 
         // path_prefix with % in it should only match literal %

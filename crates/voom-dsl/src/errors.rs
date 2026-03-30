@@ -5,7 +5,7 @@ use thiserror::Error;
 /// A parse error with source location and optional suggestion.
 #[derive(Debug, Error)]
 pub enum DslError {
-    #[error("parse error at line {line}, col {col}: {message}")]
+    #[error("parse error at line {line}, col {col}: {message}{}", suggestion.as_ref().map(|s| format!("\n  suggestion: {s}")).unwrap_or_default())]
     Parse {
         line: usize,
         col: usize,
@@ -20,7 +20,7 @@ pub enum DslError {
         message: String,
     },
 
-    #[error("validation error at line {line}, col {col}: {message}")]
+    #[error("validation error at line {line}, col {col}: {message}{}", suggestion.as_ref().map(|s| format!("\n  suggestion: {s}")).unwrap_or_default())]
     Validation {
         line: usize,
         col: usize,
@@ -39,20 +39,6 @@ impl DslError {
             col,
             message: message.into(),
             suggestion: None,
-        }
-    }
-
-    pub fn parse_with_suggestion(
-        line: usize,
-        col: usize,
-        message: impl Into<String>,
-        suggestion: impl Into<String>,
-    ) -> Self {
-        Self::Parse {
-            line,
-            col,
-            message: message.into(),
-            suggestion: Some(suggestion.into()),
         }
     }
 

@@ -6,7 +6,6 @@ use axum::Extension;
 use serde::Deserialize;
 
 use voom_domain::job::JobStatus;
-use voom_domain::media::Container;
 use voom_domain::storage::{FileFilters, JobFilters};
 
 use crate::api::files::FileFilterParams;
@@ -76,15 +75,7 @@ pub async fn library(
     let per_page = 50u32;
     let offset = (page - 1) * per_page;
 
-    let mut filters = FileFilters::default();
-    filters.container = params
-        .filters
-        .container
-        .as_deref()
-        .map(Container::from_extension);
-    filters.has_codec = params.filters.codec.clone();
-    filters.has_language = params.filters.language.clone();
-    filters.path_prefix = params.filters.path_prefix.clone();
+    let mut filters = params.filters.to_file_filters();
     filters.limit = Some(per_page);
     filters.offset = Some(offset);
 

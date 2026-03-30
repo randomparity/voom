@@ -48,7 +48,11 @@ pub fn event_result_from_wasm(
 }
 
 /// Serialized form of an `EventResult` for the WASM boundary.
-pub type WasmEventResult = (String, Vec<(String, Vec<u8>)>, Option<Vec<u8>>);
+pub struct WasmEventResult {
+    pub plugin_name: String,
+    pub produced_events: Vec<(String, Vec<u8>)>,
+    pub data: Option<Vec<u8>>,
+}
 
 /// Serialize a domain `EventResult` into WASM boundary format.
 pub fn event_result_to_wasm(result: &EventResult) -> Result<WasmEventResult> {
@@ -65,7 +69,11 @@ pub fn event_result_to_wasm(result: &EventResult) -> Result<WasmEventResult> {
         .transpose()
         .map_err(|e| VoomError::Wasm(format!("failed to serialize JSON: {e}")))?;
 
-    Ok((result.plugin_name.clone(), produced, data))
+    Ok(WasmEventResult {
+        plugin_name: result.plugin_name.clone(),
+        produced_events: produced,
+        data,
+    })
 }
 
 /// Convert a WIT capability string (e.g., "discover:file,smb") to a domain Capability.
@@ -187,7 +195,7 @@ mod tests {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
             PathBuf::from("/media/movies/test.mkv"),
             1_500_000_000,
-            "abc123def456".into(),
+            Some("abc123def456".into()),
         ));
 
         let (event_type, payload) = event_to_wasm(&event).unwrap();
@@ -208,12 +216,17 @@ mod tests {
         ))];
         result.data = Some(serde_json::json!({"status": "ok"}));
 
-        let (name, produced, data) = event_result_to_wasm(&result).unwrap();
-        assert_eq!(name, "test-plugin");
-        assert_eq!(produced.len(), 1);
-        assert!(data.is_some());
+        let wasm_result = event_result_to_wasm(&result).unwrap();
+        assert_eq!(wasm_result.plugin_name, "test-plugin");
+        assert_eq!(wasm_result.produced_events.len(), 1);
+        assert!(wasm_result.data.is_some());
 
-        let restored = event_result_from_wasm(name, produced, data).unwrap();
+        let restored = event_result_from_wasm(
+            wasm_result.plugin_name,
+            wasm_result.produced_events,
+            wasm_result.data,
+        )
+        .unwrap();
         assert_eq!(restored.plugin_name, "test-plugin");
         assert_eq!(restored.produced_events.len(), 1);
         assert_eq!(restored.data.unwrap()["status"].as_str().unwrap(), "ok");
@@ -321,7 +334,7 @@ mod tests {
             Event::FileDiscovered(FileDiscoveredEvent::new(
                 PathBuf::from("/test.mkv"),
                 100,
-                "hash".into(),
+                Some("hash".into()),
             )),
             Event::JobStarted(JobStartedEvent::new(uuid::Uuid::new_v4(), "test job")),
             Event::JobProgress(JobProgressEvent::new(uuid::Uuid::new_v4(), 0.5)),

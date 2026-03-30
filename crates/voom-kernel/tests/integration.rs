@@ -98,7 +98,7 @@ fn test_kernel_register_and_dispatch() {
     let event = Event::FileDiscovered(FileDiscoveredEvent::new(
         "/media/movies/test.mkv".into(),
         1_500_000_000,
-        "xxh64:abc123def456".to_string(),
+        Some("xxh64:abc123def456".to_string()),
     ));
 
     let results = kernel.dispatch(event);
@@ -131,7 +131,7 @@ fn test_event_cascading() {
     let event = Event::FileDiscovered(FileDiscoveredEvent::new(
         "/media/test.mkv".into(),
         500_000,
-        "xxh64:000".to_string(),
+        Some("xxh64:000".to_string()),
     ));
 
     let results = kernel.dispatch(event);

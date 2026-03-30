@@ -1,3 +1,6 @@
+# Built with componentize-py to demonstrate VOOM's language-agnostic WASM plugin
+# support. The other 6 WASM plugins use Rust; this one uses Python to prove the
+# WIT interface works across language runtimes.
 [project]
 name = "tvdb-metadata"
 version = "0.1.0"

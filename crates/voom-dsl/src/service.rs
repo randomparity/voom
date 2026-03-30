@@ -16,6 +16,8 @@ pub struct ErrorInfo {
     pub message: String,
     pub line: Option<usize>,
     pub column: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
 }
 
 impl ErrorInfo {
@@ -25,6 +27,22 @@ impl ErrorInfo {
             message: message.into(),
             line,
             column,
+            suggestion: None,
+        }
+    }
+
+    /// Create a new `ErrorInfo` with a suggestion.
+    pub fn with_suggestion(
+        message: impl Into<String>,
+        line: Option<usize>,
+        column: Option<usize>,
+        suggestion: impl Into<String>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            line,
+            column,
+            suggestion: Some(suggestion.into()),
         }
     }
 }
@@ -46,16 +64,41 @@ pub struct FormatResult {
 }
 
 fn error_info_from_dsl(err: &DslError) -> ErrorInfo {
-    let (line, column) = match err {
-        DslError::Parse { line, col, .. }
-        | DslError::Build { line, col, .. }
-        | DslError::Validation { line, col, .. } => (Some(*line), Some(*col)),
-        DslError::Compile { .. } => (None, None),
-    };
-    ErrorInfo {
-        message: err.to_string(),
-        line,
-        column,
+    match err {
+        DslError::Parse {
+            line,
+            col,
+            message,
+            suggestion,
+        } => ErrorInfo {
+            message: format!("parse error at line {line}, col {col}: {message}"),
+            line: Some(*line),
+            column: Some(*col),
+            suggestion: suggestion.clone(),
+        },
+        DslError::Build { line, col, message } => ErrorInfo {
+            message: format!("AST build error at line {line}, col {col}: {message}"),
+            line: Some(*line),
+            column: Some(*col),
+            suggestion: None,
+        },
+        DslError::Validation {
+            line,
+            col,
+            message,
+            suggestion,
+        } => ErrorInfo {
+            message: format!("validation error at line {line}, col {col}: {message}"),
+            line: Some(*line),
+            column: Some(*col),
+            suggestion: suggestion.clone(),
+        },
+        DslError::Compile { message } => ErrorInfo {
+            message: format!("compilation error: {message}"),
+            line: None,
+            column: None,
+            suggestion: None,
+        },
     }
 }
 
@@ -141,5 +184,52 @@ mod tests {
         let result = format_source("not valid");
         assert!(result.formatted.is_none());
         assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn error_info_from_dsl_extracts_suggestion() {
+        let err = DslError::validation_with_suggestion(
+            3,
+            10,
+            "unknown codec \"h265\"",
+            "did you mean \"hevc\"?",
+        );
+        let info = error_info_from_dsl(&err);
+        assert_eq!(
+            info.message,
+            "validation error at line 3, col 10: unknown codec \"h265\""
+        );
+        assert!(!info.message.contains("suggestion"));
+        assert_eq!(info.suggestion.as_deref(), Some("did you mean \"hevc\"?"));
+    }
+
+    #[test]
+    fn error_info_from_dsl_no_suggestion() {
+        let err = DslError::validation(5, 1, "duplicate phase name");
+        let info = error_info_from_dsl(&err);
+        assert_eq!(
+            info.message,
+            "validation error at line 5, col 1: duplicate phase name"
+        );
+        assert!(info.suggestion.is_none());
+    }
+
+    #[test]
+    fn error_info_serialization_omits_none_suggestion() {
+        let info = ErrorInfo::new("bad syntax", Some(1), Some(5));
+        let json = serde_json::to_value(&info).unwrap();
+        assert!(json.get("suggestion").is_none());
+    }
+
+    #[test]
+    fn error_info_serialization_includes_suggestion() {
+        let info = ErrorInfo {
+            message: "unknown codec".into(),
+            line: Some(2),
+            column: Some(3),
+            suggestion: Some("did you mean \"hevc\"?".into()),
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["suggestion"], "did you mean \"hevc\"?");
     }
 }

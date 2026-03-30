@@ -14,7 +14,7 @@ use std::time::Duration;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult, FileIntrospectedEvent, JobEnqueueRequestedEvent};
-use voom_domain::job::JobType;
+use voom_domain::job::{DiscoveredFilePayload, JobType};
 use voom_kernel::{Plugin, PluginContext};
 
 /// `FFprobe` introspector: extracts media metadata using ffprobe.
@@ -61,7 +61,7 @@ impl FfprobeIntrospectorPlugin {
         &self,
         path: &std::path::Path,
         size: u64,
-        content_hash: &str,
+        content_hash: Option<&str>,
     ) -> Result<FileIntrospectedEvent> {
         let json = ffprobe::run_ffprobe(&self.ffprobe_path, path, self.timeout)?;
         let file = parser::parse_ffprobe_output(&json, path, size, content_hash)?;
@@ -96,11 +96,12 @@ impl Plugin for FfprobeIntrospectorPlugin {
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
         if let Event::FileDiscovered(e) = event {
-            let payload = serde_json::json!({
-                "path": e.path.to_string_lossy(),
-                "size": e.size,
-                "content_hash": e.content_hash,
-            });
+            let payload = serde_json::to_value(DiscoveredFilePayload {
+                path: e.path.to_string_lossy().into_owned(),
+                size: e.size,
+                content_hash: e.content_hash.clone(),
+            })
+            .expect("DiscoveredFilePayload serialization is infallible");
             let enqueue_event = Event::JobEnqueueRequested(JobEnqueueRequestedEvent::new(
                 JobType::Introspect,
                 50,
@@ -119,10 +120,14 @@ impl Plugin for FfprobeIntrospectorPlugin {
     }
 
     fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
-        // Parse ffprobe path from plugin config if provided
-        if let Ok(config) = ctx.parse_config::<serde_json::Value>() {
-            if let Some(path) = config.get("ffprobe_path").and_then(|v| v.as_str()) {
-                self.ffprobe_path = path.to_string();
+        match ctx.parse_config::<serde_json::Value>() {
+            Ok(config) => {
+                if let Some(path) = config.get("ffprobe_path").and_then(|v| v.as_str()) {
+                    self.ffprobe_path = path.to_string();
+                }
+            }
+            Err(e) => {
+                tracing::warn!("ffprobe-introspector config parse failed, using defaults: {e}");
             }
         }
 
@@ -172,7 +177,7 @@ mod tests {
         let event = Event::FileDiscovered(voom_domain::events::FileDiscoveredEvent::new(
             PathBuf::from("/media/test.mkv"),
             1024,
-            "abc123".into(),
+            Some("abc123".into()),
         ));
         let result = plugin
             .on_event(&event)

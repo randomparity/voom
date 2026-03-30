@@ -150,39 +150,23 @@ impl HwAccelConfig {
             None => return software_encoder(codec).to_string(),
         };
 
-        let (suffix, supported_codecs): (&str, &[&str]) = match backend {
-            HwAccelBackend::Nvenc => ("_nvenc", &["hevc", "h264", "av1"]),
-            HwAccelBackend::Qsv => ("_qsv", &["hevc", "h264", "av1", "vp9"]),
-            HwAccelBackend::Vaapi => ("_vaapi", &["hevc", "h264", "av1", "vp9"]),
-            HwAccelBackend::Videotoolbox => ("_videotoolbox", &["hevc", "h264"]),
+        let Some(hw_name) = hw_encoder_for_backend(backend, codec) else {
+            return software_encoder(codec).to_string();
         };
 
-        // Normalize codec aliases to canonical names
-        let canonical = match codec {
-            "h265" => "hevc",
-            "avc" => "h264",
-            other => other,
-        };
-
-        if supported_codecs.contains(&canonical) {
-            let hw_name = format!("{canonical}{suffix}");
-            // If we validated encoders at init, only use ones that work
-            if let Some(validated) = &self.validated_encoders {
-                if validated.iter().any(|e| e == &hw_name) {
-                    hw_name
-                } else {
-                    tracing::info!(
-                        encoder = %hw_name,
-                        "HW encoder not available on this device, \
-                         falling back to software"
-                    );
-                    software_encoder(codec).to_string()
-                }
-            } else {
+        if let Some(validated) = &self.validated_encoders {
+            if validated.iter().any(|e| e == &hw_name) {
                 hw_name
+            } else {
+                tracing::info!(
+                    encoder = %hw_name,
+                    "HW encoder not available on this device, \
+                     falling back to software"
+                );
+                software_encoder(codec).to_string()
             }
         } else {
-            software_encoder(codec).to_string()
+            hw_name
         }
     }
 
@@ -199,24 +183,10 @@ impl HwAccelConfig {
             None => return false,
         };
 
-        let (suffix, supported_codecs): (&str, &[&str]) = match backend {
-            HwAccelBackend::Nvenc => ("_nvenc", &["hevc", "h264", "av1"]),
-            HwAccelBackend::Qsv => ("_qsv", &["hevc", "h264", "av1", "vp9"]),
-            HwAccelBackend::Vaapi => ("_vaapi", &["hevc", "h264", "av1", "vp9"]),
-            HwAccelBackend::Videotoolbox => ("_videotoolbox", &["hevc", "h264"]),
-        };
-
-        let canonical = match codec {
-            "h265" => "hevc",
-            "avc" => "h264",
-            other => other,
-        };
-
-        if !supported_codecs.contains(&canonical) {
+        let Some(hw_name) = hw_encoder_for_backend(backend, codec) else {
             return false;
-        }
+        };
 
-        let hw_name = format!("{canonical}{suffix}");
         match &self.validated_encoders {
             Some(validated) => validated.iter().any(|e| e == &hw_name),
             None => true,
@@ -257,6 +227,31 @@ impl HwAccelConfig {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let text = stdout.to_ascii_lowercase();
         detect_backend_from_text(&text)
+    }
+}
+
+/// Resolve the HW encoder name for a backend+codec pair.
+///
+/// Returns `None` if the backend doesn't support the codec. Handles
+/// codec alias normalization (`h265→hevc`, `avc→h264`).
+fn hw_encoder_for_backend(backend: HwAccelBackend, codec: &str) -> Option<String> {
+    let (suffix, supported_codecs): (&str, &[&str]) = match backend {
+        HwAccelBackend::Nvenc => ("_nvenc", &["hevc", "h264", "av1"]),
+        HwAccelBackend::Qsv => ("_qsv", &["hevc", "h264", "av1", "vp9"]),
+        HwAccelBackend::Vaapi => ("_vaapi", &["hevc", "h264", "av1", "vp9"]),
+        HwAccelBackend::Videotoolbox => ("_videotoolbox", &["hevc", "h264"]),
+    };
+
+    let canonical = match codec {
+        "h265" => "hevc",
+        "avc" => "h264",
+        other => other,
+    };
+
+    if supported_codecs.contains(&canonical) {
+        Some(format!("{canonical}{suffix}"))
+    } else {
+        None
     }
 }
 
