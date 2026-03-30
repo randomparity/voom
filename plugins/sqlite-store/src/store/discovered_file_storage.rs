@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use voom_domain::errors::Result;
 
-use super::{format_datetime, parse_optional_datetime, storage_err, SqliteStore};
+use super::{format_datetime, parse_required_datetime, storage_err, SqliteStore};
 
 /// Status of a discovered file in the staging pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +63,8 @@ impl SqliteStore {
         let conn = self.conn()?;
         let now = format_datetime(&chrono::Utc::now());
         let id = Uuid::new_v4().to_string();
+        // Schema uses TEXT NOT NULL; empty string is the sentinel for "no hash".
+        // Read paths convert "" back to None (see content_hash block below).
         let hash_str = content_hash.unwrap_or("");
 
         conn.execute(
@@ -151,16 +153,14 @@ impl SqliteStore {
                             format!("unknown discovered file status: {status_str}").into(),
                         )
                     })?,
-                    discovered_at: parse_optional_datetime(
-                        Some(discovered_str),
+                    discovered_at: parse_required_datetime(
+                        discovered_str,
                         "discovered_files.discovered_at",
-                    )?
-                    .unwrap_or_default(),
-                    updated_at: parse_optional_datetime(
-                        Some(updated_str),
+                    )?,
+                    updated_at: parse_required_datetime(
+                        updated_str,
                         "discovered_files.updated_at",
-                    )?
-                    .unwrap_or_default(),
+                    )?,
                 })
             })
             .map_err(storage_err("failed to query discovered files"))?

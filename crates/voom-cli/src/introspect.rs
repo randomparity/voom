@@ -94,12 +94,4 @@ pub async fn introspect_file(
     }
 }
 
-/// Shared payload for jobs keyed on a discovered file (introspection, processing).
-///
-/// Used by both the ffprobe-introspector (enqueue) and CLI commands (dequeue).
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct DiscoveredFilePayload {
-    pub path: String,
-    pub size: u64,
-    pub content_hash: Option<String>,
-}
+pub use voom_domain::DiscoveredFilePayload;

@@ -353,6 +353,8 @@ impl PlanSummary {
 }
 
 /// Row data for reconstructing a [`FileHistoryEntry`] from storage.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
 pub struct StoredHistoryRow {
     pub id: Uuid,
     pub file_id: Uuid,
@@ -362,6 +364,32 @@ pub struct StoredHistoryRow {
     pub track_count: u32,
     pub introspected_at: DateTime<Utc>,
     pub archived_at: DateTime<Utc>,
+}
+
+impl StoredHistoryRow {
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: Uuid,
+        file_id: Uuid,
+        path: PathBuf,
+        content_hash: Option<String>,
+        container: Container,
+        track_count: u32,
+        introspected_at: DateTime<Utc>,
+        archived_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            id,
+            file_id,
+            path,
+            content_hash,
+            container,
+            track_count,
+            introspected_at,
+            archived_at,
+        }
+    }
 }
 
 /// A historical snapshot of a file's state before it was updated.

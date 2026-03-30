@@ -14,7 +14,7 @@ use std::time::Duration;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult, FileIntrospectedEvent, JobEnqueueRequestedEvent};
-use voom_domain::job::JobType;
+use voom_domain::job::{DiscoveredFilePayload, JobType};
 use voom_kernel::{Plugin, PluginContext};
 
 /// `FFprobe` introspector: extracts media metadata using ffprobe.
@@ -96,11 +96,12 @@ impl Plugin for FfprobeIntrospectorPlugin {
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
         if let Event::FileDiscovered(e) = event {
-            let payload = serde_json::json!({
-                "path": e.path.to_string_lossy(),
-                "size": e.size,
-                "content_hash": e.content_hash,
-            });
+            let payload = serde_json::to_value(DiscoveredFilePayload {
+                path: e.path.to_string_lossy().into_owned(),
+                size: e.size,
+                content_hash: e.content_hash.clone(),
+            })
+            .expect("DiscoveredFilePayload serialization is infallible");
             let enqueue_event = Event::JobEnqueueRequested(JobEnqueueRequestedEvent::new(
                 JobType::Introspect,
                 50,

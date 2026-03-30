@@ -48,8 +48,8 @@ impl EventBus {
         }
     }
 
-    /// Subscribe a plugin to receive events it handles.
-    /// Lower priority values run first.
+    /// Register a plugin at the given priority (lower = earlier dispatch).
+    /// Plugins with equal priority are dispatched in registration order.
     pub fn subscribe_plugin(&self, plugin: Arc<dyn Plugin>, priority: i32) {
         let mut subs = self.subscribers.write();
         let name = plugin.name().to_string();

@@ -157,6 +157,12 @@ fn event_summary(event: &Event) -> String {
                 e.plugin_name, e.event_type, e.error
             )
         }
+        Event::JobEnqueueRequested(e) => {
+            format!(
+                "job_type={:?} priority={} requester={}",
+                e.job_type, e.priority, e.requester
+            )
+        }
         _ => String::new(),
     }
 }

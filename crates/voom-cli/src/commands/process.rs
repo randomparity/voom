@@ -531,8 +531,11 @@ async fn execute_plans(
     // Verify file hasn't changed since introspection (TOCTOU guard)
     let exec_path = file.path.clone();
     if let Some(ref stored_hash) = file.content_hash {
-        match voom_discovery::hash_file(&exec_path) {
-            Ok(current_hash) if &current_hash != stored_hash => {
+        let hash_path = exec_path.clone();
+        let hash_result =
+            tokio::task::spawn_blocking(move || voom_discovery::hash_file(&hash_path)).await;
+        match hash_result {
+            Ok(Ok(current_hash)) if &current_hash != stored_hash => {
                 tracing::warn!(path = %exec_path.display(), "file changed since introspection, skipping");
                 return Ok(Some(serde_json::json!({
                     "path": file_path_str,
@@ -540,7 +543,7 @@ async fn execute_plans(
                     "reason": "file changed since introspection",
                 })));
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!(path = %exec_path.display(), error = %e, "hash check failed, skipping");
                 return Ok(Some(serde_json::json!({
                     "path": file_path_str,
@@ -548,8 +551,19 @@ async fn execute_plans(
                     "reason": format!("hash check failed: {e}"),
                 })));
             }
+            Err(e) => {
+                tracing::warn!(path = %exec_path.display(), error = %e, "hash task panicked, skipping");
+                return Ok(Some(serde_json::json!({
+                    "path": file_path_str,
+                    "skipped": true,
+                    "reason": format!("hash task panicked: {e}"),
+                })));
+            }
             _ => {} // hash matches, proceed
         }
+    } else {
+        tracing::debug!(path = %exec_path.display(),
+            "no content_hash available, skipping TOCTOU check");
     }
 
     // Execute each non-skipped plan. PlanExecuting is dispatched first so
@@ -675,10 +689,22 @@ async fn execute_plans(
     if any_executed {
         let current_path = resolve_post_execution_path(file, &result.plans);
         if current_path.exists() {
-            let size = std::fs::metadata(&current_path)
-                .map(|m| m.len())
-                .unwrap_or(file.size);
-            let hash = voom_discovery::hash_file(&current_path).ok();
+            let p = current_path.clone();
+            let file_size = file.size;
+            let (size, hash) = tokio::task::spawn_blocking(move || {
+                let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(file_size);
+                let hash = match voom_discovery::hash_file(&p) {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        tracing::warn!(path = %p.display(), error = %e,
+                            "could not hash file after execution");
+                        None
+                    }
+                };
+                (size, hash)
+            })
+            .await
+            .unwrap_or((file.size, None));
             let ffp = ctx.ffprobe_path.map(String::from);
             let kernel_clone = ctx.kernel.clone();
             let _ = crate::introspect::introspect_file(

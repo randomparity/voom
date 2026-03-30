@@ -642,10 +642,18 @@ fn validate_transcode_keys(
     errors: &mut Vec<DslError>,
 ) {
     for (key, _) in settings {
+        if key.len() > 64 {
+            errors.push(DslError::validation(
+                line,
+                col,
+                format!("transcode setting key too long: \"{key}\""),
+            ));
+            continue;
+        }
         if !KNOWN_TRANSCODE_KEYS.contains(&key.as_str()) {
             let mut best: Option<(&str, usize)> = None;
             for &known in KNOWN_TRANSCODE_KEYS {
-                let dist = hw_edit_distance(key, known);
+                let dist = edit_distance(key, known);
                 if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
                     best = Some((known, dist));
                 }
@@ -686,7 +694,7 @@ fn validate_codec_track_type(
     let expected_type = match target {
         "video" => CodecType::Video,
         "audio" => CodecType::Audio,
-        "subtitle" | "subtitles" => CodecType::Subtitle,
+        // Grammar constrains transcode targets to "video" | "audio"
         _ => return,
     };
     let Some(actual_type) = codecs::codec_type(codec) else {
@@ -698,11 +706,16 @@ fn validate_codec_track_type(
             CodecType::Audio => "audio",
             CodecType::Subtitle => "subtitle",
         };
+        let article = if type_name.starts_with(['a', 'e', 'i', 'o', 'u']) {
+            "an"
+        } else {
+            "a"
+        };
         errors.push(DslError::validation(
             line,
             col,
             format!(
-                "codec \"{codec}\" is a {type_name} codec \
+                "codec \"{codec}\" is {article} {type_name} codec \
                  but target is {target}"
             ),
         ));
@@ -711,7 +724,7 @@ fn validate_codec_track_type(
 
 const VALID_HW_VALUES: &[&str] = &["auto", "nvenc", "qsv", "vaapi", "videotoolbox", "none"];
 
-fn hw_edit_distance(a: &str, b: &str) -> usize {
+fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let mut dp = vec![vec![0usize; b.len() + 1]; a.len() + 1];
@@ -736,7 +749,7 @@ fn suggest_hw_value(input: &str) -> Option<&'static str> {
     let lower = input.to_ascii_lowercase();
     let mut best: Option<(&str, usize)> = None;
     for &valid in VALID_HW_VALUES {
-        let dist = hw_edit_distance(&lower, valid);
+        let dist = edit_distance(&lower, valid);
         if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
             best = Some((valid, dist));
         }
@@ -761,7 +774,13 @@ fn validate_hw_settings(
                 _ => None,
             };
             if let Some(name) = hw_str {
-                if !VALID_HW_VALUES.contains(&name) {
+                if name.len() > 64 {
+                    errors.push(DslError::validation(
+                        line,
+                        col,
+                        format!("hw value too long: \"{name}\""),
+                    ));
+                } else if !VALID_HW_VALUES.contains(&name) {
                     let valid_list = VALID_HW_VALUES.join(", ");
                     if let Some(suggestion) = suggest_hw_value(name) {
                         errors.push(DslError::validation_with_suggestion(
@@ -784,6 +803,21 @@ fn validate_hw_settings(
                         ));
                     }
                 }
+            } else {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    format!(
+                        "hw value must be a string or identifier, \
+                         got {}",
+                        match val {
+                            Value::Number(_, _) => "number",
+                            Value::Bool(_) => "boolean",
+                            Value::List(_) => "list",
+                            _ => "unknown",
+                        }
+                    ),
+                ));
             }
         } else if key == "hw_fallback" {
             has_hw_fallback = true;
@@ -1194,7 +1228,7 @@ mod tests {
             err.errors
                 .iter()
                 .any(|e| format!("{e}")
-                    .contains("codec \"aac\" is a audio codec but target is video")),
+                    .contains("codec \"aac\" is an audio codec but target is video")),
             "expected codec-track mismatch error, got: {:?}",
             err.errors
         );

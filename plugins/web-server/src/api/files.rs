@@ -23,6 +23,8 @@ pub struct FileFilterParams {
 
 impl FileFilterParams {
     /// Convert to domain [`FileFilters`] with input truncation.
+    ///
+    /// Does **not** set `limit` or `offset` — callers must set those separately.
     #[must_use]
     pub fn to_file_filters(&self) -> FileFilters {
         let mut f = FileFilters::default();

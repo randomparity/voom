@@ -34,7 +34,8 @@ pub fn parse_ffprobe_output(
 
     let mut mf = MediaFile::new(path.to_path_buf());
     mf.size = size;
-    mf.content_hash = content_hash.filter(|s| !s.is_empty()).map(str::to_string);
+    // Caller guarantees None for absent hashes; no empty-string sentinel at this layer.
+    mf.content_hash = content_hash.map(str::to_string);
     mf.container = container;
     mf.duration = duration;
     mf.bitrate = bitrate;

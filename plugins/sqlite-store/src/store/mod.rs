@@ -23,8 +23,8 @@ use voom_domain::errors::{Result, StorageErrorKind, VoomError};
 use voom_domain::media::Track;
 
 pub(crate) use row_mappers::{
-    parse_optional_datetime, row_to_bad_file, row_to_file, row_to_job, row_to_track, row_uuid,
-    FileRow,
+    parse_optional_datetime, parse_required_datetime, row_to_bad_file, row_to_file, row_to_job,
+    row_to_track, row_uuid, FileRow,
 };
 
 use crate::schema;

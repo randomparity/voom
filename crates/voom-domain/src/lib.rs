@@ -26,7 +26,7 @@ pub use capabilities::Capability;
 pub use capability_map::CapabilityMap;
 pub use errors::{Result, VoomError};
 pub use events::Event;
-pub use job::{Job, JobStatus, JobUpdate};
+pub use job::{DiscoveredFilePayload, Job, JobStatus, JobUpdate};
 pub use media::{Container, MediaFile, Track, TrackType};
 pub use plan::{
     ActionParams, ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction,
