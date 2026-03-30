@@ -332,6 +332,12 @@ pub enum DbCommands {
         #[arg(long)]
         yes: bool,
     },
+    /// Show database size, row counts, and fragmentation
+    Stats {
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 // === Config ===
@@ -1042,6 +1048,26 @@ mod tests {
                 assert!(yes);
             }
             _ => panic!("expected CleanBad"),
+        }
+    }
+
+    #[test]
+    fn test_db_stats() {
+        let cli = parse(&["voom", "db", "stats"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Db(DbCommands::Stats { .. })
+        ));
+    }
+
+    #[test]
+    fn test_db_stats_json_format() {
+        let cli = parse(&["voom", "db", "stats", "-f", "json"]);
+        match cli.command {
+            Commands::Db(DbCommands::Stats { format }) => {
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Stats"),
         }
     }
 

@@ -3,7 +3,7 @@ use std::path::Path;
 use rusqlite::params;
 
 use voom_domain::errors::Result;
-use voom_domain::storage::MaintenanceStorage;
+use voom_domain::storage::{MaintenanceStorage, PageStats};
 
 use super::{escape_like, storage_err, PruneTarget, SqliteStore};
 
@@ -78,5 +78,50 @@ impl MaintenanceStorage for SqliteStore {
         let pruned = self.chunked_delete(PruneTarget::Files, &missing_ids)?;
 
         Ok(pruned)
+    }
+
+    fn table_row_counts(&self) -> Result<Vec<(String, u64)>> {
+        let tables = [
+            "files",
+            "tracks",
+            "jobs",
+            "plans",
+            "file_history",
+            "processing_stats",
+            "plugin_data",
+            "bad_files",
+            "discovered_files",
+            "health_checks",
+            "event_log",
+        ];
+        let conn = self.conn()?;
+        let mut counts = Vec::with_capacity(tables.len());
+        for table in tables {
+            let count: u64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .map_err(storage_err(&format!("failed to count rows in {table}")))?;
+            counts.push((table.to_string(), count));
+        }
+        Ok(counts)
+    }
+
+    fn page_stats(&self) -> Result<PageStats> {
+        let conn = self.conn()?;
+        let page_size: u64 = conn
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .map_err(storage_err("failed to read page_size"))?;
+        let page_count: u64 = conn
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .map_err(storage_err("failed to read page_count"))?;
+        let freelist_count: u64 = conn
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .map_err(storage_err("failed to read freelist_count"))?;
+        Ok(PageStats {
+            page_size,
+            page_count,
+            freelist_count,
+        })
     }
 }

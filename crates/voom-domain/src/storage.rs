@@ -260,6 +260,14 @@ pub trait EventLogStorage: Send + Sync {
     fn prune_event_log(&self, keep_last: u64) -> Result<u64>;
 }
 
+/// SQLite page-level statistics.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PageStats {
+    pub page_size: u64,
+    pub page_count: u64,
+    pub freelist_count: u64,
+}
+
 /// Database maintenance operations.
 ///
 /// # Errors
@@ -268,6 +276,8 @@ pub trait MaintenanceStorage: Send + Sync {
     fn vacuum(&self) -> Result<()>;
     fn prune_missing_files(&self) -> Result<u64>;
     fn prune_missing_files_under(&self, root: &Path) -> Result<u64>;
+    fn table_row_counts(&self) -> Result<Vec<(String, u64)>>;
+    fn page_stats(&self) -> Result<PageStats>;
 }
 
 /// Composed storage interface encompassing all sub-traits.
