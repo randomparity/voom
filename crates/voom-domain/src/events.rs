@@ -722,6 +722,37 @@ mod tests {
     }
 
     #[test]
+    fn test_health_status_serde_roundtrip() {
+        let event = Event::HealthStatus(HealthStatusEvent::new(
+            "data_dir_writable",
+            true,
+            Some("/data/voom".into()),
+        ));
+        assert_eq!(event.event_type(), "health.status");
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.event_type(), "health.status");
+        if let Event::HealthStatus(e) = &deserialized {
+            assert_eq!(e.check_name, "data_dir_writable");
+            assert!(e.passed);
+            assert_eq!(e.details.as_deref(), Some("/data/voom"));
+        } else {
+            panic!("expected HealthStatus event");
+        }
+
+        let bytes = rmp_serde::to_vec(&event).unwrap();
+        let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(deserialized.event_type(), "health.status");
+        if let Event::HealthStatus(e) = &deserialized {
+            assert_eq!(e.check_name, "data_dir_writable");
+            assert!(e.passed);
+        } else {
+            panic!("expected HealthStatus event");
+        }
+    }
+
+    #[test]
     fn test_executor_capabilities_serde_roundtrip() {
         let event = Event::ExecutorCapabilities(ExecutorCapabilitiesEvent::new(
             "ffmpeg-executor",

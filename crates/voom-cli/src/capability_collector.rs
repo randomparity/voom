@@ -32,7 +32,7 @@ impl voom_kernel::Plugin for CapabilityCollectorPlugin {
     }
 
     fn version(&self) -> &str {
-        "0.1.0"
+        env!("CARGO_PKG_VERSION")
     }
 
     fn description(&self) -> &str {

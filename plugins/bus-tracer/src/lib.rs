@@ -229,6 +229,13 @@ impl Plugin for BusTracerPlugin {
         Ok(None)
     }
 
+    fn shutdown(&self) -> Result<()> {
+        if let Some(writer) = &self.writer {
+            writer.lock().flush().ok();
+        }
+        Ok(())
+    }
+
     fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
         let config: BusTracerConfig = match ctx.parse_config() {
             Ok(c) => c,

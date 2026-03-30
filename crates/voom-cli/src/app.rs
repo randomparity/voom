@@ -142,6 +142,23 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
         "health checker"
     );
 
+    // Halt early if the data directory is not writable — this is a critical
+    // prerequisite for sqlite-store, backups, and job persistence.
+    if !disabled.iter().any(|d| d == "health-checker") {
+        let probe = data_dir.join(".voom-health-probe");
+        if std::fs::write(&probe, b"probe").is_err() {
+            tracing::error!(
+                data_dir = %data_dir.display(),
+                "data directory is not writable; aborting bootstrap"
+            );
+            anyhow::bail!(
+                "data directory {} is not writable — check permissions",
+                data_dir.display()
+            );
+        }
+        let _ = std::fs::remove_file(&probe);
+    }
+
     // Tool detector
     register_if_enabled!(
         "tool-detector",
@@ -169,7 +186,17 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
 
     // Capability collector — captures ExecutorCapabilities events for the evaluator.
     // Registered before executors so it sees their init-time announcements.
-    let collector = Arc::new(CapabilityCollectorPlugin::new());
+    // Uses manual init + register_plugin (like sqlite-store) because the caller
+    // needs an Arc<CapabilityCollectorPlugin> handle for snapshot() after bootstrap.
+    let collector = {
+        let mut plugin = CapabilityCollectorPlugin::new();
+        let ctx =
+            voom_kernel::PluginContext::new(plugin_json("capability-collector"), data_dir.clone());
+        plugin
+            .init(&ctx)
+            .context("Failed to initialize capability collector")?;
+        Arc::new(plugin)
+    };
     kernel.register_plugin(collector.clone(), PRIORITY_CAPABILITY_COLLECTOR);
 
     // Executor — mkvtoolnix (MKV metadata, track removal/reorder, convert-to-MKV)

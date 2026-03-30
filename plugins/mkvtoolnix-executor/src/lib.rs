@@ -222,7 +222,11 @@ impl Plugin for MkvtoolnixExecutorPlugin {
     voom_kernel::plugin_cargo_metadata!();
 
     fn capabilities(&self) -> &[Capability] {
-        &self.capabilities
+        if self.available {
+            &self.capabilities
+        } else {
+            &[]
+        }
     }
 
     fn handles(&self, event_type: &str) -> bool {
