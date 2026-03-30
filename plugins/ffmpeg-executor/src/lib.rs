@@ -423,7 +423,7 @@ mod tests {
     use std::path::PathBuf;
     use voom_domain::events::PlanExecutingEvent;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
-    use voom_domain::plan::{ActionParams, PlannedAction};
+    use voom_domain::plan::{ActionParams, PlannedAction, TranscodeSettings};
 
     fn sample_mp4_file() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/media/video.mp4"));
@@ -501,12 +501,7 @@ mod tests {
                 0,
                 ActionParams::Transcode {
                     codec: "hevc".into(),
-                    crf: None,
-                    preset: None,
-                    bitrate: None,
-                    channels: None,
-                    hw: None,
-                    hw_fallback: None,
+                    settings: Default::default(),
                 },
                 "Transcode to HEVC",
             )],
@@ -524,12 +519,7 @@ mod tests {
                 1,
                 ActionParams::Transcode {
                     codec: "opus".into(),
-                    crf: None,
-                    preset: None,
-                    bitrate: None,
-                    channels: None,
-                    hw: None,
-                    hw_fallback: None,
+                    settings: Default::default(),
                 },
                 "Transcode to Opus",
             )],
@@ -606,12 +596,7 @@ mod tests {
                     0,
                     ActionParams::Transcode {
                         codec: "h264".into(),
-                        crf: None,
-                        preset: None,
-                        bitrate: None,
-                        channels: None,
-                        hw: None,
-                        hw_fallback: None,
+                        settings: Default::default(),
                     },
                     "Transcode to H.264",
                 ),
@@ -671,12 +656,7 @@ mod tests {
                 0,
                 ActionParams::Transcode {
                     codec: "hevc".into(),
-                    crf: None,
-                    preset: None,
-                    bitrate: None,
-                    channels: None,
-                    hw: None,
-                    hw_fallback: None,
+                    settings: Default::default(),
                 },
                 "Transcode",
             )],
@@ -713,12 +693,7 @@ mod tests {
                 0,
                 ActionParams::Transcode {
                     codec: "hevc".into(),
-                    crf: Some(23),
-                    preset: None,
-                    bitrate: None,
-                    channels: None,
-                    hw: None,
-                    hw_fallback: None,
+                    settings: TranscodeSettings::default().with_crf(Some(23)),
                 },
                 "Transcode to HEVC",
             )],
@@ -742,12 +717,7 @@ mod tests {
                 0,
                 ActionParams::Transcode {
                     codec: "hevc".into(),
-                    crf: None,
-                    preset: None,
-                    bitrate: None,
-                    channels: None,
-                    hw: None,
-                    hw_fallback: None,
+                    settings: Default::default(),
                 },
                 "Transcode to HEVC",
             )],
@@ -809,12 +779,7 @@ mod tests {
                 0,
                 ActionParams::Transcode {
                     codec: "hevc".into(),
-                    crf: None,
-                    preset: None,
-                    bitrate: None,
-                    channels: None,
-                    hw: None,
-                    hw_fallback: None,
+                    settings: Default::default(),
                 },
                 "Transcode",
             )],
@@ -852,12 +817,7 @@ mod tests {
                 0,
                 ActionParams::Transcode {
                     codec: "hevc".into(),
-                    crf: None,
-                    preset: None,
-                    bitrate: None,
-                    channels: None,
-                    hw: None,
-                    hw_fallback: None,
+                    settings: Default::default(),
                 },
                 "Transcode to HEVC",
             )],
@@ -875,12 +835,7 @@ mod tests {
                 0,
                 ActionParams::Transcode {
                     codec: "hevc".into(),
-                    crf: None,
-                    preset: None,
-                    bitrate: None,
-                    channels: None,
-                    hw: None,
-                    hw_fallback: None,
+                    settings: Default::default(),
                 },
                 "Transcode to HEVC",
             )],
@@ -914,12 +869,7 @@ mod tests {
                 0,
                 ActionParams::Transcode {
                     codec: "av1".into(),
-                    crf: None,
-                    preset: None,
-                    bitrate: None,
-                    channels: None,
-                    hw: None,
-                    hw_fallback: None,
+                    settings: Default::default(),
                 },
                 "Transcode to AV1",
             )],

@@ -233,8 +233,10 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    use voom_domain::plan::TranscodeChannels;
     use voom_domain::plan::{ActionParams, OperationType};
     use voom_domain::storage::FileStorage;
+    use voom_domain::TranscodeSettings;
 
     fn test_store() -> SqliteStore {
         SqliteStore::in_memory().expect("in-memory store")
@@ -278,12 +280,10 @@ mod tests {
                 OperationType::TranscodeVideo,
                 ActionParams::Transcode {
                     codec: "hevc".into(),
-                    crf: Some(18),
-                    preset: Some("slow".into()),
-                    bitrate: None,
-                    channels: None,
-                    hw: None,
-                    hw_fallback: None,
+                    settings: TranscodeSettings::default()
+                        .with_crf(Some(18))
+                        .with_preset(Some("slow".into()))
+                        .with_channels(Some(TranscodeChannels::Count(6))),
                 },
                 "transcode video to hevc",
             ),
@@ -324,10 +324,14 @@ mod tests {
             s.actions[1].parameters,
             ActionParams::RemoveTrack { .. }
         ));
-        assert!(matches!(
-            s.actions[2].parameters,
-            ActionParams::Transcode { .. }
-        ));
+        if let ActionParams::Transcode { codec, settings } = &s.actions[2].parameters {
+            assert_eq!(codec, "hevc");
+            assert_eq!(settings.crf, Some(18));
+            assert_eq!(settings.preset.as_deref(), Some("slow"));
+            assert_eq!(settings.channels, Some(TranscodeChannels::Count(6)));
+        } else {
+            panic!("expected Transcode action");
+        }
         assert!(matches!(
             s.actions[3].parameters,
             ActionParams::Title { .. }

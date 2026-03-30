@@ -131,6 +131,118 @@ impl PlannedAction {
     }
 }
 
+/// Channel setting for a transcode action — either a named preset or a count.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TranscodeChannels {
+    /// Named preset, e.g. `stereo`, `preserve`.
+    Named(String),
+    /// Explicit channel count, e.g. `2`, `6`.
+    Count(u32),
+}
+
+impl TranscodeChannels {
+    /// Resolve to a concrete channel count.
+    /// Returns `None` for "preserve" or unrecognized named presets.
+    #[must_use]
+    pub fn to_count(&self) -> Option<u32> {
+        match self {
+            Self::Count(n) => Some(*n),
+            Self::Named(name) => match name.as_str() {
+                "mono" => Some(1),
+                "stereo" => Some(2),
+                "5.1" | "surround" => Some(6),
+                "7.1" => Some(8),
+                _ => None,
+            },
+        }
+    }
+}
+
+/// Transcode quality/encoding settings, separate from the codec choice.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct TranscodeSettings {
+    pub crf: Option<u32>,
+    pub preset: Option<String>,
+    pub bitrate: Option<String>,
+    pub channels: Option<TranscodeChannels>,
+    /// Per-action HW acceleration preference (overrides system-wide detection).
+    pub hw: Option<String>,
+    /// Whether to fall back to software encoding when HW is unavailable.
+    pub hw_fallback: Option<bool>,
+    /// Maximum resolution (e.g. "1080p"). Downscale if source exceeds.
+    pub max_resolution: Option<String>,
+    /// Scaling algorithm (e.g. "lanczos").
+    pub scale_algorithm: Option<String>,
+    /// HDR handling mode (e.g. "preserve", "tonemap").
+    pub hdr_mode: Option<String>,
+    /// Encoder tuning hint (e.g. "film", "animation").
+    pub tune: Option<String>,
+}
+
+impl TranscodeSettings {
+    #[must_use]
+    pub fn with_crf(mut self, crf: Option<u32>) -> Self {
+        self.crf = crf;
+        self
+    }
+
+    #[must_use]
+    pub fn with_preset(mut self, preset: Option<String>) -> Self {
+        self.preset = preset;
+        self
+    }
+
+    #[must_use]
+    pub fn with_bitrate(mut self, bitrate: Option<String>) -> Self {
+        self.bitrate = bitrate;
+        self
+    }
+
+    #[must_use]
+    pub fn with_channels(mut self, channels: Option<TranscodeChannels>) -> Self {
+        self.channels = channels;
+        self
+    }
+
+    #[must_use]
+    pub fn with_hw(mut self, hw: Option<String>) -> Self {
+        self.hw = hw;
+        self
+    }
+
+    #[must_use]
+    pub fn with_hw_fallback(mut self, hw_fallback: Option<bool>) -> Self {
+        self.hw_fallback = hw_fallback;
+        self
+    }
+
+    #[must_use]
+    pub fn with_max_resolution(mut self, max_resolution: Option<String>) -> Self {
+        self.max_resolution = max_resolution;
+        self
+    }
+
+    #[must_use]
+    pub fn with_scale_algorithm(mut self, scale_algorithm: Option<String>) -> Self {
+        self.scale_algorithm = scale_algorithm;
+        self
+    }
+
+    #[must_use]
+    pub fn with_hdr_mode(mut self, hdr_mode: Option<String>) -> Self {
+        self.hdr_mode = hdr_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tune(mut self, tune: Option<String>) -> Self {
+        self.tune = tune;
+        self
+    }
+}
+
 /// Typed parameters for each operation type.
 /// Replaces the previous untyped `serde_json::Value` parameters field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,16 +274,8 @@ pub enum ActionParams {
     /// Transcode settings (codec, plus optional quality/encoding parameters).
     Transcode {
         codec: String,
-        crf: Option<u32>,
-        preset: Option<String>,
-        bitrate: Option<String>,
-        channels: Option<u32>,
-        /// Per-action HW acceleration preference (overrides system-wide detection).
         #[serde(default)]
-        hw: Option<String>,
-        /// Whether to fall back to software encoding when HW is unavailable.
-        #[serde(default)]
-        hw_fallback: Option<bool>,
+        settings: TranscodeSettings,
     },
     /// Audio synthesis parameters.
     Synthesize {
@@ -453,6 +557,95 @@ mod tests {
         assert!(plan.is_skipped());
         assert_eq!(plan.skip_reason.as_deref(), Some("no changes needed"));
         assert!(plan.actions.is_empty());
+    }
+
+    #[test]
+    fn test_transcode_channels_to_count_named() {
+        assert_eq!(TranscodeChannels::Named("mono".into()).to_count(), Some(1));
+        assert_eq!(
+            TranscodeChannels::Named("stereo".into()).to_count(),
+            Some(2)
+        );
+        assert_eq!(TranscodeChannels::Named("5.1".into()).to_count(), Some(6));
+        assert_eq!(
+            TranscodeChannels::Named("surround".into()).to_count(),
+            Some(6)
+        );
+        assert_eq!(TranscodeChannels::Named("7.1".into()).to_count(), Some(8));
+    }
+
+    #[test]
+    fn test_transcode_channels_to_count_numeric() {
+        assert_eq!(TranscodeChannels::Count(1).to_count(), Some(1));
+        assert_eq!(TranscodeChannels::Count(2).to_count(), Some(2));
+        assert_eq!(TranscodeChannels::Count(6).to_count(), Some(6));
+    }
+
+    #[test]
+    fn test_transcode_channels_to_count_preserve_returns_none() {
+        assert_eq!(TranscodeChannels::Named("preserve".into()).to_count(), None);
+    }
+
+    #[test]
+    fn test_transcode_channels_to_count_unknown_returns_none() {
+        assert_eq!(
+            TranscodeChannels::Named("quadraphonic".into()).to_count(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_transcode_old_flat_format_drops_settings() {
+        let json = r#"{"type":"Transcode","codec":"hevc","crf":23,"preset":"medium"}"#;
+        let parsed: ActionParams = serde_json::from_str(json).unwrap();
+        if let ActionParams::Transcode { codec, settings } = parsed {
+            assert_eq!(codec, "hevc");
+            // Old flat fields are silently dropped — settings gets defaults
+            assert_eq!(settings.crf, None);
+            assert_eq!(settings.preset, None);
+        } else {
+            panic!("expected Transcode variant");
+        }
+    }
+
+    #[test]
+    fn test_transcode_settings_serde_roundtrip() {
+        let settings = TranscodeSettings::default()
+            .with_crf(Some(23))
+            .with_preset(Some("slow".into()))
+            .with_bitrate(Some("5M".into()))
+            .with_channels(Some(TranscodeChannels::Count(6)))
+            .with_hw(Some("nvenc".into()))
+            .with_hw_fallback(Some(false))
+            .with_max_resolution(Some("1080p".into()))
+            .with_scale_algorithm(Some("lanczos".into()))
+            .with_hdr_mode(Some("tonemap".into()))
+            .with_tune(Some("film".into()));
+
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: TranscodeSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(settings, restored);
+
+        let msgpack = rmp_serde::to_vec(&settings).unwrap();
+        let restored: TranscodeSettings = rmp_serde::from_slice(&msgpack).unwrap();
+        assert_eq!(settings, restored);
+    }
+
+    #[test]
+    fn test_transcode_channels_serde_roundtrip() {
+        // Count variant serializes as a bare number (untagged)
+        let count = TranscodeChannels::Count(6);
+        let json = serde_json::to_string(&count).unwrap();
+        assert_eq!(json, "6");
+        let restored: TranscodeChannels = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, count);
+
+        // Named variant serializes as a bare string (untagged)
+        let named = TranscodeChannels::Named("stereo".into());
+        let json = serde_json::to_string(&named).unwrap();
+        assert_eq!(json, "\"stereo\"");
+        let restored: TranscodeChannels = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, named);
     }
 
     #[test]

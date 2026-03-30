@@ -42,7 +42,7 @@ container_op = { "container" ~ ident }
 
 keep_op   = { "keep" ~ track_target ~ where_clause? }
 remove_op = { "remove" ~ track_target ~ where_clause? }
-track_target = { "audio" | "subtitles" | "subtitle" | "attachments" | "video" }
+track_target = { "audio" | "subtitles" | "subtitle" | "attachments" | "attachment" | "video" }
 where_clause = { "where" ~ filter_expr }
 
 order_op   = { "order" ~ "tracks" ~ list }

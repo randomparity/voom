@@ -9,12 +9,26 @@ use std::collections::{HashMap, HashSet};
 use voom_domain::capability_map::CapabilityMap;
 use voom_domain::errors::VoomError;
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
-use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
+use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings};
 use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
 use voom_dsl::compiled::*;
 
 use crate::condition::{evaluate_condition, resolve_value_or_field, EvalContext};
 use crate::filter::{track_matches, tracks_for_target};
+
+fn transcode_settings_from(s: &CompiledTranscodeSettings) -> TranscodeSettings {
+    TranscodeSettings::default()
+        .with_crf(s.crf)
+        .with_preset(s.preset.clone())
+        .with_bitrate(s.bitrate.clone())
+        .with_channels(s.channels.clone())
+        .with_hw(s.hw.clone())
+        .with_hw_fallback(s.hw_fallback)
+        .with_max_resolution(s.max_resolution.clone())
+        .with_scale_algorithm(s.scale_algorithm.clone())
+        .with_hdr_mode(s.hdr_mode.clone())
+        .with_tune(s.tune.clone())
+}
 
 /// Result of evaluating a full policy against a file.
 #[non_exhaustive]
@@ -583,13 +597,6 @@ fn emit_transcode(
         }
     }
 
-    let crf = settings.crf;
-    let preset = settings.preset.clone();
-    let bitrate = settings.bitrate.clone();
-    let channels = settings.channels;
-    let hw = settings.hw.clone();
-    let hw_fallback = settings.hw_fallback;
-
     for track in &tracks {
         if track.codec == codec {
             continue;
@@ -603,12 +610,7 @@ fn emit_transcode(
             track.index,
             ActionParams::Transcode {
                 codec: codec.into(),
-                crf,
-                preset: preset.clone(),
-                bitrate: bitrate.clone(),
-                channels,
-                hw: hw.clone(),
-                hw_fallback,
+                settings: transcode_settings_from(settings),
             },
             format!(
                 "Transcode {} track {} from {} to {codec}",
@@ -659,18 +661,13 @@ fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
         None => None,
     };
 
-    let channels = synth.channels.as_ref().map(|c| match c {
-        SynthChannels::Count(n) => *n,
-        SynthChannels::Named(s) => match s.as_str() {
-            "mono" => 1,
-            "stereo" => 2,
-            "5.1" | "surround" => 6,
-            "7.1" => 8,
-            other => {
-                tracing::warn!(preset = other, "unknown channel preset, defaulting to 2");
-                2
+    let channels = synth.channels.as_ref().map(|c| {
+        c.to_count().unwrap_or_else(|| {
+            if let TranscodeChannels::Named(name) = c {
+                tracing::warn!(preset = name, "unknown channel preset, defaulting to 2");
             }
-        },
+            2
+        })
     });
 
     let position = synth.position.as_ref().map(|p| match p {
@@ -2203,11 +2200,9 @@ mod tests {
             let result = evaluate_with_context(&policy, &file, Some(&caps));
             let action = &result.plans[0].actions[0];
             match &action.parameters {
-                ActionParams::Transcode {
-                    hw, hw_fallback, ..
-                } => {
-                    assert_eq!(hw.as_deref(), Some("nvenc"));
-                    assert_eq!(*hw_fallback, Some(true));
+                ActionParams::Transcode { settings, .. } => {
+                    assert_eq!(settings.hw.as_deref(), Some("nvenc"));
+                    assert_eq!(settings.hw_fallback, Some(true));
                 }
                 other => panic!("Expected Transcode params, got {other:?}"),
             }

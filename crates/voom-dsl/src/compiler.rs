@@ -14,7 +14,7 @@ use crate::compiled::{
     CompiledConditional, CompiledConfig, CompiledDefault, CompiledFilter, CompiledOperation,
     CompiledPhase, CompiledPolicy, CompiledRegex, CompiledRule, CompiledRunIf, CompiledSynthesize,
     CompiledTranscodeSettings, CompiledValueOrField, DefaultStrategy, ErrorStrategy, RulesMode,
-    RunIfTrigger, SynthChannels, SynthLanguage, SynthPosition, TrackTarget,
+    RunIfTrigger, SynthLanguage, SynthPosition, TrackTarget, TranscodeChannels,
 };
 use voom_domain::utils::codecs;
 
@@ -217,6 +217,12 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
 
     let get =
         |key: &str| -> Option<&Value> { settings.iter().find(|(k, _)| k == key).map(|(_, v)| v) };
+    let get_str = |key: &str| -> Option<String> {
+        match get(key) {
+            Some(Value::Ident(s) | Value::String(s)) => Some(s.clone()),
+            _ => None,
+        }
+    };
 
     let preserve = match get("preserve") {
         Some(Value::List(items)) => items
@@ -235,11 +241,6 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
         _ => None,
     };
 
-    let preset = match get("preset") {
-        Some(Value::String(s) | Value::Ident(s)) => Some(s.clone()),
-        _ => None,
-    };
-
     let bitrate = match get("bitrate") {
         Some(Value::String(s) | Value::Ident(s)) => Some(s.clone()),
         Some(Value::Number(_, s)) => Some(s.clone()),
@@ -247,12 +248,8 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
     };
 
     let channels = match get("channels") {
-        Some(Value::Number(n, _)) => safe_u32(*n),
-        _ => None,
-    };
-
-    let hw = match get("hw") {
-        Some(Value::String(s) | Value::Ident(s)) => Some(s.clone()),
+        Some(Value::Number(n, _)) => safe_u32(*n).map(TranscodeChannels::Count),
+        Some(Value::Ident(s) | Value::String(s)) => Some(TranscodeChannels::Named(s.clone())),
         _ => None,
     };
 
@@ -261,9 +258,20 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
         _ => None,
     };
 
-    let mut settings = CompiledTranscodeSettings::new(preserve, crf, preset, bitrate, channels);
-    settings.hw = hw;
+    let max_resolution = match get("max_resolution") {
+        Some(Value::Ident(s) | Value::String(s)) => Some(s.clone()),
+        Some(Value::Number(_, raw)) => Some(raw.clone()),
+        _ => None,
+    };
+
+    let mut settings =
+        CompiledTranscodeSettings::new(preserve, crf, get_str("preset"), bitrate, channels);
+    settings.hw = get_str("hw");
     settings.hw_fallback = hw_fallback;
+    settings.max_resolution = max_resolution;
+    settings.scale_algorithm = get_str("scale_algorithm");
+    settings.hdr_mode = get_str("hdr_mode");
+    settings.tune = get_str("tune");
 
     CompiledOperation::Transcode {
         target: parse_track_target(target),
@@ -296,11 +304,11 @@ fn compile_synthesize(
                 );
             }
             SynthSetting::Channels(v) => {
-                channels = Some(match v {
-                    Value::Number(n, _) => SynthChannels::Count(safe_u32(*n).unwrap_or(0)),
-                    Value::Ident(s) => SynthChannels::Named(s.clone()),
-                    _ => SynthChannels::Named(format!("{v:?}")),
-                });
+                channels = match v {
+                    Value::Number(n, _) => safe_u32(*n).map(TranscodeChannels::Count),
+                    Value::Ident(s) | Value::String(s) => Some(TranscodeChannels::Named(s.clone())),
+                    _ => None,
+                };
             }
             SynthSetting::Source(f) => source = Some(compile_filter(f)?),
             SynthSetting::Bitrate(b) => bitrate = Some(b.clone()),

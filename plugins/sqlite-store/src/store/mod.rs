@@ -1060,12 +1060,7 @@ mod tests {
             0,
             voom_domain::plan::ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: None,
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: None,
-                hw_fallback: None,
+                settings: Default::default(),
             },
             "Transcode video",
         )];

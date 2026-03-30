@@ -75,7 +75,7 @@ pub use host::{HostFunctions, HttpResponse, ToolOutput};
 // Import additional domain types directly from `voom_domain` if needed.
 
 pub use voom_domain::events::Event;
-pub use voom_domain::plan::{ActionParams, OperationType};
+pub use voom_domain::plan::{ActionParams, OperationType, TranscodeChannels, TranscodeSettings};
 
 // ── Full domain re-exports (for plugins that need deeper access) ────
 // Available under `voom_plugin_sdk::domain` for explicit opt-in.
