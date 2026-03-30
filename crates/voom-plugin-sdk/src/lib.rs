@@ -79,7 +79,7 @@ pub use voom_domain::plan::{ActionParams, OperationType, TranscodeChannels, Tran
 
 // ── Utilities ─────────────────────────────────────────────────────────
 
-pub use voom_domain::utils::language::language_code_from_name;
+pub use voom_domain::utils::language::{from_iso639_1, language_code_from_name};
 
 // ── Top-level domain re-exports (most-used types) ──────────────────
 // These let plugins write `use voom_plugin_sdk::MediaFile` etc.

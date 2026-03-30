@@ -29,6 +29,7 @@ exclude = [
     "wasm-plugins/whisper-transcriber",
     "wasm-plugins/audio-synthesizer",
     "wasm-plugins/handbrake-executor",
+    "wasm-plugins/audio-language-detector",
 ]
 
 [workspace.lints.clippy]

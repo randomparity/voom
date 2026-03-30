@@ -463,6 +463,8 @@ async fn process_single_file(
         }
     }
 
+    apply_detected_languages(&mut file);
+
     let result = orchestrate_plans(ctx.compiled, &file, ctx.capabilities);
 
     // Collect safeguard violations across all plans and tag the file
@@ -547,6 +549,55 @@ async fn process_single_file(
         })))
     } else {
         execute_plans(&file, &result, ctx, needs_exec).await
+    }
+}
+
+/// Apply audio language detection results to track language fields.
+///
+/// If the `audio-language-detector` plugin has produced metadata, update
+/// each track's language to match the detected value. This runs before
+/// policy evaluation so that policies can filter on detected languages
+/// (e.g. `remove audio where lang == zxx` for silent tracks).
+fn apply_detected_languages(file: &mut voom_domain::media::MediaFile) {
+    let metadata = match file.plugin_metadata.get("audio-language-detector") {
+        Some(m) => m,
+        None => return,
+    };
+
+    let detections = match metadata.get("detections").and_then(|d| d.as_array()) {
+        Some(d) => d,
+        None => return,
+    };
+
+    for det in detections {
+        let track_index = match det.get("track_index").and_then(|v| v.as_u64()) {
+            Some(i) => i as u32,
+            None => continue,
+        };
+        let detected = match det.get("detected_language").and_then(|v| v.as_str()) {
+            Some(l) => l,
+            None => continue,
+        };
+
+        let Some(track) = file.tracks.iter_mut().find(|t| t.index == track_index) else {
+            continue;
+        };
+
+        if track.language == detected {
+            continue;
+        }
+
+        if track.language != "und" {
+            tracing::warn!(
+                path = %file.path.display(),
+                track = track_index,
+                existing = %track.language,
+                detected = %detected,
+                "overwriting track language with detected value"
+            );
+        }
+
+        track.language = detected.to_string();
     }
 }
 
@@ -1273,5 +1324,117 @@ mod tests {
         // These should not panic
         reporter.on_batch_start(10);
         reporter.on_batch_complete(5, 0);
+    }
+
+    // --- apply_detected_languages tests ---
+
+    fn make_file_with_audio_tracks() -> MediaFile {
+        use voom_domain::media::{Track, TrackType};
+        let mut file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
+        let mut t0 = Track::new(0, TrackType::AudioMain, "aac".into());
+        t0.language = "und".to_string();
+        let mut t1 = Track::new(1, TrackType::AudioAlternate, "ac3".into());
+        t1.language = "fre".to_string();
+        file.tracks = vec![t0, t1];
+        file
+    }
+
+    #[test]
+    fn test_apply_detected_und_to_eng() {
+        let mut file = make_file_with_audio_tracks();
+        file.plugin_metadata.insert(
+            "audio-language-detector".to_string(),
+            serde_json::json!({
+                "detections": [{
+                    "track_index": 0,
+                    "detected_language": "eng",
+                    "confidence": 0.95,
+                }]
+            }),
+        );
+        apply_detected_languages(&mut file);
+        assert_eq!(file.tracks[0].language, "eng");
+        // Track 1 unchanged (no detection for it).
+        assert_eq!(file.tracks[1].language, "fre");
+    }
+
+    #[test]
+    fn test_apply_detected_overwrite_mismatch() {
+        let mut file = make_file_with_audio_tracks();
+        file.plugin_metadata.insert(
+            "audio-language-detector".to_string(),
+            serde_json::json!({
+                "detections": [{
+                    "track_index": 1,
+                    "detected_language": "eng",
+                    "confidence": 0.92,
+                }]
+            }),
+        );
+        apply_detected_languages(&mut file);
+        // Track 1 was "fre" but detection says "eng" — overwritten.
+        assert_eq!(file.tracks[1].language, "eng");
+    }
+
+    #[test]
+    fn test_apply_detected_zxx() {
+        let mut file = make_file_with_audio_tracks();
+        file.plugin_metadata.insert(
+            "audio-language-detector".to_string(),
+            serde_json::json!({
+                "detections": [{
+                    "track_index": 0,
+                    "detected_language": "zxx",
+                    "confidence": 0.98,
+                }]
+            }),
+        );
+        apply_detected_languages(&mut file);
+        assert_eq!(file.tracks[0].language, "zxx");
+    }
+
+    #[test]
+    fn test_apply_detected_mul() {
+        let mut file = make_file_with_audio_tracks();
+        file.plugin_metadata.insert(
+            "audio-language-detector".to_string(),
+            serde_json::json!({
+                "detections": [{
+                    "track_index": 0,
+                    "detected_language": "mul",
+                    "confidence": 0.6,
+                }]
+            }),
+        );
+        apply_detected_languages(&mut file);
+        assert_eq!(file.tracks[0].language, "mul");
+    }
+
+    #[test]
+    fn test_apply_detected_no_metadata() {
+        let mut file = make_file_with_audio_tracks();
+        apply_detected_languages(&mut file);
+        // No crash, tracks unchanged.
+        assert_eq!(file.tracks[0].language, "und");
+        assert_eq!(file.tracks[1].language, "fre");
+    }
+
+    #[test]
+    fn test_apply_detected_nonexistent_track() {
+        let mut file = make_file_with_audio_tracks();
+        file.plugin_metadata.insert(
+            "audio-language-detector".to_string(),
+            serde_json::json!({
+                "detections": [{
+                    "track_index": 99,
+                    "detected_language": "eng",
+                    "confidence": 0.95,
+                }]
+            }),
+        );
+        // No panic.
+        apply_detected_languages(&mut file);
+        assert_eq!(file.tracks[0].language, "und");
+        assert_eq!(file.tracks[1].language, "fre");
     }
 }

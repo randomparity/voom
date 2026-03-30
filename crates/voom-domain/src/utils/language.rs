@@ -126,6 +126,19 @@ pub fn normalize_language(code: &str) -> Option<&'static str> {
         .copied()
 }
 
+/// Convert an ISO 639-1 (2-letter) code to ISO 639-2/B (3-letter).
+///
+/// Only accepts 2-letter input codes; 3-letter codes return `None`.
+/// Whisper returns 2-letter codes; this makes the conversion intent explicit.
+pub fn from_iso639_1(code: &str) -> Option<&'static str> {
+    let lower = code.to_ascii_lowercase();
+    if lower.len() == 2 {
+        LANGUAGE_CODES.get(lower.as_str()).copied()
+    } else {
+        None
+    }
+}
+
 /// Check if a language code is valid (either ISO 639-1 or 639-2/B).
 pub fn is_valid_language(code: &str) -> bool {
     LANGUAGE_CODES.contains_key(code.to_ascii_lowercase().as_str())
@@ -223,6 +236,33 @@ mod tests {
         assert_eq!(language_code_from_name("japanese"), Some("jpn"));
         assert_eq!(language_code_from_name("FRENCH"), Some("fre"));
         assert_eq!(language_code_from_name("Unknown Language"), None);
+    }
+
+    #[test]
+    fn test_from_iso639_1_valid() {
+        assert_eq!(from_iso639_1("en"), Some("eng"));
+        assert_eq!(from_iso639_1("ja"), Some("jpn"));
+        assert_eq!(from_iso639_1("fr"), Some("fre"));
+        assert_eq!(from_iso639_1("de"), Some("ger"));
+    }
+
+    #[test]
+    fn test_from_iso639_1_rejects_3_letter() {
+        assert_eq!(from_iso639_1("eng"), None);
+        assert_eq!(from_iso639_1("jpn"), None);
+        assert_eq!(from_iso639_1("fre"), None);
+    }
+
+    #[test]
+    fn test_from_iso639_1_case_insensitive() {
+        assert_eq!(from_iso639_1("EN"), Some("eng"));
+        assert_eq!(from_iso639_1("Ja"), Some("jpn"));
+    }
+
+    #[test]
+    fn test_from_iso639_1_unknown() {
+        assert_eq!(from_iso639_1("xx"), None);
+        assert_eq!(from_iso639_1("zz"), None);
     }
 
     #[test]
