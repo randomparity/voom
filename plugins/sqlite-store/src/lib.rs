@@ -98,6 +98,9 @@ impl Plugin for SqliteStorePlugin {
                 store.upsert_bad_file(&bad_file)?;
                 tracing::info!(path = %e.path.display(), error = %e.error, "stored bad file");
             }
+            // sqlite-store runs at priority 100, so executors (priority 39/40)
+            // have already processed the plan by the time we record it here.
+            // This is audit-after-execution by design, not a race condition.
             Event::PlanCreated(e) => {
                 let plan_id = store.save_plan(&e.plan)?;
                 tracing::info!(%plan_id, "stored plan");
@@ -187,7 +190,12 @@ impl Plugin for SqliteStorePlugin {
                     );
                 }
             }
-            _ => {}
+            _ => {
+                tracing::debug!(
+                    event_type = event.event_type(),
+                    "no domain-specific handler"
+                );
+            }
         }
 
         // Log every event to the event_log table (best-effort).

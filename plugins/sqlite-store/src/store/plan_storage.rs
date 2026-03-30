@@ -82,7 +82,14 @@ impl PlanStorage for SqliteStore {
             )
             .optional()
             .map_err(storage_err("failed to resolve file id"))?
-            .unwrap_or_else(|| plan.file.id.to_string());
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    path = %path_str,
+                    fallback_id = %plan.file.id,
+                    "file path not found in DB, falling back to plan.file.id"
+                );
+                plan.file.id.to_string()
+            });
 
         conn.execute(
             "INSERT INTO plans (id, file_id, policy_name, phase_name, status, actions, warnings, skip_reason, policy_hash, evaluated_at, created_at)

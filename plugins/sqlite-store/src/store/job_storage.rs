@@ -115,22 +115,39 @@ impl JobStorage for SqliteStore {
         let mut conn = self.conn()?;
         let now = format_datetime(&Utc::now());
 
-        // Use IMMEDIATE transaction to prevent TOCTOU race between concurrent workers
+        // Use IMMEDIATE transaction to prevent TOCTOU race between concurrent workers.
+        // First SELECT the target id, then UPDATE by that specific id, then SELECT
+        // it back. This avoids the previous approach where the post-UPDATE SELECT
+        // filtered by worker_id+status, which could return the wrong job if the
+        // worker already had another running job.
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(storage_err("failed to begin transaction"))?;
 
+        let target_id: Option<String> = tx
+            .query_row(
+                "SELECT id FROM jobs WHERE status = 'pending' ORDER BY priority ASC, created_at ASC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_err("failed to find pending job"))?;
+
+        let Some(target_id) = target_id else {
+            tx.commit().map_err(storage_err("failed to commit claim"))?;
+            return Ok(None);
+        };
+
         tx.execute(
-            "UPDATE jobs SET status = 'running', worker_id = ?1, started_at = ?2
-             WHERE id = (SELECT id FROM jobs WHERE status = 'pending' ORDER BY priority ASC, created_at ASC LIMIT 1)",
-            params![worker_id, now],
+            "UPDATE jobs SET status = 'running', worker_id = ?1, started_at = ?2 WHERE id = ?3",
+            params![worker_id, now, target_id],
         )
         .map_err(storage_err("failed to claim job"))?;
 
         let result = tx
             .query_row(
-                "SELECT * FROM jobs WHERE worker_id = ?1 AND status = 'running' ORDER BY started_at DESC LIMIT 1",
-                params![worker_id],
+                "SELECT * FROM jobs WHERE id = ?1",
+                params![target_id],
                 row_to_job,
             )
             .optional()
