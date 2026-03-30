@@ -761,18 +761,6 @@ fn edit_distance(a: &str, b: &str) -> usize {
     dp[a.len()][b.len()]
 }
 
-fn suggest_hw_value(input: &str) -> Option<&'static str> {
-    let lower = input.to_ascii_lowercase();
-    let mut best: Option<(&str, usize)> = None;
-    for &valid in VALID_HW_VALUES {
-        let dist = edit_distance(&lower, valid);
-        if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
-            best = Some((valid, dist));
-        }
-    }
-    best.map(|(s, _)| s)
-}
-
 fn validate_hw_settings(
     settings: &[(String, Value)],
     line: usize,
@@ -785,56 +773,7 @@ fn validate_hw_settings(
     for (key, val) in settings {
         if key == "hw" {
             has_hw = true;
-            let hw_str = match val {
-                Value::Ident(s) | Value::String(s) => Some(s.as_str()),
-                _ => None,
-            };
-            if let Some(name) = hw_str {
-                if name.len() > 64 {
-                    errors.push(DslError::validation(
-                        line,
-                        col,
-                        format!("hw value too long: \"{name}\""),
-                    ));
-                } else if !VALID_HW_VALUES.contains(&name) {
-                    let valid_list = VALID_HW_VALUES.join(", ");
-                    if let Some(suggestion) = suggest_hw_value(name) {
-                        errors.push(DslError::validation_with_suggestion(
-                            line,
-                            col,
-                            format!(
-                                "unknown hw value \"{name}\", \
-                                 expected one of: {valid_list}"
-                            ),
-                            format!("did you mean \"{suggestion}\"?"),
-                        ));
-                    } else {
-                        errors.push(DslError::validation(
-                            line,
-                            col,
-                            format!(
-                                "unknown hw value \"{name}\", \
-                                 expected one of: {valid_list}"
-                            ),
-                        ));
-                    }
-                }
-            } else {
-                errors.push(DslError::validation(
-                    line,
-                    col,
-                    format!(
-                        "hw value must be a string or identifier, \
-                         got {}",
-                        match val {
-                            Value::Number(_, _) => "number",
-                            Value::Bool(_) => "boolean",
-                            Value::List(_) => "list",
-                            _ => "unknown",
-                        }
-                    ),
-                ));
-            }
+            validate_ident_setting(val, "hw", VALID_HW_VALUES, line, col, errors);
         } else if key == "hw_fallback" {
             has_hw_fallback = true;
         }

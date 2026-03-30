@@ -217,6 +217,12 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
 
     let get =
         |key: &str| -> Option<&Value> { settings.iter().find(|(k, _)| k == key).map(|(_, v)| v) };
+    let get_str = |key: &str| -> Option<String> {
+        match get(key) {
+            Some(Value::Ident(s) | Value::String(s)) => Some(s.clone()),
+            _ => None,
+        }
+    };
 
     let preserve = match get("preserve") {
         Some(Value::List(items)) => items
@@ -235,11 +241,6 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
         _ => None,
     };
 
-    let preset = match get("preset") {
-        Some(Value::String(s) | Value::Ident(s)) => Some(s.clone()),
-        _ => None,
-    };
-
     let bitrate = match get("bitrate") {
         Some(Value::String(s) | Value::Ident(s)) => Some(s.clone()),
         Some(Value::Number(_, s)) => Some(s.clone()),
@@ -249,11 +250,6 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
     let channels = match get("channels") {
         Some(Value::Number(n, _)) => safe_u32(*n).map(TranscodeChannels::Count),
         Some(Value::Ident(s) | Value::String(s)) => Some(TranscodeChannels::Named(s.clone())),
-        _ => None,
-    };
-
-    let hw = match get("hw") {
-        Some(Value::String(s) | Value::Ident(s)) => Some(s.clone()),
         _ => None,
     };
 
@@ -268,28 +264,14 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
         _ => None,
     };
 
-    let scale_algorithm = match get("scale_algorithm") {
-        Some(Value::Ident(s) | Value::String(s)) => Some(s.clone()),
-        _ => None,
-    };
-
-    let hdr_mode = match get("hdr_mode") {
-        Some(Value::Ident(s) | Value::String(s)) => Some(s.clone()),
-        _ => None,
-    };
-
-    let tune = match get("tune") {
-        Some(Value::Ident(s) | Value::String(s)) => Some(s.clone()),
-        _ => None,
-    };
-
-    let mut settings = CompiledTranscodeSettings::new(preserve, crf, preset, bitrate, channels);
-    settings.hw = hw;
+    let mut settings =
+        CompiledTranscodeSettings::new(preserve, crf, get_str("preset"), bitrate, channels);
+    settings.hw = get_str("hw");
     settings.hw_fallback = hw_fallback;
     settings.max_resolution = max_resolution;
-    settings.scale_algorithm = scale_algorithm;
-    settings.hdr_mode = hdr_mode;
-    settings.tune = tune;
+    settings.scale_algorithm = get_str("scale_algorithm");
+    settings.hdr_mode = get_str("hdr_mode");
+    settings.tune = get_str("tune");
 
     CompiledOperation::Transcode {
         target: parse_track_target(target),
