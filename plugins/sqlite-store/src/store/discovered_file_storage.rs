@@ -33,7 +33,10 @@ impl DiscoveredStatus {
             "introspecting" => Some(Self::Introspecting),
             "completed" => Some(Self::Completed),
             "failed" => Some(Self::Failed),
-            _ => None,
+            _ => {
+                tracing::warn!("unknown discovered file status: {s}");
+                None
+            }
         }
     }
 }
