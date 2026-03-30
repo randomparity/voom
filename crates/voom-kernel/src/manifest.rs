@@ -21,6 +21,9 @@ pub struct PluginManifest {
     pub dependencies: Vec<PluginDependency>,
     #[serde(default)]
     pub config_schema: Option<serde_json::Value>,
+    /// Allowed HTTP domains for this plugin (empty = deny all).
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
     /// Event bus priority for this plugin (lower = runs first in dispatch).
     /// Defaults to 70 if not specified in the manifest.
     #[serde(default = "default_priority")]
@@ -78,6 +81,7 @@ mod tests {
             handles_events: vec!["plan.created".into()],
             dependencies: vec![],
             config_schema: None,
+            allowed_domains: vec![],
             priority: 70,
         };
         assert!(manifest.validate().is_ok());
@@ -96,6 +100,7 @@ mod tests {
             handles_events: vec![],
             dependencies: vec![],
             config_schema: None,
+            allowed_domains: vec![],
             priority: 70,
         };
         let errors = manifest.validate().unwrap_err();
@@ -115,6 +120,7 @@ mod tests {
             handles_events: vec![],
             dependencies: vec![],
             config_schema: None,
+            allowed_domains: vec![],
             priority: 70,
         };
         assert!(manifest.validate().is_err());
@@ -138,6 +144,7 @@ mod tests {
                 version_req: ">=0.1.0".into(),
             }],
             config_schema: None,
+            allowed_domains: vec![],
             priority: 50,
         };
 

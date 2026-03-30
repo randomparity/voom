@@ -11,6 +11,35 @@ use wait_timeout::ChildExt;
 
 use super::{HostState, HttpResponse, ToolOutput, MAX_PLUGIN_DATA_VALUE_SIZE};
 
+/// Extract the host (domain) from a URL string.
+/// Supports `scheme://[user@]host[:port]/...` forms.
+fn extract_url_host(url: &str) -> Result<String, String> {
+    let after_scheme = url
+        .find("://")
+        .map(|i| &url[i + 3..])
+        .ok_or_else(|| format!("invalid URL '{url}': missing scheme"))?;
+    let after_userinfo = after_scheme
+        .find('@')
+        .map_or(after_scheme, |i| &after_scheme[i + 1..]);
+    let authority = after_userinfo
+        .find(['/', '?', '#'])
+        .map_or(after_userinfo, |i| &after_userinfo[..i]);
+    let host = if authority.starts_with('[') {
+        authority.find(']').map_or(authority, |i| &authority[..=i])
+    } else {
+        authority.rfind(':').map_or(authority, |i| &authority[..i])
+    };
+    if host.is_empty() {
+        return Err(format!("URL '{url}' has no host"));
+    }
+    Ok(host.to_string())
+}
+
+/// Check whether a string looks like a filesystem path.
+fn looks_like_path(s: &str) -> bool {
+    s.starts_with('/') || s.starts_with("./") || s.starts_with("../") || s.starts_with('~')
+}
+
 impl HostState {
     /// Log a message at the given level.
     pub fn log(&self, level: &str, message: &str) {
@@ -73,6 +102,28 @@ impl HostState {
         }
     }
 
+    /// Validate that a path string is within the allowed directories.
+    fn check_path_allowed(&self, path_str: &str) -> Result<(), String> {
+        let path = Path::new(path_str);
+        let canonical = std::fs::canonicalize(path).map_err(|e| {
+            format!(
+                "cannot resolve path '{}' for plugin '{}': {e}",
+                path_str, self.plugin_name
+            )
+        })?;
+        let allowed = self
+            .allowed_paths
+            .iter()
+            .any(|allowed_dir| canonical.starts_with(allowed_dir));
+        if !allowed {
+            return Err(format!(
+                "path '{}' is not within allowed directories for plugin '{}'",
+                path_str, self.plugin_name
+            ));
+        }
+        Ok(())
+    }
+
     /// Run an external tool with the given arguments.
     pub fn run_tool(
         &self,
@@ -90,25 +141,16 @@ impl HostState {
 
         // Security check: verify path arguments are within allowed directories.
         // Canonicalize paths to prevent traversal attacks (e.g., /allowed/../etc/passwd).
+        // Also checks `--flag=/path` patterns by splitting on `=`.
         if !self.allowed_paths.is_empty() {
             for arg in args {
-                let path = Path::new(arg);
-                if path.is_absolute() || arg.starts_with("./") || arg.starts_with("../") {
-                    let canonical = std::fs::canonicalize(path).map_err(|e| {
-                        format!(
-                            "cannot resolve path '{}' for plugin '{}': {e}",
-                            arg, self.plugin_name
-                        )
-                    })?;
-                    let allowed = self
-                        .allowed_paths
-                        .iter()
-                        .any(|allowed_dir| canonical.starts_with(allowed_dir));
-                    if !allowed {
-                        return Err(format!(
-                            "path '{}' is not within allowed directories for plugin '{}'",
-                            arg, self.plugin_name
-                        ));
+                if looks_like_path(arg) {
+                    self.check_path_allowed(arg)?;
+                }
+                if let Some(eq_pos) = arg.find('=') {
+                    let value = &arg[eq_pos + 1..];
+                    if looks_like_path(value) {
+                        self.check_path_allowed(value)?;
                     }
                 }
             }
@@ -172,18 +214,33 @@ impl HostState {
         }
     }
 
+    /// Check that the URL's domain is in the allowed HTTP domains list.
+    /// Empty allowlist = deny all (matches `run_tool` semantics).
+    fn check_http_domain(&self, url: &str) -> Result<(), String> {
+        if self.allowed_http_domains.is_empty() {
+            return Err(format!(
+                "HTTP access not enabled for plugin '{}' (no allowed domains)",
+                self.plugin_name
+            ));
+        }
+        let domain = extract_url_host(url)?;
+        let allowed = self.allowed_http_domains.iter().any(|d| d == &domain);
+        if !allowed {
+            return Err(format!(
+                "domain '{domain}' is not in the allowed list for plugin '{}'",
+                self.plugin_name
+            ));
+        }
+        Ok(())
+    }
+
     /// Perform an HTTP GET request.
     pub fn http_get(
         &self,
         url: &str,
         headers: &[(String, String)],
     ) -> Result<HttpResponse, String> {
-        if !self.http_allowed {
-            return Err(format!(
-                "HTTP access not enabled for plugin '{}'",
-                self.plugin_name
-            ));
-        }
+        self.check_http_domain(url)?;
 
         let mut request = ureq::get(url);
         for (name, value) in headers {
@@ -204,12 +261,7 @@ impl HostState {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<HttpResponse, String> {
-        if !self.http_allowed {
-            return Err(format!(
-                "HTTP access not enabled for plugin '{}'",
-                self.plugin_name
-            ));
-        }
+        self.check_http_domain(url)?;
 
         let mut request = ureq::post(url);
         for (name, value) in headers {
@@ -244,4 +296,40 @@ fn parse_response(response: ureq::Response) -> Result<HttpResponse, String> {
         .map_err(|e| format!("failed to read response body: {e}"))?;
 
     Ok(HttpResponse::with_headers(status, headers, body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_url_host_basic() {
+        assert_eq!(
+            extract_url_host("http://example.com/path").unwrap(),
+            "example.com"
+        );
+        assert_eq!(
+            extract_url_host("https://api.example.com:443/v1").unwrap(),
+            "api.example.com"
+        );
+        assert_eq!(
+            extract_url_host("http://192.0.2.1:8080").unwrap(),
+            "192.0.2.1"
+        );
+    }
+
+    #[test]
+    fn test_extract_url_host_no_scheme() {
+        assert!(extract_url_host("example.com/path").is_err());
+    }
+
+    #[test]
+    fn test_looks_like_path() {
+        assert!(looks_like_path("/etc/passwd"));
+        assert!(looks_like_path("./relative"));
+        assert!(looks_like_path("../parent"));
+        assert!(looks_like_path("~/home"));
+        assert!(!looks_like_path("just-a-flag"));
+        assert!(!looks_like_path("--verbose"));
+    }
 }

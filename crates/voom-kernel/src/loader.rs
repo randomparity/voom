@@ -13,6 +13,7 @@ pub mod wasm {
     use crate::manifest::PluginManifest;
     use crate::Plugin;
     use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
     use voom_domain::capabilities::Capability;
     use voom_domain::errors::VoomError;
@@ -20,6 +21,11 @@ pub mod wasm {
 
     /// A loaded plugin paired with its manifest-declared priority.
     pub type PluginWithPriority = (Arc<dyn Plugin>, i32);
+
+    /// Interval between epoch increments (10ms).
+    /// With the default deadline of 200 ticks, this gives a 2-second timeout
+    /// for WASM execution (200 ticks * 10ms = 2000ms).
+    const EPOCH_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 
     /// Derive the plugin name from its manifest (if present) or the WASM file stem.
     fn plugin_name_from_manifest(manifest: Option<&PluginManifest>, wasm_path: &Path) -> String {
@@ -36,20 +42,59 @@ pub mod wasm {
     ///
     /// The loader compiles WASM components and instantiates them with host
     /// function bindings. Each loaded plugin gets its own `Store` and `HostState`.
+    ///
+    /// A background thread increments the engine epoch every 10ms. With the
+    /// default deadline of 200 ticks, WASM execution is interrupted after ~2s.
     pub struct WasmPluginLoader {
-        engine: wasmtime::Engine,
+        engine: Arc<wasmtime::Engine>,
+        pub(crate) shutdown: Arc<AtomicBool>,
+        epoch_thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for WasmPluginLoader {
+        fn drop(&mut self) {
+            self.shutdown.store(true, Ordering::Release);
+            if let Some(handle) = self.epoch_thread.take() {
+                handle.join().ok();
+            }
+        }
     }
 
     impl WasmPluginLoader {
         /// Create a new WASM plugin loader with component model support enabled.
+        ///
+        /// Spawns a background thread that calls `engine.increment_epoch()`
+        /// every 10ms to enforce execution timeouts on WASM plugins.
         pub fn new() -> Result<Self, WasmLoadError> {
             let mut config = wasmtime::Config::new();
             config.wasm_component_model(true);
             config.max_wasm_stack(1024 * 1024); // 1 MiB stack limit
             config.epoch_interruption(true);
-            let engine = wasmtime::Engine::new(&config)
-                .map_err(|e| WasmLoadError::EngineCreation(e.to_string()))?;
-            Ok(Self { engine })
+            let engine = Arc::new(
+                wasmtime::Engine::new(&config)
+                    .map_err(|e| WasmLoadError::EngineCreation(e.to_string()))?,
+            );
+
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let epoch_engine = Arc::clone(&engine);
+            let epoch_shutdown = Arc::clone(&shutdown);
+            let epoch_thread = std::thread::Builder::new()
+                .name("wasm-epoch-ticker".into())
+                .spawn(move || {
+                    while !epoch_shutdown.load(Ordering::Acquire) {
+                        std::thread::sleep(EPOCH_TICK_INTERVAL);
+                        epoch_engine.increment_epoch();
+                    }
+                })
+                .map_err(|e| {
+                    WasmLoadError::EngineCreation(format!("failed to spawn epoch thread: {e}"))
+                })?;
+
+            Ok(Self {
+                engine,
+                shutdown,
+                epoch_thread: Some(epoch_thread),
+            })
         }
 
         /// Load a WASM plugin from a `.wasm` file alongside a `plugin.toml` manifest.
@@ -122,6 +167,7 @@ pub mod wasm {
                     .iter()
                     .map(|c| c.kind().to_string())
                     .collect();
+                state.allowed_http_domains = manifest.allowed_domains.clone();
             }
 
             let limits = wasmtime::StoreLimitsBuilder::new()
@@ -839,6 +885,20 @@ mod tests {
             let loader = WasmPluginLoader::new().unwrap();
             // Loader should be created successfully with component model enabled.
             let _ = loader;
+        }
+
+        #[test]
+        fn test_wasm_loader_drops_cleanly() {
+            let loader = WasmPluginLoader::new().unwrap();
+            assert!(!loader.shutdown.load(std::sync::atomic::Ordering::Acquire));
+            drop(loader);
+        }
+
+        #[test]
+        fn test_epoch_thread_increments() {
+            let loader = WasmPluginLoader::new().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(loader);
         }
 
         #[test]
