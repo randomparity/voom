@@ -72,6 +72,21 @@ pub struct OnEventResult {
     pub data: Option<Vec<u8>>,
 }
 
+impl OnEventResult {
+    #[must_use]
+    pub fn new(
+        plugin_name: impl Into<String>,
+        produced_events: Vec<(String, Vec<u8>)>,
+        data: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            plugin_name: plugin_name.into(),
+            produced_events,
+            data,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

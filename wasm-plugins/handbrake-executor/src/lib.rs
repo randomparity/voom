@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
     deserialize_event, load_plugin_config, serialize_event, ActionParams, Event, HostFunctions,
     OnEventResult, OperationType, PluginInfoData, ToolOutput, TranscodeChannels,
+    TranscodeSettings,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -136,12 +137,13 @@ pub fn on_event(
             host.log("info", &format!("HandBrake transcode complete: {output_path}"));
 
             let completed_event = Event::PlanCompleted(
-                voom_plugin_sdk::PlanCompletedEvent {
-                    plan_id: plan.id,
-                    path: plan.file.path.clone(),
-                    phase_name: plan.phase_name.clone(),
-                    actions_applied: transcode_actions.len(),
-                },
+                voom_plugin_sdk::domain::PlanCompletedEvent::new(
+                    plan.id,
+                    plan.file.path.clone(),
+                    plan.phase_name.clone(),
+                    transcode_actions.len(),
+                    false,
+                ),
             );
             let produced_payload = serialize_event(&completed_event).map_err(|e| {
                 host.log("error", &format!("failed to serialize event: {e}"));
@@ -153,16 +155,16 @@ pub fn on_event(
                 "actions_executed": transcode_actions.len(),
             });
 
-            Some(OnEventResult {
-                plugin_name: "handbrake-executor".to_string(),
-                produced_events: vec![(
+            Some(OnEventResult::new(
+                "handbrake-executor",
+                vec![(
                     completed_event.event_type().to_string(),
                     produced_payload,
                 )],
-                data: Some(serde_json::to_vec(&data).map_err(|e| {
+                Some(serde_json::to_vec(&data).map_err(|e| {
                     host.log("error", &format!("failed to serialize result data: {e}"));
                 }).ok()?),
-            })
+            ))
         }
         Ok(output) => {
             host.log("error", &format!(
@@ -183,7 +185,7 @@ pub fn on_event(
 fn build_handbrake_args(
     input: &str,
     output: &str,
-    actions: &[&voom_plugin_sdk::PlannedAction],
+    actions: &[&voom_plugin_sdk::domain::PlannedAction],
     config: &Option<HandbrakeConfig>,
 ) -> Vec<String> {
     let mut args = vec![
@@ -268,6 +270,7 @@ pub struct HandbrakeConfig {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use voom_plugin_sdk::domain::{MediaFile, Plan, PlannedAction};
     use voom_plugin_sdk::*;
 
     struct MockHost {
@@ -304,15 +307,15 @@ mod tests {
 
     impl HostFunctions for MockHost {
         fn run_tool(&self, _tool: &str, _args: &[String], _timeout_ms: u64) -> Result<ToolOutput, String> {
-            Ok(ToolOutput {
-                exit_code: self.exit_code,
-                stdout: b"encoded 100%".to_vec(),
-                stderr: if self.exit_code != 0 {
+            Ok(ToolOutput::new(
+                self.exit_code,
+                b"encoded 100%".to_vec(),
+                if self.exit_code != 0 {
                     b"encoding error".to_vec()
                 } else {
                     vec![]
                 },
-            })
+            ))
         }
 
         fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
@@ -331,54 +334,31 @@ mod tests {
     }
 
     fn make_transcode_plan() -> Plan {
-        Plan {
-            file: MediaFile::new(PathBuf::from("/media/movies/test.mkv")),
-            policy_name: "compress".to_string(),
-            phase_name: "transcode".to_string(),
-            actions: vec![
-                PlannedAction {
-                    operation: OperationType::TranscodeVideo,
-                    track_index: Some(0),
-                    parameters: ActionParams::Transcode {
-                        codec: "x265".to_string(),
-                        crf: Some(22),
-                        preset: None,
-                        bitrate: None,
-                        channels: None,
-                        hw: None,
-                        hw_fallback: None,
-                        max_resolution: None,
-                        scale_algorithm: None,
-                        hdr_mode: None,
-                        tune: None,
-                    },
-                    description: "Transcode video to HEVC CRF 22".to_string(),
-                },
-                PlannedAction {
-                    operation: OperationType::TranscodeAudio,
-                    track_index: Some(1),
-                    parameters: ActionParams::Transcode {
-                        codec: "opus".to_string(),
-                        crf: None,
-                        preset: None,
-                        bitrate: Some("128k".to_string()),
-                        channels: None,
-                        hw: None,
-                        hw_fallback: None,
-                        max_resolution: None,
-                        scale_algorithm: None,
-                        hdr_mode: None,
-                        tune: None,
-                    },
-                    description: "Transcode audio to Opus 128k".to_string(),
-                },
-            ],
-            warnings: vec![],
-            skip_reason: None,
-            id: uuid::Uuid::new_v4(),
-            policy_hash: None,
-            evaluated_at: chrono::Utc::now(),
-        }
+        Plan::new(
+            MediaFile::new(PathBuf::from("/media/movies/test.mkv")),
+            "compress",
+            "transcode",
+        )
+        .with_action(PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "x265".to_string(),
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(22)),
+            },
+            "Transcode video to HEVC CRF 22",
+        ))
+        .with_action(PlannedAction::track_op(
+            OperationType::TranscodeAudio,
+            1,
+            ActionParams::Transcode {
+                codec: "opus".to_string(),
+                settings: TranscodeSettings::default()
+                    .with_bitrate(Some("128k".into())),
+            },
+            "Transcode audio to Opus 128k",
+        ))
     }
 
     #[test]
@@ -399,7 +379,7 @@ mod tests {
         let host = MockHost::new();
         let plan = make_transcode_plan();
         let event = Event::PlanCreated(
-            voom_plugin_sdk::PlanCreatedEvent { plan },
+            voom_plugin_sdk::domain::PlanCreatedEvent::new(plan),
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -422,7 +402,7 @@ mod tests {
         let host = MockHost::with_failure();
         let plan = make_transcode_plan();
         let event = Event::PlanCreated(
-            voom_plugin_sdk::PlanCreatedEvent { plan },
+            voom_plugin_sdk::domain::PlanCreatedEvent::new(plan),
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -433,24 +413,19 @@ mod tests {
     #[test]
     fn test_on_event_no_transcode_actions() {
         let host = MockHost::new();
-        let plan = Plan {
-            file: MediaFile::new(PathBuf::from("/media/test.mkv")),
-            policy_name: "normalize".to_string(),
-            phase_name: "metadata".to_string(),
-            actions: vec![PlannedAction {
-                operation: OperationType::SetDefault,
-                track_index: Some(0),
-                parameters: ActionParams::Empty,
-                description: "set default".to_string(),
-            }],
-            warnings: vec![],
-            skip_reason: None,
-            id: uuid::Uuid::new_v4(),
-            policy_hash: None,
-            evaluated_at: chrono::Utc::now(),
-        };
+        let plan = Plan::new(
+            MediaFile::new(PathBuf::from("/media/test.mkv")),
+            "normalize",
+            "metadata",
+        )
+        .with_action(PlannedAction::track_op(
+            OperationType::SetDefault,
+            0,
+            ActionParams::Empty,
+            "set default",
+        ));
         let event = Event::PlanCreated(
-            voom_plugin_sdk::PlanCreatedEvent { plan },
+            voom_plugin_sdk::domain::PlanCreatedEvent::new(plan),
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -467,24 +442,16 @@ mod tests {
 
     #[test]
     fn test_build_args_basic() {
-        let action = PlannedAction {
-            operation: OperationType::TranscodeVideo,
-            track_index: Some(0),
-            parameters: ActionParams::Transcode {
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
                 codec: "x265".to_string(),
-                crf: Some(20),
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: None,
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(20)),
             },
-            description: "transcode".to_string(),
-        };
+            "transcode",
+        );
         let args = build_handbrake_args("/input.mkv", "/output.mkv", &[&action], &None);
         assert!(args.contains(&"-i".to_string()));
         assert!(args.contains(&"/input.mkv".to_string()));
@@ -507,24 +474,17 @@ mod tests {
 
     #[test]
     fn test_build_args_audio_transcode() {
-        let action = PlannedAction {
-            operation: OperationType::TranscodeAudio,
-            track_index: Some(1),
-            parameters: ActionParams::Transcode {
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeAudio,
+            1,
+            ActionParams::Transcode {
                 codec: "opus".to_string(),
-                crf: None,
-                preset: None,
-                bitrate: Some("128k".to_string()),
-                channels: Some(TranscodeChannels::Count(2)),
-                hw: None,
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_bitrate(Some("128k".into()))
+                    .with_channels(Some(TranscodeChannels::Count(2))),
             },
-            description: "transcode audio".to_string(),
-        };
+            "transcode audio",
+        );
         let args = build_handbrake_args("/input.mkv", "/output.mkv", &[&action], &None);
         assert!(args.contains(&"--aencoder".to_string()));
         assert!(args.contains(&"opus".to_string()));
