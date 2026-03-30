@@ -3354,6 +3354,7 @@ dependencies = [
  "chrono",
  "parking_lot",
  "rmp-serde",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",
