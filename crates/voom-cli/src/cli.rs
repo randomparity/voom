@@ -192,6 +192,13 @@ pub enum PolicyCommands {
         /// Policy file to format
         file: PathBuf,
     },
+    /// Compare two compiled policies
+    Diff {
+        /// First policy file
+        a: PathBuf,
+        /// Second policy file
+        b: PathBuf,
+    },
 }
 
 // === Plugin ===
@@ -757,6 +764,24 @@ mod tests {
             }
             _ => panic!("expected Policy Format"),
         }
+    }
+
+    #[test]
+    fn test_policy_diff() {
+        let cli = parse(&["voom", "policy", "diff", "a.voom", "b.voom"]);
+        match cli.command {
+            Commands::Policy(PolicyCommands::Diff { a, b }) => {
+                assert_eq!(a, PathBuf::from("a.voom"));
+                assert_eq!(b, PathBuf::from("b.voom"));
+            }
+            _ => panic!("expected Policy Diff"),
+        }
+    }
+
+    #[test]
+    fn test_policy_diff_requires_two_files() {
+        assert!(try_parse(&["voom", "policy", "diff"]).is_err());
+        assert!(try_parse(&["voom", "policy", "diff", "a.voom"]).is_err());
     }
 
     // ── Plugin subcommands ───────────────────────────────────
