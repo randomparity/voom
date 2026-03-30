@@ -152,7 +152,14 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]))
     };
 
-    let items = build_work_items(&events, args.priority_by_date);
+    let items = if args.priority_by_date {
+        let events_clone = events.clone();
+        tokio::task::spawn_blocking(move || build_work_items(&events_clone, true))
+            .await
+            .expect("build_work_items task panicked")
+    } else {
+        build_work_items(&events, false)
+    };
     let keep_backups = compiled.config.keep_backups;
     let phase_order = compiled.phase_order.clone();
     let compiled = Arc::new(compiled);
@@ -622,7 +629,20 @@ fn apply_detected_languages(file: &mut voom_domain::media::MediaFile) {
             continue;
         };
 
-        if track.language == detected {
+        let normalized = match voom_domain::utils::language::normalize_language(detected) {
+            Some(code) => code,
+            None => {
+                tracing::warn!(
+                    path = %file.path.display(),
+                    track = track_index,
+                    detected = %detected,
+                    "unrecognized language code from detector, skipping"
+                );
+                continue;
+            }
+        };
+
+        if track.language == normalized {
             continue;
         }
 
@@ -631,12 +651,12 @@ fn apply_detected_languages(file: &mut voom_domain::media::MediaFile) {
                 path = %file.path.display(),
                 track = track_index,
                 existing = %track.language,
-                detected = %detected,
+                detected = %normalized,
                 "overwriting track language with detected value"
             );
         }
 
-        track.language = detected.to_string();
+        track.language = normalized.to_string();
     }
 }
 

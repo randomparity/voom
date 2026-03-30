@@ -16,7 +16,7 @@ use voom_domain::events::{Event, FileIntrospectionFailedEvent};
 
 /// Dispatch a `FileIntrospectionFailed` event to the kernel.
 pub fn dispatch_introspection_failure(
-    kernel: &voom_kernel::Kernel,
+    kernel: &std::sync::Arc<voom_kernel::Kernel>,
     path: std::path::PathBuf,
     size: u64,
     content_hash: Option<String>,
@@ -44,7 +44,7 @@ pub async fn introspect_file(
     path: std::path::PathBuf,
     file_size: u64,
     content_hash: Option<String>,
-    kernel: &voom_kernel::Kernel,
+    kernel: &std::sync::Arc<voom_kernel::Kernel>,
     ffprobe_path: Option<&str>,
 ) -> std::result::Result<voom_domain::media::MediaFile, VoomError> {
     let mut introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
@@ -54,19 +54,23 @@ pub async fn introspect_file(
     let path_for_event = path.clone();
     let hash_for_event = content_hash.clone();
     let path_display = path.display().to_string();
+    // Run introspection AND dispatch inside spawn_blocking so the entire
+    // cascade (WASM plugins, subtitle mux) runs on the blocking pool
+    // instead of the tokio runtime.
+    let kernel_clone = kernel.clone();
     let intro_result = tokio::task::spawn_blocking(move || {
-        introspector.introspect(&path, file_size, content_hash.as_deref())
+        let result = introspector.introspect(&path, file_size, content_hash.as_deref());
+        if let Ok(ref intro_event) = result {
+            kernel_clone.dispatch(Event::FileIntrospected(
+                voom_domain::events::FileIntrospectedEvent::new(intro_event.file.clone()),
+            ));
+        }
+        result
     })
     .await;
 
     match intro_result {
-        Ok(Ok(intro_event)) => {
-            let file = intro_event.file.clone();
-            kernel.dispatch(Event::FileIntrospected(
-                voom_domain::events::FileIntrospectedEvent::new(intro_event.file),
-            ));
-            Ok(file)
-        }
+        Ok(Ok(intro_event)) => Ok(intro_event.file),
         Err(join_err) => {
             let error_msg = format!("task join error for {path_display}: {join_err}");
             dispatch_introspection_failure(
