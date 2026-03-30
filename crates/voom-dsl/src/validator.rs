@@ -274,6 +274,10 @@ fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>) {
         validate_on_error(on_error, phase.span.line, phase.span.col, errors);
     }
 
+    if let Some(skip_when) = &phase.skip_when {
+        validate_condition(skip_when, phase.span.line, phase.span.col, errors);
+    }
+
     // Track keep/remove conflicts (target, has_filter)
     let mut kept_targets: Vec<(&str, bool)> = Vec::new();
     let mut removed_targets: Vec<(&str, bool)> = Vec::new();
@@ -986,6 +990,22 @@ fn validate_ident_setting(
 
 fn validate_when(when: &WhenNode, line: usize, col: usize, errors: &mut Vec<DslError>) {
     validate_condition(&when.condition, line, col, errors);
+    for action in &when.then_actions {
+        validate_action(action, line, col, errors);
+    }
+    for action in &when.else_actions {
+        validate_action(action, line, col, errors);
+    }
+}
+
+fn validate_action(action: &ActionNode, line: usize, col: usize, errors: &mut Vec<DslError>) {
+    match action {
+        ActionNode::SetLanguage(_, ValueOrField::Field(path))
+        | ActionNode::SetTag(_, ValueOrField::Field(path)) => {
+            validate_field_path(path, line, col, errors);
+        }
+        _ => {}
+    }
 }
 
 fn validate_condition(cond: &ConditionNode, line: usize, col: usize, errors: &mut Vec<DslError>) {
@@ -996,13 +1016,18 @@ fn validate_condition(cond: &ConditionNode, line: usize, col: usize, errors: &mu
                 validate_filter(f, line, col, errors);
             }
         }
+        ConditionNode::FieldCompare(path, _, _) | ConditionNode::FieldExists(path) => {
+            validate_field_path(path, line, col, errors);
+        }
         ConditionNode::And(items) | ConditionNode::Or(items) => {
             for item in items {
                 validate_condition(item, line, col, errors);
             }
         }
         ConditionNode::Not(inner) => validate_condition(inner, line, col, errors),
-        _ => {}
+        ConditionNode::AudioIsMultiLanguage
+        | ConditionNode::IsDubbed
+        | ConditionNode::IsOriginal => {}
     }
 }
 
@@ -1673,5 +1698,40 @@ mod tests {
         }"#;
         let ast = parse_policy(input).unwrap();
         assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_skip_when_unknown_field_root() {
+        let input = r#"policy "test" {
+            phase norm {
+                skip when unknown_root.field exists
+                container mkv
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("unknown field root")),
+            "expected unknown field root error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_skip_when_valid_field_path() {
+        let input = r#"policy "test" {
+            phase norm {
+                skip when plugin.radarr.year > 2020
+                container mkv
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(
+            validate(&ast).is_ok(),
+            "plugin.radarr.year should be a valid field path: {:?}",
+            validate(&ast).unwrap_err().errors
+        );
     }
 }

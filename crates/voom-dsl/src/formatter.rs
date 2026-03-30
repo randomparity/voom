@@ -865,4 +865,21 @@ mod tests {
             ast2.phases[0].operations.len()
         );
     }
+
+    #[test]
+    fn test_roundtrip_field_filter() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == plugin.radarr.original_language
+            }
+        }"#;
+        let ast1 = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast1);
+        assert!(formatted.contains("plugin.radarr.original_language"));
+        let ast2 = parse_policy(&formatted).unwrap();
+        assert_eq!(
+            ast1.phases[0].operations.len(),
+            ast2.phases[0].operations.len()
+        );
+    }
 }
