@@ -1089,8 +1089,7 @@ Evaluate = {}
 
         #[test]
         fn test_protocol_version_compatible_loads() {
-            use crate::manifest::{PluginManifest, CURRENT_PROTOCOL_VERSION};
-            use voom_domain::capabilities::Capability;
+            use crate::manifest::CURRENT_PROTOCOL_VERSION;
 
             let dir = tempfile::tempdir().unwrap();
             let manifest_path = dir.path().join("test-plugin.toml");
@@ -1172,8 +1171,10 @@ Evaluate = {{}}
 
             let loader = WasmPluginLoader::new().unwrap();
             let result = loader.load(&wasm_path);
-            assert!(result.is_err());
-            let err = format!("{}", result.unwrap_err());
+            let err = match result {
+                Err(e) => format!("{e}"),
+                Ok(_) => panic!("expected error for incompatible protocol version"),
+            };
             assert!(
                 err.contains("incompatible protocol_version"),
                 "expected protocol version error, got: {err}"

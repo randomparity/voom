@@ -355,8 +355,8 @@ mod tests {
     #[test]
     fn test_coerce_auto_float() {
         assert_eq!(
-            coerce_value("3.14", None).unwrap(),
-            toml::Value::Float(3.14)
+            coerce_value("2.72", None).unwrap(),
+            toml::Value::Float(2.72)
         );
     }
 

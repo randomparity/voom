@@ -22,7 +22,7 @@ use crate::stats::ProcessingStats;
 use crate::storage::{
     BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage,
     HealthCheckFilters, HealthCheckRecord, HealthCheckStorage, JobFilters, JobStorage,
-    MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage, StatsStorage,
+    MaintenanceStorage, PageStats, PlanStorage, PlanSummary, PluginDataStorage, StatsStorage,
 };
 
 /// Create a standard test `MediaFile` with video, two audio, and one subtitle track.
@@ -409,5 +409,17 @@ impl MaintenanceStorage for InMemoryStore {
 
     fn prune_missing_files_under(&self, _root: &Path) -> Result<u64> {
         Ok(0)
+    }
+
+    fn table_row_counts(&self) -> Result<Vec<(String, u64)>> {
+        Ok(vec![])
+    }
+
+    fn page_stats(&self) -> Result<PageStats> {
+        Ok(PageStats {
+            page_size: 4096,
+            page_count: 0,
+            freelist_count: 0,
+        })
     }
 }
