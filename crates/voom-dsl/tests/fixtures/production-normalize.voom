@@ -49,8 +49,6 @@ policy "production-normalize" {
     transcode video to hevc {
       crf: 20
       preset: medium
-      max_resolution: 1080p
-      scale_algorithm: lanczos
       hw: auto
       hw_fallback: true
     }
