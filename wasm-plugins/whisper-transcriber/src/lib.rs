@@ -81,7 +81,14 @@ pub fn on_event(
     }
 
     // Check cache first.
-    let hash_str = file.content_hash.as_deref().unwrap_or("unknown");
+    let path_hash_owned = format!(
+        "{:x}",
+        xxhash_rust::xxh3::xxh3_64(file.path.to_string_lossy().as_bytes())
+    );
+    let hash_str = file
+        .content_hash
+        .as_deref()
+        .unwrap_or(&path_hash_owned);
     let cache_key = format!("transcript:{hash_str}");
     if let Some(cached) = host.get_plugin_data(&cache_key) {
         host.log("debug", "using cached transcript");

@@ -89,7 +89,14 @@ pub fn on_event(
     let sample_duration = cfg.map_or(30, |c| c.sample_duration_secs);
     let skip_pct = cfg.map_or(0.05, |c| c.skip_percent);
 
-    let hash_str = file.content_hash.as_deref().unwrap_or("unknown");
+    let path_hash_owned = format!(
+        "{:x}",
+        xxhash_rust::xxh3::xxh3_64(file.path.to_string_lossy().as_bytes())
+    );
+    let hash_str = file
+        .content_hash
+        .as_deref()
+        .unwrap_or(&path_hash_owned);
     let mut detections = Vec::new();
     let params = DetectionParams {
         whisper_bin,
@@ -181,8 +188,14 @@ fn detect_track_language(
     let interval =
         effective_duration / f64::from(sample_count + 1);
 
-    let hash_str =
-        file.content_hash.as_deref().unwrap_or("unknown");
+    let path_hash_owned = format!(
+        "{:x}",
+        xxhash_rust::xxh3::xxh3_64(file.path.to_string_lossy().as_bytes())
+    );
+    let hash_str = file
+        .content_hash
+        .as_deref()
+        .unwrap_or(&path_hash_owned);
     let file_path = file.path.to_string_lossy().to_string();
     let mut samples: Vec<SampleResult> = Vec::new();
 
@@ -476,6 +489,7 @@ fn build_result(
 // --- Types ---
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
 #[non_exhaustive]
 pub struct DetectorConfig {
     /// Path or name of the whisper binary (default: "whisper-cli").
@@ -488,6 +502,18 @@ pub struct DetectorConfig {
     pub sample_duration_secs: u32,
     /// Fraction of duration to skip at start/end (default: 0.05).
     pub skip_percent: f64,
+}
+
+impl Default for DetectorConfig {
+    fn default() -> Self {
+        Self {
+            whisper_binary: "whisper-cli".to_string(),
+            model: "base".to_string(),
+            sample_count: 8,
+            sample_duration_secs: 30,
+            skip_percent: 0.05,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
