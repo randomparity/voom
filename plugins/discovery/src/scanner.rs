@@ -47,6 +47,20 @@ impl FdSemaphore {
         *count -= 1;
         self.cond.notify_one();
     }
+
+    /// Returns an RAII guard that releases on drop (including panic unwind).
+    fn guard(&self) -> FdGuard<'_> {
+        self.acquire();
+        FdGuard(self)
+    }
+}
+
+struct FdGuard<'a>(&'a FdSemaphore);
+
+impl Drop for FdGuard<'_> {
+    fn drop(&mut self) {
+        self.0.release();
+    }
 }
 
 /// Media file extensions recognized by the discovery plugin.
@@ -190,9 +204,8 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
     // Process files in parallel using rayon, with a semaphore to limit
     // concurrent open file descriptors during hashing.
     let process_file = |path: &std::path::PathBuf| {
-        fd_sem.acquire();
+        let _guard = fd_sem.guard();
         let result = build_event(path, options.hash_files);
-        fd_sem.release();
         let current = processed.fetch_add(1, Ordering::Relaxed) + 1;
         if let Some(ref cb) = options.on_progress {
             cb(crate::ScanProgress::Processing {
