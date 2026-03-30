@@ -4,7 +4,7 @@ use std::path::Path;
 
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::media::{Container, MediaFile};
-use voom_domain::plan::{ActionParams, OperationType, PlannedAction};
+use voom_domain::plan::{ActionParams, OperationType, PlannedAction, TranscodeChannelsPlan};
 use voom_domain::utils::sanitize::{validate_metadata_key, validate_metadata_value};
 
 use crate::hwaccel::{self, HwAccelConfig};
@@ -331,6 +331,20 @@ fn apply_transcode_video(
     Ok(cmd)
 }
 
+fn resolve_transcode_channels(ch: &TranscodeChannelsPlan) -> Option<u32> {
+    match ch {
+        TranscodeChannelsPlan::Count(n) => Some(*n),
+        TranscodeChannelsPlan::Named(name) => match name.as_str() {
+            "mono" => Some(1),
+            "stereo" => Some(2),
+            "5.1" => Some(6),
+            "7.1" => Some(8),
+            // "preserve" and unknown names: don't set -ac, let ffmpeg decide
+            _ => None,
+        },
+    }
+}
+
 fn apply_transcode_audio(cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegCommand {
     let ActionParams::Transcode {
         codec,
@@ -342,13 +356,14 @@ fn apply_transcode_audio(cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegCo
         return cmd;
     };
 
+    let resolved = channels.as_ref().and_then(resolve_transcode_channels);
     let encoder = hwaccel::software_encoder(codec).to_string();
     apply_audio_codec_args(
         cmd,
         action.track_index,
         &encoder,
         bitrate.as_deref(),
-        *channels,
+        resolved,
     )
 }
 
@@ -585,6 +600,10 @@ mod tests {
                 channels: None,
                 hw: None,
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode video to HEVC CRF 23",
         );
@@ -615,6 +634,10 @@ mod tests {
                 channels: None,
                 hw: None,
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode video to H.264 at 5M",
         );
@@ -640,9 +663,13 @@ mod tests {
                 crf: None,
                 preset: None,
                 bitrate: Some("128k".into()),
-                channels: Some(2),
+                channels: Some(TranscodeChannelsPlan::Count(2)),
                 hw: None,
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode audio to Opus",
         );
@@ -765,6 +792,10 @@ mod tests {
                     channels: None,
                     hw: None,
                     hw_fallback: None,
+                    max_resolution: None,
+                    scale_algorithm: None,
+                    hdr_mode: None,
+                    tune: None,
                 },
                 "Transcode to HEVC",
             ),
@@ -886,6 +917,10 @@ mod tests {
                 channels: None,
                 hw: None,
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode with VAAPI device",
         );
@@ -923,6 +958,10 @@ mod tests {
                 channels: None,
                 hw: None,
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode with NVENC",
         );
@@ -1063,6 +1102,10 @@ mod tests {
                 channels: None,
                 hw: Some("none".into()),
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode with software",
         );
@@ -1092,6 +1135,10 @@ mod tests {
                 channels: None,
                 hw: Some("nvenc".into()),
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode with NVENC override",
         );
@@ -1125,6 +1172,10 @@ mod tests {
                 channels: None,
                 hw: Some("qsv".into()),
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode with QSV override",
         );
@@ -1153,6 +1204,10 @@ mod tests {
                 channels: None,
                 hw: Some("nvenc".into()),
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode with NVENC (matches global)",
         );
@@ -1183,6 +1238,10 @@ mod tests {
                 channels: None,
                 hw: Some("none".into()),
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode software, no global",
         );
@@ -1211,6 +1270,10 @@ mod tests {
                 channels: None,
                 hw: Some("none".into()),
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode software despite global nvenc",
         );
@@ -1242,6 +1305,10 @@ mod tests {
                 channels: None,
                 hw: Some("nvenc".into()),
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode AV1 with NVENC",
         );
@@ -1271,6 +1338,10 @@ mod tests {
                 channels: None,
                 hw: Some("qsv".into()),
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode HEVC with QSV",
         );
@@ -1298,6 +1369,10 @@ mod tests {
                 channels: None,
                 hw: Some("vaapi".into()),
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode H.264 with VAAPI",
         );
@@ -1331,6 +1406,10 @@ mod tests {
                 channels: None,
                 hw: None,
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode AV1 software",
         );
@@ -1357,6 +1436,10 @@ mod tests {
                 channels: None,
                 hw: Some("nvenc".into()),
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode AV1 with NVENC override",
         );
@@ -1393,6 +1476,10 @@ mod tests {
                 channels: None,
                 hw: Some("nvenc".into()),
                 hw_fallback: Some(false),
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode AV1 with NVENC, no fallback",
         );
@@ -1426,6 +1513,10 @@ mod tests {
                 channels: None,
                 hw: Some("nvenc".into()),
                 hw_fallback: Some(false),
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode HEVC with NVENC, no fallback",
         );
@@ -1456,6 +1547,10 @@ mod tests {
                 channels: None,
                 hw: None,
                 hw_fallback: Some(false),
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode AV1, no fallback, no HW",
         );
@@ -1484,6 +1579,10 @@ mod tests {
                 channels: None,
                 hw: Some("nvenc".into()),
                 hw_fallback: Some(false),
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             "Transcode HEVC, nvenc requested, no fallback",
         );

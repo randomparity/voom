@@ -261,6 +261,16 @@ impl ClearActionsSettings {
     }
 }
 
+/// Channel setting for a transcode operation — either a named preset or a count.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum TranscodeChannels {
+    /// Named preset, e.g. `stereo`, `preserve`.
+    Named(String),
+    /// Explicit channel count, e.g. `2`, `6`.
+    Count(u32),
+}
+
 /// Settings for the `Transcode` operation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
@@ -269,7 +279,7 @@ pub struct CompiledTranscodeSettings {
     pub crf: Option<u32>,
     pub preset: Option<String>,
     pub bitrate: Option<String>,
-    pub channels: Option<u32>,
+    pub channels: Option<TranscodeChannels>,
     /// Hardware acceleration backend preference.
     /// Values: "auto", "nvenc", "qsv", "vaapi", "videotoolbox", "none".
     #[serde(default)]
@@ -278,6 +288,18 @@ pub struct CompiledTranscodeSettings {
     /// HW backend is unavailable. Defaults to `true` when absent.
     #[serde(default)]
     pub hw_fallback: Option<bool>,
+    /// Maximum resolution (e.g. "1080p", "4k"). Downscale if source exceeds.
+    #[serde(default)]
+    pub max_resolution: Option<String>,
+    /// Scaling algorithm (e.g. "lanczos", "bicubic", "bilinear").
+    #[serde(default)]
+    pub scale_algorithm: Option<String>,
+    /// HDR handling mode (e.g. "preserve", "tonemap").
+    #[serde(default)]
+    pub hdr_mode: Option<String>,
+    /// Encoder tuning hint (e.g. "film", "animation", "grain").
+    #[serde(default)]
+    pub tune: Option<String>,
 }
 
 impl CompiledTranscodeSettings {
@@ -287,7 +309,7 @@ impl CompiledTranscodeSettings {
         crf: Option<u32>,
         preset: Option<String>,
         bitrate: Option<String>,
-        channels: Option<u32>,
+        channels: Option<TranscodeChannels>,
     ) -> Self {
         Self {
             preserve,
@@ -297,6 +319,10 @@ impl CompiledTranscodeSettings {
             channels,
             hw: None,
             hw_fallback: None,
+            max_resolution: None,
+            scale_algorithm: None,
+            hdr_mode: None,
+            tune: None,
         }
     }
 }

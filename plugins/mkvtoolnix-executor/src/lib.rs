@@ -392,6 +392,10 @@ mod tests {
                 channels: None,
                 hw: None,
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
         )]);
         assert!(!plugin.can_handle(&plan));

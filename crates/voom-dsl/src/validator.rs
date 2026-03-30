@@ -411,6 +411,7 @@ fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut 
             }
             validate_transcode_keys(settings, line, col, errors);
             validate_hw_settings(settings, line, col, errors);
+            validate_video_transcode_settings(settings, line, col, errors);
         }
         OperationNode::Synthesize { settings, .. } => {
             for setting in settings {
@@ -644,6 +645,10 @@ const KNOWN_TRANSCODE_KEYS: &[&str] = &[
     "channels",
     "hw",
     "hw_fallback",
+    "max_resolution",
+    "scale_algorithm",
+    "hdr_mode",
+    "tune",
 ];
 
 fn validate_transcode_keys(
@@ -840,6 +845,126 @@ fn validate_hw_settings(
             line,
             col,
             "hw_fallback has no effect without hw".to_string(),
+        ));
+    }
+}
+
+const VALID_HDR_MODES: &[&str] = &["preserve", "tonemap"];
+const VALID_TUNE_VALUES: &[&str] = &[
+    "film",
+    "animation",
+    "grain",
+    "stillimage",
+    "fastdecode",
+    "zerolatency",
+    "psnr",
+    "ssim",
+];
+const VALID_SCALE_ALGORITHMS: &[&str] = &[
+    "lanczos", "bicubic", "bilinear", "neighbor", "area", "spline", "sinc",
+];
+
+fn validate_video_transcode_settings(
+    settings: &[(String, Value)],
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    for (key, val) in settings {
+        match key.as_str() {
+            "hdr_mode" => {
+                validate_ident_setting(val, "hdr_mode", VALID_HDR_MODES, line, col, errors);
+            }
+            "tune" => {
+                validate_ident_setting(val, "tune", VALID_TUNE_VALUES, line, col, errors);
+            }
+            "scale_algorithm" => {
+                validate_ident_setting(
+                    val,
+                    "scale_algorithm",
+                    VALID_SCALE_ALGORITHMS,
+                    line,
+                    col,
+                    errors,
+                );
+            }
+            "max_resolution" => {
+                let res_str = match val {
+                    Value::Ident(s) | Value::String(s) => Some(s.as_str()),
+                    Value::Number(_, raw) => Some(raw.as_str()),
+                    _ => None,
+                };
+                if res_str.is_none() {
+                    errors.push(DslError::validation(
+                        line,
+                        col,
+                        "max_resolution must be a resolution value \
+                         (e.g. 1080p, 720p, 4k, 2160p)"
+                            .to_string(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn validate_ident_setting(
+    val: &Value,
+    key: &str,
+    valid: &[&str],
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    let name = match val {
+        Value::Ident(s) | Value::String(s) => Some(s.as_str()),
+        _ => None,
+    };
+    if let Some(name) = name {
+        if !valid.contains(&name) {
+            let valid_list = valid.join(", ");
+            let mut best: Option<(&str, usize)> = None;
+            for &v in valid {
+                let dist = edit_distance(name, v);
+                if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
+                    best = Some((v, dist));
+                }
+            }
+            if let Some((suggestion, _)) = best {
+                errors.push(DslError::validation_with_suggestion(
+                    line,
+                    col,
+                    format!(
+                        "unknown {key} value \"{name}\", \
+                         expected one of: {valid_list}"
+                    ),
+                    format!("did you mean \"{suggestion}\"?"),
+                ));
+            } else {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    format!(
+                        "unknown {key} value \"{name}\", \
+                         expected one of: {valid_list}"
+                    ),
+                ));
+            }
+        }
+    } else {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!(
+                "{key} must be a string or identifier, got {}",
+                match val {
+                    Value::Number(_, _) => "number",
+                    Value::Bool(_) => "boolean",
+                    Value::List(_) => "list",
+                    _ => "unknown",
+                }
+            ),
         ));
     }
 }
@@ -1183,7 +1308,7 @@ mod tests {
             phase tc {
                 transcode video to hevc {
                     crf: 20
-                    max_resolution: 1080p
+                    foobar: 42
                 }
             }
         }"#;
@@ -1192,7 +1317,7 @@ mod tests {
         assert!(
             err.errors
                 .iter()
-                .any(|e| format!("{e}").contains("unknown transcode setting \"max_resolution\"")),
+                .any(|e| format!("{e}").contains("unknown transcode setting \"foobar\"")),
             "expected unknown key error, got: {:?}",
             err.errors
         );
@@ -1275,6 +1400,10 @@ mod tests {
                     preset: medium
                     hw: auto
                     hw_fallback: true
+                    max_resolution: 1080p
+                    scale_algorithm: lanczos
+                    hdr_mode: preserve
+                    tune: film
                 }
                 transcode audio to aac {
                     preserve: [truehd, dts_hd, flac]

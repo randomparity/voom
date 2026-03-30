@@ -31,7 +31,7 @@
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
     deserialize_event, load_plugin_config, serialize_event, ActionParams, Event, HostFunctions,
-    OnEventResult, OperationType, PluginInfoData, ToolOutput,
+    OnEventResult, OperationType, PluginInfoData, ToolOutput, TranscodeChannelsPlan,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -232,12 +232,18 @@ fn build_handbrake_args(
                         args.push(b.clone());
                     }
                     if let Some(ch) = channels {
-                        // Map channel count to HandBrake mixdown name
+                        // Map channel setting to HandBrake mixdown name
                         let mixdown = match ch {
-                            1 => "mono",
-                            2 => "stereo",
-                            6 => "5point1",
-                            _ => "stereo",
+                            TranscodeChannelsPlan::Count(1) => "mono",
+                            TranscodeChannelsPlan::Count(2)
+                            | TranscodeChannelsPlan::Named(ref n)
+                                if n == "stereo" =>
+                            {
+                                "stereo"
+                            }
+                            TranscodeChannelsPlan::Count(6) => "5point1",
+                            TranscodeChannelsPlan::Count(_) => "stereo",
+                            TranscodeChannelsPlan::Named(_) => "stereo",
                         };
                         args.push("--mixdown".to_string());
                         args.push(mixdown.to_string());
@@ -347,6 +353,10 @@ mod tests {
                         channels: None,
                         hw: None,
                         hw_fallback: None,
+                        max_resolution: None,
+                        scale_algorithm: None,
+                        hdr_mode: None,
+                        tune: None,
                     },
                     description: "Transcode video to HEVC CRF 22".to_string(),
                 },
@@ -361,6 +371,10 @@ mod tests {
                         channels: None,
                         hw: None,
                         hw_fallback: None,
+                        max_resolution: None,
+                        scale_algorithm: None,
+                        hdr_mode: None,
+                        tune: None,
                     },
                     description: "Transcode audio to Opus 128k".to_string(),
                 },
@@ -470,6 +484,10 @@ mod tests {
                 channels: None,
                 hw: None,
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             description: "transcode".to_string(),
         };
@@ -503,9 +521,13 @@ mod tests {
                 crf: None,
                 preset: None,
                 bitrate: Some("128k".to_string()),
-                channels: Some(2),
+                channels: Some(TranscodeChannelsPlan::Count(2)),
                 hw: None,
                 hw_fallback: None,
+                max_resolution: None,
+                scale_algorithm: None,
+                hdr_mode: None,
+                tune: None,
             },
             description: "transcode audio".to_string(),
         };

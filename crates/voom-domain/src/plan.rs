@@ -131,6 +131,16 @@ impl PlannedAction {
     }
 }
 
+/// Channel setting for a transcode action — either a named preset or a count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TranscodeChannelsPlan {
+    /// Named preset, e.g. `stereo`, `preserve`.
+    Named(String),
+    /// Explicit channel count, e.g. `2`, `6`.
+    Count(u32),
+}
+
 /// Typed parameters for each operation type.
 /// Replaces the previous untyped `serde_json::Value` parameters field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,13 +175,25 @@ pub enum ActionParams {
         crf: Option<u32>,
         preset: Option<String>,
         bitrate: Option<String>,
-        channels: Option<u32>,
+        channels: Option<TranscodeChannelsPlan>,
         /// Per-action HW acceleration preference (overrides system-wide detection).
         #[serde(default)]
         hw: Option<String>,
         /// Whether to fall back to software encoding when HW is unavailable.
         #[serde(default)]
         hw_fallback: Option<bool>,
+        /// Maximum resolution (e.g. "1080p"). Downscale if source exceeds.
+        #[serde(default)]
+        max_resolution: Option<String>,
+        /// Scaling algorithm (e.g. "lanczos").
+        #[serde(default)]
+        scale_algorithm: Option<String>,
+        /// HDR handling mode (e.g. "preserve", "tonemap").
+        #[serde(default)]
+        hdr_mode: Option<String>,
+        /// Encoder tuning hint (e.g. "film", "animation").
+        #[serde(default)]
+        tune: Option<String>,
     },
     /// Audio synthesis parameters.
     Synthesize {

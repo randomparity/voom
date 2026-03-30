@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use voom_domain::capability_map::CapabilityMap;
 use voom_domain::errors::VoomError;
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
-use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
+use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeChannelsPlan};
 use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
 use voom_dsl::compiled::*;
 
@@ -586,9 +586,16 @@ fn emit_transcode(
     let crf = settings.crf;
     let preset = settings.preset.clone();
     let bitrate = settings.bitrate.clone();
-    let channels = settings.channels;
+    let channels = settings.channels.as_ref().map(|ch| match ch {
+        TranscodeChannels::Named(s) => TranscodeChannelsPlan::Named(s.clone()),
+        TranscodeChannels::Count(n) => TranscodeChannelsPlan::Count(*n),
+    });
     let hw = settings.hw.clone();
     let hw_fallback = settings.hw_fallback;
+    let max_resolution = settings.max_resolution.clone();
+    let scale_algorithm = settings.scale_algorithm.clone();
+    let hdr_mode = settings.hdr_mode.clone();
+    let tune = settings.tune.clone();
 
     for track in &tracks {
         if track.codec == codec {
@@ -606,9 +613,13 @@ fn emit_transcode(
                 crf,
                 preset: preset.clone(),
                 bitrate: bitrate.clone(),
-                channels,
+                channels: channels.clone(),
                 hw: hw.clone(),
                 hw_fallback,
+                max_resolution: max_resolution.clone(),
+                scale_algorithm: scale_algorithm.clone(),
+                hdr_mode: hdr_mode.clone(),
+                tune: tune.clone(),
             },
             format!(
                 "Transcode {} track {} from {} to {codec}",
