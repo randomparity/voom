@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 
 use rayon::prelude::*;
 use walkdir::WalkDir;
@@ -12,6 +12,42 @@ use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::FileDiscoveredEvent;
 
 use crate::ScanOptions;
+
+/// Maximum concurrent open file handles during hashing to avoid exhausting
+/// the process file descriptor limit under heavy parallelism.
+const MAX_CONCURRENT_FDS: usize = 256;
+
+/// Counting semaphore for bounding concurrent file descriptor usage.
+/// Uses `std::sync` primitives (not tokio) because discovery runs on rayon.
+struct FdSemaphore {
+    state: Mutex<usize>,
+    cond: Condvar,
+    max: usize,
+}
+
+impl FdSemaphore {
+    fn new(max: usize) -> Self {
+        Self {
+            state: Mutex::new(0),
+            cond: Condvar::new(),
+            max,
+        }
+    }
+
+    fn acquire(&self) {
+        let mut count = self.state.lock().expect("fd semaphore lock poisoned");
+        while *count >= self.max {
+            count = self.cond.wait(count).expect("fd semaphore lock poisoned");
+        }
+        *count += 1;
+    }
+
+    fn release(&self) {
+        let mut count = self.state.lock().expect("fd semaphore lock poisoned");
+        *count -= 1;
+        self.cond.notify_one();
+    }
+}
 
 /// Media file extensions recognized by the discovery plugin.
 const MEDIA_EXTENSIONS: &[&str] = &[
@@ -149,10 +185,14 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
 
     let total = media_paths.len();
     let processed = Arc::new(AtomicUsize::new(0));
+    let fd_sem = Arc::new(FdSemaphore::new(MAX_CONCURRENT_FDS));
 
-    // Process files in parallel using rayon
+    // Process files in parallel using rayon, with a semaphore to limit
+    // concurrent open file descriptors during hashing.
     let process_file = |path: &std::path::PathBuf| {
+        fd_sem.acquire();
         let result = build_event(path, options.hash_files);
+        fd_sem.release();
         let current = processed.fetch_add(1, Ordering::Relaxed) + 1;
         if let Some(ref cb) = options.on_progress {
             cb(crate::ScanProgress::Processing {

@@ -214,10 +214,26 @@ impl Plugin for BackupManagerPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
+        // Not handling PLAN_SKIPPED is intentional: skipped plans never reach
+        // PlanExecuting, so no backup is created and there is nothing to clean up.
         matches!(
             event_type,
             Event::PLAN_EXECUTING | Event::PLAN_COMPLETED | Event::PLAN_FAILED
         )
+    }
+
+    fn shutdown(&self) -> Result<()> {
+        if let Ok(records) = self.records() {
+            if !records.is_empty() {
+                for (path, _) in records.iter() {
+                    tracing::warn!(
+                        path = %path.display(),
+                        "active backup still exists at shutdown"
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
