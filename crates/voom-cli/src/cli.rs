@@ -391,6 +391,22 @@ pub enum FilesCommands {
         #[arg(short, long, default_value = "table")]
         format: OutputFormat,
     },
+    /// Show details for a single file by UUID
+    Show {
+        /// File UUID
+        id: String,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Delete a file from the database by UUID
+    Delete {
+        /// File UUID
+        id: String,
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 // === Completions ===

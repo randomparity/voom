@@ -29,6 +29,8 @@ pub fn run(cmd: FilesCommands) -> Result<()> {
             filters.offset = Some(offset);
             list(filters, format)
         }
+        FilesCommands::Show { id, format } => show(&id, format),
+        FilesCommands::Delete { id, yes } => delete(&id, yes),
     }
 }
 
@@ -99,6 +101,58 @@ fn list(filters: FileFilters, format: OutputFormat) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn show(id: &str, format: OutputFormat) -> Result<()> {
+    let uuid = uuid::Uuid::parse_str(id).with_context(|| format!("Invalid file ID: {id}"))?;
+    let config = config::load_config()?;
+    let store = app::open_store(&config)?;
+
+    let file = store
+        .file(&uuid)
+        .context("failed to look up file")?
+        .ok_or_else(|| anyhow::anyhow!("File not found: {id}"))?;
+
+    match format {
+        OutputFormat::Json => output::format_file_json(&file),
+        OutputFormat::Table => output::format_file_info(&file, false),
+    }
+    Ok(())
+}
+
+fn delete(id: &str, yes: bool) -> Result<()> {
+    let uuid = uuid::Uuid::parse_str(id).with_context(|| format!("Invalid file ID: {id}"))?;
+    let config = config::load_config()?;
+    let store = app::open_store(&config)?;
+
+    let file = store
+        .file(&uuid)
+        .context("failed to look up file")?
+        .ok_or_else(|| anyhow::anyhow!("File not found: {id}"))?;
+
+    if !yes {
+        eprintln!(
+            "Delete {} from database?",
+            style(file.path.display()).cyan()
+        );
+        eprintln!("Type 'yes' to confirm:");
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if input.trim() != "yes" {
+            println!("{}", style("Aborted.").dim());
+            return Ok(());
+        }
+    }
+
+    store.delete_file(&uuid).context("failed to delete file")?;
+
+    println!(
+        "{} Deleted {} from database",
+        style("✓").green(),
+        style(file.path.display()).cyan()
+    );
     Ok(())
 }
 
