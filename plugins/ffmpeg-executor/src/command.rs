@@ -161,6 +161,14 @@ impl FfmpegCommand {
         self
     }
 
+    /// Add a video filter (`-vf {filter}`).
+    #[must_use]
+    pub fn video_filter(mut self, filter: &str) -> Self {
+        self.args.push("-vf".to_string());
+        self.args.push(filter.to_string());
+        self
+    }
+
     /// Add a raw argument.
     #[must_use]
     pub fn arg(mut self, arg: &str) -> Self {
@@ -244,6 +252,30 @@ fn apply_preset(encoder: &str, mut cmd: FfmpegCommand, preset: &str) -> FfmpegCo
     cmd
 }
 
+/// Emit `-tune` for software encoders only.
+///
+/// Hardware encoders (NVENC, QSV, VAAPI, VideoToolbox) do not support
+/// the `-tune` flag, so it is silently skipped for those backends.
+fn apply_tune(encoder: &str, mut cmd: FfmpegCommand, tune: &str) -> FfmpegCommand {
+    if !encoder.ends_with("_nvenc")
+        && !encoder.ends_with("_qsv")
+        && !encoder.ends_with("_vaapi")
+        && !encoder.ends_with("_videotoolbox")
+    {
+        cmd = cmd.arg("-tune").arg(tune);
+    }
+    cmd
+}
+
+/// Parse a max-resolution spec into a pixel height.
+fn parse_max_height(spec: &str) -> Option<u32> {
+    match spec.to_lowercase().as_str() {
+        "4k" => Some(2160),
+        "8k" => Some(4320),
+        s => s.strip_suffix('p')?.parse().ok(),
+    }
+}
+
 fn apply_transcode_video(
     mut cmd: FfmpegCommand,
     action: &PlannedAction,
@@ -315,8 +347,36 @@ fn apply_transcode_video(
         cmd = apply_preset(&encoder, cmd, preset_val);
     }
 
+    if let Some(ref tune_val) = settings.tune {
+        cmd = apply_tune(&encoder, cmd, tune_val);
+    }
+
     if let Some(ref brate) = settings.bitrate {
         cmd = cmd.arg("-b:v").arg(brate);
+    }
+
+    // Collect video filters — ffmpeg only accepts one `-vf` argument,
+    // so multiple filters must be combined with commas.
+    let mut filters: Vec<String> = Vec::new();
+
+    if let Some(ref max_res) = settings.max_resolution {
+        if let Some(max_h) = parse_max_height(max_res) {
+            let algo = settings.scale_algorithm.as_deref().unwrap_or("lanczos");
+            filters.push(format!("scale=-2:'min(ih,{max_h})':flags={algo}"));
+        }
+    }
+
+    if settings.hdr_mode.as_deref() == Some("tonemap") {
+        filters.push(
+            "zscale=t=linear:npl=100,format=gbrpf32le,\
+             zscale=p=bt709,tonemap=hable:desat=0,\
+             zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+                .to_string(),
+        );
+    }
+
+    if !filters.is_empty() {
+        cmd = cmd.video_filter(&filters.join(","));
     }
 
     Ok(cmd)
@@ -1415,5 +1475,206 @@ mod tests {
             result.is_err(),
             "hevc_nvenc not in validated list should error when hw_fallback: false"
         );
+    }
+
+    #[test]
+    fn test_transcode_video_tune() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(20))
+                    .with_tune(Some("film".into())),
+            },
+            "Transcode with tune",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        assert!(args.contains(&"-tune".to_string()));
+        assert!(args.contains(&"film".to_string()));
+    }
+
+    #[test]
+    fn test_transcode_video_tune_skipped_for_hw() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(20))
+                    .with_tune(Some("film".into()))
+                    .with_hw(Some("nvenc".into())),
+            },
+            "Transcode with tune on NVENC",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        assert!(
+            !args.contains(&"-tune".to_string()),
+            "NVENC should not emit -tune, got: {args:?}"
+        );
+    }
+
+    #[test]
+    fn test_transcode_video_max_resolution() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default().with_max_resolution(Some("1080p".into())),
+            },
+            "Transcode with max resolution",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        assert!(
+            args.contains(&"-vf".to_string()),
+            "should have -vf: {args:?}"
+        );
+        let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        let filter = &args[vf_pos + 1];
+        assert!(
+            filter.contains("min(ih,1080)"),
+            "should downscale to 1080: {filter}"
+        );
+        assert!(
+            filter.contains("flags=lanczos"),
+            "default algorithm should be lanczos: {filter}"
+        );
+    }
+
+    #[test]
+    fn test_transcode_video_max_resolution_with_algorithm() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default()
+                    .with_max_resolution(Some("720p".into()))
+                    .with_scale_algorithm(Some("bicubic".into())),
+            },
+            "Transcode with scale algorithm",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        let filter = &args[vf_pos + 1];
+        assert!(
+            filter.contains("flags=bicubic"),
+            "should use bicubic: {filter}"
+        );
+    }
+
+    #[test]
+    fn test_transcode_video_hdr_tonemap() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default().with_hdr_mode(Some("tonemap".into())),
+            },
+            "Transcode with HDR tonemap",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        let filter = &args[vf_pos + 1];
+        assert!(
+            filter.contains("tonemap=hable"),
+            "should have tonemap filter: {filter}"
+        );
+        assert!(
+            filter.contains("zscale"),
+            "should have zscale filter: {filter}"
+        );
+    }
+
+    #[test]
+    fn test_transcode_video_combined_filters() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default()
+                    .with_max_resolution(Some("1080p".into()))
+                    .with_hdr_mode(Some("tonemap".into())),
+            },
+            "Transcode with max res + tonemap",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        // Should have exactly one -vf with both filters combined
+        let vf_count = args.iter().filter(|a| *a == "-vf").count();
+        assert_eq!(vf_count, 1, "should have exactly one -vf: {args:?}");
+        let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        let filter = &args[vf_pos + 1];
+        assert!(
+            filter.contains("min(ih,1080)"),
+            "should have scale filter: {filter}"
+        );
+        assert!(
+            filter.contains("tonemap=hable"),
+            "should have tonemap filter: {filter}"
+        );
+    }
+
+    #[test]
+    fn test_transcode_video_hdr_preserve_is_noop() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default().with_hdr_mode(Some("preserve".into())),
+            },
+            "Transcode with HDR preserve",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mkv");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+        assert!(
+            !args.contains(&"-vf".to_string()),
+            "preserve should not emit -vf: {args:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_max_height_values() {
+        assert_eq!(parse_max_height("480p"), Some(480));
+        assert_eq!(parse_max_height("720p"), Some(720));
+        assert_eq!(parse_max_height("1080p"), Some(1080));
+        assert_eq!(parse_max_height("1440p"), Some(1440));
+        assert_eq!(parse_max_height("2160p"), Some(2160));
+        assert_eq!(parse_max_height("4k"), Some(2160));
+        assert_eq!(parse_max_height("4K"), Some(2160));
+        assert_eq!(parse_max_height("8k"), Some(4320));
+        assert_eq!(parse_max_height("bogus"), None);
     }
 }
