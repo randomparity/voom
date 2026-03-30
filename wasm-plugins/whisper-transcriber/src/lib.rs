@@ -30,8 +30,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, Event, HostFunctions, OnEventResult,
-    PluginInfoData, ToolOutput,
+    deserialize_event, load_plugin_config, serialize_event, Event, HostFunctions, MediaFile,
+    MetadataEnrichedEvent, OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -76,7 +76,8 @@ pub fn on_event(
     }
 
     // Check cache first.
-    let cache_key = format!("transcript:{}", file.content_hash);
+    let hash_str = file.content_hash.as_deref().unwrap_or("unknown");
+    let cache_key = format!("transcript:{hash_str}");
     if let Some(cached) = host.get_plugin_data(&cache_key) {
         host.log("debug", "using cached transcript");
         return build_result(file, &cached, host);
@@ -86,7 +87,7 @@ pub fn on_event(
 
     // Step 1: Extract audio to a temp WAV file via ffmpeg.
     let file_path = file.path.to_string_lossy().to_string();
-    let audio_path = format!("/tmp/voom-whisper-{}.wav", file.content_hash);
+    let audio_path = format!("/tmp/voom-whisper-{hash_str}.wav");
     let extract_result = host.run_tool(
         "ffmpeg",
         &[
@@ -105,7 +106,7 @@ pub fn on_event(
         300_000, // 5 minute timeout for extraction
     );
 
-    let extract_output = match extract_result {
+    let _extract_output = match extract_result {
         Err(e) => {
             host.log("error", &format!("ffmpeg audio extraction failed: {e}"));
             return None;
@@ -167,7 +168,7 @@ pub fn on_event(
 }
 
 fn build_result(
-    file: &voom_plugin_sdk::MediaFile,
+    file: &MediaFile,
     transcript_data: &[u8],
     host: &dyn HostFunctions,
 ) -> Option<OnEventResult> {
@@ -181,22 +182,18 @@ fn build_result(
     });
 
     let enriched_event = Event::MetadataEnriched(
-        voom_plugin_sdk::MetadataEnrichedEvent {
-            path: file.path.clone(),
-            source: "whisper-transcriber".to_string(),
-            metadata,
-        },
+        MetadataEnrichedEvent::new(file.path.clone(), "whisper-transcriber".to_string(), metadata),
     );
 
     let produced_payload = serialize_event(&enriched_event).map_err(|e| {
         host.log("error", &format!("failed to serialize event: {e}"));
     }).ok()?;
 
-    Some(OnEventResult {
-        plugin_name: "whisper-transcriber".to_string(),
-        produced_events: vec![(enriched_event.event_type().to_string(), produced_payload)],
-        data: None,
-    })
+    Some(OnEventResult::new(
+        "whisper-transcriber",
+        vec![(enriched_event.event_type().to_string(), produced_payload)],
+        None,
+    ))
 }
 
 // --- Config ---
@@ -239,27 +236,15 @@ mod tests {
             let mut tool_results = HashMap::new();
             tool_results.insert(
                 "ffmpeg".to_string(),
-                ToolOutput {
-                    exit_code: 0,
-                    stdout: vec![],
-                    stderr: b"audio extracted".to_vec(),
-                },
+                ToolOutput::new(0, vec![], b"audio extracted".to_vec()),
             );
             tool_results.insert(
                 "whisper-cli".to_string(),
-                ToolOutput {
-                    exit_code: 0,
-                    stdout: serde_json::to_vec(&transcript).unwrap(),
-                    stderr: vec![],
-                },
+                ToolOutput::new(0, serde_json::to_vec(&transcript).unwrap(), vec![]),
             );
             tool_results.insert(
                 "rm".to_string(),
-                ToolOutput {
-                    exit_code: 0,
-                    stdout: vec![],
-                    stderr: vec![],
-                },
+                ToolOutput::new(0, vec![], vec![]),
             );
 
             Self {
@@ -273,11 +258,7 @@ mod tests {
             let mut host = Self::new();
             host.tool_results.insert(
                 "ffmpeg".to_string(),
-                ToolOutput {
-                    exit_code: 1,
-                    stdout: vec![],
-                    stderr: b"error: no such file".to_vec(),
-                },
+                ToolOutput::new(1, vec![], b"error: no such file".to_vec()),
             );
             host
         }
@@ -287,11 +268,7 @@ mod tests {
         fn run_tool(&self, tool: &str, _args: &[String], _timeout_ms: u64) -> Result<ToolOutput, String> {
             self.tool_results
                 .get(tool)
-                .map(|o| ToolOutput {
-                    exit_code: o.exit_code,
-                    stdout: o.stdout.clone(),
-                    stderr: o.stderr.clone(),
-                })
+                .map(|o| ToolOutput::new(o.exit_code, o.stdout.clone(), o.stderr.clone()))
                 .ok_or_else(|| format!("tool not found: {tool}"))
         }
 
@@ -313,27 +290,14 @@ mod tests {
 
     fn make_audio_file() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/media/movies/test.mkv"));
-        file.content_hash = "testhash123".into();
-        file.tracks = vec![Track {
-            index: 0,
-            track_type: TrackType::AudioMain,
-            codec: "aac".into(),
-            language: "eng".into(),
-            title: String::new(),
-            is_default: true,
-            is_forced: false,
-            channels: Some(2),
-            channel_layout: Some("stereo".into()),
-            sample_rate: Some(48000),
-            bit_depth: None,
-            width: None,
-            height: None,
-            frame_rate: None,
-            is_vfr: false,
-            is_hdr: false,
-            hdr_format: None,
-            pixel_format: None,
-        }];
+        file.content_hash = Some("testhash123".to_string());
+        let mut audio = Track::new(0, TrackType::AudioMain, "aac".into());
+        audio.language = "eng".into();
+        audio.is_default = true;
+        audio.channels = Some(2);
+        audio.channel_layout = Some("stereo".into());
+        audio.sample_rate = Some(48000);
+        file.tracks = vec![audio];
         file
     }
 
@@ -355,7 +319,7 @@ mod tests {
         let host = MockHost::new();
         let file = make_audio_file();
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::FileIntrospectedEvent { file },
+            FileIntrospectedEvent::new(file),
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -383,7 +347,7 @@ mod tests {
         let host = MockHost::new();
         let file = MediaFile::new(PathBuf::from("/media/test.mkv")); // no tracks
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::FileIntrospectedEvent { file },
+            FileIntrospectedEvent::new(file),
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -396,7 +360,7 @@ mod tests {
         let host = MockHost::with_failing_ffmpeg();
         let file = make_audio_file();
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::FileIntrospectedEvent { file },
+            FileIntrospectedEvent::new(file),
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -419,7 +383,7 @@ mod tests {
 
         let file = make_audio_file();
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::FileIntrospectedEvent { file },
+            FileIntrospectedEvent::new(file),
         );
         let payload = serialize_event(&event).unwrap();
 

@@ -31,8 +31,7 @@
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
     deserialize_event, load_plugin_config, serialize_event, ActionParams, Event, HostFunctions,
-    OnEventResult, OperationType, PluginInfoData, ToolOutput, TranscodeChannels,
-    TranscodeSettings,
+    OnEventResult, OperationType, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {

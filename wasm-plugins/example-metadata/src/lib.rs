@@ -43,7 +43,8 @@
 //! to look up movie/TV metadata from services like Radarr, Sonarr, or TMDb.
 
 use voom_plugin_sdk::{
-    deserialize_event, serialize_event, Event, HostFunctions, OnEventResult, PluginInfoData,
+    deserialize_event, serialize_event, Event, HostFunctions, MetadataEnrichedEvent, OnEventResult,
+    PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -98,22 +99,18 @@ pub fn on_event(event_type: &str, payload: &[u8], host: &dyn HostFunctions) -> O
             });
 
             let enriched_event = Event::MetadataEnriched(
-                voom_plugin_sdk::MetadataEnrichedEvent {
-                    path: file.path.clone(),
-                    source: "example-metadata".to_string(),
-                    metadata,
-                },
+                MetadataEnrichedEvent::new(file.path.clone(), "example-metadata".to_string(), metadata),
             );
 
             let produced_payload = serialize_event(&enriched_event).map_err(|e| {
                 host.log("error", &format!("failed to serialize event: {e}"));
             }).ok()?;
 
-            Some(OnEventResult {
-                plugin_name: "example-metadata".to_string(),
-                produced_events: vec![(enriched_event.event_type().to_string(), produced_payload)],
-                data: None,
-            })
+            Some(OnEventResult::new(
+                "example-metadata",
+                vec![(enriched_event.event_type().to_string(), produced_payload)],
+                None,
+            ))
         }
         _ => None,
     }
@@ -144,77 +141,47 @@ mod tests {
     use voom_plugin_sdk::*;
 
     struct NoopHost;
-    impl HostFunctions for NoopHost {}
+    impl HostFunctions for NoopHost {
+        fn get_plugin_data(&self, _key: &str) -> Option<Vec<u8>> {
+            None
+        }
+        fn set_plugin_data(&self, _key: &str, _value: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn log(&self, _level: &str, _message: &str) {}
+    }
 
     fn make_test_file() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/media/movies/test.mkv"));
         file.size = 5_000_000_000;
-        file.content_hash = "abc123".into();
+        file.content_hash = Some("abc123".to_string());
         file.container = Container::Mkv;
         file.duration = 7200.0;
         file.bitrate = Some(8_000_000);
-        file.tracks = vec![
-                Track {
-                    index: 0,
-                    track_type: TrackType::Video,
-                    codec: "hevc".into(),
-                    language: "und".into(),
-                    title: String::new(),
-                    is_default: true,
-                    is_forced: false,
-                    channels: None,
-                    channel_layout: None,
-                    sample_rate: None,
-                    bit_depth: None,
-                    width: Some(3840),
-                    height: Some(2160),
-                    frame_rate: Some(23.976),
-                    is_vfr: false,
-                    is_hdr: true,
-                    hdr_format: Some("HDR10".into()),
-                    pixel_format: Some("yuv420p10le".into()),
-                },
-                Track {
-                    index: 1,
-                    track_type: TrackType::AudioMain,
-                    codec: "truehd".into(),
-                    language: "eng".into(),
-                    title: "TrueHD Atmos 7.1".into(),
-                    is_default: true,
-                    is_forced: false,
-                    channels: Some(8),
-                    channel_layout: Some("7.1".into()),
-                    sample_rate: Some(48000),
-                    bit_depth: Some(24),
-                    width: None,
-                    height: None,
-                    frame_rate: None,
-                    is_vfr: false,
-                    is_hdr: false,
-                    hdr_format: None,
-                    pixel_format: None,
-                },
-                Track {
-                    index: 2,
-                    track_type: TrackType::SubtitleMain,
-                    codec: "subrip".into(),
-                    language: "eng".into(),
-                    title: "English".into(),
-                    is_default: true,
-                    is_forced: false,
-                    channels: None,
-                    channel_layout: None,
-                    sample_rate: None,
-                    bit_depth: None,
-                    width: None,
-                    height: None,
-                    frame_rate: None,
-                    is_vfr: false,
-                    is_hdr: false,
-                    hdr_format: None,
-                    pixel_format: None,
-                },
-            ];
+        let mut video = Track::new(0, TrackType::Video, "hevc".into());
+        video.is_default = true;
+        video.width = Some(3840);
+        video.height = Some(2160);
+        video.frame_rate = Some(23.976);
+        video.is_hdr = true;
+        video.hdr_format = Some("HDR10".into());
+        video.pixel_format = Some("yuv420p10le".into());
+
+        let mut audio = Track::new(1, TrackType::AudioMain, "truehd".into());
+        audio.language = "eng".into();
+        audio.title = "TrueHD Atmos 7.1".into();
+        audio.is_default = true;
+        audio.channels = Some(8);
+        audio.channel_layout = Some("7.1".into());
+        audio.sample_rate = Some(48000);
+        audio.bit_depth = Some(24);
+
+        let mut sub = Track::new(2, TrackType::SubtitleMain, "subrip".into());
+        sub.language = "eng".into();
+        sub.title = "English".into();
+        sub.is_default = true;
+
+        file.tracks = vec![video, audio, sub];
         file
     }
 
@@ -236,9 +203,7 @@ mod tests {
     #[test]
     fn test_on_event_file_introspected() {
         let file = make_test_file();
-        let event = Event::FileIntrospected(voom_plugin_sdk::FileIntrospectedEvent {
-            file,
-        });
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
 
         let payload = serialize_event(&event).unwrap();
         let result = on_event("file.introspected", &payload, &NoopHost);

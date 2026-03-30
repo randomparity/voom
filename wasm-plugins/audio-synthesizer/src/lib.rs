@@ -30,8 +30,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, ActionParams, Event, HostFunctions,
-    OnEventResult, OperationType, PluginInfoData, ToolOutput,
+    deserialize_event, load_plugin_config, ActionParams, Event, HostFunctions, OnEventResult,
+    OperationType, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -193,13 +193,13 @@ pub fn on_event(
         "synthesized_tracks": results,
     });
 
-    Some(OnEventResult {
-        plugin_name: "audio-synthesizer".to_string(),
-        produced_events: vec![],
-        data: Some(serde_json::to_vec(&data).map_err(|e| {
+    Some(OnEventResult::new(
+        "audio-synthesizer",
+        vec![],
+        Some(serde_json::to_vec(&data).map_err(|e| {
             host.log("error", &format!("failed to serialize result data: {e}"));
         }).ok()?),
-    })
+    ))
 }
 
 /// Simple string hash for generating deterministic temp file names.
@@ -240,11 +240,7 @@ mod tests {
 
     impl HostFunctions for MockHost {
         fn run_tool(&self, _tool: &str, _args: &[String], _timeout_ms: u64) -> Result<ToolOutput, String> {
-            Ok(ToolOutput {
-                exit_code: 0,
-                stdout: vec![],
-                stderr: vec![],
-            })
+            Ok(ToolOutput::new(0, vec![], vec![]))
         }
 
         fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
@@ -263,32 +259,26 @@ mod tests {
     }
 
     fn make_synth_plan() -> Plan {
-        Plan {
-            file: MediaFile::new(PathBuf::from("/media/test.mkv")),
-            policy_name: "normalize".to_string(),
-            phase_name: "synthesize".to_string(),
-            actions: vec![PlannedAction {
-                operation: OperationType::SynthesizeAudio,
-                track_index: None,
-                parameters: ActionParams::Synthesize {
-                    name: "audio-description".to_string(),
-                    text: Some("This is a synthesized audio track.".to_string()),
-                    language: Some("en".to_string()),
-                    codec: Some("aac".to_string()),
-                    bitrate: None,
-                    channels: None,
-                    title: None,
-                    position: None,
-                    source_track: None,
-                },
-                description: "Synthesize English audio description".to_string(),
-            }],
-            warnings: vec![],
-            skip_reason: None,
-            id: uuid::Uuid::new_v4(),
-            policy_hash: None,
-            evaluated_at: chrono::Utc::now(),
-        }
+        Plan::new(
+            MediaFile::new(PathBuf::from("/media/test.mkv")),
+            "normalize",
+            "synthesize",
+        )
+        .with_action(PlannedAction::file_op(
+            OperationType::SynthesizeAudio,
+            ActionParams::Synthesize {
+                name: "audio-description".to_string(),
+                text: Some("This is a synthesized audio track.".to_string()),
+                language: Some("en".to_string()),
+                codec: Some("aac".to_string()),
+                bitrate: None,
+                channels: None,
+                title: None,
+                position: None,
+                source_track: None,
+            },
+            "Synthesize English audio description",
+        ))
     }
 
     #[test]
@@ -308,9 +298,7 @@ mod tests {
     fn test_on_event_synthesis() {
         let host = MockHost::new();
         let plan = make_synth_plan();
-        let event = Event::PlanCreated(
-            voom_plugin_sdk::PlanCreatedEvent { plan },
-        );
+        let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("plan.created", &payload, &host);
@@ -328,25 +316,18 @@ mod tests {
     #[test]
     fn test_on_event_no_synth_actions() {
         let host = MockHost::new();
-        let plan = Plan {
-            file: MediaFile::new(PathBuf::from("/media/test.mkv")),
-            policy_name: "normalize".to_string(),
-            phase_name: "metadata".to_string(),
-            actions: vec![PlannedAction {
-                operation: OperationType::SetDefault,
-                track_index: Some(0),
-                parameters: ActionParams::Empty,
-                description: "Set default track".to_string(),
-            }],
-            warnings: vec![],
-            skip_reason: None,
-            id: uuid::Uuid::new_v4(),
-            policy_hash: None,
-            evaluated_at: chrono::Utc::now(),
-        };
-        let event = Event::PlanCreated(
-            voom_plugin_sdk::PlanCreatedEvent { plan },
-        );
+        let plan = Plan::new(
+            MediaFile::new(PathBuf::from("/media/test.mkv")),
+            "normalize",
+            "metadata",
+        )
+        .with_action(PlannedAction::track_op(
+            OperationType::SetDefault,
+            0,
+            ActionParams::Empty,
+            "Set default track",
+        ));
+        let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("plan.created", &payload, &host);
@@ -356,35 +337,27 @@ mod tests {
     #[test]
     fn test_on_event_empty_text_skipped() {
         let host = MockHost::new();
-        let plan = Plan {
-            file: MediaFile::new(PathBuf::from("/media/test.mkv")),
-            policy_name: "normalize".to_string(),
-            phase_name: "synthesize".to_string(),
-            actions: vec![PlannedAction {
-                operation: OperationType::SynthesizeAudio,
-                track_index: None,
-                parameters: ActionParams::Synthesize {
-                    name: "empty".to_string(),
-                    text: Some("".to_string()),
-                    language: Some("en".to_string()),
-                    codec: None,
-                    bitrate: None,
-                    channels: None,
-                    title: None,
-                    position: None,
-                    source_track: None,
-                },
-                description: "empty synth".to_string(),
-            }],
-            warnings: vec![],
-            skip_reason: None,
-            id: uuid::Uuid::new_v4(),
-            policy_hash: None,
-            evaluated_at: chrono::Utc::now(),
-        };
-        let event = Event::PlanCreated(
-            voom_plugin_sdk::PlanCreatedEvent { plan },
-        );
+        let plan = Plan::new(
+            MediaFile::new(PathBuf::from("/media/test.mkv")),
+            "normalize",
+            "synthesize",
+        )
+        .with_action(PlannedAction::file_op(
+            OperationType::SynthesizeAudio,
+            ActionParams::Synthesize {
+                name: "empty".to_string(),
+                text: Some("".to_string()),
+                language: Some("en".to_string()),
+                codec: None,
+                bitrate: None,
+                channels: None,
+                title: None,
+                position: None,
+                source_track: None,
+            },
+            "empty synth",
+        ));
+        let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("plan.created", &payload, &host);
