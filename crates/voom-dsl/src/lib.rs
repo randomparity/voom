@@ -34,10 +34,10 @@ pub use ast::{
     TrackRefNode, Value, ValueOrField, WhenNode,
 };
 pub use compiled::CompiledPolicy;
-pub use errors::{DslError, DslPipelineError, ValidationErrors};
+pub use errors::{DslError, DslPipelineError, DslWarning, ValidationErrors};
 pub use formatter::format_policy;
 pub use parser::parse_policy;
-pub use validator::validate;
+pub use validator::{validate, validate_with_warnings};
 
 /// Run the full parse → validate → compile pipeline in one call.
 ///

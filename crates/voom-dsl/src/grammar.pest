@@ -117,7 +117,9 @@ filter_atom = {
 
 // Actions
 action = {
-    "skip" ~ ident?
+    keep_op
+  | remove_op
+  | "skip" ~ ident?
   | "warn" ~ string
   | "fail" ~ string
   | "set_default" ~ track_ref

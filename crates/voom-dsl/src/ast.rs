@@ -204,6 +204,14 @@ pub struct TrackRefNode {
 /// An action within a when/else block.
 #[derive(Debug, Clone, Serialize)]
 pub enum ActionNode {
+    Keep {
+        target: String,
+        filter: Option<FilterNode>,
+    },
+    Remove {
+        target: String,
+        filter: Option<FilterNode>,
+    },
     Skip(Option<String>),
     Warn(String),
     Fail(String),

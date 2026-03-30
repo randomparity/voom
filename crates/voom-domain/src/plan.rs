@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -300,6 +302,13 @@ pub enum ActionParams {
     DeleteTag {
         tag: String,
     },
+    /// Subtitle mux parameters for adding an external subtitle file to a container.
+    MuxSubtitle {
+        subtitle_path: PathBuf,
+        language: String,
+        forced: bool,
+        title: Option<String>,
+    },
 }
 
 /// The type of operation to perform on a media file.
@@ -322,6 +331,7 @@ pub enum OperationType {
     SetContainerTag,
     ClearContainerTags,
     DeleteContainerTag,
+    MuxSubtitle,
 }
 
 impl OperationType {
@@ -347,6 +357,7 @@ impl OperationType {
             "set_container_tag" => Some(Self::SetContainerTag),
             "clear_container_tags" => Some(Self::ClearContainerTags),
             "delete_container_tag" => Some(Self::DeleteContainerTag),
+            "mux_subtitle" => Some(Self::MuxSubtitle),
             _ => None,
         }
     }
@@ -391,6 +402,7 @@ impl OperationType {
             OperationType::SetContainerTag => "set_container_tag",
             OperationType::ClearContainerTags => "clear_container_tags",
             OperationType::DeleteContainerTag => "delete_container_tag",
+            OperationType::MuxSubtitle => "mux_subtitle",
         }
     }
 }
@@ -662,5 +674,66 @@ mod tests {
         let plan: Plan = serde_json::from_str(json).unwrap();
         assert_eq!(plan.policy_name, "test");
         assert!(plan.policy_hash.is_none());
+    }
+
+    #[test]
+    fn test_operation_type_mux_subtitle_roundtrip() {
+        assert_eq!(
+            OperationType::parse("mux_subtitle"),
+            Some(OperationType::MuxSubtitle)
+        );
+        assert_eq!(OperationType::MuxSubtitle.as_str(), "mux_subtitle");
+    }
+
+    #[test]
+    fn test_action_params_mux_subtitle_serde_json_roundtrip() {
+        let params = ActionParams::MuxSubtitle {
+            subtitle_path: PathBuf::from("/media/movie.eng.srt"),
+            language: "eng".into(),
+            forced: true,
+            title: Some("English (Forced)".into()),
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        let restored: ActionParams = serde_json::from_str(&json).unwrap();
+        match restored {
+            ActionParams::MuxSubtitle {
+                subtitle_path,
+                language,
+                forced,
+                title,
+            } => {
+                assert_eq!(subtitle_path, PathBuf::from("/media/movie.eng.srt"));
+                assert_eq!(language, "eng");
+                assert!(forced);
+                assert_eq!(title.as_deref(), Some("English (Forced)"));
+            }
+            other => panic!("expected MuxSubtitle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_action_params_mux_subtitle_serde_msgpack_roundtrip() {
+        let params = ActionParams::MuxSubtitle {
+            subtitle_path: PathBuf::from("/media/movie.jpn.srt"),
+            language: "jpn".into(),
+            forced: false,
+            title: None,
+        };
+        let bytes = rmp_serde::to_vec(&params).unwrap();
+        let restored: ActionParams = rmp_serde::from_slice(&bytes).unwrap();
+        match restored {
+            ActionParams::MuxSubtitle {
+                subtitle_path,
+                language,
+                forced,
+                title,
+            } => {
+                assert_eq!(subtitle_path, PathBuf::from("/media/movie.jpn.srt"));
+                assert_eq!(language, "jpn");
+                assert!(!forced);
+                assert!(title.is_none());
+            }
+            other => panic!("expected MuxSubtitle, got {other:?}"),
+        }
     }
 }

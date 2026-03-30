@@ -10,7 +10,10 @@ use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::events::{CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent};
+use voom_domain::events::{
+    CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent, PlanCompletedEvent,
+    PlanExecutingEvent, PlanFailedEvent,
+};
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, ActionResult, OperationType, Plan, PlannedAction};
 use voom_domain::utils::sanitize::validate_metadata_value;
@@ -178,6 +181,9 @@ impl MkvtoolnixExecutorPlugin {
     }
 
     /// Handle a `subtitle.generated` event by muxing the SRT into the MKV.
+    ///
+    /// Emits `PlanExecuting`, `PlanCompleted`/`PlanFailed` lifecycle events so
+    /// the backup-manager can track subtitle mux operations.
     fn handle_subtitle_generated(
         &self,
         event: &voom_domain::events::SubtitleGeneratedEvent,
@@ -200,6 +206,14 @@ impl MkvtoolnixExecutorPlugin {
             tool: "mkvmerge".into(),
             message: format!("invalid language: {e}"),
         })?;
+
+        let plan_id = uuid::Uuid::new_v4();
+        let phase_name = "subtitle_mux";
+        let mut produced_events = vec![Event::PlanExecuting(PlanExecutingEvent::new(
+            event.path.clone(),
+            phase_name,
+            1,
+        ))];
 
         let temp_path = event.path.with_extension("tmp.mkv");
         let mut args = vec![
@@ -230,38 +244,79 @@ impl MkvtoolnixExecutorPlugin {
                 // mkvmerge returns 1 for warnings, which is still success
                 if let Err(e) = std::fs::rename(&temp_path, &event.path) {
                     if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
-                        tracing::warn!(error = %cleanup_err, "failed to clean up temp file");
+                        tracing::warn!(
+                            error = %cleanup_err,
+                            "failed to clean up temp file"
+                        );
                     }
-                    return Err(VoomError::ToolExecution {
-                        tool: "mkvmerge".into(),
-                        message: format!("failed to rename temp file: {e}"),
-                    });
+                    let err_msg = format!("failed to rename temp file: {e}");
+                    produced_events.push(Event::PlanFailed(PlanFailedEvent::new(
+                        plan_id,
+                        event.path.clone(),
+                        phase_name,
+                        &err_msg,
+                    )));
+                    let mut result = EventResult::new(self.name());
+                    result.claimed = true;
+                    result.produced_events = produced_events;
+                    result.execution_error = Some(err_msg);
+                    return Ok(Some(result));
                 }
+                produced_events.push(Event::PlanCompleted(PlanCompletedEvent::new(
+                    plan_id,
+                    event.path.clone(),
+                    phase_name,
+                    1,
+                    false,
+                )));
                 let mut result = EventResult::new(self.name());
                 result.claimed = true;
+                result.produced_events = produced_events;
                 Ok(Some(result))
             }
             Ok(o) => {
                 if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
-                    tracing::warn!(error = %cleanup_err, "failed to clean up temp file");
+                    tracing::warn!(
+                        error = %cleanup_err,
+                        "failed to clean up temp file"
+                    );
                 }
-                Err(VoomError::ToolExecution {
-                    tool: "mkvmerge".into(),
-                    message: format!(
-                        "mkvmerge failed (exit {}): {}",
-                        o.status.code().unwrap_or(-1),
-                        String::from_utf8_lossy(&o.stderr)
-                    ),
-                })
+                let err_msg = format!(
+                    "mkvmerge failed (exit {}): {}",
+                    o.status.code().unwrap_or(-1),
+                    String::from_utf8_lossy(&o.stderr)
+                );
+                produced_events.push(Event::PlanFailed(PlanFailedEvent::new(
+                    plan_id,
+                    event.path.clone(),
+                    phase_name,
+                    &err_msg,
+                )));
+                let mut result = EventResult::new(self.name());
+                result.claimed = true;
+                result.produced_events = produced_events;
+                result.execution_error = Some(err_msg);
+                Ok(Some(result))
             }
             Err(e) => {
                 if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
-                    tracing::warn!(error = %cleanup_err, "failed to clean up temp file");
+                    tracing::warn!(
+                        error = %cleanup_err,
+                        "failed to clean up temp file"
+                    );
                 }
-                Err(VoomError::ToolExecution {
-                    tool: "mkvmerge".into(),
-                    message: format!("mkvmerge subtitle mux failed: {e}"),
-                })
+                let err_msg = format!("mkvmerge subtitle mux failed: {e}");
+                produced_events.push(Event::PlanFailed(PlanFailedEvent::new(
+                    plan_id,
+                    event.path.clone(),
+                    phase_name,
+                    &err_msg,
+                )));
+                let mut result = EventResult::new(self.name());
+                result.claimed = true;
+                result.produced_events = produced_events;
+                result.execution_error = Some(err_msg);
+                Ok(Some(result))
             }
         }
     }

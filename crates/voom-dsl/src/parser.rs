@@ -851,6 +851,31 @@ fn build_action(pair: Pair<'_, Rule>) -> Result<ActionNode> {
     let span = pair.as_span();
     let mut inner = pair.into_inner();
 
+    // Check if the first child is a keep_op or remove_op rule
+    if let Some(first) = inner.peek() {
+        match first.as_rule() {
+            Rule::keep_op => {
+                let child = inner.next().unwrap();
+                return match build_keep_remove(child, true)? {
+                    OperationNode::Keep { target, filter } => {
+                        Ok(ActionNode::Keep { target, filter })
+                    }
+                    _ => unreachable!(),
+                };
+            }
+            Rule::remove_op => {
+                let child = inner.next().unwrap();
+                return match build_keep_remove(child, false)? {
+                    OperationNode::Remove { target, filter } => {
+                        Ok(ActionNode::Remove { target, filter })
+                    }
+                    _ => unreachable!(),
+                };
+            }
+            _ => {}
+        }
+    }
+
     // pest silently consumes keyword alternations, so we dispatch on the
     // leading keyword extracted from the raw text.
     let keyword = leading_keyword(text);
@@ -1481,5 +1506,109 @@ mod tests {
             &ast.phases[0].operations[3].node,
             OperationNode::DeleteTag(_)
         ));
+    }
+
+    #[test]
+    fn test_parse_keep_in_when_block() {
+        let input = r#"policy "test" {
+            phase validate {
+                when exists(audio where lang == jpn) {
+                    keep audio where lang in [eng, jpn]
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::When(when) => {
+                assert_eq!(when.then_actions.len(), 1);
+                match &when.then_actions[0] {
+                    ActionNode::Keep { target, filter } => {
+                        assert_eq!(target, "audio");
+                        assert!(filter.is_some());
+                        match filter.as_ref().unwrap() {
+                            FilterNode::LangIn(langs) => {
+                                assert_eq!(langs, &["eng", "jpn"]);
+                            }
+                            other => panic!("expected LangIn, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Keep action, got {other:?}"),
+                }
+            }
+            _ => panic!("expected When"),
+        }
+    }
+
+    #[test]
+    fn test_parse_remove_in_when_block() {
+        let input = r#"policy "test" {
+            phase validate {
+                when is_dubbed {
+                    remove audio where commentary
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::When(when) => {
+                assert_eq!(when.then_actions.len(), 1);
+                match &when.then_actions[0] {
+                    ActionNode::Remove { target, filter } => {
+                        assert_eq!(target, "audio");
+                        assert!(matches!(filter.as_ref().unwrap(), FilterNode::Commentary));
+                    }
+                    other => panic!("expected Remove action, got {other:?}"),
+                }
+            }
+            _ => panic!("expected When"),
+        }
+    }
+
+    #[test]
+    fn test_parse_keep_remove_in_rules_block() {
+        let input = r#"policy "test" {
+            phase validate {
+                rules first {
+                    rule "dubbed" {
+                        when is_dubbed {
+                            keep audio where lang in [eng]
+                            remove audio where commentary
+                        }
+                    }
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::Rules { rules, .. } => {
+                let actions = &rules[0].when.then_actions;
+                assert_eq!(actions.len(), 2);
+                assert!(matches!(&actions[0], ActionNode::Keep { .. }));
+                assert!(matches!(&actions[1], ActionNode::Remove { .. }));
+            }
+            _ => panic!("expected Rules"),
+        }
+    }
+
+    #[test]
+    fn test_parse_keep_no_filter_in_action() {
+        let input = r#"policy "test" {
+            phase validate {
+                when is_dubbed {
+                    keep audio
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::When(when) => match &when.then_actions[0] {
+                ActionNode::Keep { target, filter } => {
+                    assert_eq!(target, "audio");
+                    assert!(filter.is_none());
+                }
+                other => panic!("expected Keep action, got {other:?}"),
+            },
+            _ => panic!("expected When"),
+        }
     }
 }

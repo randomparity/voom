@@ -480,6 +480,14 @@ pub enum CompiledFilter {
 /// A compiled action within a conditional block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CompiledAction {
+    Keep {
+        target: TrackTarget,
+        filter: Option<CompiledFilter>,
+    },
+    Remove {
+        target: TrackTarget,
+        filter: Option<CompiledFilter>,
+    },
     Skip(Option<String>),
     Warn(String),
     Fail(String),

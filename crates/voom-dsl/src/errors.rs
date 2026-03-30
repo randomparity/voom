@@ -98,6 +98,46 @@ impl std::fmt::Display for ValidationErrors {
 
 impl std::error::Error for ValidationErrors {}
 
+/// A non-fatal warning produced during validation.
+#[derive(Debug, Clone)]
+pub struct DslWarning {
+    pub line: usize,
+    pub col: usize,
+    pub message: String,
+    pub suggestion: Option<String>,
+}
+
+impl DslWarning {
+    #[must_use]
+    pub fn new(
+        line: usize,
+        col: usize,
+        message: impl Into<String>,
+        suggestion: Option<String>,
+    ) -> Self {
+        Self {
+            line,
+            col,
+            message: message.into(),
+            suggestion,
+        }
+    }
+}
+
+impl std::fmt::Display for DslWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "warning at line {}, col {}: {}",
+            self.line, self.col, self.message
+        )?;
+        if let Some(s) = &self.suggestion {
+            write!(f, "\n  suggestion: {s}")?;
+        }
+        Ok(())
+    }
+}
+
 pub type Result<T> = std::result::Result<T, DslError>;
 
 /// A unified error for the full parse → validate → compile pipeline.

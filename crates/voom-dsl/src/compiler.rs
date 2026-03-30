@@ -474,6 +474,14 @@ fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, Ds
 
 fn compile_action(action: &ActionNode) -> std::result::Result<CompiledAction, DslError> {
     match action {
+        ActionNode::Keep { target, filter } => Ok(CompiledAction::Keep {
+            target: parse_track_target(target),
+            filter: filter.as_ref().map(compile_filter).transpose()?,
+        }),
+        ActionNode::Remove { target, filter } => Ok(CompiledAction::Remove {
+            target: parse_track_target(target),
+            filter: filter.as_ref().map(compile_filter).transpose()?,
+        }),
         ActionNode::Skip(phase) => Ok(CompiledAction::Skip(phase.clone())),
         ActionNode::Warn(msg) => Ok(CompiledAction::Warn(msg.clone())),
         ActionNode::Fail(msg) => Ok(CompiledAction::Fail(msg.clone())),
@@ -965,6 +973,63 @@ mod tests {
         match &policy.phases[0].operations[0] {
             CompiledOperation::DeleteTag(tag) => assert_eq!(tag, "encoder"),
             other => panic!("expected DeleteTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compile_keep_in_when_block() {
+        let policy = compile(
+            r#"policy "test" {
+            phase validate {
+                when exists(audio where lang == jpn) {
+                    keep audio where lang in [eng, jpn]
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+        match &policy.phases[0].operations[0] {
+            CompiledOperation::Conditional(cond) => {
+                assert_eq!(cond.then_actions.len(), 1);
+                match &cond.then_actions[0] {
+                    CompiledAction::Keep { target, filter } => {
+                        assert_eq!(*target, TrackTarget::Audio);
+                        assert!(filter.is_some());
+                    }
+                    other => panic!("expected Keep action, got {other:?}"),
+                }
+            }
+            other => panic!("expected Conditional, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compile_remove_in_when_block() {
+        let policy = compile(
+            r#"policy "test" {
+            phase validate {
+                when is_dubbed {
+                    remove audio where commentary
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+        match &policy.phases[0].operations[0] {
+            CompiledOperation::Conditional(cond) => {
+                assert_eq!(cond.then_actions.len(), 1);
+                match &cond.then_actions[0] {
+                    CompiledAction::Remove { target, filter } => {
+                        assert_eq!(*target, TrackTarget::Audio);
+                        assert!(matches!(
+                            filter.as_ref().unwrap(),
+                            CompiledFilter::Commentary
+                        ));
+                    }
+                    other => panic!("expected Remove action, got {other:?}"),
+                }
+            }
+            other => panic!("expected Conditional, got {other:?}"),
         }
     }
 }

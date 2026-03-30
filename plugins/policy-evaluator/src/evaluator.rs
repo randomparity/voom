@@ -779,6 +779,12 @@ fn emit_rules(
 
 fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), VoomError> {
     match action {
+        CompiledAction::Keep { target, filter } => {
+            emit_keep(target, filter.as_ref(), ctx);
+        }
+        CompiledAction::Remove { target, filter } => {
+            emit_remove(target, filter.as_ref(), ctx);
+        }
         CompiledAction::Skip(phase) => {
             ctx.plan.skip_reason = Some(match phase {
                 Some(p) => format!("Skipped by action (phase: {p})"),
@@ -2299,6 +2305,135 @@ mod tests {
             );
             let result = evaluate(&policy, &file);
             assert!(result.plans[0].is_skipped());
+        }
+    }
+
+    mod conditional_keep_remove {
+        use super::*;
+
+        #[test]
+        fn test_conditional_keep_removes_non_matching_tracks() {
+            let file = test_file();
+            // when condition is true (has jpn audio), keep only eng audio
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase norm {
+                        when exists(audio where lang == jpn) {
+                            keep audio where lang in [eng]
+                        }
+                    }
+                }"#,
+            );
+            let result = evaluate(&policy, &file);
+            let removes: Vec<_> = result.plans[0]
+                .actions
+                .iter()
+                .filter(|a| a.operation == OperationType::RemoveTrack)
+                .collect();
+            // Track 2 (jpn) should be removed
+            assert_eq!(removes.len(), 1);
+            assert_eq!(removes[0].track_index, Some(2));
+        }
+
+        #[test]
+        fn test_conditional_remove_removes_matching_tracks() {
+            let file = test_file();
+            // when condition is true (is multi-language), remove commentary
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase norm {
+                        when audio_is_multi_language {
+                            remove audio where commentary
+                        }
+                    }
+                }"#,
+            );
+            let result = evaluate(&policy, &file);
+            let removes: Vec<_> = result.plans[0]
+                .actions
+                .iter()
+                .filter(|a| a.operation == OperationType::RemoveTrack)
+                .collect();
+            // Track 3 (commentary) should be removed
+            assert_eq!(removes.len(), 1);
+            assert_eq!(removes[0].track_index, Some(3));
+        }
+
+        #[test]
+        fn test_conditional_keep_in_else_branch() {
+            let file = test_file();
+            // when condition is false (no french), else branch keeps eng only
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase norm {
+                        when exists(audio where lang == fre) {
+                            warn "has french"
+                        } else {
+                            keep audio where lang in [eng]
+                        }
+                    }
+                }"#,
+            );
+            let result = evaluate(&policy, &file);
+            let removes: Vec<_> = result.plans[0]
+                .actions
+                .iter()
+                .filter(|a| a.operation == OperationType::RemoveTrack)
+                .collect();
+            // Track 2 (jpn) should be removed via else branch
+            assert_eq!(removes.len(), 1);
+            assert_eq!(removes[0].track_index, Some(2));
+        }
+
+        #[test]
+        fn test_conditional_keep_skipped_when_condition_false() {
+            let file = test_file();
+            // when condition is false (no french), then branch is skipped
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase norm {
+                        when exists(audio where lang == fre) {
+                            keep audio where lang in [eng]
+                        }
+                    }
+                }"#,
+            );
+            let result = evaluate(&policy, &file);
+            // Condition is false, no then actions execute, no removes
+            assert!(
+                result.plans[0].actions.is_empty(),
+                "no actions when condition is false and no else branch"
+            );
+        }
+
+        #[test]
+        fn test_rules_block_with_keep_remove() {
+            let file = test_file();
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase norm {
+                        rules first {
+                            rule "multi-lang" {
+                                when audio_is_multi_language {
+                                    keep audio where lang in [eng]
+                                    remove subtitles where commentary
+                                }
+                            }
+                        }
+                    }
+                }"#,
+            );
+            let result = evaluate(&policy, &file);
+            let removes: Vec<_> = result.plans[0]
+                .actions
+                .iter()
+                .filter(|a| a.operation == OperationType::RemoveTrack)
+                .collect();
+            // Track 2 (jpn audio) removed by keep, track 5 (commentary sub) removed
+            assert_eq!(removes.len(), 2);
+            let indices: Vec<_> = removes.iter().map(|r| r.track_index.unwrap()).collect();
+            assert!(indices.contains(&2), "jpn audio should be removed");
+            assert!(indices.contains(&5), "commentary sub should be removed");
         }
     }
 }
