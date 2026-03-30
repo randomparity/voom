@@ -45,20 +45,7 @@ fn run_default(
             }
         }
         OutputFormat::Json => {
-            let json: Vec<serde_json::Value> = records
-                .iter()
-                .map(|r| {
-                    serde_json::json!({
-                        "rowid": r.rowid,
-                        "id": r.id.to_string(),
-                        "event_type": r.event_type,
-                        "summary": r.summary,
-                        "payload": serde_json::from_str::<serde_json::Value>(&r.payload)
-                            .unwrap_or_else(|_| serde_json::Value::String(r.payload.clone())),
-                        "created_at": r.created_at.to_rfc3339(),
-                    })
-                })
-                .collect();
+            let json: Vec<serde_json::Value> = records.iter().map(record_to_json).collect();
             println!("{}", serde_json::to_string_pretty(&json)?);
         }
     }
@@ -79,7 +66,10 @@ async fn run_follow(
         last_rowid = last_rowid.max(r.rowid);
     }
 
-    // Poll loop
+    let mut poll_filters = EventLogFilters::default();
+    poll_filters.event_type = args.filter.clone();
+    poll_filters.limit = Some(200);
+
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
     loop {
         tokio::select! {
@@ -87,11 +77,8 @@ async fn run_follow(
             _ = interval.tick() => {}
         }
 
-        let mut filters = EventLogFilters::default();
-        filters.event_type = args.filter.clone();
-        filters.since_rowid = Some(last_rowid);
-        filters.limit = Some(200);
-
+        poll_filters.since_rowid = Some(last_rowid);
+        let filters = poll_filters.clone();
         let store = store.clone();
         let new_records =
             tokio::task::spawn_blocking(move || store.list_event_log(&filters)).await??;
@@ -105,6 +92,18 @@ async fn run_follow(
     Ok(())
 }
 
+fn record_to_json(r: &voom_domain::storage::EventLogRecord) -> serde_json::Value {
+    serde_json::json!({
+        "rowid": r.rowid,
+        "id": r.id.to_string(),
+        "event_type": r.event_type,
+        "summary": r.summary,
+        "payload": serde_json::from_str::<serde_json::Value>(&r.payload)
+            .unwrap_or_else(|_| serde_json::Value::String(r.payload.clone())),
+        "created_at": r.created_at.to_rfc3339(),
+    })
+}
+
 fn print_follow_row(format: &OutputFormat, r: &voom_domain::storage::EventLogRecord) {
     match format {
         OutputFormat::Table => {
@@ -116,17 +115,7 @@ fn print_follow_row(format: &OutputFormat, r: &voom_domain::storage::EventLogRec
             );
         }
         OutputFormat::Json => {
-            let json = serde_json::json!({
-                "rowid": r.rowid,
-                "id": r.id.to_string(),
-                "event_type": r.event_type,
-                "summary": r.summary,
-                "payload": serde_json::from_str::<serde_json::Value>(&r.payload)
-                    .unwrap_or_else(|_| serde_json::Value::String(r.payload.clone())),
-                "created_at": r.created_at.to_rfc3339(),
-            });
-            // JSONL: one object per line for follow mode
-            println!("{json}");
+            println!("{}", record_to_json(r));
         }
     }
 }

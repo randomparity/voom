@@ -1,5 +1,3 @@
-use std::fmt;
-
 use anyhow::{Context, Result};
 use console::style;
 use serde_json::Value;
@@ -223,27 +221,6 @@ enum DiffLine {
         old: Value,
         new: Value,
     },
-}
-
-impl fmt::Display for DiffLine {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Added { path, value } => {
-                write!(f, "+ {path}: {}", format_value(value))
-            }
-            Self::Removed { path, value } => {
-                write!(f, "- {path}: {}", format_value(value))
-            }
-            Self::Changed { path, old, new } => {
-                write!(
-                    f,
-                    "~ {path}: {} -> {}",
-                    format_value(old),
-                    format_value(new)
-                )
-            }
-        }
-    }
 }
 
 fn format_value(v: &Value) -> String {

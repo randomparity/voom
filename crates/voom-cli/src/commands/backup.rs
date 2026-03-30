@@ -83,16 +83,12 @@ fn restore(backup_path: &Path) -> Result<()> {
     // or the same directory as the backup file if not in .voom-backup.
     let original_path = derive_original_path(backup_path, &original_name);
 
-    eprintln!(
+    let prompt = format!(
         "Restore {} to {}?",
         style(backup_path.display()).cyan(),
         style(original_path.display()).cyan()
     );
-    eprintln!("Type 'yes' to confirm:");
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    if input.trim() != "yes" {
+    if !output::confirm(&prompt)? {
         println!("{}", style("Aborted.").dim());
         return Ok(());
     }
@@ -127,14 +123,9 @@ fn cleanup(root: &Path, yes: bool) -> Result<()> {
         style(format::format_size(total_size)).bold()
     );
 
-    if !yes {
-        eprintln!("Type 'yes' to confirm deletion:");
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        if input.trim() != "yes" {
-            println!("{}", style("Aborted.").dim());
-            return Ok(());
-        }
+    if !yes && !output::confirm("Confirm deletion?")? {
+        println!("{}", style("Aborted.").dim());
+        return Ok(());
     }
 
     let mut removed = 0u64;

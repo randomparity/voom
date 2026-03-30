@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
-use comfy_table::{Cell, Table};
+use comfy_table::Cell;
 use console::style;
 
 use crate::app;
 use crate::cli::{DbCommands, OutputFormat};
 use crate::config;
+use crate::output;
 use voom_domain::utils::format::format_size;
 
 pub async fn run(cmd: DbCommands) -> Result<()> {
@@ -136,7 +137,7 @@ fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json)?);
         }
         OutputFormat::Table => {
-            let mut table = Table::new();
+            let mut table = output::new_table();
             table.set_header(vec!["Path", "Error", "Source", "Attempts", "Last Seen"]);
             for bf in &bad_files {
                 let error_display = if bf.error.len() > 60 {
@@ -317,7 +318,7 @@ fn stats(format: OutputFormat) -> Result<()> {
                 format_size(file_size)
             );
 
-            let mut table = Table::new();
+            let mut table = output::new_table();
             table.set_header(vec!["Table", "Rows"]);
             for (name, count) in &row_counts {
                 table.add_row(vec![Cell::new(name), Cell::new(format!("{count}"))]);

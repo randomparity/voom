@@ -259,16 +259,9 @@ fn clear(status_filter: Option<String>, yes: bool) -> Result<()> {
         None => "all completed, failed, and cancelled jobs".to_string(),
     };
 
-    if !yes {
-        eprintln!("Delete {label}?");
-        eprintln!("Type 'yes' to confirm:");
-
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        if input.trim() != "yes" {
-            println!("{}", style("Aborted.").dim());
-            return Ok(());
-        }
+    if !yes && !crate::output::confirm(&format!("Delete {label}?"))? {
+        println!("{}", style("Aborted.").dim());
+        return Ok(());
     }
 
     let deleted = store

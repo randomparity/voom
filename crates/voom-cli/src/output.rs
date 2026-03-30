@@ -251,6 +251,18 @@ pub fn format_plugin_list(plugins: &[PluginListEntry]) {
     println!("{table}");
 }
 
+/// Prompt the user to type "yes" to confirm a destructive action.
+///
+/// Prints `prompt` to stderr, reads a line from stdin, and returns `true`
+/// only if the user typed exactly "yes".
+pub fn confirm(prompt: &str) -> std::io::Result<bool> {
+    eprintln!("{prompt}");
+    eprintln!("Type 'yes' to confirm:");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(input.trim() == "yes")
+}
+
 /// Print executor capabilities (codecs, HW accel, formats) for a plugin.
 pub fn format_executor_capabilities(
     name: &str,

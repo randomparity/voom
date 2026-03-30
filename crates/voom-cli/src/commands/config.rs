@@ -139,11 +139,7 @@ fn set(key: &str, value: &str) -> Result<()> {
     let validated: config::AppConfig =
         toml::from_str(&toml_str).map_err(|e| anyhow::anyhow!("invalid config after set: {e}"))?;
 
-    // Save via save_config (handles permissions)
     config::save_config(&validated)?;
-
-    // Reload to confirm
-    config::load_config()?;
 
     println!(
         "{} Set {} = {}",

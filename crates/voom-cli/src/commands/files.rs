@@ -132,15 +132,11 @@ fn delete(id: &str, yes: bool) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("File not found: {id}"))?;
 
     if !yes {
-        eprintln!(
+        let prompt = format!(
             "Delete {} from database?",
             style(file.path.display()).cyan()
         );
-        eprintln!("Type 'yes' to confirm:");
-
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        if input.trim() != "yes" {
+        if !crate::output::confirm(&prompt)? {
             println!("{}", style("Aborted.").dim());
             return Ok(());
         }
