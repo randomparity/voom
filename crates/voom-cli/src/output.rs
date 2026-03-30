@@ -131,11 +131,7 @@ pub fn format_scan_results(
             table.set_header(vec!["Path", "Size", "Hash"]);
             for (path, size, hash) in files {
                 let hash_str = hash.as_deref().unwrap_or("—");
-                let hash_preview = if hash_str.len() >= 12 {
-                    &hash_str[..12]
-                } else {
-                    hash_str
-                };
+                let hash_preview = hash_preview(hash_str);
                 table.add_row(vec![
                     Cell::new(path.display()),
                     Cell::new(format::format_size(*size)),
@@ -253,6 +249,89 @@ pub fn format_plugin_list(plugins: &[PluginListEntry]) {
         ]);
     }
     println!("{table}");
+}
+
+/// Prompt the user to type "yes" to confirm a destructive action.
+///
+/// Prints `prompt` to stderr, reads a line from stdin, and returns `true`
+/// only if the user typed exactly "yes".
+pub fn confirm(prompt: &str) -> std::io::Result<bool> {
+    eprintln!("{prompt}");
+    eprintln!("Type 'yes' to confirm:");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(input.trim() == "yes")
+}
+
+/// Print executor capabilities (codecs, HW accel, formats) for a plugin.
+pub fn format_executor_capabilities(
+    name: &str,
+    capabilities: &voom_domain::capability_map::CapabilityMap,
+) {
+    if let Some(caps) = capabilities.executor_capabilities(name) {
+        if !caps.hw_accels.is_empty() {
+            let best = capabilities.best_hwaccel();
+            println!("{}", style("Hardware Acceleration:").bold());
+            println!(
+                "  {} {} ({})",
+                style("Backend:").bold(),
+                style(best).green(),
+                caps.hw_accels.join(", ")
+            );
+        }
+        if !caps.codecs.decoders.is_empty() || !caps.codecs.encoders.is_empty() {
+            println!("{}", style("Codecs:").bold());
+            if !caps.codecs.decoders.is_empty() {
+                println!(
+                    "  {} ({}): {}",
+                    style("Decoders").bold(),
+                    caps.codecs.decoders.len(),
+                    caps.codecs.decoders.join(", ")
+                );
+            }
+            if !caps.codecs.encoders.is_empty() {
+                println!(
+                    "  {} ({}): {}",
+                    style("Encoders").bold(),
+                    caps.codecs.encoders.len(),
+                    caps.codecs.encoders.join(", ")
+                );
+            }
+            if !caps.codecs.hw_decoders.is_empty() {
+                println!(
+                    "  {} ({}): {}",
+                    style("HW Decoders").bold(),
+                    caps.codecs.hw_decoders.len(),
+                    caps.codecs.hw_decoders.join(", ")
+                );
+            }
+            if !caps.codecs.hw_encoders.is_empty() {
+                println!(
+                    "  {} ({}): {}",
+                    style("HW Encoders").bold(),
+                    caps.codecs.hw_encoders.len(),
+                    caps.codecs.hw_encoders.join(", ")
+                );
+            }
+        }
+        if !caps.formats.is_empty() {
+            println!(
+                "{} ({}): {}",
+                style("Formats:").bold(),
+                caps.formats.len(),
+                caps.formats.join(", ")
+            );
+        }
+    }
+}
+
+/// Truncate a hash to a 12-character preview for table display.
+pub fn hash_preview(hash: &str) -> &str {
+    if hash.len() >= 12 {
+        &hash[..12]
+    } else {
+        hash
+    }
 }
 
 /// Create a table with the standard VOOM style.

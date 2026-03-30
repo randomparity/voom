@@ -20,6 +20,13 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
         return Ok(Vec::new());
     }
 
+    if !path.exists() {
+        return Err(VoomError::ToolExecution {
+            tool: "mkvmerge".into(),
+            message: format!("file not found: {}", path.display()),
+        });
+    }
+
     let parent = path.parent().unwrap_or(Path::new("."));
     let stem = path
         .file_stem()

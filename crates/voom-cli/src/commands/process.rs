@@ -42,6 +42,16 @@ use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// progress reporting while still letting kernel-registered plugins react to
 /// the events they care about.
 pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
+    if args.plan_only && args.approve {
+        anyhow::bail!(
+            "--plan-only and --approve cannot be used together \
+             (plan-only skips execution)"
+        );
+    }
+
+    let plan_only = args.plan_only;
+    let dry_run = args.dry_run || plan_only;
+
     let config = config::load_config()?;
     let app::BootstrapResult {
         kernel,
@@ -59,23 +69,31 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
 
     let compiled = load_and_compile_policy(&args)?;
 
-    print_run_header(&compiled.name, &path, args.dry_run);
+    if !plan_only {
+        print_run_header(&compiled.name, &path, dry_run);
+    }
 
     // Auto-prune stale file entries under the target directory
     match store.prune_missing_files_under(&path) {
-        Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
+        Ok(n) if n > 0 && !plan_only => println!("Pruned {n} stale entries."),
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
     }
 
     if token.is_cancelled() {
-        println!("{}", style("Interrupted before discovery.").yellow());
+        if !plan_only {
+            println!("{}", style("Interrupted before discovery.").yellow());
+        }
         return Ok(());
     }
 
     let mut events = discover_files(&path, &args, &kernel)?;
     if events.is_empty() {
-        println!("{}", style("No media files found.").yellow());
+        if plan_only {
+            println!("[]");
+        } else {
+            println!("{}", style("No media files found.").yellow());
+        }
         return Ok(());
     }
 
@@ -90,7 +108,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
             let before = events.len();
             events.retain(|e| !bad_paths.contains(&e.path));
             let skipped = before - events.len();
-            if skipped > 0 {
+            if skipped > 0 && !plan_only {
                 println!(
                     "Skipping {} known-bad files (use {} to re-attempt).",
                     style(skipped).yellow(),
@@ -101,12 +119,18 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     }
 
     if events.is_empty() {
-        println!("{}", style("No processable files found.").yellow());
+        if plan_only {
+            println!("[]");
+        } else {
+            println!("{}", style("No processable files found.").yellow());
+        }
         return Ok(());
     }
 
     let file_count = events.len();
-    println!("Found {} media files.", style(file_count).bold());
+    if !plan_only {
+        println!("Found {} media files.", style(file_count).bold());
+    }
 
     let on_error = match args.on_error {
         ErrorHandling::Fail => JobErrorStrategy::Fail,
@@ -120,16 +144,18 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
 
     let (pool, effective_workers) = create_worker_pool(job_queue, &args, token.clone())?;
 
-    let cli_reporter: Arc<dyn ProgressReporter> = Arc::new(BatchProgress::new(file_count));
     let bus_reporter: Arc<dyn ProgressReporter> = Arc::new(EventBusReporter::new(kernel.clone()));
-    let reporter: Arc<dyn ProgressReporter> =
-        Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]));
+    let reporter: Arc<dyn ProgressReporter> = if plan_only {
+        bus_reporter
+    } else {
+        let cli_reporter: Arc<dyn ProgressReporter> = Arc::new(BatchProgress::new(file_count));
+        Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]))
+    };
 
     let items = build_work_items(&events);
     let keep_backups = compiled.config.keep_backups;
     let phase_order = compiled.phase_order.clone();
     let compiled = Arc::new(compiled);
-    let dry_run = args.dry_run;
     let flag_size_increase = args.flag_size_increase;
     let counters = RunCounters::new();
 
@@ -143,6 +169,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
             move |job| {
                 let compiled = compiled.clone();
                 let kernel = kernel.clone();
+                let store = store.clone();
                 let token = token_for_workers.clone();
                 let ffprobe_path = ffprobe_path.clone();
                 let capabilities = capabilities.clone();
@@ -151,7 +178,9 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                     let ctx = ProcessContext {
                         compiled: &compiled,
                         kernel,
+                        store,
                         dry_run,
+                        plan_only,
                         flag_size_increase,
                         keep_backups,
                         token: &token,
@@ -167,6 +196,13 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         )
         .await;
 
+    if plan_only {
+        let plans = counters_for_summary.plan_collector.lock();
+        let output = serde_json::to_string_pretty(&*plans).context("failed to serialize plans")?;
+        println!("{output}");
+        return Ok(());
+    }
+
     let modified = counters_for_summary
         .modified_count
         .load(AtomicOrdering::Relaxed);
@@ -181,7 +217,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
             file_count,
             modified,
             effective_workers,
-            dry_run: args.dry_run,
+            dry_run,
             keep_backups,
             backup_bytes: backup_total,
             path: &path,
@@ -261,10 +297,28 @@ fn discover_files(
     progress.finish();
 
     for event in &events {
-        kernel.dispatch(Event::FileDiscovered(event.clone()));
+        let results = kernel.dispatch(Event::FileDiscovered(event.clone()));
+        log_plugin_errors(&results);
     }
 
     Ok(events)
+}
+
+/// Log any `plugin.error` events produced during event dispatch so
+/// CLI users see plugin failures rather than silent swallowing.
+fn log_plugin_errors(results: &[voom_domain::events::EventResult]) {
+    for result in results {
+        for produced in &result.produced_events {
+            if let Event::PluginError(err) = produced {
+                tracing::warn!(
+                    plugin = %err.plugin_name,
+                    event = %err.event_type,
+                    error = %err.error,
+                    "plugin error during dispatch"
+                );
+            }
+        }
+    }
 }
 
 use crate::introspect::DiscoveredFilePayload;
@@ -344,11 +398,16 @@ enum PhaseOutcomeKind {
 }
 
 /// Shared mutable counters accumulated during a processing run.
+///
+/// `parking_lot::Mutex` is safe here because the lock is never held across
+/// `.await` points — `phase_stats` is only locked inside synchronous
+/// closures (`record_phase_stat`) that complete before any await.
 #[derive(Clone)]
 struct RunCounters {
     modified_count: Arc<AtomicU64>,
     backup_bytes: Arc<AtomicU64>,
     phase_stats: PhaseStatsMap,
+    plan_collector: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
 impl RunCounters {
@@ -357,6 +416,7 @@ impl RunCounters {
             modified_count: Arc::new(AtomicU64::new(0)),
             backup_bytes: Arc::new(AtomicU64::new(0)),
             phase_stats: Arc::new(Mutex::new(HashMap::new())),
+            plan_collector: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -365,7 +425,9 @@ impl RunCounters {
 struct ProcessContext<'a> {
     compiled: &'a voom_dsl::CompiledPolicy,
     kernel: Arc<voom_kernel::Kernel>,
+    store: Arc<dyn voom_domain::storage::StorageTrait>,
     dry_run: bool,
+    plan_only: bool,
     flag_size_increase: bool,
     keep_backups: bool,
     token: &'a CancellationToken,
@@ -383,7 +445,7 @@ async fn process_single_file(
 
     let path = std::path::PathBuf::from(&payload.path);
 
-    let file = crate::introspect::introspect_file(
+    let mut file = crate::introspect::introspect_file(
         path,
         payload.size,
         payload.content_hash,
@@ -392,6 +454,14 @@ async fn process_single_file(
     )
     .await
     .map_err(|e| format!("introspect {}: {e}", payload.path))?;
+
+    // Prior runs may have written plugin_metadata that the current
+    // introspection didn't reproduce; merge so the evaluator sees both.
+    if let Ok(Some(stored)) = ctx.store.file_by_path(&file.path) {
+        for (k, v) in stored.plugin_metadata {
+            file.plugin_metadata.entry(k).or_insert(v);
+        }
+    }
 
     let result = orchestrate_plans(ctx.compiled, &file, ctx.capabilities);
 
@@ -407,9 +477,10 @@ async fn process_single_file(
             "safeguard_violations".to_string(),
             serde_json::json!(violations),
         );
-        ctx.kernel.dispatch(Event::FileIntrospected(
+        let r = ctx.kernel.dispatch(Event::FileIntrospected(
             voom_domain::events::FileIntrospectedEvent::new(tagged_file),
         ));
+        log_plugin_errors(&r);
     }
 
     let needs_exec = voom_phase_orchestrator::PhaseOrchestrator::needs_execution(&result);
@@ -441,6 +512,18 @@ async fn process_single_file(
     }
 
     if ctx.dry_run {
+        if ctx.plan_only {
+            let plans_json: Vec<serde_json::Value> = result
+                .plans
+                .iter()
+                .filter(|p| !p.is_empty() && !p.is_skipped())
+                .map(|p| serde_json::to_value(p).expect("Plan implements Serialize"))
+                .collect();
+            if !plans_json.is_empty() {
+                ctx.counters.plan_collector.lock().extend(plans_json);
+            }
+        }
+
         let plan_summaries: Vec<serde_json::Value> = result
             .plans
             .iter()
@@ -545,15 +628,19 @@ async fn execute_plans(
     for plan in &result.plans {
         if let Some(reason) = &plan.skip_reason {
             // Insert the plan row first so update_plan_status has a target.
-            ctx.kernel
+            let r = ctx
+                .kernel
                 .dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
-            ctx.kernel
+            log_plugin_errors(&r);
+            let r = ctx
+                .kernel
                 .dispatch(Event::PlanSkipped(PlanSkippedEvent::new(
                     plan.id,
                     file.path.clone(),
                     plan.phase_name.clone(),
                     reason.clone(),
                 )));
+            log_plugin_errors(&r);
             continue;
         }
         if plan.is_empty() {
@@ -602,12 +689,13 @@ async fn execute_plans(
                                     );
                                 }
                             }
-                            ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
+                            let r = ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
                                 plan.id,
                                 file.path.clone(),
                                 plan.phase_name.clone(),
                                 format!("output grew from {} to {} bytes", file.size, new_size,),
                             )));
+                            log_plugin_errors(&r);
                             record_phase_stat(
                                 &ctx.counters.phase_stats,
                                 &plan.phase_name,
@@ -628,7 +716,8 @@ async fn execute_plans(
                         "keeping backup per policy"
                     );
                 }
-                ctx.kernel
+                let r = ctx
+                    .kernel
                     .dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
                         plan.id,
                         file.path.clone(),
@@ -636,6 +725,7 @@ async fn execute_plans(
                         plan.actions.len(),
                         ctx.keep_backups,
                     )));
+                log_plugin_errors(&r);
                 record_phase_stat(
                     &ctx.counters.phase_stats,
                     &plan.phase_name,
@@ -643,7 +733,8 @@ async fn execute_plans(
                 );
             }
             PlanOutcome::Failed(failed) => {
-                ctx.kernel.dispatch(Event::PlanFailed(failed));
+                let r = ctx.kernel.dispatch(Event::PlanFailed(failed));
+                log_plugin_errors(&r);
                 record_phase_stat(
                     &ctx.counters.phase_stats,
                     &plan.phase_name,
@@ -744,13 +835,15 @@ fn execute_single_plan(
     file: &voom_domain::media::MediaFile,
     kernel: &voom_kernel::Kernel,
 ) -> PlanOutcome {
-    kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent::new(
+    let r = kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent::new(
         file.path.clone(),
         plan.phase_name.clone(),
         plan.actions.len(),
     )));
+    log_plugin_errors(&r);
 
     let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
+    log_plugin_errors(&results);
 
     let claimed = results.iter().any(|r| r.claimed);
     let exec_error = results.iter().find_map(|r| r.execution_error.clone());
@@ -877,6 +970,12 @@ fn print_phase_breakdown(stats: &HashMap<String, PhaseStats>, phase_order: &[Str
 }
 
 /// Reporter that dispatches job lifecycle events through the kernel event bus.
+///
+/// `kernel.dispatch()` is synchronous and runs in-memory (no I/O), so calling
+/// it from the tokio worker pool's async tasks does not block the executor for
+/// a meaningful duration.  Wrapping in `spawn_blocking` would add overhead
+/// without benefit since the event bus holds a `parking_lot::RwLock` read lock
+/// only for the duration of handler collection (microseconds).
 struct EventBusReporter {
     kernel: Arc<voom_kernel::Kernel>,
 }
@@ -1050,10 +1149,14 @@ mod tests {
         let compiled = voom_dsl::compile_policy("policy \"test\" { phase p1 { container mkv } }")
             .expect("test policy");
         let capabilities = voom_domain::CapabilityMap::default();
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_domain::test_support::InMemoryStore::new());
         let ctx = ProcessContext {
             compiled: &compiled,
             kernel: kernel.clone(),
+            store,
             dry_run: false,
+            plan_only: false,
             flag_size_increase: false,
             keep_backups: false,
             token: &token,

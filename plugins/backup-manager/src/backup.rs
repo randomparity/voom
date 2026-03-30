@@ -100,12 +100,7 @@ pub fn remove_backup(record: &BackupRecord) -> Result<()> {
         ))
     })?;
 
-    // Try to clean up the backup directory if empty
-    if let Some(parent) = record.backup_path.parent() {
-        if let Err(e) = fs::remove_dir(parent) {
-            tracing::debug!(path = %parent.display(), error = %e, "could not remove backup parent directory");
-        }
-    }
+    try_cleanup_parent_dir(&record.backup_path);
 
     tracing::info!(
         path = %record.original_path.display(),
@@ -130,16 +125,59 @@ pub fn cleanup_all(records: &[BackupRecord]) -> Result<u64> {
             })?;
             removed += 1;
         }
-        // Try to clean up parent directory if empty
-        if let Some(parent) = record.backup_path.parent() {
-            if let Err(e) = fs::remove_dir(parent) {
-                tracing::debug!(path = %parent.display(), error = %e, "could not remove backup parent directory");
-            }
-        }
+        try_cleanup_parent_dir(&record.backup_path);
     }
 
     tracing::info!(count = removed, "All backups cleaned up");
     Ok(removed)
+}
+
+/// Restore a file from its backup path to the derived original path.
+///
+/// Unlike [`restore_file`], this does not require a `BackupRecord`. The
+/// original path is derived by stripping the `.YYYYMMDDHHMMSS.vbak` suffix
+/// from the backup filename. This is intended for CLI use where backup
+/// records are not available (the plugin's state is in-memory only).
+pub fn restore_from_paths(backup_path: &Path, original_path: &Path) -> Result<()> {
+    fs::copy(backup_path, original_path).map_err(|e| {
+        plugin_err(format!(
+            "failed to restore {} from {}: {e}",
+            original_path.display(),
+            backup_path.display(),
+        ))
+    })?;
+    tracing::info!(
+        original = %original_path.display(),
+        backup = %backup_path.display(),
+        "File restored from backup"
+    );
+    Ok(())
+}
+
+/// Remove a `.vbak` file from disk and clean up its parent directory if empty.
+///
+/// This is a standalone helper for CLI use where no `BackupRecord` is
+/// available.
+pub fn remove_vbak_file(path: &Path) -> Result<()> {
+    fs::remove_file(path)
+        .map_err(|e| plugin_err(format!("failed to remove backup {}: {e}", path.display(),)))?;
+    try_cleanup_parent_dir(path);
+    Ok(())
+}
+
+/// Try to remove the parent directory of a backup file if it is empty.
+///
+/// This is best-effort: failures are logged at debug level and ignored.
+fn try_cleanup_parent_dir(path: &Path) {
+    if let Some(parent) = path.parent() {
+        if let Err(e) = fs::remove_dir(parent) {
+            tracing::debug!(
+                path = %parent.display(),
+                error = %e,
+                "could not remove backup parent directory"
+            );
+        }
+    }
 }
 
 /// Compute the backup path for a given original file.

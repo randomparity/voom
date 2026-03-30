@@ -14,3 +14,5 @@ wasm-plugins/*/Cargo.lock
 
 # Desloppify local state
 .desloppify/
+.claude/agent-memory/
+scorecard.png

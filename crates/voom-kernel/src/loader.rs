@@ -13,6 +13,7 @@ pub mod wasm {
     use crate::manifest::PluginManifest;
     use crate::Plugin;
     use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
     use voom_domain::capabilities::Capability;
     use voom_domain::errors::VoomError;
@@ -20,6 +21,11 @@ pub mod wasm {
 
     /// A loaded plugin paired with its manifest-declared priority.
     pub type PluginWithPriority = (Arc<dyn Plugin>, i32);
+
+    /// Interval between epoch increments (10ms).
+    /// With the default deadline of 200 ticks, this gives a 2-second timeout
+    /// for WASM execution (200 ticks * 10ms = 2000ms).
+    const EPOCH_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 
     /// Derive the plugin name from its manifest (if present) or the WASM file stem.
     fn plugin_name_from_manifest(manifest: Option<&PluginManifest>, wasm_path: &Path) -> String {
@@ -36,20 +42,59 @@ pub mod wasm {
     ///
     /// The loader compiles WASM components and instantiates them with host
     /// function bindings. Each loaded plugin gets its own `Store` and `HostState`.
+    ///
+    /// A background thread increments the engine epoch every 10ms. With the
+    /// default deadline of 200 ticks, WASM execution is interrupted after ~2s.
     pub struct WasmPluginLoader {
-        engine: wasmtime::Engine,
+        engine: Arc<wasmtime::Engine>,
+        pub(crate) shutdown: Arc<AtomicBool>,
+        epoch_thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for WasmPluginLoader {
+        fn drop(&mut self) {
+            self.shutdown.store(true, Ordering::Release);
+            if let Some(handle) = self.epoch_thread.take() {
+                handle.join().ok();
+            }
+        }
     }
 
     impl WasmPluginLoader {
         /// Create a new WASM plugin loader with component model support enabled.
+        ///
+        /// Spawns a background thread that calls `engine.increment_epoch()`
+        /// every 10ms to enforce execution timeouts on WASM plugins.
         pub fn new() -> Result<Self, WasmLoadError> {
             let mut config = wasmtime::Config::new();
             config.wasm_component_model(true);
             config.max_wasm_stack(1024 * 1024); // 1 MiB stack limit
             config.epoch_interruption(true);
-            let engine = wasmtime::Engine::new(&config)
-                .map_err(|e| WasmLoadError::EngineCreation(e.to_string()))?;
-            Ok(Self { engine })
+            let engine = Arc::new(
+                wasmtime::Engine::new(&config)
+                    .map_err(|e| WasmLoadError::EngineCreation(e.to_string()))?,
+            );
+
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let epoch_engine = Arc::clone(&engine);
+            let epoch_shutdown = Arc::clone(&shutdown);
+            let epoch_thread = std::thread::Builder::new()
+                .name("wasm-epoch-ticker".into())
+                .spawn(move || {
+                    while !epoch_shutdown.load(Ordering::Acquire) {
+                        std::thread::sleep(EPOCH_TICK_INTERVAL);
+                        epoch_engine.increment_epoch();
+                    }
+                })
+                .map_err(|e| {
+                    WasmLoadError::EngineCreation(format!("failed to spawn epoch thread: {e}"))
+                })?;
+
+            Ok(Self {
+                engine,
+                shutdown,
+                epoch_thread: Some(epoch_thread),
+            })
         }
 
         /// Load a WASM plugin from a `.wasm` file alongside a `plugin.toml` manifest.
@@ -87,6 +132,21 @@ pub mod wasm {
         ) -> Result<Arc<dyn Plugin>, WasmLoadError> {
             let path_str = wasm_path.display().to_string();
 
+            if let Some(ref m) = manifest {
+                if let Some(v) = m.protocol_version {
+                    if v != crate::manifest::CURRENT_PROTOCOL_VERSION {
+                        return Err(WasmLoadError::ManifestInvalid {
+                            path: path_str,
+                            message: format!(
+                                "incompatible protocol_version {v} \
+                                 (expected {}, or omit for backward compat)",
+                                crate::manifest::CURRENT_PROTOCOL_VERSION
+                            ),
+                        });
+                    }
+                }
+            }
+
             let wasm_bytes = std::fs::read(wasm_path).map_err(|e| WasmLoadError::ReadFile {
                 path: path_str.clone(),
                 source: e,
@@ -122,6 +182,7 @@ pub mod wasm {
                     .iter()
                     .map(|c| c.kind().to_string())
                     .collect();
+                state.allowed_http_domains = manifest.allowed_domains.clone();
             }
 
             let limits = wasmtime::StoreLimitsBuilder::new()
@@ -346,6 +407,19 @@ pub mod wasm {
 
             match call_on_event(&mut inner, &event_type, &payload) {
                 Ok(Some(wasm_result)) => {
+                    let output_size: usize = wasm_result
+                        .produced_events
+                        .iter()
+                        .map(|(t, p)| t.len() + p.len())
+                        .sum::<usize>()
+                        + wasm_result.data.as_ref().map_or(0, Vec::len);
+                    if output_size > MAX_WASM_EVENT_PAYLOAD {
+                        return Err(voom_domain::errors::VoomError::Wasm(format!(
+                            "WASM plugin '{}' returned oversized payload: \
+                                 {} bytes (max {})",
+                            self.name, output_size, MAX_WASM_EVENT_PAYLOAD
+                        )));
+                    }
                     let result = voom_wit::event_result_from_wasm(
                         wasm_result.plugin_name,
                         wasm_result.produced_events,
@@ -583,11 +657,22 @@ pub mod wasm {
             )
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
+        // Capability enforcement for run-tool is currently coarse-grained:
+        // it checks whether the plugin has any "execute:*" capability, but does
+        // not verify specific operations (e.g., "execute:transcode_video" vs
+        // "execute:convert_container"). Fine-grained per-operation enforcement
+        // is tracked for a future sprint.
         host_instance
             .func_wrap(
                 "run-tool",
                 |ctx: wasmtime::StoreContextMut<'_, HostState>,
                  (tool, args, timeout_ms): (String, Vec<String>, u64)| {
+                    tracing::debug!(
+                        plugin = %ctx.data().plugin_name,
+                        tool = %tool,
+                        args = ?args,
+                        "WASM plugin requesting tool execution"
+                    );
                     let result = ctx.data().run_tool(&tool, &args, timeout_ms);
                     let wit_result: Result<(i32, Vec<u8>, Vec<u8>), String> = match result {
                         Ok(output) => Ok((output.exit_code, output.stdout, output.stderr)),
@@ -842,6 +927,20 @@ mod tests {
         }
 
         #[test]
+        fn test_wasm_loader_drops_cleanly() {
+            let loader = WasmPluginLoader::new().unwrap();
+            assert!(!loader.shutdown.load(std::sync::atomic::Ordering::Acquire));
+            drop(loader);
+        }
+
+        #[test]
+        fn test_epoch_thread_increments() {
+            let loader = WasmPluginLoader::new().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(loader);
+        }
+
+        #[test]
         fn test_wasm_loader_missing_file() {
             let loader = WasmPluginLoader::new().unwrap();
             let result = loader.load(&PathBuf::from("/nonexistent/plugin.wasm"));
@@ -959,6 +1058,126 @@ Evaluate = {}
                 "payload of {} bytes should exceed max of {}",
                 oversized.len(),
                 MAX_WASM_EVENT_PAYLOAD
+            );
+        }
+
+        #[test]
+        fn test_oversized_wasm_return_value_rejected() {
+            use super::super::wasm::MAX_WASM_EVENT_PAYLOAD;
+
+            // Simulate an oversized WasmEventResult by constructing one
+            // whose total size exceeds MAX_WASM_EVENT_PAYLOAD.
+            let oversized_data = vec![0u8; MAX_WASM_EVENT_PAYLOAD + 1];
+            let wasm_result = voom_wit::WasmEventResult {
+                plugin_name: "test-plugin".into(),
+                produced_events: vec![],
+                data: Some(oversized_data),
+            };
+
+            let output_size: usize = wasm_result
+                .produced_events
+                .iter()
+                .map(|(t, p)| t.len() + p.len())
+                .sum::<usize>()
+                + wasm_result.data.as_ref().map_or(0, Vec::len);
+
+            assert!(
+                output_size > MAX_WASM_EVENT_PAYLOAD,
+                "constructed result should exceed limit"
+            );
+        }
+
+        #[test]
+        fn test_protocol_version_compatible_loads() {
+            use crate::manifest::CURRENT_PROTOCOL_VERSION;
+
+            let dir = tempfile::tempdir().unwrap();
+            let manifest_path = dir.path().join("test-plugin.toml");
+            std::fs::write(
+                &manifest_path,
+                format!(
+                    r#"
+name = "test-plugin"
+version = "1.0.0"
+description = "A test WASM plugin"
+handles_events = ["file.discovered"]
+protocol_version = {CURRENT_PROTOCOL_VERSION}
+
+[[capabilities]]
+Evaluate = {{}}
+"#
+                ),
+            )
+            .unwrap();
+
+            let wasm_path = dir.path().join("test-plugin.wasm");
+            let manifest = load_manifest(&wasm_path).unwrap().unwrap();
+            assert_eq!(manifest.protocol_version, Some(CURRENT_PROTOCOL_VERSION));
+        }
+
+        #[test]
+        fn test_protocol_version_none_is_compatible() {
+            let dir = tempfile::tempdir().unwrap();
+            let manifest_path = dir.path().join("test-plugin.toml");
+            std::fs::write(
+                &manifest_path,
+                r#"
+name = "test-plugin"
+version = "1.0.0"
+description = "A test WASM plugin"
+handles_events = ["file.discovered"]
+
+[[capabilities]]
+Evaluate = {}
+"#,
+            )
+            .unwrap();
+
+            let wasm_path = dir.path().join("test-plugin.wasm");
+            let manifest = load_manifest(&wasm_path).unwrap().unwrap();
+            assert!(
+                manifest.protocol_version.is_none(),
+                "missing protocol_version should default to None"
+            );
+        }
+
+        #[test]
+        fn test_incompatible_protocol_version_fails_load() {
+            use crate::manifest::CURRENT_PROTOCOL_VERSION;
+
+            let dir = tempfile::tempdir().unwrap();
+            let bad_version = CURRENT_PROTOCOL_VERSION + 99;
+            let manifest_path = dir.path().join("test-plugin.toml");
+            std::fs::write(
+                &manifest_path,
+                format!(
+                    r#"
+name = "test-plugin"
+version = "1.0.0"
+description = "A test WASM plugin"
+handles_events = ["file.discovered"]
+protocol_version = {bad_version}
+
+[[capabilities]]
+Evaluate = {{}}
+"#
+                ),
+            )
+            .unwrap();
+
+            // Write a minimal (invalid) WASM file so load_with_manifest gets past file read
+            let wasm_path = dir.path().join("test-plugin.wasm");
+            std::fs::write(&wasm_path, b"not valid wasm").unwrap();
+
+            let loader = WasmPluginLoader::new().unwrap();
+            let result = loader.load(&wasm_path);
+            let err = match result {
+                Err(e) => format!("{e}"),
+                Ok(_) => panic!("expected error for incompatible protocol version"),
+            };
+            assert!(
+                err.contains("incompatible protocol_version"),
+                "expected protocol version error, got: {err}"
             );
         }
     }

@@ -62,6 +62,95 @@ impl Event {
     pub const PLUGIN_ERROR: &str = "plugin.error";
     pub const HEALTH_STATUS: &str = "health.status";
 
+    /// One-line human-readable summary of the event payload.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        match self {
+            Event::FileDiscovered(e) => {
+                format!("path={} size={}", e.path.display(), e.size)
+            }
+            Event::FileIntrospected(e) => {
+                format!(
+                    "path={} tracks={}",
+                    e.file.path.display(),
+                    e.file.tracks.len()
+                )
+            }
+            Event::FileIntrospectionFailed(e) => {
+                format!("path={} error={}", e.path.display(), e.error)
+            }
+            Event::PlanCreated(e) => {
+                format!(
+                    "phase={} actions={}",
+                    e.plan.phase_name,
+                    e.plan.actions.len()
+                )
+            }
+            Event::PlanExecuting(e) => {
+                format!("path={} phase={}", e.path.display(), e.phase_name)
+            }
+            Event::PlanCompleted(e) => {
+                format!("path={} phase={}", e.path.display(), e.phase_name)
+            }
+            Event::PlanSkipped(e) => {
+                format!(
+                    "path={} phase={} reason={}",
+                    e.path.display(),
+                    e.phase_name,
+                    e.skip_reason
+                )
+            }
+            Event::PlanFailed(e) => {
+                format!(
+                    "path={} phase={} error={}",
+                    e.path.display(),
+                    e.phase_name,
+                    e.error
+                )
+            }
+            Event::JobStarted(e) => {
+                format!("job_id={} desc={}", e.job_id, e.description)
+            }
+            Event::JobProgress(e) => {
+                format!("job_id={} progress={:.1}%", e.job_id, e.progress * 100.0)
+            }
+            Event::JobCompleted(e) => {
+                format!("job_id={} success={}", e.job_id, e.success)
+            }
+            Event::ToolDetected(e) => {
+                format!("tool={} version={}", e.tool_name, e.version)
+            }
+            Event::MetadataEnriched(e) => {
+                format!("path={} source={}", e.path.display(), e.source)
+            }
+            Event::ExecutorCapabilities(e) => {
+                format!(
+                    "plugin={} decoders={} encoders={} formats={} hw={}",
+                    e.plugin_name,
+                    e.codecs.decoders.len(),
+                    e.codecs.encoders.len(),
+                    e.formats.len(),
+                    e.hw_accels.len()
+                )
+            }
+            Event::HealthStatus(e) => {
+                format!("check={} passed={}", e.check_name, e.passed)
+            }
+            Event::PluginError(e) => {
+                format!(
+                    "plugin={} event={} error={}",
+                    e.plugin_name, e.event_type, e.error
+                )
+            }
+            Event::JobEnqueueRequested(e) => {
+                format!(
+                    "job_type={:?} priority={} requester={}",
+                    e.job_type, e.priority, e.requester
+                )
+            }
+        }
+    }
+
     /// Returns the event type string used for subscription matching.
     #[must_use]
     pub fn event_type(&self) -> &str {
@@ -719,6 +808,37 @@ mod tests {
         let bytes = rmp_serde::to_vec(&event).unwrap();
         let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(deserialized.event_type(), "job.enqueue_requested");
+    }
+
+    #[test]
+    fn test_health_status_serde_roundtrip() {
+        let event = Event::HealthStatus(HealthStatusEvent::new(
+            "data_dir_writable",
+            true,
+            Some("/data/voom".into()),
+        ));
+        assert_eq!(event.event_type(), "health.status");
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.event_type(), "health.status");
+        if let Event::HealthStatus(e) = &deserialized {
+            assert_eq!(e.check_name, "data_dir_writable");
+            assert!(e.passed);
+            assert_eq!(e.details.as_deref(), Some("/data/voom"));
+        } else {
+            panic!("expected HealthStatus event");
+        }
+
+        let bytes = rmp_serde::to_vec(&event).unwrap();
+        let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(deserialized.event_type(), "health.status");
+        if let Event::HealthStatus(e) = &deserialized {
+            assert_eq!(e.check_name, "data_dir_writable");
+            assert!(e.passed);
+        } else {
+            panic!("expected HealthStatus event");
+        }
     }
 
     #[test]

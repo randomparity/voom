@@ -144,6 +144,17 @@ CREATE TABLE IF NOT EXISTS health_checks (
 CREATE INDEX IF NOT EXISTS idx_health_checks_name ON health_checks(check_name);
 CREATE INDEX IF NOT EXISTS idx_health_checks_time ON health_checks(checked_at);
 
+CREATE TABLE IF NOT EXISTS event_log (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_log_type ON event_log(event_type);
+
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 CREATE INDEX IF NOT EXISTS idx_files_hash ON files(content_hash);
 CREATE INDEX IF NOT EXISTS idx_tracks_file ON tracks(file_id);
@@ -174,6 +185,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "bad_files",
         "discovered_files",
         "health_checks",
+        "event_log",
     ];
     let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
         assert!(KNOWN_TABLES.contains(&table), "unknown table: {table}");
@@ -235,6 +247,26 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    // Create event_log table if missing.
+    let has_event_log: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='event_log'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_event_log {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS event_log (
+                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT NOT NULL UNIQUE,
+                event_type TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_event_log_type ON event_log(event_type);",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -278,6 +310,7 @@ mod tests {
         assert!(tables.contains(&"bad_files".to_string()));
         assert!(tables.contains(&"discovered_files".to_string()));
         assert!(tables.contains(&"health_checks".to_string()));
+        assert!(tables.contains(&"event_log".to_string()));
     }
 
     #[test]

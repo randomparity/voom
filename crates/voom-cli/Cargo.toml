@@ -76,3 +76,4 @@ workspace = true
 assert_cmd = "2"
 predicates = "3"
 tempfile.workspace = true
+voom-domain = { workspace = true, features = ["testing"] }

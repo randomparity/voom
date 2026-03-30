@@ -1,5 +1,6 @@
 mod bad_file_storage;
 mod discovered_file_storage;
+mod event_log_storage;
 mod file_history_storage;
 mod file_storage;
 mod health_check_storage;
@@ -692,6 +693,36 @@ mod tests {
             .unwrap_or(0);
         assert_eq!(pending, 2);
         assert_eq!(running, 1);
+    }
+
+    #[test]
+    fn test_claim_next_job_with_existing_running_job() {
+        let store = test_store();
+
+        // Worker already has a running job
+        let mut running_job = Job::new(voom_domain::job::JobType::Custom("running".into()));
+        running_job.priority = 100;
+        store.create_job(&running_job).unwrap();
+        store.claim_next_job("worker-1").unwrap();
+
+        // Add two more pending jobs
+        let mut job_high = Job::new(voom_domain::job::JobType::Custom("high-pri".into()));
+        job_high.priority = 10;
+        store.create_job(&job_high).unwrap();
+
+        let mut job_low = Job::new(voom_domain::job::JobType::Custom("low-pri".into()));
+        job_low.priority = 200;
+        store.create_job(&job_low).unwrap();
+
+        // Same worker claims next — should get the highest-priority pending job,
+        // not the already-running one
+        let claimed = store.claim_next_job("worker-1").unwrap().unwrap();
+        assert_eq!(
+            claimed.job_type,
+            voom_domain::job::JobType::Custom("high-pri".into())
+        );
+        assert_eq!(claimed.id, job_high.id);
+        assert_eq!(claimed.status, JobStatus::Running);
     }
 
     #[test]

@@ -51,8 +51,8 @@ pub struct HostState {
     pub storage: Option<Arc<dyn WasmPluginStore>>,
     /// Allowed tool names (empty = deny all).
     pub allowed_tools: Vec<String>,
-    /// HTTP client configuration.
-    pub http_allowed: bool,
+    /// Allowed HTTP domains (empty = deny all, matching `run_tool` semantics).
+    pub allowed_http_domains: Vec<String>,
     /// Capabilities declared by this plugin (used for runtime enforcement).
     pub allowed_capabilities: HashSet<String>,
     /// WASM resource limits.
@@ -72,7 +72,7 @@ impl HostState {
             allowed_paths: Vec::new(),
             storage: None,
             allowed_tools: Vec::new(),
-            http_allowed: false,
+            allowed_http_domains: Vec::new(),
             allowed_capabilities: HashSet::new(),
             wasm_limits: WasmResourceLimits::default(),
             #[cfg(feature = "wasm")]
@@ -81,8 +81,8 @@ impl HostState {
     }
 
     #[must_use]
-    pub fn with_http(mut self) -> Self {
-        self.http_allowed = true;
+    pub fn with_http_domains(mut self, domains: Vec<String>) -> Self {
+        self.allowed_http_domains = domains;
         self
     }
 
@@ -148,16 +148,16 @@ mod tests {
     fn test_host_state_new() {
         let state = HostState::new("test-plugin".into());
         assert_eq!(state.plugin_name, "test-plugin");
-        assert!(!state.http_allowed);
+        assert!(state.allowed_http_domains.is_empty());
         assert!(state.allowed_tools.is_empty());
     }
 
     #[test]
     fn test_host_state_builder() {
         let state = HostState::new("test".into())
-            .with_http()
+            .with_http_domains(vec!["example.com".into()])
             .with_tools(vec!["ffprobe".into(), "mkvmerge".into()]);
-        assert!(state.http_allowed);
+        assert_eq!(state.allowed_http_domains, vec!["example.com"]);
         assert_eq!(state.allowed_tools.len(), 2);
     }
 
@@ -220,13 +220,33 @@ mod tests {
         let state = HostState::new("test".into());
         let get_err = state.http_get("http://example.com", &[]).unwrap_err();
         assert!(
-            get_err.contains("HTTP access not enabled"),
+            get_err.contains("no allowed domains"),
             "expected permission error, got: {get_err}"
         );
         let post_err = state.http_post("http://example.com", &[], b"").unwrap_err();
         assert!(
-            post_err.contains("HTTP access not enabled"),
+            post_err.contains("no allowed domains"),
             "expected permission error, got: {post_err}"
+        );
+    }
+
+    #[test]
+    fn test_http_domain_not_in_allowlist() {
+        let state = HostState::new("test".into()).with_http_domains(vec!["api.example.com".into()]);
+        let err = state.http_get("http://evil.com/data", &[]).unwrap_err();
+        assert!(
+            err.contains("not in the allowed list"),
+            "expected domain rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_http_empty_allowlist_denies_all() {
+        let state = HostState::new("test".into()).with_http_domains(vec![]);
+        let err = state.http_get("http://example.com", &[]).unwrap_err();
+        assert!(
+            err.contains("no allowed domains"),
+            "expected denial, got: {err}"
         );
     }
 
@@ -234,7 +254,7 @@ mod tests {
     fn test_http_get_connection_error() {
         // With HTTP enabled, a request to a non-routable address should return
         // a connection error (not "not yet implemented").
-        let state = HostState::new("test".into()).with_http();
+        let state = HostState::new("test".into()).with_http_domains(vec!["192.0.2.1".into()]);
         let result = state.http_get("http://192.0.2.1:1", &[]);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -246,7 +266,7 @@ mod tests {
 
     #[test]
     fn test_http_post_connection_error() {
-        let state = HostState::new("test".into()).with_http();
+        let state = HostState::new("test".into()).with_http_domains(vec!["192.0.2.1".into()]);
         let result = state.http_post("http://192.0.2.1:1", &[], b"body");
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -359,6 +379,22 @@ mod tests {
         assert!(result
             .unwrap_err()
             .contains("not within allowed directories"));
+    }
+
+    #[test]
+    fn test_run_tool_flag_path_blocked() {
+        let state = HostState::new("test".into())
+            .with_tools(vec!["echo".into()])
+            .with_paths(vec![PathBuf::from("/tmp")])
+            .with_capabilities(HashSet::from(["execute:tool".to_string()]));
+        let result = state.run_tool("echo", &["--input=/etc/passwd".into()], 5000);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("not within allowed directories"),
+            "expected path rejection for --flag=/path pattern"
+        );
     }
 
     #[test]

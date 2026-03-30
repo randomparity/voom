@@ -134,6 +134,95 @@ pub fn run_with_timeout_env(
     }
 }
 
+/// Read all bytes from an optional tokio `ChildStdout`/`ChildStderr`.
+async fn read_child_pipe<R>(pipe: Option<R>) -> Vec<u8>
+where
+    R: tokio::io::AsyncReadExt + Unpin,
+{
+    let Some(mut pipe) = pipe else {
+        return Vec::new();
+    };
+    let mut buf = Vec::new();
+    if let Err(e) = pipe.read_to_end(&mut buf).await {
+        tracing::warn!(error = %e, "failed to read child pipe");
+    }
+    buf
+}
+
+/// Async cancellable subprocess execution via `tokio::process`.
+///
+/// Selects on timeout, cancellation token, and child exit. If the
+/// token fires the child is killed immediately.
+///
+/// # Errors
+/// Returns `VoomError::ToolExecution` on timeout, spawn failure,
+/// or cancellation.
+pub async fn run_cancellable(
+    tool: &str,
+    args: &[impl AsRef<OsStr>],
+    timeout: Duration,
+    token: &tokio_util::sync::CancellationToken,
+) -> Result<Output> {
+    run_cancellable_env(tool, args, timeout, &[], token).await
+}
+
+/// Async cancellable subprocess with extra environment variables.
+///
+/// See [`run_cancellable`] for details.
+pub async fn run_cancellable_env(
+    tool: &str,
+    args: &[impl AsRef<OsStr>],
+    timeout: Duration,
+    env_vars: &[(&str, &str)],
+    token: &tokio_util::sync::CancellationToken,
+) -> Result<Output> {
+    use tokio::process::Command as TokioCommand;
+
+    let mut cmd = TokioCommand::new(tool);
+    cmd.args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    for (key, val) in env_vars {
+        cmd.env(key, val);
+    }
+    let mut child = cmd.spawn().map_err(|e| VoomError::ToolExecution {
+        tool: tool.into(),
+        message: format!("failed to spawn {tool}: {e}"),
+    })?;
+
+    // Use child.wait() (borrows) instead of wait_with_output() (moves)
+    // so we can still call child.kill() in cancellation branches.
+    tokio::select! {
+        status = child.wait() => {
+            let status = status.map_err(|e| VoomError::ToolExecution {
+                tool: tool.into(),
+                message: format!("error waiting for {tool}: {e}"),
+            })?;
+            let stdout = read_child_pipe(child.stdout.take()).await;
+            let stderr = read_child_pipe(child.stderr.take()).await;
+            Ok(Output { status, stdout, stderr })
+        }
+        () = tokio::time::sleep(timeout) => {
+            let _ = child.kill().await;
+            Err(VoomError::ToolExecution {
+                tool: tool.into(),
+                message: format!(
+                    "{tool} timed out after {}s",
+                    timeout.as_secs()
+                ),
+            })
+        }
+        () = token.cancelled() => {
+            let _ = child.kill().await;
+            Err(VoomError::ToolExecution {
+                tool: tool.into(),
+                message: format!("{tool} cancelled"),
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +272,53 @@ mod tests {
             VoomError::ToolExecution { tool, message } => {
                 assert_eq!(tool, "sleep");
                 assert!(message.contains("timed out"));
+            }
+            other => panic!("expected ToolExecution timeout, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellable_echo_succeeds() {
+        let token = tokio_util::sync::CancellationToken::new();
+        let output = run_cancellable_env("echo", &["hello"], Duration::from_secs(5), &[], &token)
+            .await
+            .expect("echo should succeed");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hello");
+    }
+
+    #[tokio::test]
+    async fn cancellable_kills_on_cancel() {
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        let err = run_cancellable_env("sleep", &["60"], Duration::from_secs(30), &[], &token)
+            .await
+            .unwrap_err();
+        match &err {
+            VoomError::ToolExecution { tool, message } => {
+                assert_eq!(tool, "sleep");
+                assert!(
+                    message.contains("cancelled"),
+                    "expected 'cancelled' in message, got: {message}"
+                );
+            }
+            other => panic!("expected ToolExecution, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellable_times_out() {
+        let token = tokio_util::sync::CancellationToken::new();
+        let err = run_cancellable_env("sleep", &["60"], Duration::from_secs(1), &[], &token)
+            .await
+            .unwrap_err();
+        match &err {
+            VoomError::ToolExecution { tool, message } => {
+                assert_eq!(tool, "sleep");
+                assert!(
+                    message.contains("timed out"),
+                    "expected 'timed out' in message, got: {message}"
+                );
             }
             other => panic!("expected ToolExecution timeout, got: {other}"),
         }

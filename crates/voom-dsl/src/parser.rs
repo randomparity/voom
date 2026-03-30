@@ -80,10 +80,17 @@ fn build_policy(pair: Pair<'_, Rule>) -> Result<PolicyAst> {
 
     for item in inner {
         match item.as_rule() {
-            Rule::config => config = Some(build_config(item)),
+            Rule::config => config = Some(build_config(item)?),
             Rule::phase => phases.push(build_phase(item)?),
             Rule::EOI => {}
-            other => debug_assert!(false, "unexpected rule in policy: {other:?}"),
+            other => {
+                let (line, col) = item.as_span().start_pos().line_col();
+                return Err(DslError::build(
+                    line,
+                    col,
+                    format!("unexpected rule in policy: {other:?}"),
+                ));
+            }
         }
     }
 
@@ -95,7 +102,8 @@ fn build_policy(pair: Pair<'_, Rule>) -> Result<PolicyAst> {
     })
 }
 
-fn build_config(pair: Pair<'_, Rule>) -> ConfigNode {
+fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
+    let span = span_from_pair(&pair);
     let mut audio_languages = Vec::new();
     let mut subtitle_languages = Vec::new();
     let mut on_error = None;
@@ -145,17 +153,25 @@ fn build_config(pair: Pair<'_, Rule>) -> ConfigNode {
                     .unwrap();
                 keep_backups = Some(bool_pair.as_str() == "true");
             }
-            other => debug_assert!(false, "unexpected config keyword: {other}"),
+            other => {
+                let (line, col) = item.as_span().start_pos().line_col();
+                return Err(DslError::build(
+                    line,
+                    col,
+                    format!("unexpected config keyword: {other}"),
+                ));
+            }
         }
     }
 
-    ConfigNode {
+    Ok(ConfigNode {
         audio_languages,
         subtitle_languages,
         on_error,
         commentary_patterns,
         keep_backups,
-    }
+        span,
+    })
 }
 
 /// Push a spanned operation with a pre-captured span.
@@ -239,7 +255,7 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
             }
             Rule::defaults_op => {
                 let span = span_from_pair(&child);
-                emit_op(&mut operations, span, build_defaults(child));
+                emit_op(&mut operations, span, build_defaults(child)?);
             }
             Rule::actions_op => {
                 let span = span_from_pair(&child);
@@ -327,7 +343,7 @@ fn build_keep_remove(pair: Pair<'_, Rule>, is_keep: bool) -> Result<OperationNod
     }
 }
 
-fn build_defaults(pair: Pair<'_, Rule>) -> OperationNode {
+fn build_defaults(pair: Pair<'_, Rule>) -> Result<OperationNode> {
     let mut items = Vec::new();
     for child in pair.into_inner() {
         if child.as_rule() == Rule::default_item {
@@ -335,14 +351,22 @@ fn build_defaults(pair: Pair<'_, Rule>) -> OperationNode {
             let keyword = leading_keyword(text);
             let kind = match keyword {
                 "audio" => "audio".to_string(),
-                _ => "subtitle".to_string(),
+                "subtitle" | "subtitles" => "subtitle".to_string(),
+                other => {
+                    let (line, col) = child.as_span().start_pos().line_col();
+                    return Err(DslError::build(
+                        line,
+                        col,
+                        format!("unknown defaults kind: {other}"),
+                    ));
+                }
             };
             // Only the trailing ident is a named child
             let value = child.into_inner().next().unwrap().as_str().to_string();
             items.push((kind, value));
         }
     }
-    OperationNode::Defaults(items)
+    Ok(OperationNode::Defaults(items))
 }
 
 fn build_actions(pair: Pair<'_, Rule>) -> OperationNode {
@@ -402,6 +426,7 @@ fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {
             continue;
         }
         let text = child.as_str().trim();
+        let child_span = child.as_span();
         let mut parts = child.into_inner();
 
         // pest silently consumes keyword alternations, so we dispatch on the
@@ -445,7 +470,14 @@ fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {
                 let val = build_value(parts.next().unwrap());
                 settings.push(SynthSetting::Position(val));
             }
-            other => debug_assert!(false, "unexpected synth keyword: {other}"),
+            other => {
+                let (line, col) = child_span.start_pos().line_col();
+                return Err(DslError::build(
+                    line,
+                    col,
+                    format!("unexpected synth keyword: {other}"),
+                ));
+            }
         }
     }
 
@@ -461,6 +493,7 @@ fn build_when(pair: Pair<'_, Rule>) -> Result<WhenNode> {
     let mut else_actions = Vec::new();
 
     for child in inner {
+        let child_span = child.as_span();
         match child.as_rule() {
             Rule::action => then_actions.push(build_action(child)?),
             Rule::else_block => {
@@ -470,7 +503,14 @@ fn build_when(pair: Pair<'_, Rule>) -> Result<WhenNode> {
                     }
                 }
             }
-            other => debug_assert!(false, "unexpected rule in when block: {other:?}"),
+            other => {
+                let (line, col) = child_span.start_pos().line_col();
+                return Err(DslError::build(
+                    line,
+                    col,
+                    format!("unexpected rule in when block: {other:?}"),
+                ));
+            }
         }
     }
 

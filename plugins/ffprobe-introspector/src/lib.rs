@@ -12,7 +12,7 @@ pub mod parser;
 use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
-use voom_domain::errors::Result;
+use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{Event, EventResult, FileIntrospectedEvent, JobEnqueueRequestedEvent};
 use voom_domain::job::{DiscoveredFilePayload, JobType};
 use voom_kernel::{Plugin, PluginContext};
@@ -101,7 +101,12 @@ impl Plugin for FfprobeIntrospectorPlugin {
                 size: e.size,
                 content_hash: e.content_hash.clone(),
             })
-            .expect("DiscoveredFilePayload serialization is infallible");
+            .map_err(|err| {
+                VoomError::plugin(
+                    "ffprobe-introspector",
+                    format!("failed to serialize DiscoveredFilePayload: {err}"),
+                )
+            })?;
             let enqueue_event = Event::JobEnqueueRequested(JobEnqueueRequestedEvent::new(
                 JobType::Introspect,
                 50,

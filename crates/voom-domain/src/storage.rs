@@ -72,6 +72,11 @@ pub trait JobStorage: Send + Sync {
     fn claim_job_by_id(&self, job_id: &Uuid, worker_id: &str) -> Result<Option<Job>>;
     fn list_jobs(&self, filters: &JobFilters) -> Result<Vec<Job>>;
     fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>>;
+    /// Delete jobs by status. If `status` is `Some`, delete only jobs
+    /// with that status. If `None`, delete all terminal jobs
+    /// (completed, failed, cancelled). Never deletes pending/running.
+    /// Returns the number of deleted rows.
+    fn delete_jobs(&self, status: Option<JobStatus>) -> Result<u64>;
 }
 
 /// Plan persistence operations.
@@ -190,6 +195,79 @@ pub trait HealthCheckStorage: Send + Sync {
     fn prune_health_checks(&self, before: DateTime<Utc>) -> Result<u64>;
 }
 
+/// A single event log entry.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventLogRecord {
+    pub rowid: i64,
+    pub id: Uuid,
+    pub event_type: String,
+    pub payload: String,
+    pub summary: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl EventLogRecord {
+    #[must_use]
+    pub fn new(id: Uuid, event_type: String, payload: String, summary: String) -> Self {
+        Self {
+            rowid: 0,
+            id,
+            event_type,
+            payload,
+            summary,
+            created_at: Utc::now(),
+        }
+    }
+
+    /// Reconstruct a record from stored fields.
+    #[must_use]
+    pub fn from_stored(
+        rowid: i64,
+        id: Uuid,
+        event_type: String,
+        payload: String,
+        summary: String,
+        created_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            rowid,
+            id,
+            event_type,
+            payload,
+            summary,
+            created_at,
+        }
+    }
+}
+
+/// Filters for querying the event log.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct EventLogFilters {
+    pub event_type: Option<String>,
+    pub since_rowid: Option<i64>,
+    pub limit: Option<u32>,
+}
+
+/// Event log storage operations.
+///
+/// # Errors
+/// Methods return `VoomError::Storage` on database failures.
+pub trait EventLogStorage: Send + Sync {
+    fn insert_event_log(&self, record: &EventLogRecord) -> Result<i64>;
+    fn list_event_log(&self, filters: &EventLogFilters) -> Result<Vec<EventLogRecord>>;
+    fn prune_event_log(&self, keep_last: u64) -> Result<u64>;
+}
+
+/// SQLite page-level statistics.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PageStats {
+    pub page_size: u64,
+    pub page_count: u64,
+    pub freelist_count: u64,
+}
+
 /// Database maintenance operations.
 ///
 /// # Errors
@@ -198,6 +276,8 @@ pub trait MaintenanceStorage: Send + Sync {
     fn vacuum(&self) -> Result<()>;
     fn prune_missing_files(&self) -> Result<u64>;
     fn prune_missing_files_under(&self, root: &Path) -> Result<u64>;
+    fn table_row_counts(&self) -> Result<Vec<(String, u64)>>;
+    fn page_stats(&self) -> Result<PageStats>;
 }
 
 /// Composed storage interface encompassing all sub-traits.
@@ -218,6 +298,7 @@ pub trait StorageTrait:
     + BadFileStorage
     + MaintenanceStorage
     + HealthCheckStorage
+    + EventLogStorage
 {
 }
 
@@ -232,6 +313,7 @@ impl<T> StorageTrait for T where
         + BadFileStorage
         + MaintenanceStorage
         + HealthCheckStorage
+        + EventLogStorage
 {
 }
 

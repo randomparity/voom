@@ -15,6 +15,11 @@ config:
     - commentary
     - director
   keep_backups: ~
+  span:
+    start: 31
+    end: 223
+    line: 2
+    col: 9
 phases:
   - name: init
     skip_when: ~

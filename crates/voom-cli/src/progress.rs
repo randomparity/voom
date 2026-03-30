@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn test_truncated_filename_with_extension() {
         let path = Path::new("/some/dir/A Very Long Movie Name (2025).mkv");
-        let result = truncated_filename(&path, 20);
+        let result = truncated_filename(path, 20);
         assert!(result.len() <= 20);
         assert!(result.ends_with("...mkv"), "got: {result}");
     }
@@ -262,12 +262,12 @@ mod tests {
     #[test]
     fn test_truncated_filename_short_enough() {
         let path = Path::new("/dir/short.mkv");
-        assert_eq!(truncated_filename(&path, 40), "short.mkv");
+        assert_eq!(truncated_filename(path, 40), "short.mkv");
     }
 
     #[test]
     fn test_truncated_filename_no_filename() {
         let path = Path::new("/");
-        assert_eq!(truncated_filename(&path, 40), "");
+        assert_eq!(truncated_filename(path, 40), "");
     }
 }

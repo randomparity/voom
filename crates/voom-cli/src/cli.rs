@@ -40,7 +40,23 @@ pub enum Commands {
     /// Generate a report of the media library
     Report(ReportArgs),
 
-    /// System health check
+    /// File queries
+    #[command(subcommand)]
+    Files(FilesCommands),
+
+    /// Plan inspection
+    #[command(subcommand)]
+    Plans(PlansCommands),
+
+    /// View event log
+    Events(EventsArgs),
+
+    /// System health checks and history
+    #[command(subcommand)]
+    Health(HealthCommands),
+
+    /// System health check (alias for `health check`)
+    #[command(hide = true)]
     Doctor,
 
     /// Start the web server
@@ -53,6 +69,17 @@ pub enum Commands {
     /// Configuration management
     #[command(subcommand)]
     Config(ConfigCommands),
+
+    /// External tool management
+    #[command(subcommand)]
+    Tools(ToolsCommands),
+
+    /// Show file change history
+    History(HistoryArgs),
+
+    /// Backup management
+    #[command(subcommand)]
+    Backup(BackupCommands),
 
     /// First-time setup
     Init,
@@ -142,6 +169,10 @@ pub struct ProcessArgs {
     /// Tag files whose output is larger than the original (post-execution)
     #[arg(long)]
     pub flag_size_increase: bool,
+
+    /// Output raw plans as JSON to stdout without executing (implies --dry-run)
+    #[arg(long)]
+    pub plan_only: bool,
 }
 
 // === Policy ===
@@ -164,6 +195,13 @@ pub enum PolicyCommands {
     Format {
         /// Policy file to format
         file: PathBuf,
+    },
+    /// Compare two compiled policies
+    Diff {
+        /// First policy file
+        a: PathBuf,
+        /// Second policy file
+        b: PathBuf,
     },
 }
 
@@ -207,6 +245,9 @@ pub enum JobsCommands {
         /// Maximum number of jobs to display
         #[arg(short = 'n', long, default_value = "50")]
         limit: u32,
+        /// Number of jobs to skip
+        #[arg(long, default_value = "0")]
+        offset: u32,
     },
     /// Show job details
     Status {
@@ -217,6 +258,20 @@ pub enum JobsCommands {
     Cancel {
         /// Job ID
         id: String,
+    },
+    /// Retry a failed job
+    Retry {
+        /// Job ID
+        id: String,
+    },
+    /// Delete completed/failed/cancelled jobs
+    Clear {
+        /// Only delete jobs with this status
+        #[arg(long)]
+        status: Option<String>,
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -277,6 +332,12 @@ pub enum DbCommands {
         #[arg(long)]
         yes: bool,
     },
+    /// Show database size, row counts, and fragmentation
+    Stats {
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 // === Config ===
@@ -287,6 +348,182 @@ pub enum ConfigCommands {
     Show,
     /// Open configuration in $EDITOR
     Edit,
+    /// Get a configuration value by dot-notation key
+    Get {
+        /// Dot-notation key (e.g. auth_token, plugins.wasm_dir, plugin.ffmpeg-executor.hw_accel)
+        key: String,
+    },
+    /// Set a configuration value by dot-notation key
+    Set {
+        /// Dot-notation key (e.g. auth_token, plugin.ffmpeg-executor.hw_accel)
+        key: String,
+        /// Value to set (auto-detects type: bool, int, float, or string)
+        value: String,
+    },
+}
+
+// === Tools ===
+
+#[derive(Subcommand)]
+pub enum ToolsCommands {
+    /// List detected external tools
+    List {
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Show detailed info about a tool
+    Info {
+        /// Tool name (e.g. ffmpeg, mkvmerge)
+        name: String,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+// === History ===
+
+#[derive(clap::Args)]
+pub struct HistoryArgs {
+    /// Media file to show history for
+    pub file: PathBuf,
+
+    /// Output format
+    #[arg(short, long, default_value = "table")]
+    pub format: OutputFormat,
+}
+
+// === Backup ===
+
+#[derive(Subcommand)]
+pub enum BackupCommands {
+    /// List backup files
+    List {
+        /// Directory to scan for backups
+        path: PathBuf,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Restore a file from its backup
+    Restore {
+        /// Path to the .vbak backup file
+        backup_path: PathBuf,
+    },
+    /// Remove all backup files
+    Cleanup {
+        /// Directory to scan for backups
+        path: PathBuf,
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+// === Files ===
+
+#[derive(Subcommand)]
+pub enum FilesCommands {
+    /// List files with optional filters
+    List {
+        /// Filter by container format (e.g. mkv, mp4)
+        #[arg(long)]
+        container: Option<String>,
+        /// Filter by codec (e.g. hevc, aac)
+        #[arg(long)]
+        codec: Option<String>,
+        /// Filter by track language (e.g. eng, jpn)
+        #[arg(long)]
+        lang: Option<String>,
+        /// Filter by path prefix
+        #[arg(long)]
+        path_prefix: Option<String>,
+        /// Maximum number of files to display
+        #[arg(short = 'n', long, default_value = "100")]
+        limit: u32,
+        /// Number of files to skip
+        #[arg(long, default_value = "0")]
+        offset: u32,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Show details for a single file by UUID
+    Show {
+        /// File UUID
+        id: String,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Delete a file from the database by UUID
+    Delete {
+        /// File UUID
+        id: String,
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+// === Plans ===
+
+#[derive(Subcommand)]
+pub enum PlansCommands {
+    /// Show plans for a file
+    Show {
+        /// File UUID or path
+        file: String,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+// === Health ===
+
+#[derive(Subcommand)]
+pub enum HealthCommands {
+    /// Run live system health checks
+    Check,
+    /// Show health check history from the database
+    History {
+        /// Filter by check name
+        #[arg(long)]
+        check: Option<String>,
+        /// Show only records since this datetime
+        /// (e.g. 2024-01-15 or 2024-01-15T10:30:00)
+        #[arg(long)]
+        since: Option<String>,
+        /// Maximum number of records to display
+        #[arg(short = 'n', long, default_value = "50")]
+        limit: u32,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+// === Events ===
+
+#[derive(clap::Args)]
+pub struct EventsArgs {
+    /// Keep streaming new events
+    #[arg(short = 'F', long)]
+    pub follow: bool,
+
+    /// Filter by event type (e.g. file.discovered, job.*)
+    #[arg(long)]
+    pub filter: Option<String>,
+
+    /// Output format
+    #[arg(short, long, default_value = "table")]
+    pub format: OutputFormat,
+
+    /// Maximum events to display
+    #[arg(short = 'n', long, default_value = "50")]
+    pub limit: u32,
 }
 
 // === Completions ===
@@ -551,6 +788,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_policy_diff() {
+        let cli = parse(&["voom", "policy", "diff", "a.voom", "b.voom"]);
+        match cli.command {
+            Commands::Policy(PolicyCommands::Diff { a, b }) => {
+                assert_eq!(a, PathBuf::from("a.voom"));
+                assert_eq!(b, PathBuf::from("b.voom"));
+            }
+            _ => panic!("expected Policy Diff"),
+        }
+    }
+
+    #[test]
+    fn test_policy_diff_requires_two_files() {
+        assert!(try_parse(&["voom", "policy", "diff"]).is_err());
+        assert!(try_parse(&["voom", "policy", "diff", "a.voom"]).is_err());
+    }
+
     // ── Plugin subcommands ───────────────────────────────────
 
     #[test]
@@ -612,9 +867,14 @@ mod tests {
     fn test_jobs_list_no_filter() {
         let cli = parse(&["voom", "jobs", "list"]);
         match cli.command {
-            Commands::Jobs(JobsCommands::List { status, limit }) => {
+            Commands::Jobs(JobsCommands::List {
+                status,
+                limit,
+                offset,
+            }) => {
                 assert!(status.is_none());
                 assert_eq!(limit, 50);
+                assert_eq!(offset, 0);
             }
             _ => panic!("expected Jobs List"),
         }
@@ -628,6 +888,57 @@ mod tests {
                 assert_eq!(status.as_deref(), Some("running"));
             }
             _ => panic!("expected Jobs List"),
+        }
+    }
+
+    #[test]
+    fn test_jobs_list_with_offset() {
+        let cli = parse(&["voom", "jobs", "list", "--offset", "10"]);
+        match cli.command {
+            Commands::Jobs(JobsCommands::List { offset, .. }) => {
+                assert_eq!(offset, 10);
+            }
+            _ => panic!("expected Jobs List"),
+        }
+    }
+
+    #[test]
+    fn test_jobs_retry() {
+        let cli = parse(&["voom", "jobs", "retry", "abc-123"]);
+        match cli.command {
+            Commands::Jobs(JobsCommands::Retry { id }) => {
+                assert_eq!(id, "abc-123");
+            }
+            _ => panic!("expected Jobs Retry"),
+        }
+    }
+
+    #[test]
+    fn test_jobs_retry_requires_id() {
+        assert!(try_parse(&["voom", "jobs", "retry"]).is_err());
+    }
+
+    #[test]
+    fn test_jobs_clear_defaults() {
+        let cli = parse(&["voom", "jobs", "clear"]);
+        match cli.command {
+            Commands::Jobs(JobsCommands::Clear { status, yes }) => {
+                assert!(status.is_none());
+                assert!(!yes);
+            }
+            _ => panic!("expected Jobs Clear"),
+        }
+    }
+
+    #[test]
+    fn test_jobs_clear_with_status_and_yes() {
+        let cli = parse(&["voom", "jobs", "clear", "--status", "failed", "--yes"]);
+        match cli.command {
+            Commands::Jobs(JobsCommands::Clear { status, yes }) => {
+                assert_eq!(status.as_deref(), Some("failed"));
+                assert!(yes);
+            }
+            _ => panic!("expected Jobs Clear"),
         }
     }
 
@@ -753,6 +1064,26 @@ mod tests {
     }
 
     #[test]
+    fn test_db_stats() {
+        let cli = parse(&["voom", "db", "stats"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Db(DbCommands::Stats { .. })
+        ));
+    }
+
+    #[test]
+    fn test_db_stats_json_format() {
+        let cli = parse(&["voom", "db", "stats", "-f", "json"]);
+        match cli.command {
+            Commands::Db(DbCommands::Stats { format }) => {
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Stats"),
+        }
+    }
+
+    #[test]
     fn test_process_force_rescan() {
         let cli = parse(&[
             "voom",
@@ -788,6 +1119,69 @@ mod tests {
             cli.command,
             Commands::Config(ConfigCommands::Edit)
         ));
+    }
+
+    #[test]
+    fn test_config_get() {
+        let cli = parse(&["voom", "config", "get", "auth_token"]);
+        match cli.command {
+            Commands::Config(ConfigCommands::Get { key }) => {
+                assert_eq!(key, "auth_token");
+            }
+            _ => panic!("expected Config Get"),
+        }
+    }
+
+    #[test]
+    fn test_config_get_nested_key() {
+        let cli = parse(&["voom", "config", "get", "plugin.ffmpeg-executor.hw_accel"]);
+        match cli.command {
+            Commands::Config(ConfigCommands::Get { key }) => {
+                assert_eq!(key, "plugin.ffmpeg-executor.hw_accel");
+            }
+            _ => panic!("expected Config Get"),
+        }
+    }
+
+    #[test]
+    fn test_config_get_requires_key() {
+        assert!(try_parse(&["voom", "config", "get"]).is_err());
+    }
+
+    #[test]
+    fn test_config_set() {
+        let cli = parse(&["voom", "config", "set", "auth_token", "mytoken"]);
+        match cli.command {
+            Commands::Config(ConfigCommands::Set { key, value }) => {
+                assert_eq!(key, "auth_token");
+                assert_eq!(value, "mytoken");
+            }
+            _ => panic!("expected Config Set"),
+        }
+    }
+
+    #[test]
+    fn test_config_set_nested_key() {
+        let cli = parse(&[
+            "voom",
+            "config",
+            "set",
+            "plugin.ffmpeg-executor.hw_accel",
+            "nvenc",
+        ]);
+        match cli.command {
+            Commands::Config(ConfigCommands::Set { key, value }) => {
+                assert_eq!(key, "plugin.ffmpeg-executor.hw_accel");
+                assert_eq!(value, "nvenc");
+            }
+            _ => panic!("expected Config Set"),
+        }
+    }
+
+    #[test]
+    fn test_config_set_requires_key_and_value() {
+        assert!(try_parse(&["voom", "config", "set"]).is_err());
+        assert!(try_parse(&["voom", "config", "set", "key"]).is_err());
     }
 
     // ── Completions ──────────────────────────────────────────
@@ -830,13 +1224,74 @@ mod tests {
         assert!(try_parse(&["voom", "completions", "nushell"]).is_err());
     }
 
-    // ── No-arg subcommands ───────────────────────────────────
+    // ── Health subcommands ────────────────────────────────────
 
     #[test]
-    fn test_doctor_subcommand() {
+    fn test_health_check() {
+        let cli = parse(&["voom", "health", "check"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Health(HealthCommands::Check)
+        ));
+    }
+
+    #[test]
+    fn test_health_history_defaults() {
+        let cli = parse(&["voom", "health", "history"]);
+        match cli.command {
+            Commands::Health(HealthCommands::History {
+                check,
+                since,
+                limit,
+                format,
+            }) => {
+                assert!(check.is_none());
+                assert!(since.is_none());
+                assert_eq!(limit, 50);
+                assert!(matches!(format, OutputFormat::Table));
+            }
+            _ => panic!("expected Health History"),
+        }
+    }
+
+    #[test]
+    fn test_health_history_all_flags() {
+        let cli = parse(&[
+            "voom",
+            "health",
+            "history",
+            "--check",
+            "data_dir_exists",
+            "--since",
+            "2024-01-15",
+            "--format",
+            "json",
+            "-n",
+            "10",
+        ]);
+        match cli.command {
+            Commands::Health(HealthCommands::History {
+                check,
+                since,
+                limit,
+                format,
+            }) => {
+                assert_eq!(check.as_deref(), Some("data_dir_exists"));
+                assert_eq!(since.as_deref(), Some("2024-01-15"));
+                assert_eq!(limit, 10);
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Health History"),
+        }
+    }
+
+    #[test]
+    fn test_doctor_alias_backward_compat() {
         let cli = parse(&["voom", "doctor"]);
         assert!(matches!(cli.command, Commands::Doctor));
     }
+
+    // ── No-arg subcommands ───────────────────────────────────
 
     #[test]
     fn test_init_subcommand() {
@@ -881,11 +1336,257 @@ mod tests {
         .is_err());
     }
 
+    // ── Tools subcommands ─────────────────────────────────────
+
+    #[test]
+    fn test_tools_list() {
+        let cli = parse(&["voom", "tools", "list"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Tools(ToolsCommands::List { .. })
+        ));
+    }
+
+    #[test]
+    fn test_tools_list_json() {
+        let cli = parse(&["voom", "tools", "list", "--format", "json"]);
+        match cli.command {
+            Commands::Tools(ToolsCommands::List { format }) => {
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Tools List"),
+        }
+    }
+
+    #[test]
+    fn test_tools_info() {
+        let cli = parse(&["voom", "tools", "info", "ffmpeg"]);
+        match cli.command {
+            Commands::Tools(ToolsCommands::Info { name, .. }) => {
+                assert_eq!(name, "ffmpeg");
+            }
+            _ => panic!("expected Tools Info"),
+        }
+    }
+
+    #[test]
+    fn test_tools_info_requires_name() {
+        assert!(try_parse(&["voom", "tools", "info"]).is_err());
+    }
+
+    // ── History ──────────────────────────────────────────────
+
+    #[test]
+    fn test_history_requires_file() {
+        assert!(try_parse(&["voom", "history"]).is_err());
+    }
+
+    #[test]
+    fn test_history_defaults() {
+        let cli = parse(&["voom", "history", "/media/movie.mkv"]);
+        match cli.command {
+            Commands::History(args) => {
+                assert_eq!(args.file, PathBuf::from("/media/movie.mkv"));
+                assert!(matches!(args.format, OutputFormat::Table));
+            }
+            _ => panic!("expected History"),
+        }
+    }
+
+    #[test]
+    fn test_history_json_format() {
+        let cli = parse(&["voom", "history", "f.mkv", "--format", "json"]);
+        match cli.command {
+            Commands::History(args) => assert!(matches!(args.format, OutputFormat::Json)),
+            _ => panic!("expected History"),
+        }
+    }
+
+    // ── Backup subcommands ──────────────────────────────────
+
+    #[test]
+    fn test_backup_list() {
+        let cli = parse(&["voom", "backup", "list", "/media"]);
+        match cli.command {
+            Commands::Backup(BackupCommands::List { path, .. }) => {
+                assert_eq!(path, PathBuf::from("/media"));
+            }
+            _ => panic!("expected Backup List"),
+        }
+    }
+
+    #[test]
+    fn test_backup_list_requires_path() {
+        assert!(try_parse(&["voom", "backup", "list"]).is_err());
+    }
+
+    #[test]
+    fn test_backup_restore() {
+        let cli = parse(&["voom", "backup", "restore", "/path/to/file.vbak"]);
+        match cli.command {
+            Commands::Backup(BackupCommands::Restore { backup_path }) => {
+                assert_eq!(backup_path, PathBuf::from("/path/to/file.vbak"));
+            }
+            _ => panic!("expected Backup Restore"),
+        }
+    }
+
+    #[test]
+    fn test_backup_cleanup() {
+        let cli = parse(&["voom", "backup", "cleanup", "/media", "--yes"]);
+        match cli.command {
+            Commands::Backup(BackupCommands::Cleanup { path, yes }) => {
+                assert_eq!(path, PathBuf::from("/media"));
+                assert!(yes);
+            }
+            _ => panic!("expected Backup Cleanup"),
+        }
+    }
+
+    #[test]
+    fn test_backup_cleanup_requires_path() {
+        assert!(try_parse(&["voom", "backup", "cleanup"]).is_err());
+    }
+
+    // ── Files subcommands ─────────────────────────────────────
+
+    #[test]
+    fn test_files_list_defaults() {
+        let cli = parse(&["voom", "files", "list"]);
+        match cli.command {
+            Commands::Files(FilesCommands::List {
+                container,
+                codec,
+                lang,
+                path_prefix,
+                limit,
+                offset,
+                format,
+            }) => {
+                assert!(container.is_none());
+                assert!(codec.is_none());
+                assert!(lang.is_none());
+                assert!(path_prefix.is_none());
+                assert_eq!(limit, 100);
+                assert_eq!(offset, 0);
+                assert!(matches!(format, OutputFormat::Table));
+            }
+            _ => panic!("expected Files List"),
+        }
+    }
+
+    #[test]
+    fn test_files_list_all_filters() {
+        let cli = parse(&[
+            "voom",
+            "files",
+            "list",
+            "--container",
+            "mkv",
+            "--codec",
+            "hevc",
+            "--lang",
+            "eng",
+            "--path-prefix",
+            "/media",
+        ]);
+        match cli.command {
+            Commands::Files(FilesCommands::List {
+                container,
+                codec,
+                lang,
+                path_prefix,
+                ..
+            }) => {
+                assert_eq!(container.as_deref(), Some("mkv"));
+                assert_eq!(codec.as_deref(), Some("hevc"));
+                assert_eq!(lang.as_deref(), Some("eng"));
+                assert_eq!(path_prefix.as_deref(), Some("/media"));
+            }
+            _ => panic!("expected Files List"),
+        }
+    }
+
+    #[test]
+    fn test_files_list_json_format() {
+        let cli = parse(&["voom", "files", "list", "--format", "json"]);
+        match cli.command {
+            Commands::Files(FilesCommands::List { format, .. }) => {
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Files List"),
+        }
+    }
+
+    #[test]
+    fn test_files_list_limit_short_flag() {
+        let cli = parse(&["voom", "files", "list", "-n", "25"]);
+        match cli.command {
+            Commands::Files(FilesCommands::List { limit, .. }) => {
+                assert_eq!(limit, 25);
+            }
+            _ => panic!("expected Files List"),
+        }
+    }
+
+    // ── Plans subcommands ──────────────────────────────────────
+
+    #[test]
+    fn test_plans_show_requires_file() {
+        assert!(try_parse(&["voom", "plans", "show"]).is_err());
+    }
+
+    #[test]
+    fn test_plans_show_with_uuid() {
+        let cli = parse(&[
+            "voom",
+            "plans",
+            "show",
+            "550e8400-e29b-41d4-a716-446655440000",
+        ]);
+        match cli.command {
+            Commands::Plans(PlansCommands::Show { file, format }) => {
+                assert_eq!(file, "550e8400-e29b-41d4-a716-446655440000");
+                assert!(matches!(format, OutputFormat::Table));
+            }
+            _ => panic!("expected Plans Show"),
+        }
+    }
+
+    #[test]
+    fn test_plans_show_with_path() {
+        let cli = parse(&["voom", "plans", "show", "/media/movie.mkv"]);
+        match cli.command {
+            Commands::Plans(PlansCommands::Show { file, .. }) => {
+                assert_eq!(file, "/media/movie.mkv");
+            }
+            _ => panic!("expected Plans Show"),
+        }
+    }
+
+    #[test]
+    fn test_plans_show_json_format() {
+        let cli = parse(&[
+            "voom",
+            "plans",
+            "show",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "--format",
+            "json",
+        ]);
+        match cli.command {
+            Commands::Plans(PlansCommands::Show { format, .. }) => {
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Plans Show"),
+        }
+    }
+
     // ── Verbose flag is global (works after subcommand) ──────
 
     #[test]
     fn test_verbose_after_subcommand() {
-        let cli = parse(&["voom", "doctor", "-vv"]);
+        let cli = parse(&["voom", "health", "check", "-vv"]);
         assert_eq!(cli.verbose, 2);
     }
 }

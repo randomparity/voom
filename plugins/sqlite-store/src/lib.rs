@@ -9,8 +9,8 @@ use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
 use voom_domain::storage::{
-    BadFileStorage, FileStorage, HealthCheckRecord, HealthCheckStorage, PlanStorage,
-    PluginDataStorage,
+    BadFileStorage, EventLogRecord, EventLogStorage, FileStorage, HealthCheckRecord,
+    HealthCheckStorage, PlanStorage, PluginDataStorage,
 };
 use voom_kernel::{Plugin, PluginContext};
 
@@ -61,21 +61,10 @@ impl Plugin for SqliteStorePlugin {
         &self.capabilities
     }
 
-    fn handles(&self, event_type: &str) -> bool {
-        matches!(
-            event_type,
-            Event::FILE_DISCOVERED
-                | Event::FILE_INTROSPECTED
-                | Event::FILE_INTROSPECTION_FAILED
-                | Event::PLAN_CREATED
-                | Event::PLAN_COMPLETED
-                | Event::PLAN_SKIPPED
-                | Event::PLAN_FAILED
-                | Event::METADATA_ENRICHED
-                | Event::TOOL_DETECTED
-                | Event::EXECUTOR_CAPABILITIES
-                | Event::HEALTH_STATUS
-        )
+    fn handles(&self, _event_type: &str) -> bool {
+        // Handles ALL events: specific types get domain-specific storage,
+        // and every event is logged to the event_log table.
+        true
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
@@ -109,6 +98,9 @@ impl Plugin for SqliteStorePlugin {
                 store.upsert_bad_file(&bad_file)?;
                 tracing::info!(path = %e.path.display(), error = %e.error, "stored bad file");
             }
+            // sqlite-store runs at priority 100, so executors (priority 39/40)
+            // have already processed the plan by the time we record it here.
+            // This is audit-after-execution by design, not a race condition.
             Event::PlanCreated(e) => {
                 let plan_id = store.save_plan(&e.plan)?;
                 tracing::info!(%plan_id, "stored plan");
@@ -198,7 +190,33 @@ impl Plugin for SqliteStorePlugin {
                     );
                 }
             }
-            _ => {}
+            _ => {
+                tracing::trace!(
+                    event_type = event.event_type(),
+                    "no domain-specific handler"
+                );
+            }
+        }
+
+        // Log every event to the event_log table (best-effort).
+        let log_record = EventLogRecord::new(
+            uuid::Uuid::new_v4(),
+            event.event_type().to_string(),
+            serde_json::to_string(event).unwrap_or_default(),
+            event.summary(),
+        );
+        match store.insert_event_log(&log_record) {
+            Ok(rowid) => {
+                // Auto-prune: every 1000th insert, keep last 10_000 rows
+                if rowid % 1000 == 0 {
+                    if let Err(e) = store.prune_event_log(10_000) {
+                        tracing::warn!(error = %e, "event log prune failed");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "event log insert failed");
+            }
         }
 
         Ok(None)
@@ -294,10 +312,15 @@ mod tests {
     }
 
     #[test]
-    fn test_does_not_handle_unrelated_event_types() {
+    fn test_handles_all_event_types() {
         let plugin = SqliteStorePlugin::new();
-        assert!(!plugin.handles(Event::JOB_STARTED));
-        assert!(!plugin.handles(""));
+        assert!(plugin.handles(Event::JOB_STARTED));
+        assert!(plugin.handles(Event::JOB_PROGRESS));
+        assert!(plugin.handles(Event::JOB_COMPLETED));
+        assert!(plugin.handles(Event::JOB_ENQUEUE_REQUESTED));
+        assert!(plugin.handles(Event::PLAN_EXECUTING));
+        assert!(plugin.handles(Event::PLUGIN_ERROR));
+        assert!(plugin.handles("unknown.event"));
     }
 
     #[test]

@@ -22,7 +22,7 @@ use crate::stats::ProcessingStats;
 use crate::storage::{
     BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage,
     HealthCheckFilters, HealthCheckRecord, HealthCheckStorage, JobFilters, JobStorage,
-    MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage, StatsStorage,
+    MaintenanceStorage, PageStats, PlanStorage, PlanSummary, PluginDataStorage, StatsStorage,
 };
 
 /// Create a standard test `MediaFile` with video, two audio, and one subtitle track.
@@ -272,6 +272,21 @@ impl JobStorage for InMemoryStore {
         }
         Ok(counts.into_iter().collect())
     }
+
+    fn delete_jobs(&self, status: Option<JobStatus>) -> Result<u64> {
+        let mut jobs = self.jobs.lock().unwrap();
+        let before = jobs.len();
+        match status {
+            Some(s) => jobs.retain(|_, j| j.status != s),
+            None => jobs.retain(|_, j| {
+                !matches!(
+                    j.status,
+                    JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled
+                )
+            }),
+        }
+        Ok((before - jobs.len()) as u64)
+    }
 }
 
 impl PlanStorage for InMemoryStore {
@@ -366,6 +381,23 @@ impl HealthCheckStorage for InMemoryStore {
     }
 }
 
+impl crate::storage::EventLogStorage for InMemoryStore {
+    fn insert_event_log(&self, _record: &crate::storage::EventLogRecord) -> Result<i64> {
+        Ok(0)
+    }
+
+    fn list_event_log(
+        &self,
+        _filters: &crate::storage::EventLogFilters,
+    ) -> Result<Vec<crate::storage::EventLogRecord>> {
+        Ok(Vec::new())
+    }
+
+    fn prune_event_log(&self, _keep_last: u64) -> Result<u64> {
+        Ok(0)
+    }
+}
+
 impl MaintenanceStorage for InMemoryStore {
     fn vacuum(&self) -> Result<()> {
         Ok(())
@@ -377,5 +409,17 @@ impl MaintenanceStorage for InMemoryStore {
 
     fn prune_missing_files_under(&self, _root: &Path) -> Result<u64> {
         Ok(0)
+    }
+
+    fn table_row_counts(&self) -> Result<Vec<(String, u64)>> {
+        Ok(vec![])
+    }
+
+    fn page_stats(&self) -> Result<PageStats> {
+        Ok(PageStats {
+            page_size: 4096,
+            page_count: 0,
+            freelist_count: 0,
+        })
     }
 }

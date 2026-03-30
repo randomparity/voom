@@ -1,5 +1,7 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
+use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use console::style;
+use voom_domain::storage::HealthCheckFilters;
 use voom_ffmpeg_executor::hwaccel::{resolve_hw_config, HwAccelBackend};
 use voom_ffmpeg_executor::probe::{
     enumerate_gpus, parse_hw_implementations, parse_hwaccels, validate_hw_encoder,
@@ -7,11 +9,25 @@ use voom_ffmpeg_executor::probe::{
 };
 
 use crate::app;
+use crate::cli::{HealthCommands, OutputFormat};
 use crate::config;
 use crate::output::sanitize_for_display;
 use crate::tools::print_tool_status;
 
-/// Run the doctor command.
+/// Dispatch health subcommands.
+pub fn run(cmd: HealthCommands) -> Result<()> {
+    match cmd {
+        HealthCommands::Check => check(),
+        HealthCommands::History {
+            check,
+            since,
+            limit,
+            format,
+        } => history(check, since, limit, format),
+    }
+}
+
+/// Run live system health checks (formerly `voom doctor`).
 ///
 /// Tool detection creates a standalone `ToolDetectorPlugin` instance rather
 /// than retrieving the kernel-registered one. This is intentional: doctor
@@ -19,7 +35,7 @@ use crate::tools::print_tool_status;
 /// bootstrap (e.g. missing database directory). The standalone instance does
 /// not receive per-plugin configuration from config.toml, but tool-detector
 /// currently has no configurable settings.
-pub fn run() -> Result<()> {
+pub fn check() -> Result<()> {
     println!("{}", style("VOOM System Health Check").bold().underlined());
     println!();
 
@@ -42,7 +58,10 @@ pub fn run() -> Result<()> {
 
     // 2. Database
     print!("  Database ... ");
-    let config = config::load_config().unwrap_or_default();
+    let config = config::load_config().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to load config, using defaults");
+        config::AppConfig::default()
+    });
     let kernel_result = app::bootstrap_kernel_with_store(&config);
     match &kernel_result {
         Ok(app::BootstrapResult { store, .. }) => {
@@ -73,8 +92,8 @@ pub fn run() -> Result<()> {
     issues += tool_result.missing_required;
 
     // 4. Hardware acceleration (only if ffmpeg was found)
-    if detector.tool("ffmpeg").is_some() {
-        print_hw_accel_status(&config);
+    if let Some(ffmpeg_tool) = detector.tool("ffmpeg") {
+        print_hw_accel_status(&config, &ffmpeg_tool.path);
     }
 
     // 5. Plugins
@@ -163,11 +182,11 @@ fn print_encoder_block(hw_encoders: &[String], backend: HwAccelBackend, device: 
     }
 }
 
-fn print_hw_accel_status(app_config: &config::AppConfig) {
+fn print_hw_accel_status(app_config: &config::AppConfig, ffmpeg_path: &std::path::Path) {
     println!();
     println!("{}", style("Hardware acceleration:").bold());
 
-    let hwaccels_output = std::process::Command::new("ffmpeg")
+    let hwaccels_output = std::process::Command::new(ffmpeg_path)
         .args(["-hwaccels", "-hide_banner"])
         .output();
 
@@ -247,10 +266,10 @@ fn print_hw_accel_status(app_config: &config::AppConfig) {
         }
     }
 
-    let encoders_output = std::process::Command::new("ffmpeg")
+    let encoders_output = std::process::Command::new(ffmpeg_path)
         .args(["-encoders", "-hide_banner"])
         .output();
-    let decoders_output = std::process::Command::new("ffmpeg")
+    let decoders_output = std::process::Command::new(ffmpeg_path)
         .args(["-decoders", "-hide_banner"])
         .output();
 
@@ -290,12 +309,107 @@ fn print_hw_accel_status(app_config: &config::AppConfig) {
     }
 }
 
+fn history(
+    check_name: Option<String>,
+    since: Option<String>,
+    limit: u32,
+    format: OutputFormat,
+) -> Result<()> {
+    let since_dt = since.map(|s| parse_datetime(&s)).transpose()?;
+
+    let mut filters = HealthCheckFilters::default();
+    filters.check_name = check_name;
+    filters.since = since_dt;
+    filters.limit = Some(limit);
+
+    let config = config::load_config().unwrap_or_default();
+    let store = app::open_store(&config)?;
+    let records = store.list_health_checks(&filters)?;
+
+    match format {
+        OutputFormat::Table => {
+            if records.is_empty() {
+                println!("No health check records found.");
+                return Ok(());
+            }
+            println!(
+                "{:<20} {:<24} {:<8} Details",
+                "Timestamp", "Check", "Status"
+            );
+            println!("{}", "-".repeat(76));
+            for r in &records {
+                let status = if r.passed {
+                    style("PASS").green().to_string()
+                } else {
+                    style("FAIL").red().to_string()
+                };
+                let details = r.details.as_deref().unwrap_or("");
+                println!(
+                    "{:<20} {:<24} {:<8} {}",
+                    r.checked_at.format("%Y-%m-%d %H:%M:%S"),
+                    r.check_name,
+                    status,
+                    details,
+                );
+            }
+        }
+        OutputFormat::Json => {
+            let json: Vec<serde_json::Value> = records
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "checked_at": r.checked_at.to_rfc3339(),
+                        "check_name": r.check_name,
+                        "passed": r.passed,
+                        "details": r.details,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_datetime(s: &str) -> Result<chrono::DateTime<Utc>> {
+    // Try full datetime first: 2024-01-15T10:30:00
+    if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        return Ok(Utc.from_utc_datetime(&ndt));
+    }
+    // Try date only: 2024-01-15 (midnight UTC)
+    if let Ok(nd) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        let ndt = nd.and_hms_opt(0, 0, 0).expect("midnight is always valid");
+        return Ok(Utc.from_utc_datetime(&ndt));
+    }
+    bail!("invalid datetime '{s}': expected YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS");
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn test_tool_detector_creation() {
         let detector = voom_tool_detector::ToolDetectorPlugin::new();
-        // Should be able to create without panic
         assert!(detector.tool("nonexistent-tool").is_none());
+    }
+
+    #[test]
+    fn test_parse_datetime_date_only() {
+        let dt = parse_datetime("2024-01-15").unwrap();
+        assert_eq!(dt.to_rfc3339(), "2024-01-15T00:00:00+00:00");
+    }
+
+    #[test]
+    fn test_parse_datetime_full() {
+        let dt = parse_datetime("2024-01-15T10:30:00").unwrap();
+        assert_eq!(dt.to_rfc3339(), "2024-01-15T10:30:00+00:00");
+    }
+
+    #[test]
+    fn test_parse_datetime_invalid() {
+        assert!(parse_datetime("not-a-date").is_err());
+        assert!(parse_datetime("2024/01/15").is_err());
     }
 }

@@ -122,6 +122,12 @@ impl ProgressReporter for TracingReporter {
 /// Reporter that stores progress in the database via `JobStorage`.
 ///
 /// Used in daemon mode where the web UI polls for progress updates.
+///
+/// `store.update_job()` calls through to SQLite which is synchronous I/O.
+/// When used from async worker pool tasks, the `ProgressReporter` trait's
+/// sync interface means these calls block the current thread briefly.
+/// This is acceptable because the worker pool runs on `spawn_blocking`
+/// tasks, not on tokio's cooperative executor threads.
 pub struct StorageReporter {
     store: std::sync::Arc<dyn voom_domain::storage::JobStorage>,
 }

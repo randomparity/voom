@@ -1,4 +1,7 @@
 interface types {
+    // NOTE: media-file and track are not yet used at the WASM boundary;
+    // the actual interface passes MessagePack blobs in list<u8>.
+
     record media-file {
         path: string,
         size: u64,
@@ -44,18 +47,6 @@ interface types {
         subtitle-forced,
         subtitle-commentary,
         attachment,
-    }
-
-    enum container {
-        mkv,
-        mp4,
-        avi,
-        webm,
-        flv,
-        wmv,
-        mov,
-        ts,
-        other,
     }
 
     record key-value {
@@ -162,9 +153,4 @@ interface types {
         stderr: list<u8>,
     }
 
-    record file-filters {
-        extensions: list<string>,
-        min-size: option<u64>,
-        max-size: option<u64>,
-    }
 }
