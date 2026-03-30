@@ -272,6 +272,21 @@ impl JobStorage for InMemoryStore {
         }
         Ok(counts.into_iter().collect())
     }
+
+    fn delete_jobs(&self, status: Option<JobStatus>) -> Result<u64> {
+        let mut jobs = self.jobs.lock().unwrap();
+        let before = jobs.len();
+        match status {
+            Some(s) => jobs.retain(|_, j| j.status != s),
+            None => jobs.retain(|_, j| {
+                !matches!(
+                    j.status,
+                    JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled
+                )
+            }),
+        }
+        Ok((before - jobs.len()) as u64)
+    }
 }
 
 impl PlanStorage for InMemoryStore {

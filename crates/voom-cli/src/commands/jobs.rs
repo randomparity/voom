@@ -7,13 +7,19 @@ use crate::output;
 
 pub fn run(cmd: JobsCommands) -> Result<()> {
     match cmd {
-        JobsCommands::List { status, limit } => list(status, limit),
+        JobsCommands::List {
+            status,
+            limit,
+            offset,
+        } => list(status, limit, offset),
         JobsCommands::Status { id } => status(id),
         JobsCommands::Cancel { id } => cancel(id),
+        JobsCommands::Retry { id } => retry(id),
+        JobsCommands::Clear { status, yes } => clear(status, yes),
     }
 }
 
-fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
+fn list(status_filter: Option<String>, limit: u32, offset: u32) -> Result<()> {
     let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
@@ -38,6 +44,9 @@ fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
             let mut f = JobFilters::default();
             f.status = filter_status;
             f.limit = Some(limit);
+            if offset > 0 {
+                f.offset = Some(offset);
+            }
             f
         })
         .context("failed to list jobs")?;
@@ -102,7 +111,7 @@ fn list(status_filter: Option<String>, limit: u32) -> Result<()> {
             println!(
                 "\n{} {}",
                 style(format!("Showing {shown} of {total} jobs.")).dim(),
-                style("Use --limit or --status to narrow results.").dim(),
+                style("Use --limit, --offset, or --status to narrow results.").dim(),
             );
         }
         println!("{}", style(summary.join(" | ")).dim());
@@ -177,6 +186,100 @@ fn cancel(id: String) -> Result<()> {
         .context("failed to cancel job")?;
 
     println!("{} Job {id} cancelled.", style("OK").bold().green());
+
+    Ok(())
+}
+
+fn retry(id: String) -> Result<()> {
+    let config = crate::config::load_config()?;
+    let store = crate::app::open_store(&config)?;
+
+    let uuid = uuid::Uuid::parse_str(&id).with_context(|| format!("Invalid job ID: {id}"))?;
+
+    let job = store
+        .job(&uuid)?
+        .ok_or_else(|| anyhow::anyhow!("Job {id} not found"))?;
+
+    if job.status != voom_domain::JobStatus::Failed {
+        anyhow::bail!(
+            "Cannot retry job {id}: status is '{}', only failed jobs can be retried",
+            job.status.as_str()
+        );
+    }
+
+    let mut new_job = voom_domain::Job::new(job.job_type.clone());
+    new_job.priority = job.priority;
+    new_job.payload.clone_from(&job.payload);
+
+    let new_id = store
+        .create_job(&new_job)
+        .context("failed to create retry job")?;
+
+    println!(
+        "{} Created retry job {} from failed job {}",
+        style("OK").bold().green(),
+        style(&new_id.to_string()[..8]).cyan(),
+        style(&id[..8.min(id.len())]).dim(),
+    );
+
+    Ok(())
+}
+
+fn clear(status_filter: Option<String>, yes: bool) -> Result<()> {
+    use voom_domain::job::JobStatus;
+
+    let filter_status = match status_filter.as_deref() {
+        Some(s) => {
+            let parsed = JobStatus::parse(s).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Invalid job status '{s}'. \
+                     Valid values: completed, failed, cancelled"
+                )
+            })?;
+            if !matches!(
+                parsed,
+                JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled
+            ) {
+                anyhow::bail!(
+                    "Cannot clear '{s}' jobs: \
+                     only terminal statuses (completed, failed, cancelled) \
+                     can be cleared"
+                );
+            }
+            Some(parsed)
+        }
+        None => None,
+    };
+
+    let config = crate::config::load_config()?;
+    let store = crate::app::open_store(&config)?;
+
+    let label = match filter_status {
+        Some(s) => format!("all {} jobs", s.as_str()),
+        None => "all completed, failed, and cancelled jobs".to_string(),
+    };
+
+    if !yes {
+        eprintln!("Delete {label}?");
+        eprintln!("Type 'yes' to confirm:");
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if input.trim() != "yes" {
+            println!("{}", style("Aborted.").dim());
+            return Ok(());
+        }
+    }
+
+    let deleted = store
+        .delete_jobs(filter_status)
+        .context("failed to delete jobs")?;
+
+    println!(
+        "{} Deleted {deleted} job{}.",
+        style("OK").bold().green(),
+        if deleted == 1 { "" } else { "s" },
+    );
 
     Ok(())
 }

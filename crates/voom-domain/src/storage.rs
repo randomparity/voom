@@ -72,6 +72,11 @@ pub trait JobStorage: Send + Sync {
     fn claim_job_by_id(&self, job_id: &Uuid, worker_id: &str) -> Result<Option<Job>>;
     fn list_jobs(&self, filters: &JobFilters) -> Result<Vec<Job>>;
     fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>>;
+    /// Delete jobs by status. If `status` is `Some`, delete only jobs
+    /// with that status. If `None`, delete all terminal jobs
+    /// (completed, failed, cancelled). Never deletes pending/running.
+    /// Returns the number of deleted rows.
+    fn delete_jobs(&self, status: Option<JobStatus>) -> Result<u64>;
 }
 
 /// Plan persistence operations.

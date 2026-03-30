@@ -200,6 +200,23 @@ impl JobStorage for SqliteStore {
         Ok(jobs)
     }
 
+    fn delete_jobs(&self, status: Option<JobStatus>) -> Result<u64> {
+        let conn = self.conn()?;
+        let count = match status {
+            Some(s) => conn
+                .execute("DELETE FROM jobs WHERE status = ?1", params![s.as_str()])
+                .map_err(storage_err("failed to delete jobs"))?,
+            None => conn
+                .execute(
+                    "DELETE FROM jobs WHERE status IN \
+                     ('completed', 'failed', 'cancelled')",
+                    [],
+                )
+                .map_err(storage_err("failed to delete jobs"))?,
+        };
+        Ok(count as u64)
+    }
+
     fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>> {
         let conn = self.conn()?;
         let mut stmt = conn

@@ -226,6 +226,9 @@ pub enum JobsCommands {
         /// Maximum number of jobs to display
         #[arg(short = 'n', long, default_value = "50")]
         limit: u32,
+        /// Number of jobs to skip
+        #[arg(long, default_value = "0")]
+        offset: u32,
     },
     /// Show job details
     Status {
@@ -236,6 +239,20 @@ pub enum JobsCommands {
     Cancel {
         /// Job ID
         id: String,
+    },
+    /// Retry a failed job
+    Retry {
+        /// Job ID
+        id: String,
+    },
+    /// Delete completed/failed/cancelled jobs
+    Clear {
+        /// Only delete jobs with this status
+        #[arg(long)]
+        status: Option<String>,
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -750,9 +767,14 @@ mod tests {
     fn test_jobs_list_no_filter() {
         let cli = parse(&["voom", "jobs", "list"]);
         match cli.command {
-            Commands::Jobs(JobsCommands::List { status, limit }) => {
+            Commands::Jobs(JobsCommands::List {
+                status,
+                limit,
+                offset,
+            }) => {
                 assert!(status.is_none());
                 assert_eq!(limit, 50);
+                assert_eq!(offset, 0);
             }
             _ => panic!("expected Jobs List"),
         }
@@ -766,6 +788,57 @@ mod tests {
                 assert_eq!(status.as_deref(), Some("running"));
             }
             _ => panic!("expected Jobs List"),
+        }
+    }
+
+    #[test]
+    fn test_jobs_list_with_offset() {
+        let cli = parse(&["voom", "jobs", "list", "--offset", "10"]);
+        match cli.command {
+            Commands::Jobs(JobsCommands::List { offset, .. }) => {
+                assert_eq!(offset, 10);
+            }
+            _ => panic!("expected Jobs List"),
+        }
+    }
+
+    #[test]
+    fn test_jobs_retry() {
+        let cli = parse(&["voom", "jobs", "retry", "abc-123"]);
+        match cli.command {
+            Commands::Jobs(JobsCommands::Retry { id }) => {
+                assert_eq!(id, "abc-123");
+            }
+            _ => panic!("expected Jobs Retry"),
+        }
+    }
+
+    #[test]
+    fn test_jobs_retry_requires_id() {
+        assert!(try_parse(&["voom", "jobs", "retry"]).is_err());
+    }
+
+    #[test]
+    fn test_jobs_clear_defaults() {
+        let cli = parse(&["voom", "jobs", "clear"]);
+        match cli.command {
+            Commands::Jobs(JobsCommands::Clear { status, yes }) => {
+                assert!(status.is_none());
+                assert!(!yes);
+            }
+            _ => panic!("expected Jobs Clear"),
+        }
+    }
+
+    #[test]
+    fn test_jobs_clear_with_status_and_yes() {
+        let cli = parse(&["voom", "jobs", "clear", "--status", "failed", "--yes"]);
+        match cli.command {
+            Commands::Jobs(JobsCommands::Clear { status, yes }) => {
+                assert_eq!(status.as_deref(), Some("failed"));
+                assert!(yes);
+            }
+            _ => panic!("expected Jobs Clear"),
         }
     }
 
