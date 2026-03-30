@@ -715,6 +715,17 @@ pub mod wasm {
 
         host_instance
             .func_wrap(
+                "write-file",
+                |ctx: wasmtime::StoreContextMut<'_, HostState>,
+                 (path, content): (String, Vec<u8>)|
+                 -> Result<(Result<(), String>,), wasmtime::Error> {
+                    Ok((ctx.data().write_file(&path, &content),))
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
+
+        host_instance
+            .func_wrap(
                 "read-file-metadata",
                 |ctx: wasmtime::StoreContextMut<'_, HostState>,
                  (path,): (String,)|

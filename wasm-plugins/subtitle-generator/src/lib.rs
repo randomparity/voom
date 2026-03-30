@@ -7,7 +7,7 @@
 //!
 //! # Host functions used
 //!
-//! - `run-tool` -- write the generated SRT file to disk via shell
+//! - `write-file` -- write the generated SRT file to disk
 //! - `get-plugin-data` -- load plugin configuration
 //! - `log` -- structured logging
 
@@ -126,25 +126,9 @@ pub fn on_event(
     let srt_path = parent.join(format!("{stem}.forced-{subtitle_lang}.srt"));
     let srt_path_str = srt_path.to_string_lossy().to_string();
 
-    let escaped = srt_content.replace('\'', "'\\''");
-    let cmd = format!("printf '%s' '{escaped}' > '{srt_path_str}'");
-    match host.run_tool("sh", &["-c".to_string(), cmd], 10_000) {
-        Err(e) => {
-            host.log("error", &format!("failed to write SRT file: {e}"));
-            return None;
-        }
-        Ok(o) if o.exit_code != 0 => {
-            host.log(
-                "error",
-                &format!(
-                    "sh exited with code {}: {}",
-                    o.exit_code,
-                    String::from_utf8_lossy(&o.stderr)
-                ),
-            );
-            return None;
-        }
-        Ok(_) => {}
+    if let Err(e) = host.write_file(&srt_path_str, srt_content.as_bytes()) {
+        host.log("error", &format!("failed to write SRT file: {e}"));
+        return None;
     }
 
     host.log(
@@ -255,30 +239,25 @@ mod tests {
     use voom_plugin_sdk::*;
 
     struct MockHost {
-        tool_calls: RefCell<Vec<(String, Vec<String>)>>,
+        written_files: RefCell<Vec<(String, Vec<u8>)>>,
         config: Option<SubtitleGeneratorConfig>,
     }
 
     impl MockHost {
         fn new() -> Self {
             Self {
-                tool_calls: RefCell::new(Vec::new()),
+                written_files: RefCell::new(Vec::new()),
                 config: None,
             }
         }
     }
 
     impl HostFunctions for MockHost {
-        fn run_tool(
-            &self,
-            tool: &str,
-            args: &[String],
-            _timeout_ms: u64,
-        ) -> Result<ToolOutput, String> {
-            self.tool_calls
+        fn write_file(&self, path: &str, content: &[u8]) -> Result<(), String> {
+            self.written_files
                 .borrow_mut()
-                .push((tool.to_string(), args.to_vec()));
-            Ok(ToolOutput::new(0, vec![], vec![]))
+                .push((path.to_string(), content.to_vec()));
+            Ok(())
         }
 
         fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
@@ -369,15 +348,15 @@ mod tests {
             _ => panic!("expected SubtitleGenerated"),
         }
 
-        // Verify the SRT content was written via shell
-        let calls = host.tool_calls.borrow();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, "sh");
-        let cmd = &calls[0].1[1];
-        assert!(cmd.contains("Bonjour le monde"));
-        assert!(cmd.contains("Hola amigos"));
+        // Verify the SRT content was written via write_file
+        let files = host.written_files.borrow();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].0.ends_with(".forced-eng.srt"));
+        let content = String::from_utf8_lossy(&files[0].1);
+        assert!(content.contains("Bonjour le monde"));
+        assert!(content.contains("Hola amigos"));
         // Primary language segments should NOT appear
-        assert!(!cmd.contains("Hello there"));
+        assert!(!content.contains("Hello there"));
     }
 
     #[test]

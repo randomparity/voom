@@ -39,6 +39,12 @@ pub trait HostFunctions {
         Err("http_post not available".to_string())
     }
 
+    /// Write content to a file via the host's sandboxed file writer.
+    fn write_file(&self, path: &str, content: &[u8]) -> Result<(), String> {
+        let _ = (path, content);
+        Err("write_file not available".to_string())
+    }
+
     /// Run an external tool via the host's sandboxed tool runner.
     fn run_tool(&self, tool: &str, args: &[String], timeout_ms: u64) -> Result<ToolOutput, String> {
         let _ = (tool, args, timeout_ms);
