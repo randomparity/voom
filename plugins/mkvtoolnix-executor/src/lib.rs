@@ -6,12 +6,14 @@ pub mod propedit;
 pub(crate) mod test_helpers;
 
 use std::process::Command;
+use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent};
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, ActionResult, OperationType, Plan, PlannedAction};
+use voom_domain::utils::sanitize::validate_metadata_value;
 use voom_kernel::{Plugin, PluginContext};
 
 // Propedit (in-place metadata) operations are identified by
@@ -194,6 +196,11 @@ impl MkvtoolnixExecutorPlugin {
             return Ok(None);
         }
 
+        validate_metadata_value(&event.language).map_err(|e| VoomError::ToolExecution {
+            tool: "mkvmerge".into(),
+            message: format!("invalid language: {e}"),
+        })?;
+
         let temp_path = event.path.with_extension("tmp.mkv");
         let mut args = vec![
             "-o".to_string(),
@@ -204,13 +211,19 @@ impl MkvtoolnixExecutorPlugin {
             format!("0:{}", if event.forced { 1 } else { 0 }),
         ];
         if let Some(title) = &event.title {
+            validate_metadata_value(title).map_err(|e| VoomError::ToolExecution {
+                tool: "mkvmerge".into(),
+                message: format!("invalid title: {e}"),
+            })?;
             args.push("--track-name".to_string());
             args.push(format!("0:{title}"));
         }
         args.push(event.path.to_string_lossy().into_owned());
         args.push(event.subtitle_path.to_string_lossy().into_owned());
 
-        let output = Command::new("mkvmerge").args(&args).output();
+        const SUBTITLE_MUX_TIMEOUT: Duration = Duration::from_secs(120);
+        let output =
+            voom_process::run_with_timeout_env("mkvmerge", &args, SUBTITLE_MUX_TIMEOUT, &[]);
 
         match output {
             Ok(o) if o.status.success() || o.status.code() == Some(1) => {
@@ -241,10 +254,15 @@ impl MkvtoolnixExecutorPlugin {
                     ),
                 })
             }
-            Err(e) => Err(VoomError::ToolExecution {
-                tool: "mkvmerge".into(),
-                message: format!("failed to run mkvmerge: {e}"),
-            }),
+            Err(e) => {
+                if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
+                    tracing::warn!(error = %cleanup_err, "failed to clean up temp file");
+                }
+                Err(VoomError::ToolExecution {
+                    tool: "mkvmerge".into(),
+                    message: format!("mkvmerge subtitle mux failed: {e}"),
+                })
+            }
         }
     }
 

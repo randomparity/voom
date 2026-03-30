@@ -10,6 +10,7 @@ pub mod probe;
 pub mod progress;
 
 use std::process::Command;
+use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
@@ -18,6 +19,7 @@ use voom_domain::events::{
 };
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
+use voom_domain::utils::sanitize::validate_metadata_value;
 use voom_kernel::{Plugin, PluginContext};
 
 use crate::hwaccel::{resolve_hw_config, HwAccelConfig};
@@ -257,7 +259,15 @@ impl FfmpegExecutorPlugin {
             return Ok(None);
         }
 
-        let temp_path = event.path.with_extension("tmp.mp4");
+        validate_metadata_value(&event.language)
+            .map_err(|e| plugin_err(format!("invalid language: {e}")))?;
+
+        let orig_ext = event
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("mp4");
+        let temp_path = event.path.with_extension(format!("tmp.{orig_ext}"));
         let mut args = vec![
             "-i".to_string(),
             event.path.to_string_lossy().into_owned(),
@@ -277,7 +287,8 @@ impl FfmpegExecutorPlugin {
         args.push("-y".to_string());
         args.push(temp_path.to_string_lossy().into_owned());
 
-        let output = Command::new("ffmpeg").args(&args).output();
+        const SUBTITLE_MUX_TIMEOUT: Duration = Duration::from_secs(120);
+        let output = voom_process::run_with_timeout_env("ffmpeg", &args, SUBTITLE_MUX_TIMEOUT, &[]);
 
         match output {
             Ok(o) if o.status.success() => {
@@ -301,7 +312,12 @@ impl FfmpegExecutorPlugin {
                     String::from_utf8_lossy(&o.stderr)
                 )))
             }
-            Err(e) => Err(plugin_err(format!("failed to run ffmpeg: {e}"))),
+            Err(e) => {
+                if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
+                    tracing::warn!(error = %cleanup_err, "failed to clean up temp file");
+                }
+                Err(plugin_err(format!("ffmpeg subtitle mux failed: {e}")))
+            }
         }
     }
 
