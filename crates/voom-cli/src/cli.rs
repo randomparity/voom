@@ -44,6 +44,10 @@ pub enum Commands {
     #[command(subcommand)]
     Files(FilesCommands),
 
+    /// Plan inspection
+    #[command(subcommand)]
+    Plans(PlansCommands),
+
     /// System health check
     Doctor,
 
@@ -406,6 +410,20 @@ pub enum FilesCommands {
         /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
+    },
+}
+
+// === Plans ===
+
+#[derive(Subcommand)]
+pub enum PlansCommands {
+    /// Show plans for a file
+    Show {
+        /// File UUID or path
+        file: String,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
     },
 }
 
@@ -1191,6 +1209,59 @@ mod tests {
                 assert_eq!(limit, 25);
             }
             _ => panic!("expected Files List"),
+        }
+    }
+
+    // ── Plans subcommands ──────────────────────────────────────
+
+    #[test]
+    fn test_plans_show_requires_file() {
+        assert!(try_parse(&["voom", "plans", "show"]).is_err());
+    }
+
+    #[test]
+    fn test_plans_show_with_uuid() {
+        let cli = parse(&[
+            "voom",
+            "plans",
+            "show",
+            "550e8400-e29b-41d4-a716-446655440000",
+        ]);
+        match cli.command {
+            Commands::Plans(PlansCommands::Show { file, format }) => {
+                assert_eq!(file, "550e8400-e29b-41d4-a716-446655440000");
+                assert!(matches!(format, OutputFormat::Table));
+            }
+            _ => panic!("expected Plans Show"),
+        }
+    }
+
+    #[test]
+    fn test_plans_show_with_path() {
+        let cli = parse(&["voom", "plans", "show", "/media/movie.mkv"]);
+        match cli.command {
+            Commands::Plans(PlansCommands::Show { file, .. }) => {
+                assert_eq!(file, "/media/movie.mkv");
+            }
+            _ => panic!("expected Plans Show"),
+        }
+    }
+
+    #[test]
+    fn test_plans_show_json_format() {
+        let cli = parse(&[
+            "voom",
+            "plans",
+            "show",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "--format",
+            "json",
+        ]);
+        match cli.command {
+            Commands::Plans(PlansCommands::Show { format, .. }) => {
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Plans Show"),
         }
     }
 

@@ -8,6 +8,7 @@ pub mod history;
 pub mod init;
 pub mod inspect;
 pub mod jobs;
+pub mod plans;
 pub mod plugin;
 pub mod policy;
 pub mod process;
