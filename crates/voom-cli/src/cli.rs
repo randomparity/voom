@@ -348,6 +348,18 @@ pub enum ConfigCommands {
     Show,
     /// Open configuration in $EDITOR
     Edit,
+    /// Get a configuration value by dot-notation key
+    Get {
+        /// Dot-notation key (e.g. auth_token, plugins.wasm_dir, plugin.ffmpeg-executor.hw_accel)
+        key: String,
+    },
+    /// Set a configuration value by dot-notation key
+    Set {
+        /// Dot-notation key (e.g. auth_token, plugin.ffmpeg-executor.hw_accel)
+        key: String,
+        /// Value to set (auto-detects type: bool, int, float, or string)
+        value: String,
+    },
 }
 
 // === Tools ===
@@ -1107,6 +1119,69 @@ mod tests {
             cli.command,
             Commands::Config(ConfigCommands::Edit)
         ));
+    }
+
+    #[test]
+    fn test_config_get() {
+        let cli = parse(&["voom", "config", "get", "auth_token"]);
+        match cli.command {
+            Commands::Config(ConfigCommands::Get { key }) => {
+                assert_eq!(key, "auth_token");
+            }
+            _ => panic!("expected Config Get"),
+        }
+    }
+
+    #[test]
+    fn test_config_get_nested_key() {
+        let cli = parse(&["voom", "config", "get", "plugin.ffmpeg-executor.hw_accel"]);
+        match cli.command {
+            Commands::Config(ConfigCommands::Get { key }) => {
+                assert_eq!(key, "plugin.ffmpeg-executor.hw_accel");
+            }
+            _ => panic!("expected Config Get"),
+        }
+    }
+
+    #[test]
+    fn test_config_get_requires_key() {
+        assert!(try_parse(&["voom", "config", "get"]).is_err());
+    }
+
+    #[test]
+    fn test_config_set() {
+        let cli = parse(&["voom", "config", "set", "auth_token", "mytoken"]);
+        match cli.command {
+            Commands::Config(ConfigCommands::Set { key, value }) => {
+                assert_eq!(key, "auth_token");
+                assert_eq!(value, "mytoken");
+            }
+            _ => panic!("expected Config Set"),
+        }
+    }
+
+    #[test]
+    fn test_config_set_nested_key() {
+        let cli = parse(&[
+            "voom",
+            "config",
+            "set",
+            "plugin.ffmpeg-executor.hw_accel",
+            "nvenc",
+        ]);
+        match cli.command {
+            Commands::Config(ConfigCommands::Set { key, value }) => {
+                assert_eq!(key, "plugin.ffmpeg-executor.hw_accel");
+                assert_eq!(value, "nvenc");
+            }
+            _ => panic!("expected Config Set"),
+        }
+    }
+
+    #[test]
+    fn test_config_set_requires_key_and_value() {
+        assert!(try_parse(&["voom", "config", "set"]).is_err());
+        assert!(try_parse(&["voom", "config", "set", "key"]).is_err());
     }
 
     // ── Completions ──────────────────────────────────────────
