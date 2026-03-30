@@ -6,6 +6,10 @@ use voom_dsl::compiled::{CompiledCompareOp, CompiledFilter, TrackTarget};
 use crate::condition::{resolve_field, EvalContext};
 
 /// Returns true if the track matches the filter (no field resolution context).
+///
+/// `LangField` and `CodecField` filters always return `false` here because
+/// they require a `MediaFile` + `EvalContext` to resolve. Use
+/// [`track_matches_with_context`] when the filter may contain field references.
 #[must_use]
 pub fn track_matches(track: &Track, filter: &CompiledFilter) -> bool {
     track_matches_impl(track, filter, None)

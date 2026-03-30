@@ -905,6 +905,18 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let deserialized: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.event_type(), "subtitle.generated");
+        if let Event::SubtitleGenerated(e) = deserialized {
+            assert_eq!(e.path, PathBuf::from("/media/movie.mkv"));
+            assert_eq!(
+                e.subtitle_path,
+                PathBuf::from("/media/movie.forced-eng.srt")
+            );
+            assert_eq!(e.language, "eng");
+            assert!(e.forced);
+            assert!(e.title.is_none());
+        } else {
+            panic!("expected SubtitleGenerated variant");
+        }
     }
 
     #[test]
@@ -918,6 +930,17 @@ mod tests {
         let bytes = rmp_serde::to_vec(&event).unwrap();
         let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(deserialized.event_type(), "subtitle.generated");
+        if let Event::SubtitleGenerated(e) = deserialized {
+            assert_eq!(e.path, PathBuf::from("/media/movie.mkv"));
+            assert_eq!(
+                e.subtitle_path,
+                PathBuf::from("/media/movie.forced-eng.srt")
+            );
+            assert_eq!(e.language, "eng");
+            assert!(e.forced);
+        } else {
+            panic!("expected SubtitleGenerated variant");
+        }
     }
 
     #[test]
