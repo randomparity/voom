@@ -137,6 +137,22 @@ pub fn language_name(code: &str) -> Option<&'static str> {
     LANGUAGE_NAMES.get(canonical).copied()
 }
 
+/// Reverse lookup: display name → canonical 3-letter code.
+static NAME_TO_CODE: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
+    LANGUAGE_NAMES
+        .iter()
+        .map(|(&code, &name)| (name.to_lowercase(), code))
+        .collect()
+});
+
+/// Look up a language code from a display name (case-insensitive).
+///
+/// Accepts names like "English", "Japanese", "French" and returns
+/// the canonical ISO 639-2/B code ("eng", "jpn", "fre").
+pub fn language_code_from_name(name: &str) -> Option<&'static str> {
+    NAME_TO_CODE.get(&name.to_lowercase()).copied()
+}
+
 /// All known canonical 3-letter language codes (cached, sorted).
 static ALL_LANGUAGE_CODES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut codes: Vec<&str> = LANGUAGE_NAMES.keys().copied().collect();
@@ -199,6 +215,14 @@ mod tests {
         assert_eq!(normalize_language("zxx"), Some("zxx"));
         assert!(is_valid_language("zxx"));
         assert_eq!(language_name("zxx"), Some("No linguistic content"));
+    }
+
+    #[test]
+    fn test_code_from_name() {
+        assert_eq!(language_code_from_name("English"), Some("eng"));
+        assert_eq!(language_code_from_name("japanese"), Some("jpn"));
+        assert_eq!(language_code_from_name("FRENCH"), Some("fre"));
+        assert_eq!(language_code_from_name("Unknown Language"), None);
     }
 
     #[test]

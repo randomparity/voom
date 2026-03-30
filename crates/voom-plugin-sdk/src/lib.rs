@@ -77,6 +77,10 @@ pub use host::{HostFunctions, HttpResponse, ToolOutput};
 pub use voom_domain::events::Event;
 pub use voom_domain::plan::{ActionParams, OperationType, TranscodeChannels, TranscodeSettings};
 
+// ── Utilities ─────────────────────────────────────────────────────────
+
+pub use voom_domain::utils::language::language_code_from_name;
+
 // ── Full domain re-exports (for plugins that need deeper access) ────
 // Available under `voom_plugin_sdk::domain` for explicit opt-in.
 pub mod domain {

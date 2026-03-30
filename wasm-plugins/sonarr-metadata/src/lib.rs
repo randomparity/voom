@@ -31,8 +31,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, Event, HostFunctions, HttpResponse,
-    OnEventResult, PluginInfoData,
+    deserialize_event, language_code_from_name, load_plugin_config, serialize_event, Event,
+    HostFunctions, HttpResponse, OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -154,40 +154,6 @@ pub struct SonarrEpisode {
     pub original_language: Option<String>,
 }
 
-/// Map a Sonarr language display name to an ISO 639-3 code.
-fn language_name_to_iso639(name: &str) -> Option<&'static str> {
-    match name.to_lowercase().as_str() {
-        "english" => Some("eng"),
-        "japanese" => Some("jpn"),
-        "french" => Some("fre"),
-        "german" => Some("ger"),
-        "spanish" => Some("spa"),
-        "italian" => Some("ita"),
-        "portuguese" => Some("por"),
-        "russian" => Some("rus"),
-        "chinese" => Some("chi"),
-        "korean" => Some("kor"),
-        "arabic" => Some("ara"),
-        "hindi" => Some("hin"),
-        "dutch" => Some("dut"),
-        "swedish" => Some("swe"),
-        "norwegian" => Some("nor"),
-        "danish" => Some("dan"),
-        "finnish" => Some("fin"),
-        "polish" => Some("pol"),
-        "czech" => Some("cze"),
-        "hungarian" => Some("hun"),
-        "romanian" => Some("rum"),
-        "greek" => Some("gre"),
-        "turkish" => Some("tur"),
-        "hebrew" => Some("heb"),
-        "thai" => Some("tha"),
-        "vietnamese" => Some("vie"),
-        "ukrainian" => Some("ukr"),
-        _ => None,
-    }
-}
-
 // --- Internal helpers ---
 
 fn lookup_episode(
@@ -234,7 +200,7 @@ fn lookup_episode(
     let original_language = series
         .original_language
         .as_ref()
-        .and_then(|lang| language_name_to_iso639(&lang.name))
+        .and_then(|lang| language_code_from_name(&lang.name))
         .map(|s| s.to_string());
 
     Some(SonarrEpisode {
