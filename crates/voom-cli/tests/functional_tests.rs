@@ -663,7 +663,7 @@ mod test_db_stats {
             .args(["db", "stats"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("Database"));
+            .stdout(predicate::str::contains("Page size"));
     }
 
     #[test]
@@ -1013,7 +1013,7 @@ mod test_workflow {
             .args(["files", "list"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("Path"));
+            .stdout(predicate::str::contains("basic-h264-aac"));
 
         // 4. Inspect
         let mkv = env.media_dir().join("hevc-surround.mkv");
@@ -1021,10 +1021,14 @@ mod test_workflow {
             .args(["inspect", mkv.to_str().unwrap()])
             .timeout(std::time::Duration::from_secs(30))
             .assert()
-            .success();
+            .success()
+            .stdout(predicate::str::contains("hevc").or(predicate::str::contains("HEVC")));
 
         // 5. Events
-        env.voom().args(["events"]).assert().success();
+        env.voom().args(["events"]).assert().success().stdout(
+            predicate::str::contains("file.discovered")
+                .or(predicate::str::contains("file.introspected")),
+        );
 
         // 6. Process dry-run
         let starter = env.voom_dir.join("policies/default.voom");
@@ -1042,29 +1046,37 @@ mod test_workflow {
             .success()
             .stdout(predicate::str::contains("dry run"));
 
-        // 7. Plans show
+        // 7. Plans show (dry-run doesn't persist plans)
         let file_id = first_file_id(&env);
         env.voom()
             .args(["plans", "show", &file_id])
             .assert()
-            .success();
+            .success()
+            .stdout(predicate::str::contains("No plans found"));
 
         // 8. Health check
         env.voom()
             .args(["health", "check"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("Database"));
+            .stdout(predicate::str::contains("VOOM System Health Check"));
 
         // 9. Tools list
-        env.voom().args(["tools", "list"]).assert().success();
+        env.voom()
+            .args(["tools", "list"])
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains("tool(s) detected")
+                    .or(predicate::str::contains("No external tools")),
+            );
 
         // 10. DB stats
         env.voom()
             .args(["db", "stats"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("Database"));
+            .stdout(predicate::str::contains("Page size"));
 
         // 11. Report
         env.voom()
@@ -1250,14 +1262,19 @@ mod test_plans {
 
         let file_id = first_file_id(&env);
 
-        env.voom()
+        // Plan persistence depends on whether the file needed changes;
+        // verify the command succeeds and produces recognized output
+        let output = env
+            .voom()
             .args(["plans", "show", &file_id])
-            .assert()
-            .success()
-            .stdout(
-                predicate::str::contains("normalize")
-                    .or(predicate::str::contains("No plans found")),
-            );
+            .output()
+            .expect("run plans show");
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("normalize") || stdout.contains("No plans found"),
+            "unexpected plans show output: {stdout}"
+        );
     }
 }
 
@@ -1290,11 +1307,10 @@ mod test_events {
             .assert()
             .success();
 
-        env.voom()
-            .args(["events"])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("TYPE"));
+        env.voom().args(["events"]).assert().success().stdout(
+            predicate::str::contains("file.discovered")
+                .or(predicate::str::contains("file.introspected")),
+        );
     }
 }
 
@@ -1481,14 +1497,18 @@ mod test_backup {
             .assert()
             .success();
 
-        env.voom()
+        // Backup existence depends on whether the file needed changes
+        let output = env
+            .voom()
             .args(["backup", "list", env.media_dir().to_str().unwrap()])
-            .assert()
-            .success()
-            .stdout(
-                predicate::str::contains("backup(s) found")
-                    .or(predicate::str::contains("No .vbak files found")),
-            );
+            .output()
+            .expect("run backup list");
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("backup(s) found") || stdout.contains("No .vbak files found"),
+            "unexpected backup list output: {stdout}"
+        );
     }
 }
 
@@ -1502,10 +1522,17 @@ mod test_config_enhanced {
     #[test]
     fn config_get_data_dir() {
         let env = TestEnv::new();
-        env.voom()
+        let output = env
+            .voom()
             .args(["config", "get", "data_dir"])
-            .assert()
-            .success();
+            .output()
+            .expect("run config get");
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(env.voom_dir.to_str().unwrap()),
+            "config get data_dir should contain the configured path"
+        );
     }
 
     #[test]
@@ -1599,13 +1626,12 @@ mod test_process_plan_only {
     #[test]
     fn process_plan_only_conflicts_with_approve() {
         let env = TestEnv::new();
-        std::fs::create_dir_all(env.media_dir()).unwrap();
         let policy = env.write_policy("test", TEST_POLICY);
 
         env.voom()
             .args([
                 "process",
-                env.media_dir().to_str().unwrap(),
+                "/nonexistent",
                 "--policy",
                 policy.to_str().unwrap(),
                 "--plan-only",
