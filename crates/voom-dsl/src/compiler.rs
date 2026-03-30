@@ -14,9 +14,8 @@ use crate::compiled::{
     CompiledConditional, CompiledConfig, CompiledDefault, CompiledFilter, CompiledOperation,
     CompiledPhase, CompiledPolicy, CompiledRegex, CompiledRule, CompiledRunIf, CompiledSynthesize,
     CompiledTranscodeSettings, CompiledValueOrField, DefaultStrategy, ErrorStrategy, RulesMode,
-    RunIfTrigger, SynthChannels, SynthLanguage, SynthPosition, TrackTarget,
+    RunIfTrigger, SynthChannels, SynthLanguage, SynthPosition, TrackTarget, TranscodeChannels,
 };
-use voom_domain::plan::TranscodeChannels;
 use voom_domain::utils::codecs;
 
 use crate::ast::*;

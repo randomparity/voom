@@ -7,7 +7,7 @@ use std::fmt;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use voom_domain::plan::TranscodeChannels;
+pub use voom_domain::plan::TranscodeChannels;
 
 /// A pre-compiled regex that supports `Clone`, `Debug`, `Serialize`, and `Deserialize`.
 ///
