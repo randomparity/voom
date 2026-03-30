@@ -1,7 +1,5 @@
 //! Hardware acceleration detection and configuration for `FFmpeg`.
 
-use std::process::Command;
-
 /// Hardware acceleration backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HwAccelBackend {
@@ -53,16 +51,6 @@ impl HwAccelConfig {
     #[must_use]
     pub fn enabled(&self) -> bool {
         self.backend.is_some()
-    }
-
-    /// Detect available hardware acceleration by querying ffmpeg.
-    #[must_use]
-    pub fn detect() -> Self {
-        Self {
-            backend: Self::detect_backend(),
-            validated_encoders: None,
-            device: None,
-        }
     }
 
     /// Select the best backend from already-probed hwaccel names,
@@ -210,24 +198,6 @@ impl HwAccelConfig {
 
         vec!["-hwaccel".to_string(), hwaccel_name.to_string()]
     }
-
-    /// Check if HW accel is available by running `ffmpeg -hwaccels`.
-    fn detect_backend() -> Option<HwAccelBackend> {
-        let output = match Command::new("ffmpeg")
-            .args(["-hwaccels", "-hide_banner"])
-            .output()
-        {
-            Ok(output) => output,
-            Err(e) => {
-                tracing::debug!(error = %e, "failed to run ffmpeg for hwaccel detection");
-                return None;
-            }
-        };
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let text = stdout.to_ascii_lowercase();
-        detect_backend_from_text(&text)
-    }
 }
 
 /// Resolve the HW encoder name for a backend+codec pair.
@@ -255,19 +225,49 @@ fn hw_encoder_for_backend(backend: HwAccelBackend, codec: &str) -> Option<String
     }
 }
 
-/// Match lowercased hwaccel text to a backend in priority order.
-fn detect_backend_from_text(text: &str) -> Option<HwAccelBackend> {
+/// Collect all matching backends from lowercased hwaccel text, in
+/// priority order.
+fn candidates_from_text(text: &str) -> Vec<HwAccelBackend> {
+    let mut candidates = Vec::new();
     if text.contains("cuda") || text.contains("nvdec") {
-        Some(HwAccelBackend::Nvenc)
-    } else if text.contains("qsv") {
-        Some(HwAccelBackend::Qsv)
-    } else if text.contains("vaapi") {
-        Some(HwAccelBackend::Vaapi)
-    } else if text.contains("videotoolbox") {
-        Some(HwAccelBackend::Videotoolbox)
-    } else {
-        None
+        candidates.push(HwAccelBackend::Nvenc);
     }
+    if text.contains("qsv") {
+        candidates.push(HwAccelBackend::Qsv);
+    }
+    if text.contains("vaapi") {
+        candidates.push(HwAccelBackend::Vaapi);
+    }
+    if text.contains("videotoolbox") {
+        candidates.push(HwAccelBackend::Videotoolbox);
+    }
+    candidates
+}
+
+/// Check whether the actual hardware for a backend is present.
+fn verify_backend(backend: HwAccelBackend) -> bool {
+    match backend {
+        HwAccelBackend::Nvenc => crate::probe::has_nvidia_hardware(),
+        HwAccelBackend::Qsv => crate::probe::has_intel_gpu(),
+        HwAccelBackend::Vaapi => crate::probe::has_vaapi_devices(),
+        HwAccelBackend::Videotoolbox => true,
+    }
+}
+
+/// Pick the best backend: first candidate whose hardware is present.
+fn detect_backend_with_verifier(
+    text: &str,
+    verifier: fn(HwAccelBackend) -> bool,
+) -> Option<HwAccelBackend> {
+    candidates_from_text(text)
+        .into_iter()
+        .find(|b| verifier(*b))
+}
+
+/// Match lowercased hwaccel text to a backend, verifying hardware
+/// is actually present before committing.
+fn detect_backend_from_text(text: &str) -> Option<HwAccelBackend> {
+    detect_backend_with_verifier(text, verify_backend)
 }
 
 impl Default for HwAccelConfig {
@@ -291,6 +291,50 @@ pub fn config_from_backend_name(name: &str) -> HwAccelConfig {
         backend,
         validated_encoders: None,
         device: None,
+    }
+}
+
+/// Resolve the HW accel config from a user override name or auto-detection.
+///
+/// Returns `(config, source_label)` where `source_label` describes where
+/// the config came from ("config override", "auto-detected", or "disabled").
+/// Unrecognized override names warn and fall back to auto-detection.
+#[must_use]
+pub fn resolve_hw_config(
+    override_name: Option<&str>,
+    hw_accels: &[String],
+) -> (HwAccelConfig, &'static str) {
+    let name = override_name.map(|s| s.trim().to_ascii_lowercase());
+    match name.as_deref() {
+        Some("none") => {
+            tracing::info!("hw_accel disabled by config");
+            (HwAccelConfig::new(), "disabled")
+        }
+        Some(name) => {
+            let cfg = config_from_backend_name(name);
+            if cfg.enabled() {
+                if let Some(be) = cfg.backend {
+                    if !verify_backend(be) {
+                        tracing::warn!(
+                            backend = name,
+                            "configured hw_accel backend not detected on this system; \
+                             encoding will fail if hardware is absent"
+                        );
+                    }
+                }
+                tracing::info!(backend = name, "using configured hw_accel override");
+                (cfg, "config override")
+            } else {
+                tracing::warn!(
+                    backend = name,
+                    "unrecognized hw_accel value \
+                     (valid: nvenc, qsv, vaapi, videotoolbox, none), \
+                     falling back to auto-detection"
+                );
+                (HwAccelConfig::from_probed(hw_accels), "auto-detected")
+            }
+        }
+        None => (HwAccelConfig::from_probed(hw_accels), "auto-detected"),
     }
 }
 
@@ -544,5 +588,112 @@ mod tests {
         let over = config_from_backend_with_system("nvenc", None);
         // No system config — trusts all (backward compat)
         assert_eq!(over.encoder_name("av1"), "av1_nvenc");
+    }
+
+    // ── candidates + verifier ─────────────────────────────────────
+
+    #[test]
+    fn test_candidates_cuda_and_vaapi() {
+        let c = candidates_from_text("cuda vaapi");
+        assert_eq!(c, vec![HwAccelBackend::Nvenc, HwAccelBackend::Vaapi]);
+    }
+
+    #[test]
+    fn test_candidates_vaapi_only() {
+        let c = candidates_from_text("vaapi");
+        assert_eq!(c, vec![HwAccelBackend::Vaapi]);
+    }
+
+    #[test]
+    fn test_candidates_all() {
+        let c = candidates_from_text("cuda qsv vaapi videotoolbox");
+        assert_eq!(
+            c,
+            vec![
+                HwAccelBackend::Nvenc,
+                HwAccelBackend::Qsv,
+                HwAccelBackend::Vaapi,
+                HwAccelBackend::Videotoolbox,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_candidates_empty() {
+        assert!(candidates_from_text("").is_empty());
+        assert!(candidates_from_text("vulkan opencl").is_empty());
+    }
+
+    #[test]
+    fn test_verifier_skips_nvenc_picks_vaapi() {
+        // AMD scenario: cuda compiled in but no NVIDIA hardware
+        fn reject_nvenc(b: HwAccelBackend) -> bool {
+            b != HwAccelBackend::Nvenc
+        }
+        let result = detect_backend_with_verifier("cuda vaapi", reject_nvenc);
+        assert_eq!(result, Some(HwAccelBackend::Vaapi));
+    }
+
+    #[test]
+    fn test_verifier_accepts_nvenc() {
+        // NVIDIA scenario: real hardware present
+        fn accept_all(_: HwAccelBackend) -> bool {
+            true
+        }
+        let result = detect_backend_with_verifier("cuda vaapi", accept_all);
+        assert_eq!(result, Some(HwAccelBackend::Nvenc));
+    }
+
+    #[test]
+    fn test_verifier_rejects_all() {
+        fn reject_all(_: HwAccelBackend) -> bool {
+            false
+        }
+        let result = detect_backend_with_verifier("cuda vaapi qsv", reject_all);
+        assert_eq!(result, None);
+    }
+
+    // ── resolve_hw_config ─────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_auto_detect_empty() {
+        let (cfg, src) = resolve_hw_config(None, &[]);
+        assert!(cfg.backend.is_none());
+        assert_eq!(src, "auto-detected");
+    }
+
+    #[test]
+    fn test_resolve_disabled() {
+        let (cfg, src) = resolve_hw_config(Some("none"), &[]);
+        assert!(cfg.backend.is_none());
+        assert_eq!(src, "disabled");
+    }
+
+    #[test]
+    fn test_resolve_valid_override() {
+        let (cfg, src) = resolve_hw_config(Some("vaapi"), &[]);
+        assert_eq!(cfg.backend, Some(HwAccelBackend::Vaapi));
+        assert_eq!(src, "config override");
+    }
+
+    #[test]
+    fn test_resolve_unrecognized_falls_back() {
+        let (cfg, src) = resolve_hw_config(Some("d3d11va"), &[]);
+        assert!(cfg.backend.is_none());
+        assert_eq!(src, "auto-detected");
+    }
+
+    #[test]
+    fn test_resolve_case_insensitive() {
+        let (cfg, src) = resolve_hw_config(Some("VAAPI"), &[]);
+        assert_eq!(cfg.backend, Some(HwAccelBackend::Vaapi));
+        assert_eq!(src, "config override");
+    }
+
+    #[test]
+    fn test_resolve_trims_whitespace() {
+        let (cfg, src) = resolve_hw_config(Some(" nvenc "), &[]);
+        assert_eq!(cfg.backend, Some(HwAccelBackend::Nvenc));
+        assert_eq!(src, "config override");
     }
 }

@@ -275,6 +275,87 @@ fn enumerate_vaapi_devices() -> Vec<GpuDevice> {
     devices
 }
 
+/// Check whether NVIDIA GPU hardware is present.
+pub(crate) fn has_nvidia_hardware() -> bool {
+    std::process::Command::new("nvidia-smi")
+        .arg("--list-gpus")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Check whether a working VA-API device exists.
+///
+/// Finds the first `/dev/dri/renderD*` node and runs `vainfo` against it
+/// to confirm the VA-API userspace stack is functional. A render node can
+/// exist without working VA-API (e.g., AMD GPU without `mesa-va-drivers`).
+///
+/// Returns `false` if no render nodes exist or `vainfo` is not installed.
+/// Users can bypass this check with `hw_accel = "vaapi"` in config.
+pub(crate) fn has_vaapi_devices() -> bool {
+    let first_render_node = std::fs::read_dir("/dev/dri")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().starts_with("renderD"));
+
+    let Some(entry) = first_render_node else {
+        return false;
+    };
+
+    let path = entry.path();
+    let path_str = path.to_string_lossy();
+
+    let ok = std::process::Command::new("vainfo")
+        .args(["--display", "drm", "--device", &path_str])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if ok {
+        tracing::debug!(device = %path_str, "VA-API device verified via vainfo");
+    } else {
+        tracing::info!(
+            device = %path_str,
+            "VA-API render node exists but vainfo failed — \
+             missing drivers or vainfo not installed"
+        );
+    }
+
+    ok
+}
+
+/// Check whether Intel GPU hardware is present (for QSV).
+///
+/// Reads `/sys/class/drm/card*/device/vendor` looking for Intel's
+/// PCI vendor ID (`0x8086`).
+pub(crate) fn has_intel_gpu() -> bool {
+    let entries = match std::fs::read_dir("/sys/class/drm") {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.starts_with("card") || name_str.contains('-') {
+            continue;
+        }
+        let vendor_path = entry.path().join("device/vendor");
+        if let Ok(vendor) = std::fs::read_to_string(&vendor_path) {
+            if vendor.trim() == "0x8086" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Parse `nvidia-smi` CSV output into GPU devices.
 ///
 /// Expected format (one line per GPU):

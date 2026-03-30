@@ -1,6 +1,6 @@
 use anyhow::Result;
 use console::style;
-use voom_ffmpeg_executor::hwaccel::{HwAccelBackend, HwAccelConfig};
+use voom_ffmpeg_executor::hwaccel::{resolve_hw_config, HwAccelBackend};
 use voom_ffmpeg_executor::probe::{
     enumerate_gpus, parse_hw_implementations, parse_hwaccels, validate_hw_encoder,
     validate_hw_encoder_on_device, GpuDevice,
@@ -8,6 +8,7 @@ use voom_ffmpeg_executor::probe::{
 
 use crate::app;
 use crate::config;
+use crate::output::sanitize_for_display;
 use crate::tools::print_tool_status;
 
 /// Run the doctor command.
@@ -73,7 +74,7 @@ pub fn run() -> Result<()> {
 
     // 4. Hardware acceleration (only if ffmpeg was found)
     if detector.tool("ffmpeg").is_some() {
-        print_hw_accel_status();
+        print_hw_accel_status(&config);
     }
 
     // 5. Plugins
@@ -120,19 +121,20 @@ fn gpu_section_header(backend: HwAccelBackend) -> &'static str {
 }
 
 fn gpu_display_label(device: &GpuDevice, backend: HwAccelBackend) -> String {
+    let name = sanitize_for_display(&device.name);
     match backend {
         HwAccelBackend::Nvenc => {
             let vram = device
                 .vram_mib
                 .map(|m| format!(" ({m} MiB)"))
                 .unwrap_or_default();
-            format!("GPU {}: {}{}", device.id, device.name, vram)
+            format!("GPU {}: {}{}", device.id, name, vram)
         }
         _ => {
             if device.name == device.id {
                 device.id.clone()
             } else {
-                format!("{} ({})", device.id, device.name)
+                format!("{} ({})", device.id, name)
             }
         }
     }
@@ -141,7 +143,8 @@ fn gpu_display_label(device: &GpuDevice, backend: HwAccelBackend) -> String {
 fn encoder_block_label(device: &GpuDevice, backend: HwAccelBackend) -> String {
     match backend {
         HwAccelBackend::Nvenc => {
-            format!("GPU {} — {}", device.id, device.name)
+            let name = sanitize_for_display(&device.name);
+            format!("GPU {} — {}", device.id, name)
         }
         _ => device.id.clone(),
     }
@@ -160,7 +163,7 @@ fn print_encoder_block(hw_encoders: &[String], backend: HwAccelBackend, device: 
     }
 }
 
-fn print_hw_accel_status() {
+fn print_hw_accel_status(app_config: &config::AppConfig) {
     println!();
     println!("{}", style("Hardware acceleration:").bold());
 
@@ -176,14 +179,37 @@ fn print_hw_accel_status() {
         Err(_) => return,
     };
 
-    let config = HwAccelConfig::from_probed(&hw_accels);
+    if !hw_accels.is_empty() {
+        println!("  Available ... {}", hw_accels.join(", "));
+    }
+
+    let hw_accel_override = app_config
+        .plugin
+        .get("ffmpeg-executor")
+        .and_then(|t| t.get("hw_accel"))
+        .and_then(|v| v.as_str());
+
+    let (config, source) = resolve_hw_config(hw_accel_override, &hw_accels);
+
     let backend = match config.backend {
         Some(backend) => {
-            println!("  Backend ... {}", style(backend_label(backend)).green());
+            println!(
+                "  Backend ... {} {}",
+                style(backend_label(backend)).green(),
+                style(format!("({source})")).dim()
+            );
             backend
         }
         None => {
-            println!("  Backend ... {}", style("none detected").yellow());
+            if source == "disabled" {
+                println!(
+                    "  Backend ... {} {}",
+                    style("disabled").yellow(),
+                    style("(config override)").dim()
+                );
+            } else {
+                println!("  Backend ... {}", style("none detected").yellow());
+            }
             return;
         }
     };
@@ -198,7 +224,6 @@ fn print_hw_accel_status() {
     }
 
     // Show configured GPU device from config
-    let app_config = config::load_config().unwrap_or_default();
     if let Some(device_id) = app_config
         .plugin
         .get("ffmpeg-executor")
@@ -206,16 +231,17 @@ fn print_hw_accel_status() {
         .and_then(|v| v.as_str())
     {
         let found = devices.iter().any(|d| d.id == device_id);
+        let safe_id = sanitize_for_display(device_id);
         if found {
             println!(
                 "  Configured GPU ... {} {}",
-                style(device_id).cyan(),
+                style(&safe_id).cyan(),
                 style("(found)").green()
             );
         } else {
             println!(
                 "  Configured GPU ... {} {}",
-                style(device_id).cyan(),
+                style(&safe_id).cyan(),
                 style("(NOT FOUND)").red()
             );
         }
