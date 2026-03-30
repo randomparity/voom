@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -302,13 +300,6 @@ pub enum ActionParams {
     DeleteTag {
         tag: String,
     },
-    /// Mux a subtitle file into the container.
-    MuxSubtitle {
-        subtitle_path: PathBuf,
-        language: String,
-        forced: bool,
-        title: Option<String>,
-    },
 }
 
 /// The type of operation to perform on a media file.
@@ -331,7 +322,6 @@ pub enum OperationType {
     SetContainerTag,
     ClearContainerTags,
     DeleteContainerTag,
-    MuxSubtitle,
 }
 
 impl OperationType {
@@ -357,7 +347,6 @@ impl OperationType {
             "set_container_tag" => Some(Self::SetContainerTag),
             "clear_container_tags" => Some(Self::ClearContainerTags),
             "delete_container_tag" => Some(Self::DeleteContainerTag),
-            "mux_subtitle" => Some(Self::MuxSubtitle),
             _ => None,
         }
     }
@@ -402,7 +391,6 @@ impl OperationType {
             OperationType::SetContainerTag => "set_container_tag",
             OperationType::ClearContainerTags => "clear_container_tags",
             OperationType::DeleteContainerTag => "delete_container_tag",
-            OperationType::MuxSubtitle => "mux_subtitle",
         }
     }
 }
