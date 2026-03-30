@@ -1,5 +1,0 @@
-- [desloppify/code-health branch context](project_desloppify_context.md) — key error handling changes on the branch and what they mean
-- [Error handling architectural decisions](project_architectural_decisions.md) — where String errors are intentional (WASM boundary) vs. targets for improvement
-- [DSL parser unwrap pattern](project_parser_unwrap_pattern.md) — why unwrap() in parser/compiler is intentional and documented
-- [fix/multi-gh-issues branch context](project_fix_multi_gh_issues.md) — new plugins (health-checker, bus-tracer) and storage modules reviewed 2026-03-28
-- [feat/address-cli-gaps-1 review](project_feat_address_cli_gaps.md) — new CLI commands (config, db stats, events, health, plans, files) error handling review 2026-03-29

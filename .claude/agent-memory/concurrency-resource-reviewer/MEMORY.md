@@ -1,1 +1,0 @@
-- [VOOM concurrency architecture](project_voom_concurrency.md) — runtime topology, lock hierarchy, SQLite config, and known contention points as of desloppify/code-health branch
