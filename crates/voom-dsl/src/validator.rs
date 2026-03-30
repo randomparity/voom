@@ -411,7 +411,11 @@ fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut 
             }
             validate_transcode_keys(settings, line, col, errors);
             validate_hw_settings(settings, line, col, errors);
-            validate_video_transcode_settings(settings, line, col, errors);
+            if target == "video" {
+                validate_video_transcode_settings(settings, line, col, errors);
+            } else {
+                reject_video_only_keys(settings, target, line, col, errors);
+            }
         }
         OperationNode::Synthesize { settings, .. } => {
             for setting in settings {
@@ -803,6 +807,29 @@ const VALID_SCALE_ALGORITHMS: &[&str] = &[
     "lanczos", "bicubic", "bilinear", "neighbor", "area", "spline", "sinc",
 ];
 
+const VIDEO_ONLY_KEYS: &[&str] = &["hdr_mode", "tune", "scale_algorithm", "max_resolution"];
+
+fn reject_video_only_keys(
+    settings: &[(String, Value)],
+    target: &str,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    for (key, _) in settings {
+        if VIDEO_ONLY_KEYS.contains(&key.as_str()) {
+            errors.push(DslError::validation(
+                line,
+                col,
+                format!(
+                    "{key} is only valid for video transcodes, \
+                     not {target}"
+                ),
+            ));
+        }
+    }
+}
+
 fn validate_video_transcode_settings(
     settings: &[(String, Value)],
     line: usize,
@@ -833,14 +860,31 @@ fn validate_video_transcode_settings(
                     Value::Number(_, raw) => Some(raw.as_str()),
                     _ => None,
                 };
-                if res_str.is_none() {
-                    errors.push(DslError::validation(
-                        line,
-                        col,
-                        "max_resolution must be a resolution value \
-                         (e.g. 1080p, 720p, 4k, 2160p)"
-                            .to_string(),
-                    ));
+                match res_str {
+                    Some(s) => {
+                        let valid_resolutions =
+                            ["480p", "720p", "1080p", "1440p", "2160p", "4k", "8k"];
+                        if !valid_resolutions.contains(&s) {
+                            errors.push(DslError::validation(
+                                line,
+                                col,
+                                format!(
+                                    "invalid max_resolution \"{s}\", \
+                                     expected one of: {}",
+                                    valid_resolutions.join(", ")
+                                ),
+                            ));
+                        }
+                    }
+                    None => {
+                        errors.push(DslError::validation(
+                            line,
+                            col,
+                            "max_resolution must be a resolution value \
+                             (e.g. 1080p, 720p, 4k, 2160p)"
+                                .to_string(),
+                        ));
+                    }
                 }
             }
             _ => {}
@@ -1441,5 +1485,99 @@ mod tests {
             let ast = parse_policy(&input).unwrap();
             assert!(validate(&ast).is_ok(), "hw value \"{hw}\" should be valid");
         }
+    }
+
+    #[test]
+    fn test_video_only_setting_on_audio_transcode() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode audio to aac {
+                    hdr_mode: preserve
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors.iter().any(|e| {
+                let msg = format!("{e}");
+                msg.contains("hdr_mode") && msg.contains("only valid for video")
+            }),
+            "expected video-only key error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_video_only_settings_all_rejected_on_audio() {
+        for key in &["hdr_mode", "tune", "scale_algorithm", "max_resolution"] {
+            let value = if *key == "max_resolution" {
+                "1080p"
+            } else if *key == "tune" {
+                "film"
+            } else if *key == "scale_algorithm" {
+                "lanczos"
+            } else {
+                "preserve"
+            };
+            let input = format!(
+                r#"policy "test" {{
+                    phase tc {{
+                        transcode audio to aac {{
+                            {key}: {value}
+                        }}
+                    }}
+                }}"#
+            );
+            let ast = parse_policy(&input).unwrap();
+            let err = validate(&ast).unwrap_err();
+            assert!(
+                err.errors
+                    .iter()
+                    .any(|e| format!("{e}").contains("only valid for video")),
+                "{key} on audio should be rejected, got: {:?}",
+                err.errors
+            );
+        }
+    }
+
+    #[test]
+    fn test_valid_max_resolution_values() {
+        for res in &["480p", "720p", "1080p", "1440p", "2160p", "4k", "8k"] {
+            let input = format!(
+                r#"policy "test" {{
+                    phase tc {{
+                        transcode video to hevc {{
+                            max_resolution: {res}
+                        }}
+                    }}
+                }}"#
+            );
+            let ast = parse_policy(&input).unwrap();
+            assert!(
+                validate(&ast).is_ok(),
+                "max_resolution \"{res}\" should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn test_invalid_max_resolution_value() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    max_resolution: 999p
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("invalid max_resolution")),
+            "expected invalid max_resolution error, got: {:?}",
+            err.errors
+        );
     }
 }
