@@ -48,7 +48,7 @@ pub fn run(args: InspectArgs) -> Result<()> {
     let size = std::fs::metadata(&path)?.len();
 
     let event = introspector
-        .introspect(&path, size, "")
+        .introspect(&path, size, None)
         .context("Introspection failed")?;
 
     match args.format {

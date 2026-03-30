@@ -54,10 +54,10 @@ pub async fn introspect_file(
     let path_for_event = path.clone();
     let hash_for_event = content_hash.clone();
     let path_display = path.display().to_string();
-    let hash_str = content_hash.clone().unwrap_or_default();
-    let intro_result =
-        tokio::task::spawn_blocking(move || introspector.introspect(&path, file_size, &hash_str))
-            .await;
+    let intro_result = tokio::task::spawn_blocking(move || {
+        introspector.introspect(&path, file_size, content_hash.as_deref())
+    })
+    .await;
 
     match intro_result {
         Ok(Ok(intro_event)) => {

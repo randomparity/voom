@@ -61,7 +61,7 @@ impl FfprobeIntrospectorPlugin {
         &self,
         path: &std::path::Path,
         size: u64,
-        content_hash: &str,
+        content_hash: Option<&str>,
     ) -> Result<FileIntrospectedEvent> {
         let json = ffprobe::run_ffprobe(&self.ffprobe_path, path, self.timeout)?;
         let file = parser::parse_ffprobe_output(&json, path, size, content_hash)?;
