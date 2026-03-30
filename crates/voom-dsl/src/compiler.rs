@@ -7,7 +7,7 @@
 //! from the pest parser — the AST shape is validated before compilation.
 #![allow(clippy::unwrap_used)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::compiled::{
     ClearActionsSettings, CompiledAction, CompiledCompareOp, CompiledCondition,
@@ -563,9 +563,27 @@ fn topological_sort(ast: &PolicyAst) -> std::result::Result<Vec<String>, DslErro
     }
 
     if result.len() != ast.phases.len() {
-        return Err(DslError::compile(
-            "cannot determine phase order due to circular dependencies",
-        ));
+        let phase_names: HashSet<&str> = ast.phases.iter().map(|p| p.name.as_str()).collect();
+        let result_set: HashSet<&str> = result.iter().map(|s| s.as_str()).collect();
+        let stuck: Vec<&str> = phase_names.difference(&result_set).copied().collect();
+        let has_unknown_dep = stuck.iter().any(|&name| {
+            ast.phases.iter().find(|p| p.name == name).is_some_and(|p| {
+                p.depends_on
+                    .iter()
+                    .any(|d| !phase_names.contains(d.as_str()))
+            })
+        });
+        return if has_unknown_dep {
+            Err(DslError::compile(format!(
+                "phases [{}] reference unknown dependencies",
+                stuck.join(", "),
+            )))
+        } else {
+            Err(DslError::compile(format!(
+                "circular dependency involving phases: [{}]",
+                stuck.join(", "),
+            )))
+        };
     }
 
     Ok(result)

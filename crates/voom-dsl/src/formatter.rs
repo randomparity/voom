@@ -67,9 +67,16 @@ fn format_config(config: &ConfigNode, out: &mut String, level: usize) {
         indent(out, level + 1);
         let _ = writeln!(out, "on_error: {on_error}");
     }
-    if config.keep_backups == Some(true) {
-        indent(out, level + 1);
-        let _ = writeln!(out, "keep_backups: true");
+    match config.keep_backups {
+        Some(true) => {
+            indent(out, level + 1);
+            let _ = writeln!(out, "keep_backups: true");
+        }
+        Some(false) => {
+            indent(out, level + 1);
+            let _ = writeln!(out, "keep_backups: false");
+        }
+        None => {}
     }
 
     indent(out, level);
@@ -814,6 +821,25 @@ mod tests {
             OperationNode::DeleteTag(tag) => assert_eq!(tag, "encoder"),
             other => panic!("expected DeleteTag, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_roundtrip_keep_backups_false() {
+        let input = r#"policy "test" {
+            config {
+                languages audio: [eng]
+                keep_backups: false
+            }
+            phase init { container mkv }
+        }"#;
+        let ast1 = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast1);
+        assert!(
+            formatted.contains("keep_backups: false"),
+            "formatted output should contain keep_backups: false, got: {formatted}"
+        );
+        let ast2 = parse_policy(&formatted).unwrap();
+        assert_eq!(ast2.config.as_ref().unwrap().keep_backups, Some(false),);
     }
 
     #[test]

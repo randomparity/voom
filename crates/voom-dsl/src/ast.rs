@@ -46,6 +46,7 @@ pub struct ConfigNode {
     pub on_error: Option<String>,
     pub commentary_patterns: Vec<String>,
     pub keep_backups: Option<bool>,
+    pub span: Span,
 }
 
 /// A single phase within a policy.
