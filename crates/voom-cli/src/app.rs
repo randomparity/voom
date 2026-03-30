@@ -40,13 +40,20 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
     Ok(result.kernel)
 }
 
-/// Bootstrap the kernel with all native plugins and return the kernel,
-/// storage handle, and shared job queue.
+/// Bootstrap the kernel with all native plugins and return the
+/// kernel, storage handle, and shared job queue.
 ///
-/// The store is always returned (not `Option`): if the sqlite-store plugin is
-/// enabled its handle is reused so there is no second pool; if the plugin is
-/// disabled a standalone pool is opened via [`open_store_in`] — the same
-/// helper used by store-only commands.
+/// The store is always returned (not `Option`): if the sqlite-store
+/// plugin is enabled its handle is reused so there is no second
+/// pool; if the plugin is disabled a standalone pool is opened via
+/// [`open_store_in`].
+///
+/// # Blocking
+///
+/// This function performs synchronous I/O (filesystem checks, SQLite
+/// pool creation, plugin init) and must NOT be called from an async
+/// context. Callers should invoke it before entering the tokio
+/// runtime or from within `spawn_blocking`.
 pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult> {
     let mut kernel = Kernel::new();
     let data_dir = &config.data_dir;

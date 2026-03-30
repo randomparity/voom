@@ -3427,6 +3427,8 @@ dependencies = [
 name = "voom-process"
 version = "0.1.0"
 dependencies = [
+ "tokio",
+ "tokio-util",
  "tracing",
  "voom-domain",
  "wait-timeout",
