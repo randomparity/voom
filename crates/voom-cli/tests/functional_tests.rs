@@ -628,6 +628,41 @@ mod test_db {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// test_db_stats — `db stats`
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_db_stats {
+    use super::*;
+
+    #[test]
+    fn db_stats_empty() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["db", "stats"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Database"));
+    }
+
+    #[test]
+    fn db_stats_json() {
+        let env = TestEnv::new();
+        let output = env
+            .voom()
+            .args(["db", "stats", "--format", "json"])
+            .output()
+            .expect("run db stats");
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value = serde_json::from_str(&stdout)
+            .expect("db stats --format json should produce valid JSON");
+        assert!(json["tables"].is_object());
+        assert!(json["sqlite"].is_object());
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // test_status
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -934,6 +969,111 @@ mod test_workflow {
             .stdout(predicate::str::contains("2 files"));
     }
 
+    /// Extended lifecycle exercising new commands:
+    /// init → scan → files list → inspect → events → process --dry-run
+    /// → plans show → health check → tools list → db stats → report → status
+    #[test]
+    fn full_lifecycle_with_new_commands() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+
+        // Remove config dir to test init
+        std::fs::remove_dir_all(&env.voom_dir).unwrap();
+
+        // 1. Init
+        env.voom().arg("init").assert().success();
+
+        // 2. Populate media & scan
+        env.populate_media(&["hevc-surround", "basic-h264-aac"]);
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("2 files discovered"));
+
+        // 3. files list
+        env.voom()
+            .args(["files", "list"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Path"));
+
+        // 4. Inspect
+        let mkv = env.media_dir().join("hevc-surround.mkv");
+        env.voom()
+            .args(["inspect", mkv.to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(30))
+            .assert()
+            .success();
+
+        // 5. Events
+        env.voom().args(["events"]).assert().success();
+
+        // 6. Process dry-run
+        let starter = env.voom_dir.join("policies/default.voom");
+        assert!(starter.exists(), "init should create default.voom");
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                starter.to_str().unwrap(),
+                "--dry-run",
+            ])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("dry run"));
+
+        // 7. Plans show (by file ID from DB)
+        let list_output = env
+            .voom()
+            .args(["files", "list", "--format", "json"])
+            .output()
+            .expect("run files list");
+        let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+        let list_json: serde_json::Value = serde_json::from_str(&list_stdout).unwrap();
+        let first_id = list_json["files"][0]["id"]
+            .as_str()
+            .expect("should have file ID");
+        env.voom()
+            .args(["plans", "show", first_id])
+            .assert()
+            .success();
+
+        // 8. Health check
+        env.voom()
+            .args(["health", "check"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Database"));
+
+        // 9. Tools list
+        env.voom().args(["tools", "list"]).assert().success();
+
+        // 10. DB stats
+        env.voom()
+            .args(["db", "stats"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Database"));
+
+        // 11. Report
+        env.voom()
+            .arg("report")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("2 files"));
+
+        // 12. Status
+        env.voom()
+            .arg("status")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("2 files"));
+    }
+
     /// Scan → delete file → prune → verify status
     #[test]
     fn scan_prune_rescan() {
@@ -960,5 +1100,584 @@ mod test_workflow {
             .assert()
             .success()
             .stdout(predicate::str::contains("1 files"));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_files — `files list`, `files show`, `files delete`
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_files {
+    use super::*;
+
+    #[test]
+    fn files_list_empty_db() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["files", "list"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No files in database"));
+    }
+
+    #[test]
+    fn files_list_after_scan() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        env.voom()
+            .args(["files", "list"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("basic-h264-aac"));
+    }
+
+    #[test]
+    fn files_list_json_format() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        let output = env
+            .voom()
+            .args(["files", "list", "--format", "json"])
+            .output()
+            .expect("run files list");
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value = serde_json::from_str(&stdout)
+            .expect("files list --format json should produce valid JSON");
+        assert!(json["files"].is_array());
+        assert!(json["total"].is_number());
+    }
+
+    #[test]
+    fn files_show_and_delete() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        // Get the file ID from JSON output
+        let output = env
+            .voom()
+            .args(["files", "list", "--format", "json"])
+            .output()
+            .expect("run files list");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let file_id = json["files"][0]["id"]
+            .as_str()
+            .expect("should have file ID");
+
+        // files show <id>
+        env.voom()
+            .args(["files", "show", file_id])
+            .assert()
+            .success();
+
+        // files delete <id> --yes
+        env.voom()
+            .args(["files", "delete", file_id, "--yes"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Deleted"));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_plans — `plans show`
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_plans {
+    use super::*;
+
+    /// Helper to get the first file's UUID from `files list --format json`.
+    fn first_file_id(env: &TestEnv) -> String {
+        let output = env
+            .voom()
+            .args(["files", "list", "--format", "json"])
+            .output()
+            .expect("run files list");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        json["files"][0]["id"]
+            .as_str()
+            .expect("should have file ID")
+            .to_string()
+    }
+
+    #[test]
+    fn plans_show_empty() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        let file_id = first_file_id(&env);
+
+        env.voom()
+            .args(["plans", "show", &file_id])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No plans found"));
+    }
+
+    #[test]
+    fn plans_show_after_processing() {
+        require_tool!("ffprobe");
+        require_tool!("mkvmerge");
+        require_tool!("mkvpropedit");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+
+        // Actual processing to persist plans to DB
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--no-backup",
+            ])
+            .timeout(std::time::Duration::from_secs(120))
+            .assert()
+            .success();
+
+        let file_id = first_file_id(&env);
+
+        // plans show succeeds; shows plan data or "No plans found" if
+        // all phases were skipped (no actions needed)
+        env.voom()
+            .args(["plans", "show", &file_id])
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains("normalize")
+                    .or(predicate::str::contains("No plans found")),
+            );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_events — `events`
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_events {
+    use super::*;
+
+    #[test]
+    fn events_empty_db() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["events"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No events found"));
+    }
+
+    #[test]
+    fn events_after_scan() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        // Events should show scan-related entries with header
+        env.voom()
+            .args(["events"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("TYPE"));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_health — `health check`, `health history`
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_health {
+    use super::*;
+
+    #[test]
+    fn health_check_passes() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["health", "check"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("VOOM System Health Check"));
+    }
+
+    #[test]
+    fn health_check_replaces_doctor() {
+        let env = TestEnv::new();
+
+        // Both health check and doctor should report same sections
+        env.voom()
+            .args(["health", "check"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Database"))
+            .stdout(predicate::str::contains("External tools"))
+            .stdout(predicate::str::contains("Plugins"));
+    }
+
+    #[test]
+    fn health_history_empty() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["health", "history"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No health check records found"));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_tools — `tools list`
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_tools {
+    use super::*;
+
+    #[test]
+    fn tools_list() {
+        let env = TestEnv::new();
+        env.voom().args(["tools", "list"]).assert().success();
+    }
+
+    #[test]
+    fn tools_list_json() {
+        let env = TestEnv::new();
+        let output = env
+            .voom()
+            .args(["tools", "list", "--format", "json"])
+            .output()
+            .expect("run tools list");
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value = serde_json::from_str(&stdout)
+            .expect("tools list --format json should produce valid JSON");
+        assert!(json.is_array());
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_history — `history <path>`
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_history {
+    use super::*;
+
+    #[test]
+    fn history_no_entries() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+        let file = env.media_dir().join("basic-h264-aac.mp4");
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        env.voom()
+            .args(["history", file.to_str().unwrap()])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No history found"));
+    }
+
+    #[test]
+    fn history_after_processing() {
+        require_tool!("ffprobe");
+        require_tool!("mkvmerge");
+        require_tool!("mkvpropedit");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+        let file = env.media_dir().join("hevc-surround.mkv");
+
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--no-backup",
+            ])
+            .timeout(std::time::Duration::from_secs(120))
+            .assert()
+            .success();
+
+        env.voom()
+            .args(["history", file.to_str().unwrap()])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("history entries for"));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_backup — `backup list`
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_backup {
+    use super::*;
+
+    #[test]
+    fn backup_list_empty() {
+        let env = TestEnv::new();
+        std::fs::create_dir_all(env.media_dir()).unwrap();
+
+        env.voom()
+            .args(["backup", "list", env.media_dir().to_str().unwrap()])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No .vbak files found"));
+    }
+
+    #[test]
+    fn backup_list_after_processing() {
+        require_tool!("ffprobe");
+        require_tool!("mkvmerge");
+        require_tool!("mkvpropedit");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+
+        // Process WITHOUT --no-backup so a backup is created if changes occur
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+            ])
+            .timeout(std::time::Duration::from_secs(120))
+            .assert()
+            .success();
+
+        // backup list command succeeds (may or may not find backups
+        // depending on whether changes were needed)
+        env.voom()
+            .args(["backup", "list", env.media_dir().to_str().unwrap()])
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains("backup(s) found")
+                    .or(predicate::str::contains("No .vbak files found")),
+            );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_config_enhanced — `config get`, `config set`
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_config_enhanced {
+    use super::*;
+
+    #[test]
+    fn config_get_data_dir() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["config", "get", "data_dir"])
+            .assert()
+            .success();
+    }
+
+    #[test]
+    fn config_set_and_get() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["config", "set", "auth_token", "test-token-123"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Set"));
+
+        env.voom()
+            .args(["config", "get", "auth_token"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("test-token-123"));
+    }
+
+    #[test]
+    fn config_get_missing_key() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["config", "get", "nonexistent_key"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("key not set"));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_jobs_enhanced — `jobs list --offset`, `jobs clear`
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_jobs_enhanced {
+    use super::*;
+
+    #[test]
+    fn jobs_list_with_offset() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["jobs", "list", "--offset", "0"])
+            .assert()
+            .success();
+    }
+
+    #[test]
+    fn jobs_clear_empty() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["jobs", "clear", "--yes"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Deleted 0 job"));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_process_plan_only — `process --plan-only`
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_process_plan_only {
+    use super::*;
+
+    #[test]
+    fn process_plan_only_json() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+
+        let output = env
+            .voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--plan-only",
+            ])
+            .timeout(std::time::Duration::from_secs(60))
+            .output()
+            .expect("run process --plan-only");
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value =
+            serde_json::from_str(&stdout).expect("process --plan-only should produce valid JSON");
+        assert!(json.is_array());
+    }
+
+    #[test]
+    fn process_plan_only_conflicts_with_approve() {
+        let env = TestEnv::new();
+        std::fs::create_dir_all(env.media_dir()).unwrap();
+        let policy = env.write_policy("test", TEST_POLICY);
+
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--plan-only",
+                "--approve",
+            ])
+            .assert()
+            .failure();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_policy_diff — `policy diff`
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_policy_diff {
+    use super::*;
+
+    fn fixture_path(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/voom-dsl/tests/fixtures")
+            .join(name)
+    }
+
+    #[test]
+    fn policy_diff_identical() {
+        let env = TestEnv::new();
+        let fixture = fixture_path("production-normalize.voom");
+
+        env.voom()
+            .args([
+                "policy",
+                "diff",
+                fixture.to_str().unwrap(),
+                fixture.to_str().unwrap(),
+            ])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Policies are identical"));
+    }
+
+    #[test]
+    fn policy_diff_different() {
+        let env = TestEnv::new();
+        let fixture_a = fixture_path("production-normalize.voom");
+        let fixture_b = fixture_path("container-metadata.voom");
+
+        env.voom()
+            .args([
+                "policy",
+                "diff",
+                fixture_a.to_str().unwrap(),
+                fixture_b.to_str().unwrap(),
+            ])
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains("+")
+                    .or(predicate::str::contains("-"))
+                    .or(predicate::str::contains("~")),
+            );
     }
 }
