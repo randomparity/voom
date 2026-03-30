@@ -1,7 +1,6 @@
 interface types {
-    // ASPIRATIONAL: media-file, track, and container records are defined for
-    // future typed WASM boundary use. The actual boundary currently passes
-    // MessagePack-serialized voom-domain types in list<u8> blobs.
+    // NOTE: media-file and track are not yet used at the WASM boundary;
+    // the actual interface passes MessagePack blobs in list<u8>.
 
     record media-file {
         path: string,
@@ -48,21 +47,6 @@ interface types {
         subtitle-forced,
         subtitle-commentary,
         attachment,
-    }
-
-    // UNUSED: container enum is defined for future typed boundary use but is
-    // not referenced by any interface. Media container info currently flows as
-    // a string field on media-file or in MessagePack payloads.
-    enum container {
-        mkv,
-        mp4,
-        avi,
-        webm,
-        flv,
-        wmv,
-        mov,
-        ts,
-        other,
     }
 
     record key-value {
@@ -169,12 +153,4 @@ interface types {
         stderr: list<u8>,
     }
 
-    // UNUSED: file-filters record is defined for future typed list-files use
-    // but is not referenced by any interface. The actual list-files signature
-    // takes (dir: string, pattern: string).
-    record file-filters {
-        extensions: list<string>,
-        min-size: option<u64>,
-        max-size: option<u64>,
-    }
 }

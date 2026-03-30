@@ -67,16 +67,9 @@ fn format_config(config: &ConfigNode, out: &mut String, level: usize) {
         indent(out, level + 1);
         let _ = writeln!(out, "on_error: {on_error}");
     }
-    match config.keep_backups {
-        Some(true) => {
-            indent(out, level + 1);
-            let _ = writeln!(out, "keep_backups: true");
-        }
-        Some(false) => {
-            indent(out, level + 1);
-            let _ = writeln!(out, "keep_backups: false");
-        }
-        None => {}
+    if let Some(val) = config.keep_backups {
+        indent(out, level + 1);
+        let _ = writeln!(out, "keep_backups: {val}");
     }
 
     indent(out, level);

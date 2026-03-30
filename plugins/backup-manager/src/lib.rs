@@ -224,13 +224,11 @@ impl Plugin for BackupManagerPlugin {
 
     fn shutdown(&self) -> Result<()> {
         if let Ok(records) = self.records() {
-            if !records.is_empty() {
-                for (path, _) in records.iter() {
-                    tracing::warn!(
-                        path = %path.display(),
-                        "active backup still exists at shutdown"
-                    );
-                }
+            for (path, _) in records.iter() {
+                tracing::warn!(
+                    path = %path.display(),
+                    "active backup still exists at shutdown"
+                );
             }
         }
         Ok(())

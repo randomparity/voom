@@ -565,7 +565,8 @@ fn topological_sort(ast: &PolicyAst) -> std::result::Result<Vec<String>, DslErro
     if result.len() != ast.phases.len() {
         let phase_names: HashSet<&str> = ast.phases.iter().map(|p| p.name.as_str()).collect();
         let result_set: HashSet<&str> = result.iter().map(|s| s.as_str()).collect();
-        let stuck: Vec<&str> = phase_names.difference(&result_set).copied().collect();
+        let mut stuck: Vec<&str> = phase_names.difference(&result_set).copied().collect();
+        stuck.sort_unstable();
         let has_unknown_dep = stuck.iter().any(|&name| {
             ast.phases.iter().find(|p| p.name == name).is_some_and(|p| {
                 p.depends_on

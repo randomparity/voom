@@ -191,7 +191,7 @@ impl Plugin for SqliteStorePlugin {
                 }
             }
             _ => {
-                tracing::debug!(
+                tracing::trace!(
                     event_type = event.event_type(),
                     "no domain-specific handler"
                 );

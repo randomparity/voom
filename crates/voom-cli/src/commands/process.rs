@@ -455,9 +455,8 @@ async fn process_single_file(
     .await
     .map_err(|e| format!("introspect {}: {e}", payload.path))?;
 
-    // Merge any enriched plugin_metadata from the store so that metadata
-    // written by earlier pipeline stages (e.g. prior introspection runs)
-    // is available to the policy evaluator in the same run.
+    // Prior runs may have written plugin_metadata that the current
+    // introspection didn't reproduce; merge so the evaluator sees both.
     if let Ok(Some(stored)) = ctx.store.file_by_path(&file.path) {
         for (k, v) in stored.plugin_metadata {
             file.plugin_metadata.entry(k).or_insert(v);
