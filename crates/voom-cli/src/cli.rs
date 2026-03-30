@@ -48,7 +48,12 @@ pub enum Commands {
     #[command(subcommand)]
     Plans(PlansCommands),
 
-    /// System health check
+    /// System health checks and history
+    #[command(subcommand)]
+    Health(HealthCommands),
+
+    /// System health check (alias for `health check`)
+    #[command(hide = true)]
     Doctor,
 
     /// Start the web server
@@ -438,6 +443,30 @@ pub enum PlansCommands {
     Show {
         /// File UUID or path
         file: String,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+// === Health ===
+
+#[derive(Subcommand)]
+pub enum HealthCommands {
+    /// Run live system health checks
+    Check,
+    /// Show health check history from the database
+    History {
+        /// Filter by check name
+        #[arg(long)]
+        check: Option<String>,
+        /// Show only records since this datetime
+        /// (e.g. 2024-01-15 or 2024-01-15T10:30:00)
+        #[arg(long)]
+        since: Option<String>,
+        /// Maximum number of records to display
+        #[arg(short = 'n', long, default_value = "50")]
+        limit: u32,
         /// Output format
         #[arg(short, long, default_value = "table")]
         format: OutputFormat,
@@ -1041,13 +1070,74 @@ mod tests {
         assert!(try_parse(&["voom", "completions", "nushell"]).is_err());
     }
 
-    // ── No-arg subcommands ───────────────────────────────────
+    // ── Health subcommands ────────────────────────────────────
 
     #[test]
-    fn test_doctor_subcommand() {
+    fn test_health_check() {
+        let cli = parse(&["voom", "health", "check"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Health(HealthCommands::Check)
+        ));
+    }
+
+    #[test]
+    fn test_health_history_defaults() {
+        let cli = parse(&["voom", "health", "history"]);
+        match cli.command {
+            Commands::Health(HealthCommands::History {
+                check,
+                since,
+                limit,
+                format,
+            }) => {
+                assert!(check.is_none());
+                assert!(since.is_none());
+                assert_eq!(limit, 50);
+                assert!(matches!(format, OutputFormat::Table));
+            }
+            _ => panic!("expected Health History"),
+        }
+    }
+
+    #[test]
+    fn test_health_history_all_flags() {
+        let cli = parse(&[
+            "voom",
+            "health",
+            "history",
+            "--check",
+            "data_dir_exists",
+            "--since",
+            "2024-01-15",
+            "--format",
+            "json",
+            "-n",
+            "10",
+        ]);
+        match cli.command {
+            Commands::Health(HealthCommands::History {
+                check,
+                since,
+                limit,
+                format,
+            }) => {
+                assert_eq!(check.as_deref(), Some("data_dir_exists"));
+                assert_eq!(since.as_deref(), Some("2024-01-15"));
+                assert_eq!(limit, 10);
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Health History"),
+        }
+    }
+
+    #[test]
+    fn test_doctor_alias_backward_compat() {
         let cli = parse(&["voom", "doctor"]);
         assert!(matches!(cli.command, Commands::Doctor));
     }
+
+    // ── No-arg subcommands ───────────────────────────────────
 
     #[test]
     fn test_init_subcommand() {
@@ -1342,7 +1432,7 @@ mod tests {
 
     #[test]
     fn test_verbose_after_subcommand() {
-        let cli = parse(&["voom", "doctor", "-vv"]);
+        let cli = parse(&["voom", "health", "check", "-vv"]);
         assert_eq!(cli.verbose, 2);
     }
 }
