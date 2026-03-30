@@ -54,6 +54,17 @@ pub enum Commands {
     #[command(subcommand)]
     Config(ConfigCommands),
 
+    /// External tool management
+    #[command(subcommand)]
+    Tools(ToolsCommands),
+
+    /// Show file change history
+    History(HistoryArgs),
+
+    /// Backup management
+    #[command(subcommand)]
+    Backup(BackupCommands),
+
     /// First-time setup
     Init,
 
@@ -287,6 +298,65 @@ pub enum ConfigCommands {
     Show,
     /// Open configuration in $EDITOR
     Edit,
+}
+
+// === Tools ===
+
+#[derive(Subcommand)]
+pub enum ToolsCommands {
+    /// List detected external tools
+    List {
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Show detailed info about a tool
+    Info {
+        /// Tool name (e.g. ffmpeg, mkvmerge)
+        name: String,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+// === History ===
+
+#[derive(clap::Args)]
+pub struct HistoryArgs {
+    /// Media file to show history for
+    pub file: PathBuf,
+
+    /// Output format
+    #[arg(short, long, default_value = "table")]
+    pub format: OutputFormat,
+}
+
+// === Backup ===
+
+#[derive(Subcommand)]
+pub enum BackupCommands {
+    /// List backup files
+    List {
+        /// Directory to scan for backups
+        path: PathBuf,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Restore a file from its backup
+    Restore {
+        /// Path to the .vbak backup file
+        backup_path: PathBuf,
+    },
+    /// Remove all backup files
+    Cleanup {
+        /// Directory to scan for backups
+        path: PathBuf,
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 // === Completions ===
@@ -879,6 +949,118 @@ mod tests {
             "retry"
         ])
         .is_err());
+    }
+
+    // ── Tools subcommands ─────────────────────────────────────
+
+    #[test]
+    fn test_tools_list() {
+        let cli = parse(&["voom", "tools", "list"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Tools(ToolsCommands::List { .. })
+        ));
+    }
+
+    #[test]
+    fn test_tools_list_json() {
+        let cli = parse(&["voom", "tools", "list", "--format", "json"]);
+        match cli.command {
+            Commands::Tools(ToolsCommands::List { format }) => {
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Tools List"),
+        }
+    }
+
+    #[test]
+    fn test_tools_info() {
+        let cli = parse(&["voom", "tools", "info", "ffmpeg"]);
+        match cli.command {
+            Commands::Tools(ToolsCommands::Info { name, .. }) => {
+                assert_eq!(name, "ffmpeg");
+            }
+            _ => panic!("expected Tools Info"),
+        }
+    }
+
+    #[test]
+    fn test_tools_info_requires_name() {
+        assert!(try_parse(&["voom", "tools", "info"]).is_err());
+    }
+
+    // ── History ──────────────────────────────────────────────
+
+    #[test]
+    fn test_history_requires_file() {
+        assert!(try_parse(&["voom", "history"]).is_err());
+    }
+
+    #[test]
+    fn test_history_defaults() {
+        let cli = parse(&["voom", "history", "/media/movie.mkv"]);
+        match cli.command {
+            Commands::History(args) => {
+                assert_eq!(args.file, PathBuf::from("/media/movie.mkv"));
+                assert!(matches!(args.format, OutputFormat::Table));
+            }
+            _ => panic!("expected History"),
+        }
+    }
+
+    #[test]
+    fn test_history_json_format() {
+        let cli = parse(&["voom", "history", "f.mkv", "--format", "json"]);
+        match cli.command {
+            Commands::History(args) => assert!(matches!(args.format, OutputFormat::Json)),
+            _ => panic!("expected History"),
+        }
+    }
+
+    // ── Backup subcommands ──────────────────────────────────
+
+    #[test]
+    fn test_backup_list() {
+        let cli = parse(&["voom", "backup", "list", "/media"]);
+        match cli.command {
+            Commands::Backup(BackupCommands::List { path, .. }) => {
+                assert_eq!(path, PathBuf::from("/media"));
+            }
+            _ => panic!("expected Backup List"),
+        }
+    }
+
+    #[test]
+    fn test_backup_list_requires_path() {
+        assert!(try_parse(&["voom", "backup", "list"]).is_err());
+    }
+
+    #[test]
+    fn test_backup_restore() {
+        let cli = parse(&["voom", "backup", "restore", "/path/to/file.vbak"]);
+        match cli.command {
+            Commands::Backup(BackupCommands::Restore { backup_path }) => {
+                assert_eq!(backup_path, PathBuf::from("/path/to/file.vbak"));
+            }
+            _ => panic!("expected Backup Restore"),
+        }
+    }
+
+    #[test]
+    fn test_backup_cleanup() {
+        let cli = parse(&["voom", "backup", "cleanup", "/media", "--yes"]);
+        match cli.command {
+            Commands::Backup(BackupCommands::Cleanup { path, yes }) => {
+                assert_eq!(path, PathBuf::from("/media"));
+                assert!(yes);
+            }
+            _ => panic!("expected Backup Cleanup"),
+        }
+    }
+
+    #[test]
+    fn test_backup_cleanup_requires_path() {
+        assert!(try_parse(&["voom", "backup", "cleanup"]).is_err());
     }
 
     // ── Verbose flag is global (works after subcommand) ──────

@@ -255,6 +255,68 @@ pub fn format_plugin_list(plugins: &[PluginListEntry]) {
     println!("{table}");
 }
 
+/// Print executor capabilities (codecs, HW accel, formats) for a plugin.
+pub fn format_executor_capabilities(
+    name: &str,
+    capabilities: &voom_domain::capability_map::CapabilityMap,
+) {
+    if let Some(caps) = capabilities.executor_capabilities(name) {
+        if !caps.hw_accels.is_empty() {
+            let best = capabilities.best_hwaccel();
+            println!("{}", style("Hardware Acceleration:").bold());
+            println!(
+                "  {} {} ({})",
+                style("Backend:").bold(),
+                style(best).green(),
+                caps.hw_accels.join(", ")
+            );
+        }
+        if !caps.codecs.decoders.is_empty() || !caps.codecs.encoders.is_empty() {
+            println!("{}", style("Codecs:").bold());
+            if !caps.codecs.decoders.is_empty() {
+                println!(
+                    "  {} ({}): {}",
+                    style("Decoders").bold(),
+                    caps.codecs.decoders.len(),
+                    caps.codecs.decoders.join(", ")
+                );
+            }
+            if !caps.codecs.encoders.is_empty() {
+                println!(
+                    "  {} ({}): {}",
+                    style("Encoders").bold(),
+                    caps.codecs.encoders.len(),
+                    caps.codecs.encoders.join(", ")
+                );
+            }
+            if !caps.codecs.hw_decoders.is_empty() {
+                println!(
+                    "  {} ({}): {}",
+                    style("HW Decoders").bold(),
+                    caps.codecs.hw_decoders.len(),
+                    caps.codecs.hw_decoders.join(", ")
+                );
+            }
+            if !caps.codecs.hw_encoders.is_empty() {
+                println!(
+                    "  {} ({}): {}",
+                    style("HW Encoders").bold(),
+                    caps.codecs.hw_encoders.len(),
+                    caps.codecs.hw_encoders.join(", ")
+                );
+            }
+        }
+        if !caps.formats.is_empty() {
+            println!(
+                "{} ({}): {}",
+                style("Formats:").bold(),
+                caps.formats.len(),
+                caps.formats.join(", ")
+            );
+        }
+    }
+}
+
 /// Create a table with the standard VOOM style.
 pub fn new_table() -> Table {
     let mut table = Table::new();

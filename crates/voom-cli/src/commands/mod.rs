@@ -1,7 +1,9 @@
+pub mod backup;
 pub mod completions;
 pub mod config;
 pub mod db;
 pub mod doctor;
+pub mod history;
 pub mod init;
 pub mod inspect;
 pub mod jobs;
@@ -12,3 +14,4 @@ pub mod report;
 pub mod scan;
 pub mod serve;
 pub mod status;
+pub mod tools;
