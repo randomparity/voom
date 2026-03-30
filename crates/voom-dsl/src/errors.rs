@@ -42,20 +42,6 @@ impl DslError {
         }
     }
 
-    pub fn parse_with_suggestion(
-        line: usize,
-        col: usize,
-        message: impl Into<String>,
-        suggestion: impl Into<String>,
-    ) -> Self {
-        Self::Parse {
-            line,
-            col,
-            message: message.into(),
-            suggestion: Some(suggestion.into()),
-        }
-    }
-
     pub fn build(line: usize, col: usize, message: impl Into<String>) -> Self {
         Self::Build {
             line,
