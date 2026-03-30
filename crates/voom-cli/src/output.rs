@@ -16,7 +16,8 @@ use crate::cli::OutputFormat;
 /// Config values and external process output are untrusted input that could
 /// contain injected escape sequences. Call this at the display boundary.
 pub fn sanitize_for_display(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
+    let stripped = console::strip_ansi_codes(s);
+    stripped.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// Returns the current terminal width, defaulting to 80 if it cannot be determined.
@@ -275,8 +276,8 @@ mod tests {
 
     #[test]
     fn test_sanitize_strips_ansi_escapes() {
-        // CSI sequence: ESC [ 31 m (red text)
-        assert_eq!(sanitize_for_display("\x1b[31mred\x1b[0m"), "[31mred[0m");
+        // CSI sequence: ESC [ 31 m (red text) — fully stripped, not just ESC byte
+        assert_eq!(sanitize_for_display("\x1b[31mred\x1b[0m"), "red");
     }
 
     #[test]

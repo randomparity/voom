@@ -1,7 +1,5 @@
 //! Hardware acceleration detection and configuration for `FFmpeg`.
 
-use std::process::Command;
-
 /// Hardware acceleration backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HwAccelBackend {
@@ -53,16 +51,6 @@ impl HwAccelConfig {
     #[must_use]
     pub fn enabled(&self) -> bool {
         self.backend.is_some()
-    }
-
-    /// Detect available hardware acceleration by querying ffmpeg.
-    #[must_use]
-    pub fn detect() -> Self {
-        Self {
-            backend: Self::detect_backend(),
-            validated_encoders: None,
-            device: None,
-        }
     }
 
     /// Select the best backend from already-probed hwaccel names,
@@ -210,24 +198,6 @@ impl HwAccelConfig {
 
         vec!["-hwaccel".to_string(), hwaccel_name.to_string()]
     }
-
-    /// Check if HW accel is available by running `ffmpeg -hwaccels`.
-    fn detect_backend() -> Option<HwAccelBackend> {
-        let output = match Command::new("ffmpeg")
-            .args(["-hwaccels", "-hide_banner"])
-            .output()
-        {
-            Ok(output) => output,
-            Err(e) => {
-                tracing::debug!(error = %e, "failed to run ffmpeg for hwaccel detection");
-                return None;
-            }
-        };
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let text = stdout.to_ascii_lowercase();
-        detect_backend_from_text(&text)
-    }
 }
 
 /// Resolve the HW encoder name for a backend+codec pair.
@@ -357,7 +327,9 @@ pub fn resolve_hw_config(
             } else {
                 tracing::warn!(
                     backend = name,
-                    "unrecognized hw_accel value, falling back to auto-detection"
+                    "unrecognized hw_accel value \
+                     (valid: nvenc, qsv, vaapi, videotoolbox, none), \
+                     falling back to auto-detection"
                 );
                 (HwAccelConfig::from_probed(hw_accels), "auto-detected")
             }

@@ -97,6 +97,7 @@ impl DiscoveryProgress {
     ///
     /// Transitions from spinner to determinate bar on the first call.
     pub fn on_processing(&self, current: usize, total: usize, path: &Path, action: &str) {
+        // Relaxed is sufficient: a duplicate set_style call is harmless (ProgressBar is thread-safe).
         if !self.transitioned.swap(true, Ordering::Relaxed) {
             self.pb.set_length(total as u64);
             self.pb.set_style(bar_style());

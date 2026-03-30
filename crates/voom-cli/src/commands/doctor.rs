@@ -74,7 +74,7 @@ pub fn run() -> Result<()> {
 
     // 4. Hardware acceleration (only if ffmpeg was found)
     if detector.tool("ffmpeg").is_some() {
-        print_hw_accel_status();
+        print_hw_accel_status(&config);
     }
 
     // 5. Plugins
@@ -121,19 +121,20 @@ fn gpu_section_header(backend: HwAccelBackend) -> &'static str {
 }
 
 fn gpu_display_label(device: &GpuDevice, backend: HwAccelBackend) -> String {
+    let name = sanitize_for_display(&device.name);
     match backend {
         HwAccelBackend::Nvenc => {
             let vram = device
                 .vram_mib
                 .map(|m| format!(" ({m} MiB)"))
                 .unwrap_or_default();
-            format!("GPU {}: {}{}", device.id, device.name, vram)
+            format!("GPU {}: {}{}", device.id, name, vram)
         }
         _ => {
             if device.name == device.id {
                 device.id.clone()
             } else {
-                format!("{} ({})", device.id, device.name)
+                format!("{} ({})", device.id, name)
             }
         }
     }
@@ -142,7 +143,8 @@ fn gpu_display_label(device: &GpuDevice, backend: HwAccelBackend) -> String {
 fn encoder_block_label(device: &GpuDevice, backend: HwAccelBackend) -> String {
     match backend {
         HwAccelBackend::Nvenc => {
-            format!("GPU {} — {}", device.id, device.name)
+            let name = sanitize_for_display(&device.name);
+            format!("GPU {} — {}", device.id, name)
         }
         _ => device.id.clone(),
     }
@@ -161,7 +163,7 @@ fn print_encoder_block(hw_encoders: &[String], backend: HwAccelBackend, device: 
     }
 }
 
-fn print_hw_accel_status() {
+fn print_hw_accel_status(app_config: &config::AppConfig) {
     println!();
     println!("{}", style("Hardware acceleration:").bold());
 
@@ -181,7 +183,6 @@ fn print_hw_accel_status() {
         println!("  Available ... {}", hw_accels.join(", "));
     }
 
-    let app_config = config::load_config().unwrap_or_default();
     let hw_accel_override = app_config
         .plugin
         .get("ffmpeg-executor")

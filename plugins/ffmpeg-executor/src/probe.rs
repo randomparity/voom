@@ -276,7 +276,7 @@ fn enumerate_vaapi_devices() -> Vec<GpuDevice> {
 }
 
 /// Check whether NVIDIA GPU hardware is present.
-pub fn has_nvidia_hardware() -> bool {
+pub(crate) fn has_nvidia_hardware() -> bool {
     std::process::Command::new("nvidia-smi")
         .arg("--list-gpus")
         .stdin(std::process::Stdio::null())
@@ -295,7 +295,7 @@ pub fn has_nvidia_hardware() -> bool {
 ///
 /// Returns `false` if no render nodes exist or `vainfo` is not installed.
 /// Users can bypass this check with `hw_accel = "vaapi"` in config.
-pub fn has_vaapi_devices() -> bool {
+pub(crate) fn has_vaapi_devices() -> bool {
     let first_render_node = std::fs::read_dir("/dev/dri")
         .into_iter()
         .flatten()
@@ -335,7 +335,7 @@ pub fn has_vaapi_devices() -> bool {
 ///
 /// Reads `/sys/class/drm/card*/device/vendor` looking for Intel's
 /// PCI vendor ID (`0x8086`).
-pub fn has_intel_gpu() -> bool {
+pub(crate) fn has_intel_gpu() -> bool {
     let entries = match std::fs::read_dir("/sys/class/drm") {
         Ok(e) => e,
         Err(_) => return false,
