@@ -181,6 +181,28 @@ fn corpus_dir() -> &'static Path {
         .as_path()
 }
 
+/// Get the path to a DSL fixture file.
+fn fixture_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/voom-dsl/tests/fixtures")
+        .join(name)
+}
+
+/// Get the first file's UUID from `files list --format json`.
+fn first_file_id(env: &TestEnv) -> String {
+    let output = env
+        .voom()
+        .args(["files", "list", "--format", "json"])
+        .output()
+        .expect("run files list");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    json["files"][0]["id"]
+        .as_str()
+        .expect("should have file ID")
+        .to_string()
+}
+
 /// Simple test policy for process tests.
 const TEST_POLICY: &str = r#"
 policy "test-normalize" {
@@ -702,12 +724,6 @@ mod test_jobs {
 mod test_policy {
     use super::*;
 
-    fn fixture_path(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/voom-dsl/tests/fixtures")
-            .join(name)
-    }
-
     #[test]
     fn policy_validate_valid() {
         let env = TestEnv::new();
@@ -1026,19 +1042,10 @@ mod test_workflow {
             .success()
             .stdout(predicate::str::contains("dry run"));
 
-        // 7. Plans show (by file ID from DB)
-        let list_output = env
-            .voom()
-            .args(["files", "list", "--format", "json"])
-            .output()
-            .expect("run files list");
-        let list_stdout = String::from_utf8_lossy(&list_output.stdout);
-        let list_json: serde_json::Value = serde_json::from_str(&list_stdout).unwrap();
-        let first_id = list_json["files"][0]["id"]
-            .as_str()
-            .expect("should have file ID");
+        // 7. Plans show
+        let file_id = first_file_id(&env);
         env.voom()
-            .args(["plans", "show", first_id])
+            .args(["plans", "show", &file_id])
             .assert()
             .success();
 
@@ -1177,28 +1184,15 @@ mod test_files {
             .assert()
             .success();
 
-        // Get the file ID from JSON output
-        let output = env
-            .voom()
-            .args(["files", "list", "--format", "json"])
-            .output()
-            .expect("run files list");
+        let file_id = first_file_id(&env);
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-        let file_id = json["files"][0]["id"]
-            .as_str()
-            .expect("should have file ID");
-
-        // files show <id>
         env.voom()
-            .args(["files", "show", file_id])
+            .args(["files", "show", &file_id])
             .assert()
             .success();
 
-        // files delete <id> --yes
         env.voom()
-            .args(["files", "delete", file_id, "--yes"])
+            .args(["files", "delete", &file_id, "--yes"])
             .assert()
             .success()
             .stdout(predicate::str::contains("Deleted"));
@@ -1211,21 +1205,6 @@ mod test_files {
 
 mod test_plans {
     use super::*;
-
-    /// Helper to get the first file's UUID from `files list --format json`.
-    fn first_file_id(env: &TestEnv) -> String {
-        let output = env
-            .voom()
-            .args(["files", "list", "--format", "json"])
-            .output()
-            .expect("run files list");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-        json["files"][0]["id"]
-            .as_str()
-            .expect("should have file ID")
-            .to_string()
-    }
 
     #[test]
     fn plans_show_empty() {
@@ -1257,7 +1236,6 @@ mod test_plans {
         env.populate_media(&["hevc-surround"]);
         let policy = env.write_policy("test", TEST_POLICY);
 
-        // Actual processing to persist plans to DB
         env.voom()
             .args([
                 "process",
@@ -1272,8 +1250,6 @@ mod test_plans {
 
         let file_id = first_file_id(&env);
 
-        // plans show succeeds; shows plan data or "No plans found" if
-        // all phases were skipped (no actions needed)
         env.voom()
             .args(["plans", "show", &file_id])
             .assert()
@@ -1314,7 +1290,6 @@ mod test_events {
             .assert()
             .success();
 
-        // Events should show scan-related entries with header
         env.voom()
             .args(["events"])
             .assert()
@@ -1344,14 +1319,29 @@ mod test_health {
     fn health_check_replaces_doctor() {
         let env = TestEnv::new();
 
-        // Both health check and doctor should report same sections
-        env.voom()
+        let health = env
+            .voom()
             .args(["health", "check"])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("Database"))
-            .stdout(predicate::str::contains("External tools"))
-            .stdout(predicate::str::contains("Plugins"));
+            .output()
+            .expect("run health check");
+        let doctor = env.voom().arg("doctor").output().expect("run doctor");
+
+        assert!(health.status.success());
+        assert!(doctor.status.success());
+        // Both commands report the same sections (plugin order is
+        // non-deterministic so exact string comparison isn't reliable)
+        let h = String::from_utf8_lossy(&health.stdout);
+        let d = String::from_utf8_lossy(&doctor.stdout);
+        for section in [
+            "VOOM System Health Check",
+            "Config file",
+            "Database",
+            "External tools",
+            "Plugins",
+        ] {
+            assert!(h.contains(section), "health missing: {section}");
+            assert!(d.contains(section), "doctor missing: {section}");
+        }
     }
 
     #[test]
@@ -1480,7 +1470,6 @@ mod test_backup {
         env.populate_media(&["hevc-surround"]);
         let policy = env.write_policy("test", TEST_POLICY);
 
-        // Process WITHOUT --no-backup so a backup is created if changes occur
         env.voom()
             .args([
                 "process",
@@ -1492,8 +1481,6 @@ mod test_backup {
             .assert()
             .success();
 
-        // backup list command succeeds (may or may not find backups
-        // depending on whether changes were needed)
         env.voom()
             .args(["backup", "list", env.media_dir().to_str().unwrap()])
             .assert()
@@ -1635,12 +1622,6 @@ mod test_process_plan_only {
 
 mod test_policy_diff {
     use super::*;
-
-    fn fixture_path(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/voom-dsl/tests/fixtures")
-            .join(name)
-    }
 
     #[test]
     fn policy_diff_identical() {
