@@ -1,11 +1,13 @@
 interface host {
-    use types.{media-file, file-filters, tool-output, header, http-response, log-level};
+    use types.{tool-output, header, http-response, log-level};
 
     /// Read metadata for a file (sandboxed to media library paths).
-    read-file-metadata: func(path: string) -> result<media-file, string>;
+    /// Returns MessagePack-serialized JSON metadata bytes (size, is_file, etc.),
+    /// not a structured media-file record.
+    read-file-metadata: func(path: string) -> result<list<u8>, string>;
 
-    /// List files matching filters.
-    list-files: func(filters: file-filters) -> result<list<media-file>, string>;
+    /// List files in `dir` whose names contain `pattern` (empty = all).
+    list-files: func(dir: string, pattern: string) -> result<list<string>, string>;
 
     /// Run an external tool (plugins request, host executes).
     run-tool: func(tool: string, args: list<string>, timeout-ms: u64) -> result<tool-output, string>;

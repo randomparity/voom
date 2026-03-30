@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use voom_domain::capabilities::Capability;
 
+/// Current protocol version for MessagePack serialization at the WASM boundary.
+/// Plugins declaring a `protocol_version` must match this value to load.
+pub const CURRENT_PROTOCOL_VERSION: u32 = 1;
+
 /// Plugin manifest describing a plugin's identity and requirements.
 /// For native plugins this is built in code; for WASM plugins it's loaded from a TOML file.
 #[non_exhaustive]
@@ -28,6 +32,11 @@ pub struct PluginManifest {
     /// Defaults to 70 if not specified in the manifest.
     #[serde(default = "default_priority")]
     pub priority: i32,
+    /// MessagePack protocol version for WASM boundary serialization.
+    /// `None` means the plugin predates versioning and is treated as compatible.
+    /// If set, must match `CURRENT_PROTOCOL_VERSION` at load time.
+    #[serde(default)]
+    pub protocol_version: Option<u32>,
 }
 
 #[non_exhaustive]
@@ -51,6 +60,11 @@ impl PluginManifest {
         }
         if self.version.is_empty() {
             errors.push("plugin version cannot be empty".to_string());
+        } else if let Err(e) = semver::Version::parse(&self.version) {
+            errors.push(format!(
+                "plugin version '{}' is not valid semver: {e}",
+                self.version
+            ));
         }
         if self.capabilities.is_empty() && self.handles_events.is_empty() {
             errors.push("plugin must declare at least one capability or handled event".to_string());
@@ -68,9 +82,8 @@ impl PluginManifest {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_valid_manifest() {
-        let manifest = PluginManifest {
+    fn valid_manifest() -> PluginManifest {
+        PluginManifest {
             name: "test-plugin".into(),
             version: "0.1.0".into(),
             description: "A test plugin".into(),
@@ -83,47 +96,70 @@ mod tests {
             config_schema: None,
             allowed_domains: vec![],
             priority: 70,
-        };
-        assert!(manifest.validate().is_ok());
+            protocol_version: None,
+        }
+    }
+
+    #[test]
+    fn test_valid_manifest() {
+        assert!(valid_manifest().validate().is_ok());
     }
 
     #[test]
     fn test_empty_name_fails() {
-        let manifest = PluginManifest {
-            name: "".into(),
-            version: "0.1.0".into(),
-            description: "".into(),
-            author: String::new(),
-            license: String::new(),
-            homepage: String::new(),
-            capabilities: vec![Capability::Evaluate],
-            handles_events: vec![],
-            dependencies: vec![],
-            config_schema: None,
-            allowed_domains: vec![],
-            priority: 70,
-        };
+        let mut manifest = valid_manifest();
+        manifest.name = String::new();
         let errors = manifest.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("name")));
     }
 
     #[test]
     fn test_no_capabilities_or_events_fails() {
-        let manifest = PluginManifest {
-            name: "empty".into(),
-            version: "0.1.0".into(),
-            description: "".into(),
-            author: String::new(),
-            license: String::new(),
-            homepage: String::new(),
-            capabilities: vec![],
-            handles_events: vec![],
-            dependencies: vec![],
-            config_schema: None,
-            allowed_domains: vec![],
-            priority: 70,
-        };
+        let mut manifest = valid_manifest();
+        manifest.capabilities = vec![];
+        manifest.handles_events = vec![];
         assert!(manifest.validate().is_err());
+    }
+
+    #[test]
+    fn test_invalid_semver_fails_validation() {
+        let mut manifest = valid_manifest();
+        manifest.version = "not-a-version".into();
+        let errors = manifest.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("not valid semver")),
+            "expected semver error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_valid_semver_passes_validation() {
+        let mut manifest = valid_manifest();
+        manifest.version = "1.2.3-beta.1+build.42".into();
+        assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn test_protocol_version_none_defaults_to_compatible() {
+        let manifest = valid_manifest();
+        assert!(manifest.protocol_version.is_none());
+        // None is treated as compatible — validate() does not reject it.
+        assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn test_protocol_version_defaults_on_deserialize() {
+        let toml_str = r#"
+name = "test-plugin"
+version = "1.0.0"
+description = "A test plugin"
+handles_events = ["file.discovered"]
+
+[[capabilities]]
+Evaluate = {}
+"#;
+        let manifest: PluginManifest = toml::from_str(toml_str).unwrap();
+        assert!(manifest.protocol_version.is_none());
     }
 
     #[test]
@@ -146,11 +182,13 @@ mod tests {
             config_schema: None,
             allowed_domains: vec![],
             priority: 50,
+            protocol_version: Some(1),
         };
 
         let json = serde_json::to_string(&manifest).unwrap();
         let deserialized: PluginManifest = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.name, "discovery");
         assert_eq!(deserialized.capabilities.len(), 1);
+        assert_eq!(deserialized.protocol_version, Some(1));
     }
 }
