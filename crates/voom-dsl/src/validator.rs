@@ -50,8 +50,8 @@ fn validate_config(ast: &PolicyAst, errors: &mut Vec<DslError>) {
     for lang in &config.audio_languages {
         if !language::is_valid_language(lang) {
             errors.push(DslError::validation(
-                ast.span.line,
-                ast.span.col,
+                config.span.line,
+                config.span.col,
                 format!("unknown audio language code \"{lang}\""),
             ));
         }
@@ -59,14 +59,14 @@ fn validate_config(ast: &PolicyAst, errors: &mut Vec<DslError>) {
     for lang in &config.subtitle_languages {
         if !language::is_valid_language(lang) {
             errors.push(DslError::validation(
-                ast.span.line,
-                ast.span.col,
+                config.span.line,
+                config.span.col,
                 format!("unknown subtitle language code \"{lang}\""),
             ));
         }
     }
     if let Some(on_error) = &config.on_error {
-        validate_on_error(on_error, ast.span.line, ast.span.col, errors);
+        validate_on_error(on_error, config.span.line, config.span.col, errors);
     }
 }
 
@@ -185,6 +185,7 @@ fn validate_cycle_detection(ast: &PolicyAst, errors: &mut Vec<DslError>) {
                     span.col,
                     format!("circular dependency: {cycle_str}"),
                 ));
+                in_stack.clear();
             }
         }
     }
@@ -273,9 +274,9 @@ fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>) {
         validate_on_error(on_error, phase.span.line, phase.span.col, errors);
     }
 
-    // Track keep/remove conflicts
-    let mut kept_targets: HashSet<&str> = HashSet::new();
-    let mut removed_targets: HashSet<&str> = HashSet::new();
+    // Track keep/remove conflicts (target, has_filter)
+    let mut kept_targets: Vec<(&str, bool)> = Vec::new();
+    let mut removed_targets: Vec<(&str, bool)> = Vec::new();
 
     for spanned_op in &phase.operations {
         validate_operation(
@@ -286,11 +287,11 @@ fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>) {
         );
 
         match &spanned_op.node {
-            OperationNode::Keep { target, .. } => {
-                kept_targets.insert(target.as_str());
+            OperationNode::Keep { target, filter } => {
+                kept_targets.push((target.as_str(), filter.is_some()));
             }
-            OperationNode::Remove { target, .. } => {
-                removed_targets.insert(target.as_str());
+            OperationNode::Remove { target, filter } => {
+                removed_targets.push((target.as_str(), filter.is_some()));
             }
             _ => {}
         }
@@ -350,10 +351,11 @@ fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>) {
     }
 
     // Check for unfiltered keep+remove on the same broad target category
-    for target in &kept_targets {
+    for &(target, keep_filtered) in &kept_targets {
         let broad_category = broad_track_category(target);
-        for removed in &removed_targets {
-            if broad_track_category(removed) == broad_category {
+        for &(removed, remove_filtered) in &removed_targets {
+            if broad_track_category(removed) == broad_category && !keep_filtered && !remove_filtered
+            {
                 errors.push(DslError::validation(
                     phase.span.line,
                     phase.span.col,
@@ -591,6 +593,15 @@ fn validate_filter(filter: &FilterNode, line: usize, col: usize, errors: &mut Ve
         FilterNode::And(items) | FilterNode::Or(items) => {
             for item in items {
                 validate_filter(item, line, col, errors);
+            }
+        }
+        FilterNode::TitleMatches(pattern) => {
+            if regex::Regex::new(pattern).is_err() {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    format!("invalid regex pattern in title matches: \"{pattern}\""),
+                ));
             }
         }
         FilterNode::Not(inner) => validate_filter(inner, line, col, errors),
@@ -974,11 +985,11 @@ mod tests {
     }
 
     #[test]
-    fn test_conflicting_keep_remove() {
+    fn test_conflicting_keep_remove_unfiltered() {
         let input = r#"policy "test" {
             phase norm {
-                keep audio where lang in [eng]
-                remove audio where lang in [jpn]
+                keep audio
+                remove audio
             }
         }"#;
         let ast = parse_policy(input).unwrap();
@@ -995,12 +1006,12 @@ mod tests {
     }
 
     #[test]
-    fn test_conflicting_keep_remove_synonyms() {
-        // "keep subtitles" + "remove subtitle" should conflict
+    fn test_conflicting_keep_remove_synonyms_unfiltered() {
+        // "keep subtitles" + "remove subtitle" should conflict when both unfiltered
         let input = r#"policy "test" {
             phase norm {
-                keep subtitles where lang in [eng]
-                remove subtitle where commentary
+                keep subtitles
+                remove subtitle
             }
         }"#;
         let ast = parse_policy(input).unwrap();
@@ -1276,6 +1287,74 @@ mod tests {
         assert!(
             validate(&ast).is_ok(),
             "all known transcode keys should be valid"
+        );
+    }
+
+    #[test]
+    fn test_invalid_regex_in_title_matches() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where title matches "[invalid"
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("invalid regex pattern")),
+            "expected regex validation error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_filtered_keep_remove_no_conflict() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang in [eng]
+                remove audio where commentary
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(
+            validate(&ast).is_ok(),
+            "filtered keep+remove on same target should not conflict"
+        );
+    }
+
+    #[test]
+    fn test_two_independent_cycles_both_reported() {
+        let input = r#"policy "test" {
+            phase a {
+                depends_on: [b]
+                container mkv
+            }
+            phase b {
+                depends_on: [a]
+                container mkv
+            }
+            phase c {
+                depends_on: [d]
+                container mkv
+            }
+            phase d {
+                depends_on: [c]
+                container mkv
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        let cycle_errors: Vec<_> = err
+            .errors
+            .iter()
+            .filter(|e| format!("{e}").contains("circular dependency"))
+            .collect();
+        assert!(
+            cycle_errors.len() >= 2,
+            "expected at least 2 cycle errors, got {}: {:?}",
+            cycle_errors.len(),
+            cycle_errors
         );
     }
 

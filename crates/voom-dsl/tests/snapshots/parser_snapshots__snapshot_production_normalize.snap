@@ -16,6 +16,11 @@ config:
     - director
     - cast
   keep_backups: ~
+  span:
+    start: 34
+    end: 196
+    line: 2
+    col: 3
 phases:
   - name: containerize
     skip_when: ~
