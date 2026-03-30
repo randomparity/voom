@@ -233,6 +233,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    use voom_domain::plan::TranscodeChannels;
     use voom_domain::plan::{ActionParams, OperationType};
     use voom_domain::storage::FileStorage;
     use voom_domain::TranscodeSettings;
@@ -281,7 +282,8 @@ mod tests {
                     codec: "hevc".into(),
                     settings: TranscodeSettings::default()
                         .with_crf(Some(18))
-                        .with_preset(Some("slow".into())),
+                        .with_preset(Some("slow".into()))
+                        .with_channels(Some(TranscodeChannels::Count(6))),
                 },
                 "transcode video to hevc",
             ),
@@ -322,10 +324,14 @@ mod tests {
             s.actions[1].parameters,
             ActionParams::RemoveTrack { .. }
         ));
-        assert!(matches!(
-            s.actions[2].parameters,
-            ActionParams::Transcode { .. }
-        ));
+        if let ActionParams::Transcode { codec, settings } = &s.actions[2].parameters {
+            assert_eq!(codec, "hevc");
+            assert_eq!(settings.crf, Some(18));
+            assert_eq!(settings.preset.as_deref(), Some("slow"));
+            assert_eq!(settings.channels, Some(TranscodeChannels::Count(6)));
+        } else {
+            panic!("expected Transcode action");
+        }
         assert!(matches!(
             s.actions[3].parameters,
             ActionParams::Title { .. }

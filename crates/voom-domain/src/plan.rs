@@ -595,6 +595,60 @@ mod tests {
     }
 
     #[test]
+    fn test_transcode_old_flat_format_drops_settings() {
+        let json = r#"{"type":"Transcode","codec":"hevc","crf":23,"preset":"medium"}"#;
+        let parsed: ActionParams = serde_json::from_str(json).unwrap();
+        if let ActionParams::Transcode { codec, settings } = parsed {
+            assert_eq!(codec, "hevc");
+            // Old flat fields are silently dropped — settings gets defaults
+            assert_eq!(settings.crf, None);
+            assert_eq!(settings.preset, None);
+        } else {
+            panic!("expected Transcode variant");
+        }
+    }
+
+    #[test]
+    fn test_transcode_settings_serde_roundtrip() {
+        let settings = TranscodeSettings::default()
+            .with_crf(Some(23))
+            .with_preset(Some("slow".into()))
+            .with_bitrate(Some("5M".into()))
+            .with_channels(Some(TranscodeChannels::Count(6)))
+            .with_hw(Some("nvenc".into()))
+            .with_hw_fallback(Some(false))
+            .with_max_resolution(Some("1080p".into()))
+            .with_scale_algorithm(Some("lanczos".into()))
+            .with_hdr_mode(Some("tonemap".into()))
+            .with_tune(Some("film".into()));
+
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: TranscodeSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(settings, restored);
+
+        let msgpack = rmp_serde::to_vec(&settings).unwrap();
+        let restored: TranscodeSettings = rmp_serde::from_slice(&msgpack).unwrap();
+        assert_eq!(settings, restored);
+    }
+
+    #[test]
+    fn test_transcode_channels_serde_roundtrip() {
+        // Count variant serializes as a bare number (untagged)
+        let count = TranscodeChannels::Count(6);
+        let json = serde_json::to_string(&count).unwrap();
+        assert_eq!(json, "6");
+        let restored: TranscodeChannels = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, count);
+
+        // Named variant serializes as a bare string (untagged)
+        let named = TranscodeChannels::Named("stereo".into());
+        let json = serde_json::to_string(&named).unwrap();
+        assert_eq!(json, "\"stereo\"");
+        let restored: TranscodeChannels = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, named);
+    }
+
+    #[test]
     fn test_plan_serde_backward_compat() {
         // JSON without id/policy_hash/evaluated_at should deserialize with defaults
         let json = r#"{
