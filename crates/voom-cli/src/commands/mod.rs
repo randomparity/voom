@@ -3,6 +3,7 @@ pub mod completions;
 pub mod config;
 pub mod db;
 pub mod doctor;
+pub mod files;
 pub mod history;
 pub mod init;
 pub mod inspect;

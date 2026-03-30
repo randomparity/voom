@@ -49,6 +49,7 @@ async fn main() -> Result<()> {
         Commands::Plugin(sub) => commands::plugin::run(sub),
         Commands::Jobs(sub) => commands::jobs::run(sub),
         Commands::Report(args) => commands::report::run(args),
+        Commands::Files(sub) => commands::files::run(sub),
         Commands::Doctor => commands::doctor::run(),
         Commands::Serve(args) => commands::serve::run(args, token).await,
         Commands::Db(sub) => commands::db::run(sub).await,

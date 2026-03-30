@@ -40,6 +40,10 @@ pub enum Commands {
     /// Generate a report of the media library
     Report(ReportArgs),
 
+    /// File queries
+    #[command(subcommand)]
+    Files(FilesCommands),
+
     /// System health check
     Doctor,
 
@@ -356,6 +360,36 @@ pub enum BackupCommands {
         /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
+    },
+}
+
+// === Files ===
+
+#[derive(Subcommand)]
+pub enum FilesCommands {
+    /// List files with optional filters
+    List {
+        /// Filter by container format (e.g. mkv, mp4)
+        #[arg(long)]
+        container: Option<String>,
+        /// Filter by codec (e.g. hevc, aac)
+        #[arg(long)]
+        codec: Option<String>,
+        /// Filter by track language (e.g. eng, jpn)
+        #[arg(long)]
+        lang: Option<String>,
+        /// Filter by path prefix
+        #[arg(long)]
+        path_prefix: Option<String>,
+        /// Maximum number of files to display
+        #[arg(short = 'n', long, default_value = "100")]
+        limit: u32,
+        /// Number of files to skip
+        #[arg(long, default_value = "0")]
+        offset: u32,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
     },
 }
 
@@ -1061,6 +1095,87 @@ mod tests {
     #[test]
     fn test_backup_cleanup_requires_path() {
         assert!(try_parse(&["voom", "backup", "cleanup"]).is_err());
+    }
+
+    // ── Files subcommands ─────────────────────────────────────
+
+    #[test]
+    fn test_files_list_defaults() {
+        let cli = parse(&["voom", "files", "list"]);
+        match cli.command {
+            Commands::Files(FilesCommands::List {
+                container,
+                codec,
+                lang,
+                path_prefix,
+                limit,
+                offset,
+                format,
+            }) => {
+                assert!(container.is_none());
+                assert!(codec.is_none());
+                assert!(lang.is_none());
+                assert!(path_prefix.is_none());
+                assert_eq!(limit, 100);
+                assert_eq!(offset, 0);
+                assert!(matches!(format, OutputFormat::Table));
+            }
+            _ => panic!("expected Files List"),
+        }
+    }
+
+    #[test]
+    fn test_files_list_all_filters() {
+        let cli = parse(&[
+            "voom",
+            "files",
+            "list",
+            "--container",
+            "mkv",
+            "--codec",
+            "hevc",
+            "--lang",
+            "eng",
+            "--path-prefix",
+            "/media",
+        ]);
+        match cli.command {
+            Commands::Files(FilesCommands::List {
+                container,
+                codec,
+                lang,
+                path_prefix,
+                ..
+            }) => {
+                assert_eq!(container.as_deref(), Some("mkv"));
+                assert_eq!(codec.as_deref(), Some("hevc"));
+                assert_eq!(lang.as_deref(), Some("eng"));
+                assert_eq!(path_prefix.as_deref(), Some("/media"));
+            }
+            _ => panic!("expected Files List"),
+        }
+    }
+
+    #[test]
+    fn test_files_list_json_format() {
+        let cli = parse(&["voom", "files", "list", "--format", "json"]);
+        match cli.command {
+            Commands::Files(FilesCommands::List { format, .. }) => {
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Files List"),
+        }
+    }
+
+    #[test]
+    fn test_files_list_limit_short_flag() {
+        let cli = parse(&["voom", "files", "list", "-n", "25"]);
+        match cli.command {
+            Commands::Files(FilesCommands::List { limit, .. }) => {
+                assert_eq!(limit, 25);
+            }
+            _ => panic!("expected Files List"),
+        }
     }
 
     // ── Verbose flag is global (works after subcommand) ──────
