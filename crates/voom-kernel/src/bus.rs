@@ -49,7 +49,11 @@ impl EventBus {
     }
 
     /// Register a plugin at the given priority (lower = earlier dispatch).
-    /// Plugins with equal priority are dispatched in registration order.
+    ///
+    /// Equal-priority tie-breaking: plugins with the same priority value are
+    /// dispatched in registration (insertion) order. `binary_search_by_key`
+    /// returns `Err(insert_pos)` for duplicate keys, placing new entries
+    /// after existing ones at the same priority.
     pub fn subscribe_plugin(&self, plugin: Arc<dyn Plugin>, priority: i32) {
         let mut subs = self.subscribers.write();
         let name = plugin.name().to_string();

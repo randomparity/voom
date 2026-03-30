@@ -169,6 +169,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
             move |job| {
                 let compiled = compiled.clone();
                 let kernel = kernel.clone();
+                let store = store.clone();
                 let token = token_for_workers.clone();
                 let ffprobe_path = ffprobe_path.clone();
                 let capabilities = capabilities.clone();
@@ -177,6 +178,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                     let ctx = ProcessContext {
                         compiled: &compiled,
                         kernel,
+                        store,
                         dry_run,
                         plan_only,
                         flag_size_increase,
@@ -295,10 +297,28 @@ fn discover_files(
     progress.finish();
 
     for event in &events {
-        kernel.dispatch(Event::FileDiscovered(event.clone()));
+        let results = kernel.dispatch(Event::FileDiscovered(event.clone()));
+        log_plugin_errors(&results);
     }
 
     Ok(events)
+}
+
+/// Log any `plugin.error` events produced during event dispatch so
+/// CLI users see plugin failures rather than silent swallowing.
+fn log_plugin_errors(results: &[voom_domain::events::EventResult]) {
+    for result in results {
+        for produced in &result.produced_events {
+            if let Event::PluginError(err) = produced {
+                tracing::warn!(
+                    plugin = %err.plugin_name,
+                    event = %err.event_type,
+                    error = %err.error,
+                    "plugin error during dispatch"
+                );
+            }
+        }
+    }
 }
 
 use crate::introspect::DiscoveredFilePayload;
@@ -378,6 +398,10 @@ enum PhaseOutcomeKind {
 }
 
 /// Shared mutable counters accumulated during a processing run.
+///
+/// `parking_lot::Mutex` is safe here because the lock is never held across
+/// `.await` points — `phase_stats` is only locked inside synchronous
+/// closures (`record_phase_stat`) that complete before any await.
 #[derive(Clone)]
 struct RunCounters {
     modified_count: Arc<AtomicU64>,
@@ -401,6 +425,7 @@ impl RunCounters {
 struct ProcessContext<'a> {
     compiled: &'a voom_dsl::CompiledPolicy,
     kernel: Arc<voom_kernel::Kernel>,
+    store: Arc<dyn voom_domain::storage::StorageTrait>,
     dry_run: bool,
     plan_only: bool,
     flag_size_increase: bool,
@@ -420,7 +445,7 @@ async fn process_single_file(
 
     let path = std::path::PathBuf::from(&payload.path);
 
-    let file = crate::introspect::introspect_file(
+    let mut file = crate::introspect::introspect_file(
         path,
         payload.size,
         payload.content_hash,
@@ -429,6 +454,15 @@ async fn process_single_file(
     )
     .await
     .map_err(|e| format!("introspect {}: {e}", payload.path))?;
+
+    // Merge any enriched plugin_metadata from the store so that metadata
+    // written by earlier pipeline stages (e.g. prior introspection runs)
+    // is available to the policy evaluator in the same run.
+    if let Ok(Some(stored)) = ctx.store.file_by_path(&file.path) {
+        for (k, v) in stored.plugin_metadata {
+            file.plugin_metadata.entry(k).or_insert(v);
+        }
+    }
 
     let result = orchestrate_plans(ctx.compiled, &file, ctx.capabilities);
 
@@ -444,9 +478,10 @@ async fn process_single_file(
             "safeguard_violations".to_string(),
             serde_json::json!(violations),
         );
-        ctx.kernel.dispatch(Event::FileIntrospected(
+        let r = ctx.kernel.dispatch(Event::FileIntrospected(
             voom_domain::events::FileIntrospectedEvent::new(tagged_file),
         ));
+        log_plugin_errors(&r);
     }
 
     let needs_exec = voom_phase_orchestrator::PhaseOrchestrator::needs_execution(&result);
@@ -594,15 +629,19 @@ async fn execute_plans(
     for plan in &result.plans {
         if let Some(reason) = &plan.skip_reason {
             // Insert the plan row first so update_plan_status has a target.
-            ctx.kernel
+            let r = ctx
+                .kernel
                 .dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
-            ctx.kernel
+            log_plugin_errors(&r);
+            let r = ctx
+                .kernel
                 .dispatch(Event::PlanSkipped(PlanSkippedEvent::new(
                     plan.id,
                     file.path.clone(),
                     plan.phase_name.clone(),
                     reason.clone(),
                 )));
+            log_plugin_errors(&r);
             continue;
         }
         if plan.is_empty() {
@@ -651,12 +690,13 @@ async fn execute_plans(
                                     );
                                 }
                             }
-                            ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
+                            let r = ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
                                 plan.id,
                                 file.path.clone(),
                                 plan.phase_name.clone(),
                                 format!("output grew from {} to {} bytes", file.size, new_size,),
                             )));
+                            log_plugin_errors(&r);
                             record_phase_stat(
                                 &ctx.counters.phase_stats,
                                 &plan.phase_name,
@@ -677,7 +717,8 @@ async fn execute_plans(
                         "keeping backup per policy"
                     );
                 }
-                ctx.kernel
+                let r = ctx
+                    .kernel
                     .dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
                         plan.id,
                         file.path.clone(),
@@ -685,6 +726,7 @@ async fn execute_plans(
                         plan.actions.len(),
                         ctx.keep_backups,
                     )));
+                log_plugin_errors(&r);
                 record_phase_stat(
                     &ctx.counters.phase_stats,
                     &plan.phase_name,
@@ -692,7 +734,8 @@ async fn execute_plans(
                 );
             }
             PlanOutcome::Failed(failed) => {
-                ctx.kernel.dispatch(Event::PlanFailed(failed));
+                let r = ctx.kernel.dispatch(Event::PlanFailed(failed));
+                log_plugin_errors(&r);
                 record_phase_stat(
                     &ctx.counters.phase_stats,
                     &plan.phase_name,
@@ -793,13 +836,15 @@ fn execute_single_plan(
     file: &voom_domain::media::MediaFile,
     kernel: &voom_kernel::Kernel,
 ) -> PlanOutcome {
-    kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent::new(
+    let r = kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent::new(
         file.path.clone(),
         plan.phase_name.clone(),
         plan.actions.len(),
     )));
+    log_plugin_errors(&r);
 
     let results = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
+    log_plugin_errors(&results);
 
     let claimed = results.iter().any(|r| r.claimed);
     let exec_error = results.iter().find_map(|r| r.execution_error.clone());
@@ -926,6 +971,12 @@ fn print_phase_breakdown(stats: &HashMap<String, PhaseStats>, phase_order: &[Str
 }
 
 /// Reporter that dispatches job lifecycle events through the kernel event bus.
+///
+/// `kernel.dispatch()` is synchronous and runs in-memory (no I/O), so calling
+/// it from the tokio worker pool's async tasks does not block the executor for
+/// a meaningful duration.  Wrapping in `spawn_blocking` would add overhead
+/// without benefit since the event bus holds a `parking_lot::RwLock` read lock
+/// only for the duration of handler collection (microseconds).
 struct EventBusReporter {
     kernel: Arc<voom_kernel::Kernel>,
 }
@@ -1099,9 +1150,12 @@ mod tests {
         let compiled = voom_dsl::compile_policy("policy \"test\" { phase p1 { container mkv } }")
             .expect("test policy");
         let capabilities = voom_domain::CapabilityMap::default();
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_domain::test_support::InMemoryStore::new());
         let ctx = ProcessContext {
             compiled: &compiled,
             kernel: kernel.clone(),
+            store,
             dry_run: false,
             plan_only: false,
             flag_size_increase: false,
