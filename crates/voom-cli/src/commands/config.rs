@@ -21,13 +21,12 @@ fn show() -> Result<()> {
             .lines()
             .map(|line| {
                 let trimmed = line.trim();
-                if trimmed.starts_with("auth_token") && trimmed.contains('=') {
-                    let prefix =
-                        &line[..line.find('=').expect("line contains '=' (checked above)") + 1];
-                    format!("{prefix} \"[REDACTED]\"")
-                } else {
-                    line.to_string()
+                if trimmed.starts_with("auth_token") {
+                    if let Some((key, _)) = line.split_once('=') {
+                        return format!("{key}= \"[REDACTED]\"");
+                    }
                 }
+                line.to_string()
             })
             .collect::<Vec<_>>()
             .join("\n");

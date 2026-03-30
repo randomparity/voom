@@ -42,7 +42,10 @@ pub fn run() -> Result<()> {
 
     // 2. Database
     print!("  Database ... ");
-    let config = config::load_config().unwrap_or_default();
+    let config = config::load_config().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to load config, using defaults");
+        config::AppConfig::default()
+    });
     let kernel_result = app::bootstrap_kernel_with_store(&config);
     match &kernel_result {
         Ok(app::BootstrapResult { store, .. }) => {
@@ -73,8 +76,8 @@ pub fn run() -> Result<()> {
     issues += tool_result.missing_required;
 
     // 4. Hardware acceleration (only if ffmpeg was found)
-    if detector.tool("ffmpeg").is_some() {
-        print_hw_accel_status(&config);
+    if let Some(ffmpeg_tool) = detector.tool("ffmpeg") {
+        print_hw_accel_status(&config, &ffmpeg_tool.path);
     }
 
     // 5. Plugins
@@ -163,11 +166,11 @@ fn print_encoder_block(hw_encoders: &[String], backend: HwAccelBackend, device: 
     }
 }
 
-fn print_hw_accel_status(app_config: &config::AppConfig) {
+fn print_hw_accel_status(app_config: &config::AppConfig, ffmpeg_path: &std::path::Path) {
     println!();
     println!("{}", style("Hardware acceleration:").bold());
 
-    let hwaccels_output = std::process::Command::new("ffmpeg")
+    let hwaccels_output = std::process::Command::new(ffmpeg_path)
         .args(["-hwaccels", "-hide_banner"])
         .output();
 
@@ -247,10 +250,10 @@ fn print_hw_accel_status(app_config: &config::AppConfig) {
         }
     }
 
-    let encoders_output = std::process::Command::new("ffmpeg")
+    let encoders_output = std::process::Command::new(ffmpeg_path)
         .args(["-encoders", "-hide_banner"])
         .output();
-    let decoders_output = std::process::Command::new("ffmpeg")
+    let decoders_output = std::process::Command::new(ffmpeg_path)
         .args(["-decoders", "-hide_banner"])
         .output();
 
