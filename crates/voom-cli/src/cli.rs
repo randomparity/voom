@@ -169,6 +169,10 @@ pub struct ProcessArgs {
     /// Tag files whose output is larger than the original (post-execution)
     #[arg(long)]
     pub flag_size_increase: bool,
+
+    /// Output raw plans as JSON to stdout without executing (implies --dry-run)
+    #[arg(long)]
+    pub plan_only: bool,
 }
 
 // === Policy ===

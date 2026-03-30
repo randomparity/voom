@@ -42,6 +42,16 @@ use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// progress reporting while still letting kernel-registered plugins react to
 /// the events they care about.
 pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
+    if args.plan_only && args.approve {
+        anyhow::bail!(
+            "--plan-only and --approve cannot be used together \
+             (plan-only skips execution)"
+        );
+    }
+
+    let plan_only = args.plan_only;
+    let dry_run = args.dry_run || plan_only;
+
     let config = config::load_config()?;
     let app::BootstrapResult {
         kernel,
@@ -59,23 +69,31 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
 
     let compiled = load_and_compile_policy(&args)?;
 
-    print_run_header(&compiled.name, &path, args.dry_run);
+    if !plan_only {
+        print_run_header(&compiled.name, &path, dry_run);
+    }
 
     // Auto-prune stale file entries under the target directory
     match store.prune_missing_files_under(&path) {
-        Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
+        Ok(n) if n > 0 && !plan_only => println!("Pruned {n} stale entries."),
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
     }
 
     if token.is_cancelled() {
-        println!("{}", style("Interrupted before discovery.").yellow());
+        if !plan_only {
+            println!("{}", style("Interrupted before discovery.").yellow());
+        }
         return Ok(());
     }
 
     let mut events = discover_files(&path, &args, &kernel)?;
     if events.is_empty() {
-        println!("{}", style("No media files found.").yellow());
+        if plan_only {
+            println!("[]");
+        } else {
+            println!("{}", style("No media files found.").yellow());
+        }
         return Ok(());
     }
 
@@ -90,7 +108,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
             let before = events.len();
             events.retain(|e| !bad_paths.contains(&e.path));
             let skipped = before - events.len();
-            if skipped > 0 {
+            if skipped > 0 && !plan_only {
                 println!(
                     "Skipping {} known-bad files (use {} to re-attempt).",
                     style(skipped).yellow(),
@@ -101,12 +119,18 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     }
 
     if events.is_empty() {
-        println!("{}", style("No processable files found.").yellow());
+        if plan_only {
+            println!("[]");
+        } else {
+            println!("{}", style("No processable files found.").yellow());
+        }
         return Ok(());
     }
 
     let file_count = events.len();
-    println!("Found {} media files.", style(file_count).bold());
+    if !plan_only {
+        println!("Found {} media files.", style(file_count).bold());
+    }
 
     let on_error = match args.on_error {
         ErrorHandling::Fail => JobErrorStrategy::Fail,
@@ -120,16 +144,18 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
 
     let (pool, effective_workers) = create_worker_pool(job_queue, &args, token.clone())?;
 
-    let cli_reporter: Arc<dyn ProgressReporter> = Arc::new(BatchProgress::new(file_count));
     let bus_reporter: Arc<dyn ProgressReporter> = Arc::new(EventBusReporter::new(kernel.clone()));
-    let reporter: Arc<dyn ProgressReporter> =
-        Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]));
+    let reporter: Arc<dyn ProgressReporter> = if plan_only {
+        bus_reporter
+    } else {
+        let cli_reporter: Arc<dyn ProgressReporter> = Arc::new(BatchProgress::new(file_count));
+        Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]))
+    };
 
     let items = build_work_items(&events);
     let keep_backups = compiled.config.keep_backups;
     let phase_order = compiled.phase_order.clone();
     let compiled = Arc::new(compiled);
-    let dry_run = args.dry_run;
     let flag_size_increase = args.flag_size_increase;
     let counters = RunCounters::new();
 
@@ -152,6 +178,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                         compiled: &compiled,
                         kernel,
                         dry_run,
+                        plan_only,
                         flag_size_increase,
                         keep_backups,
                         token: &token,
@@ -167,6 +194,13 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         )
         .await;
 
+    if plan_only {
+        let plans = counters_for_summary.plan_collector.lock();
+        let output = serde_json::to_string_pretty(&*plans).context("failed to serialize plans")?;
+        println!("{output}");
+        return Ok(());
+    }
+
     let modified = counters_for_summary
         .modified_count
         .load(AtomicOrdering::Relaxed);
@@ -181,7 +215,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
             file_count,
             modified,
             effective_workers,
-            dry_run: args.dry_run,
+            dry_run,
             keep_backups,
             backup_bytes: backup_total,
             path: &path,
@@ -349,6 +383,7 @@ struct RunCounters {
     modified_count: Arc<AtomicU64>,
     backup_bytes: Arc<AtomicU64>,
     phase_stats: PhaseStatsMap,
+    plan_collector: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
 impl RunCounters {
@@ -357,6 +392,7 @@ impl RunCounters {
             modified_count: Arc::new(AtomicU64::new(0)),
             backup_bytes: Arc::new(AtomicU64::new(0)),
             phase_stats: Arc::new(Mutex::new(HashMap::new())),
+            plan_collector: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -366,6 +402,7 @@ struct ProcessContext<'a> {
     compiled: &'a voom_dsl::CompiledPolicy,
     kernel: Arc<voom_kernel::Kernel>,
     dry_run: bool,
+    plan_only: bool,
     flag_size_increase: bool,
     keep_backups: bool,
     token: &'a CancellationToken,
@@ -441,6 +478,18 @@ async fn process_single_file(
     }
 
     if ctx.dry_run {
+        if ctx.plan_only {
+            let plans_json: Vec<serde_json::Value> = result
+                .plans
+                .iter()
+                .filter(|p| !p.is_empty() && !p.is_skipped())
+                .map(|p| serde_json::to_value(p).expect("Plan implements Serialize"))
+                .collect();
+            if !plans_json.is_empty() {
+                ctx.counters.plan_collector.lock().extend(plans_json);
+            }
+        }
+
         let plan_summaries: Vec<serde_json::Value> = result
             .plans
             .iter()
@@ -1054,6 +1103,7 @@ mod tests {
             compiled: &compiled,
             kernel: kernel.clone(),
             dry_run: false,
+            plan_only: false,
             flag_size_increase: false,
             keep_backups: false,
             token: &token,
