@@ -14,7 +14,7 @@ use crate::compiled::{
     CompiledConditional, CompiledConfig, CompiledDefault, CompiledFilter, CompiledOperation,
     CompiledPhase, CompiledPolicy, CompiledRegex, CompiledRule, CompiledRunIf, CompiledSynthesize,
     CompiledTranscodeSettings, CompiledValueOrField, DefaultStrategy, ErrorStrategy, RulesMode,
-    RunIfTrigger, SynthChannels, SynthLanguage, SynthPosition, TrackTarget, TranscodeChannels,
+    RunIfTrigger, SynthLanguage, SynthPosition, TrackTarget, TranscodeChannels,
 };
 use voom_domain::utils::codecs;
 
@@ -304,11 +304,11 @@ fn compile_synthesize(
                 );
             }
             SynthSetting::Channels(v) => {
-                channels = Some(match v {
-                    Value::Number(n, _) => SynthChannels::Count(safe_u32(*n).unwrap_or(0)),
-                    Value::Ident(s) => SynthChannels::Named(s.clone()),
-                    _ => SynthChannels::Named(format!("{v:?}")),
-                });
+                channels = match v {
+                    Value::Number(n, _) => safe_u32(*n).map(TranscodeChannels::Count),
+                    Value::Ident(s) | Value::String(s) => Some(TranscodeChannels::Named(s.clone())),
+                    _ => None,
+                };
             }
             SynthSetting::Source(f) => source = Some(compile_filter(f)?),
             SynthSetting::Bitrate(b) => bitrate = Some(b.clone()),

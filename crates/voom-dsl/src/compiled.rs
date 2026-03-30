@@ -318,16 +318,6 @@ impl CompiledTranscodeSettings {
     }
 }
 
-/// Channel count for a synthesize operation — either a named preset or an explicit count.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum SynthChannels {
-    /// Named preset, e.g. `stereo`, `mono`, `5.1`.
-    Named(String),
-    /// Explicit channel count, e.g. `2`, `6`.
-    Count(u32),
-}
-
 /// Position hint for a synthesize operation — either a named position or a numeric index.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
@@ -344,7 +334,7 @@ pub enum SynthPosition {
 pub struct CompiledSynthesize {
     pub name: String,
     pub codec: Option<String>,
-    pub channels: Option<SynthChannels>,
+    pub channels: Option<TranscodeChannels>,
     pub source: Option<CompiledFilter>,
     pub bitrate: Option<String>,
     pub skip_if_exists: Option<CompiledFilter>,

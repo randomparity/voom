@@ -662,8 +662,8 @@ fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
     };
 
     let channels = synth.channels.as_ref().map(|c| match c {
-        SynthChannels::Count(n) => *n,
-        SynthChannels::Named(s) => match s.as_str() {
+        TranscodeChannels::Count(n) => *n,
+        TranscodeChannels::Named(s) => match s.as_str() {
             "mono" => 1,
             "stereo" => 2,
             "5.1" | "surround" => 6,
