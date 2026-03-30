@@ -59,7 +59,7 @@ pub fn run(args: HistoryArgs) -> Result<()> {
                 let hash = entry
                     .content_hash
                     .as_deref()
-                    .map(|h| if h.len() >= 12 { &h[..12] } else { h })
+                    .map(output::hash_preview)
                     .unwrap_or("—");
 
                 table.add_row(vec![

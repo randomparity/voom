@@ -90,9 +90,7 @@ fn info(name: String, format: OutputFormat) -> Result<()> {
     };
 
     let capabilities = executor_name.and_then(|exec_name| {
-        let config = crate::config::load_config().ok()?;
-        let result = crate::app::bootstrap_kernel_with_store(&config).ok()?;
-        let snapshot = result.collector.snapshot();
+        let snapshot = collect_executor_capabilities(exec_name)?;
         if snapshot.executor_capabilities(exec_name).is_some() {
             Some((exec_name.to_string(), snapshot))
         } else {
@@ -152,13 +150,45 @@ fn info(name: String, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
+/// Bootstrap a minimal kernel with just the named executor plugin and a
+/// capability collector, avoiding the overhead of a full kernel + SQLite.
+fn collect_executor_capabilities(
+    exec_name: &str,
+) -> Option<voom_domain::capability_map::CapabilityMap> {
+    use std::sync::Arc;
+    use voom_kernel::{Kernel, PluginContext};
+
+    let config = crate::config::load_config().ok()?;
+    let plugin_json = config
+        .plugin
+        .get(exec_name)
+        .and_then(|t| serde_json::to_value(t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let ctx = PluginContext::new(plugin_json, config.data_dir.clone());
+    let collector = Arc::new(crate::capability_collector::CapabilityCollectorPlugin::new());
+
+    let mut kernel = Kernel::new();
+    kernel.register_plugin(collector.clone(), 1);
+
+    let executor: Arc<dyn voom_kernel::Plugin> = match exec_name {
+        "ffmpeg-executor" => Arc::new(voom_ffmpeg_executor::FfmpegExecutorPlugin::new()),
+        "mkvtoolnix-executor" => {
+            Arc::new(voom_mkvtoolnix_executor::MkvtoolnixExecutorPlugin::new())
+        }
+        _ => return None,
+    };
+
+    kernel.init_and_register(executor, 10, &ctx).ok()?;
+    Some(collector.snapshot())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_list_does_not_panic() {
-        // Runs tool detection (may find tools or not)
         let result = list(OutputFormat::Table);
         assert!(result.is_ok());
     }

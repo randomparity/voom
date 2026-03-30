@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use console::style;
 use voom_domain::utils::format;
 
@@ -71,10 +71,6 @@ fn list(root: &Path, format: OutputFormat) -> Result<()> {
 }
 
 fn restore(backup_path: &Path) -> Result<()> {
-    if !backup_path.exists() {
-        bail!("Backup file not found: {}", backup_path.display());
-    }
-
     let original_name = derive_original_name(backup_path).ok_or_else(|| {
         anyhow::anyhow!(
             "Cannot derive original filename from: {}. \
@@ -175,8 +171,6 @@ fn cleanup(root: &Path, yes: bool) -> Result<()> {
 /// Looks for sibling `.voom-backup/` directories containing `*.vbak` files.
 fn scan_vbak_files(root: &Path) -> Result<Vec<VbakEntry>> {
     let mut entries = Vec::new();
-
-    // Walk looking for .voom-backup directories
     scan_dir_recursive(root, &mut entries)?;
 
     entries.sort_by(|a, b| a.backup_path.cmp(&b.backup_path));
@@ -186,7 +180,7 @@ fn scan_vbak_files(root: &Path) -> Result<Vec<VbakEntry>> {
 fn scan_dir_recursive(dir: &Path, entries: &mut Vec<VbakEntry>) -> Result<()> {
     let read_dir = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
-        Err(_) => return Ok(()), // skip unreadable directories
+        Err(_) => return Ok(()),
     };
 
     for entry in read_dir {
@@ -194,18 +188,20 @@ fn scan_dir_recursive(dir: &Path, entries: &mut Vec<VbakEntry>) -> Result<()> {
             Ok(e) => e,
             Err(_) => continue,
         };
-        let path = entry.path();
-        if !path.is_dir() {
+
+        let ft = match entry.metadata() {
+            Ok(m) => m.file_type(),
+            Err(_) => continue,
+        };
+        if ft.is_symlink() || !ft.is_dir() {
             continue;
         }
 
         let name = entry.file_name();
+        let path = entry.path();
         if name == ".voom-backup" {
-            // Collect .vbak files in this directory
             collect_vbak_in_dir(&path, entries)?;
         } else {
-            // Recurse into subdirectories (skip hidden dirs other than
-            // .voom-backup)
             let name_str = name.to_string_lossy();
             if !name_str.starts_with('.') {
                 scan_dir_recursive(&path, entries)?;

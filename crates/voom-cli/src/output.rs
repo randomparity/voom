@@ -131,11 +131,7 @@ pub fn format_scan_results(
             table.set_header(vec!["Path", "Size", "Hash"]);
             for (path, size, hash) in files {
                 let hash_str = hash.as_deref().unwrap_or("—");
-                let hash_preview = if hash_str.len() >= 12 {
-                    &hash_str[..12]
-                } else {
-                    hash_str
-                };
+                let hash_preview = hash_preview(hash_str);
                 table.add_row(vec![
                     Cell::new(path.display()),
                     Cell::new(format::format_size(*size)),
@@ -314,6 +310,15 @@ pub fn format_executor_capabilities(
                 caps.formats.join(", ")
             );
         }
+    }
+}
+
+/// Truncate a hash to a 12-character preview for table display.
+pub fn hash_preview(hash: &str) -> &str {
+    if hash.len() >= 12 {
+        &hash[..12]
+    } else {
+        hash
     }
 }
 
