@@ -195,6 +195,71 @@ pub trait HealthCheckStorage: Send + Sync {
     fn prune_health_checks(&self, before: DateTime<Utc>) -> Result<u64>;
 }
 
+/// A single event log entry.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventLogRecord {
+    pub rowid: i64,
+    pub id: Uuid,
+    pub event_type: String,
+    pub payload: String,
+    pub summary: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl EventLogRecord {
+    #[must_use]
+    pub fn new(id: Uuid, event_type: String, payload: String, summary: String) -> Self {
+        Self {
+            rowid: 0,
+            id,
+            event_type,
+            payload,
+            summary,
+            created_at: Utc::now(),
+        }
+    }
+
+    /// Reconstruct a record from stored fields.
+    #[must_use]
+    pub fn from_stored(
+        rowid: i64,
+        id: Uuid,
+        event_type: String,
+        payload: String,
+        summary: String,
+        created_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            rowid,
+            id,
+            event_type,
+            payload,
+            summary,
+            created_at,
+        }
+    }
+}
+
+/// Filters for querying the event log.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct EventLogFilters {
+    pub event_type: Option<String>,
+    pub since_rowid: Option<i64>,
+    pub limit: Option<u32>,
+}
+
+/// Event log storage operations.
+///
+/// # Errors
+/// Methods return `VoomError::Storage` on database failures.
+pub trait EventLogStorage: Send + Sync {
+    fn insert_event_log(&self, record: &EventLogRecord) -> Result<i64>;
+    fn list_event_log(&self, filters: &EventLogFilters) -> Result<Vec<EventLogRecord>>;
+    fn prune_event_log(&self, keep_last: u64) -> Result<u64>;
+}
+
 /// Database maintenance operations.
 ///
 /// # Errors
@@ -223,6 +288,7 @@ pub trait StorageTrait:
     + BadFileStorage
     + MaintenanceStorage
     + HealthCheckStorage
+    + EventLogStorage
 {
 }
 
@@ -237,6 +303,7 @@ impl<T> StorageTrait for T where
         + BadFileStorage
         + MaintenanceStorage
         + HealthCheckStorage
+        + EventLogStorage
 {
 }
 

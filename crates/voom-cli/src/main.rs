@@ -51,6 +51,7 @@ async fn main() -> Result<()> {
         Commands::Report(args) => commands::report::run(args),
         Commands::Files(sub) => commands::files::run(sub),
         Commands::Plans(sub) => commands::plans::run(sub),
+        Commands::Events(args) => commands::events::run(args, token).await,
         Commands::Health(sub) => commands::health::run(sub),
         Commands::Doctor => commands::health::check(),
         Commands::Serve(args) => commands::serve::run(args, token).await,

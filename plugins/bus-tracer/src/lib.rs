@@ -78,95 +78,6 @@ fn glob_matches(pattern: &str, event_type: &str) -> bool {
     }
 }
 
-/// Build a one-line summary of an event's payload for the trace log.
-fn event_summary(event: &Event) -> String {
-    match event {
-        Event::FileDiscovered(e) => {
-            format!("path={} size={}", e.path.display(), e.size)
-        }
-        Event::FileIntrospected(e) => {
-            format!(
-                "path={} tracks={}",
-                e.file.path.display(),
-                e.file.tracks.len()
-            )
-        }
-        Event::FileIntrospectionFailed(e) => {
-            format!("path={} error={}", e.path.display(), e.error)
-        }
-        Event::PlanCreated(e) => {
-            format!(
-                "phase={} actions={}",
-                e.plan.phase_name,
-                e.plan.actions.len()
-            )
-        }
-        Event::PlanExecuting(e) => {
-            format!("path={} phase={}", e.path.display(), e.phase_name)
-        }
-        Event::PlanCompleted(e) => {
-            format!("path={} phase={}", e.path.display(), e.phase_name)
-        }
-        Event::PlanSkipped(e) => {
-            format!(
-                "path={} phase={} reason={}",
-                e.path.display(),
-                e.phase_name,
-                e.skip_reason
-            )
-        }
-        Event::PlanFailed(e) => {
-            format!(
-                "path={} phase={} error={}",
-                e.path.display(),
-                e.phase_name,
-                e.error
-            )
-        }
-        Event::JobStarted(e) => {
-            format!("job_id={} desc={}", e.job_id, e.description)
-        }
-        Event::JobProgress(e) => {
-            format!("job_id={} progress={:.1}%", e.job_id, e.progress * 100.0)
-        }
-        Event::JobCompleted(e) => {
-            format!("job_id={} success={}", e.job_id, e.success)
-        }
-        Event::ToolDetected(e) => {
-            format!("tool={} version={}", e.tool_name, e.version)
-        }
-        Event::MetadataEnriched(e) => {
-            format!("path={} source={}", e.path.display(), e.source)
-        }
-        Event::ExecutorCapabilities(e) => {
-            format!(
-                "plugin={} decoders={} encoders={} formats={} hw_accels={}",
-                e.plugin_name,
-                e.codecs.decoders.len(),
-                e.codecs.encoders.len(),
-                e.formats.len(),
-                e.hw_accels.len()
-            )
-        }
-        Event::HealthStatus(e) => {
-            format!("check={} passed={}", e.check_name, e.passed)
-        }
-        Event::PluginError(e) => {
-            format!(
-                "plugin={} event={} error={}",
-                e.plugin_name, e.event_type, e.error
-            )
-        }
-        Event::JobEnqueueRequested(e) => {
-            format!(
-                "job_type={:?} priority={} requester={}",
-                e.job_type, e.priority, e.requester
-            )
-        }
-        _ => String::new(),
-    }
-}
-
 /// Expand `~` at the start of a path to the user's home directory.
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
@@ -217,7 +128,7 @@ impl Plugin for BusTracerPlugin {
         let entry = serde_json::json!({
             "ts": Utc::now().to_rfc3339(),
             "event": event.event_type(),
-            "summary": event_summary(event),
+            "summary": event.summary(),
         });
 
         let mut w = writer.lock();

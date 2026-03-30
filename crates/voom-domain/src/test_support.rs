@@ -381,6 +381,23 @@ impl HealthCheckStorage for InMemoryStore {
     }
 }
 
+impl crate::storage::EventLogStorage for InMemoryStore {
+    fn insert_event_log(&self, _record: &crate::storage::EventLogRecord) -> Result<i64> {
+        Ok(0)
+    }
+
+    fn list_event_log(
+        &self,
+        _filters: &crate::storage::EventLogFilters,
+    ) -> Result<Vec<crate::storage::EventLogRecord>> {
+        Ok(Vec::new())
+    }
+
+    fn prune_event_log(&self, _keep_last: u64) -> Result<u64> {
+        Ok(0)
+    }
+}
+
 impl MaintenanceStorage for InMemoryStore {
     fn vacuum(&self) -> Result<()> {
         Ok(())

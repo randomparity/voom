@@ -48,6 +48,9 @@ pub enum Commands {
     #[command(subcommand)]
     Plans(PlansCommands),
 
+    /// View event log
+    Events(EventsArgs),
+
     /// System health checks and history
     #[command(subcommand)]
     Health(HealthCommands),
@@ -471,6 +474,27 @@ pub enum HealthCommands {
         #[arg(short, long, default_value = "table")]
         format: OutputFormat,
     },
+}
+
+// === Events ===
+
+#[derive(clap::Args)]
+pub struct EventsArgs {
+    /// Keep streaming new events
+    #[arg(short = 'F', long)]
+    pub follow: bool,
+
+    /// Filter by event type (e.g. file.discovered, job.*)
+    #[arg(long)]
+    pub filter: Option<String>,
+
+    /// Output format
+    #[arg(short, long, default_value = "table")]
+    pub format: OutputFormat,
+
+    /// Maximum events to display
+    #[arg(short = 'n', long, default_value = "50")]
+    pub limit: u32,
 }
 
 // === Completions ===

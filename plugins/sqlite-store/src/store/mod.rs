@@ -1,5 +1,6 @@
 mod bad_file_storage;
 mod discovered_file_storage;
+mod event_log_storage;
 mod file_history_storage;
 mod file_storage;
 mod health_check_storage;

@@ -2,6 +2,7 @@ pub mod backup;
 pub mod completions;
 pub mod config;
 pub mod db;
+pub mod events;
 pub mod files;
 pub mod health;
 pub mod history;
