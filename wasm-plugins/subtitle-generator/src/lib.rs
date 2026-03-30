@@ -13,8 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, Event, HostFunctions, OnEventResult,
-    PluginInfoData, SubtitleGeneratedEvent,
+    deserialize_event, from_iso639_1, load_plugin_config, serialize_event, Event, HostFunctions,
+    OnEventResult, PluginInfoData, SubtitleGeneratedEvent,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -65,10 +65,13 @@ pub fn on_event(
 
     let config: Option<SubtitleGeneratorConfig> =
         load_plugin_config(|key| host.get_plugin_data(key));
-    let primary_language = config
-        .as_ref()
-        .map(|c| c.primary_language.as_str())
-        .unwrap_or("en");
+    let default_config = SubtitleGeneratorConfig {
+        primary_language: default_primary_language(),
+        subtitle_language: None,
+    };
+    let effective_config = config.as_ref().unwrap_or(&default_config);
+    let primary_language = effective_config.primary_language.as_str();
+    let subtitle_lang = effective_config.resolved_subtitle_language();
 
     let transcript = &enriched.metadata["transcript"];
     let detected_language = transcript
@@ -120,7 +123,7 @@ pub fn on_event(
     let parent = media_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
-    let srt_path = parent.join(format!("{stem}.forced-eng.srt"));
+    let srt_path = parent.join(format!("{stem}.forced-{subtitle_lang}.srt"));
     let srt_path_str = srt_path.to_string_lossy().to_string();
 
     let escaped = srt_content.replace('\'', "'\\''");
@@ -156,7 +159,7 @@ pub fn on_event(
     let subtitle_event = Event::SubtitleGenerated(SubtitleGeneratedEvent::new(
         media_path.clone(),
         srt_path,
-        "eng",
+        subtitle_lang,
         true,
     ));
 
@@ -212,8 +215,32 @@ fn format_timestamp(seconds: f64) -> String {
 #[derive(Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SubtitleGeneratorConfig {
+    /// ISO 639-1 code for the primary content language (default: "en").
+    /// Segments in this language are treated as native and excluded from
+    /// forced subtitles.
     #[serde(default = "default_primary_language")]
     pub primary_language: String,
+
+    /// ISO 639-2/B 3-letter code for subtitle track labeling (e.g. "eng",
+    /// "fra", "jpn"). When omitted, derived from `primary_language` via
+    /// ISO 639-1→2 mapping.
+    #[serde(default)]
+    pub subtitle_language: Option<String>,
+}
+
+impl SubtitleGeneratorConfig {
+    /// Resolve the 3-letter language code for output labeling.
+    ///
+    /// Uses explicit `subtitle_language` if set, otherwise converts
+    /// `primary_language` from ISO 639-1 to 639-2/B.
+    fn resolved_subtitle_language(&self) -> String {
+        if let Some(lang) = &self.subtitle_language {
+            return lang.clone();
+        }
+        from_iso639_1(&self.primary_language)
+            .unwrap_or("eng")
+            .to_string()
+    }
 }
 
 fn default_primary_language() -> String {
@@ -434,6 +461,58 @@ mod tests {
         let config: SubtitleGeneratorConfig =
             serde_json::from_str(r#"{"primary_language":"ja"}"#).unwrap();
         assert_eq!(config.primary_language, "ja");
+        assert_eq!(config.resolved_subtitle_language(), "jpn");
+    }
+
+    #[test]
+    fn test_config_explicit_subtitle_language() {
+        let config: SubtitleGeneratorConfig =
+            serde_json::from_str(r#"{"primary_language":"fr","subtitle_language":"fra"}"#).unwrap();
+        assert_eq!(config.primary_language, "fr");
+        assert_eq!(config.resolved_subtitle_language(), "fra");
+    }
+
+    #[test]
+    fn test_config_subtitle_language_overrides_derived() {
+        let config: SubtitleGeneratorConfig =
+            serde_json::from_str(r#"{"primary_language":"en","subtitle_language":"spa"}"#).unwrap();
+        // Explicit subtitle_language takes precedence over primary_language derivation
+        assert_eq!(config.resolved_subtitle_language(), "spa");
+    }
+
+    #[test]
+    fn test_config_default_resolves_to_eng() {
+        let config: SubtitleGeneratorConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.resolved_subtitle_language(), "eng");
+    }
+
+    #[test]
+    fn test_japanese_primary_produces_jpn_subtitle() {
+        let mut host = MockHost::new();
+        host.config = Some(SubtitleGeneratorConfig {
+            primary_language: "ja".to_string(),
+            subtitle_language: None,
+        });
+        let segments = serde_json::json!([
+            {"start": 0.0, "end": 2.5, "text": "こんにちは", "language": "ja"},
+            {"start": 5.0, "end": 8.0, "text": "Hello world", "language": "en"},
+        ]);
+        let payload = make_enriched_event("whisper-transcriber", "ja", segments);
+
+        let result = on_event("metadata.enriched", &payload, &host);
+        assert!(result.is_some());
+
+        let produced: Event = deserialize_event(&result.unwrap().produced_events[0].1).unwrap();
+        match produced {
+            Event::SubtitleGenerated(e) => {
+                assert_eq!(e.language, "jpn");
+                assert_eq!(
+                    e.subtitle_path,
+                    PathBuf::from("/media/movies/test.forced-jpn.srt")
+                );
+            }
+            _ => panic!("expected SubtitleGenerated"),
+        }
     }
 
     #[test]
