@@ -415,6 +415,10 @@ fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, Ds
             compile_compare_op(op),
             lang.clone(),
         )),
+        FilterNode::LangField(op, path) => Ok(CompiledFilter::LangField(
+            compile_compare_op(op),
+            path.clone(),
+        )),
         FilterNode::CodecCompare(op, codec) => {
             let normalized = codecs::normalize_codec(codec)
                 .map(|s| s.to_string())
@@ -424,6 +428,10 @@ fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, Ds
                 normalized,
             ))
         }
+        FilterNode::CodecField(op, path) => Ok(CompiledFilter::CodecField(
+            compile_compare_op(op),
+            path.clone(),
+        )),
         FilterNode::CodecIn(codec_list) => {
             let normalized: Vec<String> = codec_list
                 .iter()
@@ -892,6 +900,56 @@ mod tests {
             }
             other => panic!("expected SetTag, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_compile_lang_field_filter() {
+        let policy = compile(
+            r#"policy "test" {
+            phase norm {
+                keep audio where lang == plugin.radarr.original_language
+            }
+        }"#,
+        )
+        .unwrap();
+        match &policy.phases[0].operations[0] {
+            CompiledOperation::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                CompiledFilter::LangField(CompiledCompareOp::Eq, path) => {
+                    assert_eq!(path, &["plugin", "radarr", "original_language"]);
+                }
+                other => panic!("expected LangField, got {other:?}"),
+            },
+            other => panic!("expected Keep, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compile_codec_field_filter() {
+        let policy = compile(
+            r#"policy "test" {
+            phase norm {
+                keep audio where codec != plugin.detector.codec
+            }
+        }"#,
+        )
+        .unwrap();
+        match &policy.phases[0].operations[0] {
+            CompiledOperation::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                CompiledFilter::CodecField(CompiledCompareOp::Ne, path) => {
+                    assert_eq!(path, &["plugin", "detector", "codec"]);
+                }
+                other => panic!("expected CodecField, got {other:?}"),
+            },
+            other => panic!("expected Keep, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compile_english_optimized_policy() {
+        let input = include_str!("../../../docs/examples/english-optimized.voom");
+        let policy = compile(input).unwrap();
+        assert_eq!(policy.name, "english-optimized");
+        assert_eq!(policy.phases.len(), 11);
     }
 
     #[test]

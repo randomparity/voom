@@ -380,6 +380,12 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
             out.push(' ');
             out.push_str(lang);
         }
+        FilterNode::LangField(op, path) => {
+            out.push_str("lang ");
+            format_compare_op(op, out);
+            out.push(' ');
+            out.push_str(&path.join("."));
+        }
         FilterNode::CodecIn(codecs) => {
             let _ = write!(out, "codec in [{}]", codecs.join(", "));
         }
@@ -388,6 +394,12 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
             format_compare_op(op, out);
             out.push(' ');
             out.push_str(codec);
+        }
+        FilterNode::CodecField(op, path) => {
+            out.push_str("codec ");
+            format_compare_op(op, out);
+            out.push(' ');
+            out.push_str(&path.join("."));
         }
         FilterNode::Channels(op, val) => {
             out.push_str("channels ");

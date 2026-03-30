@@ -461,8 +461,10 @@ pub enum CompiledCompareOp {
 pub enum CompiledFilter {
     LangIn(Vec<String>),
     LangCompare(CompiledCompareOp, String),
+    LangField(CompiledCompareOp, Vec<String>),
     CodecIn(Vec<String>),
     CodecCompare(CompiledCompareOp, String),
+    CodecField(CompiledCompareOp, Vec<String>),
     Channels(CompiledCompareOp, f64),
     Commentary,
     Forced,

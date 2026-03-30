@@ -720,10 +720,11 @@ fn build_filter_not(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
     }
 }
 
-/// Result of parsing a `lang`/`codec` filter atom: either an `in` list or a comparison.
+/// Result of parsing a `lang`/`codec` filter atom.
 enum ListOrCompare {
     InList(Vec<String>),
     Compare(CompareOp, String),
+    Field(CompareOp, Vec<String>),
 }
 
 /// Shared logic for `lang` and `codec` filter atoms, which have identical grammar structure:
@@ -739,20 +740,42 @@ fn build_list_or_compare_filter(
     }
     let op = build_compare_op(next);
     let val = inner.next().unwrap();
-    let val_str = match val.as_rule() {
-        Rule::value => val.into_inner().next().unwrap().as_str().to_string(),
-        _ => val.as_str().to_string(),
-    };
-    match op {
-        CompareOp::Eq | CompareOp::In => Ok(ListOrCompare::InList(vec![val_str])),
-        CompareOp::Ne => Ok(ListOrCompare::Compare(CompareOp::Ne, val_str)),
-        _ => {
-            let (line, col) = span.start_pos().line_col();
-            Err(DslError::build(
-                line,
-                col,
-                format!("operator {op:?} is not valid for {kind} comparisons; use == or !="),
-            ))
+    // Check if the RHS is a field_access (e.g., plugin.radarr.original_language)
+    if val.as_rule() == Rule::field_access {
+        let fields = build_field_access(&val);
+        match op {
+            CompareOp::Eq | CompareOp::Ne => Ok(ListOrCompare::Field(op, fields)),
+            _ => {
+                let (line, col) = span.start_pos().line_col();
+                Err(DslError::build(
+                    line,
+                    col,
+                    format!(
+                        "operator {op:?} is not valid for {kind} \
+                         field comparisons; use == or !="
+                    ),
+                ))
+            }
+        }
+    } else {
+        let val_str = match val.as_rule() {
+            Rule::value => val.into_inner().next().unwrap().as_str().to_string(),
+            _ => val.as_str().to_string(),
+        };
+        match op {
+            CompareOp::Eq | CompareOp::In => Ok(ListOrCompare::InList(vec![val_str])),
+            CompareOp::Ne => Ok(ListOrCompare::Compare(CompareOp::Ne, val_str)),
+            _ => {
+                let (line, col) = span.start_pos().line_col();
+                Err(DslError::build(
+                    line,
+                    col,
+                    format!(
+                        "operator {op:?} is not valid for {kind} \
+                         comparisons; use == or !="
+                    ),
+                ))
+            }
         }
     }
 }
@@ -770,12 +793,14 @@ fn build_filter_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
             return match build_list_or_compare_filter(&mut inner, span, "lang")? {
                 ListOrCompare::InList(v) => Ok(FilterNode::LangIn(v)),
                 ListOrCompare::Compare(op, v) => Ok(FilterNode::LangCompare(op, v)),
+                ListOrCompare::Field(op, path) => Ok(FilterNode::LangField(op, path)),
             };
         }
         "codec" => {
             return match build_list_or_compare_filter(&mut inner, span, "codec")? {
                 ListOrCompare::InList(v) => Ok(FilterNode::CodecIn(v)),
                 ListOrCompare::Compare(op, v) => Ok(FilterNode::CodecCompare(op, v)),
+                ListOrCompare::Field(op, path) => Ok(FilterNode::CodecField(op, path)),
             };
         }
         "channels" => {
@@ -1346,6 +1371,85 @@ mod tests {
         match &ast.phases[0].operations[0].node {
             OperationNode::DeleteTag(tag) => assert_eq!(tag, "encoder"),
             other => panic!("expected DeleteTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_lang_field_access() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == plugin.radarr.original_language
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                FilterNode::LangField(CompareOp::Eq, path) => {
+                    assert_eq!(path, &["plugin", "radarr", "original_language"]);
+                }
+                other => panic!("expected LangField, got {other:?}"),
+            },
+            _ => panic!("expected Keep operation"),
+        }
+    }
+
+    #[test]
+    fn test_parse_lang_field_ne() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang != plugin.radarr.original_language
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                FilterNode::LangField(CompareOp::Ne, path) => {
+                    assert_eq!(path, &["plugin", "radarr", "original_language"]);
+                }
+                other => panic!("expected LangField(Ne), got {other:?}"),
+            },
+            _ => panic!("expected Keep operation"),
+        }
+    }
+
+    #[test]
+    fn test_parse_codec_field_access() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where codec == plugin.detector.codec
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                FilterNode::CodecField(CompareOp::Eq, path) => {
+                    assert_eq!(path, &["plugin", "detector", "codec"]);
+                }
+                other => panic!("expected CodecField, got {other:?}"),
+            },
+            _ => panic!("expected Keep operation"),
+        }
+    }
+
+    #[test]
+    fn test_parse_lang_field_in_or_filter() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == eng
+                     or lang == plugin.radarr.original_language
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                FilterNode::Or(items) => {
+                    assert_eq!(items.len(), 2);
+                    assert!(matches!(&items[0], FilterNode::LangIn(_)));
+                    assert!(matches!(&items[1], FilterNode::LangField(..)));
+                }
+                other => panic!("expected Or filter, got {other:?}"),
+            },
+            _ => panic!("expected Keep operation"),
         }
     }
 

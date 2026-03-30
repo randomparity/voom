@@ -6,7 +6,7 @@ use voom_domain::capability_map::CapabilityMap;
 use voom_domain::media::MediaFile;
 use voom_dsl::compiled::{CompiledCompareOp, CompiledCondition};
 
-use crate::filter::{compare_f64, track_matches, tracks_for_target};
+use crate::filter::{compare_f64, track_matches_with_context, tracks_for_target};
 
 /// Evaluation context carrying system-level information (e.g. hwaccel
 /// capabilities) into condition evaluation.
@@ -25,7 +25,9 @@ pub fn evaluate_condition(
         CompiledCondition::Exists { target, filter } => {
             let tracks = tracks_for_target(file, target);
             match filter {
-                Some(f) => tracks.iter().any(|t| track_matches(t, f)),
+                Some(f) => tracks
+                    .iter()
+                    .any(|t| track_matches_with_context(t, f, file, ctx)),
                 None => !tracks.is_empty(),
             }
         }
@@ -37,7 +39,10 @@ pub fn evaluate_condition(
         } => {
             let tracks = tracks_for_target(file, target);
             let count = match filter {
-                Some(f) => tracks.iter().filter(|t| track_matches(t, f)).count(),
+                Some(f) => tracks
+                    .iter()
+                    .filter(|t| track_matches_with_context(t, f, file, ctx))
+                    .count(),
                 None => tracks.len(),
             };
             compare_f64(count as f64, op, *value)
@@ -62,7 +67,7 @@ pub fn evaluate_condition(
 }
 
 /// Resolve a field path against the media file (and optionally system context).
-fn resolve_field(
+pub(crate) fn resolve_field(
     file: &MediaFile,
     path: &[String],
     ctx: &EvalContext<'_>,

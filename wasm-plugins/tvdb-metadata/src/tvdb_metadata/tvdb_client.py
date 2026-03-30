@@ -195,7 +195,7 @@ class TvdbClient:
         if ep_data is None:
             return None
 
-        return {
+        result = {
             "source": "tvdb",
             "series_id": series_id,
             "series_name": series.get("name", series_name),
@@ -206,6 +206,10 @@ class TvdbClient:
             "air_date": ep_data.get("aired", ""),
             "tvdb_episode_id": ep_data.get("id"),
         }
+        original_lang = series.get("originalLanguage")
+        if original_lang:
+            result["original_language"] = original_lang
+        return result
 
     @staticmethod
     def _best_match(results: list[dict], name: str,

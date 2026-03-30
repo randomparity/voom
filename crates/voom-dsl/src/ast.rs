@@ -177,8 +177,10 @@ pub struct TrackQueryNode {
 pub enum FilterNode {
     LangIn(Vec<String>),
     LangCompare(CompareOp, String),
+    LangField(CompareOp, Vec<String>),
     CodecIn(Vec<String>),
     CodecCompare(CompareOp, String),
+    CodecField(CompareOp, Vec<String>),
     Channels(CompareOp, f64),
     Commentary,
     Forced,

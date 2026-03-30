@@ -77,7 +77,12 @@ pub fn on_event(
     let config: RadarrConfig = load_plugin_config(|key| host.get_plugin_data(key))?;
     let movie = lookup_movie(host, &config, &file.path.to_string_lossy())?;
 
-    let metadata = serde_json::json!({
+    let original_language = movie
+        .original_language
+        .as_ref()
+        .and_then(|lang| language_name_to_iso639(&lang.name));
+
+    let mut metadata = serde_json::json!({
         "source": "radarr",
         "radarr_id": movie.id,
         "title": movie.title,
@@ -87,6 +92,9 @@ pub fn on_event(
         "quality_profile": movie.quality_profile,
         "monitored": movie.monitored,
     });
+    if let Some(lang) = original_language {
+        metadata["original_language"] = serde_json::Value::String(lang.to_string());
+    }
 
     let enriched_event = Event::MetadataEnriched(
         voom_plugin_sdk::MetadataEnrichedEvent {
@@ -129,6 +137,49 @@ pub struct RadarrMovie {
     pub quality_profile: Option<String>,
     pub monitored: bool,
     pub path: String,
+    #[serde(default)]
+    pub original_language: Option<RadarrLanguage>,
+}
+
+/// Language record from the Radarr API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RadarrLanguage {
+    pub name: String,
+}
+
+/// Map a Radarr language display name to an ISO 639-3 code.
+fn language_name_to_iso639(name: &str) -> Option<&'static str> {
+    match name.to_lowercase().as_str() {
+        "english" => Some("eng"),
+        "japanese" => Some("jpn"),
+        "french" => Some("fre"),
+        "german" => Some("ger"),
+        "spanish" => Some("spa"),
+        "italian" => Some("ita"),
+        "portuguese" => Some("por"),
+        "russian" => Some("rus"),
+        "chinese" => Some("chi"),
+        "korean" => Some("kor"),
+        "arabic" => Some("ara"),
+        "hindi" => Some("hin"),
+        "dutch" => Some("dut"),
+        "swedish" => Some("swe"),
+        "norwegian" => Some("nor"),
+        "danish" => Some("dan"),
+        "finnish" => Some("fin"),
+        "polish" => Some("pol"),
+        "czech" => Some("cze"),
+        "hungarian" => Some("hun"),
+        "romanian" => Some("rum"),
+        "greek" => Some("gre"),
+        "turkish" => Some("tur"),
+        "hebrew" => Some("heb"),
+        "thai" => Some("tha"),
+        "vietnamese" => Some("vie"),
+        "ukrainian" => Some("ukr"),
+        _ => None,
+    }
 }
 
 // --- Internal helpers ---
@@ -188,6 +239,9 @@ mod tests {
                     quality_profile: Some("HD-1080p".to_string()),
                     monitored: true,
                     path: "/media/movies/Blade Runner 2049 (2017)".to_string(),
+                    original_language: Some(RadarrLanguage {
+                        name: "English".to_string(),
+                    }),
                 }],
             }
         }
@@ -267,6 +321,7 @@ mod tests {
                 assert_eq!(e.metadata["year"], 2017);
                 assert_eq!(e.metadata["radarr_id"], 42);
                 assert_eq!(e.metadata["tmdb_id"], 335984);
+                assert_eq!(e.metadata["original_language"], "eng");
             }
             _ => panic!("expected MetadataEnriched"),
         }

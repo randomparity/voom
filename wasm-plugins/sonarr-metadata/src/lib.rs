@@ -74,7 +74,7 @@ pub fn on_event(
     let config: SonarrConfig = load_plugin_config(|key| host.get_plugin_data(key))?;
     let episode = lookup_episode(host, &config, &file.path.to_string_lossy())?;
 
-    let metadata = serde_json::json!({
+    let mut metadata = serde_json::json!({
         "source": "sonarr",
         "series_id": episode.series_id,
         "series_title": episode.series_title,
@@ -85,6 +85,9 @@ pub fn on_event(
         "quality_profile": episode.quality_profile,
         "monitored": episode.monitored,
     });
+    if let Some(lang) = &episode.original_language {
+        metadata["original_language"] = serde_json::Value::String(lang.clone());
+    }
 
     let enriched_event = Event::MetadataEnriched(
         voom_plugin_sdk::MetadataEnrichedEvent {
@@ -124,6 +127,15 @@ pub struct SonarrSeries {
     pub path: String,
     pub quality_profile: Option<String>,
     pub monitored: bool,
+    #[serde(default)]
+    pub original_language: Option<SonarrLanguage>,
+}
+
+/// Language record from the Sonarr API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SonarrLanguage {
+    pub name: String,
 }
 
 /// An episode file record matched from Sonarr.
@@ -139,6 +151,41 @@ pub struct SonarrEpisode {
     pub quality_profile: Option<String>,
     pub monitored: bool,
     pub file_path: String,
+    pub original_language: Option<String>,
+}
+
+/// Map a Sonarr language display name to an ISO 639-3 code.
+fn language_name_to_iso639(name: &str) -> Option<&'static str> {
+    match name.to_lowercase().as_str() {
+        "english" => Some("eng"),
+        "japanese" => Some("jpn"),
+        "french" => Some("fre"),
+        "german" => Some("ger"),
+        "spanish" => Some("spa"),
+        "italian" => Some("ita"),
+        "portuguese" => Some("por"),
+        "russian" => Some("rus"),
+        "chinese" => Some("chi"),
+        "korean" => Some("kor"),
+        "arabic" => Some("ara"),
+        "hindi" => Some("hin"),
+        "dutch" => Some("dut"),
+        "swedish" => Some("swe"),
+        "norwegian" => Some("nor"),
+        "danish" => Some("dan"),
+        "finnish" => Some("fin"),
+        "polish" => Some("pol"),
+        "czech" => Some("cze"),
+        "hungarian" => Some("hun"),
+        "romanian" => Some("rum"),
+        "greek" => Some("gre"),
+        "turkish" => Some("tur"),
+        "hebrew" => Some("heb"),
+        "thai" => Some("tha"),
+        "vietnamese" => Some("vie"),
+        "ukrainian" => Some("ukr"),
+        _ => None,
+    }
 }
 
 // --- Internal helpers ---
@@ -184,6 +231,12 @@ fn lookup_episode(
         }).ok()?;
     let matched = episode_files.into_iter().find(|ef| file_path.ends_with(&ef.relative_path))?;
 
+    let original_language = series
+        .original_language
+        .as_ref()
+        .and_then(|lang| language_name_to_iso639(&lang.name))
+        .map(|s| s.to_string());
+
     Some(SonarrEpisode {
         series_id: series.id,
         series_title: series.title.clone(),
@@ -194,6 +247,7 @@ fn lookup_episode(
         quality_profile: series.quality_profile.clone(),
         monitored: series.monitored,
         file_path: file_path.to_string(),
+        original_language,
     })
 }
 
@@ -234,6 +288,9 @@ mod tests {
                     path: "/media/tv/Breaking Bad".to_string(),
                     quality_profile: Some("HD-1080p".to_string()),
                     monitored: true,
+                    original_language: Some(SonarrLanguage {
+                        name: "English".to_string(),
+                    }),
                 }],
                 episode_files: vec![SonarrEpisodeFile {
                     relative_path: "Season 01/Breaking.Bad.S01E01.1080p.mkv".to_string(),
@@ -322,6 +379,7 @@ mod tests {
                 assert_eq!(e.metadata["episode_number"], 1);
                 assert_eq!(e.metadata["episode_title"], "Pilot");
                 assert_eq!(e.metadata["tvdb_id"], 81189);
+                assert_eq!(e.metadata["original_language"], "eng");
             }
             _ => panic!("expected MetadataEnriched"),
         }

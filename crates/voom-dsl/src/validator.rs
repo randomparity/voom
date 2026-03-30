@@ -565,6 +565,32 @@ fn validate_codec(codec: &str, line: usize, col: usize, errors: &mut Vec<DslErro
     }
 }
 
+/// Known root segments for field access paths in filter expressions.
+const KNOWN_FIELD_ROOTS: &[&str] = &["plugin", "file", "video", "audio", "system"];
+
+fn validate_field_path(path: &[String], line: usize, col: usize, errors: &mut Vec<DslError>) {
+    if path.is_empty() {
+        errors.push(DslError::validation(
+            line,
+            col,
+            "empty field path in filter".to_string(),
+        ));
+        return;
+    }
+    if !KNOWN_FIELD_ROOTS.contains(&path[0].as_str()) {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!(
+                "unknown field root \"{}\" in filter; \
+                 expected one of: {}",
+                path[0],
+                KNOWN_FIELD_ROOTS.join(", ")
+            ),
+        ));
+    }
+}
+
 fn validate_filter(filter: &FilterNode, line: usize, col: usize, errors: &mut Vec<DslError>) {
     match filter {
         FilterNode::LangIn(langs) => {
@@ -587,6 +613,9 @@ fn validate_filter(filter: &FilterNode, line: usize, col: usize, errors: &mut Ve
                 ));
             }
         }
+        FilterNode::LangField(_, path) => {
+            validate_field_path(path, line, col, errors);
+        }
         FilterNode::CodecIn(codecs_list) => {
             for codec in codecs_list {
                 validate_codec(codec, line, col, errors);
@@ -594,6 +623,9 @@ fn validate_filter(filter: &FilterNode, line: usize, col: usize, errors: &mut Ve
         }
         FilterNode::CodecCompare(_, codec) => {
             validate_codec(codec, line, col, errors);
+        }
+        FilterNode::CodecField(_, path) => {
+            validate_field_path(path, line, col, errors);
         }
         FilterNode::And(items) | FilterNode::Or(items) => {
             for item in items {
@@ -1579,5 +1611,67 @@ mod tests {
             "expected invalid max_resolution error, got: {:?}",
             err.errors
         );
+    }
+
+    #[test]
+    fn test_lang_field_valid_root() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == plugin.radarr.original_language
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_lang_field_invalid_root() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == unknown.field.path
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("unknown field root")),
+            "expected unknown field root error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_codec_field_valid() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where codec != plugin.detector.codec
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_zxx_language_valid() {
+        let input = r#"policy "test" {
+            phase norm {
+                remove audio where lang == zxx
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_mul_language_valid() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == mul
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
     }
 }

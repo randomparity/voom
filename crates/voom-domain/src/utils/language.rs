@@ -68,6 +68,8 @@ static LANGUAGE_CODES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock:
         ("uk", "ukr"),
         ("ukr", "ukr"),
         ("und", "und"),
+        ("zxx", "zxx"),
+        ("mul", "mul"),
     ];
     for (key, val) in entries {
         m.insert(key, val);
@@ -107,6 +109,8 @@ static LANGUAGE_NAMES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock:
         ("vie", "Vietnamese"),
         ("ukr", "Ukrainian"),
         ("und", "Undetermined"),
+        ("zxx", "No linguistic content"),
+        ("mul", "Multiple languages"),
     ];
     for (key, val) in entries {
         m.insert(key, val);
@@ -188,5 +192,19 @@ mod tests {
     fn test_und() {
         assert_eq!(normalize_language("und"), Some("und"));
         assert_eq!(language_name("und"), Some("Undetermined"));
+    }
+
+    #[test]
+    fn test_zxx() {
+        assert_eq!(normalize_language("zxx"), Some("zxx"));
+        assert!(is_valid_language("zxx"));
+        assert_eq!(language_name("zxx"), Some("No linguistic content"));
+    }
+
+    #[test]
+    fn test_mul() {
+        assert_eq!(normalize_language("mul"), Some("mul"));
+        assert!(is_valid_language("mul"));
+        assert_eq!(language_name("mul"), Some("Multiple languages"));
     }
 }
