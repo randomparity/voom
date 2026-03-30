@@ -80,6 +80,11 @@ phases:
                   - Value:
                       String: Japanese
             else_actions: []
+            span:
+              start: 210
+              end: 293
+              line: 12
+              col: 5
         span:
           start: 210
           end: 293

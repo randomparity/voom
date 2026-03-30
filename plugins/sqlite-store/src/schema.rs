@@ -170,7 +170,8 @@ CREATE TABLE IF NOT EXISTS subtitles (
     language TEXT NOT NULL,
     forced INTEGER NOT NULL DEFAULT 0,
     title TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(file_path, subtitle_path)
 );
 
 CREATE INDEX IF NOT EXISTS idx_subtitles_file ON subtitles(file_path);
@@ -295,10 +296,31 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
                 language TEXT NOT NULL,
                 forced INTEGER NOT NULL DEFAULT 0,
                 title TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(file_path, subtitle_path)
             );
             CREATE INDEX IF NOT EXISTS idx_subtitles_file ON subtitles(file_path);",
         )?;
+    }
+
+    // Add UNIQUE constraint on subtitles(file_path, subtitle_path) for existing
+    // databases that created the table before the constraint was added.
+    if has_subtitles {
+        let has_unique_idx: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master \
+             WHERE type='index' AND name='idx_subtitles_unique'",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_unique_idx {
+            conn.execute_batch(
+                "DELETE FROM subtitles WHERE id NOT IN (
+                    SELECT MIN(id) FROM subtitles GROUP BY file_path, subtitle_path
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_subtitles_unique \
+                    ON subtitles(file_path, subtitle_path);",
+            )?;
+        }
     }
 
     Ok(())

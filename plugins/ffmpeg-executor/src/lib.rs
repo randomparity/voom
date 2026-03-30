@@ -15,11 +15,12 @@ use std::time::Duration;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{
-    CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent, PlanCompletedEvent,
-    PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
+    CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent, PlanCreatedEvent,
+    PlanExecutingEvent,
 };
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
+use voom_domain::utils::language::is_valid_language;
 use voom_domain::utils::sanitize::validate_metadata_value;
 use voom_kernel::{Plugin, PluginContext};
 
@@ -70,6 +71,7 @@ const FFMPEG_OPS: &[OperationType] = &[
 /// for transcoding, container conversion, and metadata operations.
 pub struct FfmpegExecutorPlugin {
     capabilities: Vec<Capability>,
+    available: bool,
     hw_accel: HwAccelConfig,
     probed_codecs: Option<CodecCapabilities>,
     probed_formats: Option<Vec<String>>,
@@ -85,11 +87,20 @@ impl FfmpegExecutorPlugin {
                 operations: FFMPEG_OPS.to_vec(),
                 formats: vec![], // Supports all formats
             }],
+            available: false,
             hw_accel: HwAccelConfig::new(),
             probed_codecs: None,
             probed_formats: None,
             probed_hw_accels: None,
         }
+    }
+
+    /// Create with `available` set to the given value.
+    /// Bypasses the `init()` probe for testing.
+    #[cfg(test)]
+    fn with_available(mut self, available: bool) -> Self {
+        self.available = available;
+        self
     }
 
     /// Create with a specific HW accel configuration.
@@ -111,7 +122,7 @@ impl FfmpegExecutorPlugin {
     /// - Plans requiring codecs/formats the probed FFmpeg doesn't support
     #[must_use]
     pub fn can_handle(&self, plan: &Plan) -> bool {
-        if plan.is_empty() || plan.is_skipped() {
+        if !self.available || plan.is_empty() || plan.is_skipped() {
             return false;
         }
 
@@ -135,6 +146,16 @@ impl FfmpegExecutorPlugin {
                 return false;
             }
             return true;
+        }
+
+        // MuxSubtitle on non-MKV files
+        let has_mux_subtitle = plan
+            .actions
+            .iter()
+            .any(|a| a.operation == OperationType::MuxSubtitle);
+        if has_mux_subtitle {
+            let is_mkv = plan.file.container == Container::Mkv;
+            return !is_mkv;
         }
 
         // Metadata-only ops: FFmpeg handles non-MKV files.
@@ -242,57 +263,64 @@ impl FfmpegExecutorPlugin {
         if !self.can_handle(plan) {
             return Err(plugin_err("Plan cannot be handled by FFmpeg executor"));
         }
+
+        // Handle MuxSubtitle actions directly (not via the general ffmpeg command builder)
+        if plan
+            .actions
+            .iter()
+            .any(|a| a.operation == OperationType::MuxSubtitle)
+        {
+            let mut results = Vec::new();
+            for action in plan
+                .actions
+                .iter()
+                .filter(|a| a.operation == OperationType::MuxSubtitle)
+            {
+                results.extend(self.execute_mux_subtitle(&plan.file.path, action)?);
+            }
+            return Ok(results);
+        }
+
         executor::execute_plan(plan, &self.hw_accel)
     }
 
-    /// Handle a `subtitle.generated` event for non-MKV files.
-    ///
-    /// Emits `PlanExecuting`, `PlanCompleted`/`PlanFailed` lifecycle events so
-    /// the backup-manager can track subtitle mux operations.
-    fn handle_subtitle_generated(
+    /// Execute a `MuxSubtitle` action by running ffmpeg.
+    fn execute_mux_subtitle(
         &self,
-        event: &voom_domain::events::SubtitleGeneratedEvent,
-    ) -> Result<Option<EventResult>> {
-        // Defer MKV files to mkvtoolnix
-        let ext = event
-            .path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-        if Container::from_extension(ext) == Container::Mkv {
-            return Ok(None);
+        path: &std::path::Path,
+        action: &PlannedAction,
+    ) -> Result<Vec<voom_domain::plan::ActionResult>> {
+        let ActionParams::MuxSubtitle {
+            subtitle_path,
+            language,
+            forced,
+            title: _,
+        } = &action.parameters
+        else {
+            return Err(plugin_err("expected MuxSubtitle params"));
+        };
+
+        if !is_valid_language(language) {
+            return Err(plugin_err(format!(
+                "invalid ISO 639 language code: \"{language}\""
+            )));
         }
 
-        validate_metadata_value(&event.language)
-            .map_err(|e| plugin_err(format!("invalid language: {e}")))?;
-
-        let plan_id = uuid::Uuid::new_v4();
-        let phase_name = "subtitle_mux";
-        let mut produced_events = vec![Event::PlanExecuting(PlanExecutingEvent::new(
-            event.path.clone(),
-            phase_name,
-            1,
-        ))];
-
-        let orig_ext = event
-            .path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("mp4");
-        let temp_path = event.path.with_extension(format!("tmp.{orig_ext}"));
+        let orig_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
+        let temp_path = path.with_extension(format!("tmp.{orig_ext}"));
         let mut args = vec![
             "-i".to_string(),
-            event.path.to_string_lossy().into_owned(),
+            path.to_string_lossy().into_owned(),
             "-i".to_string(),
-            event.subtitle_path.to_string_lossy().into_owned(),
+            subtitle_path.to_string_lossy().into_owned(),
             "-c".to_string(),
             "copy".to_string(),
             "-c:s".to_string(),
             "srt".to_string(),
             "-metadata:s:s:0".to_string(),
-            format!("language={}", event.language),
+            format!("language={language}"),
         ];
-        if event.forced {
+        if *forced {
             args.push("-disposition:s:0".to_string());
             args.push("forced".to_string());
         }
@@ -304,83 +332,85 @@ impl FfmpegExecutorPlugin {
 
         match output {
             Ok(o) if o.status.success() => {
-                if let Err(e) = std::fs::rename(&temp_path, &event.path) {
-                    if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
-                        tracing::warn!(
-                            error = %cleanup_err,
-                            "failed to clean up temp file"
-                        );
-                    }
-                    let err_msg = format!("failed to rename temp file: {e}");
-                    produced_events.push(Event::PlanFailed(PlanFailedEvent::new(
-                        plan_id,
-                        event.path.clone(),
-                        phase_name,
-                        &err_msg,
-                    )));
-                    let mut result = EventResult::new("ffmpeg-executor");
-                    result.claimed = true;
-                    result.produced_events = produced_events;
-                    result.execution_error = Some(err_msg);
-                    return Ok(Some(result));
-                }
-                produced_events.push(Event::PlanCompleted(PlanCompletedEvent::new(
-                    plan_id,
-                    event.path.clone(),
-                    phase_name,
-                    1,
-                    false,
-                )));
-                let mut result = EventResult::new("ffmpeg-executor");
-                result.claimed = true;
-                result.produced_events = produced_events;
-                Ok(Some(result))
+                std::fs::rename(&temp_path, path).map_err(|e| {
+                    let _ = std::fs::remove_file(&temp_path);
+                    plugin_err(format!("failed to rename temp file: {e}"))
+                })?;
+                Ok(vec![voom_domain::plan::ActionResult::success(
+                    action.operation,
+                    &action.description,
+                )])
             }
             Ok(o) => {
-                if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
-                    tracing::warn!(
-                        error = %cleanup_err,
-                        "failed to clean up temp file"
-                    );
-                }
-                let err_msg = format!(
+                let _ = std::fs::remove_file(&temp_path);
+                Err(plugin_err(format!(
                     "ffmpeg failed (exit {}): {}",
                     o.status.code().unwrap_or(-1),
                     String::from_utf8_lossy(&o.stderr)
-                );
-                produced_events.push(Event::PlanFailed(PlanFailedEvent::new(
-                    plan_id,
-                    event.path.clone(),
-                    phase_name,
-                    &err_msg,
-                )));
-                let mut result = EventResult::new("ffmpeg-executor");
-                result.claimed = true;
-                result.produced_events = produced_events;
-                result.execution_error = Some(err_msg);
-                Ok(Some(result))
+                )))
             }
             Err(e) => {
-                if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
-                    tracing::warn!(
-                        error = %cleanup_err,
-                        "failed to clean up temp file"
-                    );
-                }
-                let err_msg = format!("ffmpeg subtitle mux failed: {e}");
-                produced_events.push(Event::PlanFailed(PlanFailedEvent::new(
-                    plan_id,
-                    event.path.clone(),
-                    phase_name,
-                    &err_msg,
-                )));
-                let mut result = EventResult::new("ffmpeg-executor");
-                result.claimed = true;
-                result.produced_events = produced_events;
-                result.execution_error = Some(err_msg);
-                Ok(Some(result))
+                let _ = std::fs::remove_file(&temp_path);
+                Err(plugin_err(format!("ffmpeg subtitle mux failed: {e}")))
             }
         }
+    }
+
+    /// Handle a `subtitle.generated` event for non-MKV files.
+    ///
+    /// Converts the event into a `PlanCreated` event with a `MuxSubtitle`
+    /// action. Emits `PlanExecuting` before `PlanCreated` so that
+    /// backup-manager creates a backup before the executor modifies the file.
+    fn handle_subtitle_generated(
+        &self,
+        event: &voom_domain::events::SubtitleGeneratedEvent,
+    ) -> Result<Option<EventResult>> {
+        if !self.available {
+            return Ok(None);
+        }
+
+        // Defer MKV files to mkvtoolnix
+        let ext = event
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let container = Container::from_extension(ext);
+        if container == Container::Mkv {
+            return Ok(None);
+        }
+
+        validate_metadata_value(&event.language)
+            .map_err(|e| plugin_err(format!("invalid language: {e}")))?;
+        if let Some(title) = &event.title {
+            validate_metadata_value(title)
+                .map_err(|e| plugin_err(format!("invalid title: {e}")))?;
+        }
+
+        let phase_name = "subtitle_mux";
+        let mut file = voom_domain::media::MediaFile::new(event.path.clone());
+        file.container = container;
+        let mut plan = Plan::new(file, "subtitle-mux", phase_name);
+        plan.actions = vec![PlannedAction::file_op(
+            OperationType::MuxSubtitle,
+            ActionParams::MuxSubtitle {
+                subtitle_path: event.subtitle_path.clone(),
+                language: event.language.clone(),
+                forced: event.forced,
+                title: event.title.clone(),
+            },
+            "Mux subtitle into container",
+        )];
+
+        let produced_events = vec![
+            Event::PlanExecuting(PlanExecutingEvent::new(event.path.clone(), phase_name, 1)),
+            Event::PlanCreated(voom_domain::events::PlanCreatedEvent::new(plan)),
+        ];
+
+        let mut result = EventResult::new("ffmpeg-executor");
+        result.claimed = true;
+        result.produced_events = produced_events;
+        Ok(Some(result))
     }
 
     /// Handle a `plan.created` event.
@@ -425,7 +455,11 @@ impl Plugin for FfmpegExecutorPlugin {
     voom_kernel::plugin_cargo_metadata!();
 
     fn capabilities(&self) -> &[Capability] {
-        &self.capabilities
+        if self.available {
+            &self.capabilities
+        } else {
+            &[]
+        }
     }
 
     fn handles(&self, event_type: &str) -> bool {
@@ -441,14 +475,19 @@ impl Plugin for FfmpegExecutorPlugin {
     }
 
     fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
-        let mut codecs = Command::new("ffmpeg")
+        let codecs_output = match Command::new("ffmpeg")
             .args(["-codecs", "-hide_banner"])
             .output()
-            .map(|o| parse_codecs(&String::from_utf8_lossy(&o.stdout)))
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to probe ffmpeg codecs");
-                CodecCapabilities::empty()
-            });
+        {
+            Ok(o) => o,
+            Err(_) => {
+                tracing::warn!("ffmpeg not found; ffmpeg executor disabled");
+                return Ok(vec![]);
+            }
+        };
+        self.available = true;
+
+        let mut codecs = parse_codecs(&String::from_utf8_lossy(&codecs_output.stdout));
 
         let formats = Command::new("ffmpeg")
             .args(["-formats", "-hide_banner"])
@@ -598,7 +637,7 @@ mod tests {
 
     #[test]
     fn test_plugin_metadata() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         assert_eq!(plugin.name(), "ffmpeg-executor");
         assert_eq!(plugin.version(), env!("CARGO_PKG_VERSION"));
 
@@ -654,7 +693,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_transcode_video() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         let plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction::track_op(
@@ -672,7 +711,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_transcode_audio() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         let plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction::track_op(
@@ -690,7 +729,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_synthesize_audio() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         let plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction::track_op(
@@ -715,7 +754,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_convert_container() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         let plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction::file_op(
@@ -731,7 +770,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_non_mkv_metadata() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         // MP4 file with metadata ops — FFmpeg handles non-MKV metadata
         let plan = plan_with_actions(
             sample_mp4_file(),
@@ -747,7 +786,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_mkv_with_transcode() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         // MKV file with transcode — FFmpeg handles all transcodes regardless of container
         let plan = plan_with_actions(
             sample_mkv_file(),
@@ -776,7 +815,7 @@ mod tests {
 
     #[test]
     fn test_cannot_handle_mkv_metadata_only() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         // MKV file with only metadata ops — mkvtoolnix handles these
         let plan = plan_with_actions(
             sample_mkv_file(),
@@ -802,14 +841,14 @@ mod tests {
 
     #[test]
     fn test_cannot_handle_empty_plan() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         let plan = plan_with_actions(sample_mp4_file(), vec![]);
         assert!(!plugin.can_handle(&plan));
     }
 
     #[test]
     fn test_cannot_handle_skipped_plan() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         let mut plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction::track_op(
@@ -830,7 +869,7 @@ mod tests {
 
     #[test]
     fn test_execute_plan_not_handleable() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         // MKV + metadata only — cannot handle
         let plan = plan_with_actions(
             sample_mkv_file(),
@@ -846,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_execute_plan_file_not_found() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         let plan = plan_with_actions(
             sample_mp4_file(), // /media/video.mp4 does not exist
             vec![PlannedAction::track_op(
@@ -870,7 +909,7 @@ mod tests {
 
     #[test]
     fn test_on_event_claims_transcode_plan() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         let plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction::track_op(
@@ -893,7 +932,7 @@ mod tests {
 
     #[test]
     fn test_on_event_skips_mkv_metadata_plan() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         let plan = plan_with_actions(
             sample_mkv_file(),
             vec![PlannedAction::track_op(
@@ -923,7 +962,7 @@ mod tests {
 
     #[test]
     fn test_on_event_skips_empty_plan() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         let plan = plan_with_actions(sample_mp4_file(), vec![]);
         let event = Event::PlanCreated(PlanCreatedEvent::new(plan));
         let result = plugin.on_event(&event).unwrap();
@@ -932,7 +971,7 @@ mod tests {
 
     #[test]
     fn test_on_event_skips_skipped_plan() {
-        let plugin = FfmpegExecutorPlugin::new();
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
         let mut plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction::track_op(
@@ -961,7 +1000,7 @@ mod tests {
 
     fn plugin_with_probed(encoders: Vec<&str>, formats: Vec<&str>) -> FfmpegExecutorPlugin {
         let enc: Vec<String> = encoders.into_iter().map(String::from).collect();
-        let mut plugin = FfmpegExecutorPlugin::new();
+        let mut plugin = FfmpegExecutorPlugin::new().with_available(true);
         // Use encoders as decoders too — real ffmpeg typically has both
         plugin.probed_codecs = Some(CodecCapabilities::new(enc.clone(), enc));
         plugin.probed_formats = Some(formats.into_iter().map(String::from).collect());
@@ -1022,7 +1061,7 @@ mod tests {
 
     #[test]
     fn test_can_handle_fallback_when_not_probed() {
-        let plugin = FfmpegExecutorPlugin::new(); // no probed data
+        let plugin = FfmpegExecutorPlugin::new().with_available(true); // no probed data
         let plan = plan_with_actions(
             sample_mp4_file(),
             vec![PlannedAction::track_op(
@@ -1059,6 +1098,24 @@ mod tests {
         let config = FfmpegExecutorConfig::default();
         assert!(config.gpu_device.is_none());
         assert!(config.hw_accel.is_none());
+    }
+
+    #[test]
+    fn test_can_handle_unavailable() {
+        let plugin = FfmpegExecutorPlugin::new(); // available = false
+        let plan = plan_with_actions(
+            sample_mp4_file(),
+            vec![PlannedAction::track_op(
+                OperationType::TranscodeVideo,
+                0,
+                ActionParams::Transcode {
+                    codec: "hevc".into(),
+                    settings: Default::default(),
+                },
+                "Transcode to HEVC",
+            )],
+        );
+        assert!(!plugin.can_handle(&plan));
     }
 
     #[test]

@@ -11,11 +11,11 @@ use std::time::Duration;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{
-    CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent, PlanCompletedEvent,
-    PlanExecutingEvent, PlanFailedEvent,
+    CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent, PlanExecutingEvent,
 };
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, ActionResult, OperationType, Plan, PlannedAction};
+use voom_domain::utils::language::is_valid_language;
 use voom_domain::utils::sanitize::validate_metadata_value;
 use voom_kernel::{Plugin, PluginContext};
 
@@ -31,7 +31,7 @@ const MERGE_OPS: &[OperationType] = &[
 
 /// Check whether the given operation type is supported by this executor.
 fn is_supported_op(op: OperationType) -> bool {
-    op.is_metadata_op() || MERGE_OPS.contains(&op)
+    op.is_metadata_op() || MERGE_OPS.contains(&op) || op == OperationType::MuxSubtitle
 }
 
 /// `MKVToolNix` executor plugin.
@@ -119,6 +119,23 @@ impl MkvtoolnixExecutorPlugin {
             });
         }
 
+        // Handle MuxSubtitle actions separately
+        if plan
+            .actions
+            .iter()
+            .any(|a| a.operation == OperationType::MuxSubtitle)
+        {
+            let mut results = Vec::new();
+            for action in plan
+                .actions
+                .iter()
+                .filter(|a| a.operation == OperationType::MuxSubtitle)
+            {
+                results.extend(self.execute_mux_subtitle(path, action)?);
+            }
+            return Ok(results);
+        }
+
         // Classify actions
         let (propedit_actions, merge_actions) = classify_actions(&plan.actions);
 
@@ -180,10 +197,11 @@ impl MkvtoolnixExecutorPlugin {
         Ok(results)
     }
 
-    /// Handle a `subtitle.generated` event by muxing the SRT into the MKV.
+    /// Handle a `subtitle.generated` event by converting it into a
+    /// `PlanCreated` event with a `MuxSubtitle` action.
     ///
-    /// Emits `PlanExecuting`, `PlanCompleted`/`PlanFailed` lifecycle events so
-    /// the backup-manager can track subtitle mux operations.
+    /// Emits `PlanExecuting` before `PlanCreated` so that backup-manager
+    /// creates a backup before the executor modifies the file.
     fn handle_subtitle_generated(
         &self,
         event: &voom_domain::events::SubtitleGeneratedEvent,
@@ -206,34 +224,80 @@ impl MkvtoolnixExecutorPlugin {
             tool: "mkvmerge".into(),
             message: format!("invalid language: {e}"),
         })?;
-
-        let plan_id = uuid::Uuid::new_v4();
-        let phase_name = "subtitle_mux";
-        let mut produced_events = vec![Event::PlanExecuting(PlanExecutingEvent::new(
-            event.path.clone(),
-            phase_name,
-            1,
-        ))];
-
-        let temp_path = event.path.with_extension("tmp.mkv");
-        let mut args = vec![
-            "-o".to_string(),
-            temp_path.to_string_lossy().into_owned(),
-            "--language".to_string(),
-            format!("0:{}", event.language),
-            "--forced-display-flag".to_string(),
-            format!("0:{}", if event.forced { 1 } else { 0 }),
-        ];
         if let Some(title) = &event.title {
             validate_metadata_value(title).map_err(|e| VoomError::ToolExecution {
                 tool: "mkvmerge".into(),
                 message: format!("invalid title: {e}"),
             })?;
+        }
+
+        let phase_name = "subtitle_mux";
+        let mut file = voom_domain::media::MediaFile::new(event.path.clone());
+        file.container = Container::Mkv;
+        let mut plan = Plan::new(file, "subtitle-mux", phase_name);
+        plan.actions = vec![PlannedAction::file_op(
+            OperationType::MuxSubtitle,
+            ActionParams::MuxSubtitle {
+                subtitle_path: event.subtitle_path.clone(),
+                language: event.language.clone(),
+                forced: event.forced,
+                title: event.title.clone(),
+            },
+            "Mux subtitle into container",
+        )];
+
+        let produced_events = vec![
+            Event::PlanExecuting(PlanExecutingEvent::new(event.path.clone(), phase_name, 1)),
+            Event::PlanCreated(voom_domain::events::PlanCreatedEvent::new(plan)),
+        ];
+
+        let mut result = EventResult::new(self.name());
+        result.claimed = true;
+        result.produced_events = produced_events;
+        Ok(Some(result))
+    }
+
+    /// Execute a `MuxSubtitle` action by running mkvmerge.
+    fn execute_mux_subtitle(
+        &self,
+        path: &std::path::Path,
+        action: &PlannedAction,
+    ) -> Result<Vec<ActionResult>> {
+        let ActionParams::MuxSubtitle {
+            subtitle_path,
+            language,
+            forced,
+            title,
+        } = &action.parameters
+        else {
+            return Err(VoomError::ToolExecution {
+                tool: "mkvmerge".into(),
+                message: "expected MuxSubtitle params".into(),
+            });
+        };
+
+        if !is_valid_language(language) {
+            return Err(VoomError::ToolExecution {
+                tool: "mkvmerge".into(),
+                message: format!("invalid ISO 639 language code: \"{language}\""),
+            });
+        }
+
+        let temp_path = path.with_extension("tmp.mkv");
+        let mut args = vec![
+            "-o".to_string(),
+            temp_path.to_string_lossy().into_owned(),
+            "--language".to_string(),
+            format!("0:{language}"),
+            "--forced-display-flag".to_string(),
+            format!("0:{}", if *forced { 1 } else { 0 }),
+        ];
+        if let Some(title) = title {
             args.push("--track-name".to_string());
             args.push(format!("0:{title}"));
         }
-        args.push(event.path.to_string_lossy().into_owned());
-        args.push(event.subtitle_path.to_string_lossy().into_owned());
+        args.push(path.to_string_lossy().into_owned());
+        args.push(subtitle_path.to_string_lossy().into_owned());
 
         const SUBTITLE_MUX_TIMEOUT: Duration = Duration::from_secs(120);
         let output =
@@ -241,82 +305,35 @@ impl MkvtoolnixExecutorPlugin {
 
         match output {
             Ok(o) if o.status.success() || o.status.code() == Some(1) => {
-                // mkvmerge returns 1 for warnings, which is still success
-                if let Err(e) = std::fs::rename(&temp_path, &event.path) {
-                    if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
-                        tracing::warn!(
-                            error = %cleanup_err,
-                            "failed to clean up temp file"
-                        );
+                std::fs::rename(&temp_path, path).map_err(|e| {
+                    let _ = std::fs::remove_file(&temp_path);
+                    VoomError::ToolExecution {
+                        tool: "mkvmerge".into(),
+                        message: format!("failed to rename temp file: {e}"),
                     }
-                    let err_msg = format!("failed to rename temp file: {e}");
-                    produced_events.push(Event::PlanFailed(PlanFailedEvent::new(
-                        plan_id,
-                        event.path.clone(),
-                        phase_name,
-                        &err_msg,
-                    )));
-                    let mut result = EventResult::new(self.name());
-                    result.claimed = true;
-                    result.produced_events = produced_events;
-                    result.execution_error = Some(err_msg);
-                    return Ok(Some(result));
-                }
-                produced_events.push(Event::PlanCompleted(PlanCompletedEvent::new(
-                    plan_id,
-                    event.path.clone(),
-                    phase_name,
-                    1,
-                    false,
-                )));
-                let mut result = EventResult::new(self.name());
-                result.claimed = true;
-                result.produced_events = produced_events;
-                Ok(Some(result))
+                })?;
+                Ok(vec![ActionResult::success(
+                    action.operation,
+                    &action.description,
+                )])
             }
             Ok(o) => {
-                if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
-                    tracing::warn!(
-                        error = %cleanup_err,
-                        "failed to clean up temp file"
-                    );
-                }
-                let err_msg = format!(
-                    "mkvmerge failed (exit {}): {}",
-                    o.status.code().unwrap_or(-1),
-                    String::from_utf8_lossy(&o.stderr)
-                );
-                produced_events.push(Event::PlanFailed(PlanFailedEvent::new(
-                    plan_id,
-                    event.path.clone(),
-                    phase_name,
-                    &err_msg,
-                )));
-                let mut result = EventResult::new(self.name());
-                result.claimed = true;
-                result.produced_events = produced_events;
-                result.execution_error = Some(err_msg);
-                Ok(Some(result))
+                let _ = std::fs::remove_file(&temp_path);
+                Err(VoomError::ToolExecution {
+                    tool: "mkvmerge".into(),
+                    message: format!(
+                        "mkvmerge failed (exit {}): {}",
+                        o.status.code().unwrap_or(-1),
+                        String::from_utf8_lossy(&o.stderr)
+                    ),
+                })
             }
             Err(e) => {
-                if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
-                    tracing::warn!(
-                        error = %cleanup_err,
-                        "failed to clean up temp file"
-                    );
-                }
-                let err_msg = format!("mkvmerge subtitle mux failed: {e}");
-                produced_events.push(Event::PlanFailed(PlanFailedEvent::new(
-                    plan_id,
-                    event.path.clone(),
-                    phase_name,
-                    &err_msg,
-                )));
-                let mut result = EventResult::new(self.name());
-                result.claimed = true;
-                result.produced_events = produced_events;
-                result.execution_error = Some(err_msg);
-                Ok(Some(result))
+                let _ = std::fs::remove_file(&temp_path);
+                Err(VoomError::ToolExecution {
+                    tool: "mkvmerge".into(),
+                    message: format!("mkvmerge subtitle mux failed: {e}"),
+                })
             }
         }
     }

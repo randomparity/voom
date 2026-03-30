@@ -471,7 +471,7 @@ fn validate_operation(
             }
         }
         OperationNode::When(when) => {
-            validate_when(when, line, col, errors, warnings);
+            validate_when(when, errors, warnings);
         }
         OperationNode::Rules { mode, rules } => {
             match mode.as_str() {
@@ -485,7 +485,7 @@ fn validate_operation(
                 }
             }
             for rule in rules {
-                validate_when(&rule.when, line, col, errors, warnings);
+                validate_when(&rule.when, errors, warnings);
             }
         }
         OperationNode::Order(items) => {
@@ -631,6 +631,9 @@ fn validate_field_path(
     if path[0] == "plugin" && path.len() >= 2 {
         let plugin_name = &path[1];
         if !KNOWN_PLUGIN_NAMES.contains(&plugin_name.as_str()) {
+            // Only warn when the name is close to a known plugin (likely typo).
+            // Names far from all known plugins are assumed to be WASM plugins
+            // and should not trigger a warning.
             let mut best: Option<(&str, usize)> = None;
             for &known in KNOWN_PLUGIN_NAMES {
                 let dist = edit_distance(plugin_name, known);
@@ -638,17 +641,18 @@ fn validate_field_path(
                     best = Some((known, dist));
                 }
             }
-            let suggestion = best.map(|(s, _)| format!("did you mean \"{s}\"?"));
-            warnings.push(DslWarning::new(
-                line,
-                col,
-                format!(
-                    "unknown plugin name \"{plugin_name}\" in field path; \
-                     known plugins: {}",
-                    KNOWN_PLUGIN_NAMES.join(", ")
-                ),
-                suggestion,
-            ));
+            if let Some((suggestion, _)) = best {
+                warnings.push(DslWarning::new(
+                    line,
+                    col,
+                    format!(
+                        "unknown plugin name \"{plugin_name}\" in field path; \
+                         known plugins: {}",
+                        KNOWN_PLUGIN_NAMES.join(", ")
+                    ),
+                    Some(format!("did you mean \"{suggestion}\"?")),
+                ));
+            }
         }
     }
 }
@@ -1052,13 +1056,9 @@ fn validate_ident_setting(
     }
 }
 
-fn validate_when(
-    when: &WhenNode,
-    line: usize,
-    col: usize,
-    errors: &mut Vec<DslError>,
-    warnings: &mut Vec<DslWarning>,
-) {
+fn validate_when(when: &WhenNode, errors: &mut Vec<DslError>, warnings: &mut Vec<DslWarning>) {
+    let line = when.span.line;
+    let col = when.span.col;
     validate_condition(&when.condition, line, col, errors, warnings);
     for action in &when.then_actions {
         validate_action(action, line, col, errors, warnings);
@@ -1082,11 +1082,39 @@ fn validate_action(
                 validate_filter(f, line, col, errors, warnings);
             }
         }
-        ActionNode::SetLanguage(_, ValueOrField::Field(path))
-        | ActionNode::SetTag(_, ValueOrField::Field(path)) => {
-            validate_field_path(path, line, col, errors, warnings);
+        ActionNode::SetDefault(track_ref) | ActionNode::SetForced(track_ref) => {
+            validate_track_target(&track_ref.target, line, col, errors);
+            if let Some(f) = &track_ref.filter {
+                validate_filter(f, line, col, errors, warnings);
+            }
         }
-        _ => {}
+        ActionNode::SetLanguage(track_ref, val) => {
+            validate_track_target(&track_ref.target, line, col, errors);
+            if let Some(f) = &track_ref.filter {
+                validate_filter(f, line, col, errors, warnings);
+            }
+            match val {
+                ValueOrField::Value(Value::String(s)) => {
+                    if !language::is_valid_language(s) {
+                        errors.push(DslError::validation(
+                            line,
+                            col,
+                            format!("unknown language code \"{s}\" in set_language action"),
+                        ));
+                    }
+                }
+                ValueOrField::Field(path) => {
+                    validate_field_path(path, line, col, errors, warnings);
+                }
+                _ => {}
+            }
+        }
+        ActionNode::SetTag(_, val) => {
+            if let ValueOrField::Field(path) = val {
+                validate_field_path(path, line, col, errors, warnings);
+            }
+        }
+        ActionNode::Skip(_) | ActionNode::Warn(_) | ActionNode::Fail(_) => {}
     }
 }
 
@@ -1862,7 +1890,9 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_name_warning_unknown() {
+    fn test_plugin_name_no_warning_for_wasm_plugins() {
+        // Plugin names far from all known plugins are assumed to be WASM plugins
+        // and should not trigger a warning.
         let input = r#"policy "test" {
             phase norm {
                 keep audio where lang == plugin.custom_wasm.original_language
@@ -1871,15 +1901,30 @@ mod tests {
         let ast = parse_policy(input).unwrap();
         let (warnings, result) = validate_with_warnings(&ast);
         assert!(result.is_ok(), "unknown plugin name should not be an error");
+        assert!(
+            warnings.is_empty(),
+            "WASM plugin names should not produce warnings, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_plugin_name_warning_for_typo() {
+        // Plugin names close to a known plugin should warn (likely typo).
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == plugin.sonar.original_language
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let (warnings, result) = validate_with_warnings(&ast);
+        assert!(result.is_ok());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0]
             .message
-            .contains("unknown plugin name \"custom_wasm\""));
-        // Too far from any known name to suggest
+            .contains("unknown plugin name \"sonar\""));
         assert!(
-            warnings[0].suggestion.is_none(),
-            "no suggestion for very different name, got: {:?}",
-            warnings[0].suggestion
+            warnings[0].suggestion.is_some(),
+            "close name should have suggestion"
         );
     }
 }

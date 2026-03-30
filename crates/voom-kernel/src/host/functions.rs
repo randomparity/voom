@@ -129,6 +129,14 @@ impl HostState {
     /// Canonicalizes the parent directory (since the file may not exist
     /// yet) and verifies it is within the allowed paths.
     pub fn write_file(&self, path: &str, content: &[u8]) -> Result<(), String> {
+        if self.allowed_paths.is_empty() {
+            return Err(format!(
+                "path '{}' is not within allowed directories for plugin '{}' \
+                 (no paths configured)",
+                path, self.plugin_name
+            ));
+        }
+
         let file_path = std::path::Path::new(path);
 
         let parent = file_path.parent().ok_or_else(|| {
@@ -138,29 +146,27 @@ impl HostState {
             )
         })?;
 
-        if !self.allowed_paths.is_empty() {
-            let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
-                format!(
-                    "cannot resolve parent of '{}' for plugin '{}': {e}",
-                    path, self.plugin_name
-                )
-            })?;
+        let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
+            format!(
+                "cannot resolve parent of '{}' for plugin '{}': {e}",
+                path, self.plugin_name
+            )
+        })?;
 
-            let file_name = file_path
-                .file_name()
-                .ok_or_else(|| format!("path '{}' has no filename", path))?;
-            let canonical_target = canonical_parent.join(file_name);
+        let file_name = file_path
+            .file_name()
+            .ok_or_else(|| format!("path '{}' has no filename", path))?;
+        let canonical_target = canonical_parent.join(file_name);
 
-            let allowed = self
-                .allowed_paths
-                .iter()
-                .any(|allowed_dir| canonical_target.starts_with(allowed_dir));
-            if !allowed {
-                return Err(format!(
-                    "path '{}' is not within allowed directories for plugin '{}'",
-                    path, self.plugin_name
-                ));
-            }
+        let allowed = self
+            .allowed_paths
+            .iter()
+            .any(|allowed_dir| canonical_target.starts_with(allowed_dir));
+        if !allowed {
+            return Err(format!(
+                "path '{}' is not within allowed directories for plugin '{}'",
+                path, self.plugin_name
+            ));
         }
 
         std::fs::write(file_path, content).map_err(|e| format!("failed to write '{}': {e}", path))
@@ -184,16 +190,15 @@ impl HostState {
         // Security check: verify path arguments are within allowed directories.
         // Canonicalize paths to prevent traversal attacks (e.g., /allowed/../etc/passwd).
         // Also checks `--flag=/path` patterns by splitting on `=`.
-        if !self.allowed_paths.is_empty() {
-            for arg in args {
-                if looks_like_path(arg) {
-                    self.check_path_allowed(arg)?;
-                }
-                if let Some(eq_pos) = arg.find('=') {
-                    let value = &arg[eq_pos + 1..];
-                    if looks_like_path(value) {
-                        self.check_path_allowed(value)?;
-                    }
+        // When allowed_paths is empty, no paths are permitted (deny all).
+        for arg in args {
+            if looks_like_path(arg) {
+                self.check_path_allowed(arg)?;
+            }
+            if let Some(eq_pos) = arg.find('=') {
+                let value = &arg[eq_pos + 1..];
+                if looks_like_path(value) {
+                    self.check_path_allowed(value)?;
                 }
             }
         }
@@ -378,8 +383,9 @@ mod tests {
         let state = HostState::new("test".into());
         let file_path = dir.path().join("output.txt");
         let result = state.write_file(&file_path.to_string_lossy(), b"hello");
-        // Empty allowed_paths = no restriction (like run_tool path check)
-        assert!(result.is_ok());
+        // Empty allowed_paths = deny all (matches allowed_tools semantics)
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not within allowed"));
     }
 
     #[test]

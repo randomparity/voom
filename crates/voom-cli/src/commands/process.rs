@@ -152,14 +152,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]))
     };
 
-    let items = if args.priority_by_date {
-        let events_clone = events.clone();
-        tokio::task::spawn_blocking(move || build_work_items(&events_clone, true))
-            .await
-            .expect("build_work_items task panicked")
-    } else {
-        build_work_items(&events, false)
-    };
+    let items = build_work_items(&events, args.priority_by_date);
     let keep_backups = compiled.config.keep_backups;
     let phase_order = compiled.phase_order.clone();
     let compiled = Arc::new(compiled);
@@ -598,6 +591,8 @@ async fn process_single_file(
     }
 }
 
+const AUDIO_LANGUAGE_DETECTOR_PLUGIN: &str = "audio-language-detector";
+
 /// Apply audio language detection results to track language fields.
 ///
 /// If the `audio-language-detector` plugin has produced metadata, update
@@ -605,7 +600,7 @@ async fn process_single_file(
 /// policy evaluation so that policies can filter on detected languages
 /// (e.g. `remove audio where lang == zxx` for silent tracks).
 fn apply_detected_languages(file: &mut voom_domain::media::MediaFile) {
-    let metadata = match file.plugin_metadata.get("audio-language-detector") {
+    let metadata = match file.plugin_metadata.get(AUDIO_LANGUAGE_DETECTOR_PLUGIN) {
         Some(m) => m,
         None => return,
     };
@@ -1081,11 +1076,10 @@ fn print_phase_breakdown(stats: &HashMap<String, PhaseStats>, phase_order: &[Str
 
 /// Reporter that dispatches job lifecycle events through the kernel event bus.
 ///
-/// `kernel.dispatch()` is synchronous and runs in-memory (no I/O), so calling
-/// it from the tokio worker pool's async tasks does not block the executor for
-/// a meaningful duration.  Wrapping in `spawn_blocking` would add overhead
-/// without benefit since the event bus holds a `parking_lot::RwLock` read lock
-/// only for the duration of handler collection (microseconds).
+/// `kernel.dispatch()` is synchronous. While most handlers are fast in-memory
+/// operations, `sqlite-store` performs a blocking SQLite write on every dispatch.
+/// The overhead is acceptable for job lifecycle events (low frequency), but this
+/// should be revisited if dispatch latency becomes a concern.
 struct EventBusReporter {
     kernel: Arc<voom_kernel::Kernel>,
 }
@@ -1417,7 +1411,7 @@ mod tests {
     fn test_apply_detected_und_to_eng() {
         let mut file = make_file_with_audio_tracks();
         file.plugin_metadata.insert(
-            "audio-language-detector".to_string(),
+            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
             serde_json::json!({
                 "detections": [{
                     "track_index": 0,
@@ -1436,7 +1430,7 @@ mod tests {
     fn test_apply_detected_overwrite_mismatch() {
         let mut file = make_file_with_audio_tracks();
         file.plugin_metadata.insert(
-            "audio-language-detector".to_string(),
+            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
             serde_json::json!({
                 "detections": [{
                     "track_index": 1,
@@ -1454,7 +1448,7 @@ mod tests {
     fn test_apply_detected_zxx() {
         let mut file = make_file_with_audio_tracks();
         file.plugin_metadata.insert(
-            "audio-language-detector".to_string(),
+            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
             serde_json::json!({
                 "detections": [{
                     "track_index": 0,
@@ -1471,7 +1465,7 @@ mod tests {
     fn test_apply_detected_mul() {
         let mut file = make_file_with_audio_tracks();
         file.plugin_metadata.insert(
-            "audio-language-detector".to_string(),
+            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
             serde_json::json!({
                 "detections": [{
                     "track_index": 0,
@@ -1497,7 +1491,7 @@ mod tests {
     fn test_apply_detected_nonexistent_track() {
         let mut file = make_file_with_audio_tracks();
         file.plugin_metadata.insert(
-            "audio-language-detector".to_string(),
+            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
             serde_json::json!({
                 "detections": [{
                     "track_index": 99,

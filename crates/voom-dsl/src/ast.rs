@@ -139,6 +139,8 @@ pub struct WhenNode {
     pub condition: ConditionNode,
     pub then_actions: Vec<ActionNode>,
     pub else_actions: Vec<ActionNode>,
+    /// Source location of the `when` keyword for error attribution.
+    pub span: Span,
 }
 
 /// A named rule within a rules block.

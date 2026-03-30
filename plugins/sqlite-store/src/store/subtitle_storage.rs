@@ -153,6 +153,35 @@ mod tests {
     }
 
     #[test]
+    fn test_upsert_replaces_duplicate() {
+        let store = test_store();
+        store
+            .upsert_subtitle(
+                "/media/movie.mkv",
+                "/media/movie.eng.srt",
+                "eng",
+                false,
+                None,
+            )
+            .unwrap();
+        // Re-upsert same (file_path, subtitle_path) with different data.
+        store
+            .upsert_subtitle(
+                "/media/movie.mkv",
+                "/media/movie.eng.srt",
+                "eng",
+                true,
+                Some("SDH"),
+            )
+            .unwrap();
+
+        let records = store.list_subtitles("/media/movie.mkv").unwrap();
+        assert_eq!(records.len(), 1, "should replace, not duplicate");
+        assert!(records[0].forced);
+        assert_eq!(records[0].title.as_deref(), Some("SDH"));
+    }
+
+    #[test]
     fn test_subtitles_isolated_between_files() {
         let store = test_store();
         store

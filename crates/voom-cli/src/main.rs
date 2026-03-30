@@ -41,7 +41,9 @@ async fn main() -> Result<()> {
         std::process::exit(130);
     });
 
-    cleanup_wasm_temp_files();
+    // Fire-and-forget: cleanup runs on the blocking pool to avoid
+    // blocking the tokio runtime with filesystem I/O at startup.
+    tokio::task::spawn_blocking(cleanup_wasm_temp_files);
 
     match cli.command {
         Commands::Scan(args) => commands::scan::run(args, token).await,

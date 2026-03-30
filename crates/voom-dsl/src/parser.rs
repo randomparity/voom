@@ -326,7 +326,8 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
     })
 }
 
-fn build_keep_remove(pair: Pair<'_, Rule>, is_keep: bool) -> Result<OperationNode> {
+/// Extract the target and optional filter from a keep_op or remove_op pair.
+fn build_keep_remove_parts(pair: Pair<'_, Rule>) -> Result<(String, Option<FilterNode>)> {
     let mut inner = pair.into_inner();
     let target = inner.next().unwrap().as_str().to_string();
     let filter = if let Some(where_pair) = inner.next() {
@@ -335,7 +336,11 @@ fn build_keep_remove(pair: Pair<'_, Rule>, is_keep: bool) -> Result<OperationNod
     } else {
         None
     };
+    Ok((target, filter))
+}
 
+fn build_keep_remove(pair: Pair<'_, Rule>, is_keep: bool) -> Result<OperationNode> {
+    let (target, filter) = build_keep_remove_parts(pair)?;
     if is_keep {
         Ok(OperationNode::Keep { target, filter })
     } else {
@@ -485,6 +490,8 @@ fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {
 }
 
 fn build_when(pair: Pair<'_, Rule>) -> Result<WhenNode> {
+    let when_span = pair.as_span();
+    let (when_line, when_col) = when_span.start_pos().line_col();
     let mut inner = pair.into_inner();
     let cond_pair = inner.next().unwrap();
     let condition = build_condition(cond_pair)?;
@@ -518,6 +525,7 @@ fn build_when(pair: Pair<'_, Rule>) -> Result<WhenNode> {
         condition,
         then_actions,
         else_actions,
+        span: Span::new(when_span.start(), when_span.end(), when_line, when_col),
     })
 }
 
@@ -856,21 +864,13 @@ fn build_action(pair: Pair<'_, Rule>) -> Result<ActionNode> {
         match first.as_rule() {
             Rule::keep_op => {
                 let child = inner.next().unwrap();
-                return match build_keep_remove(child, true)? {
-                    OperationNode::Keep { target, filter } => {
-                        Ok(ActionNode::Keep { target, filter })
-                    }
-                    _ => unreachable!(),
-                };
+                let (target, filter) = build_keep_remove_parts(child)?;
+                return Ok(ActionNode::Keep { target, filter });
             }
             Rule::remove_op => {
                 let child = inner.next().unwrap();
-                return match build_keep_remove(child, false)? {
-                    OperationNode::Remove { target, filter } => {
-                        Ok(ActionNode::Remove { target, filter })
-                    }
-                    _ => unreachable!(),
-                };
+                let (target, filter) = build_keep_remove_parts(child)?;
+                return Ok(ActionNode::Remove { target, filter });
             }
             _ => {}
         }

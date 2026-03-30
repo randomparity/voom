@@ -2,6 +2,16 @@
 #[cfg(feature = "wasm")]
 type WitHttpResult = Result<(u16, Vec<(String, String)>, Vec<u8>), String>;
 
+/// Expand `~` at the start of a path string to `$HOME`.
+fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return std::path::PathBuf::from(home).join(rest);
+        }
+    }
+    std::path::PathBuf::from(path)
+}
+
 /// WASM plugin loader using wasmtime's component model.
 /// Only available with the `wasm` feature.
 #[cfg(feature = "wasm")]
@@ -183,6 +193,13 @@ pub mod wasm {
                     .map(|c| c.kind().to_string())
                     .collect();
                 state.allowed_http_domains = manifest.allowed_domains.clone();
+                if !manifest.allowed_paths.is_empty() {
+                    state.allowed_paths = manifest
+                        .allowed_paths
+                        .iter()
+                        .map(|p| super::expand_tilde(p))
+                        .collect();
+                }
             }
 
             let limits = wasmtime::StoreLimitsBuilder::new()
@@ -312,7 +329,22 @@ pub mod wasm {
                                 serde_json::json!({})
                             }
                         };
-                        HostState::new(plugin_name.clone()).with_initial_config(config_value)
+                        let mut state =
+                            HostState::new(plugin_name.clone()).with_initial_config(config_value);
+
+                        // Allow config to specify allowed_paths for filesystem access.
+                        if let Some(paths) = table.get("allowed_paths") {
+                            if let Some(arr) = paths.as_array() {
+                                let paths: Vec<std::path::PathBuf> = arr
+                                    .iter()
+                                    .filter_map(|v| v.as_str())
+                                    .map(super::expand_tilde)
+                                    .collect();
+                                state = state.with_paths(paths);
+                            }
+                        }
+
+                        state
                     });
 
                     let priority = manifest.as_ref().map(|m| m.priority).unwrap_or(70);
@@ -730,27 +762,29 @@ pub mod wasm {
                 |ctx: wasmtime::StoreContextMut<'_, HostState>,
                  (path,): (String,)|
                  -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
-                    let file_path = std::path::Path::new(&path);
+                    // Security: empty allowed_paths = deny all.
+                    if ctx.data().allowed_paths.is_empty() {
+                        return Ok((Err(format!(
+                            "path '{path}' is not within allowed directories"
+                        )),));
+                    }
 
-                    // Security: canonicalize to defeat symlink traversal,
-                    // then check the resolved path is within allowed dirs.
-                    if !ctx.data().allowed_paths.is_empty() {
-                        let canonical = match std::fs::canonicalize(file_path) {
-                            Ok(p) => p,
-                            Err(e) => {
-                                return Ok((Err(format!("cannot resolve path '{path}': {e}")),));
-                            }
-                        };
-                        let allowed = ctx
-                            .data()
-                            .allowed_paths
-                            .iter()
-                            .any(|p| canonical.starts_with(p));
-                        if !allowed {
-                            return Ok((Err(format!(
-                                "path '{path}' is not within allowed directories"
-                            )),));
+                    let file_path = std::path::Path::new(&path);
+                    let canonical = match std::fs::canonicalize(file_path) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return Ok((Err(format!("cannot resolve path '{path}': {e}")),));
                         }
+                    };
+                    let allowed = ctx
+                        .data()
+                        .allowed_paths
+                        .iter()
+                        .any(|p| canonical.starts_with(p));
+                    if !allowed {
+                        return Ok((Err(format!(
+                            "path '{path}' is not within allowed directories"
+                        )),));
                     }
 
                     match std::fs::metadata(file_path) {
@@ -782,27 +816,29 @@ pub mod wasm {
                 |ctx: wasmtime::StoreContextMut<'_, HostState>,
                  (dir, pattern): (String, String)|
                  -> Result<(Result<Vec<String>, String>,), wasmtime::Error> {
-                    let dir_path = std::path::Path::new(&dir);
+                    // Security: empty allowed_paths = deny all.
+                    if ctx.data().allowed_paths.is_empty() {
+                        return Ok((Err(format!(
+                            "directory '{dir}' is not within allowed directories"
+                        )),));
+                    }
 
-                    // Security: canonicalize to defeat symlink traversal,
-                    // then check the resolved path is within allowed dirs.
-                    if !ctx.data().allowed_paths.is_empty() {
-                        let canonical = match std::fs::canonicalize(dir_path) {
-                            Ok(p) => p,
-                            Err(e) => {
-                                return Ok((Err(format!("cannot resolve path '{dir}': {e}")),));
-                            }
-                        };
-                        let allowed = ctx
-                            .data()
-                            .allowed_paths
-                            .iter()
-                            .any(|p| canonical.starts_with(p));
-                        if !allowed {
-                            return Ok((Err(format!(
-                                "directory '{dir}' is not within allowed directories"
-                            )),));
+                    let dir_path = std::path::Path::new(&dir);
+                    let canonical = match std::fs::canonicalize(dir_path) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return Ok((Err(format!("cannot resolve path '{dir}': {e}")),));
                         }
+                    };
+                    let allowed = ctx
+                        .data()
+                        .allowed_paths
+                        .iter()
+                        .any(|p| canonical.starts_with(p));
+                    if !allowed {
+                        return Ok((Err(format!(
+                            "directory '{dir}' is not within allowed directories"
+                        )),));
                     }
 
                     match std::fs::read_dir(dir_path) {

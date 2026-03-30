@@ -303,6 +303,10 @@ pub enum ActionParams {
         tag: String,
     },
     /// Subtitle mux parameters for adding an external subtitle file to a container.
+    ///
+    /// Produced by executors when handling `SubtitleGenerated` events. The executor
+    /// converts the event into a `PlanCreated` with this action, which flows through
+    /// the normal backup-aware execution path.
     MuxSubtitle {
         subtitle_path: PathBuf,
         language: String,
@@ -331,6 +335,10 @@ pub enum OperationType {
     SetContainerTag,
     ClearContainerTags,
     DeleteContainerTag,
+    /// Mux an external subtitle file into the media container.
+    ///
+    /// Handled by `mkvtoolnix-executor` (MKV files) and `ffmpeg-executor`
+    /// (non-MKV files) via the normal plan execution path.
     MuxSubtitle,
 }
 

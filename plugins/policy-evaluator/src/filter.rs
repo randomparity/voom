@@ -10,8 +10,9 @@ use crate::condition::{resolve_field, EvalContext};
 /// `LangField` and `CodecField` filters always return `false` here because
 /// they require a `MediaFile` + `EvalContext` to resolve. Use
 /// [`track_matches_with_context`] when the filter may contain field references.
+#[cfg(test)]
 #[must_use]
-pub fn track_matches(track: &Track, filter: &CompiledFilter) -> bool {
+pub(crate) fn track_matches(track: &Track, filter: &CompiledFilter) -> bool {
     track_matches_impl(track, filter, None)
 }
 
