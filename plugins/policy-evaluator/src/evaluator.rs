@@ -14,6 +14,7 @@ use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
 use voom_dsl::compiled::*;
 
 use crate::condition::{evaluate_condition, resolve_value_or_field, EvalContext};
+use crate::filter::{track_matches, tracks_for_target};
 
 fn transcode_settings_from(s: &CompiledTranscodeSettings) -> TranscodeSettings {
     TranscodeSettings::default()
@@ -28,7 +29,6 @@ fn transcode_settings_from(s: &CompiledTranscodeSettings) -> TranscodeSettings {
         .with_hdr_mode(s.hdr_mode.clone())
         .with_tune(s.tune.clone())
 }
-use crate::filter::{track_matches, tracks_for_target};
 
 /// Result of evaluating a full policy against a file.
 #[non_exhaustive]

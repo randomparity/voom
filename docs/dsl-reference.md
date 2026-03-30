@@ -148,7 +148,7 @@ Both `keep` and `remove` operate on a track target:
 | `audio` | Audio tracks |
 | `subtitle` / `subtitles` | Subtitle tracks (both spellings accepted) |
 | `video` | Video tracks |
-| `attachments` | Attachment tracks (fonts, images, etc.) |
+| `attachment` / `attachments` | Attachment tracks (both spellings accepted) |
 | `track` | Any track type (wildcard; valid in `exists()` and `count()` queries) |
 
 ### `order tracks`
@@ -285,6 +285,7 @@ transcode audio to aac {
   preserve: [truehd, dts_hd, flac]   // don't transcode these codecs
   bitrate: 192k                       // target bitrate
   channels: stereo                    // channel layout (stereo, 5.1, etc.)
+                                      // use "preserve" to keep original layout (default)
 }
 ```
 
