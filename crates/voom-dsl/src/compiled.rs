@@ -7,6 +7,7 @@ use std::fmt;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use voom_domain::plan::TranscodeChannels;
 
 /// A pre-compiled regex that supports `Clone`, `Debug`, `Serialize`, and `Deserialize`.
 ///
@@ -259,16 +260,6 @@ impl ClearActionsSettings {
             clear_all_titles,
         }
     }
-}
-
-/// Channel setting for a transcode operation — either a named preset or a count.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum TranscodeChannels {
-    /// Named preset, e.g. `stereo`, `preserve`.
-    Named(String),
-    /// Explicit channel count, e.g. `2`, `6`.
-    Count(u32),
 }
 
 /// Settings for the `Transcode` operation.

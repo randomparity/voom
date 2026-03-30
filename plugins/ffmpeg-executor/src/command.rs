@@ -4,7 +4,7 @@ use std::path::Path;
 
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::media::{Container, MediaFile};
-use voom_domain::plan::{ActionParams, OperationType, PlannedAction, TranscodeChannelsPlan};
+use voom_domain::plan::{ActionParams, OperationType, PlannedAction, TranscodeChannels};
 use voom_domain::utils::sanitize::{validate_metadata_key, validate_metadata_value};
 
 use crate::hwaccel::{self, HwAccelConfig};
@@ -331,10 +331,10 @@ fn apply_transcode_video(
     Ok(cmd)
 }
 
-fn resolve_transcode_channels(ch: &TranscodeChannelsPlan) -> Option<u32> {
+fn resolve_transcode_channels(ch: &TranscodeChannels) -> Option<u32> {
     match ch {
-        TranscodeChannelsPlan::Count(n) => Some(*n),
-        TranscodeChannelsPlan::Named(name) => match name.as_str() {
+        TranscodeChannels::Count(n) => Some(*n),
+        TranscodeChannels::Named(name) => match name.as_str() {
             "mono" => Some(1),
             "stereo" => Some(2),
             "5.1" => Some(6),
@@ -663,7 +663,7 @@ mod tests {
                 crf: None,
                 preset: None,
                 bitrate: Some("128k".into()),
-                channels: Some(TranscodeChannelsPlan::Count(2)),
+                channels: Some(TranscodeChannels::Count(2)),
                 hw: None,
                 hw_fallback: None,
                 max_resolution: None,

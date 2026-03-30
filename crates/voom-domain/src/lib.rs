@@ -30,7 +30,7 @@ pub use job::{DiscoveredFilePayload, Job, JobStatus, JobUpdate};
 pub use media::{Container, MediaFile, Track, TrackType};
 pub use plan::{
     ActionParams, ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction,
-    TranscodeChannelsPlan,
+    TranscodeChannels,
 };
 pub use safeguard::{SafeguardKind, SafeguardViolation};
 pub use stats::{ProcessingOutcome, ProcessingStats};

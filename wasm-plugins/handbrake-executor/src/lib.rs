@@ -31,7 +31,7 @@
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
     deserialize_event, load_plugin_config, serialize_event, ActionParams, Event, HostFunctions,
-    OnEventResult, OperationType, PluginInfoData, ToolOutput, TranscodeChannelsPlan,
+    OnEventResult, OperationType, PluginInfoData, ToolOutput, TranscodeChannels,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -233,13 +233,13 @@ fn build_handbrake_args(
                     }
                     if let Some(ch) = channels {
                         let mixdown = match ch {
-                            TranscodeChannelsPlan::Count(1) => "mono",
-                            TranscodeChannelsPlan::Count(2) => "stereo",
-                            TranscodeChannelsPlan::Count(6) => "5point1",
-                            TranscodeChannelsPlan::Count(8) => "7point1",
-                            TranscodeChannelsPlan::Named(ref n) if n == "mono" => "mono",
-                            TranscodeChannelsPlan::Named(ref n) if n == "5.1" => "5point1",
-                            TranscodeChannelsPlan::Named(ref n) if n == "7.1" => "7point1",
+                            TranscodeChannels::Count(1) => "mono",
+                            TranscodeChannels::Count(2) => "stereo",
+                            TranscodeChannels::Count(6) => "5point1",
+                            TranscodeChannels::Count(8) => "7point1",
+                            TranscodeChannels::Named(ref n) if n == "mono" => "mono",
+                            TranscodeChannels::Named(ref n) if n == "5.1" => "5point1",
+                            TranscodeChannels::Named(ref n) if n == "7.1" => "7point1",
                             // "stereo", "preserve", unknown counts/names
                             _ => "stereo",
                         };
@@ -519,7 +519,7 @@ mod tests {
                 crf: None,
                 preset: None,
                 bitrate: Some("128k".to_string()),
-                channels: Some(TranscodeChannelsPlan::Count(2)),
+                channels: Some(TranscodeChannels::Count(2)),
                 hw: None,
                 hw_fallback: None,
                 max_resolution: None,

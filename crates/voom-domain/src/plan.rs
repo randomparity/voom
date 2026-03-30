@@ -132,9 +132,9 @@ impl PlannedAction {
 }
 
 /// Channel setting for a transcode action — either a named preset or a count.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum TranscodeChannelsPlan {
+pub enum TranscodeChannels {
     /// Named preset, e.g. `stereo`, `preserve`.
     Named(String),
     /// Explicit channel count, e.g. `2`, `6`.
@@ -175,7 +175,7 @@ pub enum ActionParams {
         crf: Option<u32>,
         preset: Option<String>,
         bitrate: Option<String>,
-        channels: Option<TranscodeChannelsPlan>,
+        channels: Option<TranscodeChannels>,
         /// Per-action HW acceleration preference (overrides system-wide detection).
         #[serde(default)]
         hw: Option<String>,

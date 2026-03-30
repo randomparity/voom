@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use voom_domain::capability_map::CapabilityMap;
 use voom_domain::errors::VoomError;
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
-use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeChannelsPlan};
+use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
 use voom_dsl::compiled::*;
 
@@ -583,11 +583,6 @@ fn emit_transcode(
         }
     }
 
-    let map_channels = |ch: &TranscodeChannels| match ch {
-        TranscodeChannels::Named(s) => TranscodeChannelsPlan::Named(s.clone()),
-        TranscodeChannels::Count(n) => TranscodeChannelsPlan::Count(*n),
-    };
-
     for track in &tracks {
         if track.codec == codec {
             continue;
@@ -604,7 +599,7 @@ fn emit_transcode(
                 crf: settings.crf,
                 preset: settings.preset.clone(),
                 bitrate: settings.bitrate.clone(),
-                channels: settings.channels.as_ref().map(&map_channels),
+                channels: settings.channels.clone(),
                 hw: settings.hw.clone(),
                 hw_fallback: settings.hw_fallback,
                 max_resolution: settings.max_resolution.clone(),
