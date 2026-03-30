@@ -141,6 +141,90 @@ pub enum TranscodeChannels {
     Count(u32),
 }
 
+/// Transcode quality/encoding settings, separate from the codec choice.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct TranscodeSettings {
+    pub crf: Option<u32>,
+    pub preset: Option<String>,
+    pub bitrate: Option<String>,
+    pub channels: Option<TranscodeChannels>,
+    /// Per-action HW acceleration preference (overrides system-wide detection).
+    pub hw: Option<String>,
+    /// Whether to fall back to software encoding when HW is unavailable.
+    pub hw_fallback: Option<bool>,
+    /// Maximum resolution (e.g. "1080p"). Downscale if source exceeds.
+    pub max_resolution: Option<String>,
+    /// Scaling algorithm (e.g. "lanczos").
+    pub scale_algorithm: Option<String>,
+    /// HDR handling mode (e.g. "preserve", "tonemap").
+    pub hdr_mode: Option<String>,
+    /// Encoder tuning hint (e.g. "film", "animation").
+    pub tune: Option<String>,
+}
+
+impl TranscodeSettings {
+    #[must_use]
+    pub fn with_crf(mut self, crf: Option<u32>) -> Self {
+        self.crf = crf;
+        self
+    }
+
+    #[must_use]
+    pub fn with_preset(mut self, preset: Option<String>) -> Self {
+        self.preset = preset;
+        self
+    }
+
+    #[must_use]
+    pub fn with_bitrate(mut self, bitrate: Option<String>) -> Self {
+        self.bitrate = bitrate;
+        self
+    }
+
+    #[must_use]
+    pub fn with_channels(mut self, channels: Option<TranscodeChannels>) -> Self {
+        self.channels = channels;
+        self
+    }
+
+    #[must_use]
+    pub fn with_hw(mut self, hw: Option<String>) -> Self {
+        self.hw = hw;
+        self
+    }
+
+    #[must_use]
+    pub fn with_hw_fallback(mut self, hw_fallback: Option<bool>) -> Self {
+        self.hw_fallback = hw_fallback;
+        self
+    }
+
+    #[must_use]
+    pub fn with_max_resolution(mut self, max_resolution: Option<String>) -> Self {
+        self.max_resolution = max_resolution;
+        self
+    }
+
+    #[must_use]
+    pub fn with_scale_algorithm(mut self, scale_algorithm: Option<String>) -> Self {
+        self.scale_algorithm = scale_algorithm;
+        self
+    }
+
+    #[must_use]
+    pub fn with_hdr_mode(mut self, hdr_mode: Option<String>) -> Self {
+        self.hdr_mode = hdr_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tune(mut self, tune: Option<String>) -> Self {
+        self.tune = tune;
+        self
+    }
+}
+
 /// Typed parameters for each operation type.
 /// Replaces the previous untyped `serde_json::Value` parameters field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,28 +256,8 @@ pub enum ActionParams {
     /// Transcode settings (codec, plus optional quality/encoding parameters).
     Transcode {
         codec: String,
-        crf: Option<u32>,
-        preset: Option<String>,
-        bitrate: Option<String>,
-        channels: Option<TranscodeChannels>,
-        /// Per-action HW acceleration preference (overrides system-wide detection).
         #[serde(default)]
-        hw: Option<String>,
-        /// Whether to fall back to software encoding when HW is unavailable.
-        #[serde(default)]
-        hw_fallback: Option<bool>,
-        /// Maximum resolution (e.g. "1080p"). Downscale if source exceeds.
-        #[serde(default)]
-        max_resolution: Option<String>,
-        /// Scaling algorithm (e.g. "lanczos").
-        #[serde(default)]
-        scale_algorithm: Option<String>,
-        /// HDR handling mode (e.g. "preserve", "tonemap").
-        #[serde(default)]
-        hdr_mode: Option<String>,
-        /// Encoder tuning hint (e.g. "film", "animation").
-        #[serde(default)]
-        tune: Option<String>,
+        settings: TranscodeSettings,
     },
     /// Audio synthesis parameters.
     Synthesize {

@@ -386,16 +386,7 @@ mod tests {
             Some(0),
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: None,
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: None,
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: Default::default(),
             },
         )]);
         assert!(!plugin.can_handle(&plan));

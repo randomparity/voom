@@ -9,11 +9,25 @@ use std::collections::{HashMap, HashSet};
 use voom_domain::capability_map::CapabilityMap;
 use voom_domain::errors::VoomError;
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
-use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
+use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings};
 use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
 use voom_dsl::compiled::*;
 
 use crate::condition::{evaluate_condition, resolve_value_or_field, EvalContext};
+
+fn transcode_settings_from(s: &CompiledTranscodeSettings) -> TranscodeSettings {
+    TranscodeSettings::default()
+        .with_crf(s.crf)
+        .with_preset(s.preset.clone())
+        .with_bitrate(s.bitrate.clone())
+        .with_channels(s.channels.clone())
+        .with_hw(s.hw.clone())
+        .with_hw_fallback(s.hw_fallback)
+        .with_max_resolution(s.max_resolution.clone())
+        .with_scale_algorithm(s.scale_algorithm.clone())
+        .with_hdr_mode(s.hdr_mode.clone())
+        .with_tune(s.tune.clone())
+}
 use crate::filter::{track_matches, tracks_for_target};
 
 /// Result of evaluating a full policy against a file.
@@ -596,16 +610,7 @@ fn emit_transcode(
             track.index,
             ActionParams::Transcode {
                 codec: codec.into(),
-                crf: settings.crf,
-                preset: settings.preset.clone(),
-                bitrate: settings.bitrate.clone(),
-                channels: settings.channels.clone(),
-                hw: settings.hw.clone(),
-                hw_fallback: settings.hw_fallback,
-                max_resolution: settings.max_resolution.clone(),
-                scale_algorithm: settings.scale_algorithm.clone(),
-                hdr_mode: settings.hdr_mode.clone(),
-                tune: settings.tune.clone(),
+                settings: transcode_settings_from(settings),
             },
             format!(
                 "Transcode {} track {} from {} to {codec}",
@@ -2200,11 +2205,9 @@ mod tests {
             let result = evaluate_with_context(&policy, &file, Some(&caps));
             let action = &result.plans[0].actions[0];
             match &action.parameters {
-                ActionParams::Transcode {
-                    hw, hw_fallback, ..
-                } => {
-                    assert_eq!(hw.as_deref(), Some("nvenc"));
-                    assert_eq!(*hw_fallback, Some(true));
+                ActionParams::Transcode { settings, .. } => {
+                    assert_eq!(settings.hw.as_deref(), Some("nvenc"));
+                    assert_eq!(settings.hw_fallback, Some(true));
                 }
                 other => panic!("Expected Transcode params, got {other:?}"),
             }

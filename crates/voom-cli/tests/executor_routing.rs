@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use voom_domain::events::{Event, PlanCreatedEvent};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
-use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
+use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings};
 use voom_kernel::{Kernel, PluginContext};
 
 fn mkvmerge_available() -> bool {
@@ -87,16 +87,7 @@ fn test_transcode_routes_to_ffmpeg() {
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: Some(23),
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: None,
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default().with_crf(Some(23)),
             },
             "Transcode to HEVC",
         )],
@@ -207,16 +198,7 @@ fn test_mkv_transcode_routes_to_ffmpeg() {
             0,
             ActionParams::Transcode {
                 codec: "h264".into(),
-                crf: None,
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: None,
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: Default::default(),
             },
             "Transcode MKV to H.264",
         )],

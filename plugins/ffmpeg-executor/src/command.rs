@@ -249,16 +249,7 @@ fn apply_transcode_video(
     action: &PlannedAction,
     hw_accel: Option<&HwAccelConfig>,
 ) -> Result<FfmpegCommand> {
-    let ActionParams::Transcode {
-        codec,
-        crf,
-        preset,
-        bitrate,
-        hw,
-        hw_fallback,
-        ..
-    } = &action.parameters
-    else {
+    let ActionParams::Transcode { codec, settings } = &action.parameters else {
         return Ok(cmd);
     };
 
@@ -266,7 +257,7 @@ fn apply_transcode_video(
     // Per-action overrides inherit validated encoders from the system
     // config so we don't bypass startup validation.
     let effective_config: Option<HwAccelConfig>;
-    let effective_hw: Option<&HwAccelConfig> = match hw.as_deref() {
+    let effective_hw: Option<&HwAccelConfig> = match settings.hw.as_deref() {
         Some("none") => None,
         Some(backend) => {
             let cfg = hwaccel::config_from_backend_with_system(backend, hw_accel);
@@ -281,8 +272,8 @@ fn apply_transcode_video(
     };
 
     // Check hw_fallback: when false, error if HW encoder isn't available
-    let hw_requested = hw.as_deref().is_some_and(|v| v != "none");
-    if hw_requested && hw_fallback == &Some(false) {
+    let hw_requested = settings.hw.as_deref().is_some_and(|v| v != "none");
+    if hw_requested && settings.hw_fallback == Some(false) {
         if let Some(hw_cfg) = effective_hw {
             if !hw_cfg.has_hw_encoder(codec) {
                 return Err(VoomError::ToolExecution {
@@ -316,15 +307,15 @@ fn apply_transcode_video(
         cmd = cmd.video_codec(&encoder);
     }
 
-    if let Some(crf_val) = crf {
-        cmd = apply_quality(&encoder, cmd, *crf_val);
+    if let Some(crf_val) = settings.crf {
+        cmd = apply_quality(&encoder, cmd, crf_val);
     }
 
-    if let Some(preset_val) = preset {
+    if let Some(ref preset_val) = settings.preset {
         cmd = apply_preset(&encoder, cmd, preset_val);
     }
 
-    if let Some(brate) = bitrate {
+    if let Some(ref brate) = settings.bitrate {
         cmd = cmd.arg("-b:v").arg(brate);
     }
 
@@ -346,23 +337,20 @@ fn resolve_transcode_channels(ch: &TranscodeChannels) -> Option<u32> {
 }
 
 fn apply_transcode_audio(cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegCommand {
-    let ActionParams::Transcode {
-        codec,
-        bitrate,
-        channels,
-        ..
-    } = &action.parameters
-    else {
+    let ActionParams::Transcode { codec, settings } = &action.parameters else {
         return cmd;
     };
 
-    let resolved = channels.as_ref().and_then(resolve_transcode_channels);
+    let resolved = settings
+        .channels
+        .as_ref()
+        .and_then(resolve_transcode_channels);
     let encoder = hwaccel::software_encoder(codec).to_string();
     apply_audio_codec_args(
         cmd,
         action.track_index,
         &encoder,
-        bitrate.as_deref(),
+        settings.bitrate.as_deref(),
         resolved,
     )
 }
@@ -536,6 +524,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    use voom_domain::plan::TranscodeSettings;
 
     fn sample_mp4_file() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/media/video.mp4"));
@@ -594,16 +583,9 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: Some(23),
-                preset: Some("medium".into()),
-                bitrate: None,
-                channels: None,
-                hw: None,
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(23))
+                    .with_preset(Some("medium".into())),
             },
             "Transcode video to HEVC CRF 23",
         );
@@ -628,16 +610,7 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "h264".into(),
-                crf: None,
-                preset: None,
-                bitrate: Some("5M".into()),
-                channels: None,
-                hw: None,
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default().with_bitrate(Some("5M".into())),
             },
             "Transcode video to H.264 at 5M",
         );
@@ -660,16 +633,9 @@ mod tests {
             1,
             ActionParams::Transcode {
                 codec: "opus".into(),
-                crf: None,
-                preset: None,
-                bitrate: Some("128k".into()),
-                channels: Some(TranscodeChannels::Count(2)),
-                hw: None,
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_bitrate(Some("128k".into()))
+                    .with_channels(Some(TranscodeChannels::Count(2))),
             },
             "Transcode audio to Opus",
         );
@@ -786,16 +752,7 @@ mod tests {
                 0,
                 ActionParams::Transcode {
                     codec: "hevc".into(),
-                    crf: Some(20),
-                    preset: None,
-                    bitrate: None,
-                    channels: None,
-                    hw: None,
-                    hw_fallback: None,
-                    max_resolution: None,
-                    scale_algorithm: None,
-                    hdr_mode: None,
-                    tune: None,
+                    settings: TranscodeSettings::default().with_crf(Some(20)),
                 },
                 "Transcode to HEVC",
             ),
@@ -911,16 +868,7 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: None,
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: None,
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: Default::default(),
             },
             "Transcode with VAAPI device",
         );
@@ -952,16 +900,7 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: Some(23),
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: None,
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default().with_crf(Some(23)),
             },
             "Transcode with NVENC",
         );
@@ -1096,16 +1035,9 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: Some(23),
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: Some("none".into()),
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(23))
+                    .with_hw(Some("none".into())),
             },
             "Transcode with software",
         );
@@ -1129,16 +1061,9 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: Some(23),
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: Some("nvenc".into()),
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(23))
+                    .with_hw(Some("nvenc".into())),
             },
             "Transcode with NVENC override",
         );
@@ -1166,16 +1091,7 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: None,
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: Some("qsv".into()),
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default().with_hw(Some("qsv".into())),
             },
             "Transcode with QSV override",
         );
@@ -1198,16 +1114,7 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: None,
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: Some("nvenc".into()),
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default().with_hw(Some("nvenc".into())),
             },
             "Transcode with NVENC (matches global)",
         );
@@ -1232,16 +1139,7 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: None,
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: Some("none".into()),
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default().with_hw(Some("none".into())),
             },
             "Transcode software, no global",
         );
@@ -1264,16 +1162,7 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: None,
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: Some("none".into()),
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default().with_hw(Some("none".into())),
             },
             "Transcode software despite global nvenc",
         );
@@ -1299,16 +1188,10 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "av1".into(),
-                crf: Some(30),
-                preset: Some("slow".into()),
-                bitrate: None,
-                channels: None,
-                hw: Some("nvenc".into()),
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(30))
+                    .with_preset(Some("slow".into()))
+                    .with_hw(Some("nvenc".into())),
             },
             "Transcode AV1 with NVENC",
         );
@@ -1332,16 +1215,9 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: Some(25),
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: Some("qsv".into()),
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(25))
+                    .with_hw(Some("qsv".into())),
             },
             "Transcode HEVC with QSV",
         );
@@ -1363,16 +1239,10 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "h264".into(),
-                crf: Some(20),
-                preset: Some("medium".into()),
-                bitrate: None,
-                channels: None,
-                hw: Some("vaapi".into()),
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(20))
+                    .with_preset(Some("medium".into()))
+                    .with_hw(Some("vaapi".into())),
             },
             "Transcode H.264 with VAAPI",
         );
@@ -1400,16 +1270,9 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "av1".into(),
-                crf: Some(28),
-                preset: Some("6".into()),
-                bitrate: None,
-                channels: None,
-                hw: None,
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(28))
+                    .with_preset(Some("6".into())),
             },
             "Transcode AV1 software",
         );
@@ -1430,16 +1293,10 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "av1".into(),
-                crf: Some(32),
-                preset: Some("medium".into()),
-                bitrate: None,
-                channels: None,
-                hw: Some("nvenc".into()),
-                hw_fallback: None,
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(32))
+                    .with_preset(Some("medium".into()))
+                    .with_hw(Some("nvenc".into())),
             },
             "Transcode AV1 with NVENC override",
         );
@@ -1470,16 +1327,10 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "av1".into(),
-                crf: Some(32),
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: Some("nvenc".into()),
-                hw_fallback: Some(false),
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(32))
+                    .with_hw(Some("nvenc".into()))
+                    .with_hw_fallback(Some(false)),
             },
             "Transcode AV1 with NVENC, no fallback",
         );
@@ -1507,16 +1358,10 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: Some(23),
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: Some("nvenc".into()),
-                hw_fallback: Some(false),
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(23))
+                    .with_hw(Some("nvenc".into()))
+                    .with_hw_fallback(Some(false)),
             },
             "Transcode HEVC with NVENC, no fallback",
         );
@@ -1541,16 +1386,9 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "av1".into(),
-                crf: Some(32),
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: None,
-                hw_fallback: Some(false),
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(32))
+                    .with_hw_fallback(Some(false)),
             },
             "Transcode AV1, no fallback, no HW",
         );
@@ -1573,16 +1411,10 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                crf: Some(23),
-                preset: None,
-                bitrate: None,
-                channels: None,
-                hw: Some("nvenc".into()),
-                hw_fallback: Some(false),
-                max_resolution: None,
-                scale_algorithm: None,
-                hdr_mode: None,
-                tune: None,
+                settings: TranscodeSettings::default()
+                    .with_crf(Some(23))
+                    .with_hw(Some("nvenc".into()))
+                    .with_hw_fallback(Some(false)),
             },
             "Transcode HEVC, nvenc requested, no fallback",
         );

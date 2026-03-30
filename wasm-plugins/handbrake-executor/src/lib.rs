@@ -203,35 +203,35 @@ fn build_handbrake_args(
     for action in actions {
         match action.operation {
             OperationType::TranscodeVideo => {
-                if let ActionParams::Transcode { codec, crf, preset, bitrate, .. } = &action.parameters {
+                if let ActionParams::Transcode { codec, settings } = &action.parameters {
                     args.push("--encoder".to_string());
                     args.push(codec.clone());
-                    if let Some(q) = crf {
+                    if let Some(q) = settings.crf {
                         args.push("--quality".to_string());
                         args.push(q.to_string());
                     }
-                    if let Some(p) = preset {
+                    if let Some(ref p) = settings.preset {
                         // Only push preset from action params if not already set by config
                         if config.as_ref().and_then(|c| c.preset.as_deref()).is_none() {
                             args.push("--preset".to_string());
                             args.push(p.clone());
                         }
                     }
-                    if let Some(b) = bitrate {
+                    if let Some(ref b) = settings.bitrate {
                         args.push("--vb".to_string());
                         args.push(b.clone());
                     }
                 }
             }
             OperationType::TranscodeAudio => {
-                if let ActionParams::Transcode { codec, bitrate, channels, .. } = &action.parameters {
+                if let ActionParams::Transcode { codec, settings } = &action.parameters {
                     args.push("--aencoder".to_string());
                     args.push(codec.clone());
-                    if let Some(b) = bitrate {
+                    if let Some(ref b) = settings.bitrate {
                         args.push("--ab".to_string());
                         args.push(b.clone());
                     }
-                    if let Some(ch) = channels {
+                    if let Some(ref ch) = settings.channels {
                         let mixdown = match ch {
                             TranscodeChannels::Count(1) => "mono",
                             TranscodeChannels::Count(2) => "stereo",

@@ -235,6 +235,7 @@ mod tests {
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
     use voom_domain::plan::{ActionParams, OperationType};
     use voom_domain::storage::FileStorage;
+    use voom_domain::TranscodeSettings;
 
     fn test_store() -> SqliteStore {
         SqliteStore::in_memory().expect("in-memory store")
@@ -278,16 +279,9 @@ mod tests {
                 OperationType::TranscodeVideo,
                 ActionParams::Transcode {
                     codec: "hevc".into(),
-                    crf: Some(18),
-                    preset: Some("slow".into()),
-                    bitrate: None,
-                    channels: None,
-                    hw: None,
-                    hw_fallback: None,
-                    max_resolution: None,
-                    scale_algorithm: None,
-                    hdr_mode: None,
-                    tune: None,
+                    settings: TranscodeSettings::default()
+                        .with_crf(Some(18))
+                        .with_preset(Some("slow".into())),
                 },
                 "transcode video to hevc",
             ),
