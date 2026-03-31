@@ -1,8 +1,10 @@
 //! Common type aliases and helpers for plugin authors.
 
+use voom_domain::capabilities::Capability;
+
 /// Plugin information for the WIT boundary.
 ///
-/// Mirrors the WIT `plugin-info` record exactly. Used by WASM plugins
+/// Mirrors the WIT `plugin-info` record. Used by WASM plugins
 /// in their `get_info()` implementation.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -13,7 +15,7 @@ pub struct PluginInfoData {
     pub author: String,
     pub license: String,
     pub homepage: String,
-    pub capabilities: Vec<String>,
+    pub capabilities: Vec<Capability>,
 }
 
 impl PluginInfoData {
@@ -25,7 +27,7 @@ impl PluginInfoData {
     pub fn new(
         name: impl Into<String>,
         version: impl Into<String>,
-        capabilities: Vec<String>,
+        capabilities: Vec<Capability>,
     ) -> Self {
         Self {
             name: name.into(),
@@ -92,24 +94,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_plugin_info_data_structured_capabilities() {
+        let info = PluginInfoData::new(
+            "test-plugin",
+            "0.1.0",
+            vec![Capability::EnrichMetadata {
+                source: "test".to_string(),
+            }],
+        );
+        assert_eq!(info.capabilities.len(), 1);
+        assert_eq!(info.capabilities[0].kind(), "enrich_metadata");
+    }
+
+    #[test]
     fn test_plugin_info_data_fields() {
-        let info = PluginInfoData::new("test-plugin", "0.1.0", vec!["enrich_metadata:test".into()]);
+        let info = PluginInfoData::new(
+            "test-plugin",
+            "0.1.0",
+            vec![Capability::EnrichMetadata {
+                source: "test".to_string(),
+            }],
+        );
         assert_eq!(info.name, "test-plugin");
         assert_eq!(info.version, "0.1.0");
         assert_eq!(info.description, "");
         assert_eq!(info.author, "");
         assert_eq!(info.license, "");
         assert_eq!(info.homepage, "");
-        assert_eq!(info.capabilities, vec!["enrich_metadata:test"]);
+        assert_eq!(info.capabilities.len(), 1);
+        assert_eq!(info.capabilities[0].kind(), "enrich_metadata");
     }
 
     #[test]
     fn test_plugin_info_data_builder() {
-        let info = PluginInfoData::new("my-plugin", "1.0.0", vec!["execute:ffmpeg".into()])
-            .with_description("A cool plugin")
-            .with_author("VOOM Contributors")
-            .with_license("MIT")
-            .with_homepage("https://example.com");
+        let info = PluginInfoData::new(
+            "my-plugin",
+            "1.0.0",
+            vec![Capability::Execute {
+                operations: vec![],
+                formats: vec!["mkv".to_string()],
+            }],
+        )
+        .with_description("A cool plugin")
+        .with_author("VOOM Contributors")
+        .with_license("MIT")
+        .with_homepage("https://example.com");
 
         assert_eq!(info.description, "A cool plugin");
         assert_eq!(info.author, "VOOM Contributors");
