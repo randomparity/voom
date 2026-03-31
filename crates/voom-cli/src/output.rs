@@ -77,9 +77,22 @@ pub fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
-        let end = max_len.saturating_sub(3);
+        let target = max_len.saturating_sub(3);
+        let end = floor_char_boundary(s, target);
         format!("{}...", &s[..end])
     }
+}
+
+/// Find the largest byte index <= `index` that is a char boundary in `s`.
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    let mut i = index;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 /// Format skip reasons sorted by frequency, showing at most `limit` entries.
@@ -414,5 +427,27 @@ mod tests {
         let result = shrink_filename("Some Long Name Here.m2ts", 20);
         assert!(result.ends_with("...m2ts"), "got: {result}");
         assert_eq!(result.len(), 20);
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_ascii() {
+        assert_eq!(truncate_with_ellipsis("hello", 10), "hello");
+        assert_eq!(truncate_with_ellipsis("hello world", 8), "hello...");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_multibyte_no_panic() {
+        // "日本語テスト" — each char is 3 bytes
+        let s = "日本語テスト";
+        let result = truncate_with_ellipsis(s, 10);
+        assert!(result.ends_with("..."), "got: {result}");
+        // Must not panic and must be valid UTF-8 (implicit if we get here)
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_emoji() {
+        let s = "🎬🎥🎞️🎦📽️ movie";
+        let result = truncate_with_ellipsis(s, 8);
+        assert!(result.ends_with("..."), "got: {result}");
     }
 }

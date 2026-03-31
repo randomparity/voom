@@ -59,7 +59,7 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(health_interval));
             interval.tick().await; // skip immediate first tick (init already ran checks)
-            let prune_every = 86_400 / health_interval; // ~once per day
+            let prune_every = (86_400 / health_interval).max(1); // ~once per day
             let mut tick_count: u64 = 0;
             loop {
                 tokio::select! {
