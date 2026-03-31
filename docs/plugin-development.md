@@ -323,11 +323,11 @@ exclude = [
 
 ### WIT Interface
 
-WASM plugins implement the `voom:plugin@0.2.0` world defined in `crates/voom-wit/wit/`:
+WASM plugins implement the `voom:plugin@0.3.0` world defined in `crates/voom-wit/wit/`:
 
 **`world.wit`** — The plugin world:
 ```wit
-package voom:plugin@0.2.0;
+package voom:plugin@0.3.0;
 
 world voom-plugin {
     import host;    // Host functions the plugin can call

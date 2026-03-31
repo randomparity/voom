@@ -498,12 +498,18 @@ pub mod wasm {
 
         let instance = inner.instance.as_ref().unwrap();
 
-        // Try the namespaced @0.2.0 interface first, then fall back to a bare
-        // export for simpler single-interface components.
+        // Try the namespaced interface starting from the latest version,
+        // then fall back to older versions and bare exports.
         let on_event = instance
-            .get_export(&mut inner.store, None, "voom:plugin/plugin@0.2.0")
+            .get_export(&mut inner.store, None, "voom:plugin/plugin@0.3.0")
             .and_then(|idx| instance.get_export(&mut inner.store, Some(&idx), "on-event"))
             .and_then(|idx| instance.get_func(&mut inner.store, idx))
+            .or_else(|| {
+                instance
+                    .get_export(&mut inner.store, None, "voom:plugin/plugin@0.2.0")
+                    .and_then(|idx| instance.get_export(&mut inner.store, Some(&idx), "on-event"))
+                    .and_then(|idx| instance.get_func(&mut inner.store, idx))
+            })
             .or_else(|| {
                 let idx = instance.get_export(&mut inner.store, None, "on-event")?;
                 instance.get_func(&mut inner.store, idx)
@@ -637,13 +643,23 @@ pub mod wasm {
     /// Register host function imports in the linker.
     ///
     /// These are the functions that WASM plugins can call back into the host.
+    /// Registers under both `@0.3.0` (current) and `@0.2.0` (backward compat)
+    /// so plugins compiled against either version can resolve their imports.
     fn register_host_functions(
         linker: &mut wasmtime::component::Linker<HostState>,
     ) -> Result<(), WasmLoadError> {
-        // The interface name in WIT is "host" in package "voom:plugin".
+        register_host_instance(linker, "voom:plugin/host@0.3.0")?;
+        register_host_instance(linker, "voom:plugin/host@0.2.0")?;
+        Ok(())
+    }
+
+    fn register_host_instance(
+        linker: &mut wasmtime::component::Linker<HostState>,
+        instance_name: &str,
+    ) -> Result<(), WasmLoadError> {
         let mut root = linker.root();
         let mut host_instance = root
-            .instance("voom:plugin/host@0.2.0")
+            .instance(instance_name)
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
         host_instance

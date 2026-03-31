@@ -16,10 +16,22 @@ pub fn event_to_wasm(event: &Event) -> Result<(String, Vec<u8>)> {
 }
 
 /// Deserialize a domain Event from WASM boundary format.
+///
+/// Validates that the declared `event_type` matches the actual
+/// deserialized event variant to prevent mismatched payloads.
 pub fn event_from_wasm(event_type: &str, payload: &[u8]) -> Result<Event> {
-    let _ = event_type; // event_type is encoded in the enum variant
-    rmp_serde::from_slice(payload)
-        .map_err(|e| VoomError::Wasm(format!("failed to deserialize event: {e}")))
+    let event: Event = rmp_serde::from_slice(payload)
+        .map_err(|e| VoomError::Wasm(format!("failed to deserialize event: {e}")))?;
+
+    let actual_type = event.event_type();
+    if actual_type != event_type {
+        return Err(VoomError::Wasm(format!(
+            "event type mismatch: declared='{}' actual='{}'",
+            event_type, actual_type
+        )));
+    }
+
+    Ok(event)
 }
 
 /// Convert a WASM event result back into a domain `EventResult`.
@@ -422,5 +434,43 @@ mod tests {
         assert_eq!(result.plugin_name, "empty-plugin");
         assert!(result.produced_events.is_empty());
         assert!(result.data.is_none());
+    }
+
+    #[test]
+    fn test_event_from_wasm_type_mismatch_rejected() {
+        let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+            PathBuf::from("/test.mkv"),
+            100,
+            Some("hash".into()),
+        ));
+
+        let (_correct_type, payload) = event_to_wasm(&event).unwrap();
+
+        let err = event_from_wasm("job.started", &payload).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("event type mismatch"),
+            "expected mismatch error, got: {msg}"
+        );
+        assert!(msg.contains("declared='job.started'"));
+        assert!(msg.contains("actual='file.discovered'"));
+    }
+
+    #[test]
+    fn test_event_result_from_wasm_propagates_mismatch() {
+        let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+            PathBuf::from("/test.mkv"),
+            100,
+            Some("hash".into()),
+        ));
+        let (_correct_type, payload) = event_to_wasm(&event).unwrap();
+
+        let err = event_result_from_wasm(
+            "test-plugin".into(),
+            vec![("wrong.type".into(), payload)],
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("event type mismatch"));
     }
 }
