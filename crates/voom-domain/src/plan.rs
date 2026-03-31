@@ -183,6 +183,177 @@ pub struct TranscodeSettings {
     pub tune: Option<String>,
 }
 
+/// Deserialization helper for [`ActionParams`] that lifts legacy flat
+/// transcode fields (`crf`, `preset`, …) into `TranscodeSettings`.
+///
+/// All variants except `Transcode` are structurally identical.  The
+/// `Transcode` variant captures both the nested `settings` key (current
+/// format) and flat sibling keys (legacy format), then merges them.
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
+enum ActionParamsCompat {
+    Empty,
+    Container {
+        container: Container,
+    },
+    RemoveTrack {
+        reason: String,
+        track_type: TrackType,
+    },
+    ReorderTracks {
+        order: Vec<String>,
+    },
+    Language {
+        language: String,
+    },
+    Title {
+        title: String,
+    },
+    Transcode {
+        codec: String,
+        #[serde(default)]
+        settings: TranscodeSettings,
+        // Legacy flat fields — populated when deserializing old payloads.
+        #[serde(default)]
+        crf: Option<u32>,
+        #[serde(default)]
+        preset: Option<String>,
+        #[serde(default)]
+        bitrate: Option<String>,
+        #[serde(default)]
+        channels: Option<TranscodeChannels>,
+        #[serde(default)]
+        hw: Option<String>,
+        #[serde(default)]
+        hw_fallback: Option<bool>,
+        #[serde(default)]
+        max_resolution: Option<String>,
+        #[serde(default)]
+        scale_algorithm: Option<String>,
+        #[serde(default)]
+        hdr_mode: Option<String>,
+        #[serde(default)]
+        tune: Option<String>,
+    },
+    Synthesize {
+        name: String,
+        language: Option<String>,
+        codec: Option<String>,
+        text: Option<String>,
+        bitrate: Option<String>,
+        channels: Option<u32>,
+        title: Option<String>,
+        position: Option<String>,
+        source_track: Option<u32>,
+    },
+    SetTag {
+        tag: String,
+        value: String,
+    },
+    ClearTags {
+        tags: Vec<String>,
+    },
+    DeleteTag {
+        tag: String,
+    },
+    MuxSubtitle {
+        subtitle_path: PathBuf,
+        language: String,
+        forced: bool,
+        title: Option<String>,
+    },
+}
+
+impl From<ActionParamsCompat> for ActionParams {
+    #[allow(clippy::needless_update)]
+    fn from(compat: ActionParamsCompat) -> Self {
+        match compat {
+            ActionParamsCompat::Empty => Self::Empty,
+            ActionParamsCompat::Container { container } => Self::Container { container },
+            ActionParamsCompat::RemoveTrack { reason, track_type } => {
+                Self::RemoveTrack { reason, track_type }
+            }
+            ActionParamsCompat::ReorderTracks { order } => Self::ReorderTracks { order },
+            ActionParamsCompat::Language { language } => Self::Language { language },
+            ActionParamsCompat::Title { title } => Self::Title { title },
+            ActionParamsCompat::Transcode {
+                codec,
+                settings,
+                crf,
+                preset,
+                bitrate,
+                channels,
+                hw,
+                hw_fallback,
+                max_resolution,
+                scale_algorithm,
+                hdr_mode,
+                tune,
+            } => {
+                // If the nested `settings` object has values, use it.
+                // Otherwise, lift the legacy flat fields.
+                let merged = if settings != TranscodeSettings::default() {
+                    settings
+                } else {
+                    TranscodeSettings {
+                        crf,
+                        preset,
+                        bitrate,
+                        channels,
+                        hw,
+                        hw_fallback,
+                        max_resolution,
+                        scale_algorithm,
+                        hdr_mode,
+                        tune,
+                        ..Default::default()
+                    }
+                };
+                Self::Transcode {
+                    codec,
+                    settings: merged,
+                }
+            }
+            ActionParamsCompat::Synthesize {
+                name,
+                language,
+                codec,
+                text,
+                bitrate,
+                channels,
+                title,
+                position,
+                source_track,
+            } => Self::Synthesize {
+                name,
+                language,
+                codec,
+                text,
+                bitrate,
+                channels,
+                title,
+                position,
+                source_track,
+            },
+            ActionParamsCompat::SetTag { tag, value } => Self::SetTag { tag, value },
+            ActionParamsCompat::ClearTags { tags } => Self::ClearTags { tags },
+            ActionParamsCompat::DeleteTag { tag } => Self::DeleteTag { tag },
+            ActionParamsCompat::MuxSubtitle {
+                subtitle_path,
+                language,
+                forced,
+                title,
+            } => Self::MuxSubtitle {
+                subtitle_path,
+                language,
+                forced,
+                title,
+            },
+        }
+    }
+}
+
 impl TranscodeSettings {
     #[must_use]
     pub fn with_crf(mut self, crf: Option<u32>) -> Self {
@@ -248,7 +419,7 @@ impl TranscodeSettings {
 /// Typed parameters for each operation type.
 /// Replaces the previous untyped `serde_json::Value` parameters field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", from = "ActionParamsCompat")]
 pub enum ActionParams {
     /// No parameters needed (`SetDefault`, `ClearDefault`, `SetForced`, `ClearForced`).
     Empty,
@@ -615,14 +786,26 @@ mod tests {
     }
 
     #[test]
-    fn test_transcode_old_flat_format_drops_settings() {
+    fn test_transcode_old_flat_format_preserves_settings() {
         let json = r#"{"type":"Transcode","codec":"hevc","crf":23,"preset":"medium"}"#;
         let parsed: ActionParams = serde_json::from_str(json).unwrap();
         if let ActionParams::Transcode { codec, settings } = parsed {
             assert_eq!(codec, "hevc");
-            // Old flat fields are silently dropped — settings gets defaults
-            assert_eq!(settings.crf, None);
-            assert_eq!(settings.preset, None);
+            assert_eq!(settings.crf, Some(23));
+            assert_eq!(settings.preset.as_deref(), Some("medium"));
+        } else {
+            panic!("expected Transcode variant");
+        }
+    }
+
+    #[test]
+    fn test_transcode_nested_format_preserves_settings() {
+        let json = r#"{"type":"Transcode","codec":"hevc","settings":{"crf":18,"preset":"slow"}}"#;
+        let parsed: ActionParams = serde_json::from_str(json).unwrap();
+        if let ActionParams::Transcode { codec, settings } = parsed {
+            assert_eq!(codec, "hevc");
+            assert_eq!(settings.crf, Some(18));
+            assert_eq!(settings.preset.as_deref(), Some("slow"));
         } else {
             panic!("expected Transcode variant");
         }
