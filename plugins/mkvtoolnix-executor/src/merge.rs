@@ -5,7 +5,7 @@ use std::time::Duration;
 use scopeguard::ScopeGuard;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::plan::{ActionParams, ActionResult, OperationType, PlannedAction};
-use voom_domain::temp_file::temp_path;
+use voom_domain::temp_file::temp_path_with_ext;
 use voom_process::run_with_timeout;
 
 /// Execute mkvmerge operations (remux, track removal, reorder).
@@ -28,7 +28,7 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
         });
     }
 
-    let temp_path = temp_path(path);
+    let temp_path = temp_path_with_ext(path, "mkv");
 
     let args = build_merge_args(path, &temp_path, actions);
 

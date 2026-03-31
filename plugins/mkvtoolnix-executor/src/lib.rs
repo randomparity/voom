@@ -15,7 +15,7 @@ use voom_domain::events::{
 };
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, ActionResult, OperationType, Plan, PlannedAction};
-use voom_domain::temp_file::temp_path;
+use voom_domain::temp_file::temp_path_with_ext;
 use voom_domain::utils::language::is_valid_language;
 use voom_domain::utils::sanitize::validate_metadata_value;
 use voom_kernel::{Plugin, PluginContext};
@@ -284,7 +284,7 @@ impl MkvtoolnixExecutorPlugin {
             });
         }
 
-        let tmp = temp_path(path);
+        let tmp = temp_path_with_ext(path, "mkv");
         let _guard = scopeguard::guard(tmp.clone(), |p| {
             let _ = std::fs::remove_file(&p);
         });
