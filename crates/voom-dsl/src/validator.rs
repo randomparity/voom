@@ -466,7 +466,15 @@ fn validate_operation(
                     SynthSetting::Source(f) | SynthSetting::SkipIfExists(f) => {
                         validate_filter(f, line, col, errors, warnings);
                     }
-                    _ => {}
+                    SynthSetting::Channels(v) => {
+                        validate_synth_channels(v, line, col, errors);
+                    }
+                    SynthSetting::Position(v) => {
+                        validate_synth_position(v, line, col, errors);
+                    }
+                    SynthSetting::Bitrate(_)
+                    | SynthSetting::Title(_)
+                    | SynthSetting::CreateIf(_) => {}
                 }
             }
         }
@@ -535,8 +543,9 @@ fn validate_operation(
                 }
             }
         }
-        OperationNode::Actions { target, .. } => {
+        OperationNode::Actions { target, settings } => {
             validate_track_target(target, line, col, errors);
+            validate_actions_settings(settings, line, col, errors);
         }
         OperationNode::ClearTags => {}
         OperationNode::SetTag { tag, .. } => {
@@ -722,6 +731,12 @@ fn validate_value(val: &Value, line: usize, col: usize, errors: &mut Vec<DslErro
     if let Value::Number(_, raw) = val {
         validate_number_suffix(raw, line, col, errors);
     }
+}
+
+fn has_number_suffix(raw: &str) -> bool {
+    raw.chars()
+        .last()
+        .is_some_and(|c| !c.is_ascii_digit() && c != '.')
 }
 
 fn validate_number_suffix(raw: &str, line: usize, col: usize, errors: &mut Vec<DslError>) {
@@ -1056,6 +1071,208 @@ fn validate_ident_setting(
     }
 }
 
+const KNOWN_CHANNEL_NAMES: &[&str] = &["mono", "stereo", "5.1", "surround", "7.1", "preserve"];
+
+const KNOWN_POSITION_NAMES: &[&str] = &["after_source", "last", "beginning"];
+
+fn validate_synth_channels(val: &Value, line: usize, col: usize, errors: &mut Vec<DslError>) {
+    match val {
+        Value::Number(n, raw) => {
+            if raw == "5.1" || raw == "7.1" {
+                return;
+            }
+            if has_number_suffix(raw) {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    format!(
+                        "invalid channels value \"{raw}\", \
+                         suffixed numbers are not valid here; \
+                         expected a positive integer or one of: {}",
+                        KNOWN_CHANNEL_NAMES.join(", ")
+                    ),
+                ));
+            } else if n.fract() != 0.0 || *n <= 0.0 || *n > f64::from(u32::MAX) {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    format!(
+                        "invalid channels value \"{raw}\", \
+                         expected a positive integer or one of: {}",
+                        KNOWN_CHANNEL_NAMES.join(", ")
+                    ),
+                ));
+            }
+        }
+        Value::Ident(s) => {
+            if !KNOWN_CHANNEL_NAMES.contains(&s.as_str()) {
+                let mut best: Option<(&str, usize)> = None;
+                for &known in KNOWN_CHANNEL_NAMES {
+                    let dist = edit_distance(s, known);
+                    if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
+                        best = Some((known, dist));
+                    }
+                }
+                if let Some((suggestion, _)) = best {
+                    errors.push(DslError::validation_with_suggestion(
+                        line,
+                        col,
+                        format!(
+                            "unknown channels value \"{s}\", \
+                             expected one of: {}",
+                            KNOWN_CHANNEL_NAMES.join(", ")
+                        ),
+                        format!("did you mean \"{suggestion}\"?"),
+                    ));
+                } else {
+                    errors.push(DslError::validation(
+                        line,
+                        col,
+                        format!(
+                            "unknown channels value \"{s}\", \
+                             expected one of: {}",
+                            KNOWN_CHANNEL_NAMES.join(", ")
+                        ),
+                    ));
+                }
+            }
+        }
+        _ => {
+            errors.push(DslError::validation(
+                line,
+                col,
+                format!(
+                    "invalid channels value, \
+                     expected a number or one of: {}",
+                    KNOWN_CHANNEL_NAMES.join(", ")
+                ),
+            ));
+        }
+    }
+}
+
+fn validate_synth_position(val: &Value, line: usize, col: usize, errors: &mut Vec<DslError>) {
+    match val {
+        Value::Number(n, raw) => {
+            if has_number_suffix(raw) {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    format!(
+                        "invalid position value \"{raw}\", \
+                         suffixed numbers are not valid here; \
+                         expected a non-negative integer or one of: {}",
+                        KNOWN_POSITION_NAMES.join(", ")
+                    ),
+                ));
+            } else if n.fract() != 0.0 || *n < 0.0 || *n > f64::from(u32::MAX) {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    format!(
+                        "invalid position value \"{raw}\", \
+                         expected a non-negative integer or one of: {}",
+                        KNOWN_POSITION_NAMES.join(", ")
+                    ),
+                ));
+            }
+        }
+        Value::Ident(s) => {
+            if !KNOWN_POSITION_NAMES.contains(&s.as_str()) {
+                let mut best: Option<(&str, usize)> = None;
+                for &known in KNOWN_POSITION_NAMES {
+                    let dist = edit_distance(s, known);
+                    if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
+                        best = Some((known, dist));
+                    }
+                }
+                if let Some((suggestion, _)) = best {
+                    errors.push(DslError::validation_with_suggestion(
+                        line,
+                        col,
+                        format!(
+                            "unknown position value \"{s}\", \
+                             expected one of: {}",
+                            KNOWN_POSITION_NAMES.join(", ")
+                        ),
+                        format!("did you mean \"{suggestion}\"?"),
+                    ));
+                } else {
+                    errors.push(DslError::validation(
+                        line,
+                        col,
+                        format!(
+                            "unknown position value \"{s}\", \
+                             expected one of: {}",
+                            KNOWN_POSITION_NAMES.join(", ")
+                        ),
+                    ));
+                }
+            }
+        }
+        _ => {
+            errors.push(DslError::validation(
+                line,
+                col,
+                format!(
+                    "invalid position value, \
+                     expected a number or one of: {}",
+                    KNOWN_POSITION_NAMES.join(", ")
+                ),
+            ));
+        }
+    }
+}
+
+const KNOWN_ACTIONS_KEYS: &[&str] = &["clear_all_default", "clear_all_forced", "clear_all_titles"];
+
+fn validate_actions_settings(
+    settings: &[(String, Value)],
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    for (key, val) in settings {
+        if !KNOWN_ACTIONS_KEYS.contains(&key.as_str()) {
+            let mut best: Option<(&str, usize)> = None;
+            for &known in KNOWN_ACTIONS_KEYS {
+                let dist = edit_distance(key, known);
+                if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
+                    best = Some((known, dist));
+                }
+            }
+            if let Some((suggestion, _)) = best {
+                errors.push(DslError::validation_with_suggestion(
+                    line,
+                    col,
+                    format!(
+                        "unknown actions setting \"{key}\", \
+                         expected one of: {}",
+                        KNOWN_ACTIONS_KEYS.join(", ")
+                    ),
+                    format!("did you mean \"{suggestion}\"?"),
+                ));
+            } else {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    format!(
+                        "unknown actions setting \"{key}\", \
+                         expected one of: {}",
+                        KNOWN_ACTIONS_KEYS.join(", ")
+                    ),
+                ));
+            }
+        } else if !matches!(val, Value::Bool(_)) {
+            errors.push(DslError::validation(
+                line,
+                col,
+                format!("actions setting \"{key}\" requires a boolean value"),
+            ));
+        }
+    }
+}
+
 fn validate_when(when: &WhenNode, errors: &mut Vec<DslError>, warnings: &mut Vec<DslWarning>) {
     let line = when.span.line;
     let col = when.span.col;
@@ -1132,7 +1349,11 @@ fn validate_condition(
                 validate_filter(f, line, col, errors, warnings);
             }
         }
-        ConditionNode::FieldCompare(path, _, _) | ConditionNode::FieldExists(path) => {
+        ConditionNode::FieldCompare(path, _, value) => {
+            validate_field_path(path, line, col, errors, warnings);
+            validate_value(value, line, col, errors);
+        }
+        ConditionNode::FieldExists(path) => {
             validate_field_path(path, line, col, errors, warnings);
         }
         ConditionNode::And(items) | ConditionNode::Or(items) => {
@@ -1925,6 +2146,316 @@ mod tests {
         assert!(
             warnings[0].suggestion.is_some(),
             "close name should have suggestion"
+        );
+    }
+
+    // --- Fix 1: FieldCompare RHS validation ---
+
+    #[test]
+    fn test_field_compare_valid_suffix_passes() {
+        let input = r#"policy "test" {
+            phase norm {
+                when file.size > 10G {
+                    warn "large file"
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_field_compare_bare_number_passes() {
+        let input = r#"policy "test" {
+            phase norm {
+                when file.size > 10 {
+                    warn "large file"
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_field_compare_invalid_suffix_errors() {
+        let input = r#"policy "test" {
+            phase norm {
+                when file.size > 10z {
+                    warn "large file"
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("unknown number suffix")),
+            "expected suffix error, got: {:?}",
+            err.errors
+        );
+    }
+
+    // --- Fix 2: Actions block key/value validation ---
+
+    #[test]
+    fn test_actions_valid_passes() {
+        let input = r#"policy "test" {
+            phase norm {
+                audio actions {
+                    clear_all_default: true
+                    clear_all_forced: false
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_actions_unknown_key_errors() {
+        let input = r#"policy "test" {
+            phase norm {
+                audio actions {
+                    bogus_key: true
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("unknown actions setting \"bogus_key\"")),
+            "expected unknown key error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_actions_typo_suggests() {
+        let input = r#"policy "test" {
+            phase norm {
+                audio actions {
+                    clear_all_defualt: true
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        let key_err = err
+            .errors
+            .iter()
+            .find(|e| format!("{e}").contains("unknown actions setting"))
+            .expect("expected unknown key error");
+        match key_err {
+            DslError::Validation { suggestion, .. } => {
+                assert!(suggestion.is_some(), "expected did-you-mean suggestion");
+                let s = suggestion.as_ref().unwrap();
+                assert!(
+                    s.contains("clear_all_default"),
+                    "expected clear_all_default suggestion, got: {s}"
+                );
+            }
+            _ => panic!("expected validation error"),
+        }
+    }
+
+    #[test]
+    fn test_actions_non_bool_value_errors() {
+        let input = r#"policy "test" {
+            phase norm {
+                audio actions {
+                    clear_all_default: 42
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("requires a boolean value")),
+            "expected boolean type error, got: {:?}",
+            err.errors
+        );
+    }
+
+    // --- Fix 3: Synthesize channels and position validation ---
+
+    #[test]
+    fn test_synthesize_channels_named_passes() {
+        let input = r#"policy "test" {
+            phase synth {
+                synthesize "Test" {
+                    codec: aac
+                    channels: stereo
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_synthesize_channels_numeric_passes() {
+        let input = r#"policy "test" {
+            phase synth {
+                synthesize "Test" {
+                    codec: aac
+                    channels: 2
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_synthesize_channels_5_1_passes() {
+        let input = r#"policy "test" {
+            phase synth {
+                synthesize "Test" {
+                    codec: aac
+                    channels: 5.1
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_synthesize_channels_unknown_errors() {
+        let input = r#"policy "test" {
+            phase synth {
+                synthesize "Test" {
+                    codec: aac
+                    channels: quadraphonic
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("unknown channels value \"quadraphonic\"")),
+            "expected unknown channels error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_synthesize_position_named_passes() {
+        let input = r#"policy "test" {
+            phase synth {
+                synthesize "Test" {
+                    codec: aac
+                    position: after_source
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_synthesize_position_numeric_passes() {
+        let input = r#"policy "test" {
+            phase synth {
+                synthesize "Test" {
+                    codec: aac
+                    position: 0
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_synthesize_position_fractional_errors() {
+        let input = r#"policy "test" {
+            phase synth {
+                synthesize "Test" {
+                    codec: aac
+                    position: 2.5
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("invalid position value")),
+            "expected position error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_synthesize_position_unknown_errors() {
+        let input = r#"policy "test" {
+            phase synth {
+                synthesize "Test" {
+                    codec: aac
+                    position: middle
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("unknown position value \"middle\"")),
+            "expected unknown position error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_synthesize_channels_suffixed_number_errors() {
+        let input = r#"policy "test" {
+            phase synth {
+                synthesize "Test" {
+                    codec: aac
+                    channels: 2k
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("suffixed numbers are not valid")),
+            "expected suffix rejection, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_synthesize_position_suffixed_number_errors() {
+        let input = r#"policy "test" {
+            phase synth {
+                synthesize "Test" {
+                    codec: aac
+                    position: 1k
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("suffixed numbers are not valid")),
+            "expected suffix rejection, got: {:?}",
+            err.errors
         );
     }
 }
