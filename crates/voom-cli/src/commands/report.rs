@@ -23,6 +23,10 @@ pub fn run(args: ReportArgs) -> Result<()> {
         .list_files(&voom_domain::FileFilters::default())
         .context("failed to list files from database")?;
 
+    if args.issues {
+        return run_issues_report(&files, &args.format);
+    }
+
     if files.is_empty() {
         if args.format.is_machine() {
             if matches!(args.format, OutputFormat::Json) {
@@ -44,10 +48,6 @@ pub fn run(args: ReportArgs) -> Result<()> {
             style("No files in database. Run 'voom scan' first.").yellow()
         );
         return Ok(());
-    }
-
-    if args.issues {
-        return run_issues_report(&files, &args.format);
     }
 
     match args.format {
