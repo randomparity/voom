@@ -133,10 +133,8 @@ mod tests {
     #[test]
     fn test_server_config_with_auth_token() {
         let config = crate::config::AppConfig {
-            data_dir: std::path::PathBuf::from("/tmp"),
-            plugins: crate::config::PluginsConfig::default(),
             auth_token: Some("secret".to_string()),
-            plugin: std::collections::HashMap::new(),
+            ..Default::default()
         };
         let mut server_config = ServerConfig::new("0.0.0.0".to_string(), 3000);
         server_config.auth_token = config.auth_token.clone();

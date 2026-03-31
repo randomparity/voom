@@ -357,9 +357,7 @@ mod tests {
     fn test_db_path_uses_data_dir() {
         let cfg = config::AppConfig {
             data_dir: std::path::PathBuf::from("/tmp/test-voom"),
-            plugins: config::PluginsConfig::default(),
-            auth_token: None,
-            plugin: std::collections::HashMap::new(),
+            ..Default::default()
         };
         let db_path = cfg.data_dir.join("voom.db");
         assert_eq!(db_path, std::path::PathBuf::from("/tmp/test-voom/voom.db"));
@@ -370,9 +368,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = config::AppConfig {
             data_dir: dir.path().to_path_buf(),
-            plugins: config::PluginsConfig::default(),
-            auth_token: None,
-            plugin: std::collections::HashMap::new(),
+            ..Default::default()
         };
         let store = app::open_store(&cfg);
         assert!(store.is_ok(), "should open store in temp directory");

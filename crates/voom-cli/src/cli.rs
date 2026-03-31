@@ -146,9 +146,13 @@ pub struct ProcessArgs {
     /// Directory or file to process
     pub path: PathBuf,
 
-    /// Policy file (.voom) to apply
-    #[arg(short, long)]
-    pub policy: PathBuf,
+    /// Policy file (.voom) to apply to all files
+    #[arg(short, long, conflicts_with = "policy_map")]
+    pub policy: Option<PathBuf>,
+
+    /// TOML file mapping directory prefixes to policies
+    #[arg(long, conflicts_with = "policy")]
+    pub policy_map: Option<PathBuf>,
 
     /// Show what would be done without making changes
     #[arg(long)]
@@ -781,9 +785,20 @@ mod tests {
     // ── Process ──────────────────────────────────────────────
 
     #[test]
-    fn test_process_requires_path_and_policy() {
+    fn test_process_requires_path() {
         assert!(try_parse(&["voom", "process"]).is_err());
-        assert!(try_parse(&["voom", "process", "/media"]).is_err());
+    }
+
+    #[test]
+    fn test_process_no_policy_is_ok() {
+        let cli = parse(&["voom", "process", "/media"]);
+        match cli.command {
+            Commands::Process(args) => {
+                assert!(args.policy.is_none());
+                assert!(args.policy_map.is_none());
+            }
+            _ => panic!("expected Process"),
+        }
     }
 
     #[test]
@@ -792,7 +807,8 @@ mod tests {
         match cli.command {
             Commands::Process(args) => {
                 assert_eq!(args.path, PathBuf::from("/media"));
-                assert_eq!(args.policy, PathBuf::from("my.voom"));
+                assert_eq!(args.policy, Some(PathBuf::from("my.voom")));
+                assert!(args.policy_map.is_none());
                 assert!(!args.dry_run);
                 assert!(matches!(args.on_error, ErrorHandling::Fail));
                 assert_eq!(args.workers, 0);
@@ -801,6 +817,32 @@ mod tests {
             }
             _ => panic!("expected Process"),
         }
+    }
+
+    #[test]
+    fn test_process_policy_map_flag() {
+        let cli = parse(&["voom", "process", "/media", "--policy-map", "map.toml"]);
+        match cli.command {
+            Commands::Process(args) => {
+                assert!(args.policy.is_none());
+                assert_eq!(args.policy_map, Some(PathBuf::from("map.toml")));
+            }
+            _ => panic!("expected Process"),
+        }
+    }
+
+    #[test]
+    fn test_process_policy_and_map_conflict() {
+        assert!(try_parse(&[
+            "voom",
+            "process",
+            "/media",
+            "--policy",
+            "p.voom",
+            "--policy-map",
+            "map.toml"
+        ])
+        .is_err());
     }
 
     #[test]

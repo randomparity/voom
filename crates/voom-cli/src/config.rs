@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::policy_map::MappingEntry;
+
 /// Application configuration loaded from TOML.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -21,6 +23,12 @@ pub struct AppConfig {
     /// Example: `[plugin.ffprobe-introspector]` with `ffprobe_path = "/usr/local/bin/ffprobe"`.
     #[serde(default)]
     pub plugin: HashMap<String, toml::Table>,
+    /// Default policy file applied to files that match no prefix in `policy_mapping`.
+    #[serde(default)]
+    pub default_policy: Option<String>,
+    /// Per-directory policy mappings: longest matching prefix wins.
+    #[serde(default)]
+    pub policy_mapping: Vec<MappingEntry>,
 }
 
 impl std::fmt::Debug for AppConfig {
@@ -33,6 +41,8 @@ impl std::fmt::Debug for AppConfig {
                 &self.auth_token.as_ref().map(|_| "[REDACTED]"),
             )
             .field("plugin", &self.plugin)
+            .field("default_policy", &self.default_policy)
+            .field("policy_mapping", &self.policy_mapping)
             .finish()
     }
 }
@@ -63,6 +73,8 @@ impl Default for AppConfig {
             plugins: PluginsConfig::default(),
             auth_token: None,
             plugin: HashMap::new(),
+            default_policy: None,
+            policy_mapping: Vec::new(),
         }
     }
 }
@@ -189,6 +201,23 @@ pub fn default_config_contents() -> String {
 #   mkvtoolnix-executor, ffmpeg-executor, backup-manager, job-manager
 # disabled_plugins = ["mkvtoolnix-executor"]
 
+# Default policy file applied when no --policy or --policy-map flag is given.
+# Files not matching any [[policy_mapping]] prefix use this policy.
+# Set to "skip" to skip unmatched files instead.
+# default_policy = "standard.voom"
+
+# Per-directory policy mappings. Longest matching prefix wins.
+# Each entry needs either `policy` or `skip = true`.
+# Prefixes are relative to the path argument of `voom process`.
+#
+# [[policy_mapping]]
+# prefix = "best-hd"
+# policy = "high-quality.voom"
+#
+# [[policy_mapping]]
+# prefix = "test-bad"
+# skip = true
+
 # Per-plugin configuration. Use [plugin.<name>] sections to pass
 # settings to specific plugins. The section name must match the plugin name.
 #
@@ -310,6 +339,7 @@ mod tests {
             },
             auth_token: Some("secret-token".into()),
             plugin: plugin_config,
+            ..Default::default()
         };
 
         let toml_str = toml::to_string_pretty(&config).expect("serialize");
@@ -408,6 +438,14 @@ mod tests {
             contents.contains("[plugin."),
             "should document per-plugin config sections"
         );
+        assert!(
+            contents.contains("# default_policy"),
+            "should document default_policy"
+        );
+        assert!(
+            contents.contains("[[policy_mapping]]"),
+            "should document policy_mapping"
+        );
     }
 
     // ── load_config with temp files ──────────────────────────
@@ -444,6 +482,7 @@ mod tests {
             },
             auth_token: Some("my-token".into()),
             plugin: HashMap::new(),
+            ..Default::default()
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -468,6 +507,7 @@ mod tests {
             plugins: PluginsConfig::default(),
             auth_token: Some("secret".into()),
             plugin: HashMap::new(),
+            ..Default::default()
         };
 
         // Write config using the same logic as save_config (can't override config_path(),
