@@ -58,6 +58,7 @@ pub fn backup_file(
         backup_path,
         size: metadata.len(),
         created_at: Utc::now(),
+        retained: false,
     };
 
     tracing::info!(
