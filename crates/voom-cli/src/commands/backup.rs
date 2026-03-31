@@ -26,7 +26,13 @@ fn list(root: &Path, format: OutputFormat) -> Result<()> {
     let entries = scan_vbak_files(root)?;
 
     if entries.is_empty() {
-        println!(
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!(
             "{}",
             style(format!("No .vbak files found under {}", root.display())).dim()
         );

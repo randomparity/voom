@@ -40,7 +40,9 @@ pub fn run(args: InspectArgs) -> Result<()> {
     }
 
     // Not in DB — introspect live
-    println!("{}", style("File not in database, introspecting...").dim());
+    if !args.format.is_machine() {
+        eprintln!("{}", style("File not in database, introspecting...").dim());
+    }
 
     let mut introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
     if let Some(fp) = config.ffprobe_path() {

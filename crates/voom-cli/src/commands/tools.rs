@@ -20,7 +20,13 @@ fn list(format: OutputFormat) -> Result<()> {
     tools.sort_by(|a, b| a.name.cmp(&b.name));
 
     if tools.is_empty() {
-        println!("{}", style("No external tools detected.").dim());
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!("{}", style("No external tools detected.").dim());
         return Ok(());
     }
 

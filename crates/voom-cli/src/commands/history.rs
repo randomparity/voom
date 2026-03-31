@@ -14,7 +14,13 @@ pub fn run(args: HistoryArgs) -> Result<()> {
     let entries = store.file_history(&path)?;
 
     if entries.is_empty() {
-        println!(
+        if args.format.is_machine() {
+            if matches!(args.format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!(
             "{}",
             style(format!("No history found for {}", path.display())).dim()
         );

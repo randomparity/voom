@@ -329,7 +329,7 @@ fn history(
     match format {
         OutputFormat::Table => {
             if records.is_empty() {
-                println!("No health check records found.");
+                eprintln!("No health check records found.");
                 return Ok(());
             }
             println!(

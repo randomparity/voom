@@ -24,7 +24,13 @@ pub fn run(args: ReportArgs) -> Result<()> {
         .context("failed to list files from database")?;
 
     if files.is_empty() {
-        println!(
+        if args.format.is_machine() {
+            if matches!(args.format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!(
             "{}",
             style("No files in database. Run 'voom scan' first.").yellow()
         );
@@ -109,7 +115,13 @@ fn run_issues_report(files: &[voom_domain::MediaFile], format: &OutputFormat) ->
         .collect();
 
     if files_with_issues.is_empty() {
-        println!("{}", style("No files with safeguard violations.").green());
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!("{}", style("No files with safeguard violations.").green());
         return Ok(());
     }
 
@@ -173,7 +185,13 @@ fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()
         .context("failed to query plan stats")?;
 
     if stats.is_empty() {
-        println!(
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!(
             "{}",
             style("No plan data. Run 'voom process' first.").yellow()
         );

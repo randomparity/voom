@@ -30,7 +30,7 @@ fn run_default(
     match format {
         OutputFormat::Table => {
             if records.is_empty() {
-                println!("No events found.");
+                eprintln!("No events found.");
                 return Ok(());
             }
             println!("{:<20} {:<28} SUMMARY", "TIMESTAMP", "TYPE");

@@ -115,7 +115,13 @@ fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
         .context("failed to list bad files")?;
 
     if bad_files.is_empty() {
-        println!("{}", style("No bad files recorded.").dim());
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!("{}", style("No bad files recorded.").dim());
         return Ok(());
     }
 

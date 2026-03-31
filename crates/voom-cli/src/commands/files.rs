@@ -44,7 +44,13 @@ fn list(filters: FileFilters, format: OutputFormat) -> Result<()> {
     let files = store.list_files(&filters).context("failed to list files")?;
 
     if total == 0 {
-        println!(
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!("{{\"files\":[],\"total\":0}}");
+            }
+            return Ok(());
+        }
+        eprintln!(
             "{}",
             style("No files in database. Run 'voom scan' first.").yellow()
         );
