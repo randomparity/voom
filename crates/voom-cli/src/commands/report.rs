@@ -26,7 +26,16 @@ pub fn run(args: ReportArgs) -> Result<()> {
     if files.is_empty() {
         if args.format.is_machine() {
             if matches!(args.format, OutputFormat::Json) {
-                println!("[]");
+                let empty = serde_json::json!({
+                    "total_files": 0,
+                    "total_size": 0,
+                    "containers": [],
+                    "codecs": [],
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&empty).expect("report is serializable")
+                );
             }
             return Ok(());
         }

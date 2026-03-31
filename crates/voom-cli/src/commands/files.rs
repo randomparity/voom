@@ -46,7 +46,12 @@ fn list(filters: FileFilters, format: OutputFormat) -> Result<()> {
     if total == 0 {
         if format.is_machine() {
             if matches!(format, OutputFormat::Json) {
-                println!("{{\"files\":[],\"total\":0}}");
+                let empty = serde_json::json!({"files": [], "total": 0});
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&empty)
+                        .expect("serde_json::Value serialization cannot fail")
+                );
             }
             return Ok(());
         }
