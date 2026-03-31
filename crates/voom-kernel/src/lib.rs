@@ -190,6 +190,12 @@ impl Kernel {
         ctx: &PluginContext,
     ) -> Result<()> {
         let name = plugin.name().to_string();
+        if self.registry.contains(&name) {
+            return Err(voom_domain::errors::VoomError::Plugin {
+                plugin: name,
+                message: "a plugin with this name is already registered".into(),
+            });
+        }
         let plugin_mut =
             Arc::get_mut(&mut plugin).ok_or_else(|| voom_domain::errors::VoomError::Plugin {
                 plugin: name.clone(),
@@ -486,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicate_init_and_register_rejected() {
+    fn test_duplicate_init_and_register_rejected_without_calling_init() {
         let mut kernel = Kernel::new();
         let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
 
@@ -494,8 +500,9 @@ mod tests {
             init_called: Arc::new(AtomicBool::new(false)),
             shutdown_called: Arc::new(AtomicBool::new(false)),
         });
+        let p2_init_called = Arc::new(AtomicBool::new(false));
         let p2 = Arc::new(LifecyclePlugin {
-            init_called: Arc::new(AtomicBool::new(false)),
+            init_called: p2_init_called.clone(),
             shutdown_called: Arc::new(AtomicBool::new(false)),
         });
 
@@ -504,6 +511,10 @@ mod tests {
         assert!(
             err.to_string().contains("already registered"),
             "expected 'already registered' error, got: {err}"
+        );
+        assert!(
+            !p2_init_called.load(Ordering::SeqCst),
+            "duplicate plugin must not have init() called"
         );
         assert_eq!(kernel.registry.len(), 1);
         assert_eq!(kernel.subscriber_count(), 1);
