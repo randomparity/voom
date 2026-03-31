@@ -440,14 +440,21 @@ Filters are used in `where` clauses to match tracks. They share the logical oper
 ```
 lang in [eng, jpn, und]          // language is in list
 lang == eng                       // exact language match
+lang == plugin.radarr.original_language   // compare to a dynamic field
+lang != plugin.sonarr.original_language   // not-equal with field reference
 ```
+
+The right-hand side of `lang ==` and `lang !=` can be a **field reference** (dot-separated path) instead of a literal value. At evaluation time, the field is resolved against the media file's plugin metadata. If the field does not exist, the comparison evaluates to `false`.
 
 ### Codec Filter
 
 ```
 codec in [aac, ac3, eac3]        // codec is in list
 codec == truehd                   // exact codec match
+codec == plugin.detector.codec    // compare to a dynamic field
 ```
+
+Like language filters, `codec ==` and `codec !=` also accept field references on the right-hand side.
 
 ### Channel Filter
 
@@ -541,6 +548,8 @@ Use ISO 639-2/B three-letter language codes:
 | `fre` | French |
 | `ger` | German |
 | `spa` | Spanish |
+| `zxx` | No linguistic content (music/effects) |
+| `mul` | Multiple languages |
 
 ### Codec Names
 

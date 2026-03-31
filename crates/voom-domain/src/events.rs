@@ -18,6 +18,9 @@ pub enum Event {
     /// Emitted by WASM metadata plugins. Consumed by the sqlite-store plugin
     /// to persist enriched metadata as plugin data keyed by file path.
     MetadataEnriched(MetadataEnrichedEvent),
+    /// Emitted by subtitle generator plugins when a forced subtitle file
+    /// has been written. Executors subscribe to mux the SRT into the container.
+    SubtitleGenerated(SubtitleGeneratedEvent),
     PlanCreated(PlanCreatedEvent),
     PlanExecuting(PlanExecutingEvent),
     PlanCompleted(PlanCompletedEvent),
@@ -48,6 +51,7 @@ impl Event {
     pub const FILE_INTROSPECTED: &str = "file.introspected";
     pub const FILE_INTROSPECTION_FAILED: &str = "file.introspection_failed";
     pub const METADATA_ENRICHED: &str = "metadata.enriched";
+    pub const SUBTITLE_GENERATED: &str = "subtitle.generated";
     pub const PLAN_CREATED: &str = "plan.created";
     pub const PLAN_EXECUTING: &str = "plan.executing";
     pub const PLAN_COMPLETED: &str = "plan.completed";
@@ -123,6 +127,14 @@ impl Event {
             Event::MetadataEnriched(e) => {
                 format!("path={} source={}", e.path.display(), e.source)
             }
+            Event::SubtitleGenerated(e) => {
+                format!(
+                    "path={} subtitle={} lang={}",
+                    e.path.display(),
+                    e.subtitle_path.display(),
+                    e.language
+                )
+            }
             Event::ExecutorCapabilities(e) => {
                 format!(
                     "plugin={} decoders={} encoders={} formats={} hw={}",
@@ -159,6 +171,7 @@ impl Event {
             Event::FileIntrospected(_) => Self::FILE_INTROSPECTED,
             Event::FileIntrospectionFailed(_) => Self::FILE_INTROSPECTION_FAILED,
             Event::MetadataEnriched(_) => Self::METADATA_ENRICHED,
+            Event::SubtitleGenerated(_) => Self::SUBTITLE_GENERATED,
             Event::PlanCreated(_) => Self::PLAN_CREATED,
             Event::PlanExecuting(_) => Self::PLAN_EXECUTING,
             Event::PlanCompleted(_) => Self::PLAN_COMPLETED,
@@ -344,6 +357,35 @@ impl MetadataEnrichedEvent {
             path,
             source,
             metadata,
+        }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubtitleGeneratedEvent {
+    pub path: PathBuf,
+    pub subtitle_path: PathBuf,
+    pub language: String,
+    pub forced: bool,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+impl SubtitleGeneratedEvent {
+    #[must_use]
+    pub fn new(
+        path: PathBuf,
+        subtitle_path: PathBuf,
+        language: impl Into<String>,
+        forced: bool,
+    ) -> Self {
+        Self {
+            path,
+            subtitle_path,
+            language: language.into(),
+            forced,
+            title: None,
         }
     }
 }
@@ -839,6 +881,76 @@ mod tests {
         } else {
             panic!("expected HealthStatus event");
         }
+    }
+
+    #[test]
+    fn test_subtitle_generated_event_type() {
+        let event = Event::SubtitleGenerated(SubtitleGeneratedEvent::new(
+            PathBuf::from("/media/movie.mkv"),
+            PathBuf::from("/media/movie.forced-eng.srt"),
+            "eng",
+            true,
+        ));
+        assert_eq!(event.event_type(), "subtitle.generated");
+    }
+
+    #[test]
+    fn test_subtitle_generated_json_roundtrip() {
+        let event = Event::SubtitleGenerated(SubtitleGeneratedEvent::new(
+            PathBuf::from("/media/movie.mkv"),
+            PathBuf::from("/media/movie.forced-eng.srt"),
+            "eng",
+            true,
+        ));
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.event_type(), "subtitle.generated");
+        if let Event::SubtitleGenerated(e) = deserialized {
+            assert_eq!(e.path, PathBuf::from("/media/movie.mkv"));
+            assert_eq!(
+                e.subtitle_path,
+                PathBuf::from("/media/movie.forced-eng.srt")
+            );
+            assert_eq!(e.language, "eng");
+            assert!(e.forced);
+            assert!(e.title.is_none());
+        } else {
+            panic!("expected SubtitleGenerated variant");
+        }
+    }
+
+    #[test]
+    fn test_subtitle_generated_msgpack_roundtrip() {
+        let event = Event::SubtitleGenerated(SubtitleGeneratedEvent::new(
+            PathBuf::from("/media/movie.mkv"),
+            PathBuf::from("/media/movie.forced-eng.srt"),
+            "eng",
+            true,
+        ));
+        let bytes = rmp_serde::to_vec(&event).unwrap();
+        let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(deserialized.event_type(), "subtitle.generated");
+        if let Event::SubtitleGenerated(e) = deserialized {
+            assert_eq!(e.path, PathBuf::from("/media/movie.mkv"));
+            assert_eq!(
+                e.subtitle_path,
+                PathBuf::from("/media/movie.forced-eng.srt")
+            );
+            assert_eq!(e.language, "eng");
+            assert!(e.forced);
+        } else {
+            panic!("expected SubtitleGenerated variant");
+        }
+    }
+
+    #[test]
+    fn test_subtitle_generated_missing_optional_title() {
+        let json =
+            r#"{"path":"/movie.mkv","subtitle_path":"/movie.srt","language":"eng","forced":true}"#;
+        let event: SubtitleGeneratedEvent = serde_json::from_str(json).unwrap();
+        assert!(event.title.is_none());
+        assert!(event.forced);
+        assert_eq!(event.language, "eng");
     }
 
     #[test]

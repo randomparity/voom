@@ -14,7 +14,7 @@ use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
 use voom_dsl::compiled::*;
 
 use crate::condition::{evaluate_condition, resolve_value_or_field, EvalContext};
-use crate::filter::{track_matches, tracks_for_target};
+use crate::filter::{track_matches_with_context, tracks_for_target};
 
 fn transcode_settings_from(s: &CompiledTranscodeSettings) -> TranscodeSettings {
     TranscodeSettings::default()
@@ -357,7 +357,7 @@ fn emit_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut Ph
     let mut kept = 0u32;
     for track in &tracks {
         let should_remove = match filter {
-            Some(f) => !track_matches(track, f),
+            Some(f) => !track_matches_with_context(track, f, ctx.file, ctx.eval_ctx),
             None => false, // "keep audio" with no filter keeps all
         };
         if should_remove {
@@ -390,7 +390,7 @@ fn emit_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut 
     let mut kept = 0u32;
     for track in &tracks {
         let should_remove = match filter {
-            Some(f) => track_matches(track, f),
+            Some(f) => track_matches_with_context(track, f, ctx.file, ctx.eval_ctx),
             None => true, // "remove audio" with no filter removes all
         };
         if should_remove {
@@ -634,7 +634,10 @@ fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
 
     // Check skip_if_exists
     if let Some(ref skip_filter) = synth.skip_if_exists {
-        if audio_tracks.iter().any(|t| track_matches(t, skip_filter)) {
+        if audio_tracks
+            .iter()
+            .any(|t| track_matches_with_context(t, skip_filter, ctx.file, ctx.eval_ctx))
+        {
             return;
         }
     }
@@ -643,7 +646,7 @@ fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
     let source_index = if let Some(ref source_filter) = synth.source {
         audio_tracks
             .iter()
-            .find(|t| track_matches(t, source_filter))
+            .find(|t| track_matches_with_context(t, source_filter, ctx.file, ctx.eval_ctx))
             .map(|t| t.index)
     } else {
         audio_tracks.first().map(|t| t.index)
@@ -776,6 +779,12 @@ fn emit_rules(
 
 fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), VoomError> {
     match action {
+        CompiledAction::Keep { target, filter } => {
+            emit_keep(target, filter.as_ref(), ctx);
+        }
+        CompiledAction::Remove { target, filter } => {
+            emit_remove(target, filter.as_ref(), ctx);
+        }
         CompiledAction::Skip(phase) => {
             ctx.plan.skip_reason = Some(match phase {
                 Some(p) => format!("Skipped by action (phase: {p})"),
@@ -806,7 +815,9 @@ fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), Vo
             })?;
             let tracks = tracks_for_target(ctx.file, target);
             for track in &tracks {
-                if filter_matches(track, filter) && track.language != lang {
+                if filter_matches_ctx(track, filter, ctx.file, ctx.eval_ctx)
+                    && track.language != lang
+                {
                     ctx.plan.actions.push(PlannedAction::track_op(
                         OperationType::SetLanguage,
                         track.index,
@@ -836,9 +847,14 @@ fn expand_template(template: &str, file: &MediaFile) -> String {
         .replace("{path}", &file.path.to_string_lossy())
 }
 
-fn filter_matches(track: &Track, filter: &Option<CompiledFilter>) -> bool {
+fn filter_matches_ctx(
+    track: &Track,
+    filter: &Option<CompiledFilter>,
+    file: &MediaFile,
+    eval_ctx: &EvalContext<'_>,
+) -> bool {
     match filter {
-        Some(f) => track_matches(track, f),
+        Some(f) => track_matches_with_context(track, f, file, eval_ctx),
         None => true,
     }
 }
@@ -860,7 +876,7 @@ fn emit_flag_action(
     };
     let tracks = tracks_for_target(ctx.file, target);
     for track in &tracks {
-        if filter_matches(track, filter) && !is_set_fn(track) {
+        if filter_matches_ctx(track, filter, ctx.file, ctx.eval_ctx) && !is_set_fn(track) {
             ctx.plan.actions.push(PlannedAction::track_op(
                 op,
                 track.index,
@@ -2206,6 +2222,218 @@ mod tests {
                 }
                 other => panic!("Expected Transcode params, got {other:?}"),
             }
+        }
+    }
+
+    mod field_filters {
+        use super::*;
+
+        #[test]
+        fn test_keep_with_lang_field_japanese_content() {
+            // Japanese content should keep both eng and jpn audio
+            let mut file = test_file();
+            file.plugin_metadata.insert(
+                "radarr".into(),
+                serde_json::json!({"original_language": "jpn"}),
+            );
+
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase norm {
+                        keep audio where lang == eng
+                             or lang == plugin.radarr.original_language
+                    }
+                }"#,
+            );
+            let result = evaluate(&policy, &file);
+            let removes: Vec<_> = result.plans[0]
+                .actions
+                .iter()
+                .filter(|a| a.operation == OperationType::RemoveTrack)
+                .collect();
+            // Track 3 (commentary eng) should be kept (lang==eng matches)
+            // Track 1 (eng) kept, Track 2 (jpn) kept via field ref
+            assert!(
+                removes.is_empty(),
+                "Japanese content should keep eng+jpn audio, got removes: {removes:?}"
+            );
+        }
+
+        #[test]
+        fn test_keep_with_lang_field_english_content() {
+            // English content: field resolves to "eng", keeps only eng
+            let mut file = test_file();
+            file.plugin_metadata.insert(
+                "radarr".into(),
+                serde_json::json!({"original_language": "eng"}),
+            );
+
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase norm {
+                        keep audio where lang == eng
+                             or lang == plugin.radarr.original_language
+                    }
+                }"#,
+            );
+            let result = evaluate(&policy, &file);
+            let removes: Vec<_> = result.plans[0]
+                .actions
+                .iter()
+                .filter(|a| a.operation == OperationType::RemoveTrack)
+                .collect();
+            // Track 2 (jpn) should be removed; both filter arms resolve to "eng"
+            assert_eq!(removes.len(), 1);
+            assert_eq!(removes[0].track_index, Some(2));
+        }
+
+        #[test]
+        fn test_skip_when_field_comparison() {
+            let mut file = test_file();
+            file.plugin_metadata.insert(
+                "radarr".into(),
+                serde_json::json!({"original_language": "eng"}),
+            );
+
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase norm {
+                        skip when plugin.radarr.original_language == "eng"
+                        keep audio where lang in [eng]
+                    }
+                }"#,
+            );
+            let result = evaluate(&policy, &file);
+            assert!(result.plans[0].is_skipped());
+        }
+    }
+
+    mod conditional_keep_remove {
+        use super::*;
+
+        #[test]
+        fn test_conditional_keep_removes_non_matching_tracks() {
+            let file = test_file();
+            // when condition is true (has jpn audio), keep only eng audio
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase norm {
+                        when exists(audio where lang == jpn) {
+                            keep audio where lang in [eng]
+                        }
+                    }
+                }"#,
+            );
+            let result = evaluate(&policy, &file);
+            let removes: Vec<_> = result.plans[0]
+                .actions
+                .iter()
+                .filter(|a| a.operation == OperationType::RemoveTrack)
+                .collect();
+            // Track 2 (jpn) should be removed
+            assert_eq!(removes.len(), 1);
+            assert_eq!(removes[0].track_index, Some(2));
+        }
+
+        #[test]
+        fn test_conditional_remove_removes_matching_tracks() {
+            let file = test_file();
+            // when condition is true (is multi-language), remove commentary
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase norm {
+                        when audio_is_multi_language {
+                            remove audio where commentary
+                        }
+                    }
+                }"#,
+            );
+            let result = evaluate(&policy, &file);
+            let removes: Vec<_> = result.plans[0]
+                .actions
+                .iter()
+                .filter(|a| a.operation == OperationType::RemoveTrack)
+                .collect();
+            // Track 3 (commentary) should be removed
+            assert_eq!(removes.len(), 1);
+            assert_eq!(removes[0].track_index, Some(3));
+        }
+
+        #[test]
+        fn test_conditional_keep_in_else_branch() {
+            let file = test_file();
+            // when condition is false (no french), else branch keeps eng only
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase norm {
+                        when exists(audio where lang == fre) {
+                            warn "has french"
+                        } else {
+                            keep audio where lang in [eng]
+                        }
+                    }
+                }"#,
+            );
+            let result = evaluate(&policy, &file);
+            let removes: Vec<_> = result.plans[0]
+                .actions
+                .iter()
+                .filter(|a| a.operation == OperationType::RemoveTrack)
+                .collect();
+            // Track 2 (jpn) should be removed via else branch
+            assert_eq!(removes.len(), 1);
+            assert_eq!(removes[0].track_index, Some(2));
+        }
+
+        #[test]
+        fn test_conditional_keep_skipped_when_condition_false() {
+            let file = test_file();
+            // when condition is false (no french), then branch is skipped
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase norm {
+                        when exists(audio where lang == fre) {
+                            keep audio where lang in [eng]
+                        }
+                    }
+                }"#,
+            );
+            let result = evaluate(&policy, &file);
+            // Condition is false, no then actions execute, no removes
+            assert!(
+                result.plans[0].actions.is_empty(),
+                "no actions when condition is false and no else branch"
+            );
+        }
+
+        #[test]
+        fn test_rules_block_with_keep_remove() {
+            let file = test_file();
+            let policy = test_policy(
+                r#"policy "test" {
+                    phase norm {
+                        rules first {
+                            rule "multi-lang" {
+                                when audio_is_multi_language {
+                                    keep audio where lang in [eng]
+                                    remove subtitles where commentary
+                                }
+                            }
+                        }
+                    }
+                }"#,
+            );
+            let result = evaluate(&policy, &file);
+            let removes: Vec<_> = result.plans[0]
+                .actions
+                .iter()
+                .filter(|a| a.operation == OperationType::RemoveTrack)
+                .collect();
+            // Track 2 (jpn audio) removed by keep, track 5 (commentary sub) removed
+            assert_eq!(removes.len(), 2);
+            let indices: Vec<_> = removes.iter().map(|r| r.track_index.unwrap()).collect();
+            assert!(indices.contains(&2), "jpn audio should be removed");
+            assert!(indices.contains(&5), "commentary sub should be removed");
         }
     }
 }

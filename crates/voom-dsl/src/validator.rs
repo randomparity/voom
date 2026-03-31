@@ -20,12 +20,33 @@ use std::collections::{HashMap, HashSet};
 use voom_domain::utils::{codecs, codecs::CodecType, language};
 
 use crate::ast::*;
-use crate::errors::{DslError, ValidationErrors};
+use crate::errors::{DslError, DslWarning, ValidationErrors};
 
 /// Validate a parsed AST for semantic correctness.
 /// Returns `Ok(())` if valid, or `Err(ValidationErrors)` with all errors found.
 pub fn validate(ast: &PolicyAst) -> std::result::Result<(), ValidationErrors> {
+    let (_warnings, result) = validate_collecting_warnings(ast);
+    result
+}
+
+/// Validate a parsed AST, returning both warnings and errors.
+///
+/// Warnings are non-fatal issues (e.g., unknown plugin names in field paths).
+/// Errors are fatal validation failures. The result follows the same contract
+/// as [`validate`]: `Ok(())` if no errors, `Err(ValidationErrors)` otherwise.
+pub fn validate_with_warnings(
+    ast: &PolicyAst,
+) -> (Vec<DslWarning>, std::result::Result<(), ValidationErrors>) {
+    validate_collecting_warnings(ast)
+}
+
+const KNOWN_PLUGIN_NAMES: &[&str] = &["radarr", "sonarr", "plex"];
+
+fn validate_collecting_warnings(
+    ast: &PolicyAst,
+) -> (Vec<DslWarning>, std::result::Result<(), ValidationErrors>) {
     let mut errors = Vec::new();
+    let mut warnings = Vec::new();
 
     validate_config(ast, &mut errors);
     validate_phase_names(ast, &mut errors);
@@ -34,14 +55,15 @@ pub fn validate(ast: &PolicyAst) -> std::result::Result<(), ValidationErrors> {
     validate_reachability(ast, &mut errors);
 
     for phase in &ast.phases {
-        validate_phase(phase, &mut errors);
+        validate_phase(phase, &mut errors, &mut warnings);
     }
 
-    if errors.is_empty() {
+    let result = if errors.is_empty() {
         Ok(())
     } else {
         Err(ValidationErrors { errors })
-    }
+    };
+    (warnings, result)
 }
 
 fn validate_config(ast: &PolicyAst, errors: &mut Vec<DslError>) {
@@ -269,9 +291,13 @@ fn validate_reachability(ast: &PolicyAst, errors: &mut Vec<DslError>) {
     }
 }
 
-fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>) {
+fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>, warnings: &mut Vec<DslWarning>) {
     if let Some(on_error) = &phase.on_error {
         validate_on_error(on_error, phase.span.line, phase.span.col, errors);
+    }
+
+    if let Some(skip_when) = &phase.skip_when {
+        validate_condition(skip_when, phase.span.line, phase.span.col, errors, warnings);
     }
 
     // Track keep/remove conflicts (target, has_filter)
@@ -284,6 +310,7 @@ fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>) {
             spanned_op.span.line,
             spanned_op.span.col,
             errors,
+            warnings,
         );
 
         match &spanned_op.node {
@@ -381,7 +408,13 @@ fn broad_track_category(target: &str) -> &str {
     }
 }
 
-fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut Vec<DslError>) {
+fn validate_operation(
+    op: &OperationNode,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+    warnings: &mut Vec<DslWarning>,
+) {
     match op {
         OperationNode::Container(name) => {
             if voom_domain::Container::from_extension(name) == voom_domain::Container::Other {
@@ -395,7 +428,7 @@ fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut 
         OperationNode::Keep { target, filter } | OperationNode::Remove { target, filter } => {
             validate_track_target(target, line, col, errors);
             if let Some(f) = filter {
-                validate_filter(f, line, col, errors);
+                validate_filter(f, line, col, errors, warnings);
             }
         }
         OperationNode::Transcode {
@@ -431,14 +464,14 @@ fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut 
                         }
                     }
                     SynthSetting::Source(f) | SynthSetting::SkipIfExists(f) => {
-                        validate_filter(f, line, col, errors);
+                        validate_filter(f, line, col, errors, warnings);
                     }
                     _ => {}
                 }
             }
         }
         OperationNode::When(when) => {
-            validate_when(when, line, col, errors);
+            validate_when(when, errors, warnings);
         }
         OperationNode::Rules { mode, rules } => {
             match mode.as_str() {
@@ -452,7 +485,7 @@ fn validate_operation(op: &OperationNode, line: usize, col: usize, errors: &mut 
                 }
             }
             for rule in rules {
-                validate_when(&rule.when, line, col, errors);
+                validate_when(&rule.when, errors, warnings);
             }
         }
         OperationNode::Order(items) => {
@@ -565,7 +598,72 @@ fn validate_codec(codec: &str, line: usize, col: usize, errors: &mut Vec<DslErro
     }
 }
 
-fn validate_filter(filter: &FilterNode, line: usize, col: usize, errors: &mut Vec<DslError>) {
+/// Known root segments for field access paths in filter expressions.
+const KNOWN_FIELD_ROOTS: &[&str] = &["plugin", "file", "video", "audio", "system"];
+
+fn validate_field_path(
+    path: &[String],
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+    warnings: &mut Vec<DslWarning>,
+) {
+    if path.is_empty() {
+        errors.push(DslError::validation(
+            line,
+            col,
+            "empty field path in filter".to_string(),
+        ));
+        return;
+    }
+    if !KNOWN_FIELD_ROOTS.contains(&path[0].as_str()) {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!(
+                "unknown field root \"{}\" in filter; \
+                 expected one of: {}",
+                path[0],
+                KNOWN_FIELD_ROOTS.join(", ")
+            ),
+        ));
+    }
+    if path[0] == "plugin" && path.len() >= 2 {
+        let plugin_name = &path[1];
+        if !KNOWN_PLUGIN_NAMES.contains(&plugin_name.as_str()) {
+            // Only warn when the name is close to a known plugin (likely typo).
+            // Names far from all known plugins are assumed to be WASM plugins
+            // and should not trigger a warning.
+            let mut best: Option<(&str, usize)> = None;
+            for &known in KNOWN_PLUGIN_NAMES {
+                let dist = edit_distance(plugin_name, known);
+                if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
+                    best = Some((known, dist));
+                }
+            }
+            if let Some((suggestion, _)) = best {
+                warnings.push(DslWarning::new(
+                    line,
+                    col,
+                    format!(
+                        "unknown plugin name \"{plugin_name}\" in field path; \
+                         known plugins: {}",
+                        KNOWN_PLUGIN_NAMES.join(", ")
+                    ),
+                    Some(format!("did you mean \"{suggestion}\"?")),
+                ));
+            }
+        }
+    }
+}
+
+fn validate_filter(
+    filter: &FilterNode,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+    warnings: &mut Vec<DslWarning>,
+) {
     match filter {
         FilterNode::LangIn(langs) => {
             for lang in langs {
@@ -587,6 +685,9 @@ fn validate_filter(filter: &FilterNode, line: usize, col: usize, errors: &mut Ve
                 ));
             }
         }
+        FilterNode::LangField(_, path) => {
+            validate_field_path(path, line, col, errors, warnings);
+        }
         FilterNode::CodecIn(codecs_list) => {
             for codec in codecs_list {
                 validate_codec(codec, line, col, errors);
@@ -595,9 +696,12 @@ fn validate_filter(filter: &FilterNode, line: usize, col: usize, errors: &mut Ve
         FilterNode::CodecCompare(_, codec) => {
             validate_codec(codec, line, col, errors);
         }
+        FilterNode::CodecField(_, path) => {
+            validate_field_path(path, line, col, errors, warnings);
+        }
         FilterNode::And(items) | FilterNode::Or(items) => {
             for item in items {
-                validate_filter(item, line, col, errors);
+                validate_filter(item, line, col, errors, warnings);
             }
         }
         FilterNode::TitleMatches(pattern) => {
@@ -609,7 +713,7 @@ fn validate_filter(filter: &FilterNode, line: usize, col: usize, errors: &mut Ve
                 ));
             }
         }
-        FilterNode::Not(inner) => validate_filter(inner, line, col, errors),
+        FilterNode::Not(inner) => validate_filter(inner, line, col, errors, warnings),
         _ => {}
     }
 }
@@ -952,25 +1056,94 @@ fn validate_ident_setting(
     }
 }
 
-fn validate_when(when: &WhenNode, line: usize, col: usize, errors: &mut Vec<DslError>) {
-    validate_condition(&when.condition, line, col, errors);
+fn validate_when(when: &WhenNode, errors: &mut Vec<DslError>, warnings: &mut Vec<DslWarning>) {
+    let line = when.span.line;
+    let col = when.span.col;
+    validate_condition(&when.condition, line, col, errors, warnings);
+    for action in &when.then_actions {
+        validate_action(action, line, col, errors, warnings);
+    }
+    for action in &when.else_actions {
+        validate_action(action, line, col, errors, warnings);
+    }
 }
 
-fn validate_condition(cond: &ConditionNode, line: usize, col: usize, errors: &mut Vec<DslError>) {
+fn validate_action(
+    action: &ActionNode,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+    warnings: &mut Vec<DslWarning>,
+) {
+    match action {
+        ActionNode::Keep { target, filter } | ActionNode::Remove { target, filter } => {
+            validate_track_target(target, line, col, errors);
+            if let Some(f) = filter {
+                validate_filter(f, line, col, errors, warnings);
+            }
+        }
+        ActionNode::SetDefault(track_ref) | ActionNode::SetForced(track_ref) => {
+            validate_track_target(&track_ref.target, line, col, errors);
+            if let Some(f) = &track_ref.filter {
+                validate_filter(f, line, col, errors, warnings);
+            }
+        }
+        ActionNode::SetLanguage(track_ref, val) => {
+            validate_track_target(&track_ref.target, line, col, errors);
+            if let Some(f) = &track_ref.filter {
+                validate_filter(f, line, col, errors, warnings);
+            }
+            match val {
+                ValueOrField::Value(Value::String(s)) => {
+                    if !language::is_valid_language(s) {
+                        errors.push(DslError::validation(
+                            line,
+                            col,
+                            format!("unknown language code \"{s}\" in set_language action"),
+                        ));
+                    }
+                }
+                ValueOrField::Field(path) => {
+                    validate_field_path(path, line, col, errors, warnings);
+                }
+                _ => {}
+            }
+        }
+        ActionNode::SetTag(_, val) => {
+            if let ValueOrField::Field(path) = val {
+                validate_field_path(path, line, col, errors, warnings);
+            }
+        }
+        ActionNode::Skip(_) | ActionNode::Warn(_) | ActionNode::Fail(_) => {}
+    }
+}
+
+fn validate_condition(
+    cond: &ConditionNode,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+    warnings: &mut Vec<DslWarning>,
+) {
     match cond {
         ConditionNode::Exists(query) | ConditionNode::Count(query, _, _) => {
             validate_track_target(&query.target, line, col, errors);
             if let Some(f) = &query.filter {
-                validate_filter(f, line, col, errors);
+                validate_filter(f, line, col, errors, warnings);
             }
+        }
+        ConditionNode::FieldCompare(path, _, _) | ConditionNode::FieldExists(path) => {
+            validate_field_path(path, line, col, errors, warnings);
         }
         ConditionNode::And(items) | ConditionNode::Or(items) => {
             for item in items {
-                validate_condition(item, line, col, errors);
+                validate_condition(item, line, col, errors, warnings);
             }
         }
-        ConditionNode::Not(inner) => validate_condition(inner, line, col, errors),
-        _ => {}
+        ConditionNode::Not(inner) => validate_condition(inner, line, col, errors, warnings),
+        ConditionNode::AudioIsMultiLanguage
+        | ConditionNode::IsDubbed
+        | ConditionNode::IsOriginal => {}
     }
 }
 
@@ -1578,6 +1751,180 @@ mod tests {
                 .any(|e| format!("{e}").contains("invalid max_resolution")),
             "expected invalid max_resolution error, got: {:?}",
             err.errors
+        );
+    }
+
+    #[test]
+    fn test_lang_field_valid_root() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == plugin.radarr.original_language
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_lang_field_invalid_root() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == unknown.field.path
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("unknown field root")),
+            "expected unknown field root error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_codec_field_valid() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where codec != plugin.detector.codec
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_zxx_language_valid() {
+        let input = r#"policy "test" {
+            phase norm {
+                remove audio where lang == zxx
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_mul_language_valid() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == mul
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_skip_when_unknown_field_root() {
+        let input = r#"policy "test" {
+            phase norm {
+                skip when unknown_root.field exists
+                container mkv
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("unknown field root")),
+            "expected unknown field root error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_skip_when_valid_field_path() {
+        let input = r#"policy "test" {
+            phase norm {
+                skip when plugin.radarr.year > 2020
+                container mkv
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(
+            validate(&ast).is_ok(),
+            "plugin.radarr.year should be a valid field path: {:?}",
+            validate(&ast).unwrap_err().errors
+        );
+    }
+
+    #[test]
+    fn test_plugin_name_warning_typo() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == plugin.radrr.original_language
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let (warnings, result) = validate_with_warnings(&ast);
+        assert!(result.is_ok(), "typo in plugin name should not be an error");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0]
+            .message
+            .contains("unknown plugin name \"radrr\""));
+        assert!(
+            warnings[0].suggestion.as_ref().unwrap().contains("radarr"),
+            "should suggest radarr, got: {:?}",
+            warnings[0].suggestion
+        );
+    }
+
+    #[test]
+    fn test_plugin_name_no_warning() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == plugin.radarr.original_language
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let (warnings, result) = validate_with_warnings(&ast);
+        assert!(result.is_ok());
+        assert!(
+            warnings.is_empty(),
+            "known plugin name should produce no warnings, got: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn test_plugin_name_no_warning_for_wasm_plugins() {
+        // Plugin names far from all known plugins are assumed to be WASM plugins
+        // and should not trigger a warning.
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == plugin.custom_wasm.original_language
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let (warnings, result) = validate_with_warnings(&ast);
+        assert!(result.is_ok(), "unknown plugin name should not be an error");
+        assert!(
+            warnings.is_empty(),
+            "WASM plugin names should not produce warnings, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_plugin_name_warning_for_typo() {
+        // Plugin names close to a known plugin should warn (likely typo).
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == plugin.sonar.original_language
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let (warnings, result) = validate_with_warnings(&ast);
+        assert!(result.is_ok());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0]
+            .message
+            .contains("unknown plugin name \"sonar\""));
+        assert!(
+            warnings[0].suggestion.is_some(),
+            "close name should have suggestion"
         );
     }
 }

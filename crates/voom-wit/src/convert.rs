@@ -120,6 +120,7 @@ pub fn capability_from_wit(cap_str: &str) -> Option<Capability> {
         }),
         "transcribe" => Some(Capability::Transcribe),
         "synthesize" => Some(Capability::Synthesize),
+        "generate_subtitle" => Some(Capability::GenerateSubtitle),
         "health_check" => Some(Capability::HealthCheck),
         _ => None,
     }
@@ -179,6 +180,7 @@ pub fn capability_to_wit(cap: &Capability) -> String {
         Capability::EnrichMetadata { source } => format!("enrich_metadata:{source}"),
         Capability::Transcribe => "transcribe".to_string(),
         Capability::Synthesize => "synthesize".to_string(),
+        Capability::GenerateSubtitle => "generate_subtitle".to_string(),
         Capability::HealthCheck => "health_check".to_string(),
         other => other.kind().to_string(),
     }

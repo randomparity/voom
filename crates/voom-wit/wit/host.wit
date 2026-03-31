@@ -24,6 +24,9 @@ interface host {
     /// HTTP POST request.
     http-post: func(url: string, headers: list<header>, body: list<u8>) -> result<http-response, string>;
 
+    /// Write content to a file (sandboxed to allowed paths).
+    write-file: func(path: string, content: list<u8>) -> result<_, string>;
+
     /// Log a message at the given level.
     log: func(level: log-level, message: string);
 }

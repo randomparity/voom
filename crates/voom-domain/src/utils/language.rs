@@ -68,6 +68,8 @@ static LANGUAGE_CODES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock:
         ("uk", "ukr"),
         ("ukr", "ukr"),
         ("und", "und"),
+        ("zxx", "zxx"),
+        ("mul", "mul"),
     ];
     for (key, val) in entries {
         m.insert(key, val);
@@ -107,6 +109,8 @@ static LANGUAGE_NAMES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock:
         ("vie", "Vietnamese"),
         ("ukr", "Ukrainian"),
         ("und", "Undetermined"),
+        ("zxx", "No linguistic content"),
+        ("mul", "Multiple languages"),
     ];
     for (key, val) in entries {
         m.insert(key, val);
@@ -122,6 +126,19 @@ pub fn normalize_language(code: &str) -> Option<&'static str> {
         .copied()
 }
 
+/// Convert an ISO 639-1 (2-letter) code to ISO 639-2/B (3-letter).
+///
+/// Only accepts 2-letter input codes; 3-letter codes return `None`.
+/// Whisper returns 2-letter codes; this makes the conversion intent explicit.
+pub fn from_iso639_1(code: &str) -> Option<&'static str> {
+    let lower = code.to_ascii_lowercase();
+    if lower.len() == 2 {
+        LANGUAGE_CODES.get(lower.as_str()).copied()
+    } else {
+        None
+    }
+}
+
 /// Check if a language code is valid (either ISO 639-1 or 639-2/B).
 pub fn is_valid_language(code: &str) -> bool {
     LANGUAGE_CODES.contains_key(code.to_ascii_lowercase().as_str())
@@ -131,6 +148,22 @@ pub fn is_valid_language(code: &str) -> bool {
 pub fn language_name(code: &str) -> Option<&'static str> {
     let canonical = normalize_language(code)?;
     LANGUAGE_NAMES.get(canonical).copied()
+}
+
+/// Reverse lookup: display name → canonical 3-letter code.
+static NAME_TO_CODE: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
+    LANGUAGE_NAMES
+        .iter()
+        .map(|(&code, &name)| (name.to_lowercase(), code))
+        .collect()
+});
+
+/// Look up a language code from a display name (case-insensitive).
+///
+/// Accepts names like "English", "Japanese", "French" and returns
+/// the canonical ISO 639-2/B code ("eng", "jpn", "fre").
+pub fn language_code_from_name(name: &str) -> Option<&'static str> {
+    NAME_TO_CODE.get(&name.to_lowercase()).copied()
 }
 
 /// All known canonical 3-letter language codes (cached, sorted).
@@ -188,5 +221,54 @@ mod tests {
     fn test_und() {
         assert_eq!(normalize_language("und"), Some("und"));
         assert_eq!(language_name("und"), Some("Undetermined"));
+    }
+
+    #[test]
+    fn test_zxx() {
+        assert_eq!(normalize_language("zxx"), Some("zxx"));
+        assert!(is_valid_language("zxx"));
+        assert_eq!(language_name("zxx"), Some("No linguistic content"));
+    }
+
+    #[test]
+    fn test_code_from_name() {
+        assert_eq!(language_code_from_name("English"), Some("eng"));
+        assert_eq!(language_code_from_name("japanese"), Some("jpn"));
+        assert_eq!(language_code_from_name("FRENCH"), Some("fre"));
+        assert_eq!(language_code_from_name("Unknown Language"), None);
+    }
+
+    #[test]
+    fn test_from_iso639_1_valid() {
+        assert_eq!(from_iso639_1("en"), Some("eng"));
+        assert_eq!(from_iso639_1("ja"), Some("jpn"));
+        assert_eq!(from_iso639_1("fr"), Some("fre"));
+        assert_eq!(from_iso639_1("de"), Some("ger"));
+    }
+
+    #[test]
+    fn test_from_iso639_1_rejects_3_letter() {
+        assert_eq!(from_iso639_1("eng"), None);
+        assert_eq!(from_iso639_1("jpn"), None);
+        assert_eq!(from_iso639_1("fre"), None);
+    }
+
+    #[test]
+    fn test_from_iso639_1_case_insensitive() {
+        assert_eq!(from_iso639_1("EN"), Some("eng"));
+        assert_eq!(from_iso639_1("Ja"), Some("jpn"));
+    }
+
+    #[test]
+    fn test_from_iso639_1_unknown() {
+        assert_eq!(from_iso639_1("xx"), None);
+        assert_eq!(from_iso639_1("zz"), None);
+    }
+
+    #[test]
+    fn test_mul() {
+        assert_eq!(normalize_language("mul"), Some("mul"));
+        assert!(is_valid_language("mul"));
+        assert_eq!(language_name("mul"), Some("Multiple languages"));
     }
 }

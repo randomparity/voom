@@ -139,6 +139,8 @@ pub struct WhenNode {
     pub condition: ConditionNode,
     pub then_actions: Vec<ActionNode>,
     pub else_actions: Vec<ActionNode>,
+    /// Source location of the `when` keyword for error attribution.
+    pub span: Span,
 }
 
 /// A named rule within a rules block.
@@ -177,8 +179,10 @@ pub struct TrackQueryNode {
 pub enum FilterNode {
     LangIn(Vec<String>),
     LangCompare(CompareOp, String),
+    LangField(CompareOp, Vec<String>),
     CodecIn(Vec<String>),
     CodecCompare(CompareOp, String),
+    CodecField(CompareOp, Vec<String>),
     Channels(CompareOp, f64),
     Commentary,
     Forced,
@@ -202,6 +206,14 @@ pub struct TrackRefNode {
 /// An action within a when/else block.
 #[derive(Debug, Clone, Serialize)]
 pub enum ActionNode {
+    Keep {
+        target: String,
+        filter: Option<FilterNode>,
+    },
+    Remove {
+        target: String,
+        filter: Option<FilterNode>,
+    },
     Skip(Option<String>),
     Warn(String),
     Fail(String),

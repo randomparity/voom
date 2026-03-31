@@ -28,6 +28,9 @@ pub struct PluginManifest {
     /// Allowed HTTP domains for this plugin (empty = deny all).
     #[serde(default)]
     pub allowed_domains: Vec<String>,
+    /// Allowed filesystem paths for this plugin (empty = deny all).
+    #[serde(default)]
+    pub allowed_paths: Vec<String>,
     /// Event bus priority for this plugin (lower = runs first in dispatch).
     /// Defaults to 70 if not specified in the manifest.
     #[serde(default = "default_priority")]
@@ -95,6 +98,7 @@ mod tests {
             dependencies: vec![],
             config_schema: None,
             allowed_domains: vec![],
+            allowed_paths: vec![],
             priority: 70,
             protocol_version: None,
         }
@@ -181,6 +185,7 @@ Evaluate = {}
             }],
             config_schema: None,
             allowed_domains: vec![],
+            allowed_paths: vec![],
             priority: 50,
             protocol_version: Some(1),
         };

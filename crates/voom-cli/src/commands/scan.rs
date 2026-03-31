@@ -20,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     let config = config::load_config()?;
     let app::BootstrapResult { kernel, store, .. } = app::bootstrap_kernel_with_store(&config)?;
+    let kernel = Arc::new(kernel);
 
     let path = args
         .path

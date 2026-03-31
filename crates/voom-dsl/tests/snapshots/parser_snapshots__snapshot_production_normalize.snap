@@ -1,5 +1,6 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
+assertion_line: 179
 expression: ast
 ---
 name: production-normalize
@@ -273,6 +274,11 @@ phases:
             then_actions:
               - Warn: "Japanese audio but no English subtitles in {filename}"
             else_actions: []
+            span:
+              start: 1809
+              end: 1969
+              line: 83
+              col: 5
         span:
           start: 1809
           end: 1969
@@ -288,6 +294,11 @@ phases:
                   then_actions:
                     - Warn: "Multiple audio languages in {filename}"
                   else_actions: []
+                  span:
+                    start: 2021
+                    end: 2124
+                    line: 89
+                    col: 9
         span:
           start: 1969
           end: 2131
@@ -326,6 +337,11 @@ phases:
                       - radarr
                       - title
             else_actions: []
+            span:
+              start: 2190
+              end: 2357
+              line: 98
+              col: 5
         span:
           start: 2190
           end: 2357

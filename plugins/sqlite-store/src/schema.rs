@@ -162,6 +162,19 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, priority);
 CREATE INDEX IF NOT EXISTS idx_plans_file ON plans(file_id);
 CREATE INDEX IF NOT EXISTS idx_stats_file ON processing_stats(file_id);
 CREATE INDEX IF NOT EXISTS idx_bad_files_path ON bad_files(path);
+
+CREATE TABLE IF NOT EXISTS subtitles (
+    id INTEGER PRIMARY KEY,
+    file_path TEXT NOT NULL,
+    subtitle_path TEXT NOT NULL,
+    language TEXT NOT NULL,
+    forced INTEGER NOT NULL DEFAULT 0,
+    title TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(file_path, subtitle_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_subtitles_file ON subtitles(file_path);
 "#;
 
 /// Initialize the database schema.
@@ -186,6 +199,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "discovered_files",
         "health_checks",
         "event_log",
+        "subtitles",
     ];
     let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
         assert!(KNOWN_TABLES.contains(&table), "unknown table: {table}");
@@ -267,6 +281,48 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    // Create subtitles table if missing.
+    let has_subtitles: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='subtitles'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_subtitles {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS subtitles (
+                id INTEGER PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                subtitle_path TEXT NOT NULL,
+                language TEXT NOT NULL,
+                forced INTEGER NOT NULL DEFAULT 0,
+                title TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(file_path, subtitle_path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_subtitles_file ON subtitles(file_path);",
+        )?;
+    }
+
+    // Add UNIQUE constraint on subtitles(file_path, subtitle_path) for existing
+    // databases that created the table before the constraint was added.
+    if has_subtitles {
+        let has_unique_idx: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master \
+             WHERE type='index' AND name='idx_subtitles_unique'",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_unique_idx {
+            conn.execute_batch(
+                "DELETE FROM subtitles WHERE id NOT IN (
+                    SELECT MIN(id) FROM subtitles GROUP BY file_path, subtitle_path
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_subtitles_unique \
+                    ON subtitles(file_path, subtitle_path);",
+            )?;
+        }
+    }
+
     Ok(())
 }
 
@@ -311,6 +367,7 @@ mod tests {
         assert!(tables.contains(&"discovered_files".to_string()));
         assert!(tables.contains(&"health_checks".to_string()));
         assert!(tables.contains(&"event_log".to_string()));
+        assert!(tables.contains(&"subtitles".to_string()));
     }
 
     #[test]

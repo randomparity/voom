@@ -124,6 +124,54 @@ impl HostState {
         Ok(())
     }
 
+    /// Write content to a file (sandboxed to allowed paths).
+    ///
+    /// Canonicalizes the parent directory (since the file may not exist
+    /// yet) and verifies it is within the allowed paths.
+    pub fn write_file(&self, path: &str, content: &[u8]) -> Result<(), String> {
+        if self.allowed_paths.is_empty() {
+            return Err(format!(
+                "path '{}' is not within allowed directories for plugin '{}' \
+                 (no paths configured)",
+                path, self.plugin_name
+            ));
+        }
+
+        let file_path = std::path::Path::new(path);
+
+        let parent = file_path.parent().ok_or_else(|| {
+            format!(
+                "path '{}' has no parent directory for plugin '{}'",
+                path, self.plugin_name
+            )
+        })?;
+
+        let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
+            format!(
+                "cannot resolve parent of '{}' for plugin '{}': {e}",
+                path, self.plugin_name
+            )
+        })?;
+
+        let file_name = file_path
+            .file_name()
+            .ok_or_else(|| format!("path '{}' has no filename", path))?;
+        let canonical_target = canonical_parent.join(file_name);
+
+        let allowed = self
+            .allowed_paths
+            .iter()
+            .any(|allowed_dir| canonical_target.starts_with(allowed_dir));
+        if !allowed {
+            return Err(format!(
+                "path '{}' is not within allowed directories for plugin '{}'",
+                path, self.plugin_name
+            ));
+        }
+
+        std::fs::write(file_path, content).map_err(|e| format!("failed to write '{}': {e}", path))
+    }
+
     /// Run an external tool with the given arguments.
     pub fn run_tool(
         &self,
@@ -142,16 +190,15 @@ impl HostState {
         // Security check: verify path arguments are within allowed directories.
         // Canonicalize paths to prevent traversal attacks (e.g., /allowed/../etc/passwd).
         // Also checks `--flag=/path` patterns by splitting on `=`.
-        if !self.allowed_paths.is_empty() {
-            for arg in args {
-                if looks_like_path(arg) {
-                    self.check_path_allowed(arg)?;
-                }
-                if let Some(eq_pos) = arg.find('=') {
-                    let value = &arg[eq_pos + 1..];
-                    if looks_like_path(value) {
-                        self.check_path_allowed(value)?;
-                    }
+        // When allowed_paths is empty, no paths are permitted (deny all).
+        for arg in args {
+            if looks_like_path(arg) {
+                self.check_path_allowed(arg)?;
+            }
+            if let Some(eq_pos) = arg.find('=') {
+                let value = &arg[eq_pos + 1..];
+                if looks_like_path(value) {
+                    self.check_path_allowed(value)?;
                 }
             }
         }
@@ -301,6 +348,45 @@ fn parse_response(response: ureq::Response) -> Result<HttpResponse, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::HostState;
+
+    #[test]
+    fn test_write_file_allowed_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
+        let state = HostState::new("test".into()).with_paths(vec![canonical_dir.clone()]);
+        let file_path = canonical_dir.join("output.srt");
+        let result = state.write_file(
+            &file_path.to_string_lossy(),
+            b"1\n00:00:00,000 --> 00:00:02,500\nHello\n",
+        );
+        assert!(result.is_ok());
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            "1\n00:00:00,000 --> 00:00:02,500\nHello\n"
+        );
+    }
+
+    #[test]
+    fn test_write_file_blocked_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
+        let state = HostState::new("test".into()).with_paths(vec![canonical_dir]);
+        let result = state.write_file("/etc/evil.txt", b"bad");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not within allowed"));
+    }
+
+    #[test]
+    fn test_write_file_no_paths_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = HostState::new("test".into());
+        let file_path = dir.path().join("output.txt");
+        let result = state.write_file(&file_path.to_string_lossy(), b"hello");
+        // Empty allowed_paths = deny all (matches allowed_tools semantics)
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not within allowed"));
+    }
 
     #[test]
     fn test_extract_url_host_basic() {

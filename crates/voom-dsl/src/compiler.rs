@@ -415,6 +415,10 @@ fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, Ds
             compile_compare_op(op),
             lang.clone(),
         )),
+        FilterNode::LangField(op, path) => Ok(CompiledFilter::LangField(
+            compile_compare_op(op),
+            path.clone(),
+        )),
         FilterNode::CodecCompare(op, codec) => {
             let normalized = codecs::normalize_codec(codec)
                 .map(|s| s.to_string())
@@ -424,6 +428,10 @@ fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, Ds
                 normalized,
             ))
         }
+        FilterNode::CodecField(op, path) => Ok(CompiledFilter::CodecField(
+            compile_compare_op(op),
+            path.clone(),
+        )),
         FilterNode::CodecIn(codec_list) => {
             let normalized: Vec<String> = codec_list
                 .iter()
@@ -466,6 +474,14 @@ fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, Ds
 
 fn compile_action(action: &ActionNode) -> std::result::Result<CompiledAction, DslError> {
     match action {
+        ActionNode::Keep { target, filter } => Ok(CompiledAction::Keep {
+            target: parse_track_target(target),
+            filter: filter.as_ref().map(compile_filter).transpose()?,
+        }),
+        ActionNode::Remove { target, filter } => Ok(CompiledAction::Remove {
+            target: parse_track_target(target),
+            filter: filter.as_ref().map(compile_filter).transpose()?,
+        }),
         ActionNode::Skip(phase) => Ok(CompiledAction::Skip(phase.clone())),
         ActionNode::Warn(msg) => Ok(CompiledAction::Warn(msg.clone())),
         ActionNode::Fail(msg) => Ok(CompiledAction::Fail(msg.clone())),
@@ -895,6 +911,56 @@ mod tests {
     }
 
     #[test]
+    fn test_compile_lang_field_filter() {
+        let policy = compile(
+            r#"policy "test" {
+            phase norm {
+                keep audio where lang == plugin.radarr.original_language
+            }
+        }"#,
+        )
+        .unwrap();
+        match &policy.phases[0].operations[0] {
+            CompiledOperation::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                CompiledFilter::LangField(CompiledCompareOp::Eq, path) => {
+                    assert_eq!(path, &["plugin", "radarr", "original_language"]);
+                }
+                other => panic!("expected LangField, got {other:?}"),
+            },
+            other => panic!("expected Keep, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compile_codec_field_filter() {
+        let policy = compile(
+            r#"policy "test" {
+            phase norm {
+                keep audio where codec != plugin.detector.codec
+            }
+        }"#,
+        )
+        .unwrap();
+        match &policy.phases[0].operations[0] {
+            CompiledOperation::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                CompiledFilter::CodecField(CompiledCompareOp::Ne, path) => {
+                    assert_eq!(path, &["plugin", "detector", "codec"]);
+                }
+                other => panic!("expected CodecField, got {other:?}"),
+            },
+            other => panic!("expected Keep, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compile_english_optimized_policy() {
+        let input = include_str!("../../../docs/examples/english-optimized.voom");
+        let policy = compile(input).unwrap();
+        assert_eq!(policy.name, "english-optimized");
+        assert_eq!(policy.phases.len(), 11);
+    }
+
+    #[test]
     fn test_compile_delete_tag() {
         let policy = compile(
             r#"policy "test" {
@@ -907,6 +973,63 @@ mod tests {
         match &policy.phases[0].operations[0] {
             CompiledOperation::DeleteTag(tag) => assert_eq!(tag, "encoder"),
             other => panic!("expected DeleteTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compile_keep_in_when_block() {
+        let policy = compile(
+            r#"policy "test" {
+            phase validate {
+                when exists(audio where lang == jpn) {
+                    keep audio where lang in [eng, jpn]
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+        match &policy.phases[0].operations[0] {
+            CompiledOperation::Conditional(cond) => {
+                assert_eq!(cond.then_actions.len(), 1);
+                match &cond.then_actions[0] {
+                    CompiledAction::Keep { target, filter } => {
+                        assert_eq!(*target, TrackTarget::Audio);
+                        assert!(filter.is_some());
+                    }
+                    other => panic!("expected Keep action, got {other:?}"),
+                }
+            }
+            other => panic!("expected Conditional, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compile_remove_in_when_block() {
+        let policy = compile(
+            r#"policy "test" {
+            phase validate {
+                when is_dubbed {
+                    remove audio where commentary
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+        match &policy.phases[0].operations[0] {
+            CompiledOperation::Conditional(cond) => {
+                assert_eq!(cond.then_actions.len(), 1);
+                match &cond.then_actions[0] {
+                    CompiledAction::Remove { target, filter } => {
+                        assert_eq!(*target, TrackTarget::Audio);
+                        assert!(matches!(
+                            filter.as_ref().unwrap(),
+                            CompiledFilter::Commentary
+                        ));
+                    }
+                    other => panic!("expected Remove action, got {other:?}"),
+                }
+            }
+            other => panic!("expected Conditional, got {other:?}"),
         }
     }
 }

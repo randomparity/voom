@@ -31,8 +31,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, Event, HostFunctions, HttpResponse,
-    OnEventResult, PluginInfoData,
+    deserialize_event, language_code_from_name, load_plugin_config, serialize_event, Event,
+    HostFunctions, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -77,7 +77,12 @@ pub fn on_event(
     let config: RadarrConfig = load_plugin_config(|key| host.get_plugin_data(key))?;
     let movie = lookup_movie(host, &config, &file.path.to_string_lossy())?;
 
-    let metadata = serde_json::json!({
+    let original_language = movie
+        .original_language
+        .as_ref()
+        .and_then(|lang| language_code_from_name(&lang.name));
+
+    let mut metadata = serde_json::json!({
         "source": "radarr",
         "radarr_id": movie.id,
         "title": movie.title,
@@ -87,24 +92,23 @@ pub fn on_event(
         "quality_profile": movie.quality_profile,
         "monitored": movie.monitored,
     });
+    if let Some(lang) = original_language {
+        metadata["original_language"] = serde_json::Value::String(lang.to_string());
+    }
 
     let enriched_event = Event::MetadataEnriched(
-        voom_plugin_sdk::MetadataEnrichedEvent {
-            path: file.path.clone(),
-            source: "radarr".to_string(),
-            metadata,
-        },
+        MetadataEnrichedEvent::new(file.path.clone(), "radarr".to_string(), metadata),
     );
 
     let produced_payload = serialize_event(&enriched_event).map_err(|e| {
         host.log("error", &format!("failed to serialize event: {e}"));
     }).ok()?;
 
-    Some(OnEventResult {
-        plugin_name: "radarr-metadata".to_string(),
-        produced_events: vec![(enriched_event.event_type().to_string(), produced_payload)],
-        data: None,
-    })
+    Some(OnEventResult::new(
+        "radarr-metadata",
+        vec![(enriched_event.event_type().to_string(), produced_payload)],
+        None,
+    ))
 }
 
 // --- Radarr data types ---
@@ -129,6 +133,15 @@ pub struct RadarrMovie {
     pub quality_profile: Option<String>,
     pub monitored: bool,
     pub path: String,
+    #[serde(default)]
+    pub original_language: Option<RadarrLanguage>,
+}
+
+/// Language record from the Radarr API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RadarrLanguage {
+    pub name: String,
 }
 
 // --- Internal helpers ---
@@ -188,6 +201,9 @@ mod tests {
                     quality_profile: Some("HD-1080p".to_string()),
                     monitored: true,
                     path: "/media/movies/Blade Runner 2049 (2017)".to_string(),
+                    original_language: Some(RadarrLanguage {
+                        name: "English".to_string(),
+                    }),
                 }],
             }
         }
@@ -249,7 +265,7 @@ mod tests {
             "/media/movies/Blade Runner 2049 (2017)/Blade.Runner.2049.2017.1080p.mkv",
         );
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::FileIntrospectedEvent { file },
+            FileIntrospectedEvent::new(file),
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -267,6 +283,7 @@ mod tests {
                 assert_eq!(e.metadata["year"], 2017);
                 assert_eq!(e.metadata["radarr_id"], 42);
                 assert_eq!(e.metadata["tmdb_id"], 335984);
+                assert_eq!(e.metadata["original_language"], "eng");
             }
             _ => panic!("expected MetadataEnriched"),
         }
@@ -277,7 +294,7 @@ mod tests {
         let host = MockHost::new();
         let file = make_test_file("/media/movies/Unknown Movie/file.mkv");
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::FileIntrospectedEvent { file },
+            FileIntrospectedEvent::new(file),
         );
         let payload = serialize_event(&event).unwrap();
 
@@ -290,7 +307,7 @@ mod tests {
         let host = MockHost::without_config();
         let file = make_test_file("/media/movies/test.mkv");
         let event = Event::FileIntrospected(
-            voom_plugin_sdk::FileIntrospectedEvent { file },
+            FileIntrospectedEvent::new(file),
         );
         let payload = serialize_event(&event).unwrap();
 

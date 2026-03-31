@@ -461,8 +461,10 @@ pub enum CompiledCompareOp {
 pub enum CompiledFilter {
     LangIn(Vec<String>),
     LangCompare(CompiledCompareOp, String),
+    LangField(CompiledCompareOp, Vec<String>),
     CodecIn(Vec<String>),
     CodecCompare(CompiledCompareOp, String),
+    CodecField(CompiledCompareOp, Vec<String>),
     Channels(CompiledCompareOp, f64),
     Commentary,
     Forced,
@@ -478,6 +480,14 @@ pub enum CompiledFilter {
 /// A compiled action within a conditional block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CompiledAction {
+    Keep {
+        target: TrackTarget,
+        filter: Option<CompiledFilter>,
+    },
+    Remove {
+        target: TrackTarget,
+        filter: Option<CompiledFilter>,
+    },
     Skip(Option<String>),
     Warn(String),
     Fail(String),

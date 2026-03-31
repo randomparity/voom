@@ -1,5 +1,6 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
+assertion_line: 214
 expression: ast
 ---
 name: when-else
@@ -18,6 +19,11 @@ phases:
               - Warn: File is dubbed
             else_actions:
               - Warn: File is not dubbed
+            span:
+              start: 58
+              end: 189
+              line: 3
+              col: 13
         span:
           start: 58
           end: 189

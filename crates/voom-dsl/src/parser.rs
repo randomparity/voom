@@ -326,7 +326,8 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
     })
 }
 
-fn build_keep_remove(pair: Pair<'_, Rule>, is_keep: bool) -> Result<OperationNode> {
+/// Extract the target and optional filter from a keep_op or remove_op pair.
+fn build_keep_remove_parts(pair: Pair<'_, Rule>) -> Result<(String, Option<FilterNode>)> {
     let mut inner = pair.into_inner();
     let target = inner.next().unwrap().as_str().to_string();
     let filter = if let Some(where_pair) = inner.next() {
@@ -335,7 +336,11 @@ fn build_keep_remove(pair: Pair<'_, Rule>, is_keep: bool) -> Result<OperationNod
     } else {
         None
     };
+    Ok((target, filter))
+}
 
+fn build_keep_remove(pair: Pair<'_, Rule>, is_keep: bool) -> Result<OperationNode> {
+    let (target, filter) = build_keep_remove_parts(pair)?;
     if is_keep {
         Ok(OperationNode::Keep { target, filter })
     } else {
@@ -485,6 +490,8 @@ fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {
 }
 
 fn build_when(pair: Pair<'_, Rule>) -> Result<WhenNode> {
+    let when_span = pair.as_span();
+    let (when_line, when_col) = when_span.start_pos().line_col();
     let mut inner = pair.into_inner();
     let cond_pair = inner.next().unwrap();
     let condition = build_condition(cond_pair)?;
@@ -518,6 +525,7 @@ fn build_when(pair: Pair<'_, Rule>) -> Result<WhenNode> {
         condition,
         then_actions,
         else_actions,
+        span: Span::new(when_span.start(), when_span.end(), when_line, when_col),
     })
 }
 
@@ -720,10 +728,11 @@ fn build_filter_not(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
     }
 }
 
-/// Result of parsing a `lang`/`codec` filter atom: either an `in` list or a comparison.
+/// Result of parsing a `lang`/`codec` filter atom.
 enum ListOrCompare {
     InList(Vec<String>),
     Compare(CompareOp, String),
+    Field(CompareOp, Vec<String>),
 }
 
 /// Shared logic for `lang` and `codec` filter atoms, which have identical grammar structure:
@@ -739,20 +748,42 @@ fn build_list_or_compare_filter(
     }
     let op = build_compare_op(next);
     let val = inner.next().unwrap();
-    let val_str = match val.as_rule() {
-        Rule::value => val.into_inner().next().unwrap().as_str().to_string(),
-        _ => val.as_str().to_string(),
-    };
-    match op {
-        CompareOp::Eq | CompareOp::In => Ok(ListOrCompare::InList(vec![val_str])),
-        CompareOp::Ne => Ok(ListOrCompare::Compare(CompareOp::Ne, val_str)),
-        _ => {
-            let (line, col) = span.start_pos().line_col();
-            Err(DslError::build(
-                line,
-                col,
-                format!("operator {op:?} is not valid for {kind} comparisons; use == or !="),
-            ))
+    // Check if the RHS is a field_access (e.g., plugin.radarr.original_language)
+    if val.as_rule() == Rule::field_access {
+        let fields = build_field_access(&val);
+        match op {
+            CompareOp::Eq | CompareOp::Ne => Ok(ListOrCompare::Field(op, fields)),
+            _ => {
+                let (line, col) = span.start_pos().line_col();
+                Err(DslError::build(
+                    line,
+                    col,
+                    format!(
+                        "operator {op:?} is not valid for {kind} \
+                         field comparisons; use == or !="
+                    ),
+                ))
+            }
+        }
+    } else {
+        let val_str = match val.as_rule() {
+            Rule::value => val.into_inner().next().unwrap().as_str().to_string(),
+            _ => val.as_str().to_string(),
+        };
+        match op {
+            CompareOp::Eq | CompareOp::In => Ok(ListOrCompare::InList(vec![val_str])),
+            CompareOp::Ne => Ok(ListOrCompare::Compare(CompareOp::Ne, val_str)),
+            _ => {
+                let (line, col) = span.start_pos().line_col();
+                Err(DslError::build(
+                    line,
+                    col,
+                    format!(
+                        "operator {op:?} is not valid for {kind} \
+                         comparisons; use == or !="
+                    ),
+                ))
+            }
         }
     }
 }
@@ -770,12 +801,14 @@ fn build_filter_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
             return match build_list_or_compare_filter(&mut inner, span, "lang")? {
                 ListOrCompare::InList(v) => Ok(FilterNode::LangIn(v)),
                 ListOrCompare::Compare(op, v) => Ok(FilterNode::LangCompare(op, v)),
+                ListOrCompare::Field(op, path) => Ok(FilterNode::LangField(op, path)),
             };
         }
         "codec" => {
             return match build_list_or_compare_filter(&mut inner, span, "codec")? {
                 ListOrCompare::InList(v) => Ok(FilterNode::CodecIn(v)),
                 ListOrCompare::Compare(op, v) => Ok(FilterNode::CodecCompare(op, v)),
+                ListOrCompare::Field(op, path) => Ok(FilterNode::CodecField(op, path)),
             };
         }
         "channels" => {
@@ -825,6 +858,23 @@ fn build_action(pair: Pair<'_, Rule>) -> Result<ActionNode> {
     let text = pair.as_str().trim();
     let span = pair.as_span();
     let mut inner = pair.into_inner();
+
+    // Check if the first child is a keep_op or remove_op rule
+    if let Some(first) = inner.peek() {
+        match first.as_rule() {
+            Rule::keep_op => {
+                let child = inner.next().unwrap();
+                let (target, filter) = build_keep_remove_parts(child)?;
+                return Ok(ActionNode::Keep { target, filter });
+            }
+            Rule::remove_op => {
+                let child = inner.next().unwrap();
+                let (target, filter) = build_keep_remove_parts(child)?;
+                return Ok(ActionNode::Remove { target, filter });
+            }
+            _ => {}
+        }
+    }
 
     // pest silently consumes keyword alternations, so we dispatch on the
     // leading keyword extracted from the raw text.
@@ -1350,6 +1400,85 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_lang_field_access() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == plugin.radarr.original_language
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                FilterNode::LangField(CompareOp::Eq, path) => {
+                    assert_eq!(path, &["plugin", "radarr", "original_language"]);
+                }
+                other => panic!("expected LangField, got {other:?}"),
+            },
+            _ => panic!("expected Keep operation"),
+        }
+    }
+
+    #[test]
+    fn test_parse_lang_field_ne() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang != plugin.radarr.original_language
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                FilterNode::LangField(CompareOp::Ne, path) => {
+                    assert_eq!(path, &["plugin", "radarr", "original_language"]);
+                }
+                other => panic!("expected LangField(Ne), got {other:?}"),
+            },
+            _ => panic!("expected Keep operation"),
+        }
+    }
+
+    #[test]
+    fn test_parse_codec_field_access() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where codec == plugin.detector.codec
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                FilterNode::CodecField(CompareOp::Eq, path) => {
+                    assert_eq!(path, &["plugin", "detector", "codec"]);
+                }
+                other => panic!("expected CodecField, got {other:?}"),
+            },
+            _ => panic!("expected Keep operation"),
+        }
+    }
+
+    #[test]
+    fn test_parse_lang_field_in_or_filter() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == eng
+                     or lang == plugin.radarr.original_language
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::Keep { filter, .. } => match filter.as_ref().unwrap() {
+                FilterNode::Or(items) => {
+                    assert_eq!(items.len(), 2);
+                    assert!(matches!(&items[0], FilterNode::LangIn(_)));
+                    assert!(matches!(&items[1], FilterNode::LangField(..)));
+                }
+                other => panic!("expected Or filter, got {other:?}"),
+            },
+            _ => panic!("expected Keep operation"),
+        }
+    }
+
+    #[test]
     fn test_parse_combined_container_metadata() {
         let input = r#"policy "test" {
             phase clean {
@@ -1377,5 +1506,109 @@ mod tests {
             &ast.phases[0].operations[3].node,
             OperationNode::DeleteTag(_)
         ));
+    }
+
+    #[test]
+    fn test_parse_keep_in_when_block() {
+        let input = r#"policy "test" {
+            phase validate {
+                when exists(audio where lang == jpn) {
+                    keep audio where lang in [eng, jpn]
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::When(when) => {
+                assert_eq!(when.then_actions.len(), 1);
+                match &when.then_actions[0] {
+                    ActionNode::Keep { target, filter } => {
+                        assert_eq!(target, "audio");
+                        assert!(filter.is_some());
+                        match filter.as_ref().unwrap() {
+                            FilterNode::LangIn(langs) => {
+                                assert_eq!(langs, &["eng", "jpn"]);
+                            }
+                            other => panic!("expected LangIn, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Keep action, got {other:?}"),
+                }
+            }
+            _ => panic!("expected When"),
+        }
+    }
+
+    #[test]
+    fn test_parse_remove_in_when_block() {
+        let input = r#"policy "test" {
+            phase validate {
+                when is_dubbed {
+                    remove audio where commentary
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::When(when) => {
+                assert_eq!(when.then_actions.len(), 1);
+                match &when.then_actions[0] {
+                    ActionNode::Remove { target, filter } => {
+                        assert_eq!(target, "audio");
+                        assert!(matches!(filter.as_ref().unwrap(), FilterNode::Commentary));
+                    }
+                    other => panic!("expected Remove action, got {other:?}"),
+                }
+            }
+            _ => panic!("expected When"),
+        }
+    }
+
+    #[test]
+    fn test_parse_keep_remove_in_rules_block() {
+        let input = r#"policy "test" {
+            phase validate {
+                rules first {
+                    rule "dubbed" {
+                        when is_dubbed {
+                            keep audio where lang in [eng]
+                            remove audio where commentary
+                        }
+                    }
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::Rules { rules, .. } => {
+                let actions = &rules[0].when.then_actions;
+                assert_eq!(actions.len(), 2);
+                assert!(matches!(&actions[0], ActionNode::Keep { .. }));
+                assert!(matches!(&actions[1], ActionNode::Remove { .. }));
+            }
+            _ => panic!("expected Rules"),
+        }
+    }
+
+    #[test]
+    fn test_parse_keep_no_filter_in_action() {
+        let input = r#"policy "test" {
+            phase validate {
+                when is_dubbed {
+                    keep audio
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        match &ast.phases[0].operations[0].node {
+            OperationNode::When(when) => match &when.then_actions[0] {
+                ActionNode::Keep { target, filter } => {
+                    assert_eq!(target, "audio");
+                    assert!(filter.is_none());
+                }
+                other => panic!("expected Keep action, got {other:?}"),
+            },
+            _ => panic!("expected When"),
+        }
     }
 }

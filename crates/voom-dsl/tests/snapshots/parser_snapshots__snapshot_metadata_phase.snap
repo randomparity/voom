@@ -1,5 +1,6 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
+assertion_line: 172
 expression: ast
 ---
 name: metadata
@@ -33,6 +34,11 @@ phases:
                       - radarr
                       - title
             else_actions: []
+            span:
+              start: 57
+              end: 258
+              line: 3
+              col: 13
         span:
           start: 57
           end: 258

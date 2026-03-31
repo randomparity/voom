@@ -152,7 +152,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]))
     };
 
-    let items = build_work_items(&events);
+    let items = build_work_items(&events, args.priority_by_date);
     let keep_backups = compiled.config.keep_backups;
     let phase_order = compiled.phase_order.clone();
     let compiled = Arc::new(compiled);
@@ -323,16 +323,55 @@ fn log_plugin_errors(results: &[voom_domain::events::EventResult]) {
 
 use crate::introspect::DiscoveredFilePayload;
 
+/// Compute job priority based on file modification date.
+///
+/// More recently modified files get higher priority (lower number).
+/// - Modified within 7 days: 10
+/// - Modified within 30 days: 50
+/// - Modified within 1 year: 100
+/// - Older or metadata unavailable: 200
+fn compute_file_date_priority(path: &std::path::Path) -> i32 {
+    let metadata = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return 200,
+    };
+    let modified = match metadata.modified() {
+        Ok(t) => t,
+        Err(_) => return 200,
+    };
+    let elapsed = match std::time::SystemTime::now().duration_since(modified) {
+        Ok(d) => d,
+        Err(_) => return 200,
+    };
+    const SECS_PER_DAY: u64 = 86_400;
+    let days = elapsed.as_secs() / SECS_PER_DAY;
+    if days < 7 {
+        10
+    } else if days < 30 {
+        50
+    } else if days < 365 {
+        100
+    } else {
+        200
+    }
+}
+
 /// Build work items from discovery events for the worker pool.
 fn build_work_items(
     events: &[voom_domain::events::FileDiscoveredEvent],
+    priority_by_date: bool,
 ) -> Vec<voom_job_manager::worker::WorkItem<DiscoveredFilePayload>> {
     events
         .iter()
         .map(|evt| {
+            let priority = if priority_by_date {
+                compute_file_date_priority(&evt.path)
+            } else {
+                100
+            };
             voom_job_manager::worker::WorkItem::new(
                 voom_domain::job::JobType::Process,
-                100,
+                priority,
                 Some(DiscoveredFilePayload {
                     path: evt.path.to_string_lossy().into_owned(),
                     size: evt.size,
@@ -463,6 +502,8 @@ async fn process_single_file(
         }
     }
 
+    apply_detected_languages(&mut file);
+
     let result = orchestrate_plans(ctx.compiled, &file, ctx.capabilities);
 
     // Collect safeguard violations across all plans and tag the file
@@ -547,6 +588,70 @@ async fn process_single_file(
         })))
     } else {
         execute_plans(&file, &result, ctx, needs_exec).await
+    }
+}
+
+const AUDIO_LANGUAGE_DETECTOR_PLUGIN: &str = "audio-language-detector";
+
+/// Apply audio language detection results to track language fields.
+///
+/// If the `audio-language-detector` plugin has produced metadata, update
+/// each track's language to match the detected value. This runs before
+/// policy evaluation so that policies can filter on detected languages
+/// (e.g. `remove audio where lang == zxx` for silent tracks).
+fn apply_detected_languages(file: &mut voom_domain::media::MediaFile) {
+    let metadata = match file.plugin_metadata.get(AUDIO_LANGUAGE_DETECTOR_PLUGIN) {
+        Some(m) => m,
+        None => return,
+    };
+
+    let detections = match metadata.get("detections").and_then(|d| d.as_array()) {
+        Some(d) => d,
+        None => return,
+    };
+
+    for det in detections {
+        let track_index = match det.get("track_index").and_then(|v| v.as_u64()) {
+            Some(i) => i as u32,
+            None => continue,
+        };
+        let detected = match det.get("detected_language").and_then(|v| v.as_str()) {
+            Some(l) => l,
+            None => continue,
+        };
+
+        let Some(track) = file.tracks.iter_mut().find(|t| t.index == track_index) else {
+            continue;
+        };
+
+        let normalized = match voom_domain::utils::language::normalize_language(detected) {
+            Some(code) => code,
+            None => {
+                tracing::warn!(
+                    path = %file.path.display(),
+                    track = track_index,
+                    detected = %detected,
+                    "unrecognized language code from detector, skipping"
+                );
+                continue;
+            }
+        };
+
+        if track.language == normalized {
+            continue;
+        }
+
+        if track.language != "und" {
+            tracing::warn!(
+                path = %file.path.display(),
+                track = track_index,
+                existing = %track.language,
+                detected = %normalized,
+                "overwriting track language with detected value"
+            );
+        }
+
+        track.language = normalized.to_string();
     }
 }
 
@@ -971,11 +1076,10 @@ fn print_phase_breakdown(stats: &HashMap<String, PhaseStats>, phase_order: &[Str
 
 /// Reporter that dispatches job lifecycle events through the kernel event bus.
 ///
-/// `kernel.dispatch()` is synchronous and runs in-memory (no I/O), so calling
-/// it from the tokio worker pool's async tasks does not block the executor for
-/// a meaningful duration.  Wrapping in `spawn_blocking` would add overhead
-/// without benefit since the event bus holds a `parking_lot::RwLock` read lock
-/// only for the duration of handler collection (microseconds).
+/// `kernel.dispatch()` is synchronous. While most handlers are fast in-memory
+/// operations, `sqlite-store` performs a blocking SQLite write on every dispatch.
+/// The overhead is acceptable for job lifecycle events (low frequency), but this
+/// should be revisited if dispatch latency becomes a concern.
 struct EventBusReporter {
     kernel: Arc<voom_kernel::Kernel>,
 }
@@ -1267,11 +1371,138 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_file_date_priority_recent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent.mkv");
+        std::fs::write(&path, "test").unwrap();
+        // Just created -> within 7 days -> priority 10
+        assert_eq!(compute_file_date_priority(&path), 10);
+    }
+
+    #[test]
+    fn test_compute_file_date_priority_nonexistent() {
+        let path = std::path::PathBuf::from("/nonexistent/file.mkv");
+        assert_eq!(compute_file_date_priority(&path), 200);
+    }
+
+    #[test]
     fn test_event_bus_reporter_batch_methods_are_noop() {
         let kernel = Arc::new(voom_kernel::Kernel::new());
         let reporter = EventBusReporter::new(kernel);
         // These should not panic
         reporter.on_batch_start(10);
         reporter.on_batch_complete(5, 0);
+    }
+
+    // --- apply_detected_languages tests ---
+
+    fn make_file_with_audio_tracks() -> MediaFile {
+        use voom_domain::media::{Track, TrackType};
+        let mut file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
+        let mut t0 = Track::new(0, TrackType::AudioMain, "aac".into());
+        t0.language = "und".to_string();
+        let mut t1 = Track::new(1, TrackType::AudioAlternate, "ac3".into());
+        t1.language = "fre".to_string();
+        file.tracks = vec![t0, t1];
+        file
+    }
+
+    #[test]
+    fn test_apply_detected_und_to_eng() {
+        let mut file = make_file_with_audio_tracks();
+        file.plugin_metadata.insert(
+            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
+            serde_json::json!({
+                "detections": [{
+                    "track_index": 0,
+                    "detected_language": "eng",
+                    "confidence": 0.95,
+                }]
+            }),
+        );
+        apply_detected_languages(&mut file);
+        assert_eq!(file.tracks[0].language, "eng");
+        // Track 1 unchanged (no detection for it).
+        assert_eq!(file.tracks[1].language, "fre");
+    }
+
+    #[test]
+    fn test_apply_detected_overwrite_mismatch() {
+        let mut file = make_file_with_audio_tracks();
+        file.plugin_metadata.insert(
+            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
+            serde_json::json!({
+                "detections": [{
+                    "track_index": 1,
+                    "detected_language": "eng",
+                    "confidence": 0.92,
+                }]
+            }),
+        );
+        apply_detected_languages(&mut file);
+        // Track 1 was "fre" but detection says "eng" — overwritten.
+        assert_eq!(file.tracks[1].language, "eng");
+    }
+
+    #[test]
+    fn test_apply_detected_zxx() {
+        let mut file = make_file_with_audio_tracks();
+        file.plugin_metadata.insert(
+            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
+            serde_json::json!({
+                "detections": [{
+                    "track_index": 0,
+                    "detected_language": "zxx",
+                    "confidence": 0.98,
+                }]
+            }),
+        );
+        apply_detected_languages(&mut file);
+        assert_eq!(file.tracks[0].language, "zxx");
+    }
+
+    #[test]
+    fn test_apply_detected_mul() {
+        let mut file = make_file_with_audio_tracks();
+        file.plugin_metadata.insert(
+            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
+            serde_json::json!({
+                "detections": [{
+                    "track_index": 0,
+                    "detected_language": "mul",
+                    "confidence": 0.6,
+                }]
+            }),
+        );
+        apply_detected_languages(&mut file);
+        assert_eq!(file.tracks[0].language, "mul");
+    }
+
+    #[test]
+    fn test_apply_detected_no_metadata() {
+        let mut file = make_file_with_audio_tracks();
+        apply_detected_languages(&mut file);
+        // No crash, tracks unchanged.
+        assert_eq!(file.tracks[0].language, "und");
+        assert_eq!(file.tracks[1].language, "fre");
+    }
+
+    #[test]
+    fn test_apply_detected_nonexistent_track() {
+        let mut file = make_file_with_audio_tracks();
+        file.plugin_metadata.insert(
+            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
+            serde_json::json!({
+                "detections": [{
+                    "track_index": 99,
+                    "detected_language": "eng",
+                    "confidence": 0.95,
+                }]
+            }),
+        );
+        // No panic.
+        apply_detected_languages(&mut file);
+        assert_eq!(file.tracks[0].language, "und");
+        assert_eq!(file.tracks[1].language, "fre");
     }
 }

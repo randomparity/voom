@@ -380,6 +380,12 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
             out.push(' ');
             out.push_str(lang);
         }
+        FilterNode::LangField(op, path) => {
+            out.push_str("lang ");
+            format_compare_op(op, out);
+            out.push(' ');
+            out.push_str(&path.join("."));
+        }
         FilterNode::CodecIn(codecs) => {
             let _ = write!(out, "codec in [{}]", codecs.join(", "));
         }
@@ -388,6 +394,12 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
             format_compare_op(op, out);
             out.push(' ');
             out.push_str(codec);
+        }
+        FilterNode::CodecField(op, path) => {
+            out.push_str("codec ");
+            format_compare_op(op, out);
+            out.push(' ');
+            out.push_str(&path.join("."));
         }
         FilterNode::Channels(op, val) => {
             out.push_str("channels ");
@@ -445,6 +457,22 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
 fn format_action(action: &ActionNode, out: &mut String, level: usize) {
     indent(out, level);
     match action {
+        ActionNode::Keep { target, filter } => {
+            let _ = write!(out, "keep {target}");
+            if let Some(f) = filter {
+                out.push_str(" where ");
+                format_filter(f, out);
+            }
+            out.push('\n');
+        }
+        ActionNode::Remove { target, filter } => {
+            let _ = write!(out, "remove {target}");
+            if let Some(f) = filter {
+                out.push_str(" where ");
+                format_filter(f, out);
+            }
+            out.push('\n');
+        }
         ActionNode::Skip(phase) => {
             out.push_str("skip");
             if let Some(p) = phase {
@@ -852,5 +880,76 @@ mod tests {
             ast1.phases[0].operations.len(),
             ast2.phases[0].operations.len()
         );
+    }
+
+    #[test]
+    fn test_roundtrip_field_filter() {
+        let input = r#"policy "test" {
+            phase norm {
+                keep audio where lang == plugin.radarr.original_language
+            }
+        }"#;
+        let ast1 = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast1);
+        assert!(formatted.contains("plugin.radarr.original_language"));
+        let ast2 = parse_policy(&formatted).unwrap();
+        assert_eq!(
+            ast1.phases[0].operations.len(),
+            ast2.phases[0].operations.len()
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_keep_in_when() {
+        let input = r#"policy "test" {
+            phase validate {
+                when exists(audio where lang == jpn) {
+                    keep audio where lang in [eng, jpn]
+                }
+            }
+        }"#;
+        let ast1 = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast1);
+        assert!(formatted.contains("keep audio where lang in [eng, jpn]"));
+        let ast2 = parse_policy(&formatted).unwrap();
+        match (
+            &ast1.phases[0].operations[0].node,
+            &ast2.phases[0].operations[0].node,
+        ) {
+            (OperationNode::When(w1), OperationNode::When(w2)) => {
+                assert_eq!(w1.then_actions.len(), w2.then_actions.len());
+                assert!(matches!(&w2.then_actions[0], ActionNode::Keep { .. }));
+            }
+            _ => panic!("expected When"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_remove_in_when() {
+        let input = r#"policy "test" {
+            phase validate {
+                when is_dubbed {
+                    remove audio where commentary
+                } else {
+                    warn "not dubbed"
+                }
+            }
+        }"#;
+        let ast1 = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast1);
+        assert!(formatted.contains("remove audio where commentary"));
+        assert!(formatted.contains("else"));
+        let ast2 = parse_policy(&formatted).unwrap();
+        match (
+            &ast1.phases[0].operations[0].node,
+            &ast2.phases[0].operations[0].node,
+        ) {
+            (OperationNode::When(w1), OperationNode::When(w2)) => {
+                assert_eq!(w1.then_actions.len(), w2.then_actions.len());
+                assert_eq!(w1.else_actions.len(), w2.else_actions.len());
+                assert!(matches!(&w2.then_actions[0], ActionNode::Remove { .. }));
+            }
+            _ => panic!("expected When"),
+        }
     }
 }

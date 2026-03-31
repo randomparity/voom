@@ -3,14 +3,47 @@
 use voom_domain::media::{MediaFile, Track, TrackType};
 use voom_dsl::compiled::{CompiledCompareOp, CompiledFilter, TrackTarget};
 
-/// Returns true if the track matches the filter.
+use crate::condition::{resolve_field, EvalContext};
+
+/// Returns true if the track matches the filter (no field resolution context).
+///
+/// `LangField` and `CodecField` filters always return `false` here because
+/// they require a `MediaFile` + `EvalContext` to resolve. Use
+/// [`track_matches_with_context`] when the filter may contain field references.
+#[cfg(test)]
 #[must_use]
-pub fn track_matches(track: &Track, filter: &CompiledFilter) -> bool {
+pub(crate) fn track_matches(track: &Track, filter: &CompiledFilter) -> bool {
+    track_matches_impl(track, filter, None)
+}
+
+/// Returns true if the track matches the filter, resolving field references
+/// against the given `MediaFile` and `EvalContext`.
+#[must_use]
+pub fn track_matches_with_context(
+    track: &Track,
+    filter: &CompiledFilter,
+    file: &MediaFile,
+    eval_ctx: &EvalContext<'_>,
+) -> bool {
+    track_matches_impl(track, filter, Some((file, eval_ctx)))
+}
+
+/// Core filter matching, optionally with context for resolving field references.
+fn track_matches_impl(
+    track: &Track,
+    filter: &CompiledFilter,
+    ctx: Option<(&MediaFile, &EvalContext<'_>)>,
+) -> bool {
     match filter {
         CompiledFilter::LangIn(langs) => langs.iter().any(|l| l == &track.language),
         CompiledFilter::LangCompare(op, lang) => compare_string(&track.language, op, lang),
+        CompiledFilter::LangField(op, path) => resolve_field_str(ctx, path)
+            .is_some_and(|val| compare_string(&track.language, op, &val)),
         CompiledFilter::CodecIn(codecs) => codecs.iter().any(|c| c == &track.codec),
         CompiledFilter::CodecCompare(op, codec) => compare_string(&track.codec, op, codec),
+        CompiledFilter::CodecField(op, path) => {
+            resolve_field_str(ctx, path).is_some_and(|val| compare_string(&track.codec, op, &val))
+        }
         CompiledFilter::Channels(op, value) => {
             if let Some(ch) = track.channels {
                 compare_f64(ch as f64, op, *value)
@@ -24,10 +57,22 @@ pub fn track_matches(track: &Track, filter: &CompiledFilter) -> bool {
         CompiledFilter::Font => is_font_attachment(track),
         CompiledFilter::TitleContains(s) => track.title.to_lowercase().contains(&s.to_lowercase()),
         CompiledFilter::TitleMatches(compiled_re) => compiled_re.regex().is_match(&track.title),
-        CompiledFilter::And(filters) => filters.iter().all(|f| track_matches(track, f)),
-        CompiledFilter::Or(filters) => filters.iter().any(|f| track_matches(track, f)),
-        CompiledFilter::Not(inner) => !track_matches(track, inner),
+        CompiledFilter::And(filters) => filters.iter().all(|f| track_matches_impl(track, f, ctx)),
+        CompiledFilter::Or(filters) => filters.iter().any(|f| track_matches_impl(track, f, ctx)),
+        CompiledFilter::Not(inner) => !track_matches_impl(track, inner, ctx),
     }
+}
+
+/// Resolve a field path to a string value using the optional context.
+fn resolve_field_str(
+    ctx: Option<(&MediaFile, &EvalContext<'_>)>,
+    path: &[String],
+) -> Option<String> {
+    let (file, eval_ctx) = ctx?;
+    resolve_field(file, path, eval_ctx).and_then(|v| match v {
+        serde_json::Value::String(s) => Some(s),
+        _ => None,
+    })
 }
 
 /// Check if a track is a commentary track based on its `TrackType`.
@@ -312,5 +357,104 @@ mod tests {
         assert!(track_matches(&track, &filter));
         let filter_other = CompiledFilter::LangCompare(CompiledCompareOp::Eq, "eng".into());
         assert!(!track_matches(&track, &filter_other));
+    }
+
+    #[test]
+    fn test_lang_field_resolves_from_plugin_metadata() {
+        use std::path::PathBuf;
+        let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
+        file.plugin_metadata.insert(
+            "radarr".into(),
+            serde_json::json!({"original_language": "jpn"}),
+        );
+        let ctx = EvalContext { capabilities: None };
+
+        let jpn_track = audio_track("jpn", "aac", 2);
+        let eng_track = audio_track("eng", "aac", 2);
+
+        let filter = CompiledFilter::LangField(
+            CompiledCompareOp::Eq,
+            vec!["plugin".into(), "radarr".into(), "original_language".into()],
+        );
+
+        assert!(track_matches_with_context(&jpn_track, &filter, &file, &ctx));
+        assert!(!track_matches_with_context(
+            &eng_track, &filter, &file, &ctx
+        ));
+    }
+
+    #[test]
+    fn test_lang_field_returns_false_when_field_missing() {
+        use std::path::PathBuf;
+        let file = MediaFile::new(PathBuf::from("/test.mkv"));
+        let ctx = EvalContext { capabilities: None };
+
+        let track = audio_track("eng", "aac", 2);
+        let filter = CompiledFilter::LangField(
+            CompiledCompareOp::Eq,
+            vec!["plugin".into(), "radarr".into(), "original_language".into()],
+        );
+
+        assert!(!track_matches_with_context(&track, &filter, &file, &ctx));
+    }
+
+    #[test]
+    fn test_lang_field_ne() {
+        use std::path::PathBuf;
+        let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
+        file.plugin_metadata.insert(
+            "radarr".into(),
+            serde_json::json!({"original_language": "jpn"}),
+        );
+        let ctx = EvalContext { capabilities: None };
+
+        let eng_track = audio_track("eng", "aac", 2);
+        let jpn_track = audio_track("jpn", "aac", 2);
+
+        let filter = CompiledFilter::LangField(
+            CompiledCompareOp::Ne,
+            vec!["plugin".into(), "radarr".into(), "original_language".into()],
+        );
+
+        assert!(track_matches_with_context(&eng_track, &filter, &file, &ctx));
+        assert!(!track_matches_with_context(
+            &jpn_track, &filter, &file, &ctx
+        ));
+    }
+
+    #[test]
+    fn test_codec_field_resolves() {
+        use std::path::PathBuf;
+        let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
+        file.plugin_metadata
+            .insert("detector".into(), serde_json::json!({"codec": "aac"}));
+        let ctx = EvalContext { capabilities: None };
+
+        let aac_track = audio_track("eng", "aac", 2);
+        let flac_track = audio_track("eng", "flac", 2);
+
+        let filter = CompiledFilter::CodecField(
+            CompiledCompareOp::Eq,
+            vec!["plugin".into(), "detector".into(), "codec".into()],
+        );
+
+        assert!(track_matches_with_context(&aac_track, &filter, &file, &ctx));
+        assert!(!track_matches_with_context(
+            &flac_track,
+            &filter,
+            &file,
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn test_lang_field_without_context_returns_false() {
+        let track = audio_track("jpn", "aac", 2);
+        let filter = CompiledFilter::LangField(
+            CompiledCompareOp::Eq,
+            vec!["plugin".into(), "radarr".into(), "original_language".into()],
+        );
+        // track_matches (no context) should return false for field refs
+        assert!(!track_matches(&track, &filter));
     }
 }

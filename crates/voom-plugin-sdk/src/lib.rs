@@ -77,6 +77,20 @@ pub use host::{HostFunctions, HttpResponse, ToolOutput};
 pub use voom_domain::events::Event;
 pub use voom_domain::plan::{ActionParams, OperationType, TranscodeChannels, TranscodeSettings};
 
+// ── Utilities ─────────────────────────────────────────────────────────
+
+pub use voom_domain::utils::language::{from_iso639_1, language_code_from_name};
+
+// ── Top-level domain re-exports (most-used types) ──────────────────
+// These let plugins write `use voom_plugin_sdk::MediaFile` etc.
+pub use voom_domain::capabilities::Capability;
+pub use voom_domain::events::{
+    EventResult, FileIntrospectedEvent, MetadataEnrichedEvent, PlanCompletedEvent,
+    PlanCreatedEvent, SubtitleGeneratedEvent,
+};
+pub use voom_domain::media::{Container, MediaFile, Track, TrackType};
+pub use voom_domain::plan::{ActionResult, PhaseOutcome, PhaseResult, Plan, PlannedAction};
+
 // ── Full domain re-exports (for plugins that need deeper access) ────
 // Available under `voom_plugin_sdk::domain` for explicit opt-in.
 pub mod domain {
@@ -85,7 +99,7 @@ pub mod domain {
     pub use voom_domain::capabilities::Capability;
     pub use voom_domain::events::{
         EventResult, FileIntrospectedEvent, MetadataEnrichedEvent, PlanCompletedEvent,
-        PlanCreatedEvent,
+        PlanCreatedEvent, SubtitleGeneratedEvent,
     };
     pub use voom_domain::media::{Container, MediaFile, Track, TrackType};
     pub use voom_domain::plan::{ActionResult, PhaseOutcome, PhaseResult, Plan, PlannedAction};

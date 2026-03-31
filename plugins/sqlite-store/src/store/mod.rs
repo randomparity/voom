@@ -10,6 +10,7 @@ mod plan_storage;
 mod plugin_data_storage;
 mod row_mappers;
 mod stats_storage;
+mod subtitle_storage;
 
 use std::collections::HashMap;
 use std::path::Path;

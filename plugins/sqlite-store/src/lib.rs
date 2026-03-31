@@ -190,6 +190,17 @@ impl Plugin for SqliteStorePlugin {
                     );
                 }
             }
+            Event::SubtitleGenerated(e) => {
+                if let Err(err) = store.upsert_subtitle(
+                    &e.path.to_string_lossy(),
+                    &e.subtitle_path.to_string_lossy(),
+                    &e.language,
+                    e.forced,
+                    e.title.as_deref(),
+                ) {
+                    tracing::warn!(error = %err, "failed to store subtitle record");
+                }
+            }
             _ => {
                 tracing::trace!(
                     event_type = event.event_type(),
@@ -498,5 +509,33 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&data.unwrap()).unwrap();
         assert_eq!(value["tool_name"], "ffprobe");
         assert_eq!(value["version"], "6.0");
+    }
+
+    #[test]
+    fn test_handles_subtitle_generated() {
+        let plugin = SqliteStorePlugin::new();
+        assert!(plugin.handles(Event::SUBTITLE_GENERATED));
+    }
+
+    #[test]
+    fn test_on_event_handles_subtitle_generated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut plugin = SqliteStorePlugin::new();
+        let ctx = PluginContext::new(serde_json::Value::Null, tmp.path().to_path_buf());
+        plugin.init(&ctx).unwrap();
+
+        let event = Event::SubtitleGenerated(voom_domain::events::SubtitleGeneratedEvent::new(
+            "/media/movie.mkv".into(),
+            "/media/movie.forced-eng.srt".into(),
+            "eng",
+            true,
+        ));
+        plugin.on_event(&event).unwrap();
+
+        let store = plugin.store().unwrap();
+        let records = store.list_subtitles("/media/movie.mkv").unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].language, "eng");
+        assert!(records[0].forced);
     }
 }

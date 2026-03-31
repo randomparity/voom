@@ -133,6 +133,10 @@ fn test_mkv_metadata_routes_to_mkvtoolnix() {
 /// Non-MKV metadata plans should route to ffmpeg-executor.
 #[test]
 fn test_non_mkv_metadata_routes_to_ffmpeg() {
+    if !ffmpeg_available() {
+        eprintln!("skipping: ffmpeg not found on PATH");
+        return;
+    }
     let kernel = make_kernel_with_both_executors();
 
     let plan = make_plan(
