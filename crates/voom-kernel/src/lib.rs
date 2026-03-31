@@ -165,11 +165,20 @@ impl Kernel {
     }
 
     /// Register a native plugin, subscribing it to events it handles.
-    pub fn register_plugin(&mut self, plugin: Arc<dyn Plugin>, priority: i32) {
+    ///
+    /// Returns an error if a plugin with the same name is already registered.
+    pub fn register_plugin(&mut self, plugin: Arc<dyn Plugin>, priority: i32) -> Result<()> {
         let name = plugin.name().to_string();
+        if self.registry.contains(&name) {
+            return Err(voom_domain::errors::VoomError::Plugin {
+                plugin: name,
+                message: "a plugin with this name is already registered".into(),
+            });
+        }
         self.registry.register(plugin.clone());
         self.bus.subscribe_plugin(plugin, priority);
         tracing::info!(plugin = %name, "plugin registered");
+        Ok(())
     }
 
     /// Initialize a plugin via `init()`, then register it with the given priority.
@@ -187,6 +196,12 @@ impl Kernel {
         ctx: &PluginContext,
     ) -> Result<()> {
         let name = plugin.name().to_string();
+        if self.registry.contains(&name) {
+            return Err(voom_domain::errors::VoomError::Plugin {
+                plugin: name,
+                message: "a plugin with this name is already registered".into(),
+            });
+        }
         let plugin_mut =
             Arc::get_mut(&mut plugin).ok_or_else(|| voom_domain::errors::VoomError::Plugin {
                 plugin: name.clone(),
@@ -420,7 +435,7 @@ mod tests {
         let capture = Arc::new(EventCapture {
             received: received.clone(),
         });
-        kernel.register_plugin(capture, 10);
+        kernel.register_plugin(capture, 10).unwrap();
 
         // Now init_and_register the emitter — its init events should reach the capture plugin
         let emitter = Arc::new(InitEventEmitter);
@@ -455,5 +470,54 @@ mod tests {
         ctx.register_resource(Arc::new(1_u32));
         ctx.register_resource(Arc::new(2_u32));
         assert_eq!(ctx.resource::<u32>().as_deref(), Some(&2));
+    }
+
+    #[test]
+    fn test_duplicate_plugin_registration_rejected() {
+        let mut kernel = Kernel::new();
+
+        let p1 = Arc::new(LifecyclePlugin {
+            init_called: Arc::new(AtomicBool::new(false)),
+            shutdown_called: Arc::new(AtomicBool::new(false)),
+        });
+        let p2 = Arc::new(LifecyclePlugin {
+            init_called: Arc::new(AtomicBool::new(false)),
+            shutdown_called: Arc::new(AtomicBool::new(false)),
+        });
+
+        kernel.register_plugin(p1, 10).unwrap();
+        let err = kernel.register_plugin(p2, 20).unwrap_err();
+        assert!(
+            err.to_string().contains("already registered"),
+            "expected 'already registered' error, got: {err}"
+        );
+
+        // Original plugin still present, no duplicate in bus.
+        assert_eq!(kernel.registry.len(), 1);
+        assert_eq!(kernel.subscriber_count(), 1);
+    }
+
+    #[test]
+    fn test_duplicate_init_and_register_rejected() {
+        let mut kernel = Kernel::new();
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+
+        let p1 = Arc::new(LifecyclePlugin {
+            init_called: Arc::new(AtomicBool::new(false)),
+            shutdown_called: Arc::new(AtomicBool::new(false)),
+        });
+        let p2 = Arc::new(LifecyclePlugin {
+            init_called: Arc::new(AtomicBool::new(false)),
+            shutdown_called: Arc::new(AtomicBool::new(false)),
+        });
+
+        kernel.init_and_register(p1, 10, &ctx).unwrap();
+        let err = kernel.init_and_register(p2, 20, &ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("already registered"),
+            "expected 'already registered' error, got: {err}"
+        );
+        assert_eq!(kernel.registry.len(), 1);
+        assert_eq!(kernel.subscriber_count(), 1);
     }
 }

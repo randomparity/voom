@@ -51,15 +51,21 @@ impl EventBus {
     /// Register a plugin at the given priority (lower = earlier dispatch).
     ///
     /// Equal-priority tie-breaking: plugins with the same priority value are
-    /// dispatched in registration (insertion) order. `binary_search_by_key`
-    /// returns `Err(insert_pos)` for duplicate keys, placing new entries
-    /// after existing ones at the same priority.
+    /// dispatched in registration (insertion) order. New entries are placed
+    /// after all existing entries at the same priority.
     pub fn subscribe_plugin(&self, plugin: Arc<dyn Plugin>, priority: i32) {
         let mut subs = self.subscribers.write();
         let name = plugin.name().to_string();
-        let pos = subs
-            .binary_search_by_key(&priority, |s| s.priority)
-            .unwrap_or_else(|i| i);
+        let pos = match subs.binary_search_by_key(&priority, |s| s.priority) {
+            Ok(i) => {
+                let mut end = i + 1;
+                while end < subs.len() && subs[end].priority == priority {
+                    end += 1;
+                }
+                end
+            }
+            Err(i) => i,
+        };
         subs.insert(
             pos,
             Subscriber {
@@ -601,6 +607,31 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].plugin_name, "first");
         assert_eq!(results[1].plugin_name, "second");
+    }
+
+    #[test]
+    fn test_equal_priority_preserves_registration_order() {
+        let bus = EventBus::new();
+
+        let p1 = Arc::new(TestPlugin::new("first", &[Event::FILE_DISCOVERED]));
+        let p2 = Arc::new(TestPlugin::new("second", &[Event::FILE_DISCOVERED]));
+        let p3 = Arc::new(TestPlugin::new("third", &[Event::FILE_DISCOVERED]));
+
+        bus.subscribe_plugin(p1, 50);
+        bus.subscribe_plugin(p2, 50);
+        bus.subscribe_plugin(p3, 50);
+
+        let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+            "/test.mkv".into(),
+            1024,
+            Some("abc".into()),
+        ));
+
+        let results = bus.publish(event);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].plugin_name, "first");
+        assert_eq!(results[1].plugin_name, "second");
+        assert_eq!(results[2].plugin_name, "third");
     }
 
     #[test]

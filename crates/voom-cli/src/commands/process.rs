@@ -1327,7 +1327,7 @@ mod tests {
     async fn test_execute_single_plan_dispatches_lifecycle_events() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(PlanRecordingPlugin::new());
-        kernel.register_plugin(recorder.clone(), 50);
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
 
         let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
         let plan = test_plan("normalize", false);
@@ -1348,7 +1348,7 @@ mod tests {
     fn test_skipped_plan_dispatches_created_and_skipped_events() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(PlanRecordingPlugin::new());
-        kernel.register_plugin(recorder.clone(), 50);
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
 
         let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
         let skipped_plan = test_plan("normalize", true);
@@ -1381,7 +1381,7 @@ mod tests {
     async fn test_discovery_and_introspection_events_dispatched() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(PlanRecordingPlugin::new());
-        kernel.register_plugin(recorder.clone(), 50);
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
 
         // Simulate discovery events
         let discovered =
@@ -1450,7 +1450,7 @@ mod tests {
     fn test_event_bus_reporter_dispatches_job_events() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(JobEventRecorder::new());
-        kernel.register_plugin(recorder.clone(), 50);
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
         let kernel = Arc::new(kernel);
 
         let reporter = EventBusReporter::new(kernel);

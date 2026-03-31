@@ -114,7 +114,7 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
                 .expect("store is Some after successful init");
 
             let plugin_arc: Arc<dyn voom_kernel::Plugin> = Arc::new(plugin);
-            kernel.register_plugin(plugin_arc, PRIORITY_STORAGE);
+            kernel.register_plugin(plugin_arc, PRIORITY_STORAGE)?;
 
             // Dispatch init events after registration so bus subscribers can
             // see them (e.g. health status events from other init'd plugins).
@@ -204,7 +204,7 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
             .context("Failed to initialize capability collector")?;
         Arc::new(plugin)
     };
-    kernel.register_plugin(collector.clone(), PRIORITY_CAPABILITY_COLLECTOR);
+    kernel.register_plugin(collector.clone(), PRIORITY_CAPABILITY_COLLECTOR)?;
 
     // Executor — mkvtoolnix (MKV metadata, track removal/reorder, convert-to-MKV)
     register_if_enabled!(
@@ -268,7 +268,7 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
                                 // WASM plugins are already initialized during load
                                 // (WasmPluginLoader::load_with_manifest handles init).
                                 // Priority comes from manifest (default: 70).
-                                kernel.register_plugin(plugin, priority);
+                                kernel.register_plugin(plugin, priority)?;
                                 tracing::info!(plugin = %name, priority, "WASM plugin loaded");
                             }
                             Err(e) => {

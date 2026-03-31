@@ -42,6 +42,11 @@ impl PluginRegistry {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Returns `true` if a plugin with the given name is registered.
+    pub fn contains(&self, name: &str) -> bool {
+        self.plugins.read().contains_key(name)
+    }
 }
 
 impl Default for PluginRegistry {

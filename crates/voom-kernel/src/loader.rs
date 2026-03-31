@@ -193,12 +193,8 @@ pub mod wasm {
                     .map(|c| c.kind().to_string())
                     .collect();
                 state.allowed_http_domains = manifest.allowed_domains.clone();
-                if !manifest.allowed_paths.is_empty() {
-                    state.allowed_paths = manifest
-                        .allowed_paths
-                        .iter()
-                        .map(|p| super::expand_tilde(p))
-                        .collect();
+                if let Some(ref paths) = manifest.allowed_paths {
+                    state.allowed_paths = paths.iter().map(|p| super::expand_tilde(p)).collect();
                 }
             }
 
@@ -1185,6 +1181,86 @@ Evaluate = {}
             assert!(
                 manifest.protocol_version.is_none(),
                 "missing protocol_version should default to None"
+            );
+        }
+
+        /// Verify that a manifest with explicit `allowed_paths = []` clears
+        /// any config-provided paths, enforcing deny-all filesystem access.
+        #[test]
+        fn test_manifest_explicit_empty_allowed_paths_clears_config_paths() {
+            use crate::host::HostState;
+            use crate::manifest::PluginManifest;
+
+            let mut state =
+                HostState::new("test-plugin".into()).with_paths(vec!["/some/config/path".into()]);
+            assert!(!state.allowed_paths.is_empty());
+
+            let manifest: PluginManifest = toml::from_str(
+                r#"
+name = "test-plugin"
+version = "1.0.0"
+description = "test"
+capabilities = []
+handles_events = []
+allowed_paths = []
+"#,
+            )
+            .expect("valid manifest TOML");
+            assert!(
+                manifest.allowed_paths.is_some(),
+                "explicit empty array should deserialize to Some([])"
+            );
+
+            // Apply the same logic as load_with_manifest.
+            if let Some(ref paths) = manifest.allowed_paths {
+                state.allowed_paths = paths
+                    .iter()
+                    .map(|p| super::super::expand_tilde(p))
+                    .collect();
+            }
+
+            assert!(
+                state.allowed_paths.is_empty(),
+                "manifest with allowed_paths = [] must clear config-provided paths"
+            );
+        }
+
+        /// Verify that a manifest that omits `allowed_paths` preserves
+        /// host-configured filesystem access paths.
+        #[test]
+        fn test_manifest_omitted_allowed_paths_keeps_config_paths() {
+            use crate::host::HostState;
+            use crate::manifest::PluginManifest;
+
+            let mut state =
+                HostState::new("test-plugin".into()).with_paths(vec!["/some/config/path".into()]);
+
+            let manifest: PluginManifest = toml::from_str(
+                r#"
+name = "test-plugin"
+version = "1.0.0"
+description = "test"
+capabilities = []
+handles_events = []
+"#,
+            )
+            .expect("valid manifest TOML");
+            assert!(
+                manifest.allowed_paths.is_none(),
+                "omitted field should deserialize to None"
+            );
+
+            if let Some(ref paths) = manifest.allowed_paths {
+                state.allowed_paths = paths
+                    .iter()
+                    .map(|p| super::super::expand_tilde(p))
+                    .collect();
+            }
+
+            assert_eq!(
+                state.allowed_paths.len(),
+                1,
+                "omitted allowed_paths must preserve config-provided paths"
             );
         }
 
