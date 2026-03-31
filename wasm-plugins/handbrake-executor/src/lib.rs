@@ -38,7 +38,13 @@ pub fn get_info() -> PluginInfoData {
     PluginInfoData::new(
         "handbrake-executor",
         "0.1.0",
-        vec![Capability::Execute { operations: vec![], formats: vec![] }],
+        vec![Capability::Execute {
+            operations: vec![
+                OperationType::TranscodeVideo,
+                OperationType::TranscodeAudio,
+            ],
+            formats: vec!["mkv".to_string(), "mp4".to_string()],
+        }],
     )
     .with_description("Video transcoding via HandBrakeCLI")
     .with_author("David Christensen")
