@@ -21,9 +21,10 @@ fn resolve_file_id(file_arg: &str, store: &dyn FileStorage) -> Result<Uuid> {
         return Ok(uuid);
     }
 
-    let path = Path::new(file_arg);
+    let canonical =
+        std::fs::canonicalize(file_arg).unwrap_or_else(|_| Path::new(file_arg).to_path_buf());
     let media_file = store
-        .file_by_path(path)
+        .file_by_path(&canonical)
         .context("failed to look up file by path")?
         .ok_or_else(|| {
             anyhow::anyhow!(

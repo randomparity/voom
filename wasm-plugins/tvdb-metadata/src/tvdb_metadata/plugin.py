@@ -1,6 +1,6 @@
 """WIT Guest implementation for the tvdb-metadata WASM plugin.
 
-Implements the three exported functions from voom:plugin@0.2.0/plugin:
+Implements the three exported functions from voom:plugin@0.3.0/plugin:
   - get_info() -> PluginInfo
   - handles(event_type: str) -> bool
   - on_event(event: EventData) -> Option<EventResult>

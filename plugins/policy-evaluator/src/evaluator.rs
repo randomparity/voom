@@ -43,7 +43,7 @@ pub struct EvaluationResult {
 /// which represents execution outcomes. This type tracks evaluation-time outcomes
 /// (e.g., whether a phase produced modifications) for dependency resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EvaluationOutcome {
+pub enum EvaluationOutcome {
     Executed { modified: bool },
     Skipped,
 }
@@ -86,6 +86,33 @@ pub fn evaluate_with_context(
     }
 
     EvaluationResult { plans }
+}
+
+/// Evaluate a single phase of a compiled policy against a media file.
+///
+/// Used by the per-phase evaluate-execute-reintrospect loop: after each
+/// phase executes and the file is re-introspected, the next phase is
+/// evaluated against the updated file state.
+///
+/// `phase_outcomes` tracks prior phase results for `depends_on` / `run_if`
+/// resolution.
+#[must_use]
+pub fn evaluate_single_phase(
+    phase_name: &str,
+    policy: &CompiledPolicy,
+    file: &MediaFile,
+    phase_outcomes: &HashMap<String, EvaluationOutcome>,
+    capabilities: Option<&CapabilityMap>,
+) -> Option<Plan> {
+    let phase = policy.phases.iter().find(|p| p.name == phase_name)?;
+    let eval_ctx = EvalContext { capabilities };
+    Some(evaluate_phase(
+        phase,
+        policy,
+        file,
+        phase_outcomes,
+        &eval_ctx,
+    ))
 }
 
 /// Evaluate a single phase against a file.
@@ -914,7 +941,7 @@ fn target_str(target: &TrackTarget) -> &'static str {
 ///
 /// Skips validation entirely when the capability map is empty (no
 /// executors reported capabilities).
-pub(crate) fn apply_capability_hints(plans: &mut [Plan], capabilities: &CapabilityMap) {
+pub fn apply_capability_hints(plans: &mut [Plan], capabilities: &CapabilityMap) {
     if capabilities.is_empty() {
         return;
     }

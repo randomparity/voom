@@ -113,7 +113,7 @@ pub fn run_with_timeout_env(
             join_pipe_readers(stdout_handle, stderr_handle);
             Err(VoomError::ToolExecution {
                 tool: tool.into(),
-                message: format!("{tool} timed out after {}s", timeout.as_secs()),
+                message: format!("{tool} timed out after {:.1}s", timeout.as_secs_f64()),
             })
         }
         Err(e) => {
@@ -191,16 +191,25 @@ pub async fn run_cancellable_env(
         message: format!("failed to spawn {tool}: {e}"),
     })?;
 
-    // Use child.wait() (borrows) instead of wait_with_output() (moves)
-    // so we can still call child.kill() in cancellation branches.
+    // Take pipes before waiting so they drain concurrently with the
+    // child, avoiding deadlock when output exceeds the OS pipe buffer.
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+
     tokio::select! {
-        status = child.wait() => {
+        result = async {
+            let (stdout, stderr, status) = tokio::join!(
+                read_child_pipe(stdout_pipe),
+                read_child_pipe(stderr_pipe),
+                child.wait(),
+            );
+            (stdout, stderr, status)
+        } => {
+            let (stdout, stderr, status) = result;
             let status = status.map_err(|e| VoomError::ToolExecution {
                 tool: tool.into(),
                 message: format!("error waiting for {tool}: {e}"),
             })?;
-            let stdout = read_child_pipe(child.stdout.take()).await;
-            let stderr = read_child_pipe(child.stderr.take()).await;
             Ok(Output { status, stdout, stderr })
         }
         () = tokio::time::sleep(timeout) => {
@@ -208,8 +217,8 @@ pub async fn run_cancellable_env(
             Err(VoomError::ToolExecution {
                 tool: tool.into(),
                 message: format!(
-                    "{tool} timed out after {}s",
-                    timeout.as_secs()
+                    "{tool} timed out after {:.1}s",
+                    timeout.as_secs_f64()
                 ),
             })
         }
@@ -322,5 +331,24 @@ mod tests {
             }
             other => panic!("expected ToolExecution timeout, got: {other}"),
         }
+    }
+
+    #[tokio::test]
+    async fn cancellable_drains_large_output() {
+        // Generate >128KB of output (exceeds typical OS pipe buffer of
+        // 64KB). Before the fix, this would deadlock because the child
+        // blocks writing to full pipes while we wait for exit.
+        let token = tokio_util::sync::CancellationToken::new();
+        let output = run_cancellable_env(
+            "dd",
+            &["if=/dev/zero", "bs=1024", "count=256"],
+            Duration::from_secs(10),
+            &[],
+            &token,
+        )
+        .await
+        .expect("dd should succeed");
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 256 * 1024, "expected 256KB of output");
     }
 }

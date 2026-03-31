@@ -16,9 +16,17 @@ interface plugin {
         introspect(introspect-cap),
         evaluate,
         execute(execute-cap),
+        store(store-cap),
+        detect-tools,
+        manage-jobs,
+        serve-http,
+        plan,
+        backup,
         enrich-metadata(enrich-cap),
         transcribe,
         synthesize,
+        generate-subtitle,
+        health-check,
     }
 
     record discover-cap {
@@ -36,6 +44,10 @@ interface plugin {
 
     record enrich-cap {
         source: string,
+    }
+
+    record store-cap {
+        backend: string,
     }
 
     /// Return plugin identity and capabilities.

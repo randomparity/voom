@@ -252,7 +252,7 @@ mod tests {
     async fn test_events_dispatched_through_kernel() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(RecordingPlugin::new());
-        kernel.register_plugin(recorder.clone(), 50);
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
 
         // Simulate discovery event
         let discovered =
@@ -272,7 +272,7 @@ mod tests {
     async fn test_multiple_discovery_events_dispatched() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(RecordingPlugin::new());
-        kernel.register_plugin(recorder.clone(), 50);
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
 
         let events = vec![
             FileDiscoveredEvent::new(PathBuf::from("/tmp/a.mkv"), 100, Some("aaa".into())),

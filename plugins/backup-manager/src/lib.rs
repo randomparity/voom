@@ -36,6 +36,9 @@ pub struct BackupRecord {
     pub backup_path: PathBuf,
     pub size: u64,
     pub created_at: DateTime<Utc>,
+    /// Whether the backup was intentionally retained via `keep_backups`.
+    /// Retained backups are not warned about at shutdown.
+    pub retained: bool,
 }
 
 /// Configuration for backup operations.
@@ -224,11 +227,13 @@ impl Plugin for BackupManagerPlugin {
 
     fn shutdown(&self) -> Result<()> {
         if let Ok(records) = self.records() {
-            for (path, _) in records.iter() {
-                tracing::warn!(
-                    path = %path.display(),
-                    "active backup still exists at shutdown"
-                );
+            for (path, record) in records.iter() {
+                if !record.retained {
+                    tracing::warn!(
+                        path = %path.display(),
+                        "active backup still exists at shutdown"
+                    );
+                }
             }
         }
         Ok(())
@@ -264,6 +269,12 @@ impl Plugin for BackupManagerPlugin {
             }
             Event::PlanCompleted(evt) => {
                 if evt.keep_backups {
+                    // Mark as retained so shutdown doesn't warn about it.
+                    if let Ok(mut records) = self.records() {
+                        if let Some(record) = records.get_mut(&evt.path) {
+                            record.retained = true;
+                        }
+                    }
                     tracing::info!(
                         path = %evt.path.display(),
                         "keeping backup per policy"

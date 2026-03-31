@@ -169,7 +169,7 @@ fn collect_executor_capabilities(
     let collector = Arc::new(crate::capability_collector::CapabilityCollectorPlugin::new());
 
     let mut kernel = Kernel::new();
-    kernel.register_plugin(collector.clone(), 1);
+    kernel.register_plugin(collector.clone(), 1).ok()?;
 
     let executor: Arc<dyn voom_kernel::Plugin> = match exec_name {
         "ffmpeg-executor" => Arc::new(voom_ffmpeg_executor::FfmpegExecutorPlugin::new()),

@@ -21,18 +21,15 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, from_iso639_1, load_plugin_config, serialize_event,
-    Event, HostFunctions, MediaFile, MetadataEnrichedEvent, OnEventResult,
-    PluginInfoData,
+    deserialize_event, from_iso639_1, load_plugin_config, serialize_event, Capability, Event,
+    HostFunctions, MediaFile, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
     PluginInfoData::new(
         "audio-language-detector",
         "0.1.0",
-        vec![
-            "enrich_metadata:audio-language-detector".to_string(),
-        ],
+        vec![Capability::EnrichMetadata { source: "audio-language-detector".to_string() }],
     )
     .with_description("Audio language detection via Whisper")
     .with_author("David Christensen")
@@ -707,10 +704,8 @@ mod tests {
     fn test_get_info() {
         let info = get_info();
         assert_eq!(info.name, "audio-language-detector");
-        assert_eq!(
-            info.capabilities,
-            vec!["enrich_metadata:audio-language-detector"]
-        );
+        assert_eq!(info.capabilities.len(), 1);
+        assert_eq!(info.capabilities[0].kind(), "enrich_metadata");
     }
 
     #[test]

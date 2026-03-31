@@ -88,8 +88,8 @@ fn test_kernel_register_and_dispatch() {
     });
     let introspector = Arc::new(MockIntrospector);
 
-    kernel.register_plugin(logger, 0);
-    kernel.register_plugin(introspector, 10);
+    kernel.register_plugin(logger, 0).unwrap();
+    kernel.register_plugin(introspector, 10).unwrap();
 
     assert_eq!(kernel.registry.len(), 2);
     assert_eq!(kernel.subscriber_count(), 2);
@@ -125,7 +125,7 @@ fn test_event_cascading() {
     let mut kernel = Kernel::new();
 
     let introspector = Arc::new(MockIntrospector);
-    kernel.register_plugin(introspector, 0);
+    kernel.register_plugin(introspector, 0).unwrap();
 
     // Dispatch initial event.
     let event = Event::FileDiscovered(FileDiscoveredEvent::new(
@@ -242,8 +242,12 @@ fn test_executor_claimed_mkv_metadata_goes_to_mkvtoolnix() {
     let mut kernel = Kernel::new();
 
     // MKV executor at priority 39, FFmpeg at 40
-    kernel.register_plugin(Arc::new(MockMkvExecutor), 39);
-    kernel.register_plugin(Arc::new(MockFfmpegExecutor), 40);
+    kernel
+        .register_plugin(Arc::new(MockMkvExecutor), 39)
+        .unwrap();
+    kernel
+        .register_plugin(Arc::new(MockFfmpegExecutor), 40)
+        .unwrap();
 
     // MKV file with metadata-only actions
     let plan = make_plan(
@@ -271,8 +275,12 @@ fn test_executor_claimed_mp4_goes_to_ffmpeg() {
 
     let mut kernel = Kernel::new();
 
-    kernel.register_plugin(Arc::new(MockMkvExecutor), 39);
-    kernel.register_plugin(Arc::new(MockFfmpegExecutor), 40);
+    kernel
+        .register_plugin(Arc::new(MockMkvExecutor), 39)
+        .unwrap();
+    kernel
+        .register_plugin(Arc::new(MockFfmpegExecutor), 40)
+        .unwrap();
 
     // MP4 file — mkvtoolnix declines, ffmpeg handles
     let plan = make_plan(
@@ -301,8 +309,12 @@ fn test_executor_mkv_transcode_falls_through_to_ffmpeg() {
 
     let mut kernel = Kernel::new();
 
-    kernel.register_plugin(Arc::new(MockMkvExecutor), 39);
-    kernel.register_plugin(Arc::new(MockFfmpegExecutor), 40);
+    kernel
+        .register_plugin(Arc::new(MockMkvExecutor), 39)
+        .unwrap();
+    kernel
+        .register_plugin(Arc::new(MockFfmpegExecutor), 40)
+        .unwrap();
 
     // MKV file with transcode — mkvtoolnix declines, ffmpeg handles
     let plan = make_plan(

@@ -476,6 +476,13 @@ struct ProcessContext<'a> {
 }
 
 /// Process a single file: introspect, orchestrate, and (unless dry-run) execute plans.
+///
+/// For dry-run/plan-only mode, all phases are evaluated up front against the
+/// original file state (matching existing behavior).
+///
+/// For real execution, phases are evaluated one at a time. After each phase
+/// executes, the file is re-introspected so the next phase sees the current
+/// on-disk state (updated path, tracks, container, etc.).
 async fn process_single_file(
     job: voom_domain::job::Job,
     ctx: &ProcessContext<'_>,
@@ -504,28 +511,23 @@ async fn process_single_file(
 
     apply_detected_languages(&mut file);
 
-    let result = orchestrate_plans(ctx.compiled, &file, ctx.capabilities);
-
-    // Collect safeguard violations across all plans and tag the file
-    let violations: Vec<&voom_domain::SafeguardViolation> = result
-        .plans
-        .iter()
-        .flat_map(|p| &p.safeguard_violations)
-        .collect();
-    if !violations.is_empty() {
-        let mut tagged_file = file.clone();
-        tagged_file.plugin_metadata.insert(
-            "safeguard_violations".to_string(),
-            serde_json::json!(violations),
-        );
-        let r = ctx.kernel.dispatch(Event::FileIntrospected(
-            voom_domain::events::FileIntrospectedEvent::new(tagged_file),
-        ));
-        log_plugin_errors(&r);
+    if ctx.dry_run {
+        process_single_file_dry_run(&file, ctx)
+    } else {
+        process_single_file_execute(&file, ctx).await
     }
+}
+
+/// Dry-run / plan-only: evaluate all phases up front against the original file.
+fn process_single_file_dry_run(
+    file: &voom_domain::media::MediaFile,
+    ctx: &ProcessContext<'_>,
+) -> std::result::Result<Option<serde_json::Value>, String> {
+    let result = orchestrate_plans(ctx.compiled, file, ctx.capabilities);
+
+    collect_safeguard_violations(file, &result, ctx);
 
     let needs_exec = voom_phase_orchestrator::PhaseOrchestrator::needs_execution(&result);
-
     if needs_exec {
         ctx.counters
             .modified_count
@@ -543,7 +545,7 @@ async fn process_single_file(
                 &plan.phase_name,
                 PhaseOutcomeKind::Skipped(reason),
             );
-        } else if ctx.dry_run && !plan.is_empty() {
+        } else if !plan.is_empty() {
             record_phase_stat(
                 &ctx.counters.phase_stats,
                 &plan.phase_name,
@@ -552,42 +554,369 @@ async fn process_single_file(
         }
     }
 
-    if ctx.dry_run {
-        if ctx.plan_only {
-            let plans_json: Vec<serde_json::Value> = result
-                .plans
-                .iter()
-                .filter(|p| !p.is_empty() && !p.is_skipped())
-                .map(|p| serde_json::to_value(p).expect("Plan implements Serialize"))
-                .collect();
-            if !plans_json.is_empty() {
-                ctx.counters.plan_collector.lock().extend(plans_json);
-            }
-        }
-
-        let plan_summaries: Vec<serde_json::Value> = result
+    if ctx.plan_only {
+        let plans_json: Vec<serde_json::Value> = result
             .plans
             .iter()
-            .map(|p| {
-                let mut summary = serde_json::json!({
-                    "phase": p.phase_name,
-                    "actions": p.actions.len(),
-                    "skipped": p.is_skipped(),
-                });
-                if !p.safeguard_violations.is_empty() {
-                    summary["safeguard_violations"] = serde_json::json!(p.safeguard_violations);
-                }
-                summary
-            })
+            .filter(|p| !p.is_empty() && !p.is_skipped())
+            .map(|p| serde_json::to_value(p).expect("Plan implements Serialize"))
             .collect();
+        if !plans_json.is_empty() {
+            ctx.counters.plan_collector.lock().extend(plans_json);
+        }
+    }
 
-        Ok(Some(serde_json::json!({
-            "path": file.path.display().to_string(),
-            "needs_execution": needs_exec,
-            "plans": plan_summaries,
-        })))
-    } else {
-        execute_plans(&file, &result, ctx, needs_exec).await
+    let plan_summaries: Vec<serde_json::Value> = result
+        .plans
+        .iter()
+        .map(|p| {
+            let mut summary = serde_json::json!({
+                "phase": p.phase_name,
+                "actions": p.actions.len(),
+                "skipped": p.is_skipped(),
+            });
+            if !p.safeguard_violations.is_empty() {
+                summary["safeguard_violations"] = serde_json::json!(p.safeguard_violations);
+            }
+            summary
+        })
+        .collect();
+
+    Ok(Some(serde_json::json!({
+        "path": file.path.display().to_string(),
+        "needs_execution": needs_exec,
+        "plans": plan_summaries,
+    })))
+}
+
+/// Real execution: evaluate → execute → re-introspect per phase.
+///
+/// After each phase executes successfully, the file is re-introspected so
+/// that subsequent phases see the updated path, container, and tracks.
+async fn process_single_file_execute(
+    file: &voom_domain::media::MediaFile,
+    ctx: &ProcessContext<'_>,
+) -> std::result::Result<Option<serde_json::Value>, String> {
+    let file_path_str = file.path.display().to_string();
+
+    // Verify file hasn't changed since introspection (TOCTOU guard)
+    if let Some(skip_json) = check_file_hash(file).await {
+        return Ok(Some(skip_json));
+    }
+
+    let evaluator = voom_policy_evaluator::PolicyEvaluator::new();
+    let mut current_file = file.clone();
+    let mut phase_outcomes: HashMap<String, voom_policy_evaluator::EvaluationOutcome> =
+        HashMap::new();
+    let mut any_executed = false;
+    let mut plans_evaluated: usize = 0;
+
+    for phase_name in &ctx.compiled.phase_order {
+        if ctx.token.is_cancelled() {
+            break;
+        }
+
+        let plan = match evaluator.evaluate_single_phase(
+            phase_name,
+            ctx.compiled,
+            &current_file,
+            &phase_outcomes,
+            ctx.capabilities,
+        ) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        plans_evaluated += 1;
+
+        // Track the evaluation outcome for dependency resolution
+        let outcome = if plan.is_skipped() {
+            voom_policy_evaluator::EvaluationOutcome::Skipped
+        } else {
+            voom_policy_evaluator::EvaluationOutcome::Executed {
+                modified: !plan.is_empty(),
+            }
+        };
+        phase_outcomes.insert(phase_name.clone(), outcome);
+
+        // Report safeguard violations
+        if !plan.safeguard_violations.is_empty() {
+            let mut tagged = current_file.clone();
+            tagged.plugin_metadata.insert(
+                "safeguard_violations".to_string(),
+                serde_json::json!(&plan.safeguard_violations),
+            );
+            let r = ctx.kernel.dispatch(Event::FileIntrospected(
+                voom_domain::events::FileIntrospectedEvent::new(tagged),
+            ));
+            log_plugin_errors(&r);
+        }
+
+        // Handle skipped plans
+        if let Some(reason) = &plan.skip_reason {
+            let r = ctx
+                .kernel
+                .dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
+            log_plugin_errors(&r);
+            let r = ctx
+                .kernel
+                .dispatch(Event::PlanSkipped(PlanSkippedEvent::new(
+                    plan.id,
+                    current_file.path.clone(),
+                    plan.phase_name.clone(),
+                    reason.clone(),
+                )));
+            log_plugin_errors(&r);
+            record_phase_stat(
+                &ctx.counters.phase_stats,
+                &plan.phase_name,
+                PhaseOutcomeKind::Skipped(reason.clone()),
+            );
+            continue;
+        }
+
+        // Empty plans need no execution
+        if plan.is_empty() {
+            continue;
+        }
+
+        // Count as modified on first real plan
+        if !any_executed {
+            ctx.counters
+                .modified_count
+                .fetch_add(1, AtomicOrdering::Relaxed);
+        }
+
+        // Execute this plan
+        let plan_clone = plan.clone();
+        let file_clone = current_file.clone();
+        let kernel_clone = ctx.kernel.clone();
+        let exec_outcome = tokio::task::spawn_blocking(move || {
+            execute_single_plan(&plan_clone, &file_clone, &kernel_clone)
+        })
+        .await
+        .map_err(|e| format!("plan execution join error: {e}"))?;
+
+        match exec_outcome {
+            PlanOutcome::Success => {
+                any_executed = true;
+
+                // Size-increase guard
+                if ctx.flag_size_increase {
+                    let check_path =
+                        resolve_post_execution_path(&current_file, std::slice::from_ref(&plan));
+                    if let Ok(meta) = std::fs::metadata(&check_path) {
+                        let new_size = meta.len();
+                        if new_size > current_file.size && current_file.size > 0 {
+                            tracing::warn!(
+                                path = %check_path.display(),
+                                before = current_file.size,
+                                after = new_size,
+                                "output larger than original, restoring"
+                            );
+                            if check_path != current_file.path {
+                                if let Err(e) = std::fs::remove_file(&check_path) {
+                                    tracing::warn!(
+                                        path = %check_path.display(),
+                                        error = %e,
+                                        "failed to remove converted output"
+                                    );
+                                }
+                            }
+                            let r = ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
+                                plan.id,
+                                current_file.path.clone(),
+                                plan.phase_name.clone(),
+                                format!(
+                                    "output grew from {} to {} bytes",
+                                    current_file.size, new_size,
+                                ),
+                            )));
+                            log_plugin_errors(&r);
+                            record_phase_stat(
+                                &ctx.counters.phase_stats,
+                                &plan.phase_name,
+                                PhaseOutcomeKind::Failed,
+                            );
+                            continue;
+                        }
+                    }
+                }
+
+                if ctx.keep_backups {
+                    ctx.counters
+                        .backup_bytes
+                        .fetch_add(current_file.size, AtomicOrdering::Relaxed);
+                    tracing::info!(
+                        path = %current_file.path.display(),
+                        phase = %plan.phase_name,
+                        "keeping backup per policy"
+                    );
+                }
+                let r = ctx
+                    .kernel
+                    .dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
+                        plan.id,
+                        current_file.path.clone(),
+                        plan.phase_name.clone(),
+                        plan.actions.len(),
+                        ctx.keep_backups,
+                    )));
+                log_plugin_errors(&r);
+                record_phase_stat(
+                    &ctx.counters.phase_stats,
+                    &plan.phase_name,
+                    PhaseOutcomeKind::Completed,
+                );
+
+                // Re-introspect so the next phase sees updated file state
+                current_file = reintrospect_file(&current_file, &[plan], ctx).await;
+            }
+            PlanOutcome::Failed(failed) => {
+                let r = ctx.kernel.dispatch(Event::PlanFailed(failed));
+                log_plugin_errors(&r);
+                record_phase_stat(
+                    &ctx.counters.phase_stats,
+                    &plan.phase_name,
+                    PhaseOutcomeKind::Failed,
+                );
+            }
+        }
+    }
+
+    Ok(Some(serde_json::json!({
+        "path": file_path_str,
+        "needs_execution": any_executed,
+        "plans_evaluated": plans_evaluated,
+    })))
+}
+
+/// Check file hash for TOCTOU guard. Returns Some(json) if file should be skipped.
+async fn check_file_hash(file: &voom_domain::media::MediaFile) -> Option<serde_json::Value> {
+    let file_path_str = file.path.display().to_string();
+    let Some(ref stored_hash) = file.content_hash else {
+        tracing::debug!(path = %file.path.display(),
+            "no content_hash available, skipping TOCTOU check");
+        return None;
+    };
+
+    let hash_path = file.path.clone();
+    let hash_result =
+        tokio::task::spawn_blocking(move || voom_discovery::hash_file(&hash_path)).await;
+    match hash_result {
+        Ok(Ok(current_hash)) if &current_hash != stored_hash => {
+            tracing::warn!(path = %file.path.display(), "file changed since introspection, skipping");
+            Some(serde_json::json!({
+                "path": file_path_str,
+                "skipped": true,
+                "reason": "file changed since introspection",
+            }))
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(path = %file.path.display(), error = %e, "hash check failed, skipping");
+            Some(serde_json::json!({
+                "path": file_path_str,
+                "skipped": true,
+                "reason": format!("hash check failed: {e}"),
+            }))
+        }
+        Err(e) => {
+            tracing::warn!(path = %file.path.display(), error = %e, "hash task panicked, skipping");
+            Some(serde_json::json!({
+                "path": file_path_str,
+                "skipped": true,
+                "reason": format!("hash task panicked: {e}"),
+            }))
+        }
+        _ => None, // hash matches, proceed
+    }
+}
+
+/// Re-introspect the file after a phase executes, returning the updated
+/// `MediaFile` with the current on-disk path, tracks, and metadata.
+async fn reintrospect_file(
+    file: &voom_domain::media::MediaFile,
+    plans: &[voom_domain::plan::Plan],
+    ctx: &ProcessContext<'_>,
+) -> voom_domain::media::MediaFile {
+    let current_path = resolve_post_execution_path(file, plans);
+    if !current_path.exists() {
+        tracing::warn!(
+            path = %current_path.display(),
+            "file not found after execution, using previous state"
+        );
+        return file.clone();
+    }
+
+    let p = current_path.clone();
+    let file_size = file.size;
+    let (size, hash) = tokio::task::spawn_blocking(move || {
+        let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(file_size);
+        let hash = match voom_discovery::hash_file(&p) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                tracing::warn!(path = %p.display(), error = %e,
+                    "could not hash file after execution");
+                None
+            }
+        };
+        (size, hash)
+    })
+    .await
+    .unwrap_or((file.size, None));
+
+    let ffp = ctx.ffprobe_path.map(String::from);
+    let kernel_clone = ctx.kernel.clone();
+    match crate::introspect::introspect_file(
+        current_path,
+        size,
+        hash,
+        &kernel_clone,
+        ffp.as_deref(),
+    )
+    .await
+    {
+        Ok(mut new_file) => {
+            // Preserve plugin_metadata from prior phases
+            for (k, v) in &file.plugin_metadata {
+                new_file
+                    .plugin_metadata
+                    .entry(k.clone())
+                    .or_insert(v.clone());
+            }
+            // Reapply detector-derived languages so subsequent
+            // phases see normalized values, not raw ffprobe tags.
+            apply_detected_languages(&mut new_file);
+            new_file
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "re-introspection failed, using previous state");
+            file.clone()
+        }
+    }
+}
+
+/// Collect safeguard violations across plans and tag the file.
+fn collect_safeguard_violations(
+    file: &voom_domain::media::MediaFile,
+    result: &voom_phase_orchestrator::OrchestrationResult,
+    ctx: &ProcessContext<'_>,
+) {
+    let violations: Vec<&voom_domain::SafeguardViolation> = result
+        .plans
+        .iter()
+        .flat_map(|p| &p.safeguard_violations)
+        .collect();
+    if !violations.is_empty() {
+        let mut tagged_file = file.clone();
+        tagged_file.plugin_metadata.insert(
+            "safeguard_violations".to_string(),
+            serde_json::json!(violations),
+        );
+        let r = ctx.kernel.dispatch(Event::FileIntrospected(
+            voom_domain::events::FileIntrospectedEvent::new(tagged_file),
+        ));
+        log_plugin_errors(&r);
     }
 }
 
@@ -655,10 +984,9 @@ fn apply_detected_languages(file: &mut voom_domain::media::MediaFile) {
     }
 }
 
-/// Run the phase orchestrator to produce plans.
+/// Run the phase orchestrator to produce plans (used for dry-run mode).
 ///
-/// NOTE: This function does NOT dispatch `PlanCreated` events. The `execute_plans`
-/// function dispatches them when it's time to actually execute. Dispatching
+/// NOTE: This function does NOT dispatch `PlanCreated` events. Dispatching
 /// here would trigger executor plugins during dry-run mode.
 fn orchestrate_plans(
     compiled: &voom_dsl::CompiledPolicy,
@@ -670,224 +998,6 @@ fn orchestrate_plans(
         .plans;
     let orchestrator = voom_phase_orchestrator::PhaseOrchestrator::new();
     orchestrator.orchestrate(plans)
-}
-
-/// Verify file integrity and publish plan lifecycle events for non-dry-run execution.
-///
-/// Each plan execution is offloaded to `spawn_blocking` because executor
-/// plugins run subprocesses synchronously via `voom-process`, which would
-/// otherwise block the tokio worker thread.
-async fn execute_plans(
-    file: &voom_domain::media::MediaFile,
-    result: &voom_phase_orchestrator::OrchestrationResult,
-    ctx: &ProcessContext<'_>,
-    needs_exec: bool,
-) -> std::result::Result<Option<serde_json::Value>, String> {
-    let file_path_str = file.path.display().to_string();
-
-    // Verify file hasn't changed since introspection (TOCTOU guard)
-    let exec_path = file.path.clone();
-    if let Some(ref stored_hash) = file.content_hash {
-        let hash_path = exec_path.clone();
-        let hash_result =
-            tokio::task::spawn_blocking(move || voom_discovery::hash_file(&hash_path)).await;
-        match hash_result {
-            Ok(Ok(current_hash)) if &current_hash != stored_hash => {
-                tracing::warn!(path = %exec_path.display(), "file changed since introspection, skipping");
-                return Ok(Some(serde_json::json!({
-                    "path": file_path_str,
-                    "skipped": true,
-                    "reason": "file changed since introspection",
-                })));
-            }
-            Ok(Err(e)) => {
-                tracing::warn!(path = %exec_path.display(), error = %e, "hash check failed, skipping");
-                return Ok(Some(serde_json::json!({
-                    "path": file_path_str,
-                    "skipped": true,
-                    "reason": format!("hash check failed: {e}"),
-                })));
-            }
-            Err(e) => {
-                tracing::warn!(path = %exec_path.display(), error = %e, "hash task panicked, skipping");
-                return Ok(Some(serde_json::json!({
-                    "path": file_path_str,
-                    "skipped": true,
-                    "reason": format!("hash task panicked: {e}"),
-                })));
-            }
-            _ => {} // hash matches, proceed
-        }
-    } else {
-        tracing::debug!(path = %exec_path.display(),
-            "no content_hash available, skipping TOCTOU check");
-    }
-
-    // Execute each non-skipped plan. PlanExecuting is dispatched first so
-    // the backup-manager creates a backup before any executor modifies the
-    // file. PlanCreated then triggers the actual execution.
-    //
-    // PlanCompleted/PlanFailed are dispatched *after* post-execution checks
-    // (size-increase guard) so the backup is still available for restore.
-    let mut any_executed = false;
-    for plan in &result.plans {
-        if let Some(reason) = &plan.skip_reason {
-            // Insert the plan row first so update_plan_status has a target.
-            let r = ctx
-                .kernel
-                .dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
-            log_plugin_errors(&r);
-            let r = ctx
-                .kernel
-                .dispatch(Event::PlanSkipped(PlanSkippedEvent::new(
-                    plan.id,
-                    file.path.clone(),
-                    plan.phase_name.clone(),
-                    reason.clone(),
-                )));
-            log_plugin_errors(&r);
-            continue;
-        }
-        if plan.is_empty() {
-            continue;
-        }
-
-        if ctx.token.is_cancelled() {
-            break;
-        }
-
-        let plan_clone = plan.clone();
-        let file_clone = file.clone();
-        let kernel_clone = ctx.kernel.clone();
-        let outcome = tokio::task::spawn_blocking(move || {
-            execute_single_plan(&plan_clone, &file_clone, &kernel_clone)
-        })
-        .await
-        .map_err(|e| format!("plan execution join error: {e}"))?;
-
-        match outcome {
-            PlanOutcome::Success => {
-                any_executed = true;
-
-                // Size-increase guard: check *before* committing, while
-                // the backup is still on disk.
-                if ctx.flag_size_increase {
-                    let check_path = resolve_post_execution_path(file, std::slice::from_ref(plan));
-                    if let Ok(meta) = std::fs::metadata(&check_path) {
-                        let new_size = meta.len();
-                        if new_size > file.size && file.size > 0 {
-                            tracing::warn!(
-                                path = %check_path.display(),
-                                before = file.size,
-                                after = new_size,
-                                "output larger than original, restoring"
-                            );
-                            // Remove the converted output before
-                            // restoring so no orphan file is left
-                            // behind (e.g. .mkv after mp4→mkv).
-                            if check_path != file.path {
-                                if let Err(e) = std::fs::remove_file(&check_path) {
-                                    tracing::warn!(
-                                        path = %check_path.display(),
-                                        error = %e,
-                                        "failed to remove converted output"
-                                    );
-                                }
-                            }
-                            let r = ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
-                                plan.id,
-                                file.path.clone(),
-                                plan.phase_name.clone(),
-                                format!("output grew from {} to {} bytes", file.size, new_size,),
-                            )));
-                            log_plugin_errors(&r);
-                            record_phase_stat(
-                                &ctx.counters.phase_stats,
-                                &plan.phase_name,
-                                PhaseOutcomeKind::Failed,
-                            );
-                            continue;
-                        }
-                    }
-                }
-
-                if ctx.keep_backups {
-                    ctx.counters
-                        .backup_bytes
-                        .fetch_add(file.size, AtomicOrdering::Relaxed);
-                    tracing::info!(
-                        path = %file.path.display(),
-                        phase = %plan.phase_name,
-                        "keeping backup per policy"
-                    );
-                }
-                let r = ctx
-                    .kernel
-                    .dispatch(Event::PlanCompleted(PlanCompletedEvent::new(
-                        plan.id,
-                        file.path.clone(),
-                        plan.phase_name.clone(),
-                        plan.actions.len(),
-                        ctx.keep_backups,
-                    )));
-                log_plugin_errors(&r);
-                record_phase_stat(
-                    &ctx.counters.phase_stats,
-                    &plan.phase_name,
-                    PhaseOutcomeKind::Completed,
-                );
-            }
-            PlanOutcome::Failed(failed) => {
-                let r = ctx.kernel.dispatch(Event::PlanFailed(failed));
-                log_plugin_errors(&r);
-                record_phase_stat(
-                    &ctx.counters.phase_stats,
-                    &plan.phase_name,
-                    PhaseOutcomeKind::Failed,
-                );
-            }
-        }
-    }
-
-    // Re-introspect after execution so the database reflects the actual
-    // file on disk (new container, path, tracks, etc.).
-    if any_executed {
-        let current_path = resolve_post_execution_path(file, &result.plans);
-        if current_path.exists() {
-            let p = current_path.clone();
-            let file_size = file.size;
-            let (size, hash) = tokio::task::spawn_blocking(move || {
-                let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(file_size);
-                let hash = match voom_discovery::hash_file(&p) {
-                    Ok(h) => Some(h),
-                    Err(e) => {
-                        tracing::warn!(path = %p.display(), error = %e,
-                            "could not hash file after execution");
-                        None
-                    }
-                };
-                (size, hash)
-            })
-            .await
-            .unwrap_or((file.size, None));
-            let ffp = ctx.ffprobe_path.map(String::from);
-            let kernel_clone = ctx.kernel.clone();
-            let _ = crate::introspect::introspect_file(
-                current_path,
-                size,
-                hash,
-                &kernel_clone,
-                ffp.as_deref(),
-            )
-            .await;
-        }
-    }
-
-    Ok(Some(serde_json::json!({
-        "path": file_path_str,
-        "needs_execution": needs_exec,
-        "plans_evaluated": result.plans.len(),
-    })))
 }
 
 /// Determine the file path after plan execution.
@@ -1217,7 +1327,7 @@ mod tests {
     async fn test_execute_single_plan_dispatches_lifecycle_events() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(PlanRecordingPlugin::new());
-        kernel.register_plugin(recorder.clone(), 50);
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
 
         let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
         let plan = test_plan("normalize", false);
@@ -1234,41 +1344,29 @@ mod tests {
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
     }
 
-    #[tokio::test]
-    async fn test_dispatch_plan_events_skips_skipped_plans() {
+    #[test]
+    fn test_skipped_plan_dispatches_created_and_skipped_events() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(PlanRecordingPlugin::new());
-        kernel.register_plugin(recorder.clone(), 50);
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
 
         let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
         let skipped_plan = test_plan("normalize", true);
         assert!(skipped_plan.is_skipped());
 
-        let result =
-            voom_phase_orchestrator::OrchestrationResult::new(vec![skipped_plan], vec![], false);
-
-        let token = CancellationToken::new();
-        let kernel = Arc::new(kernel);
-        let counters = RunCounters::new();
-        let compiled = voom_dsl::compile_policy("policy \"test\" { phase p1 { container mkv } }")
-            .expect("test policy");
-        let capabilities = voom_domain::CapabilityMap::default();
-        let store: Arc<dyn voom_domain::storage::StorageTrait> =
-            Arc::new(voom_domain::test_support::InMemoryStore::new());
-        let ctx = ProcessContext {
-            compiled: &compiled,
-            kernel: kernel.clone(),
-            store,
-            dry_run: false,
-            plan_only: false,
-            flag_size_increase: false,
-            keep_backups: false,
-            token: &token,
-            ffprobe_path: None,
-            capabilities: &capabilities,
-            counters: &counters,
-        };
-        let _ = execute_plans(&file, &result, &ctx, true).await;
+        // Simulate the skipped-plan dispatch sequence from
+        // process_single_file_execute: PlanCreated then PlanSkipped.
+        let r = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent::new(
+            skipped_plan.clone(),
+        )));
+        log_plugin_errors(&r);
+        let r = kernel.dispatch(Event::PlanSkipped(PlanSkippedEvent::new(
+            skipped_plan.id,
+            file.path.clone(),
+            skipped_plan.phase_name.clone(),
+            skipped_plan.skip_reason.clone().unwrap(),
+        )));
+        log_plugin_errors(&r);
 
         // Skipped plans should NOT trigger execution events
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
@@ -1283,7 +1381,7 @@ mod tests {
     async fn test_discovery_and_introspection_events_dispatched() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(PlanRecordingPlugin::new());
-        kernel.register_plugin(recorder.clone(), 50);
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
 
         // Simulate discovery events
         let discovered =
@@ -1352,7 +1450,7 @@ mod tests {
     fn test_event_bus_reporter_dispatches_job_events() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(JobEventRecorder::new());
-        kernel.register_plugin(recorder.clone(), 50);
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
         let kernel = Arc::new(kernel);
 
         let reporter = EventBusReporter::new(kernel);

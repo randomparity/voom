@@ -31,15 +31,15 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, language_code_from_name, load_plugin_config, serialize_event, Event,
-    HostFunctions, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
+    deserialize_event, language_code_from_name, load_plugin_config, serialize_event, Capability,
+    Event, HostFunctions, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
     PluginInfoData::new(
         "sonarr-metadata",
         "0.1.0",
-        vec!["enrich_metadata:sonarr".to_string()],
+        vec![Capability::EnrichMetadata { source: "sonarr".to_string() }],
     )
     .with_description("TV metadata enrichment via Sonarr API")
     .with_author("David Christensen")
@@ -307,7 +307,8 @@ mod tests {
     fn test_get_info() {
         let info = get_info();
         assert_eq!(info.name, "sonarr-metadata");
-        assert_eq!(info.capabilities, vec!["enrich_metadata:sonarr"]);
+        assert_eq!(info.capabilities.len(), 1);
+        assert_eq!(info.capabilities[0].kind(), "enrich_metadata");
     }
 
     #[test]

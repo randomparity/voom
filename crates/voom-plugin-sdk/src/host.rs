@@ -16,9 +16,9 @@ pub trait HostFunctions {
         Err("read_file_metadata not available".to_string())
     }
 
-    /// List files matching filters (serialized as `MessagePack` bytes).
-    fn list_files(&self, filters: &[u8]) -> Result<Vec<Vec<u8>>, String> {
-        let _ = filters;
+    /// List files in a directory matching a pattern (empty pattern = all).
+    fn list_files(&self, dir: &str, pattern: &str) -> Result<Vec<String>, String> {
+        let _ = (dir, pattern);
         Err("list_files not available".to_string())
     }
 
@@ -79,6 +79,14 @@ mod tests {
         }
 
         fn log(&self, _level: &str, _message: &str) {}
+    }
+
+    #[test]
+    fn test_default_list_files_returns_error() {
+        let host = TestHost;
+        let result = host.list_files("/some/dir", "*.mkv");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "list_files not available");
     }
 
     #[test]

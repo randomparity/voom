@@ -72,6 +72,16 @@ fn matches_filter(file: &MediaFile, filters: &FileFilters) -> bool {
             return false;
         }
     }
+    if let Some(ref codec) = filters.has_codec {
+        if !file.tracks.iter().any(|t| t.codec == *codec) {
+            return false;
+        }
+    }
+    if let Some(ref lang) = filters.has_language {
+        if !file.tracks.iter().any(|t| t.language == *lang) {
+            return false;
+        }
+    }
     true
 }
 
@@ -258,6 +268,9 @@ impl JobStorage for InMemoryStore {
                 .cmp(&b.priority)
                 .then(b.created_at.cmp(&a.created_at))
         });
+        if let Some(offset) = filters.offset {
+            result = result.into_iter().skip(offset as usize).collect();
+        }
         if let Some(limit) = filters.limit {
             result.truncate(limit as usize);
         }

@@ -180,8 +180,8 @@ fn scan_dir_recursive(dir: &Path, entries: &mut Vec<VbakEntry>) -> Result<()> {
             Err(_) => continue,
         };
 
-        let ft = match entry.metadata() {
-            Ok(m) => m.file_type(),
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
             Err(_) => continue,
         };
         if ft.is_symlink() || !ft.is_dir() {

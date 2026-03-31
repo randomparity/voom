@@ -193,12 +193,8 @@ pub mod wasm {
                     .map(|c| c.kind().to_string())
                     .collect();
                 state.allowed_http_domains = manifest.allowed_domains.clone();
-                if !manifest.allowed_paths.is_empty() {
-                    state.allowed_paths = manifest
-                        .allowed_paths
-                        .iter()
-                        .map(|p| super::expand_tilde(p))
-                        .collect();
+                if let Some(ref paths) = manifest.allowed_paths {
+                    state.allowed_paths = paths.iter().map(|p| super::expand_tilde(p)).collect();
                 }
             }
 
@@ -502,12 +498,18 @@ pub mod wasm {
 
         let instance = inner.instance.as_ref().unwrap();
 
-        // Try the namespaced @0.2.0 interface first, then fall back to a bare
-        // export for simpler single-interface components.
+        // Try the namespaced interface starting from the latest version,
+        // then fall back to older versions and bare exports.
         let on_event = instance
-            .get_export(&mut inner.store, None, "voom:plugin/plugin@0.2.0")
+            .get_export(&mut inner.store, None, "voom:plugin/plugin@0.3.0")
             .and_then(|idx| instance.get_export(&mut inner.store, Some(&idx), "on-event"))
             .and_then(|idx| instance.get_func(&mut inner.store, idx))
+            .or_else(|| {
+                instance
+                    .get_export(&mut inner.store, None, "voom:plugin/plugin@0.2.0")
+                    .and_then(|idx| instance.get_export(&mut inner.store, Some(&idx), "on-event"))
+                    .and_then(|idx| instance.get_func(&mut inner.store, idx))
+            })
             .or_else(|| {
                 let idx = instance.get_export(&mut inner.store, None, "on-event")?;
                 instance.get_func(&mut inner.store, idx)
@@ -641,13 +643,23 @@ pub mod wasm {
     /// Register host function imports in the linker.
     ///
     /// These are the functions that WASM plugins can call back into the host.
+    /// Registers under both `@0.3.0` (current) and `@0.2.0` (backward compat)
+    /// so plugins compiled against either version can resolve their imports.
     fn register_host_functions(
         linker: &mut wasmtime::component::Linker<HostState>,
     ) -> Result<(), WasmLoadError> {
-        // The interface name in WIT is "host" in package "voom:plugin".
+        register_host_instance(linker, "voom:plugin/host@0.3.0")?;
+        register_host_instance(linker, "voom:plugin/host@0.2.0")?;
+        Ok(())
+    }
+
+    fn register_host_instance(
+        linker: &mut wasmtime::component::Linker<HostState>,
+        instance_name: &str,
+    ) -> Result<(), WasmLoadError> {
         let mut root = linker.root();
         let mut host_instance = root
-            .instance("voom:plugin/host@0.2.0")
+            .instance(instance_name)
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
         host_instance
@@ -1185,6 +1197,86 @@ Evaluate = {}
             assert!(
                 manifest.protocol_version.is_none(),
                 "missing protocol_version should default to None"
+            );
+        }
+
+        /// Verify that a manifest with explicit `allowed_paths = []` clears
+        /// any config-provided paths, enforcing deny-all filesystem access.
+        #[test]
+        fn test_manifest_explicit_empty_allowed_paths_clears_config_paths() {
+            use crate::host::HostState;
+            use crate::manifest::PluginManifest;
+
+            let mut state =
+                HostState::new("test-plugin".into()).with_paths(vec!["/some/config/path".into()]);
+            assert!(!state.allowed_paths.is_empty());
+
+            let manifest: PluginManifest = toml::from_str(
+                r#"
+name = "test-plugin"
+version = "1.0.0"
+description = "test"
+capabilities = []
+handles_events = []
+allowed_paths = []
+"#,
+            )
+            .expect("valid manifest TOML");
+            assert!(
+                manifest.allowed_paths.is_some(),
+                "explicit empty array should deserialize to Some([])"
+            );
+
+            // Apply the same logic as load_with_manifest.
+            if let Some(ref paths) = manifest.allowed_paths {
+                state.allowed_paths = paths
+                    .iter()
+                    .map(|p| super::super::expand_tilde(p))
+                    .collect();
+            }
+
+            assert!(
+                state.allowed_paths.is_empty(),
+                "manifest with allowed_paths = [] must clear config-provided paths"
+            );
+        }
+
+        /// Verify that a manifest that omits `allowed_paths` preserves
+        /// host-configured filesystem access paths.
+        #[test]
+        fn test_manifest_omitted_allowed_paths_keeps_config_paths() {
+            use crate::host::HostState;
+            use crate::manifest::PluginManifest;
+
+            let mut state =
+                HostState::new("test-plugin".into()).with_paths(vec!["/some/config/path".into()]);
+
+            let manifest: PluginManifest = toml::from_str(
+                r#"
+name = "test-plugin"
+version = "1.0.0"
+description = "test"
+capabilities = []
+handles_events = []
+"#,
+            )
+            .expect("valid manifest TOML");
+            assert!(
+                manifest.allowed_paths.is_none(),
+                "omitted field should deserialize to None"
+            );
+
+            if let Some(ref paths) = manifest.allowed_paths {
+                state.allowed_paths = paths
+                    .iter()
+                    .map(|p| super::super::expand_tilde(p))
+                    .collect();
+            }
+
+            assert_eq!(
+                state.allowed_paths.len(),
+                1,
+                "omitted allowed_paths must preserve config-provided paths"
             );
         }
 

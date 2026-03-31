@@ -30,15 +30,21 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, ActionParams, Event, HostFunctions,
-    OnEventResult, OperationType, PluginInfoData,
+    deserialize_event, load_plugin_config, serialize_event, ActionParams, Capability, Event,
+    HostFunctions, OnEventResult, OperationType, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
     PluginInfoData::new(
         "handbrake-executor",
         "0.1.0",
-        vec!["execute:transcode_video+transcode_audio:mkv,mp4".to_string()],
+        vec![Capability::Execute {
+            operations: vec![
+                OperationType::TranscodeVideo,
+                OperationType::TranscodeAudio,
+            ],
+            formats: vec!["mkv".to_string(), "mp4".to_string()],
+        }],
     )
     .with_description("Video transcoding via HandBrakeCLI")
     .with_author("David Christensen")
@@ -364,7 +370,8 @@ mod tests {
     fn test_get_info() {
         let info = get_info();
         assert_eq!(info.name, "handbrake-executor");
-        assert!(info.capabilities[0].starts_with("execute:"));
+        assert_eq!(info.capabilities.len(), 1);
+        assert_eq!(info.capabilities[0].kind(), "execute");
     }
 
     #[test]
