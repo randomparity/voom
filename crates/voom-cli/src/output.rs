@@ -153,6 +153,11 @@ pub fn format_scan_results(
             }
             println!("{table}");
         }
+        OutputFormat::Plain => {
+            for (path, _, _) in files {
+                println!("{}", path.display());
+            }
+        }
     }
 }
 

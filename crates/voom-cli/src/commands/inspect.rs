@@ -29,6 +29,7 @@ pub fn run(args: InspectArgs) -> Result<()> {
             match args.format {
                 OutputFormat::Json => output::format_file_json(&file),
                 OutputFormat::Table => output::format_file_info(&file, args.tracks_only),
+                OutputFormat::Plain => println!("{}", file.path.display()),
             }
             return Ok(());
         }
@@ -54,6 +55,7 @@ pub fn run(args: InspectArgs) -> Result<()> {
     match args.format {
         OutputFormat::Json => output::format_file_json(&event.file),
         OutputFormat::Table => output::format_file_info(&event.file, args.tracks_only),
+        OutputFormat::Plain => println!("{}", event.file.path.display()),
     }
 
     Ok(())

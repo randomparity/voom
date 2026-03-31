@@ -322,7 +322,7 @@ mod test_scan {
             .args(["scan", env.media_dir().to_str().unwrap()])
             .assert()
             .success()
-            .stdout(predicate::str::contains("No media files found"));
+            .stderr(predicate::str::contains("No media files found"));
     }
 
     #[test]
@@ -476,8 +476,8 @@ mod test_process {
             .timeout(std::time::Duration::from_secs(60))
             .assert()
             .success()
-            .stdout(predicate::str::contains("Dry-running"))
-            .stdout(predicate::str::contains("dry run"));
+            .stderr(predicate::str::contains("Dry-running"))
+            .stderr(predicate::str::contains("dry run"));
     }
 
     #[test]
@@ -526,7 +526,7 @@ mod test_process {
             .timeout(std::time::Duration::from_secs(120))
             .assert()
             .success()
-            .stdout(predicate::str::contains("Applying"));
+            .stderr(predicate::str::contains("Applying"));
     }
 
     #[test]
@@ -544,7 +544,7 @@ mod test_process {
             ])
             .assert()
             .success()
-            .stdout(predicate::str::contains("No media files found"));
+            .stderr(predicate::str::contains("No media files found"));
     }
 
     #[test]

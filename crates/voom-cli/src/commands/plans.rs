@@ -93,6 +93,14 @@ fn show(file_arg: &str, format: OutputFormat) -> Result<()> {
 
             println!("{table}");
         }
+        // Plans are complex structures; fall through to JSON for plain output
+        OutputFormat::Plain => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&plans)
+                    .expect("PlanSummary serialization cannot fail")
+            );
+        }
     }
 
     Ok(())

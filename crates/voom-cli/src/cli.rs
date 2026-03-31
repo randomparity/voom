@@ -10,6 +10,10 @@ pub struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
 
+    /// Suppress progress bars and status messages
+    #[arg(short, long, global = true)]
+    pub quiet: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -110,9 +114,9 @@ pub struct ScanArgs {
     #[arg(long)]
     pub no_hash: bool,
 
-    /// Show full file table after scan
-    #[arg(long)]
-    pub table: bool,
+    /// Output format (omit for summary only)
+    #[arg(short, long)]
+    pub format: Option<OutputFormat>,
 }
 
 // === Inspect ===
@@ -544,6 +548,14 @@ pub struct CompletionsArgs {
 pub enum OutputFormat {
     Table,
     Json,
+    Plain,
+}
+
+impl OutputFormat {
+    /// Returns true for formats intended for machine consumption (piping, scripting).
+    pub fn is_machine(&self) -> bool {
+        matches!(self, Self::Json | Self::Plain)
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -592,6 +604,30 @@ mod tests {
         assert_eq!(cli.verbose, 2);
     }
 
+    #[test]
+    fn test_quiet_default_is_false() {
+        let cli = parse(&["voom", "doctor"]);
+        assert!(!cli.quiet);
+    }
+
+    #[test]
+    fn test_quiet_short_flag() {
+        let cli = parse(&["voom", "-q", "doctor"]);
+        assert!(cli.quiet);
+    }
+
+    #[test]
+    fn test_quiet_long_flag() {
+        let cli = parse(&["voom", "--quiet", "doctor"]);
+        assert!(cli.quiet);
+    }
+
+    #[test]
+    fn test_quiet_after_subcommand() {
+        let cli = parse(&["voom", "scan", "/media", "--quiet"]);
+        assert!(cli.quiet);
+    }
+
     // ── Scan ─────────────────────────────────────────────────
 
     #[test]
@@ -608,7 +644,7 @@ mod tests {
                 assert!(args.recursive);
                 assert_eq!(args.workers, 0);
                 assert!(!args.no_hash);
-                assert!(!args.table);
+                assert!(args.format.is_none());
             }
             _ => panic!("expected Scan"),
         }
@@ -623,14 +659,33 @@ mod tests {
             "--no-hash",
             "--workers",
             "4",
-            "--table",
+            "--format",
+            "json",
         ]);
         match cli.command {
             Commands::Scan(args) => {
                 assert!(args.no_hash);
                 assert_eq!(args.workers, 4);
-                assert!(args.table);
+                assert!(matches!(args.format, Some(OutputFormat::Json)));
             }
+            _ => panic!("expected Scan"),
+        }
+    }
+
+    #[test]
+    fn test_scan_plain_format() {
+        let cli = parse(&["voom", "scan", "/media", "--format", "plain"]);
+        match cli.command {
+            Commands::Scan(args) => assert!(matches!(args.format, Some(OutputFormat::Plain))),
+            _ => panic!("expected Scan"),
+        }
+    }
+
+    #[test]
+    fn test_scan_table_format() {
+        let cli = parse(&["voom", "scan", "/media", "--format", "table"]);
+        match cli.command {
+            Commands::Scan(args) => assert!(matches!(args.format, Some(OutputFormat::Table))),
             _ => panic!("expected Scan"),
         }
     }
@@ -1349,6 +1404,13 @@ mod tests {
             Commands::Process(args) => assert!(!args.priority_by_date),
             _ => panic!("expected Process"),
         }
+    }
+
+    #[test]
+    fn test_output_format_is_machine() {
+        assert!(!OutputFormat::Table.is_machine());
+        assert!(OutputFormat::Json.is_machine());
+        assert!(OutputFormat::Plain.is_machine());
     }
 
     #[test]

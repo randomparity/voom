@@ -45,10 +45,14 @@ async fn main() -> Result<()> {
     // blocking the tokio runtime with filesystem I/O at startup.
     tokio::task::spawn_blocking(cleanup_wasm_temp_files);
 
+    // Compute effective quiet: explicit --quiet OR machine-readable format
+    let quiet = cli.quiet
+        || matches!(&cli.command, Commands::Scan(args) if args.format.is_some_and(|f| f.is_machine()));
+
     match cli.command {
-        Commands::Scan(args) => commands::scan::run(args, token).await,
+        Commands::Scan(args) => commands::scan::run(args, quiet, token).await,
         Commands::Inspect(args) => commands::inspect::run(args),
-        Commands::Process(args) => commands::process::run(args, token).await,
+        Commands::Process(args) => commands::process::run(args, quiet, token).await,
         Commands::Policy(sub) => commands::policy::run(sub),
         Commands::Plugin(sub) => commands::plugin::run(sub),
         Commands::Jobs(sub) => commands::jobs::run(sub),

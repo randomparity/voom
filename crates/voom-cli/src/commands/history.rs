@@ -73,6 +73,16 @@ pub fn run(args: HistoryArgs) -> Result<()> {
 
             println!("{table}");
         }
+        OutputFormat::Plain => {
+            for entry in &entries {
+                println!(
+                    "{}\t{}\t{}",
+                    entry.archived_at.format("%Y-%m-%d %H:%M:%S"),
+                    entry.container.as_str(),
+                    entry.path.display(),
+                );
+            }
+        }
     }
 
     Ok(())

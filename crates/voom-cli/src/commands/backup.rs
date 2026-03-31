@@ -65,6 +65,11 @@ fn list(root: &Path, format: OutputFormat) -> Result<()> {
             }
             println!("{table}");
         }
+        OutputFormat::Plain => {
+            for entry in &entries {
+                println!("{}", entry.backup_path.display());
+            }
+        }
     }
 
     Ok(())

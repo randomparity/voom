@@ -41,7 +41,7 @@ use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// This split gives the CLI full control over ordering, concurrency, and
 /// progress reporting while still letting kernel-registered plugins react to
 /// the events they care about.
-pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
+pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Result<()> {
     if args.plan_only && args.approve {
         anyhow::bail!(
             "--plan-only and --approve cannot be used together \
@@ -69,30 +69,30 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
 
     let compiled = load_and_compile_policy(&args)?;
 
-    if !plan_only {
+    if !plan_only && !quiet {
         print_run_header(&compiled.name, &path, dry_run);
     }
 
     // Auto-prune stale file entries under the target directory
     match store.prune_missing_files_under(&path) {
-        Ok(n) if n > 0 && !plan_only => println!("Pruned {n} stale entries."),
+        Ok(n) if n > 0 && !plan_only && !quiet => eprintln!("Pruned {n} stale entries."),
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
     }
 
     if token.is_cancelled() {
-        if !plan_only {
-            println!("{}", style("Interrupted before discovery.").yellow());
+        if !plan_only && !quiet {
+            eprintln!("{}", style("Interrupted before discovery.").yellow());
         }
         return Ok(());
     }
 
-    let mut events = discover_files(&path, &args, &kernel)?;
+    let mut events = discover_files(&path, &args, &kernel, quiet)?;
     if events.is_empty() {
         if plan_only {
             println!("[]");
-        } else {
-            println!("{}", style("No media files found.").yellow());
+        } else if !quiet {
+            eprintln!("{}", style("No media files found.").yellow());
         }
         return Ok(());
     }
@@ -108,8 +108,8 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
             let before = events.len();
             events.retain(|e| !bad_paths.contains(&e.path));
             let skipped = before - events.len();
-            if skipped > 0 && !plan_only {
-                println!(
+            if skipped > 0 && !plan_only && !quiet {
+                eprintln!(
                     "Skipping {} known-bad files (use {} to re-attempt).",
                     style(skipped).yellow(),
                     style("--force-rescan").bold()
@@ -121,15 +121,15 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     if events.is_empty() {
         if plan_only {
             println!("[]");
-        } else {
-            println!("{}", style("No processable files found.").yellow());
+        } else if !quiet {
+            eprintln!("{}", style("No processable files found.").yellow());
         }
         return Ok(());
     }
 
     let file_count = events.len();
-    if !plan_only {
-        println!("Found {} media files.", style(file_count).bold());
+    if !plan_only && !quiet {
+        eprintln!("Found {} media files.", style(file_count).bold());
     }
 
     let on_error = match args.on_error {
@@ -138,7 +138,9 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     };
 
     if token.is_cancelled() {
-        println!("{}", style("Interrupted before processing.").yellow());
+        if !quiet {
+            eprintln!("{}", style("Interrupted before processing.").yellow());
+        }
         return Ok(());
     }
 
@@ -148,7 +150,11 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let reporter: Arc<dyn ProgressReporter> = if plan_only {
         bus_reporter
     } else {
-        let cli_reporter: Arc<dyn ProgressReporter> = Arc::new(BatchProgress::new(file_count));
+        let cli_reporter: Arc<dyn ProgressReporter> = if quiet {
+            Arc::new(BatchProgress::hidden(file_count))
+        } else {
+            Arc::new(BatchProgress::new(file_count))
+        };
         Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]))
     };
 
@@ -209,21 +215,23 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let backup_total = counters_for_summary
         .backup_bytes
         .load(AtomicOrdering::Relaxed);
-    if token.is_cancelled() {
-        print_interrupted_summary(&pool, file_count, modified);
-    } else {
-        print_summary(&SummaryContext {
-            pool: &pool,
-            file_count,
-            modified,
-            effective_workers,
-            dry_run,
-            keep_backups,
-            backup_bytes: backup_total,
-            path: &path,
-        });
+    if !quiet {
+        if token.is_cancelled() {
+            print_interrupted_summary(&pool, file_count, modified);
+        } else {
+            print_summary(&SummaryContext {
+                pool: &pool,
+                file_count,
+                modified,
+                effective_workers,
+                dry_run,
+                keep_backups,
+                backup_bytes: backup_total,
+                path: &path,
+            });
+        }
+        print_phase_breakdown(&counters_for_summary.phase_stats.lock(), &phase_order);
     }
-    print_phase_breakdown(&counters_for_summary.phase_stats.lock(), &phase_order);
 
     Ok(())
 }
@@ -239,7 +247,7 @@ fn load_and_compile_policy(args: &ProcessArgs) -> Result<voom_dsl::CompiledPolic
 
 /// Print the header line describing what we are about to do.
 fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
-    println!(
+    eprintln!(
         "{} policy {} to {}{}",
         if dry_run {
             style("Dry-running").bold()
@@ -270,13 +278,18 @@ fn discover_files(
     path: &std::path::Path,
     args: &ProcessArgs,
     kernel: &voom_kernel::Kernel,
+    quiet: bool,
 ) -> Result<Vec<voom_domain::events::FileDiscoveredEvent>> {
     let discovery = voom_discovery::DiscoveryPlugin::new();
     let mut options = voom_discovery::ScanOptions::new(path.to_path_buf());
     options.hash_files = !args.no_backup;
     options.workers = args.workers;
 
-    let progress = DiscoveryProgress::new();
+    let progress = if quiet {
+        DiscoveryProgress::hidden()
+    } else {
+        DiscoveryProgress::new()
+    };
     let progress_clone = progress.clone();
     let hash_files = options.hash_files;
     options.on_progress = Some(Box::new(move |p| match p {
@@ -1087,7 +1100,7 @@ fn execute_single_plan(
 fn print_interrupted_summary(pool: &WorkerPool, file_count: usize, modified: u64) {
     let completed = pool.completed_count();
     let failed = pool.failed_count();
-    println!(
+    eprintln!(
         "\n{} {}/{} processed, {} modified, {} errors",
         style("Interrupted.").bold().yellow(),
         completed,
@@ -1123,7 +1136,7 @@ fn print_summary(ctx: &SummaryContext<'_>) {
         "modified"
     };
 
-    println!(
+    eprintln!(
         "\n{} {} processed, {} {modified_label}, {} skipped, {} errors (workers: {})",
         style("Done.").bold().green(),
         style(completed).green(),
@@ -1138,7 +1151,7 @@ fn print_summary(ctx: &SummaryContext<'_>) {
     );
 
     if ctx.keep_backups && ctx.modified > 0 && !ctx.dry_run {
-        println!(
+        eprintln!(
             "{} {} backups retained ({}) \u{2014} delete with: find {} -name '*.vbak' -delete",
             style("Info:").bold(),
             style(ctx.modified).cyan(),
@@ -1148,7 +1161,7 @@ fn print_summary(ctx: &SummaryContext<'_>) {
     }
 
     if ctx.dry_run {
-        println!(
+        eprintln!(
             "\n{}",
             style("This was a dry run. No files were modified.").dim()
         );
@@ -1160,7 +1173,7 @@ fn print_phase_breakdown(stats: &HashMap<String, PhaseStats>, phase_order: &[Str
         return;
     }
 
-    println!("\n  {}", style("Phase breakdown:").bold());
+    eprintln!("\n  {}", style("Phase breakdown:").bold());
     for phase_name in phase_order {
         let Some(ps) = stats.get(phase_name) else {
             continue;
@@ -1180,7 +1193,7 @@ fn print_phase_breakdown(stats: &HashMap<String, PhaseStats>, phase_order: &[Str
         if ps.failed > 0 {
             parts.push(format!("{} errors", ps.failed));
         }
-        println!("    {:<20} {}", format!("{phase_name}:"), parts.join(", "));
+        eprintln!("    {:<20} {}", format!("{phase_name}:"), parts.join(", "));
     }
 }
 

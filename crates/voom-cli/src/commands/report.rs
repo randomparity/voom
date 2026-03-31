@@ -84,6 +84,11 @@ pub fn run(args: ReportArgs) -> Result<()> {
             }
             println!("{table}");
         }
+        OutputFormat::Plain => {
+            for file in &files {
+                println!("{}", file.path.display());
+            }
+        }
     }
 
     Ok(())
@@ -149,6 +154,13 @@ fn run_issues_report(files: &[voom_domain::MediaFile], format: &OutputFormat) ->
                 }
             }
             println!("{table}");
+        }
+        OutputFormat::Plain => {
+            for (f, violations) in &files_with_issues {
+                for v in violations {
+                    println!("{}\t{}", f.path.display(), v.kind.as_str());
+                }
+            }
         }
     }
 
@@ -248,6 +260,19 @@ fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()
                 ]);
             }
             println!("{table}");
+        }
+        OutputFormat::Plain => {
+            for name in &phases {
+                let ps = by_phase.get(name).expect("phase exists");
+                let status = if ps.failed > 0 {
+                    "failed"
+                } else if ps.completed > 0 {
+                    "completed"
+                } else {
+                    "skipped"
+                };
+                println!("{name}\t{status}");
+            }
         }
     }
 

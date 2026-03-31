@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 /// Discovery and introspection are driven directly for deterministic progress
 /// reporting, but all events are also published through the kernel's event bus
 /// so that subscribers (sqlite-store, WASM plugins) receive them.
-pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
+pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Result<()> {
     let config = config::load_config()?;
     let app::BootstrapResult { kernel, store, .. } = app::bootstrap_kernel_with_store(&config)?;
     let kernel = Arc::new(kernel);
@@ -29,20 +29,26 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
 
     // Auto-prune stale file entries under the scanned directory
     match store.prune_missing_files_under(&path) {
-        Ok(n) if n > 0 => println!("Pruned {n} stale entries."),
+        Ok(n) if n > 0 && !quiet => eprintln!("Pruned {n} stale entries."),
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
     }
 
-    println!(
-        "{} {}",
-        style("Scanning").bold(),
-        style(path.display()).cyan()
-    );
+    if !quiet {
+        eprintln!(
+            "{} {}",
+            style("Scanning").bold(),
+            style(path.display()).cyan()
+        );
+    }
 
     let discovery = voom_discovery::DiscoveryPlugin::new();
 
-    let progress = DiscoveryProgress::new();
+    let progress = if quiet {
+        DiscoveryProgress::hidden()
+    } else {
+        DiscoveryProgress::new()
+    };
     let progress_clone = progress.clone();
     let file_count = Arc::new(AtomicU64::new(0));
     let file_count_clone = file_count.clone();
@@ -73,31 +79,38 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
     progress.finish();
 
     if events.is_empty() {
-        println!("{}", style("No media files found.").yellow());
+        if !quiet {
+            eprintln!("{}", style("No media files found.").yellow());
+        }
+        if matches!(args.format, Some(crate::cli::OutputFormat::Json)) {
+            println!("[]");
+        }
         return Ok(());
     }
 
     // Show discovery/hashing summary
-    let discovery_elapsed = start.elapsed();
-    if hash_files {
-        let elapsed_ms = discovery_elapsed.as_millis();
-        let elapsed_str = if elapsed_ms < 1000 {
-            format!("{elapsed_ms}ms")
+    if !quiet {
+        let discovery_elapsed = start.elapsed();
+        if hash_files {
+            let elapsed_ms = discovery_elapsed.as_millis();
+            let elapsed_str = if elapsed_ms < 1000 {
+                format!("{elapsed_ms}ms")
+            } else {
+                format!("{}", HumanDuration(discovery_elapsed))
+            };
+            eprintln!(
+                "  {} {} files, hashed in {}",
+                style("Discovered").dim(),
+                events.len(),
+                elapsed_str,
+            );
         } else {
-            format!("{}", HumanDuration(discovery_elapsed))
-        };
-        println!(
-            "  {} {} files, hashed in {}",
-            style("Discovered").dim(),
-            events.len(),
-            elapsed_str,
-        );
-    } else {
-        println!(
-            "  {} {} files (hashing skipped)",
-            style("Discovered").dim(),
-            events.len(),
-        );
+            eprintln!(
+                "  {} {} files (hashing skipped)",
+                style("Discovered").dim(),
+                events.len(),
+            );
+        }
     }
 
     // Dispatch FileDiscovered events through the kernel so subscribers react:
@@ -111,7 +124,11 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
         kernel.dispatch(voom_domain::events::Event::FileDiscovered(event.clone()));
     }
 
-    let probe = ProbeProgress::new(events.len());
+    let probe = if quiet {
+        ProbeProgress::hidden(events.len())
+    } else {
+        ProbeProgress::new(events.len())
+    };
     let mut introspected = 0u64;
     let mut errors = 0u64;
     let total = events.len() as u64;
@@ -147,12 +164,38 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
 
     let total_elapsed = start.elapsed();
     if token.is_cancelled() {
-        println!(
-            "\n{} {} files discovered, {}/{} introspected{} ({})",
-            style("Interrupted.").bold().yellow(),
+        if !quiet {
+            eprintln!(
+                "\n{} {} files discovered, {}/{} introspected{} ({})",
+                style("Interrupted.").bold().yellow(),
+                events.len(),
+                introspected,
+                total,
+                if errors > 0 {
+                    format!(", {} {}", errors, style("errors").red())
+                } else {
+                    String::new()
+                },
+                HumanDuration(total_elapsed),
+            );
+        }
+        // Emit valid output for machine formats even on interruption
+        if let Some(format) = args.format {
+            let results: Vec<_> = events
+                .iter()
+                .map(|e| (e.path.clone(), e.size, e.content_hash.clone()))
+                .collect();
+            output::format_scan_results(&results, format);
+        }
+        return Ok(());
+    }
+
+    if !quiet {
+        eprintln!(
+            "\n{} {} files discovered, {} introspected{} ({})",
+            style("Done.").bold().green(),
             events.len(),
             introspected,
-            total,
             if errors > 0 {
                 format!(", {} {}", errors, style("errors").red())
             } else {
@@ -160,28 +203,14 @@ pub async fn run(args: ScanArgs, token: CancellationToken) -> Result<()> {
             },
             HumanDuration(total_elapsed),
         );
-        return Ok(());
     }
 
-    println!(
-        "\n{} {} files discovered, {} introspected{} ({})",
-        style("Done.").bold().green(),
-        events.len(),
-        introspected,
-        if errors > 0 {
-            format!(", {} {}", errors, style("errors").red())
-        } else {
-            String::new()
-        },
-        HumanDuration(total_elapsed),
-    );
-
-    if args.table {
+    if let Some(format) = args.format {
         let results: Vec<_> = events
             .iter()
             .map(|e| (e.path.clone(), e.size, e.content_hash.clone()))
             .collect();
-        output::format_scan_results(&results, crate::cli::OutputFormat::Table);
+        output::format_scan_results(&results, format);
     }
 
     Ok(())

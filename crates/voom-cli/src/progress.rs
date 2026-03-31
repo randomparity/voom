@@ -85,6 +85,15 @@ impl DiscoveryProgress {
         }
     }
 
+    /// Create a hidden (no-op) progress indicator for quiet/scripted mode.
+    pub fn hidden() -> Self {
+        Self {
+            pb: ProgressBar::hidden(),
+            start: Instant::now(),
+            transitioned: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// Update for a newly discovered file.
     pub fn on_discovered(&self, count: usize, path: &Path) {
         let prefix = format!("Discovering... {count} files found \u{2014} ");
@@ -136,6 +145,15 @@ impl ProbeProgress {
         }
     }
 
+    /// Create a hidden (no-op) progress bar for quiet/scripted mode.
+    pub fn hidden(total: usize) -> Self {
+        Self {
+            pb: ProgressBar::hidden(),
+            start: Instant::now(),
+            total,
+        }
+    }
+
     /// Update progress for the current file being probed.
     pub fn on_file(&self, index: usize, path: &Path) {
         let eta = format_eta(self.start.elapsed(), index, self.total);
@@ -173,6 +191,15 @@ impl BatchProgress {
         overall.enable_steady_tick(TICK_INTERVAL);
         Self {
             overall,
+            start: Instant::now(),
+            total: total as u64,
+        }
+    }
+
+    /// Create a hidden (no-op) progress bar for quiet/scripted mode.
+    pub fn hidden(total: usize) -> Self {
+        Self {
+            overall: ProgressBar::hidden(),
             start: Instant::now(),
             total: total as u64,
         }

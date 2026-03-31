@@ -48,6 +48,16 @@ fn run_default(
             let json: Vec<serde_json::Value> = records.iter().map(record_to_json).collect();
             println!("{}", serde_json::to_string_pretty(&json)?);
         }
+        OutputFormat::Plain => {
+            for r in &records {
+                println!(
+                    "{}\t{}\t{}",
+                    r.event_type,
+                    r.created_at.format("%Y-%m-%d %H:%M:%S"),
+                    r.summary,
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -116,6 +126,14 @@ fn print_follow_row(format: &OutputFormat, r: &voom_domain::storage::EventLogRec
         }
         OutputFormat::Json => {
             println!("{}", record_to_json(r));
+        }
+        OutputFormat::Plain => {
+            println!(
+                "{}\t{}\t{}",
+                r.event_type,
+                r.created_at.format("%Y-%m-%d %H:%M:%S"),
+                r.summary,
+            );
         }
     }
 }

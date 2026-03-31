@@ -156,6 +156,11 @@ fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
             println!("{table}");
             println!("\n{} bad files total.", style(bad_files.len()).bold());
         }
+        OutputFormat::Plain => {
+            for bf in &bad_files {
+                println!("{}", bf.path.display());
+            }
+        }
     }
 
     Ok(())
@@ -343,6 +348,11 @@ fn stats(format: OutputFormat) -> Result<()> {
                 "  Free pages:   {} ({free_pct})",
                 style(page_stats.freelist_count).bold()
             );
+        }
+        OutputFormat::Plain => {
+            for (name, count) in &row_counts {
+                println!("{name}\t{count}");
+            }
         }
     }
 
