@@ -12,6 +12,7 @@ use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::config;
 use crate::progress::{BatchProgress, DiscoveryProgress};
+use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{
     Event, JobCompletedEvent, JobProgressEvent, JobStartedEvent, PlanCompletedEvent,
     PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent, PlanSkippedEvent,
@@ -304,6 +305,15 @@ fn discover_files(
             let action = if hash_files { "Hashing" } else { "Scanning" };
             progress_clone.on_processing(current, total, &path, action);
         }
+        voom_discovery::ScanProgress::OrphanedTempFiles { .. } => {}
+    }));
+
+    let discovery_errors: Arc<Mutex<Vec<(std::path::PathBuf, u64, String)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let errors_clone = discovery_errors.clone();
+    options.on_error = Some(Box::new(move |path, size, error| {
+        tracing::warn!(path = %path.display(), error = %error, "discovery error");
+        errors_clone.lock().push((path, size, error));
     }));
 
     let events = discovery.scan(&options).context("filesystem scan failed")?;
@@ -312,6 +322,17 @@ fn discover_files(
     for event in &events {
         let results = kernel.dispatch(Event::FileDiscovered(event.clone()));
         log_plugin_errors(&results);
+    }
+
+    for (path, size, error) in discovery_errors.lock().drain(..) {
+        crate::introspect::dispatch_failure(
+            kernel,
+            path,
+            size,
+            None,
+            &error,
+            BadFileSource::Discovery,
+        );
     }
 
     Ok(events)

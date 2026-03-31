@@ -15,6 +15,7 @@ use voom_domain::events::{
 };
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, ActionResult, OperationType, Plan, PlannedAction};
+use voom_domain::temp_file::temp_path;
 use voom_domain::utils::language::is_valid_language;
 use voom_domain::utils::sanitize::validate_metadata_value;
 use voom_kernel::{Plugin, PluginContext};
@@ -283,10 +284,13 @@ impl MkvtoolnixExecutorPlugin {
             });
         }
 
-        let temp_path = path.with_extension("tmp.mkv");
+        let tmp = temp_path(path);
+        let _guard = scopeguard::guard(tmp.clone(), |p| {
+            let _ = std::fs::remove_file(&p);
+        });
         let mut args = vec![
             "-o".to_string(),
-            temp_path.to_string_lossy().into_owned(),
+            tmp.to_string_lossy().into_owned(),
             "--language".to_string(),
             format!("0:{language}"),
             "--forced-display-flag".to_string(),
@@ -305,36 +309,29 @@ impl MkvtoolnixExecutorPlugin {
 
         match output {
             Ok(o) if o.status.success() || o.status.code() == Some(1) => {
-                std::fs::rename(&temp_path, path).map_err(|e| {
-                    let _ = std::fs::remove_file(&temp_path);
-                    VoomError::ToolExecution {
-                        tool: "mkvmerge".into(),
-                        message: format!("failed to rename temp file: {e}"),
-                    }
+                std::fs::rename(&tmp, path).map_err(|e| VoomError::ToolExecution {
+                    tool: "mkvmerge".into(),
+                    message: format!("failed to rename temp file: {e}"),
                 })?;
+                // Defuse guard — temp file was successfully renamed
+                scopeguard::ScopeGuard::into_inner(_guard);
                 Ok(vec![ActionResult::success(
                     action.operation,
                     &action.description,
                 )])
             }
-            Ok(o) => {
-                let _ = std::fs::remove_file(&temp_path);
-                Err(VoomError::ToolExecution {
-                    tool: "mkvmerge".into(),
-                    message: format!(
-                        "mkvmerge failed (exit {}): {}",
-                        o.status.code().unwrap_or(-1),
-                        String::from_utf8_lossy(&o.stderr)
-                    ),
-                })
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&temp_path);
-                Err(VoomError::ToolExecution {
-                    tool: "mkvmerge".into(),
-                    message: format!("mkvmerge subtitle mux failed: {e}"),
-                })
-            }
+            Ok(o) => Err(VoomError::ToolExecution {
+                tool: "mkvmerge".into(),
+                message: format!(
+                    "mkvmerge failed (exit {}): {}",
+                    o.status.code().unwrap_or(-1),
+                    String::from_utf8_lossy(&o.stderr)
+                ),
+            }),
+            Err(e) => Err(VoomError::ToolExecution {
+                tool: "mkvmerge".into(),
+                message: format!("mkvmerge subtitle mux failed: {e}"),
+            }),
         }
     }
 

@@ -99,6 +99,7 @@ interface types {
         file-modified: bool,
         skip-reason: option<string>,
         duration-ms: u64,
+        temp-path: option<string>,
     }
 
     enum phase-outcome {

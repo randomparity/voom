@@ -11,6 +11,8 @@ use anyhow::{Context, Result};
 use console::style;
 use indicatif::HumanDuration;
 use tokio_util::sync::CancellationToken;
+use voom_domain::bad_file::BadFileSource;
+use voom_domain::events::Event;
 
 /// Run the scan command.
 ///
@@ -52,9 +54,14 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     let progress_clone = progress.clone();
     let file_count = Arc::new(AtomicU64::new(0));
     let file_count_clone = file_count.clone();
+    let orphan_count = Arc::new(AtomicU64::new(0));
+    let orphan_count_clone = orphan_count.clone();
+    let discovery_errors = Arc::new(AtomicU64::new(0));
+    let discovery_errors_clone = discovery_errors.clone();
     let start = Instant::now();
     let hash_files = !args.no_hash;
 
+    let kernel_for_errors = kernel.clone();
     let mut options = voom_discovery::ScanOptions::new(path);
     options.recursive = args.recursive;
     options.hash_files = hash_files;
@@ -72,15 +79,42 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
             progress_clone.on_processing(current, total, &path, action);
             file_count_clone.store(total as u64, Ordering::Relaxed);
         }
+        voom_discovery::ScanProgress::OrphanedTempFiles { count } => {
+            orphan_count_clone.store(count as u64, Ordering::Relaxed);
+        }
+    }));
+    options.on_error = Some(Box::new(move |path, size, error| {
+        tracing::warn!(path = %path.display(), error = %error, "discovery error");
+        discovery_errors_clone.fetch_add(1, Ordering::Relaxed);
+        crate::introspect::dispatch_failure(
+            &kernel_for_errors,
+            path,
+            size,
+            None,
+            &error,
+            BadFileSource::Discovery,
+        );
     }));
 
     let events = discovery.scan(&options).context("filesystem scan failed")?;
 
     progress.finish();
 
+    let orphans = orphan_count.load(Ordering::Relaxed);
+    let disc_errors = discovery_errors.load(Ordering::Relaxed);
+
     if events.is_empty() {
         if !quiet {
-            eprintln!("{}", style("No media files found.").yellow());
+            if orphans > 0 {
+                eprintln!(
+                    "{} ({} orphaned temp {} skipped)",
+                    style("No media files found.").yellow(),
+                    orphans,
+                    if orphans == 1 { "file" } else { "files" },
+                );
+            } else {
+                eprintln!("{}", style("No media files found.").yellow());
+            }
         }
         if matches!(args.format, Some(crate::cli::OutputFormat::Json)) {
             println!("[]");
@@ -91,6 +125,24 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     // Show discovery/hashing summary
     if !quiet {
         let discovery_elapsed = start.elapsed();
+        let orphan_suffix = if orphans > 0 {
+            format!(
+                " ({} orphaned temp {} skipped)",
+                orphans,
+                if orphans == 1 { "file" } else { "files" }
+            )
+        } else {
+            String::new()
+        };
+        let disc_error_suffix = if disc_errors > 0 {
+            format!(
+                ", {} discovery {}",
+                disc_errors,
+                if disc_errors == 1 { "error" } else { "errors" }
+            )
+        } else {
+            String::new()
+        };
         if hash_files {
             let elapsed_ms = discovery_elapsed.as_millis();
             let elapsed_str = if elapsed_ms < 1000 {
@@ -99,16 +151,20 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
                 format!("{}", HumanDuration(discovery_elapsed))
             };
             eprintln!(
-                "  {} {} files, hashed in {}",
+                "  {} {} files, hashed in {}{}{}",
                 style("Discovered").dim(),
                 events.len(),
                 elapsed_str,
+                orphan_suffix,
+                disc_error_suffix,
             );
         } else {
             eprintln!(
-                "  {} {} files (hashing skipped)",
+                "  {} {} files (hashing skipped){}{}",
                 style("Discovered").dim(),
                 events.len(),
+                orphan_suffix,
+                disc_error_suffix,
             );
         }
     }
@@ -121,7 +177,7 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     // progress reporting. The enqueued introspect jobs are not consumed here;
     // they exist for future daemon-mode use (issue #36).
     for event in &events {
-        kernel.dispatch(voom_domain::events::Event::FileDiscovered(event.clone()));
+        kernel.dispatch(Event::FileDiscovered(event.clone()));
     }
 
     let probe = if quiet {
@@ -222,7 +278,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use voom_domain::capabilities::Capability;
-    use voom_domain::events::{Event, EventResult, FileDiscoveredEvent, FileIntrospectedEvent};
+    use voom_domain::events::{EventResult, FileDiscoveredEvent, FileIntrospectedEvent};
     use voom_domain::media::MediaFile;
 
     /// A test plugin that counts received events.
