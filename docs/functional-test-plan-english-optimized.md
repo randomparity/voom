@@ -59,6 +59,23 @@ Inspect the JSON and verify each test scenario below.
 
 ## 4. Phase-by-Phase Scenarios
 
+### Setup
+
+Create a fresh test copy for the live run:
+
+```bash
+rm -rf /tmp/voom-test-eo
+cp -r /tmp/voom-corpus /tmp/voom-test-eo
+```
+
+Run the live process:
+
+```bash
+voom process /tmp/voom-test-eo --policy docs/examples/english-optimized.voom
+```
+
+**Expected:** `0 errors` in the summary line, all phases report completed or skipped counts.
+
 ### 4.1 Containerize (phase 1)
 
 | Test file | Expected behavior |
@@ -66,9 +83,27 @@ Inspect the JSON and verify each test scenario below.
 | `basic-h264-aac.mp4` | Plan includes `ConvertContainer` to MKV |
 | `sd-mpeg2.avi` | Plan includes `ConvertContainer` to MKV |
 | `vp9-opus.webm` | Plan includes `ConvertContainer` to MKV |
+| `av1-opus.mp4` | Plan includes `ConvertContainer` to MKV |
+| `vfr-h264.mp4` | Plan includes `ConvertContainer` to MKV |
 | `hevc-surround.mkv` | No container action (already MKV) |
 
-**Verify:** After live run, all output files have `.mkv` extension.
+**Verify all files are now MKV:**
+
+```bash
+# Should list only .mkv files (plus any .vbak backups)
+ls /tmp/voom-test-eo/*.mkv
+# Should return nothing — no non-MKV media files remain
+ls /tmp/voom-test-eo/*.{mp4,avi,webm} 2>/dev/null
+```
+
+**Verify in plan-only output:**
+
+```bash
+jq '[.[] | select(.phase == "containerize")] |
+    group_by(.file.path | split("/")[-1]) |
+    .[] | {file: .[0].file.path | split("/")[-1],
+           actions: [.[].actions[].operation]}' /tmp/plans-eo.json
+```
 
 ### 4.2 Strip (phase 2)
 
@@ -76,26 +111,86 @@ Inspect the JSON and verify each test scenario below.
 |-----------|-------------------|
 | `attachment.mkv` | `ClearTags` + `RemoveAttachments` (non-font attachments removed, font kept) |
 | `cover-art.mkv` | Cover art attachment removed (not a font) |
-| `hevc-surround.mkv` | `ClearTags` emitted |
+| All MKV files | `ClearTags` emitted |
 
-**Verify:** `voom inspect <file> --format json` shows no container tags and no non-font attachments after processing.
+**Verify no container-level tags remain:**
+
+```bash
+# Should show no tags on any file
+for f in /tmp/voom-test-eo/*.mkv; do
+  tags=$(ffprobe -v quiet -print_format json -show_format "$f" | jq '.format.tags // {}')
+  echo "$(basename "$f"): $tags"
+done
+```
+
+**Verify attachment.mkv kept font but removed images:**
+
+```bash
+# Should show only the font attachment (DummyFont.ttf), not cover.jpg or poster.png
+voom inspect /tmp/voom-test-eo/attachment.mkv --format json | \
+  jq '.tracks[] | select(.track_type | test("attachment"; "i")) | {index, title, codec}'
+```
+
+**Verify cover-art.mkv has no attachments:**
+
+```bash
+voom inspect /tmp/voom-test-eo/cover-art.mkv --format json | \
+  jq '[.tracks[] | select(.track_type | test("attachment"; "i"))] | length'
+# Expected: 0
+```
 
 ### 4.3 Transcode (phase 3)
 
 | Test file | Expected behavior |
 |-----------|-------------------|
-| `basic-h264-aac.mp4` | Plan includes `TranscodeVideo` to HEVC (h264 source) |
-| `sd-mpeg2.avi` | Plan includes `TranscodeVideo` to HEVC (mpeg2 source) |
+| `basic-h264-aac.mkv` | Transcoded to HEVC (was h264) |
+| `sd-mpeg2.mkv` | Transcoded to HEVC (was mpeg2) |
+| `vp9-opus.mkv` | Transcoded to HEVC (was vp9) |
+| `vfr-h264.mkv` | Transcoded to HEVC (was h264) |
+| `multichannel-flac.mkv` | Transcoded to HEVC (was h264) |
 | `hevc-surround.mkv` | **Skipped** via `skip when video.codec == "hevc"` |
 | `4k-hevc-hdr10.mkv` | **Skipped** (already HEVC) |
+| `hevc-truehd.mkv` | **Skipped** (already HEVC) |
 
-**Verify:** After live run, `voom inspect <file>` shows `hevc` video codec on previously non-HEVC files. HDR10 metadata preserved on `4k-hevc-hdr10.mkv`.
+**Verify all video tracks are now HEVC:**
+
+```bash
+for f in /tmp/voom-test-eo/*.mkv; do
+  codec=$(ffprobe -v quiet -print_format json -show_streams -select_streams v "$f" | \
+    jq -r '.streams[0].codec_name')
+  echo "$(basename "$f"): $codec"
+done
+# Expected: every file shows "hevc"
+```
+
+**Verify skip_when in plan-only output:**
+
+```bash
+jq '.[] | select(.phase == "transcode" and .skip_reason != null) |
+    {file: .file.path | split("/")[-1], skip_reason}' /tmp/plans-eo.json
+```
+
+**Verify HDR10 metadata preserved on 4k-hevc-hdr10.mkv:**
+
+```bash
+ffprobe -v quiet -print_format json -show_streams -select_streams v \
+  /tmp/voom-test-eo/4k-hevc-hdr10.mkv | \
+  jq '{color_primaries: .streams[0].color_primaries,
+       color_transfer: .streams[0].color_transfer,
+       color_space: .streams[0].color_space}'
+# Expected: bt2020 / smpte2084 / bt2020nc
+```
 
 ### 4.4 Enrich (phase 4)
 
 This phase requires Radarr/Sonarr plugin metadata. Without those plugins configured, it should be a no-op.
 
-**Test without metadata:** Run `--plan-only` and confirm no `SetLanguage` actions in the enrich phase.
+**Verify no SetLanguage actions without metadata:**
+
+```bash
+jq '[.[] | select(.phase == "enrich") | .actions[]] | length' /tmp/plans-eo.json
+# Expected: 0
+```
 
 **Test with simulated metadata:** If you have a Radarr/Sonarr integration configured, or can inject `plugin_metadata` via a WASM plugin, verify:
 - Video track language set to `original_language` from Radarr
@@ -108,7 +203,23 @@ This phase requires Radarr/Sonarr plugin metadata. Without those plugins configu
 | `multichannel-flac.mkv` | Commentary audio track (ac3 with "Director's Commentary" title) removed |
 | Any file with `zxx` audio | Track removed |
 
-**Verify:** `voom inspect` after processing shows no commentary or `zxx` audio tracks.
+**Verify commentary track removed from multichannel-flac.mkv:**
+
+```bash
+voom inspect /tmp/voom-test-eo/multichannel-flac.mkv --format json | \
+  jq '[.tracks[] | select(.track_type | test("audio"; "i"))] |
+      [{index, codec, title, language}]'
+# Expected: only the FLAC stereo track remains, no "Director's Commentary"
+```
+
+**Verify in plan-only output:**
+
+```bash
+jq '.[] | select(.phase == "audio-cleanup" and
+    (.file.path | contains("multichannel"))) |
+    {file: .file.path | split("/")[-1],
+     actions: [.actions[] | {operation, description}]}' /tmp/plans-eo.json
+```
 
 ### 4.6 Audio Filtering (phases 5b/5c)
 
@@ -120,7 +231,28 @@ These phases are mutually exclusive via `skip when` conditions:
 | Radarr `original_language == "eng"` | `audio-filter-english` | Keep only `eng`/`und` audio |
 | Radarr `original_language == "jpn"` | `audio-filter-foreign` | Keep `eng` + `jpn` audio |
 
-**Verify with `--plan-only`:** Confirm exactly one of the two filter phases produces actions per file. The other should be skipped.
+**Verify mutual exclusivity — exactly one phase skipped per file:**
+
+```bash
+jq '[.[] | select(.phase | test("audio-filter"))] |
+    group_by(.file.path) | .[] |
+    {file: .[0].file.path | split("/")[-1],
+     phases: [.[] | {phase: .phase, skipped: (.skip_reason != null)}]}' \
+  /tmp/plans-eo.json
+# Expected: for each file, audio-filter-foreign is skipped (no Radarr metadata),
+#           audio-filter-english is active
+```
+
+**Verify remaining audio tracks have eng or und language:**
+
+```bash
+for f in /tmp/voom-test-eo/*.mkv; do
+  langs=$(voom inspect "$f" --format json | \
+    jq -r '[.tracks[] | select(.track_type | test("audio"; "i")) | .language] | join(",")')
+  echo "$(basename "$f"): $langs"
+done
+# Expected: only "eng" and/or "und" languages
+```
 
 ### 4.7 Subtitle Filtering (phase 6)
 
@@ -130,7 +262,29 @@ These phases are mutually exclusive via `skip when` conditions:
 | `multichannel-flac.mkv` | English subtitle kept |
 | `4k-hevc-hdr10.mkv` | English ASS subtitle kept |
 
-**Verify:** Only `eng` non-commentary subtitles remain after processing.
+**Verify only English non-commentary subtitles remain:**
+
+```bash
+for f in /tmp/voom-test-eo/*.mkv; do
+  subs=$(voom inspect "$f" --format json | \
+    jq '[.tracks[] | select(.track_type | test("subtitle"; "i")) |
+         {language, title}]')
+  count=$(echo "$subs" | jq 'length')
+  if [ "$count" -gt 0 ]; then
+    echo "$(basename "$f"): $subs"
+  fi
+done
+# Expected: only eng-language subtitles, no commentary subtitles
+```
+
+**Verify Spanish subtitle removed from hevc-surround.mkv:**
+
+```bash
+voom inspect /tmp/voom-test-eo/hevc-surround.mkv --format json | \
+  jq '[.tracks[] | select(.track_type | test("subtitle"; "i")) |
+       {language, title}]'
+# Expected: only English subtitle, no Spanish
+```
 
 ### 4.8 Audio Normalization (phase 7)
 
@@ -143,17 +297,66 @@ Three synthesize rules, tested in priority order:
 | eng stereo only (no 5.1+) | AAC stereo @ 192k created (unless AAC stereo already exists) |
 | eng AC3 5.1 already present | No synthesize (skip_if_exists triggers) |
 
-**Key corpus files:**
-- `hevc-surround.mkv` (AC3 5.1 + AAC stereo): skip_if_exists should prevent new synthesis
-- `multichannel-flac.mkv` (FLAC stereo): AAC stereo synthesize may trigger depending on track language
+**Verify synthesized tracks in plan-only output:**
 
-**Verify with `--plan-only`:** Check `SynthesizeAudio` actions and their `skip_if_exists` / `create_if` evaluation.
+```bash
+jq '.[] | select(.phase == "audio-normalize" and .actions != null and
+    (.actions | length) > 0) |
+    {file: .file.path | split("/")[-1],
+     actions: [.actions[] | {operation, description}]}' /tmp/plans-eo.json
+```
+
+**Verify hevc-surround.mkv skip_if_exists (already has AC3 5.1):**
+
+```bash
+jq '.[] | select(.phase == "audio-normalize" and
+    (.file.path | contains("hevc-surround"))) |
+    {actions_count: (.actions | length),
+     actions: [.actions[]? | .description]}' /tmp/plans-eo.json
+# Expected: no SynthesizeAudio actions (AC3 5.1 already satisfies skip_if_exists)
+```
+
+**Verify audio tracks after processing:**
+
+```bash
+for f in /tmp/voom-test-eo/*.mkv; do
+  tracks=$(voom inspect "$f" --format json | \
+    jq '[.tracks[] | select(.track_type | test("audio"; "i")) |
+         {codec, channels, language, title}]')
+  echo "=== $(basename "$f") ==="
+  echo "$tracks"
+done
+```
 
 ### 4.9 Finalize (phase 8)
 
-**Verify:** Track order after processing matches: video, main audio, alternate audio, main subtitle, forced subtitle, attachments. Default audio is `first_per_language`, default subtitle is `none`.
+**Verify track order matches policy spec:**
 
-Use `voom inspect <file> --format json` and check track ordering and default flags.
+Track order should be: video, main audio, alternate audio, main subtitle, forced subtitle, attachments.
+
+```bash
+for f in /tmp/voom-test-eo/*.mkv; do
+  order=$(voom inspect "$f" --format json | \
+    jq '[.tracks[] | {index, track_type, codec, language}]')
+  echo "=== $(basename "$f") ==="
+  echo "$order"
+done
+```
+
+**Verify default flags — audio: first_per_language, subtitle: none:**
+
+```bash
+for f in /tmp/voom-test-eo/*.mkv; do
+  defaults=$(voom inspect "$f" --format json | \
+    jq '{audio_defaults: [.tracks[] | select(.track_type | test("audio"; "i")) |
+             {index, language, default: .default}],
+         sub_defaults: [.tracks[] | select(.track_type | test("subtitle"; "i")) |
+             {index, language, default: .default}]}')
+  echo "=== $(basename "$f") ==="
+  echo "$defaults"
+done
+# Expected: first audio per language has default=true; all subtitles have default=false
+```
 
 ### 4.10 Validate (phase 9)
 
@@ -163,13 +366,50 @@ Use `voom inspect <file> --format json` and check track ordering and default fla
 | File where all audio was removed | `fail` message: "No non-commentary audio tracks remain" |
 | File with no eng audio remaining | `warn` message: "No English audio" |
 
-**Test the failure case:** Create a policy variant that removes all audio, then run `--dry-run` and confirm the validation phase emits the fail message.
+**Check validate phase in plan-only output:**
+
+```bash
+jq '.[] | select(.phase == "validate") |
+    {file: .file.path | split("/")[-1],
+     actions: (.actions | length),
+     warnings: .warnings,
+     skip_reason}' /tmp/plans-eo.json
+# Expected: validate runs (not skipped) and produces no fail/warn actions
+#           for files with English audio
+```
+
+**Test the failure case:** Create a policy variant that removes all audio, then confirm the validation phase catches it:
+
+```bash
+cat > /tmp/test-validate.voom <<'POLICY'
+policy "validate-test" {
+  phase strip-all-audio {
+    remove audio where true
+  }
+  phase validate {
+    depends_on: [strip-all-audio]
+    run_if strip-all-audio.completed
+    when count(audio where not commentary) == 0 {
+      fail "No non-commentary audio tracks remain in {filename}"
+    }
+  }
+}
+POLICY
+
+voom process /tmp/voom-test-eo --policy /tmp/test-validate.voom --plan-only 2>/dev/null | \
+  jq '.[] | select(.phase == "validate" and (.actions | length) > 0) |
+      {file: .file.path | split("/")[-1],
+       actions: [.actions[] | .description]}' | head -20
+# Expected: fail actions for every file
+```
 
 ## 5. Background Variant Differences
 
 Run the background policy and verify these behavioral differences:
 
 ```bash
+rm -rf /tmp/voom-test-eo
+cp -r /tmp/voom-corpus /tmp/voom-test-eo
 voom process /tmp/voom-test-eo \
   --policy docs/examples/english-optimized-background.voom \
   --dry-run
@@ -185,6 +425,7 @@ voom process /tmp/voom-test-eo \
 Run against a disposable copy of the corpus with backups enabled.
 
 ```bash
+rm -rf /tmp/voom-live-test
 cp -r /tmp/voom-corpus /tmp/voom-live-test
 
 # Scan first to populate the database
@@ -193,18 +434,35 @@ voom scan /tmp/voom-live-test
 # Process with backups
 voom process /tmp/voom-live-test \
   --policy docs/examples/english-optimized.voom
-
-# Verify backups were created
-voom backup list /tmp/voom-live-test
 ```
 
 **Verify after processing:**
-- All files are MKV containers
-- Video tracks are HEVC (except files that were already HEVC)
-- Only English non-commentary subtitles remain
-- Commentary audio tracks removed
-- Backup files (`.vbak`) exist for every modified file
-- `voom inspect <file>` shows expected track layout
+
+```bash
+# All files are MKV containers
+ls /tmp/voom-live-test/*.mkv
+
+# No non-MKV media files remain
+ls /tmp/voom-live-test/*.{mp4,avi,webm} 2>/dev/null
+
+# Video tracks are HEVC
+for f in /tmp/voom-live-test/*.mkv; do
+  codec=$(ffprobe -v quiet -print_format json -show_streams -select_streams v "$f" | \
+    jq -r '.streams[0].codec_name')
+  echo "$(basename "$f"): $codec"
+done
+
+# Only English non-commentary subtitles remain
+for f in /tmp/voom-live-test/*.mkv; do
+  voom inspect "$f" --format json | \
+    jq -e '[.tracks[] | select(.track_type | test("subtitle"; "i")) |
+            select(.language != "eng" or (.title // "" | test("commentary"; "i")))] |
+           length == 0' > /dev/null && echo "$(basename "$f"): OK" || echo "$(basename "$f"): FAIL"
+done
+
+# Backup files exist for every modified file
+ls /tmp/voom-live-test/*.vbak | wc -l
+```
 
 **Re-run idempotency check:**
 
@@ -225,6 +483,33 @@ voom process /tmp/voom-live-test \
 | File with no audio | Remove all audio from a test file with mkvmerge, then process | Validate phase emits fail |
 | Already-optimized file | Process an already-processed file | All phases skip or produce empty plans |
 | Corrupt/truncated file | Truncate a corpus file: `head -c 1024 file.mkv > bad.mkv` | Error reported, processing continues (background policy) or aborts (base policy) |
+
+**Edge case commands:**
+
+```bash
+# Empty directory
+mkdir -p /tmp/empty
+voom process /tmp/empty --policy docs/examples/english-optimized.voom
+
+# Single file
+cp /tmp/voom-corpus/hevc-surround.mkv /tmp/voom-single/
+voom process /tmp/voom-single --policy docs/examples/english-optimized.voom
+
+# File with no audio
+mkdir -p /tmp/voom-no-audio
+mkvmerge -o /tmp/voom-no-audio/no-audio.mkv --no-audio /tmp/voom-live-test/hevc-surround.mkv
+voom process /tmp/voom-no-audio --policy docs/examples/english-optimized.voom --dry-run
+
+# Already-optimized file (re-run on processed output)
+voom process /tmp/voom-live-test --policy docs/examples/english-optimized.voom --dry-run
+# Expected: 0 would modify
+
+# Corrupt file
+mkdir -p /tmp/voom-corrupt
+head -c 1024 /tmp/voom-corpus/hevc-surround.mkv > /tmp/voom-corrupt/bad.mkv
+voom process /tmp/voom-corrupt --policy docs/examples/english-optimized-background.voom
+# Expected: error reported, exit 0 (background policy continues)
+```
 
 ## 8. Automated Functional Tests
 
