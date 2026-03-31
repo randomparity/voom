@@ -169,13 +169,7 @@ impl Kernel {
     /// Returns an error if a plugin with the same name is already registered.
     pub fn register_plugin(&mut self, plugin: Arc<dyn Plugin>, priority: i32) -> Result<()> {
         let name = plugin.name().to_string();
-        if self.registry.contains(&name) {
-            return Err(voom_domain::errors::VoomError::Plugin {
-                plugin: name,
-                message: "a plugin with this name is already registered".into(),
-            });
-        }
-        self.registry.register(plugin.clone());
+        self.registry.register(plugin.clone())?;
         self.bus.subscribe_plugin(plugin, priority);
         tracing::info!(plugin = %name, "plugin registered");
         Ok(())
@@ -196,12 +190,6 @@ impl Kernel {
         ctx: &PluginContext,
     ) -> Result<()> {
         let name = plugin.name().to_string();
-        if self.registry.contains(&name) {
-            return Err(voom_domain::errors::VoomError::Plugin {
-                plugin: name,
-                message: "a plugin with this name is already registered".into(),
-            });
-        }
         let plugin_mut =
             Arc::get_mut(&mut plugin).ok_or_else(|| voom_domain::errors::VoomError::Plugin {
                 plugin: name.clone(),
@@ -215,7 +203,7 @@ impl Kernel {
                     plugin: name.clone(),
                     message: format!("init failed: {e}"),
                 })?;
-        self.registry.register(plugin.clone());
+        self.registry.register(plugin.clone())?;
         self.bus.subscribe_plugin(plugin, priority);
         tracing::info!(plugin = %name, "plugin initialized and registered");
 

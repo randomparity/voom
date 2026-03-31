@@ -19,9 +19,19 @@ impl PluginRegistry {
     }
 
     /// Register a plugin by name.
-    pub fn register(&self, plugin: Arc<dyn Plugin>) {
+    ///
+    /// Returns an error if a plugin with the same name is already registered.
+    pub fn register(&self, plugin: Arc<dyn Plugin>) -> voom_domain::errors::Result<()> {
         let name = plugin.name().to_string();
-        self.plugins.write().insert(name, plugin);
+        let mut plugins = self.plugins.write();
+        if plugins.contains_key(&name) {
+            return Err(voom_domain::errors::VoomError::Plugin {
+                plugin: name,
+                message: "a plugin with this name is already registered".into(),
+            });
+        }
+        plugins.insert(name, plugin);
+        Ok(())
     }
 
     /// Look up a plugin by name.
@@ -91,10 +101,31 @@ mod tests {
             name: "test-plugin".into(),
             caps: vec![],
         });
-        registry.register(plugin);
+        registry.register(plugin).unwrap();
 
         assert!(registry.get("test-plugin").is_some());
         assert!(registry.get("nonexistent").is_none());
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn test_duplicate_register_rejected() {
+        let registry = PluginRegistry::new();
+        let p1 = Arc::new(FakePlugin {
+            name: "dup".into(),
+            caps: vec![],
+        });
+        let p2 = Arc::new(FakePlugin {
+            name: "dup".into(),
+            caps: vec![],
+        });
+
+        registry.register(p1).unwrap();
+        let err = registry.register(p2).unwrap_err();
+        assert!(
+            err.to_string().contains("already registered"),
+            "expected 'already registered' error, got: {err}"
+        );
         assert_eq!(registry.len(), 1);
     }
 }
