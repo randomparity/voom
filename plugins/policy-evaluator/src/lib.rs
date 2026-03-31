@@ -8,9 +8,13 @@ pub mod condition;
 pub mod evaluator;
 pub mod filter;
 
+use std::collections::HashMap;
+
 use voom_domain::capability_map::CapabilityMap;
 use voom_domain::media::MediaFile;
 use voom_dsl::compiled::CompiledPolicy;
+
+pub use evaluator::EvaluationOutcome;
 
 /// The policy evaluator plugin.
 ///
@@ -49,6 +53,29 @@ impl PolicyEvaluator {
         let mut result = evaluator::evaluate_with_context(policy, file, Some(capabilities));
         evaluator::apply_capability_hints(&mut result.plans, capabilities);
         result
+    }
+
+    /// Evaluate a single phase against the current file state.
+    ///
+    /// Used by the per-phase evaluate-execute-reintrospect loop so each
+    /// phase sees the file as it exists after prior phases have executed.
+    pub fn evaluate_single_phase(
+        &self,
+        phase_name: &str,
+        policy: &CompiledPolicy,
+        file: &MediaFile,
+        phase_outcomes: &HashMap<String, EvaluationOutcome>,
+        capabilities: &CapabilityMap,
+    ) -> Option<voom_domain::plan::Plan> {
+        let mut plan = evaluator::evaluate_single_phase(
+            phase_name,
+            policy,
+            file,
+            phase_outcomes,
+            Some(capabilities),
+        )?;
+        evaluator::apply_capability_hints(std::slice::from_mut(&mut plan), capabilities);
+        Some(plan)
     }
 }
 
