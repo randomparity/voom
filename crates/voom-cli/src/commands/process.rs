@@ -884,6 +884,9 @@ async fn reintrospect_file(
                     .entry(k.clone())
                     .or_insert(v.clone());
             }
+            // Reapply detector-derived languages so subsequent
+            // phases see normalized values, not raw ffprobe tags.
+            apply_detected_languages(&mut new_file);
             new_file
         }
         Err(e) => {
