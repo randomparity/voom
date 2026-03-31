@@ -31,15 +31,15 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, language_code_from_name, load_plugin_config, serialize_event, Event,
-    HostFunctions, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
+    deserialize_event, language_code_from_name, load_plugin_config, serialize_event, Capability,
+    Event, HostFunctions, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
     PluginInfoData::new(
         "radarr-metadata",
         "0.1.0",
-        vec!["enrich_metadata:radarr".to_string()],
+        vec![Capability::EnrichMetadata { source: "radarr".to_string() }],
     )
     .with_description("Movie metadata enrichment via Radarr API")
     .with_author("David Christensen")
@@ -248,7 +248,8 @@ mod tests {
     fn test_get_info() {
         let info = get_info();
         assert_eq!(info.name, "radarr-metadata");
-        assert_eq!(info.capabilities, vec!["enrich_metadata:radarr"]);
+        assert_eq!(info.capabilities.len(), 1);
+        assert_eq!(info.capabilities[0].kind(), "enrich_metadata");
     }
 
     #[test]

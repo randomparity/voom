@@ -43,15 +43,15 @@
 //! to look up movie/TV metadata from services like Radarr, Sonarr, or TMDb.
 
 use voom_plugin_sdk::{
-    deserialize_event, serialize_event, Event, HostFunctions, MetadataEnrichedEvent, OnEventResult,
-    PluginInfoData,
+    deserialize_event, serialize_event, Capability, Event, HostFunctions, MetadataEnrichedEvent,
+    OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
     PluginInfoData::new(
         "example-metadata",
         "0.1.0",
-        vec!["enrich_metadata:example".to_string()],
+        vec![Capability::EnrichMetadata { source: "example".to_string() }],
     )
     .with_description("Example metadata enrichment plugin")
     .with_author("David Christensen")
@@ -190,7 +190,8 @@ mod tests {
         let info = get_info();
         assert_eq!(info.name, "example-metadata");
         assert_eq!(info.version, "0.1.0");
-        assert_eq!(info.capabilities, vec!["enrich_metadata:example"]);
+        assert_eq!(info.capabilities.len(), 1);
+        assert_eq!(info.capabilities[0].kind(), "enrich_metadata");
     }
 
     #[test]

@@ -30,15 +30,15 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, ActionParams, Event, HostFunctions, OnEventResult,
-    OperationType, PluginInfoData,
+    deserialize_event, load_plugin_config, ActionParams, Capability, Event, HostFunctions,
+    OnEventResult, OperationType, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
     PluginInfoData::new(
         "audio-synthesizer",
         "0.1.0",
-        vec!["synthesize".to_string()],
+        vec![Capability::Synthesize],
     )
     .with_description("Audio synthesis via TTS engines")
     .with_author("David Christensen")
@@ -285,7 +285,8 @@ mod tests {
     fn test_get_info() {
         let info = get_info();
         assert_eq!(info.name, "audio-synthesizer");
-        assert_eq!(info.capabilities, vec!["synthesize"]);
+        assert_eq!(info.capabilities.len(), 1);
+        assert_eq!(info.capabilities[0].kind(), "synthesize");
     }
 
     #[test]

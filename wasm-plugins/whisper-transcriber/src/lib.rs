@@ -30,15 +30,15 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, Event, HostFunctions, MediaFile,
-    MetadataEnrichedEvent, OnEventResult, PluginInfoData,
+    deserialize_event, load_plugin_config, serialize_event, Capability, Event, HostFunctions,
+    MediaFile, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
     PluginInfoData::new(
         "whisper-transcriber",
         "0.1.0",
-        vec!["transcribe".to_string()],
+        vec![Capability::Transcribe],
     )
     .with_description("Audio transcription via Whisper")
     .with_author("David Christensen")
@@ -371,7 +371,8 @@ mod tests {
     fn test_get_info() {
         let info = get_info();
         assert_eq!(info.name, "whisper-transcriber");
-        assert_eq!(info.capabilities, vec!["transcribe"]);
+        assert_eq!(info.capabilities.len(), 1);
+        assert_eq!(info.capabilities[0].kind(), "transcribe");
     }
 
     #[test]
