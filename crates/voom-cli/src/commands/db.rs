@@ -8,14 +8,14 @@ use crate::config;
 use crate::output;
 use voom_domain::utils::format::format_size;
 
-pub async fn run(cmd: DbCommands) -> Result<()> {
+pub async fn run(cmd: DbCommands, global_yes: bool) -> Result<()> {
     match cmd {
         DbCommands::Prune => prune(),
         DbCommands::Vacuum => vacuum(),
-        DbCommands::Reset => reset().await,
+        DbCommands::Reset { yes } => reset(yes || global_yes).await,
         DbCommands::ListBad { path, format } => list_bad(path, format),
         DbCommands::PurgeBad => purge_bad(),
-        DbCommands::CleanBad { yes } => clean_bad(yes).await,
+        DbCommands::CleanBad { yes } => clean_bad(yes || global_yes).await,
         DbCommands::Stats { format } => stats(format),
     }
 }
@@ -66,7 +66,7 @@ fn vacuum() -> Result<()> {
     Ok(())
 }
 
-async fn reset() -> Result<()> {
+async fn reset(yes: bool) -> Result<()> {
     let config = config::load_config()?;
     let db_path = config.data_dir.join("voom.db");
 
@@ -75,21 +75,13 @@ async fn reset() -> Result<()> {
         return Ok(());
     }
 
-    // Safety prompt via stderr
-    eprintln!(
+    let prompt = format!(
         "{} This will delete all data in {}",
         style("WARNING").bold().red(),
         style(db_path.display()).bold()
     );
-    eprintln!("Type 'yes' to confirm:");
-
-    let input = tokio::task::spawn_blocking(|| {
-        let mut buf = String::new();
-        std::io::stdin().read_line(&mut buf).map(|_| buf)
-    })
-    .await??;
-
-    if input.trim() != "yes" {
+    let confirmed = tokio::task::spawn_blocking(move || output::confirm(&prompt, yes)).await??;
+    if !confirmed {
         println!("{}", style("Aborted.").dim());
         return Ok(());
     }
@@ -225,24 +217,15 @@ async fn clean_bad(yes: bool) -> Result<()> {
         voom_domain::utils::format::format_size(total_size)
     );
 
-    if !yes {
-        eprintln!(
-            "{} This will delete {} files from disk.",
-            style("WARNING").bold().red(),
-            count
-        );
-        eprintln!("Type 'yes' to confirm:");
-
-        let input = tokio::task::spawn_blocking(|| {
-            let mut buf = String::new();
-            std::io::stdin().read_line(&mut buf).map(|_| buf)
-        })
-        .await??;
-
-        if input.trim() != "yes" {
-            println!("{}", style("Aborted.").dim());
-            return Ok(());
-        }
+    let prompt = format!(
+        "{} This will delete {} files from disk.",
+        style("WARNING").bold().red(),
+        count
+    );
+    let confirmed = tokio::task::spawn_blocking(move || output::confirm(&prompt, yes)).await??;
+    if !confirmed {
+        println!("{}", style("Aborted.").dim());
+        return Ok(());
     }
 
     let mut deleted = 0u64;

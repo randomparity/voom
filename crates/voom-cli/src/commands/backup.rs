@@ -14,11 +14,11 @@ struct VbakEntry {
     size: u64,
 }
 
-pub fn run(cmd: BackupCommands) -> Result<()> {
+pub fn run(cmd: BackupCommands, global_yes: bool) -> Result<()> {
     match cmd {
         BackupCommands::List { path, format } => list(&path, format),
-        BackupCommands::Restore { backup_path } => restore(&backup_path),
-        BackupCommands::Cleanup { path, yes } => cleanup(&path, yes),
+        BackupCommands::Restore { backup_path, yes } => restore(&backup_path, yes || global_yes),
+        BackupCommands::Cleanup { path, yes } => cleanup(&path, yes || global_yes),
     }
 }
 
@@ -81,7 +81,7 @@ fn list(root: &Path, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn restore(backup_path: &Path) -> Result<()> {
+fn restore(backup_path: &Path, yes: bool) -> Result<()> {
     let original_name = derive_original_name(backup_path).ok_or_else(|| {
         anyhow::anyhow!(
             "Cannot derive original filename from: {}. \
@@ -99,7 +99,7 @@ fn restore(backup_path: &Path) -> Result<()> {
         style(backup_path.display()).cyan(),
         style(original_path.display()).cyan()
     );
-    if !output::confirm(&prompt)? {
+    if !output::confirm(&prompt, yes)? {
         println!("{}", style("Aborted.").dim());
         return Ok(());
     }
@@ -134,7 +134,7 @@ fn cleanup(root: &Path, yes: bool) -> Result<()> {
         style(format::format_size(total_size)).bold()
     );
 
-    if !yes && !output::confirm("Confirm deletion?")? {
+    if !output::confirm("Confirm deletion?", yes)? {
         println!("{}", style("Aborted.").dim());
         return Ok(());
     }

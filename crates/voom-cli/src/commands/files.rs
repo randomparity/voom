@@ -9,7 +9,7 @@ use voom_domain::FileFilters;
 use crate::cli::{FilesCommands, OutputFormat};
 use crate::{app, config, output};
 
-pub fn run(cmd: FilesCommands) -> Result<()> {
+pub fn run(cmd: FilesCommands, global_yes: bool) -> Result<()> {
     match cmd {
         FilesCommands::List {
             container,
@@ -30,7 +30,7 @@ pub fn run(cmd: FilesCommands) -> Result<()> {
             list(filters, format)
         }
         FilesCommands::Show { id, format } => show(&id, format),
-        FilesCommands::Delete { id, yes } => delete(&id, yes),
+        FilesCommands::Delete { id, yes } => delete(&id, yes || global_yes),
     }
 }
 
@@ -148,15 +148,13 @@ fn delete(id: &str, yes: bool) -> Result<()> {
         .context("failed to look up file")?
         .ok_or_else(|| anyhow::anyhow!("File not found: {id}"))?;
 
-    if !yes {
-        let prompt = format!(
-            "Delete {} from database?",
-            style(file.path.display()).cyan()
-        );
-        if !crate::output::confirm(&prompt)? {
-            println!("{}", style("Aborted.").dim());
-            return Ok(());
-        }
+    let prompt = format!(
+        "Delete {} from database?",
+        style(file.path.display()).cyan()
+    );
+    if !crate::output::confirm(&prompt, yes)? {
+        println!("{}", style("Aborted.").dim());
+        return Ok(());
     }
 
     store.delete_file(&uuid).context("failed to delete file")?;

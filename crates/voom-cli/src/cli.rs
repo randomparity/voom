@@ -14,6 +14,10 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub quiet: bool,
 
+    /// Assume "yes" to all confirmation prompts (for automation)
+    #[arg(short, long, global = true)]
+    pub yes: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -322,7 +326,11 @@ pub enum DbCommands {
     /// Compact the database
     Vacuum,
     /// Reset the database (destructive!)
-    Reset,
+    Reset {
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
     /// List files that failed introspection
     ListBad {
         /// Filter by path prefix
@@ -418,6 +426,9 @@ pub enum BackupCommands {
     Restore {
         /// Path to the .vbak backup file
         backup_path: PathBuf,
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
     /// Remove all backup files
     Cleanup {
@@ -626,6 +637,45 @@ mod tests {
     fn test_quiet_after_subcommand() {
         let cli = parse(&["voom", "scan", "/media", "--quiet"]);
         assert!(cli.quiet);
+    }
+
+    #[test]
+    fn test_yes_default_is_false() {
+        let cli = parse(&["voom", "doctor"]);
+        assert!(!cli.yes);
+    }
+
+    #[test]
+    fn test_yes_short_flag() {
+        let cli = parse(&["voom", "-y", "doctor"]);
+        assert!(cli.yes);
+    }
+
+    #[test]
+    fn test_yes_long_flag() {
+        let cli = parse(&["voom", "--yes", "doctor"]);
+        assert!(cli.yes);
+    }
+
+    #[test]
+    fn test_yes_after_subcommand() {
+        let cli = parse(&["voom", "scan", "/media", "--yes"]);
+        assert!(cli.yes);
+    }
+
+    #[test]
+    fn test_db_reset_yes() {
+        let cli = parse(&["voom", "db", "reset", "--yes"]);
+        match cli.command {
+            Commands::Db(DbCommands::Reset { yes }) => assert!(yes),
+            _ => panic!("expected Db Reset"),
+        }
+    }
+
+    #[test]
+    fn test_global_yes_with_db_reset() {
+        let cli = parse(&["voom", "-y", "db", "reset"]);
+        assert!(cli.yes);
     }
 
     // ── Scan ─────────────────────────────────────────────────
@@ -1082,7 +1132,10 @@ mod tests {
     #[test]
     fn test_db_reset() {
         let cli = parse(&["voom", "db", "reset"]);
-        assert!(matches!(cli.command, Commands::Db(DbCommands::Reset)));
+        assert!(matches!(
+            cli.command,
+            Commands::Db(DbCommands::Reset { .. })
+        ));
     }
 
     #[test]
@@ -1515,8 +1568,20 @@ mod tests {
     fn test_backup_restore() {
         let cli = parse(&["voom", "backup", "restore", "/path/to/file.vbak"]);
         match cli.command {
-            Commands::Backup(BackupCommands::Restore { backup_path }) => {
+            Commands::Backup(BackupCommands::Restore { backup_path, yes }) => {
                 assert_eq!(backup_path, PathBuf::from("/path/to/file.vbak"));
+                assert!(!yes);
+            }
+            _ => panic!("expected Backup Restore"),
+        }
+    }
+
+    #[test]
+    fn test_backup_restore_yes() {
+        let cli = parse(&["voom", "backup", "restore", "/path/to/file.vbak", "--yes"]);
+        match cli.command {
+            Commands::Backup(BackupCommands::Restore { yes, .. }) => {
+                assert!(yes);
             }
             _ => panic!("expected Backup Restore"),
         }
