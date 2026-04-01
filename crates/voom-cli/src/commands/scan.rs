@@ -24,10 +24,9 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     let app::BootstrapResult { kernel, store, .. } = app::bootstrap_kernel_with_store(&config)?;
     let kernel = Arc::new(kernel);
 
-    let path = args
-        .path
+    let path = args.paths[0]
         .canonicalize()
-        .with_context(|| format!("Path not found: {}", args.path.display()))?;
+        .with_context(|| format!("Path not found: {}", args.paths[0].display()))?;
 
     // Auto-prune stale file entries under the scanned directory
     match store.prune_missing_files_under(&path) {

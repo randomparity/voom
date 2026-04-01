@@ -16,9 +16,9 @@ struct VbakEntry {
 
 pub fn run(cmd: BackupCommands, global_yes: bool) -> Result<()> {
     match cmd {
-        BackupCommands::List { path, format } => list(&path, format),
+        BackupCommands::List { paths, format } => list(&paths[0], format),
         BackupCommands::Restore { backup_path, yes } => restore(&backup_path, yes || global_yes),
-        BackupCommands::Cleanup { path, yes } => cleanup(&path, yes || global_yes),
+        BackupCommands::Cleanup { paths, yes } => cleanup(&paths[0], yes || global_yes),
     }
 }
 

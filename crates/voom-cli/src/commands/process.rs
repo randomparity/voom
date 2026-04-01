@@ -64,10 +64,9 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
     let kernel = Arc::new(kernel);
     let capabilities = Arc::new(collector.snapshot());
 
-    let path = args
-        .path
+    let path = args.paths[0]
         .canonicalize()
-        .with_context(|| format!("Path not found: {}", args.path.display()))?;
+        .with_context(|| format!("Path not found: {}", args.paths[0].display()))?;
 
     let root = if path.is_file() {
         path.parent()
