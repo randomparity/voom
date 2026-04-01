@@ -324,23 +324,38 @@ fn discover_files(
 
     let mut all_events: Vec<voom_domain::events::FileDiscoveredEvent> = Vec::new();
 
+    // Cumulative counters so the progress bar shows totals across all
+    // directories instead of resetting per directory.
+    let cumulative_discovered = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let processing_base = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     for path in paths {
+        // Reset bar to spinner so stale position/length from the previous
+        // directory's processing phase doesn't bleed into this discovery.
+        progress.reset_to_spinner();
+
         let mut options = voom_discovery::ScanOptions::new(path.clone());
         options.hash_files = hash_files;
         options.workers = args.workers;
 
         let progress_clone = progress.clone();
+        let cum_disc = cumulative_discovered.clone();
+        let proc_base = processing_base.clone();
+        let pre_scan_discovered = cumulative_discovered.load(std::sync::atomic::Ordering::Relaxed);
+
         options.on_progress = Some(Box::new(move |p| match p {
-            voom_discovery::ScanProgress::Discovered { count, path } => {
-                progress_clone.on_discovered(count, &path);
+            voom_discovery::ScanProgress::Discovered { count: _, path } => {
+                let cumulative = cum_disc.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                progress_clone.on_discovered(cumulative as usize, &path);
             }
             voom_discovery::ScanProgress::Processing {
                 current,
                 total,
                 path,
             } => {
+                let base = proc_base.load(std::sync::atomic::Ordering::Relaxed) as usize;
                 let action = if hash_files { "Hashing" } else { "Scanning" };
-                progress_clone.on_processing(current, total, &path, action);
+                progress_clone.on_processing(base + current, base + total, &path, action);
             }
             voom_discovery::ScanProgress::OrphanedTempFiles { .. } => {}
         }));
@@ -352,6 +367,11 @@ fn discover_files(
         }));
 
         let events = discovery.scan(&options).context("filesystem scan failed")?;
+
+        let dir_discovered =
+            cumulative_discovered.load(std::sync::atomic::Ordering::Relaxed) - pre_scan_discovered;
+        processing_base.fetch_add(dir_discovered, std::sync::atomic::Ordering::Relaxed);
+
         all_events.extend(events);
     }
 

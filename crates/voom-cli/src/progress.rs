@@ -94,6 +94,19 @@ impl DiscoveryProgress {
         }
     }
 
+    /// Reset from bar back to spinner for a new discovery phase.
+    ///
+    /// Called between directories so the progress bar doesn't show stale
+    /// position/length from the previous directory's processing phase.
+    pub fn reset_to_spinner(&self) {
+        if self.transitioned.swap(false, Ordering::Relaxed) {
+            self.pb.set_style(spinner_style());
+            self.pb.set_position(0);
+            self.pb.set_length(0);
+            self.pb.set_message("Discovering...");
+        }
+    }
+
     /// Update for a newly discovered file.
     pub fn on_discovered(&self, count: usize, path: &Path) {
         let prefix = format!("Discovering... {count} files found \u{2014} ");
@@ -105,12 +118,14 @@ impl DiscoveryProgress {
     /// Update for a processing step (hashing/scanning).
     ///
     /// Transitions from spinner to determinate bar on the first call.
+    /// Always updates bar length to support cumulative totals across
+    /// multiple scan directories.
     pub fn on_processing(&self, current: usize, total: usize, path: &Path, action: &str) {
         // Relaxed is sufficient: a duplicate set_style call is harmless (ProgressBar is thread-safe).
         if !self.transitioned.swap(true, Ordering::Relaxed) {
-            self.pb.set_length(total as u64);
             self.pb.set_style(bar_style());
         }
+        self.pb.set_length(total as u64);
         let eta = format_eta(self.start.elapsed(), current, total);
         let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + action.len() + 1 + eta.len());
         let name = truncated_filename(path, max_name);
