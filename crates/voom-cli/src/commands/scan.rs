@@ -6,6 +6,7 @@ use crate::app;
 use crate::cli::ScanArgs;
 use crate::config;
 use crate::output;
+use crate::paths::resolve_paths;
 use crate::progress::{DiscoveryProgress, ProbeProgress};
 use anyhow::{Context, Result};
 use console::style;
@@ -13,30 +14,6 @@ use indicatif::HumanDuration;
 use tokio_util::sync::CancellationToken;
 use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::Event;
-
-/// Canonicalize paths and deduplicate, removing paths that are subdirectories
-/// of another provided path (to avoid scanning overlapping trees).
-fn resolve_paths(raw: &[std::path::PathBuf]) -> Result<Vec<std::path::PathBuf>> {
-    let mut canonical: Vec<std::path::PathBuf> = Vec::with_capacity(raw.len());
-    for p in raw {
-        let c = p
-            .canonicalize()
-            .with_context(|| format!("Path not found: {}", p.display()))?;
-        canonical.push(c);
-    }
-    canonical.sort();
-    canonical.dedup();
-
-    let mut filtered: Vec<std::path::PathBuf> = Vec::with_capacity(canonical.len());
-    for path in &canonical {
-        let dominated = filtered.iter().any(|existing| path.starts_with(existing));
-        if !dominated {
-            filtered.retain(|existing| !existing.starts_with(path));
-            filtered.push(path.clone());
-        }
-    }
-    Ok(filtered)
-}
 
 /// Run the scan command.
 ///
@@ -418,33 +395,5 @@ mod tests {
         }
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 3);
-    }
-
-    #[test]
-    fn test_resolve_paths_deduplicates() {
-        let tmp = std::env::temp_dir();
-        let paths = vec![tmp.clone(), tmp.clone()];
-        let result = resolve_paths(&paths).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], tmp.canonicalize().unwrap());
-    }
-
-    #[test]
-    fn test_resolve_paths_nonexistent_returns_error() {
-        let paths = vec![PathBuf::from("/nonexistent/path/that/does/not/exist")];
-        let result = resolve_paths(&paths);
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("Path not found"));
-    }
-
-    #[test]
-    fn test_resolve_paths_subdirectory_dominated_by_parent() {
-        let tmp = std::env::temp_dir().canonicalize().unwrap();
-        // tmp and itself are both provided — deduplicated to one entry
-        let paths = vec![tmp.clone(), tmp.clone()];
-        let result = resolve_paths(&paths).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], tmp);
     }
 }

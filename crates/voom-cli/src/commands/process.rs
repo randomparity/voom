@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::config;
+use crate::paths::resolve_paths;
 use crate::policy_map::{PolicyMatch, PolicyResolver};
 use crate::progress::{BatchProgress, DiscoveryProgress};
 use voom_domain::bad_file::BadFileSource;
@@ -22,27 +23,6 @@ use voom_domain::plan::OperationType;
 use voom_domain::utils::format::format_size;
 use voom_job_manager::progress::{CompositeReporter, ProgressReporter};
 use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
-
-fn resolve_paths(raw: &[std::path::PathBuf]) -> Result<Vec<std::path::PathBuf>> {
-    let mut canonical: Vec<std::path::PathBuf> = Vec::with_capacity(raw.len());
-    for p in raw {
-        let c = p
-            .canonicalize()
-            .with_context(|| format!("Path not found: {}", p.display()))?;
-        canonical.push(c);
-    }
-    canonical.sort();
-    canonical.dedup();
-    let mut filtered: Vec<std::path::PathBuf> = Vec::with_capacity(canonical.len());
-    for path in &canonical {
-        let dominated = filtered.iter().any(|existing| path.starts_with(existing));
-        if !dominated {
-            filtered.retain(|existing| !existing.starts_with(path));
-            filtered.push(path.clone());
-        }
-    }
-    Ok(filtered)
-}
 
 /// Run the process command.
 ///
