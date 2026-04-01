@@ -1,5 +1,10 @@
 # VOOM
 
+[![CI](https://github.com/randomparity/voom/actions/workflows/ci.yml/badge.svg)](https://github.com/randomparity/voom/actions/workflows/ci.yml)
+[![Release](https://github.com/randomparity/voom/actions/workflows/release.yml/badge.svg)](https://github.com/randomparity/voom/actions/workflows/release.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
+
 **Policy-driven video library management, built in Rust.**
 
 VOOM automatically normalizes, organizes, and processes video files according
@@ -212,4 +217,7 @@ plugin registry. See [`docs/architecture.md`](docs/architecture.md) for details.
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+You may use, modify, and distribute this software under the terms of the AGPL-3.0.
+Any network-accessible deployment of modified versions must make the complete
+source code available to users under the same license.
