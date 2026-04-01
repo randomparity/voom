@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo $CLAUDE_TOOL_INPUT | grep -q 'git commit' && cargo fmt --check && cargo clippy --workspace -- -D warnings && cargo test --workspace || true"
+            "command": "if echo $CLAUDE_TOOL_INPUT | grep -q 'git commit'; then cargo fmt --check && cargo clippy --workspace -- -D warnings && cargo test --workspace; fi"
           }
         ]
       }
