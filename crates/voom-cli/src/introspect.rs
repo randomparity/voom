@@ -16,20 +16,33 @@ use voom_domain::events::{Event, FileIntrospectionFailedEvent};
 
 /// Dispatch a `FileIntrospectionFailed` event to the kernel.
 pub fn dispatch_introspection_failure(
-    kernel: &std::sync::Arc<voom_kernel::Kernel>,
+    kernel: &voom_kernel::Kernel,
     path: std::path::PathBuf,
     size: u64,
     content_hash: Option<String>,
     error: &str,
 ) {
+    dispatch_failure(
+        kernel,
+        path,
+        size,
+        content_hash,
+        error,
+        BadFileSource::Introspection,
+    );
+}
+
+/// Dispatch a file failure event with a specific [`BadFileSource`].
+pub fn dispatch_failure(
+    kernel: &voom_kernel::Kernel,
+    path: std::path::PathBuf,
+    size: u64,
+    content_hash: Option<String>,
+    error: &str,
+    source: BadFileSource,
+) {
     kernel.dispatch(Event::FileIntrospectionFailed(
-        FileIntrospectionFailedEvent::new(
-            path,
-            size,
-            content_hash,
-            error.to_string(),
-            BadFileSource::Introspection,
-        ),
+        FileIntrospectionFailedEvent::new(path, size, content_hash, error.to_string(), source),
     ));
 }
 

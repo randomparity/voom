@@ -11,7 +11,9 @@ use tokio_util::sync::CancellationToken;
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::config;
+use crate::policy_map::{PolicyMatch, PolicyResolver};
 use crate::progress::{BatchProgress, DiscoveryProgress};
+use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{
     Event, JobCompletedEvent, JobProgressEvent, JobStartedEvent, PlanCompletedEvent,
     PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent, PlanSkippedEvent,
@@ -41,7 +43,7 @@ use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// This split gives the CLI full control over ordering, concurrency, and
 /// progress reporting while still letting kernel-registered plugins react to
 /// the events they care about.
-pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
+pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Result<()> {
     if args.plan_only && args.approve {
         anyhow::bail!(
             "--plan-only and --approve cannot be used together \
@@ -67,32 +69,42 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         .canonicalize()
         .with_context(|| format!("Path not found: {}", args.path.display()))?;
 
-    let compiled = load_and_compile_policy(&args)?;
+    let root = if path.is_file() {
+        path.parent()
+            .ok_or_else(|| {
+                anyhow::anyhow!("cannot determine parent directory of {}", path.display())
+            })?
+            .to_path_buf()
+    } else {
+        path.clone()
+    };
 
-    if !plan_only {
-        print_run_header(&compiled.name, &path, dry_run);
+    let resolver = build_policy_resolver(&args, &config, &root)?;
+
+    if !plan_only && !quiet {
+        print_run_header(&resolver.summary(), &path, dry_run);
     }
 
     // Auto-prune stale file entries under the target directory
     match store.prune_missing_files_under(&path) {
-        Ok(n) if n > 0 && !plan_only => println!("Pruned {n} stale entries."),
+        Ok(n) if n > 0 && !plan_only && !quiet => eprintln!("Pruned {n} stale entries."),
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
     }
 
     if token.is_cancelled() {
-        if !plan_only {
-            println!("{}", style("Interrupted before discovery.").yellow());
+        if !plan_only && !quiet {
+            eprintln!("{}", style("Interrupted before discovery.").yellow());
         }
         return Ok(());
     }
 
-    let mut events = discover_files(&path, &args, &kernel)?;
+    let mut events = discover_files(&path, &args, &kernel, quiet)?;
     if events.is_empty() {
         if plan_only {
             println!("[]");
-        } else {
-            println!("{}", style("No media files found.").yellow());
+        } else if !quiet {
+            eprintln!("{}", style("No media files found.").yellow());
         }
         return Ok(());
     }
@@ -108,8 +120,8 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
             let before = events.len();
             events.retain(|e| !bad_paths.contains(&e.path));
             let skipped = before - events.len();
-            if skipped > 0 && !plan_only {
-                println!(
+            if skipped > 0 && !plan_only && !quiet {
+                eprintln!(
                     "Skipping {} known-bad files (use {} to re-attempt).",
                     style(skipped).yellow(),
                     style("--force-rescan").bold()
@@ -121,15 +133,15 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     if events.is_empty() {
         if plan_only {
             println!("[]");
-        } else {
-            println!("{}", style("No processable files found.").yellow());
+        } else if !quiet {
+            eprintln!("{}", style("No processable files found.").yellow());
         }
         return Ok(());
     }
 
     let file_count = events.len();
-    if !plan_only {
-        println!("Found {} media files.", style(file_count).bold());
+    if !plan_only && !quiet {
+        eprintln!("Found {} media files.", style(file_count).bold());
     }
 
     let on_error = match args.on_error {
@@ -138,7 +150,9 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     };
 
     if token.is_cancelled() {
-        println!("{}", style("Interrupted before processing.").yellow());
+        if !quiet {
+            eprintln!("{}", style("Interrupted before processing.").yellow());
+        }
         return Ok(());
     }
 
@@ -148,14 +162,17 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let reporter: Arc<dyn ProgressReporter> = if plan_only {
         bus_reporter
     } else {
-        let cli_reporter: Arc<dyn ProgressReporter> = Arc::new(BatchProgress::new(file_count));
+        let cli_reporter: Arc<dyn ProgressReporter> = if quiet {
+            Arc::new(BatchProgress::hidden(file_count))
+        } else {
+            Arc::new(BatchProgress::new(file_count))
+        };
         Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]))
     };
 
     let items = build_work_items(&events, args.priority_by_date);
-    let keep_backups = compiled.config.keep_backups;
-    let phase_order = compiled.phase_order.clone();
-    let compiled = Arc::new(compiled);
+    let all_phase_names = resolver.all_phase_names();
+    let resolver = Arc::new(resolver);
     let flag_size_increase = args.flag_size_increase;
     let counters = RunCounters::new();
 
@@ -167,7 +184,7 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
         .process_batch(
             items,
             move |job| {
-                let compiled = compiled.clone();
+                let resolver = resolver.clone();
                 let kernel = kernel.clone();
                 let store = store.clone();
                 let token = token_for_workers.clone();
@@ -176,13 +193,12 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
                 let counters = counters.clone();
                 async move {
                     let ctx = ProcessContext {
-                        compiled: &compiled,
+                        resolver: &resolver,
                         kernel,
                         store,
                         dry_run,
                         plan_only,
                         flag_size_increase,
-                        keep_backups,
                         token: &token,
                         ffprobe_path: ffprobe_path.as_deref(),
                         capabilities: &capabilities,
@@ -209,37 +225,53 @@ pub async fn run(args: ProcessArgs, token: CancellationToken) -> Result<()> {
     let backup_total = counters_for_summary
         .backup_bytes
         .load(AtomicOrdering::Relaxed);
-    if token.is_cancelled() {
-        print_interrupted_summary(&pool, file_count, modified);
-    } else {
-        print_summary(&SummaryContext {
-            pool: &pool,
-            file_count,
-            modified,
-            effective_workers,
-            dry_run,
-            keep_backups,
-            backup_bytes: backup_total,
-            path: &path,
-        });
+    if !quiet {
+        if token.is_cancelled() {
+            print_interrupted_summary(&pool, file_count, modified);
+        } else {
+            print_summary(&SummaryContext {
+                pool: &pool,
+                file_count,
+                modified,
+                effective_workers,
+                dry_run,
+                backup_bytes: backup_total,
+                path: &path,
+            });
+        }
+        print_phase_breakdown(&counters_for_summary.phase_stats.lock(), &all_phase_names);
     }
-    print_phase_breakdown(&counters_for_summary.phase_stats.lock(), &phase_order);
 
     Ok(())
 }
 
-/// Load and compile the DSL policy file.
-fn load_and_compile_policy(args: &ProcessArgs) -> Result<voom_dsl::CompiledPolicy> {
-    let resolved = crate::config::resolve_policy_path(&args.policy);
-    let policy_source = std::fs::read_to_string(&resolved)
-        .with_context(|| format!("Failed to read policy: {}", resolved.display()))?;
-
-    voom_dsl::compile_policy(&policy_source).context("policy compilation failed")
+/// Build a `PolicyResolver` from CLI args and config.
+fn build_policy_resolver(
+    args: &ProcessArgs,
+    config: &crate::config::AppConfig,
+    root: &std::path::Path,
+) -> Result<PolicyResolver> {
+    if let Some(ref policy_path) = args.policy {
+        let resolved = crate::config::resolve_policy_path(policy_path);
+        let source = std::fs::read_to_string(&resolved)
+            .with_context(|| format!("Failed to read policy: {}", resolved.display()))?;
+        let compiled = voom_dsl::compile_policy(&source).context("policy compilation failed")?;
+        Ok(PolicyResolver::from_single(compiled, root))
+    } else if let Some(ref map_path) = args.policy_map {
+        PolicyResolver::from_map_file(map_path, root)
+    } else if !config.policy_mapping.is_empty() || config.default_policy.is_some() {
+        PolicyResolver::from_config(config, root)
+    } else {
+        anyhow::bail!(
+            "no policy specified; use --policy, --policy-map, \
+             or configure policy_mapping in config.toml"
+        );
+    }
 }
 
 /// Print the header line describing what we are about to do.
 fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
-    println!(
+    eprintln!(
         "{} policy {} to {}{}",
         if dry_run {
             style("Dry-running").bold()
@@ -270,13 +302,18 @@ fn discover_files(
     path: &std::path::Path,
     args: &ProcessArgs,
     kernel: &voom_kernel::Kernel,
+    quiet: bool,
 ) -> Result<Vec<voom_domain::events::FileDiscoveredEvent>> {
     let discovery = voom_discovery::DiscoveryPlugin::new();
     let mut options = voom_discovery::ScanOptions::new(path.to_path_buf());
     options.hash_files = !args.no_backup;
     options.workers = args.workers;
 
-    let progress = DiscoveryProgress::new();
+    let progress = if quiet {
+        DiscoveryProgress::hidden()
+    } else {
+        DiscoveryProgress::new()
+    };
     let progress_clone = progress.clone();
     let hash_files = options.hash_files;
     options.on_progress = Some(Box::new(move |p| match p {
@@ -291,6 +328,15 @@ fn discover_files(
             let action = if hash_files { "Hashing" } else { "Scanning" };
             progress_clone.on_processing(current, total, &path, action);
         }
+        voom_discovery::ScanProgress::OrphanedTempFiles { .. } => {}
+    }));
+
+    let discovery_errors: Arc<Mutex<Vec<(std::path::PathBuf, u64, String)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let errors_clone = discovery_errors.clone();
+    options.on_error = Some(Box::new(move |path, size, error| {
+        tracing::warn!(path = %path.display(), error = %error, "discovery error");
+        errors_clone.lock().push((path, size, error));
     }));
 
     let events = discovery.scan(&options).context("filesystem scan failed")?;
@@ -299,6 +345,17 @@ fn discover_files(
     for event in &events {
         let results = kernel.dispatch(Event::FileDiscovered(event.clone()));
         log_plugin_errors(&results);
+    }
+
+    for (path, size, error) in discovery_errors.lock().drain(..) {
+        crate::introspect::dispatch_failure(
+            kernel,
+            path,
+            size,
+            None,
+            &error,
+            BadFileSource::Discovery,
+        );
     }
 
     Ok(events)
@@ -462,13 +519,12 @@ impl RunCounters {
 
 /// Shared context for processing a single file.
 struct ProcessContext<'a> {
-    compiled: &'a voom_dsl::CompiledPolicy,
+    resolver: &'a PolicyResolver,
     kernel: Arc<voom_kernel::Kernel>,
     store: Arc<dyn voom_domain::storage::StorageTrait>,
     dry_run: bool,
     plan_only: bool,
     flag_size_increase: bool,
-    keep_backups: bool,
     token: &'a CancellationToken,
     ffprobe_path: Option<&'a str>,
     capabilities: &'a voom_domain::CapabilityMap,
@@ -511,19 +567,36 @@ async fn process_single_file(
 
     apply_detected_languages(&mut file);
 
+    // Resolve which policy applies to this file.
+    let matched = ctx
+        .resolver
+        .resolve(&file.path)
+        .map_err(|e| format!("policy resolution: {e}"))?;
+    let compiled = match matched {
+        PolicyMatch::Policy(compiled, _name) => compiled,
+        PolicyMatch::Skip => {
+            return Ok(Some(serde_json::json!({
+                "path": file.path.display().to_string(),
+                "skipped": true,
+                "reason": "excluded by policy map",
+            })));
+        }
+    };
+
     if ctx.dry_run {
-        process_single_file_dry_run(&file, ctx)
+        process_single_file_dry_run(&file, compiled, ctx)
     } else {
-        process_single_file_execute(&file, ctx).await
+        process_single_file_execute(&file, compiled, ctx).await
     }
 }
 
 /// Dry-run / plan-only: evaluate all phases up front against the original file.
 fn process_single_file_dry_run(
     file: &voom_domain::media::MediaFile,
+    compiled: &voom_dsl::CompiledPolicy,
     ctx: &ProcessContext<'_>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
-    let result = orchestrate_plans(ctx.compiled, file, ctx.capabilities);
+    let result = orchestrate_plans(compiled, file, ctx.capabilities);
 
     collect_safeguard_violations(file, &result, ctx);
 
@@ -595,9 +668,11 @@ fn process_single_file_dry_run(
 /// that subsequent phases see the updated path, container, and tracks.
 async fn process_single_file_execute(
     file: &voom_domain::media::MediaFile,
+    compiled: &voom_dsl::CompiledPolicy,
     ctx: &ProcessContext<'_>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let file_path_str = file.path.display().to_string();
+    let keep_backups = compiled.config.keep_backups;
 
     // Verify file hasn't changed since introspection (TOCTOU guard)
     if let Some(skip_json) = check_file_hash(file).await {
@@ -611,14 +686,14 @@ async fn process_single_file_execute(
     let mut any_executed = false;
     let mut plans_evaluated: usize = 0;
 
-    for phase_name in &ctx.compiled.phase_order {
+    for phase_name in &compiled.phase_order {
         if ctx.token.is_cancelled() {
             break;
         }
 
         let plan = match evaluator.evaluate_single_phase(
             phase_name,
-            ctx.compiled,
+            compiled,
             &current_file,
             &phase_outcomes,
             ctx.capabilities,
@@ -743,7 +818,7 @@ async fn process_single_file_execute(
                     }
                 }
 
-                if ctx.keep_backups {
+                if keep_backups {
                     ctx.counters
                         .backup_bytes
                         .fetch_add(current_file.size, AtomicOrdering::Relaxed);
@@ -760,7 +835,7 @@ async fn process_single_file_execute(
                         current_file.path.clone(),
                         plan.phase_name.clone(),
                         plan.actions.len(),
-                        ctx.keep_backups,
+                        keep_backups,
                     )));
                 log_plugin_errors(&r);
                 record_phase_stat(
@@ -1087,7 +1162,7 @@ fn execute_single_plan(
 fn print_interrupted_summary(pool: &WorkerPool, file_count: usize, modified: u64) {
     let completed = pool.completed_count();
     let failed = pool.failed_count();
-    println!(
+    eprintln!(
         "\n{} {}/{} processed, {} modified, {} errors",
         style("Interrupted.").bold().yellow(),
         completed,
@@ -1104,7 +1179,6 @@ struct SummaryContext<'a> {
     modified: u64,
     effective_workers: usize,
     dry_run: bool,
-    keep_backups: bool,
     backup_bytes: u64,
     path: &'a std::path::Path,
 }
@@ -1123,7 +1197,7 @@ fn print_summary(ctx: &SummaryContext<'_>) {
         "modified"
     };
 
-    println!(
+    eprintln!(
         "\n{} {} processed, {} {modified_label}, {} skipped, {} errors (workers: {})",
         style("Done.").bold().green(),
         style(completed).green(),
@@ -1137,8 +1211,8 @@ fn print_summary(ctx: &SummaryContext<'_>) {
         ctx.effective_workers,
     );
 
-    if ctx.keep_backups && ctx.modified > 0 && !ctx.dry_run {
-        println!(
+    if ctx.backup_bytes > 0 && ctx.modified > 0 && !ctx.dry_run {
+        eprintln!(
             "{} {} backups retained ({}) \u{2014} delete with: find {} -name '*.vbak' -delete",
             style("Info:").bold(),
             style(ctx.modified).cyan(),
@@ -1148,7 +1222,7 @@ fn print_summary(ctx: &SummaryContext<'_>) {
     }
 
     if ctx.dry_run {
-        println!(
+        eprintln!(
             "\n{}",
             style("This was a dry run. No files were modified.").dim()
         );
@@ -1160,7 +1234,7 @@ fn print_phase_breakdown(stats: &HashMap<String, PhaseStats>, phase_order: &[Str
         return;
     }
 
-    println!("\n  {}", style("Phase breakdown:").bold());
+    eprintln!("\n  {}", style("Phase breakdown:").bold());
     for phase_name in phase_order {
         let Some(ps) = stats.get(phase_name) else {
             continue;
@@ -1180,7 +1254,7 @@ fn print_phase_breakdown(stats: &HashMap<String, PhaseStats>, phase_order: &[Str
         if ps.failed > 0 {
             parts.push(format!("{} errors", ps.failed));
         }
-        println!("    {:<20} {}", format!("{phase_name}:"), parts.join(", "));
+        eprintln!("    {:<20} {}", format!("{phase_name}:"), parts.join(", "));
     }
 }
 

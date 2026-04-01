@@ -153,6 +153,11 @@ pub fn format_scan_results(
             }
             println!("{table}");
         }
+        OutputFormat::Plain => {
+            for (path, _, _) in files {
+                println!("{}", path.display());
+            }
+        }
     }
 }
 
@@ -266,9 +271,13 @@ pub fn format_plugin_list(plugins: &[PluginListEntry]) {
 
 /// Prompt the user to type "yes" to confirm a destructive action.
 ///
-/// Prints `prompt` to stderr, reads a line from stdin, and returns `true`
-/// only if the user typed exactly "yes".
-pub fn confirm(prompt: &str) -> std::io::Result<bool> {
+/// When `skip` is true, returns `Ok(true)` immediately (for `--yes` flags).
+/// Otherwise prints `prompt` to stderr, reads a line from stdin, and returns
+/// `true` only if the user typed exactly "yes".
+pub fn confirm(prompt: &str, skip: bool) -> std::io::Result<bool> {
+    if skip {
+        return Ok(true);
+    }
     eprintln!("{prompt}");
     eprintln!("Type 'yes' to confirm:");
     let mut input = String::new();

@@ -12,6 +12,7 @@ pub mod plan;
 pub mod safeguard;
 pub mod stats;
 pub mod storage;
+pub mod temp_file;
 #[cfg(feature = "testing")]
 #[allow(
     clippy::unwrap_used,

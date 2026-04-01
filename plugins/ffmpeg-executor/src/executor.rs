@@ -6,6 +6,8 @@ use voom_domain::errors::{Result, VoomError};
 use voom_domain::plan::{ActionResult, Plan, PlannedAction};
 use voom_process::run_with_timeout_env;
 
+use voom_domain::temp_file::temp_path_with_ext;
+
 use crate::command::{build_ffmpeg_command, output_extension};
 use crate::hwaccel::HwAccelConfig;
 
@@ -29,18 +31,7 @@ pub fn execute_plan(plan: &Plan, hw_accel: &HwAccelConfig) -> Result<Vec<ActionR
     let ext = output_extension(&plan.file, &actions);
 
     // Build the output path (temp file next to original)
-    let parent = plan
-        .file
-        .path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("/tmp"));
-    let stem = plan
-        .file
-        .path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    let output_path = parent.join(format!("{stem}.voom_tmp_{}.{ext}", plan.id));
+    let output_path = temp_path_with_ext(&plan.file.path, &ext);
 
     let hw = hw_accel.enabled().then_some(hw_accel);
     let ffmpeg_args = build_ffmpeg_command(&plan.file, &actions, &output_path, hw)?;

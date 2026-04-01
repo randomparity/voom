@@ -45,7 +45,13 @@ fn show(file_arg: &str, format: OutputFormat) -> Result<()> {
         .context("failed to load plans")?;
 
     if plans.is_empty() {
-        println!("{}", style("No plans found for this file.").yellow());
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!("{}", style("No plans found for this file.").yellow());
         return Ok(());
     }
 
@@ -92,6 +98,14 @@ fn show(file_arg: &str, format: OutputFormat) -> Result<()> {
             }
 
             println!("{table}");
+        }
+        // Plans are complex structures; fall through to JSON for plain output
+        OutputFormat::Plain => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&plans)
+                    .expect("PlanSummary serialization cannot fail")
+            );
         }
     }
 

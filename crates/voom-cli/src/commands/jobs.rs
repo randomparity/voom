@@ -5,7 +5,7 @@ use console::style;
 use crate::cli::JobsCommands;
 use crate::output;
 
-pub fn run(cmd: JobsCommands) -> Result<()> {
+pub fn run(cmd: JobsCommands, global_yes: bool) -> Result<()> {
     match cmd {
         JobsCommands::List {
             status,
@@ -15,7 +15,7 @@ pub fn run(cmd: JobsCommands) -> Result<()> {
         JobsCommands::Status { id } => status(id),
         JobsCommands::Cancel { id } => cancel(id),
         JobsCommands::Retry { id } => retry(id),
-        JobsCommands::Clear { status, yes } => clear(status, yes),
+        JobsCommands::Clear { status, yes } => clear(status, yes || global_yes),
     }
 }
 
@@ -259,7 +259,7 @@ fn clear(status_filter: Option<String>, yes: bool) -> Result<()> {
         None => "all completed, failed, and cancelled jobs".to_string(),
     };
 
-    if !yes && !crate::output::confirm(&format!("Delete {label}?"))? {
+    if !crate::output::confirm(&format!("Delete {label}?"), yes)? {
         println!("{}", style("Aborted.").dim());
         return Ok(());
     }

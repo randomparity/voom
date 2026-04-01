@@ -596,6 +596,9 @@ pub struct PhaseResult {
     pub file_modified: bool,
     pub skip_reason: Option<String>,
     pub duration_ms: u64,
+    /// Path to the temp file used during execution, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temp_path: Option<String>,
 }
 
 impl PhaseResult {
@@ -608,6 +611,7 @@ impl PhaseResult {
             file_modified: false,
             skip_reason: None,
             duration_ms: 0,
+            temp_path: None,
         }
     }
 }
@@ -926,5 +930,34 @@ mod tests {
             }
             other => panic!("expected MuxSubtitle, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_phase_result_serde_with_temp_path() {
+        let mut pr = PhaseResult::new("normalize", PhaseOutcome::Completed);
+        pr.temp_path = Some("/media/movie.voom_tmp_abc.mkv".into());
+        let json = serde_json::to_string(&pr).unwrap();
+        assert!(json.contains("temp_path"));
+        let restored: PhaseResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            restored.temp_path.as_deref(),
+            Some("/media/movie.voom_tmp_abc.mkv")
+        );
+    }
+
+    #[test]
+    fn test_phase_result_serde_without_temp_path() {
+        let pr = PhaseResult::new("normalize", PhaseOutcome::Completed);
+        let json = serde_json::to_string(&pr).unwrap();
+        assert!(!json.contains("temp_path"));
+        let restored: PhaseResult = serde_json::from_str(&json).unwrap();
+        assert!(restored.temp_path.is_none());
+    }
+
+    #[test]
+    fn test_phase_result_backward_compat_missing_temp_path() {
+        let json = r#"{"phase_name":"normalize","outcome":"Completed","actions":[],"file_modified":false,"skip_reason":null,"duration_ms":0}"#;
+        let pr: PhaseResult = serde_json::from_str(json).unwrap();
+        assert!(pr.temp_path.is_none());
     }
 }

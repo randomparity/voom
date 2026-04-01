@@ -23,7 +23,12 @@ pub enum ScanProgress {
         total: usize,
         path: std::path::PathBuf,
     },
+    /// Orphaned voom temp files were found and skipped.
+    OrphanedTempFiles { count: usize },
 }
+
+/// Callback for files that fail during discovery (path, size, error message).
+type ErrorCallback = Box<dyn Fn(std::path::PathBuf, u64, String) + Send + Sync>;
 
 /// Configuration for a discovery scan.
 #[non_exhaustive]
@@ -38,6 +43,10 @@ pub struct ScanOptions {
     pub workers: usize,
     /// Optional progress callback.
     pub on_progress: Option<Box<dyn Fn(ScanProgress) + Send + Sync>>,
+    /// Optional error callback for files that fail during discovery
+    /// (e.g., disappeared between walk and hash). Called with (path, size, error_message).
+    /// Size is captured during the directory walk and may be stale if the file changed.
+    pub on_error: Option<ErrorCallback>,
 }
 
 impl ScanOptions {
@@ -49,6 +58,7 @@ impl ScanOptions {
             hash_files: true,
             workers: 0,
             on_progress: None,
+            on_error: None,
         }
     }
 }
@@ -61,6 +71,7 @@ impl std::fmt::Debug for ScanOptions {
             .field("hash_files", &self.hash_files)
             .field("workers", &self.workers)
             .field("on_progress", &self.on_progress.as_ref().map(|_| "..."))
+            .field("on_error", &self.on_error.as_ref().map(|_| "..."))
             .finish()
     }
 }

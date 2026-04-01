@@ -329,7 +329,7 @@ fn history(
     match format {
         OutputFormat::Table => {
             if records.is_empty() {
-                println!("No health check records found.");
+                eprintln!("No health check records found.");
                 return Ok(());
             }
             println!(
@@ -366,6 +366,12 @@ fn history(
                 })
                 .collect();
             println!("{}", serde_json::to_string_pretty(&json)?);
+        }
+        OutputFormat::Plain => {
+            for r in &records {
+                let status = if r.passed { "PASS" } else { "FAIL" };
+                println!("{}\t{}", r.checked_at.format("%Y-%m-%d %H:%M:%S"), status,);
+            }
         }
     }
 

@@ -14,7 +14,13 @@ pub fn run(args: HistoryArgs) -> Result<()> {
     let entries = store.file_history(&path)?;
 
     if entries.is_empty() {
-        println!(
+        if args.format.is_machine() {
+            if matches!(args.format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!(
             "{}",
             style(format!("No history found for {}", path.display())).dim()
         );
@@ -72,6 +78,16 @@ pub fn run(args: HistoryArgs) -> Result<()> {
             }
 
             println!("{table}");
+        }
+        OutputFormat::Plain => {
+            for entry in &entries {
+                println!(
+                    "{}\t{}\t{}",
+                    entry.archived_at.format("%Y-%m-%d %H:%M:%S"),
+                    entry.container.as_str(),
+                    entry.path.display(),
+                );
+            }
         }
     }
 

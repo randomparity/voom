@@ -10,6 +10,14 @@ pub struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
 
+    /// Suppress progress bars and status messages
+    #[arg(short, long, global = true)]
+    pub quiet: bool,
+
+    /// Assume "yes" to all confirmation prompts (for automation)
+    #[arg(short, long, global = true)]
+    pub yes: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -110,9 +118,9 @@ pub struct ScanArgs {
     #[arg(long)]
     pub no_hash: bool,
 
-    /// Show full file table after scan
-    #[arg(long)]
-    pub table: bool,
+    /// Output format (omit for summary only)
+    #[arg(short, long)]
+    pub format: Option<OutputFormat>,
 }
 
 // === Inspect ===
@@ -138,9 +146,13 @@ pub struct ProcessArgs {
     /// Directory or file to process
     pub path: PathBuf,
 
-    /// Policy file (.voom) to apply
-    #[arg(short, long)]
-    pub policy: PathBuf,
+    /// Policy file (.voom) to apply to all files
+    #[arg(short, long, conflicts_with = "policy_map")]
+    pub policy: Option<PathBuf>,
+
+    /// TOML file mapping directory prefixes to policies
+    #[arg(long, conflicts_with = "policy")]
+    pub policy_map: Option<PathBuf>,
 
     /// Show what would be done without making changes
     #[arg(long)]
@@ -318,7 +330,11 @@ pub enum DbCommands {
     /// Compact the database
     Vacuum,
     /// Reset the database (destructive!)
-    Reset,
+    Reset {
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
     /// List files that failed introspection
     ListBad {
         /// Filter by path prefix
@@ -414,6 +430,9 @@ pub enum BackupCommands {
     Restore {
         /// Path to the .vbak backup file
         backup_path: PathBuf,
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
     /// Remove all backup files
     Cleanup {
@@ -544,6 +563,14 @@ pub struct CompletionsArgs {
 pub enum OutputFormat {
     Table,
     Json,
+    Plain,
+}
+
+impl OutputFormat {
+    /// Returns true for formats intended for machine consumption (piping, scripting).
+    pub fn is_machine(&self) -> bool {
+        matches!(self, Self::Json | Self::Plain)
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -592,6 +619,69 @@ mod tests {
         assert_eq!(cli.verbose, 2);
     }
 
+    #[test]
+    fn test_quiet_default_is_false() {
+        let cli = parse(&["voom", "doctor"]);
+        assert!(!cli.quiet);
+    }
+
+    #[test]
+    fn test_quiet_short_flag() {
+        let cli = parse(&["voom", "-q", "doctor"]);
+        assert!(cli.quiet);
+    }
+
+    #[test]
+    fn test_quiet_long_flag() {
+        let cli = parse(&["voom", "--quiet", "doctor"]);
+        assert!(cli.quiet);
+    }
+
+    #[test]
+    fn test_quiet_after_subcommand() {
+        let cli = parse(&["voom", "scan", "/media", "--quiet"]);
+        assert!(cli.quiet);
+    }
+
+    #[test]
+    fn test_yes_default_is_false() {
+        let cli = parse(&["voom", "doctor"]);
+        assert!(!cli.yes);
+    }
+
+    #[test]
+    fn test_yes_short_flag() {
+        let cli = parse(&["voom", "-y", "doctor"]);
+        assert!(cli.yes);
+    }
+
+    #[test]
+    fn test_yes_long_flag() {
+        let cli = parse(&["voom", "--yes", "doctor"]);
+        assert!(cli.yes);
+    }
+
+    #[test]
+    fn test_yes_after_subcommand() {
+        let cli = parse(&["voom", "scan", "/media", "--yes"]);
+        assert!(cli.yes);
+    }
+
+    #[test]
+    fn test_db_reset_yes() {
+        let cli = parse(&["voom", "db", "reset", "--yes"]);
+        match cli.command {
+            Commands::Db(DbCommands::Reset { yes }) => assert!(yes),
+            _ => panic!("expected Db Reset"),
+        }
+    }
+
+    #[test]
+    fn test_global_yes_with_db_reset() {
+        let cli = parse(&["voom", "-y", "db", "reset"]);
+        assert!(cli.yes);
+    }
+
     // ── Scan ─────────────────────────────────────────────────
 
     #[test]
@@ -608,7 +698,7 @@ mod tests {
                 assert!(args.recursive);
                 assert_eq!(args.workers, 0);
                 assert!(!args.no_hash);
-                assert!(!args.table);
+                assert!(args.format.is_none());
             }
             _ => panic!("expected Scan"),
         }
@@ -623,14 +713,33 @@ mod tests {
             "--no-hash",
             "--workers",
             "4",
-            "--table",
+            "--format",
+            "json",
         ]);
         match cli.command {
             Commands::Scan(args) => {
                 assert!(args.no_hash);
                 assert_eq!(args.workers, 4);
-                assert!(args.table);
+                assert!(matches!(args.format, Some(OutputFormat::Json)));
             }
+            _ => panic!("expected Scan"),
+        }
+    }
+
+    #[test]
+    fn test_scan_plain_format() {
+        let cli = parse(&["voom", "scan", "/media", "--format", "plain"]);
+        match cli.command {
+            Commands::Scan(args) => assert!(matches!(args.format, Some(OutputFormat::Plain))),
+            _ => panic!("expected Scan"),
+        }
+    }
+
+    #[test]
+    fn test_scan_table_format() {
+        let cli = parse(&["voom", "scan", "/media", "--format", "table"]);
+        match cli.command {
+            Commands::Scan(args) => assert!(matches!(args.format, Some(OutputFormat::Table))),
             _ => panic!("expected Scan"),
         }
     }
@@ -676,9 +785,20 @@ mod tests {
     // ── Process ──────────────────────────────────────────────
 
     #[test]
-    fn test_process_requires_path_and_policy() {
+    fn test_process_requires_path() {
         assert!(try_parse(&["voom", "process"]).is_err());
-        assert!(try_parse(&["voom", "process", "/media"]).is_err());
+    }
+
+    #[test]
+    fn test_process_no_policy_is_ok() {
+        let cli = parse(&["voom", "process", "/media"]);
+        match cli.command {
+            Commands::Process(args) => {
+                assert!(args.policy.is_none());
+                assert!(args.policy_map.is_none());
+            }
+            _ => panic!("expected Process"),
+        }
     }
 
     #[test]
@@ -687,7 +807,8 @@ mod tests {
         match cli.command {
             Commands::Process(args) => {
                 assert_eq!(args.path, PathBuf::from("/media"));
-                assert_eq!(args.policy, PathBuf::from("my.voom"));
+                assert_eq!(args.policy, Some(PathBuf::from("my.voom")));
+                assert!(args.policy_map.is_none());
                 assert!(!args.dry_run);
                 assert!(matches!(args.on_error, ErrorHandling::Fail));
                 assert_eq!(args.workers, 0);
@@ -696,6 +817,32 @@ mod tests {
             }
             _ => panic!("expected Process"),
         }
+    }
+
+    #[test]
+    fn test_process_policy_map_flag() {
+        let cli = parse(&["voom", "process", "/media", "--policy-map", "map.toml"]);
+        match cli.command {
+            Commands::Process(args) => {
+                assert!(args.policy.is_none());
+                assert_eq!(args.policy_map, Some(PathBuf::from("map.toml")));
+            }
+            _ => panic!("expected Process"),
+        }
+    }
+
+    #[test]
+    fn test_process_policy_and_map_conflict() {
+        assert!(try_parse(&[
+            "voom",
+            "process",
+            "/media",
+            "--policy",
+            "p.voom",
+            "--policy-map",
+            "map.toml"
+        ])
+        .is_err());
     }
 
     #[test]
@@ -1027,7 +1174,10 @@ mod tests {
     #[test]
     fn test_db_reset() {
         let cli = parse(&["voom", "db", "reset"]);
-        assert!(matches!(cli.command, Commands::Db(DbCommands::Reset)));
+        assert!(matches!(
+            cli.command,
+            Commands::Db(DbCommands::Reset { .. })
+        ));
     }
 
     #[test]
@@ -1352,6 +1502,13 @@ mod tests {
     }
 
     #[test]
+    fn test_output_format_is_machine() {
+        assert!(!OutputFormat::Table.is_machine());
+        assert!(OutputFormat::Json.is_machine());
+        assert!(OutputFormat::Plain.is_machine());
+    }
+
+    #[test]
     fn test_invalid_on_error_rejected() {
         assert!(try_parse(&[
             "voom",
@@ -1453,8 +1610,20 @@ mod tests {
     fn test_backup_restore() {
         let cli = parse(&["voom", "backup", "restore", "/path/to/file.vbak"]);
         match cli.command {
-            Commands::Backup(BackupCommands::Restore { backup_path }) => {
+            Commands::Backup(BackupCommands::Restore { backup_path, yes }) => {
                 assert_eq!(backup_path, PathBuf::from("/path/to/file.vbak"));
+                assert!(!yes);
+            }
+            _ => panic!("expected Backup Restore"),
+        }
+    }
+
+    #[test]
+    fn test_backup_restore_yes() {
+        let cli = parse(&["voom", "backup", "restore", "/path/to/file.vbak", "--yes"]);
+        match cli.command {
+            Commands::Backup(BackupCommands::Restore { yes, .. }) => {
+                assert!(yes);
             }
             _ => panic!("expected Backup Restore"),
         }

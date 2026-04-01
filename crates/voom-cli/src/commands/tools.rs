@@ -20,7 +20,13 @@ fn list(format: OutputFormat) -> Result<()> {
     tools.sort_by(|a, b| a.name.cmp(&b.name));
 
     if tools.is_empty() {
-        println!("{}", style("No external tools detected.").dim());
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!("{}", style("No external tools detected.").dim());
         return Ok(());
     }
 
@@ -54,6 +60,11 @@ fn list(format: OutputFormat) -> Result<()> {
             }
             println!("{} tool(s) detected:\n", style(tools.len()).bold());
             println!("{table}");
+        }
+        OutputFormat::Plain => {
+            for t in &tools {
+                println!("{}", t.name);
+            }
         }
     }
 
@@ -144,6 +155,11 @@ fn info(name: String, format: OutputFormat) -> Result<()> {
                 );
                 output::format_executor_capabilities(exec_name, caps);
             }
+        }
+        OutputFormat::Plain => {
+            println!("name\t{}", tool.name);
+            println!("version\t{}", sanitize_for_display(&tool.version));
+            println!("path\t{}", tool.path.display());
         }
     }
 

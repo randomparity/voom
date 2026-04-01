@@ -24,7 +24,27 @@ pub fn run(args: ReportArgs) -> Result<()> {
         .context("failed to list files from database")?;
 
     if files.is_empty() {
-        println!(
+        if args.format.is_machine() {
+            if matches!(args.format, OutputFormat::Json) {
+                // Emit the correct empty schema for the requested sub-report
+                let empty: serde_json::Value = if args.issues {
+                    serde_json::json!([])
+                } else {
+                    serde_json::json!({
+                        "total_files": 0,
+                        "total_size": 0,
+                        "containers": [],
+                        "codecs": [],
+                    })
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&empty).expect("report is serializable")
+                );
+            }
+            return Ok(());
+        }
+        eprintln!(
             "{}",
             style("No files in database. Run 'voom scan' first.").yellow()
         );
@@ -84,6 +104,11 @@ pub fn run(args: ReportArgs) -> Result<()> {
             }
             println!("{table}");
         }
+        OutputFormat::Plain => {
+            for file in &files {
+                println!("{}", file.path.display());
+            }
+        }
     }
 
     Ok(())
@@ -104,7 +129,13 @@ fn run_issues_report(files: &[voom_domain::MediaFile], format: &OutputFormat) ->
         .collect();
 
     if files_with_issues.is_empty() {
-        println!("{}", style("No files with safeguard violations.").green());
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!("{}", style("No files with safeguard violations.").green());
         return Ok(());
     }
 
@@ -150,6 +181,13 @@ fn run_issues_report(files: &[voom_domain::MediaFile], format: &OutputFormat) ->
             }
             println!("{table}");
         }
+        OutputFormat::Plain => {
+            for (f, violations) in &files_with_issues {
+                for v in violations {
+                    println!("{}\t{}", f.path.display(), v.kind.as_str());
+                }
+            }
+        }
     }
 
     Ok(())
@@ -161,7 +199,13 @@ fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()
         .context("failed to query plan stats")?;
 
     if stats.is_empty() {
-        println!(
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!(
             "{}",
             style("No plan data. Run 'voom process' first.").yellow()
         );
@@ -248,6 +292,19 @@ fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()
                 ]);
             }
             println!("{table}");
+        }
+        OutputFormat::Plain => {
+            for name in &phases {
+                let ps = by_phase.get(name).expect("phase exists");
+                let status = if ps.failed > 0 {
+                    "failed"
+                } else if ps.completed > 0 {
+                    "completed"
+                } else {
+                    "skipped"
+                };
+                println!("{name}\t{status}");
+            }
         }
     }
 

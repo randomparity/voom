@@ -58,6 +58,11 @@ fn list() -> Result<()> {
 }
 
 fn validate(file: std::path::PathBuf) -> Result<()> {
+    // If the file has a .toml extension, treat it as a policy map.
+    if file.extension().is_some_and(|e| e == "toml") {
+        return validate_policy_map(&file);
+    }
+
     let file = crate::config::resolve_policy_path(&file);
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
@@ -78,6 +83,35 @@ fn validate(file: std::path::PathBuf) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Validate a `.toml` policy map file and all policies it references.
+fn validate_policy_map(file: &std::path::Path) -> Result<()> {
+    use crate::policy_map::PolicyResolver;
+
+    // Use a dummy root — we only care about compilation, not prefix matching.
+    let root = std::path::PathBuf::from(".");
+    let resolver = PolicyResolver::from_map_file(file, &root)
+        .with_context(|| format!("Policy map validation failed: {}", file.display()))?;
+
+    let policies = resolver.policies();
+    println!(
+        "{} Policy map \"{}\" is valid ({} policies)",
+        style("OK").bold().green(),
+        file.display(),
+        policies.len(),
+    );
+    for (name, compiled) in policies {
+        println!(
+            "  {} {} — \"{}\" ({} phases: [{}])",
+            style("OK").green(),
+            name,
+            compiled.name,
+            compiled.phases.len(),
+            compiled.phase_order.join(", ")
+        );
+    }
     Ok(())
 }
 

@@ -48,6 +48,7 @@ impl BadFile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BadFileSource {
+    Discovery,
     Introspection,
     Io,
     Parse,
@@ -56,6 +57,7 @@ pub enum BadFileSource {
 impl std::fmt::Display for BadFileSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            BadFileSource::Discovery => write!(f, "discovery"),
             BadFileSource::Introspection => write!(f, "introspection"),
             BadFileSource::Io => write!(f, "io"),
             BadFileSource::Parse => write!(f, "parse"),
@@ -68,6 +70,7 @@ impl std::str::FromStr for BadFileSource {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
+            "discovery" => Ok(BadFileSource::Discovery),
             "introspection" => Ok(BadFileSource::Introspection),
             "io" => Ok(BadFileSource::Io),
             "parse" => Ok(BadFileSource::Parse),
@@ -131,6 +134,7 @@ mod tests {
 
     #[test]
     fn test_bad_file_source_display() {
+        assert_eq!(BadFileSource::Discovery.to_string(), "discovery");
         assert_eq!(BadFileSource::Introspection.to_string(), "introspection");
         assert_eq!(BadFileSource::Io.to_string(), "io");
         assert_eq!(BadFileSource::Parse.to_string(), "parse");
@@ -138,6 +142,10 @@ mod tests {
 
     #[test]
     fn test_bad_file_source_from_str() {
+        assert_eq!(
+            "discovery".parse::<BadFileSource>().unwrap(),
+            BadFileSource::Discovery
+        );
         assert_eq!(
             "introspection".parse::<BadFileSource>().unwrap(),
             BadFileSource::Introspection
@@ -148,5 +156,19 @@ mod tests {
             BadFileSource::Parse
         );
         assert!("unknown".parse::<BadFileSource>().is_err());
+    }
+
+    #[test]
+    fn test_bad_file_source_discovery_serde_roundtrip() {
+        let bf = BadFile::new(
+            PathBuf::from("/test/vanished.mkv"),
+            0,
+            None,
+            "file disappeared during scan".into(),
+            BadFileSource::Discovery,
+        );
+        let json = serde_json::to_string(&bf).unwrap();
+        let deserialized: BadFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.error_source, BadFileSource::Discovery);
     }
 }

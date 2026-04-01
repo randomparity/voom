@@ -20,6 +20,7 @@ use voom_domain::events::{
 };
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
+use voom_domain::temp_file::temp_path;
 use voom_domain::utils::language::is_valid_language;
 use voom_domain::utils::sanitize::validate_metadata_value;
 use voom_kernel::{Plugin, PluginContext};
@@ -306,8 +307,7 @@ impl FfmpegExecutorPlugin {
             )));
         }
 
-        let orig_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
-        let temp_path = path.with_extension(format!("tmp.{orig_ext}"));
+        let temp_path = temp_path(path);
         let mut args = vec![
             "-i".to_string(),
             path.to_string_lossy().into_owned(),

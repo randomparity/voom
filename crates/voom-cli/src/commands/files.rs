@@ -9,7 +9,7 @@ use voom_domain::FileFilters;
 use crate::cli::{FilesCommands, OutputFormat};
 use crate::{app, config, output};
 
-pub fn run(cmd: FilesCommands) -> Result<()> {
+pub fn run(cmd: FilesCommands, global_yes: bool) -> Result<()> {
     match cmd {
         FilesCommands::List {
             container,
@@ -30,7 +30,7 @@ pub fn run(cmd: FilesCommands) -> Result<()> {
             list(filters, format)
         }
         FilesCommands::Show { id, format } => show(&id, format),
-        FilesCommands::Delete { id, yes } => delete(&id, yes),
+        FilesCommands::Delete { id, yes } => delete(&id, yes || global_yes),
     }
 }
 
@@ -44,7 +44,18 @@ fn list(filters: FileFilters, format: OutputFormat) -> Result<()> {
     let files = store.list_files(&filters).context("failed to list files")?;
 
     if total == 0 {
-        println!(
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                let empty = serde_json::json!({"files": [], "total": 0});
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&empty)
+                        .expect("serde_json::Value serialization cannot fail")
+                );
+            }
+            return Ok(());
+        }
+        eprintln!(
             "{}",
             style("No files in database. Run 'voom scan' first.").yellow()
         );
@@ -99,6 +110,11 @@ fn list(filters: FileFilters, format: OutputFormat) -> Result<()> {
                 println!("Showing {showing} of {total_usize} files");
             }
         }
+        OutputFormat::Plain => {
+            for file in &files {
+                println!("{}", file.path.display());
+            }
+        }
     }
 
     Ok(())
@@ -117,6 +133,7 @@ fn show(id: &str, format: OutputFormat) -> Result<()> {
     match format {
         OutputFormat::Json => output::format_file_json(&file),
         OutputFormat::Table => output::format_file_info(&file, false),
+        OutputFormat::Plain => println!("{}", file.path.display()),
     }
     Ok(())
 }
@@ -131,15 +148,13 @@ fn delete(id: &str, yes: bool) -> Result<()> {
         .context("failed to look up file")?
         .ok_or_else(|| anyhow::anyhow!("File not found: {id}"))?;
 
-    if !yes {
-        let prompt = format!(
-            "Delete {} from database?",
-            style(file.path.display()).cyan()
-        );
-        if !crate::output::confirm(&prompt)? {
-            println!("{}", style("Aborted.").dim());
-            return Ok(());
-        }
+    let prompt = format!(
+        "Delete {} from database?",
+        style(file.path.display()).cyan()
+    );
+    if !crate::output::confirm(&prompt, yes)? {
+        println!("{}", style("Aborted.").dim());
+        return Ok(());
     }
 
     store.delete_file(&uuid).context("failed to delete file")?;

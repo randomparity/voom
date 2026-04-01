@@ -292,7 +292,7 @@ fn test_scan_empty_directory() {
         .args(["scan", dir.path().to_str().unwrap()])
         .assert()
         .success()
-        .stdout(predicate::str::contains("No media files found"));
+        .stderr(predicate::str::contains("No media files found"));
 }
 
 #[test]

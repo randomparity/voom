@@ -10,6 +10,7 @@ mod commands;
 mod config;
 mod introspect;
 mod output;
+mod policy_map;
 mod progress;
 mod stats;
 mod tools;
@@ -45,25 +46,31 @@ async fn main() -> Result<()> {
     // blocking the tokio runtime with filesystem I/O at startup.
     tokio::task::spawn_blocking(cleanup_wasm_temp_files);
 
+    // Compute effective quiet: explicit --quiet OR machine-readable format
+    let quiet = cli.quiet
+        || matches!(&cli.command, Commands::Scan(args) if args.format.is_some_and(|f| f.is_machine()));
+
+    let global_yes = cli.yes;
+
     match cli.command {
-        Commands::Scan(args) => commands::scan::run(args, token).await,
+        Commands::Scan(args) => commands::scan::run(args, quiet, token).await,
         Commands::Inspect(args) => commands::inspect::run(args),
-        Commands::Process(args) => commands::process::run(args, token).await,
+        Commands::Process(args) => commands::process::run(args, quiet, token).await,
         Commands::Policy(sub) => commands::policy::run(sub),
         Commands::Plugin(sub) => commands::plugin::run(sub),
-        Commands::Jobs(sub) => commands::jobs::run(sub),
+        Commands::Jobs(sub) => commands::jobs::run(sub, global_yes),
         Commands::Report(args) => commands::report::run(args),
-        Commands::Files(sub) => commands::files::run(sub),
+        Commands::Files(sub) => commands::files::run(sub, global_yes),
         Commands::Plans(sub) => commands::plans::run(sub),
         Commands::Events(args) => commands::events::run(args, token).await,
         Commands::Health(sub) => commands::health::run(sub),
         Commands::Doctor => commands::health::check(),
         Commands::Serve(args) => commands::serve::run(args, token).await,
-        Commands::Db(sub) => commands::db::run(sub).await,
+        Commands::Db(sub) => commands::db::run(sub, global_yes).await,
         Commands::Config(sub) => commands::config::run(sub),
         Commands::Tools(sub) => commands::tools::run(sub),
         Commands::History(args) => commands::history::run(args),
-        Commands::Backup(sub) => commands::backup::run(sub),
+        Commands::Backup(sub) => commands::backup::run(sub, global_yes),
         Commands::Init => commands::init::run(),
         Commands::Status => commands::status::run(),
         Commands::Completions(args) => commands::completions::run(args),
