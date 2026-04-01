@@ -19,10 +19,15 @@ use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::{Container, MediaFile, Track, TrackType};
 use crate::plan::Plan;
 use crate::stats::ProcessingStats;
+use crate::stats::{
+    AudioStats, FileStats, JobAggregateStats, LibrarySnapshot, ProcessingAggregateStats,
+    SnapshotTrigger, SubtitleStats, VideoStats,
+};
 use crate::storage::{
     BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage,
     HealthCheckFilters, HealthCheckRecord, HealthCheckStorage, JobFilters, JobStorage,
-    MaintenanceStorage, PageStats, PlanStorage, PlanSummary, PluginDataStorage, StatsStorage,
+    MaintenanceStorage, PageStats, PlanStorage, PlanSummary, PluginDataStorage, SnapshotStorage,
+    StatsStorage,
 };
 
 /// Create a standard test `MediaFile` with video, two audio, and one subtitle track.
@@ -91,6 +96,7 @@ fn matches_filter(file: &MediaFile, filters: &FileFilters) -> bool {
 pub struct InMemoryStore {
     files: Mutex<HashMap<Uuid, MediaFile>>,
     jobs: Mutex<HashMap<Uuid, Job>>,
+    snapshots: Mutex<Vec<LibrarySnapshot>>,
 }
 
 impl InMemoryStore {
@@ -98,6 +104,7 @@ impl InMemoryStore {
         Self {
             files: Mutex::new(HashMap::new()),
             jobs: Mutex::new(HashMap::new()),
+            snapshots: Mutex::new(Vec::new()),
         }
     }
 
@@ -408,6 +415,51 @@ impl crate::storage::EventLogStorage for InMemoryStore {
 
     fn prune_event_log(&self, _keep_last: u64) -> Result<u64> {
         Ok(0)
+    }
+}
+
+impl SnapshotStorage for InMemoryStore {
+    fn gather_library_stats(&self, trigger: SnapshotTrigger) -> Result<LibrarySnapshot> {
+        Ok(LibrarySnapshot {
+            id: Uuid::new_v4(),
+            captured_at: chrono::Utc::now(),
+            trigger,
+            files: FileStats::default(),
+            video: VideoStats::default(),
+            audio: AudioStats::default(),
+            subtitles: SubtitleStats::default(),
+            processing: ProcessingAggregateStats::default(),
+            jobs: JobAggregateStats::default(),
+        })
+    }
+
+    fn save_snapshot(&self, snapshot: &LibrarySnapshot) -> Result<()> {
+        self.snapshots.lock().unwrap().push(snapshot.clone());
+        Ok(())
+    }
+
+    fn latest_snapshot(&self) -> Result<Option<LibrarySnapshot>> {
+        Ok(self.snapshots.lock().unwrap().last().cloned())
+    }
+
+    fn list_snapshots(&self, limit: u32) -> Result<Vec<LibrarySnapshot>> {
+        let snaps = self.snapshots.lock().unwrap();
+        let mut result: Vec<_> = snaps.iter().rev().take(limit as usize).cloned().collect();
+        result.reverse();
+        Ok(result)
+    }
+
+    fn prune_snapshots(&self, keep_last: u32) -> Result<u64> {
+        let mut snaps = self.snapshots.lock().unwrap();
+        let len = snaps.len();
+        let keep = keep_last as usize;
+        if len > keep {
+            let removed = len - keep;
+            *snaps = snaps.split_off(removed);
+            Ok(removed as u64)
+        } else {
+            Ok(0)
+        }
     }
 }
 

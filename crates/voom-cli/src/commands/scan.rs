@@ -261,6 +261,9 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
         );
     }
 
+    // Capture a library snapshot for trend tracking
+    capture_snapshot(&*store);
+
     if let Some(format) = args.format {
         let results: Vec<_> = events
             .iter()
@@ -270,6 +273,19 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     }
 
     Ok(())
+}
+
+fn capture_snapshot(store: &dyn voom_domain::storage::SnapshotStorage) {
+    match store.gather_library_stats(voom_domain::stats::SnapshotTrigger::ScanComplete) {
+        Ok(snapshot) => {
+            if let Err(e) = store.save_snapshot(&snapshot) {
+                tracing::warn!(error = %e, "failed to save library snapshot");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to gather library stats for snapshot");
+        }
+    }
 }
 
 #[cfg(test)]

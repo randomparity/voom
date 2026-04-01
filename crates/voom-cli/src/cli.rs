@@ -306,6 +306,14 @@ pub struct ReportArgs {
     /// Show per-phase plan processing summary
     #[arg(long)]
     pub plans: bool,
+
+    /// Show deep library statistics
+    #[arg(long)]
+    pub stats: bool,
+
+    /// Show snapshot history (N most recent)
+    #[arg(long)]
+    pub history: Option<u32>,
 }
 
 // === Serve ===

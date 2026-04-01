@@ -9,7 +9,7 @@ use crate::errors::Result;
 use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::{Container, MediaFile};
 use crate::plan::Plan;
-use crate::stats::ProcessingStats;
+use crate::stats::{LibrarySnapshot, ProcessingStats, SnapshotTrigger};
 
 /// Filters for querying jobs from storage.
 #[non_exhaustive]
@@ -260,6 +260,23 @@ pub trait EventLogStorage: Send + Sync {
     fn prune_event_log(&self, keep_last: u64) -> Result<u64>;
 }
 
+/// Library snapshot storage operations.
+///
+/// # Errors
+/// Methods return `VoomError::Storage` on database failures.
+pub trait SnapshotStorage: Send + Sync {
+    /// Gather live library statistics from the database.
+    fn gather_library_stats(&self, trigger: SnapshotTrigger) -> Result<LibrarySnapshot>;
+    /// Persist a snapshot for history tracking.
+    fn save_snapshot(&self, snapshot: &LibrarySnapshot) -> Result<()>;
+    /// Retrieve the most recent snapshot.
+    fn latest_snapshot(&self) -> Result<Option<LibrarySnapshot>>;
+    /// List snapshots ordered by captured_at descending.
+    fn list_snapshots(&self, limit: u32) -> Result<Vec<LibrarySnapshot>>;
+    /// Delete all but the newest `keep_last` snapshots. Returns rows deleted.
+    fn prune_snapshots(&self, keep_last: u32) -> Result<u64>;
+}
+
 /// SQLite page-level statistics.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PageStats {
@@ -299,6 +316,7 @@ pub trait StorageTrait:
     + MaintenanceStorage
     + HealthCheckStorage
     + EventLogStorage
+    + SnapshotStorage
 {
 }
 
@@ -314,6 +332,7 @@ impl<T> StorageTrait for T where
         + MaintenanceStorage
         + HealthCheckStorage
         + EventLogStorage
+        + SnapshotStorage
 {
 }
 

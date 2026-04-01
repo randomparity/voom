@@ -175,6 +175,20 @@ CREATE TABLE IF NOT EXISTS subtitles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_subtitles_file ON subtitles(file_path);
+
+CREATE TABLE IF NOT EXISTS library_snapshots (
+    id TEXT PRIMARY KEY,
+    captured_at TEXT NOT NULL,
+    trigger TEXT NOT NULL,
+    total_files INTEGER NOT NULL,
+    total_size_bytes INTEGER NOT NULL,
+    total_duration_secs REAL NOT NULL,
+    snapshot_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_captured
+    ON library_snapshots(captured_at);
+CREATE INDEX IF NOT EXISTS idx_tracks_type ON tracks(track_type);
 "#;
 
 /// Initialize the database schema.
@@ -200,6 +214,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "health_checks",
         "event_log",
         "subtitles",
+        "library_snapshots",
     ];
     let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
         assert!(KNOWN_TABLES.contains(&table), "unknown table: {table}");
@@ -303,6 +318,38 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    // Create library_snapshots table if missing.
+    let has_snapshots: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='library_snapshots'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_snapshots {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS library_snapshots (
+                id TEXT PRIMARY KEY,
+                captured_at TEXT NOT NULL,
+                trigger TEXT NOT NULL,
+                total_files INTEGER NOT NULL,
+                total_size_bytes INTEGER NOT NULL,
+                total_duration_secs REAL NOT NULL,
+                snapshot_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_snapshots_captured
+                ON library_snapshots(captured_at);",
+        )?;
+    }
+
+    // Create index on tracks(track_type) if missing.
+    let has_track_type_idx: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND name='idx_tracks_type'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_track_type_idx {
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tracks_type ON tracks(track_type);")?;
+    }
+
     // Add UNIQUE constraint on subtitles(file_path, subtitle_path) for existing
     // databases that created the table before the constraint was added.
     if has_subtitles {
@@ -368,6 +415,7 @@ mod tests {
         assert!(tables.contains(&"health_checks".to_string()));
         assert!(tables.contains(&"event_log".to_string()));
         assert!(tables.contains(&"subtitles".to_string()));
+        assert!(tables.contains(&"library_snapshots".to_string()));
     }
 
     #[test]

@@ -34,10 +34,13 @@ pub use plan::{
     TranscodeChannels, TranscodeSettings,
 };
 pub use safeguard::{SafeguardKind, SafeguardViolation};
-pub use stats::{ProcessingOutcome, ProcessingStats};
+pub use stats::{
+    AudioStats, FileStats, JobAggregateStats, LibrarySnapshot, ProcessingAggregateStats,
+    ProcessingOutcome, ProcessingStats, SnapshotTrigger, SubtitleStats, VideoStats,
+};
 pub use storage::{
     BadFileFilters, BadFileStorage, EventLogFilters, EventLogRecord, EventLogStorage, FileFilters,
     FileHistoryStorage, FileStorage, HealthCheckFilters, HealthCheckRecord, HealthCheckStorage,
     JobFilters, JobStorage, MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage,
-    StatsStorage, StorageTrait,
+    SnapshotStorage, StatsStorage, StorageTrait,
 };
