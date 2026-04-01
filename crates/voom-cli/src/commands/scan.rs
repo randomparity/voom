@@ -14,6 +14,30 @@ use tokio_util::sync::CancellationToken;
 use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::Event;
 
+/// Canonicalize paths and deduplicate, removing paths that are subdirectories
+/// of another provided path (to avoid scanning overlapping trees).
+fn resolve_paths(raw: &[std::path::PathBuf]) -> Result<Vec<std::path::PathBuf>> {
+    let mut canonical: Vec<std::path::PathBuf> = Vec::with_capacity(raw.len());
+    for p in raw {
+        let c = p
+            .canonicalize()
+            .with_context(|| format!("Path not found: {}", p.display()))?;
+        canonical.push(c);
+    }
+    canonical.sort();
+    canonical.dedup();
+
+    let mut filtered: Vec<std::path::PathBuf> = Vec::with_capacity(canonical.len());
+    for path in &canonical {
+        let dominated = filtered.iter().any(|existing| path.starts_with(existing));
+        if !dominated {
+            filtered.retain(|existing| !existing.starts_with(path));
+            filtered.push(path.clone());
+        }
+    }
+    Ok(filtered)
+}
+
 /// Run the scan command.
 ///
 /// Discovery and introspection are driven directly for deterministic progress
@@ -24,23 +48,25 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     let app::BootstrapResult { kernel, store, .. } = app::bootstrap_kernel_with_store(&config)?;
     let kernel = Arc::new(kernel);
 
-    let path = args.paths[0]
-        .canonicalize()
-        .with_context(|| format!("Path not found: {}", args.paths[0].display()))?;
+    let paths = resolve_paths(&args.paths)?;
 
-    // Auto-prune stale file entries under the scanned directory
-    match store.prune_missing_files_under(&path) {
-        Ok(n) if n > 0 && !quiet => eprintln!("Pruned {n} stale entries."),
-        Ok(_) => {}
-        Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
+    // Auto-prune stale file entries under each scanned directory
+    for path in &paths {
+        match store.prune_missing_files_under(path) {
+            Ok(n) if n > 0 && !quiet => {
+                eprintln!("Pruned {n} stale entries under {}.", path.display());
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(path = %path.display(), error = %e, "auto-prune failed"),
+        }
     }
 
     if !quiet {
-        eprintln!(
-            "{} {}",
-            style("Scanning").bold(),
-            style(path.display()).cyan()
-        );
+        let path_list: Vec<_> = paths
+            .iter()
+            .map(|p| style(p.display()).cyan().to_string())
+            .collect();
+        eprintln!("{} {}", style("Scanning").bold(), path_list.join(", "));
     }
 
     let discovery = voom_discovery::DiscoveryPlugin::new();
@@ -50,59 +76,69 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     } else {
         DiscoveryProgress::new()
     };
-    let progress_clone = progress.clone();
     let file_count = Arc::new(AtomicU64::new(0));
-    let file_count_clone = file_count.clone();
     let orphan_count = Arc::new(AtomicU64::new(0));
-    let orphan_count_clone = orphan_count.clone();
     let discovery_errors = Arc::new(AtomicU64::new(0));
-    let discovery_errors_clone = discovery_errors.clone();
     let start = Instant::now();
     let hash_files = !args.no_hash;
 
-    let kernel_for_errors = kernel.clone();
-    let mut options = voom_discovery::ScanOptions::new(path);
-    options.recursive = args.recursive;
-    options.hash_files = hash_files;
-    options.workers = args.workers;
-    options.on_progress = Some(Box::new(move |progress| match progress {
-        voom_discovery::ScanProgress::Discovered { count, path } => {
-            progress_clone.on_discovered(count, &path);
-        }
-        voom_discovery::ScanProgress::Processing {
-            current,
-            total,
-            path,
-        } => {
-            let action = if hash_files { "Hashing" } else { "Processing" };
-            progress_clone.on_processing(current, total, &path, action);
-            file_count_clone.store(total as u64, Ordering::Relaxed);
-        }
-        voom_discovery::ScanProgress::OrphanedTempFiles { count } => {
-            orphan_count_clone.store(count as u64, Ordering::Relaxed);
-        }
-    }));
-    options.on_error = Some(Box::new(move |path, size, error| {
-        tracing::warn!(path = %path.display(), error = %error, "discovery error");
-        discovery_errors_clone.fetch_add(1, Ordering::Relaxed);
-        crate::introspect::dispatch_failure(
-            &kernel_for_errors,
-            path,
-            size,
-            None,
-            &error,
-            BadFileSource::Discovery,
-        );
-    }));
+    let mut all_events = Vec::new();
 
-    let events = discovery.scan(&options).context("filesystem scan failed")?;
+    for path in &paths {
+        let progress_clone = progress.clone();
+        let file_count_clone = file_count.clone();
+        let orphan_count_clone = orphan_count.clone();
+        let discovery_errors_clone = discovery_errors.clone();
+        let kernel_for_errors = kernel.clone();
+
+        let mut options = voom_discovery::ScanOptions::new(path.clone());
+        options.recursive = args.recursive;
+        options.hash_files = hash_files;
+        options.workers = args.workers;
+        options.on_progress = Some(Box::new(move |progress| match progress {
+            voom_discovery::ScanProgress::Discovered { count, path } => {
+                progress_clone.on_discovered(count, &path);
+            }
+            voom_discovery::ScanProgress::Processing {
+                current,
+                total,
+                path,
+            } => {
+                let action = if hash_files { "Hashing" } else { "Processing" };
+                progress_clone.on_processing(current, total, &path, action);
+                file_count_clone.store(total as u64, Ordering::Relaxed);
+            }
+            voom_discovery::ScanProgress::OrphanedTempFiles { count } => {
+                orphan_count_clone.fetch_add(count as u64, Ordering::Relaxed);
+            }
+        }));
+        options.on_error = Some(Box::new(move |path, size, error| {
+            tracing::warn!(path = %path.display(), error = %error, "discovery error");
+            discovery_errors_clone.fetch_add(1, Ordering::Relaxed);
+            crate::introspect::dispatch_failure(
+                &kernel_for_errors,
+                path,
+                size,
+                None,
+                &error,
+                BadFileSource::Discovery,
+            );
+        }));
+
+        let events = discovery.scan(&options).context("filesystem scan failed")?;
+        all_events.extend(events);
+    }
 
     progress.finish();
+
+    // Deduplicate events by path in case multiple scan roots overlap
+    let mut seen = std::collections::HashSet::new();
+    all_events.retain(|e| seen.insert(e.path.clone()));
 
     let orphans = orphan_count.load(Ordering::Relaxed);
     let disc_errors = discovery_errors.load(Ordering::Relaxed);
 
-    if events.is_empty() {
+    if all_events.is_empty() {
         if !quiet {
             if orphans > 0 {
                 eprintln!(
@@ -152,7 +188,7 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
             eprintln!(
                 "  {} {} files, hashed in {}{}{}",
                 style("Discovered").dim(),
-                events.len(),
+                all_events.len(),
                 elapsed_str,
                 orphan_suffix,
                 disc_error_suffix,
@@ -161,7 +197,7 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
             eprintln!(
                 "  {} {} files (hashing skipped){}{}",
                 style("Discovered").dim(),
-                events.len(),
+                all_events.len(),
                 orphan_suffix,
                 disc_error_suffix,
             );
@@ -175,20 +211,20 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     // The CLI still drives introspection directly (below) for deterministic
     // progress reporting. The enqueued introspect jobs are not consumed here;
     // they exist for future daemon-mode use (issue #36).
-    for event in &events {
+    for event in &all_events {
         kernel.dispatch(Event::FileDiscovered(event.clone()));
     }
 
     let probe = if quiet {
-        ProbeProgress::hidden(events.len())
+        ProbeProgress::hidden(all_events.len())
     } else {
-        ProbeProgress::new(events.len())
+        ProbeProgress::new(all_events.len())
     };
     let mut introspected = 0u64;
     let mut errors = 0u64;
-    let total = events.len() as u64;
+    let total = all_events.len() as u64;
 
-    for (i, event) in events.iter().enumerate() {
+    for (i, event) in all_events.iter().enumerate() {
         if token.is_cancelled() {
             break;
         }
@@ -223,7 +259,7 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
             eprintln!(
                 "\n{} {} files discovered, {}/{} introspected{} ({})",
                 style("Interrupted.").bold().yellow(),
-                events.len(),
+                all_events.len(),
                 introspected,
                 total,
                 if errors > 0 {
@@ -236,7 +272,7 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
         }
         // Emit valid output for machine formats even on interruption
         if let Some(format) = args.format {
-            let results: Vec<_> = events
+            let results: Vec<_> = all_events
                 .iter()
                 .map(|e| (e.path.clone(), e.size, e.content_hash.clone()))
                 .collect();
@@ -249,7 +285,7 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
         eprintln!(
             "\n{} {} files discovered, {} introspected{} ({})",
             style("Done.").bold().green(),
-            events.len(),
+            all_events.len(),
             introspected,
             if errors > 0 {
                 format!(", {} {}", errors, style("errors").red())
@@ -264,7 +300,7 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     capture_snapshot(&*store);
 
     if let Some(format) = args.format {
-        let results: Vec<_> = events
+        let results: Vec<_> = all_events
             .iter()
             .map(|e| (e.path.clone(), e.size, e.content_hash.clone()))
             .collect();

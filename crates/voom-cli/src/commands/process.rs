@@ -23,6 +23,27 @@ use voom_domain::utils::format::format_size;
 use voom_job_manager::progress::{CompositeReporter, ProgressReporter};
 use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 
+fn resolve_paths(raw: &[std::path::PathBuf]) -> Result<Vec<std::path::PathBuf>> {
+    let mut canonical: Vec<std::path::PathBuf> = Vec::with_capacity(raw.len());
+    for p in raw {
+        let c = p
+            .canonicalize()
+            .with_context(|| format!("Path not found: {}", p.display()))?;
+        canonical.push(c);
+    }
+    canonical.sort();
+    canonical.dedup();
+    let mut filtered: Vec<std::path::PathBuf> = Vec::with_capacity(canonical.len());
+    for path in &canonical {
+        let dominated = filtered.iter().any(|existing| path.starts_with(existing));
+        if !dominated {
+            filtered.retain(|existing| !existing.starts_with(path));
+            filtered.push(path.clone());
+        }
+    }
+    Ok(filtered)
+}
+
 /// Run the process command.
 ///
 /// Uses the event-driven + direct-call pattern throughout:
@@ -64,31 +85,37 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
     let kernel = Arc::new(kernel);
     let capabilities = Arc::new(collector.snapshot());
 
-    let path = args.paths[0]
-        .canonicalize()
-        .with_context(|| format!("Path not found: {}", args.paths[0].display()))?;
+    let paths = resolve_paths(&args.paths)?;
 
-    let root = if path.is_file() {
-        path.parent()
+    let root = if paths.len() == 1 && paths[0].is_file() {
+        paths[0]
+            .parent()
             .ok_or_else(|| {
-                anyhow::anyhow!("cannot determine parent directory of {}", path.display())
+                anyhow::anyhow!(
+                    "cannot determine parent directory of {}",
+                    paths[0].display()
+                )
             })?
             .to_path_buf()
     } else {
-        path.clone()
+        paths[0].clone()
     };
 
     let resolver = build_policy_resolver(&args, &config, &root)?;
 
     if !plan_only && !quiet {
-        print_run_header(&resolver.summary(), &path, dry_run);
+        let path_list: Vec<_> = paths.iter().map(|p| p.display().to_string()).collect();
+        let display_paths = path_list.join(", ");
+        print_run_header(&resolver.summary(), &display_paths, dry_run);
     }
 
-    // Auto-prune stale file entries under the target directory
-    match store.prune_missing_files_under(&path) {
-        Ok(n) if n > 0 && !plan_only && !quiet => eprintln!("Pruned {n} stale entries."),
-        Ok(_) => {}
-        Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
+    // Auto-prune stale file entries under the target directories
+    for path in &paths {
+        match store.prune_missing_files_under(path) {
+            Ok(n) if n > 0 && !plan_only && !quiet => eprintln!("Pruned {n} stale entries."),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
+        }
     }
 
     if token.is_cancelled() {
@@ -98,7 +125,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         return Ok(());
     }
 
-    let mut events = discover_files(&path, &args, &kernel, quiet)?;
+    let mut events = discover_files(&paths, &args, &kernel, quiet)?;
     if events.is_empty() {
         if plan_only {
             println!("[]");
@@ -235,7 +262,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
                 effective_workers,
                 dry_run,
                 backup_bytes: backup_total,
-                path: &path,
+                paths: &paths,
             });
         }
         print_phase_breakdown(&counters_for_summary.phase_stats.lock(), &all_phase_names);
@@ -269,7 +296,7 @@ fn build_policy_resolver(
 }
 
 /// Print the header line describing what we are about to do.
-fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
+fn print_run_header(policy_name: &str, path_display: &str, dry_run: bool) {
     eprintln!(
         "{} policy {} to {}{}",
         if dry_run {
@@ -278,7 +305,7 @@ fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
             style("Applying").bold()
         },
         style(policy_name).cyan(),
-        style(path.display()).cyan(),
+        style(path_display).cyan(),
         if dry_run {
             " (no changes will be made)"
         } else {
@@ -298,50 +325,62 @@ fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
 /// Introspection is still driven directly by `process_single_file` for
 /// deterministic progress reporting.
 fn discover_files(
-    path: &std::path::Path,
+    paths: &[std::path::PathBuf],
     args: &ProcessArgs,
     kernel: &voom_kernel::Kernel,
     quiet: bool,
 ) -> Result<Vec<voom_domain::events::FileDiscoveredEvent>> {
     let discovery = voom_discovery::DiscoveryPlugin::new();
-    let mut options = voom_discovery::ScanOptions::new(path.to_path_buf());
-    options.hash_files = !args.no_backup;
-    options.workers = args.workers;
+    let hash_files = !args.no_backup;
 
     let progress = if quiet {
         DiscoveryProgress::hidden()
     } else {
         DiscoveryProgress::new()
     };
-    let progress_clone = progress.clone();
-    let hash_files = options.hash_files;
-    options.on_progress = Some(Box::new(move |p| match p {
-        voom_discovery::ScanProgress::Discovered { count, path } => {
-            progress_clone.on_discovered(count, &path);
-        }
-        voom_discovery::ScanProgress::Processing {
-            current,
-            total,
-            path,
-        } => {
-            let action = if hash_files { "Hashing" } else { "Scanning" };
-            progress_clone.on_processing(current, total, &path, action);
-        }
-        voom_discovery::ScanProgress::OrphanedTempFiles { .. } => {}
-    }));
 
     let discovery_errors: Arc<Mutex<Vec<(std::path::PathBuf, u64, String)>>> =
         Arc::new(Mutex::new(Vec::new()));
-    let errors_clone = discovery_errors.clone();
-    options.on_error = Some(Box::new(move |path, size, error| {
-        tracing::warn!(path = %path.display(), error = %error, "discovery error");
-        errors_clone.lock().push((path, size, error));
-    }));
 
-    let events = discovery.scan(&options).context("filesystem scan failed")?;
+    let mut all_events: Vec<voom_domain::events::FileDiscoveredEvent> = Vec::new();
+
+    for path in paths {
+        let mut options = voom_discovery::ScanOptions::new(path.clone());
+        options.hash_files = hash_files;
+        options.workers = args.workers;
+
+        let progress_clone = progress.clone();
+        options.on_progress = Some(Box::new(move |p| match p {
+            voom_discovery::ScanProgress::Discovered { count, path } => {
+                progress_clone.on_discovered(count, &path);
+            }
+            voom_discovery::ScanProgress::Processing {
+                current,
+                total,
+                path,
+            } => {
+                let action = if hash_files { "Hashing" } else { "Scanning" };
+                progress_clone.on_processing(current, total, &path, action);
+            }
+            voom_discovery::ScanProgress::OrphanedTempFiles { .. } => {}
+        }));
+
+        let errors_clone = discovery_errors.clone();
+        options.on_error = Some(Box::new(move |path, size, error| {
+            tracing::warn!(path = %path.display(), error = %error, "discovery error");
+            errors_clone.lock().push((path, size, error));
+        }));
+
+        let events = discovery.scan(&options).context("filesystem scan failed")?;
+        all_events.extend(events);
+    }
+
     progress.finish();
 
-    for event in &events {
+    let mut seen = std::collections::HashSet::new();
+    all_events.retain(|e| seen.insert(e.path.clone()));
+
+    for event in &all_events {
         let results = kernel.dispatch(Event::FileDiscovered(event.clone()));
         log_plugin_errors(&results);
     }
@@ -357,7 +396,7 @@ fn discover_files(
         );
     }
 
-    Ok(events)
+    Ok(all_events)
 }
 
 /// Log any `plugin.error` events produced during event dispatch so
@@ -1179,7 +1218,7 @@ struct SummaryContext<'a> {
     effective_workers: usize,
     dry_run: bool,
     backup_bytes: u64,
-    path: &'a std::path::Path,
+    paths: &'a [std::path::PathBuf],
 }
 
 /// Print the final summary line after processing.
@@ -1211,12 +1250,13 @@ fn print_summary(ctx: &SummaryContext<'_>) {
     );
 
     if ctx.backup_bytes > 0 && ctx.modified > 0 && !ctx.dry_run {
+        let path_args: Vec<_> = ctx.paths.iter().map(|p| p.display().to_string()).collect();
         eprintln!(
             "{} {} backups retained ({}) \u{2014} delete with: find {} -name '*.vbak' -delete",
             style("Info:").bold(),
             style(ctx.modified).cyan(),
             style(format_size(ctx.backup_bytes)).cyan(),
-            ctx.path.display(),
+            path_args.join(" "),
         );
     }
 
