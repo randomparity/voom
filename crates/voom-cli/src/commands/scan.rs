@@ -76,7 +76,6 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     } else {
         DiscoveryProgress::new()
     };
-    let file_count = Arc::new(AtomicU64::new(0));
     let orphan_count = Arc::new(AtomicU64::new(0));
     let discovery_errors = Arc::new(AtomicU64::new(0));
     let start = Instant::now();
@@ -86,7 +85,6 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
 
     for path in &paths {
         let progress_clone = progress.clone();
-        let file_count_clone = file_count.clone();
         let orphan_count_clone = orphan_count.clone();
         let discovery_errors_clone = discovery_errors.clone();
         let kernel_for_errors = kernel.clone();
@@ -106,7 +104,6 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
             } => {
                 let action = if hash_files { "Hashing" } else { "Processing" };
                 progress_clone.on_processing(current, total, &path, action);
-                file_count_clone.store(total as u64, Ordering::Relaxed);
             }
             voom_discovery::ScanProgress::OrphanedTempFiles { count } => {
                 orphan_count_clone.fetch_add(count as u64, Ordering::Relaxed);
@@ -421,5 +418,33 @@ mod tests {
         }
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn test_resolve_paths_deduplicates() {
+        let tmp = std::env::temp_dir();
+        let paths = vec![tmp.clone(), tmp.clone()];
+        let result = resolve_paths(&paths).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], tmp.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_resolve_paths_nonexistent_returns_error() {
+        let paths = vec![PathBuf::from("/nonexistent/path/that/does/not/exist")];
+        let result = resolve_paths(&paths);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("Path not found"));
+    }
+
+    #[test]
+    fn test_resolve_paths_subdirectory_dominated_by_parent() {
+        let tmp = std::env::temp_dir().canonicalize().unwrap();
+        // tmp and itself are both provided — deduplicated to one entry
+        let paths = vec![tmp.clone(), tmp.clone()];
+        let result = resolve_paths(&paths).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], tmp);
     }
 }
