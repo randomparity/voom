@@ -86,6 +86,92 @@ def _collect_episodes(match: re.Match) -> list[int]:
     return eps
 
 
+def _split_path(filename: str) -> tuple[list[str], str]:
+    """Normalize separators and return path parts plus basename."""
+    parts = filename.replace("\\", "/").split("/")
+    basename = parts[-1] if parts else filename
+    return parts, basename
+
+
+def _is_valid_input(filename: str, basename: str) -> bool:
+    """Apply length guards that protect the regex parser."""
+    return len(filename) <= 4096 and len(basename) <= 512
+
+
+def _strip_extension(name: str) -> str:
+    """Remove a simple file extension if present."""
+    return re.sub(r"\.\w{2,4}$", "", name)
+
+
+def _build_episode_info(
+    filename: str,
+    series_name: str,
+    season_number: int,
+    episode_numbers: list[int],
+) -> EpisodeInfo:
+    """Build a normalized EpisodeInfo result."""
+    return EpisodeInfo(
+        series_name=_clean_series_name(series_name),
+        season_number=season_number,
+        episode_numbers=episode_numbers,
+        year=_extract_year(filename),
+    )
+
+
+def _parse_sxxexx(name_no_ext: str, filename: str) -> EpisodeInfo | None:
+    """Parse standard SxxExx episode patterns."""
+    match = _SXXEXX.match(name_no_ext)
+    if not match:
+        return None
+    return _build_episode_info(
+        filename=filename,
+        series_name=match.group("series"),
+        season_number=int(match.group("season")),
+        episode_numbers=_collect_episodes(match),
+    )
+
+
+def _parse_nxn(name_no_ext: str, filename: str) -> EpisodeInfo | None:
+    """Parse NxN episode patterns like 1x02."""
+    match = _NXN.match(name_no_ext)
+    if not match:
+        return None
+    return _build_episode_info(
+        filename=filename,
+        series_name=match.group("series"),
+        season_number=int(match.group("season")),
+        episode_numbers=[int(match.group("ep"))],
+    )
+
+
+def _series_name_from_parts(parts: list[str]) -> str:
+    """Infer the series name from a directory path."""
+    if len(parts) >= 3:
+        return parts[-3]
+    if len(parts) >= 2:
+        return parts[-2]
+    return ""
+
+
+def _parse_directory_episode(
+    parts: list[str],
+    name_no_ext: str,
+    filename: str,
+) -> EpisodeInfo | None:
+    """Parse Season X / Episode Y path patterns."""
+    full_path = "/".join(parts)
+    season_match = _DIR_SEASON.search(full_path)
+    ep_match = _DIR_EPISODE.search(name_no_ext)
+    if not (season_match and ep_match):
+        return None
+    return _build_episode_info(
+        filename=filename,
+        series_name=_series_name_from_parts(parts),
+        season_number=int(season_match.group("season")),
+        episode_numbers=[int(ep_match.group("ep"))],
+    )
+
+
 def parse_filename(filename: str) -> EpisodeInfo | None:
     """Parse a TV filename/path and extract episode information.
 
@@ -99,56 +185,13 @@ def parse_filename(filename: str) -> EpisodeInfo | None:
 
     Returns None if no episode pattern is found.
     """
-    if len(filename) > 4096:
+    parts, basename = _split_path(filename)
+    if not _is_valid_input(filename, basename):
         return None
 
-    # Extract just the path components we care about
-    # Try the filename first, then include parent directory
-    parts = filename.replace("\\", "/").split("/")
-    basename = parts[-1] if parts else filename
-
-    if len(basename) > 512:
-        return None
-
-    # Remove file extension
-    name_no_ext = re.sub(r"\.\w{2,4}$", "", basename)
-
-    # Try SxxExx pattern
-    m = _SXXEXX.match(name_no_ext)
-    if m:
-        return EpisodeInfo(
-            series_name=_clean_series_name(m.group("series")),
-            season_number=int(m.group("season")),
-            episode_numbers=_collect_episodes(m),
-            year=_extract_year(filename),
-        )
-
-    # Try NxN pattern
-    m = _NXN.match(name_no_ext)
-    if m:
-        return EpisodeInfo(
-            series_name=_clean_series_name(m.group("series")),
-            season_number=int(m.group("season")),
-            episode_numbers=[int(m.group("ep"))],
-            year=_extract_year(filename),
-        )
-
-    # Try directory-based: look at parent path for "Season X"
-    full_path = "/".join(parts)
-    season_match = _DIR_SEASON.search(full_path)
-    ep_match = _DIR_EPISODE.search(name_no_ext)
-    if season_match and ep_match:
-        # Try to get series name from grandparent directory
-        series_name = ""
-        if len(parts) >= 3:
-            series_name = parts[-3]
-        elif len(parts) >= 2:
-            series_name = parts[-2]
-        return EpisodeInfo(
-            series_name=_clean_series_name(series_name),
-            season_number=int(season_match.group("season")),
-            episode_numbers=[int(ep_match.group("ep"))],
-            year=_extract_year(filename),
-        )
-
-    return None
+    name_no_ext = _strip_extension(basename)
+    return (
+        _parse_sxxexx(name_no_ext, filename)
+        or _parse_nxn(name_no_ext, filename)
+        or _parse_directory_episode(parts, name_no_ext, filename)
+    )
