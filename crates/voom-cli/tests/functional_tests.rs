@@ -2993,6 +2993,75 @@ mod test_lifecycle_advanced {
             "valid file should have tracks after introspection, got {track_count}"
         );
     }
+
+    // ───────────────────────────────────────────────────────────────────
+    // H. End-to-end corpus generator integration
+    // ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn end_to_end_scaled_corpus_with_corruption() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        let preset = scale_preset();
+
+        // Generate a corpus with random files and some corrupted
+        let count = std::cmp::max(preset.corrupt_files + 2, 5);
+        let corrupt = preset.corrupt_files;
+        let corpus = generate_scaled_corpus(&env, count, corrupt, 42);
+
+        // Verify the generator produced files
+        let generated: Vec<_> = std::fs::read_dir(&corpus)
+            .expect("read corpus dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_file())
+            .collect();
+
+        // Should have manifest files + random files
+        assert!(
+            generated.len() >= count,
+            "expected at least {count} random files, got {}",
+            generated.len()
+        );
+
+        // Copy all files to the test media dir
+        let media = env.media_dir();
+        std::fs::create_dir_all(&media).unwrap();
+        for entry in &generated {
+            let name = entry.file_name();
+            std::fs::copy(entry.path(), media.join(&name)).unwrap();
+        }
+
+        // Scan — should complete without crashing, track valid files
+        env.voom()
+            .args(["scan", media.to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        let db = env.db_path();
+        let active = count_by_status(&db, "active");
+        assert!(
+            active >= 1,
+            "at least some valid files should be tracked after scan"
+        );
+
+        // Corrupt files should NOT prevent valid files from being tracked.
+        let min_expected = (generated.len() - corrupt) as i64;
+        assert!(
+            active >= min_expected - 2,
+            "expected ~{min_expected} active files, got {active} \
+             ({corrupt} corrupt out of {} total)",
+            generated.len()
+        );
+
+        // Verify discovery transitions were recorded for the valid files
+        let discovery_count = count_transitions_by_source(&db, "discovery");
+        assert!(
+            discovery_count >= active,
+            "each active file should have at least one discovery transition, \
+             got {discovery_count} for {active} active files"
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
