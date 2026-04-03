@@ -3219,6 +3219,7 @@ dependencies = [
  "indicatif",
  "parking_lot",
  "predicates",
+ "rand 0.10.0",
  "rusqlite",
  "serde",
  "serde_json",

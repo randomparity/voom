@@ -1619,6 +1619,1230 @@ mod test_lifecycle {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// test_lifecycle_advanced — comprehensive file lifecycle tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_lifecycle_advanced {
+    use super::*;
+
+    struct ScalePreset {
+        files_per_root: usize,
+        num_roots: usize,
+        lifecycle_iterations: usize,
+        corrupt_files: usize,
+    }
+
+    fn scale_preset() -> ScalePreset {
+        match std::env::var("VOOM_TEST_SCALE")
+            .unwrap_or_default()
+            .as_str()
+        {
+            "medium" => ScalePreset {
+                files_per_root: 10,
+                num_roots: 3,
+                lifecycle_iterations: 5,
+                corrupt_files: 3,
+            },
+            "large" => ScalePreset {
+                files_per_root: 0,
+                num_roots: 4,
+                lifecycle_iterations: 10,
+                corrupt_files: 5,
+            },
+            _ => ScalePreset {
+                files_per_root: 3,
+                num_roots: 2,
+                lifecycle_iterations: 3,
+                corrupt_files: 1,
+            },
+        }
+    }
+
+    /// Distribute corpus files across N root directories (round-robin).
+    fn populate_multi_root(
+        env: &TestEnv,
+        num_roots: usize,
+        max_per_root: usize,
+    ) -> (Vec<PathBuf>, Vec<(usize, String)>) {
+        let corpus = corpus_dir();
+        let mut roots = Vec::new();
+        for i in 0..num_roots {
+            let root = env._tempdir.path().join(format!("root_{i}"));
+            std::fs::create_dir_all(&root).expect("create root dir");
+            roots.push(root);
+        }
+        let mut files: Vec<_> = std::fs::read_dir(corpus)
+            .expect("read corpus")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_file())
+            .collect();
+        files.sort_by_key(|e| e.file_name());
+        let mut assignments = Vec::new();
+        let mut counts = vec![0usize; num_roots];
+        for entry in &files {
+            let target = (0..num_roots)
+                .filter(|&r| max_per_root == 0 || counts[r] < max_per_root)
+                .min_by_key(|&r| counts[r]);
+            let Some(root_idx) = target else { break };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            std::fs::copy(entry.path(), roots[root_idx].join(&name)).expect("copy file");
+            assignments.push((root_idx, name));
+            counts[root_idx] += 1;
+        }
+        (roots, assignments)
+    }
+
+    fn count_by_status(db: &std::path::Path, status: &str) -> i64 {
+        let conn = rusqlite::Connection::open(db).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM files WHERE status = ?1",
+            [status],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn count_transitions_by_source(db: &std::path::Path, source: &str) -> i64 {
+        let conn = rusqlite::Connection::open(db).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM file_transitions WHERE source = ?1",
+            [source],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn count_transitions_by_detail(db: &std::path::Path, pattern: &str) -> i64 {
+        let conn = rusqlite::Connection::open(db).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM file_transitions WHERE source_detail LIKE ?1",
+            [pattern],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn file_by_path_contains(db: &std::path::Path, substring: &str) -> Option<(String, String)> {
+        let conn = rusqlite::Connection::open(db).unwrap();
+        conn.query_row(
+            "SELECT id, status FROM files WHERE path LIKE ?1",
+            [format!("%{substring}%")],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()
+    }
+
+    fn transition_count_for_file(db: &std::path::Path, file_id: &str) -> i64 {
+        let conn = rusqlite::Connection::open(db).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM file_transitions WHERE file_id = ?1",
+            [file_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn insert_event_log(db: &std::path::Path, event_type: &str, summary: &str) {
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO event_log (id, event_type, payload, summary, created_at) \
+             VALUES (?1, ?2, '{}', ?3, ?4)",
+            rusqlite::params![id, event_type, summary, now],
+        )
+        .unwrap();
+    }
+
+    fn set_recovery_mode(env: &TestEnv, mode: &str) {
+        let config_path = env.voom_dir.join("config.toml");
+        let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+        let new_content = format!("{existing}\n[recovery]\nmode = \"{mode}\"\n");
+        std::fs::write(&config_path, new_content).unwrap();
+    }
+
+    fn set_pruning_retention(env: &TestEnv, days: u32) {
+        let config_path = env.voom_dir.join("config.toml");
+        let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+        let new_content = format!("{existing}\n[pruning]\nretention_days = {days}\n");
+        std::fs::write(&config_path, new_content).unwrap();
+    }
+
+    fn scan_timeout() -> std::time::Duration {
+        std::time::Duration::from_secs(60)
+    }
+
+    fn process_timeout() -> std::time::Duration {
+        std::time::Duration::from_secs(120)
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // A. Multi-root scan reconciliation
+    // ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn scan_multi_root_independent() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        let preset = scale_preset();
+        let (roots, assignments) =
+            populate_multi_root(&env, preset.num_roots, preset.files_per_root);
+
+        // Scan all roots
+        for root in &roots {
+            env.voom()
+                .args(["scan", root.to_str().unwrap()])
+                .timeout(scan_timeout())
+                .assert()
+                .success();
+        }
+
+        let db = env.db_path();
+        let initial_active = count_by_status(&db, "active");
+        assert!(
+            initial_active > 0,
+            "should have active files after scanning all roots"
+        );
+
+        // Delete one file from root 0
+        let first_in_root0 = assignments
+            .iter()
+            .find(|(idx, _)| *idx == 0)
+            .expect("should have file in root 0");
+        std::fs::remove_file(roots[0].join(&first_in_root0.1)).unwrap();
+
+        // Rescan all roots
+        for root in &roots {
+            env.voom()
+                .args(["scan", root.to_str().unwrap()])
+                .timeout(scan_timeout())
+                .assert()
+                .success();
+        }
+
+        let missing = count_by_status(&db, "missing");
+        assert_eq!(missing, 1, "expected exactly 1 missing file");
+        let active_after = count_by_status(&db, "active");
+        assert_eq!(
+            active_after,
+            initial_active - 1,
+            "active count should decrease by 1"
+        );
+    }
+
+    #[test]
+    fn scan_subset_doesnt_affect_unscanned() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        let (roots, _) = populate_multi_root(&env, 2, 3);
+
+        // Scan both roots
+        for root in &roots {
+            env.voom()
+                .args(["scan", root.to_str().unwrap()])
+                .timeout(scan_timeout())
+                .assert()
+                .success();
+        }
+
+        let db = env.db_path();
+        let initial_active = count_by_status(&db, "active");
+
+        // Rescan only root 0 — root 1 files should stay active
+        env.voom()
+            .args(["scan", roots[0].to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        let active_after = count_by_status(&db, "active");
+        assert_eq!(
+            active_after, initial_active,
+            "rescanning one root should not affect the other root's files"
+        );
+        let missing = count_by_status(&db, "missing");
+        assert_eq!(
+            missing, 0,
+            "no files should be missing when nothing was deleted"
+        );
+    }
+
+    #[test]
+    fn scan_file_moved_within_root() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        let db = env.db_path();
+        let (original_id, _) =
+            file_by_path_contains(&db, "basic-h264-aac").expect("file should exist");
+
+        // Move file into a subdirectory within the same root
+        let subdir = env.media_dir().join("subdir");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::rename(
+            env.media_dir().join("basic-h264-aac.mp4"),
+            subdir.join("basic-h264-aac.mp4"),
+        )
+        .unwrap();
+
+        // Rescan the root (includes subdirectories)
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // Same UUID should be preserved
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let (id_after, path_after): (String, String) = conn
+            .query_row(
+                "SELECT id, path FROM files WHERE status = 'active'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(id_after, original_id, "UUID should be preserved after move");
+        assert!(
+            path_after.contains("subdir"),
+            "path should reflect subdirectory: {path_after}"
+        );
+
+        let moves = count_transitions_by_detail(&db, "detected_move");
+        assert!(moves >= 1, "expected a detected_move transition");
+    }
+
+    #[test]
+    fn scan_file_moved_between_roots() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        let (roots, assignments) = populate_multi_root(&env, 2, 3);
+
+        // Scan both roots
+        for root in &roots {
+            env.voom()
+                .args(["scan", root.to_str().unwrap()])
+                .timeout(scan_timeout())
+                .assert()
+                .success();
+        }
+
+        let db = env.db_path();
+        let first_in_root0 = assignments
+            .iter()
+            .find(|(idx, _)| *idx == 0)
+            .expect("should have file in root 0");
+        let (original_id, _) =
+            file_by_path_contains(&db, &first_in_root0.1).expect("file should exist");
+
+        // Move file from root 0 to root 1
+        std::fs::rename(
+            roots[0].join(&first_in_root0.1),
+            roots[1].join(&first_in_root0.1),
+        )
+        .unwrap();
+
+        // Scan root 0 — file should go missing
+        env.voom()
+            .args(["scan", roots[0].to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // Scan root 1 — file should be detected (moved or new)
+        env.voom()
+            .args(["scan", roots[1].to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // The file should still be tracked (either same UUID via move
+        // detection, or a new UUID if the system treats it as new)
+        let active = count_by_status(&db, "active");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let file_in_root1: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM files WHERE status = 'active' AND path LIKE ?1",
+                [format!("%{}%", first_in_root0.1)],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(file_in_root1, "file should be active in root 1 after move");
+
+        // If move detection worked, the UUID is preserved and original_id
+        // is still active. Either way, the file is tracked.
+        let id_status: Option<String> = conn
+            .query_row(
+                "SELECT status FROM files WHERE id = ?1",
+                [&original_id],
+                |r| r.get(0),
+            )
+            .ok();
+        // Accept either: same UUID reactivated, or a new UUID created
+        assert!(
+            id_status.as_deref() == Some("active") || active > 0,
+            "file should be tracked after cross-root move"
+        );
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // B. External modification detection
+    // ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn scan_detects_external_modification() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        let db = env.db_path();
+        let (original_id, _) =
+            file_by_path_contains(&db, "basic-h264-aac").expect("file should exist");
+        let initial_transitions = transition_count_for_file(&db, &original_id);
+
+        // Modify the file externally (append bytes to change hash)
+        let file_path = env.media_dir().join("basic-h264-aac.mp4");
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file_path)
+            .unwrap();
+        std::io::Write::write_all(&mut f, &[0xDE; 1024]).unwrap();
+
+        // Rescan
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // The system should detect the hash change. Depending on
+        // implementation: the old UUID goes missing and a new one is
+        // created, OR the same UUID gets an external transition.
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let total_transitions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM file_transitions", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            total_transitions > initial_transitions,
+            "expected new transitions after external modification"
+        );
+    }
+
+    #[test]
+    fn scan_external_mod_plus_deletion() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac", "hevc-surround"]);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        let db = env.db_path();
+        assert_eq!(count_by_status(&db, "active"), 2);
+
+        // Modify one file, delete the other
+        let modify_path = env.media_dir().join("basic-h264-aac.mp4");
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&modify_path)
+            .unwrap();
+        std::io::Write::write_all(&mut f, &[0xDE; 1024]).unwrap();
+        std::fs::remove_file(env.media_dir().join("hevc-surround.mkv")).unwrap();
+
+        // Rescan
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // hevc-surround should be missing
+        let missing = count_by_status(&db, "missing");
+        assert!(missing >= 1, "deleted file should be missing");
+
+        // basic-h264-aac should still be tracked (active, possibly new UUID)
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let has_basic: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM files WHERE status = 'active' AND path LIKE '%basic-h264-aac%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_basic, "modified file should still be active");
+    }
+
+    #[test]
+    fn scan_replace_with_identical_content() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        let db = env.db_path();
+        let (original_id, _) =
+            file_by_path_contains(&db, "basic-h264-aac").expect("file should exist");
+        let initial_transitions = transition_count_for_file(&db, &original_id);
+
+        // Delete and restore with identical content
+        let file_path = env.media_dir().join("basic-h264-aac.mp4");
+        let content = std::fs::read(&file_path).unwrap();
+        std::fs::remove_file(&file_path).unwrap();
+        std::fs::write(&file_path, &content).unwrap();
+
+        // Rescan
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // Same content = same hash, so UUID and status should be unchanged
+        let (id_after, status_after) =
+            file_by_path_contains(&db, "basic-h264-aac").expect("file should still exist");
+        assert_eq!(id_after, original_id, "UUID should be preserved");
+        assert_eq!(status_after, "active", "file should remain active");
+
+        // No new transitions beyond the original discovery
+        let transitions_after = transition_count_for_file(&db, &original_id);
+        assert_eq!(
+            transitions_after, initial_transitions,
+            "no new transitions when content is identical"
+        );
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // C. Reactivation & lifecycle cycling
+    // ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn scan_file_reappears_at_same_path() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        // Scan, get UUID
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        let db = env.db_path();
+        let (original_id, _) =
+            file_by_path_contains(&db, "basic-h264-aac").expect("file should exist");
+
+        // Save content, delete, rescan (goes missing)
+        let file_path = env.media_dir().join("basic-h264-aac.mp4");
+        let content = std::fs::read(&file_path).unwrap();
+        std::fs::remove_file(&file_path).unwrap();
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        assert_eq!(count_by_status(&db, "missing"), 1);
+
+        // Restore at same path, rescan (should reactivate)
+        std::fs::write(&file_path, &content).unwrap();
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        let (id_after, status_after) =
+            file_by_path_contains(&db, "basic-h264-aac").expect("file should exist");
+        assert_eq!(id_after, original_id, "same UUID after reappearance");
+        assert_eq!(status_after, "active", "file should be reactivated");
+        assert_eq!(count_by_status(&db, "missing"), 0);
+    }
+
+    #[test]
+    fn scan_file_reappears_at_different_path() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        let db = env.db_path();
+        let (original_id, _) =
+            file_by_path_contains(&db, "basic-h264-aac").expect("file should exist");
+
+        // Save content, delete original, rescan (goes missing)
+        let file_path = env.media_dir().join("basic-h264-aac.mp4");
+        let content = std::fs::read(&file_path).unwrap();
+        std::fs::remove_file(&file_path).unwrap();
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        assert_eq!(count_by_status(&db, "missing"), 1);
+
+        // Restore at a different name, rescan
+        let new_path = env.media_dir().join("restored-video.mp4");
+        std::fs::write(&new_path, &content).unwrap();
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // Move detection should match by hash and reuse the UUID
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let id_status: Option<String> = conn
+            .query_row(
+                "SELECT status FROM files WHERE id = ?1",
+                [&original_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        // If move detection worked: same UUID, active, detected_move transition
+        if id_status.as_deref() == Some("active") {
+            let moves = count_transitions_by_detail(&db, "detected_move");
+            assert!(
+                moves >= 1,
+                "expected detected_move transition for reappeared file"
+            );
+        } else {
+            // Alternatively, the system may create a new file record
+            let active = count_by_status(&db, "active");
+            assert!(
+                active >= 1,
+                "file should be tracked under a new or existing UUID"
+            );
+        }
+    }
+
+    #[test]
+    fn lifecycle_iteration_stress() {
+        require_tool!("ffprobe");
+        use rand::RngExt;
+
+        let env = TestEnv::new();
+        let preset = scale_preset();
+        let (roots, _assignments) =
+            populate_multi_root(&env, preset.num_roots, preset.files_per_root);
+
+        // Initial scan of all roots
+        for root in &roots {
+            env.voom()
+                .args(["scan", root.to_str().unwrap()])
+                .timeout(scan_timeout())
+                .assert()
+                .success();
+        }
+
+        let db = env.db_path();
+        let mut prev_transition_count: i64 = {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.query_row("SELECT COUNT(*) FROM file_transitions", [], |r| r.get(0))
+                .unwrap()
+        };
+
+        let mut rng = rand::rng();
+
+        for iteration in 0..preset.lifecycle_iterations {
+            // Randomly delete or move one file per iteration
+            let active_files: Vec<(String, String)> = {
+                let conn = rusqlite::Connection::open(&db).unwrap();
+                let mut stmt = conn
+                    .prepare("SELECT id, path FROM files WHERE status = 'active'")
+                    .unwrap();
+                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .unwrap()
+                    .filter_map(|r| r.ok())
+                    .collect()
+            };
+
+            if active_files.is_empty() {
+                break;
+            }
+
+            let idx = rng.random_range(0..active_files.len());
+            let (_, ref path) = active_files[idx];
+            let file_path = PathBuf::from(path);
+
+            if file_path.exists() {
+                if rng.random_bool(0.5) {
+                    // Delete
+                    std::fs::remove_file(&file_path).unwrap();
+                } else {
+                    // Rename within same directory
+                    let parent = file_path.parent().unwrap();
+                    let new_name = format!(
+                        "moved_{iteration}_{}",
+                        file_path.file_name().unwrap().to_string_lossy()
+                    );
+                    let new_path = parent.join(new_name);
+                    std::fs::rename(&file_path, &new_path).unwrap();
+                }
+            }
+
+            // Rescan all roots
+            for root in &roots {
+                env.voom()
+                    .args(["scan", root.to_str().unwrap()])
+                    .timeout(scan_timeout())
+                    .assert()
+                    .success();
+            }
+
+            // Transition count should only grow
+            let current: i64 = {
+                let conn = rusqlite::Connection::open(&db).unwrap();
+                conn.query_row("SELECT COUNT(*) FROM file_transitions", [], |r| r.get(0))
+                    .unwrap()
+            };
+            assert!(
+                current >= prev_transition_count,
+                "iteration {iteration}: transitions should grow monotonically \
+                 ({current} < {prev_transition_count})"
+            );
+            prev_transition_count = current;
+
+            // No duplicate active UUIDs
+            let dupes: i64 = {
+                let conn = rusqlite::Connection::open(&db).unwrap();
+                conn.query_row(
+                    "SELECT COUNT(*) FROM (SELECT id FROM files WHERE status = 'active' \
+                     GROUP BY id HAVING COUNT(*) > 1)",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+            };
+            assert_eq!(dupes, 0, "iteration {iteration}: no duplicate active UUIDs");
+        }
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // D. Process transition recording
+    // ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn process_records_voom_transition() {
+        require_tool!("ffprobe");
+        require_tool!("mkvmerge");
+        require_tool!("mkvpropedit");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--no-backup",
+            ])
+            .timeout(process_timeout())
+            .assert()
+            .success();
+
+        let db = env.db_path();
+        let voom_transitions = count_transitions_by_source(&db, "voom");
+        assert!(
+            voom_transitions >= 1,
+            "expected at least 1 voom transition after processing, got {voom_transitions}"
+        );
+
+        // Verify the transition has executor/phase detail and plan_id
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let has_detail: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM file_transitions \
+                 WHERE source = 'voom' AND source_detail IS NOT NULL \
+                 AND plan_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            has_detail,
+            "voom transitions should have source_detail and plan_id"
+        );
+    }
+
+    #[test]
+    fn process_dry_run_records_no_transitions() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--dry-run",
+            ])
+            .timeout(process_timeout())
+            .assert()
+            .success();
+
+        let db = env.db_path();
+        let voom_transitions = count_transitions_by_source(&db, "voom");
+        assert_eq!(
+            voom_transitions, 0,
+            "dry-run should not record voom transitions"
+        );
+    }
+
+    #[test]
+    fn process_updates_expected_hash() {
+        require_tool!("ffprobe");
+        require_tool!("mkvmerge");
+        require_tool!("mkvpropedit");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--no-backup",
+            ])
+            .timeout(process_timeout())
+            .assert()
+            .success();
+
+        // Verify expected_hash is set
+        let db = env.db_path();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let has_expected: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM files WHERE expected_hash IS NOT NULL \
+                 AND expected_hash != ''",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_expected, "expected_hash should be set after processing");
+
+        // Rescan — should not flag as external modification
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        let external_transitions = count_transitions_by_source(&db, "external");
+        assert_eq!(
+            external_transitions, 0,
+            "no external transitions after rescan following processing"
+        );
+    }
+
+    #[test]
+    fn process_then_rescan_shows_full_history() {
+        require_tool!("ffprobe");
+        require_tool!("mkvmerge");
+        require_tool!("mkvpropedit");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+        let file = env.media_dir().join("hevc-surround.mkv");
+
+        // Process
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--no-backup",
+            ])
+            .timeout(process_timeout())
+            .assert()
+            .success();
+
+        // Rescan
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // History command should show entries
+        env.voom()
+            .args(["history", file.to_str().unwrap()])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("history entries for"));
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // E. Crash recovery
+    // ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn crash_recovery_always_recover() {
+        require_tool!("ffprobe");
+        require_tool!("mkvmerge");
+        require_tool!("mkvpropedit");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+        set_recovery_mode(&env, "always_recover");
+
+        // First, do a real scan to populate the DB
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // Create a fake .vbak backup (simulating a crash mid-process)
+        let backup_dir = env.media_dir().join(".voom-backup");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let original = env.media_dir().join("hevc-surround.mkv");
+        let backup_name = "hevc-surround.20260403120000.vbak";
+        let backup_path = backup_dir.join(backup_name);
+        std::fs::copy(&original, &backup_path).unwrap();
+
+        // Insert a plan.executing event (so the backup is treated as a
+        // crash orphan, not a normal completed backup)
+        let db = env.db_path();
+        let summary = format!("path={} phase=normalize", original.display());
+        insert_event_log(&db, "plan.executing", &summary);
+
+        // Run process — crash recovery should restore the backup
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--no-backup",
+            ])
+            .timeout(process_timeout())
+            .assert()
+            .success();
+
+        // Backup should be cleaned up
+        assert!(
+            !backup_path.exists(),
+            "backup should be removed after recovery"
+        );
+
+        // Check for crash_recovery transition
+        let restored = count_transitions_by_detail(&db, "%restored%");
+        assert!(restored >= 1, "expected crash_recovery:restored transition");
+    }
+
+    #[test]
+    fn crash_recovery_always_discard() {
+        require_tool!("ffprobe");
+        require_tool!("mkvmerge");
+        require_tool!("mkvpropedit");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+        set_recovery_mode(&env, "always_discard");
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // Create fake crash orphan
+        let backup_dir = env.media_dir().join(".voom-backup");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let original = env.media_dir().join("hevc-surround.mkv");
+        let backup_name = "hevc-surround.20260403120000.vbak";
+        let backup_path = backup_dir.join(backup_name);
+        std::fs::copy(&original, &backup_path).unwrap();
+
+        let db = env.db_path();
+        let summary = format!("path={} phase=normalize", original.display());
+        insert_event_log(&db, "plan.executing", &summary);
+
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--no-backup",
+            ])
+            .timeout(process_timeout())
+            .assert()
+            .success();
+
+        assert!(
+            !backup_path.exists(),
+            "backup should be removed after discard"
+        );
+
+        let discarded = count_transitions_by_detail(&db, "%discard%");
+        assert!(
+            discarded >= 1,
+            "expected crash_recovery:discarded transition"
+        );
+    }
+
+    #[test]
+    fn normal_backup_not_treated_as_orphan() {
+        require_tool!("ffprobe");
+        require_tool!("mkvmerge");
+        require_tool!("mkvpropedit");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+        set_recovery_mode(&env, "always_recover");
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // Create .vbak with BOTH executing AND completed events
+        // (completed = not an orphan)
+        let backup_dir = env.media_dir().join(".voom-backup");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let original = env.media_dir().join("hevc-surround.mkv");
+        let backup_name = "hevc-surround.20260403120000.vbak";
+        let backup_path = backup_dir.join(backup_name);
+        std::fs::copy(&original, &backup_path).unwrap();
+
+        let db = env.db_path();
+        let summary = format!("path={} phase=normalize", original.display());
+        insert_event_log(&db, "plan.executing", &summary);
+        insert_event_log(&db, "plan.completed", &summary);
+
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--no-backup",
+            ])
+            .timeout(process_timeout())
+            .assert()
+            .success();
+
+        // Backup should NOT be removed (it's a normal completed backup)
+        assert!(
+            backup_path.exists(),
+            "normal backup should not be treated as orphan"
+        );
+
+        // No crash_recovery transitions
+        let crash_transitions = count_transitions_by_detail(&db, "%crash_recovery%");
+        assert_eq!(
+            crash_transitions, 0,
+            "no crash_recovery transitions for normal backups"
+        );
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // F. Statistics & filtering
+    // ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn missing_files_excluded_from_status_and_report() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac", "hevc-surround"]);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // Delete one file and rescan
+        std::fs::remove_file(env.media_dir().join("basic-h264-aac.mp4")).unwrap();
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // Status should show only 1 file
+        let status_output = env.voom().arg("status").output().expect("run status");
+        let status_stdout = String::from_utf8_lossy(&status_output.stdout);
+        assert!(
+            status_stdout.contains("1 file") || status_stdout.contains("1 media"),
+            "status should show only 1 active file, got: {status_stdout}"
+        );
+
+        // Report should also exclude missing files
+        let report_output = env
+            .voom()
+            .args(["report", "--stats"])
+            .output()
+            .expect("run report");
+        let report_stdout = String::from_utf8_lossy(&report_output.stdout);
+        // The report should not count the missing file in totals
+        assert!(
+            !report_stdout.contains("2 files") && !report_stdout.contains("2 media"),
+            "report should not count missing files, got: {report_stdout}"
+        );
+    }
+
+    #[test]
+    fn db_prune_removes_soft_deleted_files() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // Delete and rescan to mark as missing
+        std::fs::remove_file(env.media_dir().join("basic-h264-aac.mp4")).unwrap();
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        let db = env.db_path();
+        assert_eq!(count_by_status(&db, "missing"), 1);
+
+        // Backdate missing_since to make it eligible for purging
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute(
+                "UPDATE files SET missing_since = '2020-01-01T00:00:00+00:00' \
+                 WHERE status = 'missing'",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Set retention to 0 so all missing files get purged
+        set_pruning_retention(&env, 0);
+
+        // Run db prune
+        env.voom().args(["db", "prune"]).assert().success();
+
+        // File should be hard-deleted from DB
+        let missing_after = count_by_status(&db, "missing");
+        assert_eq!(missing_after, 0, "missing file should be purged from DB");
+
+        // Transitions should also be cleaned up
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let transitions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM file_transitions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            transitions, 0,
+            "transitions for purged file should be removed"
+        );
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // G. Corrupt file handling
+    // ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn scan_handles_corrupt_files_gracefully() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        let preset = scale_preset();
+        env.populate_media(&["basic-h264-aac"]);
+
+        // Create corrupt files (truncated to 64 bytes)
+        for i in 0..preset.corrupt_files {
+            let corrupt_path = env.media_dir().join(format!("corrupt-video-{i}.mkv"));
+            std::fs::write(&corrupt_path, [0u8; 64]).unwrap();
+        }
+
+        // Scan should not crash
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // The valid file should still be tracked
+        let db = env.db_path();
+        let active = count_by_status(&db, "active");
+        assert!(
+            active >= 1,
+            "valid file should be tracked despite corrupt file"
+        );
+    }
+
+    #[test]
+    fn process_handles_corrupt_files_gracefully() {
+        require_tool!("ffprobe");
+        require_tool!("mkvmerge");
+        require_tool!("mkvpropedit");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+
+        // Add a corrupt file
+        let corrupt_path = env.media_dir().join("corrupt-video.mkv");
+        std::fs::write(&corrupt_path, [0u8; 64]).unwrap();
+
+        // Process should not crash (may warn about the corrupt file)
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--no-backup",
+            ])
+            .timeout(process_timeout())
+            .assert()
+            .success();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // test_history — `history <path>`
 // ═══════════════════════════════════════════════════════════════════════════
 
