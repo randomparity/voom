@@ -54,13 +54,12 @@ impl FileStorage for SqliteStore {
         .map_err(storage_err("failed to delete old tracks"))?;
 
         tx.execute(
-            "INSERT INTO files (id, path, filename, size, content_hash, expected_hash, status, container, duration, bitrate, tags, plugin_metadata, introspected_at, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            "INSERT INTO files (id, path, filename, size, content_hash, status, container, duration, bitrate, tags, plugin_metadata, introspected_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(path) DO UPDATE SET
                 filename = excluded.filename,
                 size = excluded.size,
                 content_hash = excluded.content_hash,
-                expected_hash = excluded.expected_hash,
                 status = excluded.status,
                 container = excluded.container,
                 duration = excluded.duration,
@@ -75,7 +74,6 @@ impl FileStorage for SqliteStore {
                 filename,
                 file.size as i64,
                 file.content_hash.as_deref().unwrap_or(""),
-                file.expected_hash.as_deref(),
                 file.status.as_str(),
                 file.container.as_str(),
                 file.duration,

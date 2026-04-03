@@ -1521,8 +1521,8 @@ mod tests {
         let store = test_store();
         let mut file = MediaFile::new(PathBuf::from("/movies/unchanged.mkv"));
         file.content_hash = Some("hash_same".into());
-        file.expected_hash = Some("hash_same".into());
         store.upsert_file(&file).unwrap();
+        store.update_expected_hash(&file.id, "hash_same").unwrap();
 
         let files = vec![discovered("/movies/unchanged.mkv", 1000, "hash_same")];
         let result = store
@@ -1548,8 +1548,8 @@ mod tests {
         let mut file = MediaFile::new(PathBuf::from("/movies/modified.mkv"));
         file.size = 500;
         file.content_hash = Some("hash_old".into());
-        file.expected_hash = Some("hash_old".into());
         store.upsert_file(&file).unwrap();
+        store.update_expected_hash(&file.id, "hash_old").unwrap();
         let original_id = file.id;
 
         let files = vec![discovered("/movies/modified.mkv", 600, "hash_new")];
@@ -1591,8 +1591,8 @@ mod tests {
         let store = test_store();
         let mut file = MediaFile::new(PathBuf::from("/movies/gone.mkv"));
         file.content_hash = Some("hash_gone".into());
-        file.expected_hash = Some("hash_gone".into());
         store.upsert_file(&file).unwrap();
+        store.update_expected_hash(&file.id, "hash_gone").unwrap();
 
         let result = store
             .reconcile_discovered_files(&[], &[PathBuf::from("/movies/")])
@@ -1609,8 +1609,8 @@ mod tests {
         let store = test_store();
         let mut file = MediaFile::new(PathBuf::from("/movies/old_name.mkv"));
         file.content_hash = Some("hash_moved".into());
-        file.expected_hash = Some("hash_moved".into());
         store.upsert_file(&file).unwrap();
+        store.update_expected_hash(&file.id, "hash_moved").unwrap();
         let original_id = file.id;
 
         // Mark missing first (simulates previous scan not finding it)
@@ -1648,13 +1648,13 @@ mod tests {
         let store = test_store();
         let mut movie = MediaFile::new(PathBuf::from("/movies/a.mkv"));
         movie.content_hash = Some("hash_a".into());
-        movie.expected_hash = Some("hash_a".into());
         store.upsert_file(&movie).unwrap();
+        store.update_expected_hash(&movie.id, "hash_a").unwrap();
 
         let mut tv = MediaFile::new(PathBuf::from("/tv/b.mkv"));
         tv.content_hash = Some("hash_b".into());
-        tv.expected_hash = Some("hash_b".into());
         store.upsert_file(&tv).unwrap();
+        store.update_expected_hash(&tv.id, "hash_b").unwrap();
 
         // Scan only /movies/ with nothing found
         let result = store
@@ -1675,8 +1675,8 @@ mod tests {
         let store = test_store();
         let mut file = MediaFile::new(PathBuf::from("/movies/back.mkv"));
         file.content_hash = Some("hash_back".into());
-        file.expected_hash = Some("hash_back".into());
         store.upsert_file(&file).unwrap();
+        store.update_expected_hash(&file.id, "hash_back").unwrap();
         let original_id = file.id;
 
         store.mark_missing(&file.id).unwrap();
@@ -1705,8 +1705,8 @@ mod tests {
         let store = test_store();
         let mut file = MediaFile::new(PathBuf::from("/movies2/file.mkv"));
         file.content_hash = Some("hash_m2".into());
-        file.expected_hash = Some("hash_m2".into());
         store.upsert_file(&file).unwrap();
+        store.update_expected_hash(&file.id, "hash_m2").unwrap();
 
         // Scan /movies (no trailing slash) with no discovered files
         let result = store
@@ -1754,8 +1754,10 @@ mod tests {
         let store = test_store();
         let mut missing_file = MediaFile::new(PathBuf::from("/movies/original.mkv"));
         missing_file.content_hash = Some("shared_hash".into());
-        missing_file.expected_hash = Some("shared_hash".into());
         store.upsert_file(&missing_file).unwrap();
+        store
+            .update_expected_hash(&missing_file.id, "shared_hash")
+            .unwrap();
         store.mark_missing(&missing_file.id).unwrap();
 
         let files = vec![
