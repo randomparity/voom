@@ -450,30 +450,40 @@ Add at the end of the `test_lifecycle_advanced` module, after the G section:
              got {discovery_count} for {active} active files"
         );
 
-        // Process with --dry-run to verify:
-        // - Valid files produce plans (process doesn't crash on corrupt files)
-        // - Corrupt files don't abort the batch
+        // Process with --plan-only to verify:
+        // - Valid files produce plans (corrupt files don't abort the batch)
+        // - Plans are valid JSON with at least one entry
         let policy = env.write_policy("test", TEST_POLICY);
 
-        env.voom()
+        let process_output = env
+            .voom()
             .args([
                 "process",
                 media.to_str().unwrap(),
                 "--policy",
                 policy.to_str().unwrap(),
-                "--dry-run",
+                "--plan-only",
             ])
             .timeout(process_timeout())
-            .assert()
-            .success();
+            .output()
+            .expect("run process --plan-only");
 
-        // After process --dry-run, voom transitions should exist for
-        // valid files that matched the policy. At minimum the process
-        // command must complete without aborting on corrupt files.
-        let voom_transitions = count_transitions_by_source(&db, "voom");
         assert!(
-            voom_transitions >= 0,
-            "process --dry-run should not crash; got {voom_transitions} voom transitions"
+            process_output.status.success(),
+            "process --plan-only failed: {}",
+            String::from_utf8_lossy(&process_output.stderr),
+        );
+
+        // --plan-only outputs a JSON array of plans to stdout.
+        // At least one valid file should produce a plan.
+        let stdout = String::from_utf8_lossy(&process_output.stdout);
+        let plans: serde_json::Value =
+            serde_json::from_str(&stdout).expect("plan-only output should be valid JSON");
+        let plan_count = plans.as_array().map_or(0, |a| a.len());
+        assert!(
+            plan_count >= 1,
+            "process --plan-only should produce plans for valid files, \
+             got {plan_count} plans (with {active} active files scanned)"
         );
     }
 ```
