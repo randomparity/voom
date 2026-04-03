@@ -27,13 +27,13 @@ impl FileStatus {
         }
     }
 
-    /// Parse from a string, returning `Active` for unrecognized values.
+    /// Parse from a string, returning `None` for unrecognized values.
     #[must_use]
-    pub fn from_str_lossy(s: &str) -> Self {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "active" => FileStatus::Active,
-            "missing" => FileStatus::Missing,
-            _ => FileStatus::Active,
+            "active" => Some(FileStatus::Active),
+            "missing" => Some(FileStatus::Missing),
+            _ => None,
         }
     }
 }
@@ -65,15 +65,15 @@ impl TransitionSource {
         }
     }
 
-    /// Parse from a string, returning `Unknown` for unrecognized values.
+    /// Parse from a string, returning `None` for unrecognized values.
     #[must_use]
-    pub fn from_str_lossy(s: &str) -> Self {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "discovery" => TransitionSource::Discovery,
-            "voom" => TransitionSource::Voom,
-            "external" => TransitionSource::External,
-            "unknown" => TransitionSource::Unknown,
-            _ => TransitionSource::Unknown,
+            "discovery" => Some(TransitionSource::Discovery),
+            "voom" => Some(TransitionSource::Voom),
+            "external" => Some(TransitionSource::External),
+            "unknown" => Some(TransitionSource::Unknown),
+            _ => None,
         }
     }
 }
@@ -107,14 +107,16 @@ pub struct FileTransition {
 }
 
 impl FileTransition {
-    /// Create a new transition record.
+    /// Create a new transition record with just the post-change state.
+    ///
+    /// For discovery transitions where the previous state is unknown, use this
+    /// constructor and optionally call [`with_from`](Self::with_from) to set the
+    /// prior hash and size.
     #[must_use]
     pub fn new(
         file_id: Uuid,
         path: PathBuf,
-        from_hash: Option<String>,
         to_hash: String,
-        from_size: Option<u64>,
         to_size: u64,
         source: TransitionSource,
     ) -> Self {
@@ -122,15 +124,23 @@ impl FileTransition {
             id: Uuid::new_v4(),
             file_id,
             path,
-            from_hash,
+            from_hash: None,
             to_hash,
-            from_size,
+            from_size: None,
             to_size,
             source,
             source_detail: None,
             plan_id: None,
             created_at: Utc::now(),
         }
+    }
+
+    /// Set the prior hash and size (pre-change state).
+    #[must_use]
+    pub fn with_from(mut self, hash: Option<String>, size: Option<u64>) -> Self {
+        self.from_hash = hash;
+        self.from_size = size;
+        self
     }
 
     /// Set the `source_detail` field.
@@ -195,14 +205,14 @@ mod tests {
     #[test]
     fn test_file_status_roundtrip() {
         for status in [FileStatus::Active, FileStatus::Missing] {
-            assert_eq!(FileStatus::from_str_lossy(status.as_str()), status);
+            assert_eq!(FileStatus::parse(status.as_str()), Some(status));
         }
     }
 
     #[test]
-    fn test_file_status_unknown_defaults_to_active() {
-        assert_eq!(FileStatus::from_str_lossy("garbage"), FileStatus::Active);
-        assert_eq!(FileStatus::from_str_lossy(""), FileStatus::Active);
+    fn test_file_status_parse_returns_none_for_unknown() {
+        assert_eq!(FileStatus::parse("garbage"), None);
+        assert_eq!(FileStatus::parse(""), None);
     }
 
     #[test]
@@ -218,16 +228,14 @@ mod tests {
             TransitionSource::External,
             TransitionSource::Unknown,
         ] {
-            assert_eq!(TransitionSource::from_str_lossy(source.as_str()), source);
+            assert_eq!(TransitionSource::parse(source.as_str()), Some(source));
         }
     }
 
     #[test]
-    fn test_transition_source_unknown_defaults_to_unknown() {
-        assert_eq!(
-            TransitionSource::from_str_lossy("garbage"),
-            TransitionSource::Unknown
-        );
+    fn test_transition_source_parse_returns_none_for_unknown() {
+        assert_eq!(TransitionSource::parse("garbage"), None);
+        assert_eq!(TransitionSource::parse(""), None);
     }
 
     #[test]
@@ -242,12 +250,11 @@ mod tests {
         let t = FileTransition::new(
             file_id,
             PathBuf::from("/movies/test.mkv"),
-            Some("oldhash".into()),
             "newhash".into(),
-            Some(1000),
             2000,
             TransitionSource::Voom,
         )
+        .with_from(Some("oldhash".into()), Some(1000))
         .with_detail("mkvtoolnix")
         .with_plan_id(plan_id);
 
@@ -268,9 +275,7 @@ mod tests {
         let t = FileTransition::new(
             file_id,
             PathBuf::from("/movies/test.mkv"),
-            None,
             "newhash".into(),
-            None,
             2000,
             TransitionSource::Discovery,
         );
@@ -304,12 +309,11 @@ mod tests {
         let t = FileTransition::new(
             file_id,
             PathBuf::from("/movies/test.mkv"),
-            Some("oldhash".into()),
             "newhash".into(),
-            Some(1000),
             2000,
             TransitionSource::External,
         )
+        .with_from(Some("oldhash".into()), Some(1000))
         .with_detail("manual edit");
 
         let json = serde_json::to_string(&t).expect("serialize");

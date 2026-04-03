@@ -5,6 +5,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::transition::FileStatus;
+
 /// A media file with full introspection metadata.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,7 +18,7 @@ pub struct MediaFile {
     #[serde(default)]
     pub expected_hash: Option<String>,
     #[serde(default)]
-    pub status: crate::transition::FileStatus,
+    pub status: FileStatus,
     pub container: Container,
     pub duration: f64,
     pub bitrate: Option<u32>,
@@ -35,7 +37,7 @@ impl MediaFile {
             size: 0,
             content_hash: None,
             expected_hash: None,
-            status: crate::transition::FileStatus::Active,
+            status: FileStatus::Active,
             container: Container::Other,
             duration: 0.0,
             bitrate: None,
@@ -339,6 +341,36 @@ mod tests {
         assert_eq!(mf.path, PathBuf::from("/test/video.mkv"));
         assert_eq!(mf.container, Container::Other);
         assert!(mf.tracks.is_empty());
+        assert_eq!(mf.expected_hash, None);
+        assert_eq!(mf.status, FileStatus::Active);
+    }
+
+    #[test]
+    fn test_media_file_serde_defaults_for_missing_fields() {
+        // Simulate an old JSON record that does not include the new fields.
+        let json = r#"{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "path": "/test/video.mkv",
+            "size": 0,
+            "content_hash": null,
+            "container": "Other",
+            "duration": 0.0,
+            "bitrate": null,
+            "tracks": [],
+            "tags": {},
+            "plugin_metadata": {},
+            "introspected_at": "2024-01-01T00:00:00Z"
+        }"#;
+        let mf: MediaFile = serde_json::from_str(json).expect("deserialize old record");
+        assert_eq!(
+            mf.expected_hash, None,
+            "expected_hash should default to None"
+        );
+        assert_eq!(
+            mf.status,
+            FileStatus::Active,
+            "status should default to Active"
+        );
     }
 
     #[test]
