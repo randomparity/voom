@@ -9,6 +9,7 @@ use voom_domain::bad_file::{BadFile, BadFileSource};
 use voom_domain::errors::Result;
 use voom_domain::job::{Job, JobStatus};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
+use voom_domain::transition::FileStatus;
 
 use super::{other_storage_err, parse_datetime, parse_uuid};
 
@@ -69,6 +70,10 @@ pub(crate) fn row_to_file(row: &Row<'_>) -> rusqlite::Result<FileRow> {
         path: row.get("path")?,
         size: row.get("size")?,
         content_hash: row.get("content_hash")?,
+        expected_hash: row.get("expected_hash")?,
+        status: row
+            .get::<_, Option<String>>("status")?
+            .unwrap_or_else(|| "active".to_string()),
         container: row.get("container")?,
         duration: row.get("duration")?,
         bitrate: row.get("bitrate")?,
@@ -83,6 +88,8 @@ pub(crate) struct FileRow {
     path: String,
     size: i64,
     content_hash: String,
+    expected_hash: Option<String>,
+    status: String,
     container: String,
     duration: Option<f64>,
     bitrate: Option<i32>,
@@ -127,6 +134,8 @@ impl FileRow {
         mf.tags = tags;
         mf.plugin_metadata = plugin_metadata;
         mf.introspected_at = parse_datetime(&self.introspected_at)?;
+        mf.expected_hash = self.expected_hash.clone();
+        mf.status = FileStatus::parse(&self.status).unwrap_or_default();
         Ok(mf)
     }
 }

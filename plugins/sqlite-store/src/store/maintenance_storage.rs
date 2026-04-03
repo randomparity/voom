@@ -86,7 +86,7 @@ impl MaintenanceStorage for SqliteStore {
             "tracks",
             "jobs",
             "plans",
-            "file_history",
+            "file_transitions",
             "processing_stats",
             "plugin_data",
             "bad_files",

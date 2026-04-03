@@ -53,12 +53,14 @@ impl FileStorage for SqliteStore {
         .map_err(storage_err("failed to delete old tracks"))?;
 
         tx.execute(
-            "INSERT INTO files (id, path, filename, size, content_hash, container, duration, bitrate, tags, plugin_metadata, introspected_at, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            "INSERT INTO files (id, path, filename, size, content_hash, expected_hash, status, container, duration, bitrate, tags, plugin_metadata, introspected_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(path) DO UPDATE SET
                 filename = excluded.filename,
                 size = excluded.size,
                 content_hash = excluded.content_hash,
+                expected_hash = excluded.expected_hash,
+                status = excluded.status,
                 container = excluded.container,
                 duration = excluded.duration,
                 bitrate = excluded.bitrate,
@@ -72,6 +74,8 @@ impl FileStorage for SqliteStore {
                 filename,
                 file.size as i64,
                 file.content_hash.as_deref().unwrap_or(""),
+                file.expected_hash.as_deref(),
+                file.status.as_str(),
                 file.container.as_str(),
                 file.duration,
                 file.bitrate.map(i64::from),
@@ -127,7 +131,7 @@ impl FileStorage for SqliteStore {
         let conn = self.conn()?;
         let file_row: Option<FileRow> = conn
             .query_row(
-                "SELECT id, path, size, content_hash, container, duration, bitrate, tags, plugin_metadata, introspected_at FROM files WHERE id = ?1",
+                "SELECT id, path, size, content_hash, expected_hash, status, container, duration, bitrate, tags, plugin_metadata, introspected_at FROM files WHERE id = ?1",
                 params![id.to_string()],
                 row_to_file,
             )
@@ -148,7 +152,7 @@ impl FileStorage for SqliteStore {
         let path_str = path.to_string_lossy().to_string();
         let file_row: Option<FileRow> = conn
             .query_row(
-                "SELECT id, path, size, content_hash, container, duration, bitrate, tags, plugin_metadata, introspected_at FROM files WHERE path = ?1",
+                "SELECT id, path, size, content_hash, expected_hash, status, container, duration, bitrate, tags, plugin_metadata, introspected_at FROM files WHERE path = ?1",
                 params![path_str],
                 row_to_file,
             )
@@ -172,14 +176,18 @@ impl FileStorage for SqliteStore {
         // When filtering by codec/language, use a subquery to apply filters before
         // LIMIT/OFFSET, ensuring consistent pagination with count_files.
         let base = if has_track_filter {
-            "SELECT DISTINCT files.id, files.path, files.size, files.content_hash, files.container, files.duration, files.bitrate, files.tags, files.plugin_metadata, files.introspected_at FROM files INNER JOIN tracks ON tracks.file_id = files.id WHERE 1=1"
+            "SELECT DISTINCT files.id, files.path, files.size, files.content_hash, files.expected_hash, files.status, files.container, files.duration, files.bitrate, files.tags, files.plugin_metadata, files.introspected_at FROM files INNER JOIN tracks ON tracks.file_id = files.id WHERE 1=1"
         } else {
-            "SELECT id, path, size, content_hash, container, duration, bitrate, tags, plugin_metadata, introspected_at FROM files WHERE 1=1"
+            "SELECT id, path, size, content_hash, expected_hash, status, container, duration, bitrate, tags, plugin_metadata, introspected_at FROM files WHERE 1=1"
         };
         let mut q = SqlQuery::new(base);
 
         let col_prefix = if has_track_filter { "files." } else { "" };
 
+        if !filters.include_missing {
+            let clause = format!(" AND {col_prefix}status = {{}}");
+            q.condition(&clause, "active".to_string());
+        }
         if let Some(container) = filters.container {
             let clause = format!(" AND {col_prefix}container = {{}}");
             q.condition(&clause, container.as_str().to_string());
@@ -234,6 +242,9 @@ impl FileStorage for SqliteStore {
         };
         let mut q = SqlQuery::new(base);
 
+        if !filters.include_missing {
+            q.condition(" AND files.status = {}", "active".to_string());
+        }
         if let Some(container) = filters.container {
             q.condition(" AND files.container = {}", container.as_str().to_string());
         }
@@ -257,19 +268,48 @@ impl FileStorage for SqliteStore {
         Ok(count)
     }
 
-    fn mark_missing(&self, _id: &Uuid) -> Result<()> {
-        // Stub: real implementation in Task 3 (schema migration adds status column)
+    fn mark_missing(&self, id: &Uuid) -> Result<()> {
+        let conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+        conn.execute(
+            "UPDATE files SET status = 'missing', missing_since = ?1 WHERE id = ?2 AND status = 'active'",
+            params![now, id.to_string()],
+        )
+        .map_err(storage_err("failed to mark file missing"))?;
         Ok(())
     }
 
-    fn reactivate_file(&self, _id: &Uuid, _new_path: &Path) -> Result<()> {
-        // Stub: real implementation in Task 3
+    fn reactivate_file(&self, id: &Uuid, new_path: &Path) -> Result<()> {
+        let conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+        let path_str = new_path.to_string_lossy().to_string();
+        let filename = new_path
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_default();
+        conn.execute(
+            "UPDATE files SET status = 'active', missing_since = NULL, path = ?1, filename = ?2, updated_at = ?3 WHERE id = ?4",
+            params![path_str, filename, now, id.to_string()],
+        )
+        .map_err(storage_err("failed to reactivate file"))?;
         Ok(())
     }
 
-    fn purge_missing(&self, _older_than: DateTime<Utc>) -> Result<u64> {
-        // Stub: real implementation in Task 3
-        Ok(0)
+    fn purge_missing(&self, older_than: DateTime<Utc>) -> Result<u64> {
+        let conn = self.conn()?;
+        let cutoff = format_datetime(&older_than);
+        conn.execute(
+            "DELETE FROM file_transitions WHERE file_id IN (SELECT id FROM files WHERE status = 'missing' AND missing_since < ?1)",
+            params![cutoff],
+        )
+        .map_err(storage_err("failed to purge transitions for missing files"))?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM files WHERE status = 'missing' AND missing_since < ?1",
+                params![cutoff],
+            )
+            .map_err(storage_err("failed to purge missing files"))?;
+        Ok(deleted as u64)
     }
 
     fn reconcile_discovered_files(
@@ -281,8 +321,13 @@ impl FileStorage for SqliteStore {
         Ok(ReconcileResult::default())
     }
 
-    fn update_expected_hash(&self, _id: &Uuid, _hash: &str) -> Result<()> {
-        // Stub: real implementation in Task 3
+    fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE files SET expected_hash = ?1 WHERE id = ?2",
+            params![hash, id.to_string()],
+        )
+        .map_err(storage_err("failed to update expected_hash"))?;
         Ok(())
     }
 }

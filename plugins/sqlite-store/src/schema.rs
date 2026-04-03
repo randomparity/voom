@@ -4,10 +4,13 @@ use rusqlite::Connection;
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY,
-    path TEXT NOT NULL UNIQUE,
+    path TEXT UNIQUE,
     filename TEXT NOT NULL,
     size INTEGER NOT NULL,
     content_hash TEXT NOT NULL,
+    expected_hash TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    missing_since TEXT,
     container TEXT NOT NULL,
     duration REAL,
     bitrate INTEGER,
@@ -74,18 +77,22 @@ CREATE TABLE IF NOT EXISTS plans (
     result TEXT
 );
 
-CREATE TABLE IF NOT EXISTS file_history (
+CREATE TABLE IF NOT EXISTS file_transitions (
     id TEXT PRIMARY KEY,
     file_id TEXT NOT NULL,
     path TEXT NOT NULL,
-    content_hash TEXT NOT NULL,
-    container TEXT NOT NULL,
-    track_count INTEGER NOT NULL,
-    introspected_at TEXT NOT NULL,
-    archived_at TEXT NOT NULL
+    from_hash TEXT,
+    to_hash TEXT NOT NULL,
+    from_size INTEGER,
+    to_size INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    source_detail TEXT,
+    plan_id TEXT,
+    created_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_file_history_file ON file_history(file_id);
+CREATE INDEX IF NOT EXISTS idx_transitions_file ON file_transitions(file_id);
+CREATE INDEX IF NOT EXISTS idx_transitions_source ON file_transitions(source);
 
 CREATE TABLE IF NOT EXISTS processing_stats (
     id TEXT PRIMARY KEY,
@@ -207,7 +214,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "jobs",
         "plans",
         "processing_stats",
-        "file_history",
+        "file_transitions",
         "plugin_data",
         "bad_files",
         "discovered_files",
@@ -233,6 +240,53 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     }
     if !has_column("plans", "evaluated_at")? {
         conn.execute_batch("ALTER TABLE plans ADD COLUMN evaluated_at TEXT")?;
+    }
+
+    // Add new lifecycle columns to files table if missing.
+    if !has_column("files", "expected_hash")? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN expected_hash TEXT")?;
+    }
+    if !has_column("files", "status")? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")?;
+    }
+    if !has_column("files", "missing_since")? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN missing_since TEXT")?;
+    }
+
+    // Drop legacy file_history table if it exists; replace with file_transitions.
+    let has_file_history: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='file_history'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_file_history {
+        conn.execute_batch("DROP TABLE IF EXISTS file_history")?;
+    }
+
+    // Create file_transitions table if missing.
+    let has_file_transitions: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='file_transitions'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_file_transitions {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS file_transitions (
+                id TEXT PRIMARY KEY,
+                file_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                from_hash TEXT,
+                to_hash TEXT NOT NULL,
+                from_size INTEGER,
+                to_size INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                source_detail TEXT,
+                plan_id TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_transitions_file ON file_transitions(file_id);
+            CREATE INDEX IF NOT EXISTS idx_transitions_source ON file_transitions(source);",
+        )?;
     }
 
     // Create discovered_files table if missing (added in sprint 13).
@@ -409,7 +463,7 @@ mod tests {
         assert!(tables.contains(&"plans".to_string()));
         assert!(tables.contains(&"processing_stats".to_string()));
         assert!(tables.contains(&"plugin_data".to_string()));
-        assert!(tables.contains(&"file_history".to_string()));
+        assert!(tables.contains(&"file_transitions".to_string()));
         assert!(tables.contains(&"bad_files".to_string()));
         assert!(tables.contains(&"discovered_files".to_string()));
         assert!(tables.contains(&"health_checks".to_string()));
