@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -327,18 +327,13 @@ impl FileStorage for SqliteStore {
         let mut result = ReconcileResult::default();
 
         // Build set of discovered paths for fast lookup
-        let discovered_paths: std::collections::HashSet<String> = discovered
+        let discovered_paths: HashSet<String> = discovered
             .iter()
             .map(|d| d.path.to_string_lossy().to_string())
             .collect();
 
         // --- Pass 1: Mark missing ---
         // Find active files under scanned_dirs that are NOT in the discovered set.
-        let scanned_prefixes: Vec<String> = scanned_dirs
-            .iter()
-            .map(|d| d.to_string_lossy().to_string())
-            .collect();
-
         {
             let mut missing_stmt = tx
                 .prepare(
@@ -361,9 +356,8 @@ impl FileStorage for SqliteStore {
                 .map_err(storage_err("failed to collect active files"))?;
 
             for (id, path, _expected_hash, _size) in &active_files {
-                let under_scanned = scanned_prefixes
-                    .iter()
-                    .any(|prefix| path.starts_with(prefix.as_str()));
+                let path_obj = Path::new(path);
+                let under_scanned = scanned_dirs.iter().any(|dir| path_obj.starts_with(dir));
                 if under_scanned && !discovered_paths.contains(path.as_str()) {
                     tx.execute(
                         "UPDATE files SET status = 'missing', missing_since = ?1 \
@@ -377,13 +371,13 @@ impl FileStorage for SqliteStore {
         }
 
         // --- Pass 2: Match discovered files ---
-        // Pre-load missing files with expected_hash for move detection
-        let missing_by_hash: HashMap<String, (String, String, i64)> = {
+        // Pre-load all missing files with a non-NULL expected_hash for move detection.
+        // Both path-bearing and NULL-path records are included; only id and hash are used.
+        let missing_by_hash: HashMap<String, (String, i64)> = {
             let mut stmt = tx
                 .prepare(
-                    "SELECT id, path, expected_hash, size FROM files \
-                     WHERE status = 'missing' AND expected_hash IS NOT NULL \
-                     AND path IS NOT NULL",
+                    "SELECT id, expected_hash, size FROM files \
+                     WHERE status = 'missing' AND expected_hash IS NOT NULL",
                 )
                 .map_err(storage_err("failed to prepare missing lookup"))?;
             let rows = stmt
@@ -391,8 +385,7 @@ impl FileStorage for SqliteStore {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(2)?,
                     ))
                 })
                 .map_err(storage_err("failed to query missing files"))?
@@ -400,48 +393,14 @@ impl FileStorage for SqliteStore {
                 .map_err(storage_err("failed to collect missing files"))?;
 
             let mut map = HashMap::new();
-            for (id, path, hash, size) in rows {
-                if let Some(h) = hash {
-                    map.entry(h).or_insert((id, path, size));
-                }
-            }
-            map
-        };
-
-        // Also load missing files with NULL path (externally replaced)
-        // for move detection
-        let missing_null_path_by_hash: HashMap<String, (String, i64)> = {
-            let mut stmt = tx
-                .prepare(
-                    "SELECT id, expected_hash, size FROM files \
-                     WHERE status = 'missing' AND expected_hash IS NOT NULL \
-                     AND path IS NULL",
-                )
-                .map_err(storage_err("failed to prepare null-path missing lookup"))?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                })
-                .map_err(storage_err("failed to query null-path missing files"))?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(storage_err("failed to collect null-path missing files"))?;
-
-            let mut map = HashMap::new();
             for (id, hash, size) in rows {
-                if let Some(h) = hash {
-                    map.entry(h).or_insert((id, size));
-                }
+                map.entry(hash).or_insert((id, size));
             }
             map
         };
 
         // Track which missing file IDs have been consumed by move detection
-        let mut consumed_missing: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut consumed_missing: HashSet<String> = HashSet::new();
 
         for df in discovered {
             let path_str = df.path.to_string_lossy().to_string();
@@ -555,14 +514,8 @@ impl FileStorage for SqliteStore {
                 // Check for move: hash matches a missing file?
                 let move_match = missing_by_hash
                     .get(&df.content_hash)
-                    .filter(|(id, _, _)| !consumed_missing.contains(id))
-                    .map(|(id, _path, size)| (id.clone(), *size))
-                    .or_else(|| {
-                        missing_null_path_by_hash
-                            .get(&df.content_hash)
-                            .filter(|(id, _)| !consumed_missing.contains(id))
-                            .map(|(id, size)| (id.clone(), *size))
-                    });
+                    .filter(|(id, _)| !consumed_missing.contains(id))
+                    .map(|(id, size)| (id.clone(), *size));
 
                 if let Some((missing_id, _missing_size)) = move_match {
                     // Case 3: Move detected

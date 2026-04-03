@@ -1640,4 +1640,77 @@ mod tests {
         // Should be counted as unchanged (path exists, hash matches)
         assert_eq!(result.unchanged, 1);
     }
+
+    #[test]
+    fn reconcile_path_prefix_boundary_no_false_match() {
+        // /movies should NOT match /movies2/file.mkv — component-level check required
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/movies2/file.mkv"));
+        file.content_hash = Some("hash_m2".into());
+        file.expected_hash = Some("hash_m2".into());
+        store.upsert_file(&file).unwrap();
+
+        // Scan /movies (no trailing slash) with no discovered files
+        let result = store
+            .reconcile_discovered_files(&[], &[PathBuf::from("/movies")])
+            .unwrap();
+
+        // /movies2/file.mkv is not under /movies — must NOT be marked missing
+        assert_eq!(result.missing, 0);
+        let loaded = store.file(&file.id).unwrap().expect("file still in DB");
+        assert_eq!(loaded.status, FileStatus::Active);
+    }
+
+    #[test]
+    fn reconcile_null_expected_hash_legacy_file_counts_as_unchanged() {
+        // A file with NULL expected_hash re-discovered with any hash should be unchanged
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/movies/legacy.mkv"));
+        file.content_hash = Some("old_hash".into());
+        file.expected_hash = None; // legacy file — no expected_hash
+        store.upsert_file(&file).unwrap();
+
+        let files = vec![discovered("/movies/legacy.mkv", 1000, "new_hash")];
+        let result = store
+            .reconcile_discovered_files(&files, &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        // NULL expected_hash means we cannot detect external modification;
+        // treat as unchanged and backfill expected_hash
+        assert_eq!(result.unchanged, 1);
+        assert_eq!(result.external_changes, 0);
+
+        let loaded = store
+            .file_by_path(Path::new("/movies/legacy.mkv"))
+            .unwrap()
+            .expect("file exists");
+        // expected_hash should now be backfilled with the discovered hash
+        assert_eq!(loaded.expected_hash.as_deref(), Some("new_hash"));
+        assert_eq!(loaded.status, FileStatus::Active);
+    }
+
+    #[test]
+    fn reconcile_duplicate_hash_in_discovered_one_move_one_new() {
+        // Two discovered files share the same content_hash.
+        // One missing file has that hash → exactly one move, one new file.
+        let store = test_store();
+        let mut missing_file = MediaFile::new(PathBuf::from("/movies/original.mkv"));
+        missing_file.content_hash = Some("shared_hash".into());
+        missing_file.expected_hash = Some("shared_hash".into());
+        store.upsert_file(&missing_file).unwrap();
+        store.mark_missing(&missing_file.id).unwrap();
+
+        let files = vec![
+            discovered("/movies/copy_a.mkv", 1000, "shared_hash"),
+            discovered("/movies/copy_b.mkv", 1000, "shared_hash"),
+        ];
+        let result = store
+            .reconcile_discovered_files(&files, &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        // First match consumes the missing record; second must be a new file
+        assert_eq!(result.moved, 1);
+        assert_eq!(result.new_files, 1);
+        assert_eq!(result.unchanged, 0);
+    }
 }
