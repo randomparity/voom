@@ -367,6 +367,87 @@ def build_random_specs(count, seed, duration_range):
 
 
 # ---------------------------------------------------------------------------
+# File corruption for error-path testing
+# ---------------------------------------------------------------------------
+
+CORRUPTION_TYPES = ["truncated", "header_damage", "mid_stream", "zero_length", "wrong_extension"]
+
+
+def apply_corruption(file_path, corruption_type, rng):
+    """Corrupt a generated file in-place. Returns a description string."""
+    size = file_path.stat().st_size
+    if size == 0:
+        return "skipped (already empty)"
+
+    if corruption_type == "truncated":
+        cut_pct = rng.randint(10, 80)
+        new_size = max(1, size * cut_pct // 100)
+        data = file_path.read_bytes()[:new_size]
+        file_path.write_bytes(data)
+        return f"truncated to {cut_pct}% ({new_size} bytes)"
+
+    elif corruption_type == "header_damage":
+        damage_size = min(rng.randint(64, 512), size)
+        data = bytearray(file_path.read_bytes())
+        for i in range(damage_size):
+            data[i] = rng.randint(0, 255)
+        file_path.write_bytes(bytes(data))
+        return f"header damaged ({damage_size} bytes)"
+
+    elif corruption_type == "mid_stream":
+        block_size = min(rng.randint(1024, 4096), size // 2)
+        quarter = max(1, size // 4)
+        offset = rng.randint(quarter, max(quarter, size - quarter - block_size))
+        data = bytearray(file_path.read_bytes())
+        for i in range(min(block_size, len(data) - offset)):
+            data[offset + i] = rng.randint(0, 255)
+        file_path.write_bytes(bytes(data))
+        return f"mid-stream corruption ({block_size} bytes at offset {offset})"
+
+    elif corruption_type == "zero_length":
+        file_path.write_bytes(b"")
+        return "truncated to zero bytes"
+
+    elif corruption_type == "wrong_extension":
+        current_ext = file_path.suffix
+        if current_ext == ".mkv":
+            new_ext = ".mp4"
+        elif current_ext == ".mp4":
+            new_ext = ".mkv"
+        else:
+            new_ext = ".mkv"
+        new_path = file_path.with_suffix(new_ext)
+        file_path.rename(new_path)
+        return f"extension changed {current_ext} -> {new_ext}"
+
+    return "unknown corruption type"
+
+
+def select_and_corrupt(dest, random_specs, corrupt_count, seed):
+    """Select `corrupt_count` files from `random_specs` and corrupt them.
+
+    Returns list of (filename, corruption_type, description) tuples.
+    """
+    if corrupt_count <= 0 or not random_specs:
+        return []
+
+    rng = random.Random(seed + 9999)
+    targets = rng.sample(random_specs, min(corrupt_count, len(random_specs)))
+    results = []
+
+    for spec in targets:
+        filename = f"{spec['stem']}.{spec['ext']}"
+        filepath = dest / filename
+        if not filepath.exists():
+            continue
+        ctype = rng.choice(CORRUPTION_TYPES)
+        desc = apply_corruption(filepath, ctype, rng)
+        results.append((filename, ctype, desc))
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Encoder availability
 # ---------------------------------------------------------------------------
 
