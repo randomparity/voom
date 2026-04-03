@@ -811,7 +811,7 @@ async fn process_single_file_execute(
         .map_err(|e| format!("plan execution join error: {e}"))?;
 
         match exec_outcome {
-            PlanOutcome::Success => {
+            PlanOutcome::Success { executor } => {
                 any_executed = true;
 
                 // Size-increase guard
@@ -882,8 +882,39 @@ async fn process_single_file_execute(
                     PhaseOutcomeKind::Completed,
                 );
 
+                // Capture plan fields before moving plan into reintrospect_file
+                let plan_id = plan.id;
+                let phase_name = plan.phase_name.clone();
+
                 // Re-introspect so the next phase sees updated file state
-                current_file = reintrospect_file(&current_file, &[plan], ctx).await;
+                let new_file = reintrospect_file(&current_file, &[plan], ctx).await;
+
+                // Record transition only if the hash actually changed
+                let hash_changed = new_file.content_hash != current_file.content_hash;
+                if hash_changed {
+                    let transition = voom_domain::FileTransition::new(
+                        current_file.id,
+                        new_file.path.clone(),
+                        new_file.content_hash.clone().unwrap_or_default(),
+                        new_file.size,
+                        voom_domain::TransitionSource::Voom,
+                    )
+                    .with_from(current_file.content_hash.clone(), Some(current_file.size))
+                    .with_detail(format!("{executor}:{phase_name}"))
+                    .with_plan_id(plan_id);
+
+                    if let Err(e) = ctx.store.record_transition(&transition) {
+                        tracing::warn!(error = %e, "failed to record transition");
+                    }
+
+                    if let Some(ref hash) = new_file.content_hash {
+                        if let Err(e) = ctx.store.update_expected_hash(&current_file.id, hash) {
+                            tracing::warn!(error = %e, "failed to update expected_hash");
+                        }
+                    }
+                }
+
+                current_file = new_file;
             }
             PlanOutcome::Failed(failed) => {
                 let r = ctx.kernel.dispatch(Event::PlanFailed(failed));
@@ -1145,7 +1176,7 @@ fn resolve_post_execution_path(
 /// Result of executing a single plan via the event bus.
 enum PlanOutcome {
     /// An executor claimed and completed the plan.
-    Success,
+    Success { executor: String },
     /// Execution failed (executor error or unclaimed).
     Failed(PlanFailedEvent),
 }
@@ -1177,7 +1208,12 @@ fn execute_single_plan(
     let exec_error = results.iter().find_map(|r| r.execution_error.clone());
 
     if claimed && exec_error.is_none() {
-        PlanOutcome::Success
+        let executor = results
+            .iter()
+            .find(|r| r.claimed)
+            .map(|r| r.plugin_name.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        PlanOutcome::Success { executor }
     } else if let Some(error) = exec_error {
         let mut failed =
             PlanFailedEvent::new(plan.id, file.path.clone(), plan.phase_name.clone(), error);
