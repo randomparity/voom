@@ -203,46 +203,51 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
 
     // Batch reconciliation: detect moves, external changes, and missing files.
     // Requires content hashes — skip if --no-hash was specified.
-    if hash_files {
-        let discovered: Vec<voom_domain::transition::DiscoveredFile> = all_events
-            .iter()
-            .filter_map(|e| {
-                e.content_hash.as_ref().map(|hash| {
-                    voom_domain::transition::DiscoveredFile::new(
-                        e.path.clone(),
-                        e.size,
-                        hash.clone(),
-                    )
+    let reconcile_introspect_paths: Option<std::collections::HashSet<std::path::PathBuf>> =
+        if hash_files {
+            let discovered: Vec<voom_domain::transition::DiscoveredFile> = all_events
+                .iter()
+                .filter_map(|e| {
+                    e.content_hash.as_ref().map(|hash| {
+                        voom_domain::transition::DiscoveredFile::new(
+                            e.path.clone(),
+                            e.size,
+                            hash.clone(),
+                        )
+                    })
                 })
-            })
-            .collect();
+                .collect();
 
-        let reconcile_result = store.reconcile_discovered_files(&discovered, &paths)?;
+            let reconcile_result = store.reconcile_discovered_files(&discovered, &paths)?;
 
-        if !quiet {
-            if reconcile_result.missing > 0 {
-                eprintln!(
-                    "  {} {} files no longer on disk",
-                    style("Missing").dim(),
-                    reconcile_result.missing
-                );
+            if !quiet {
+                if reconcile_result.missing > 0 {
+                    eprintln!(
+                        "  {} {} files no longer on disk",
+                        style("Missing").dim(),
+                        reconcile_result.missing
+                    );
+                }
+                if reconcile_result.moved > 0 {
+                    eprintln!(
+                        "  {} {} files moved/renamed",
+                        style("Moved").dim(),
+                        reconcile_result.moved
+                    );
+                }
+                if reconcile_result.external_changes > 0 {
+                    eprintln!(
+                        "  {} {} files changed externally",
+                        style("Changed").dim(),
+                        reconcile_result.external_changes
+                    );
+                }
             }
-            if reconcile_result.moved > 0 {
-                eprintln!(
-                    "  {} {} files moved/renamed",
-                    style("Moved").dim(),
-                    reconcile_result.moved
-                );
-            }
-            if reconcile_result.external_changes > 0 {
-                eprintln!(
-                    "  {} {} files changed externally",
-                    style("Changed").dim(),
-                    reconcile_result.external_changes
-                );
-            }
-        }
-    }
+
+            Some(reconcile_result.needs_introspection.into_iter().collect())
+        } else {
+            None
+        };
 
     // Dispatch FileDiscovered events through the kernel so subscribers react:
     // - sqlite-store records each file in the discovered_files staging table
@@ -255,20 +260,13 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
         kernel.dispatch(Event::FileDiscovered(event.clone()));
     }
 
-    // With hashing enabled, skip re-introspecting files whose hash matches
-    // the stored expected_hash (i.e., files that haven't changed).
-    let needs_introspection: Vec<_> = if hash_files {
+    // With hashing enabled, use reconciliation results to determine which files
+    // need introspection (new, moved, externally changed). Without hashing,
+    // introspect everything.
+    let needs_introspection: Vec<_> = if let Some(ref introspect_set) = reconcile_introspect_paths {
         all_events
             .iter()
-            .filter(|e| {
-                store
-                    .file_by_path(&e.path)
-                    .ok()
-                    .flatten()
-                    .map_or(true, |f| {
-                        f.expected_hash.as_deref() != e.content_hash.as_deref()
-                    })
-            })
+            .filter(|e| introspect_set.contains(&e.path))
             .collect()
     } else {
         all_events.iter().collect()

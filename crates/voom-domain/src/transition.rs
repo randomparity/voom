@@ -196,6 +196,8 @@ pub struct ReconcileResult {
     pub external_changes: u32,
     /// Previously tracked files that could not be found.
     pub missing: u32,
+    /// Paths that need introspection (new, moved, externally changed).
+    pub needs_introspection: Vec<PathBuf>,
 }
 
 #[cfg(test)]

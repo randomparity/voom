@@ -508,6 +508,7 @@ impl FileStorage for SqliteStore {
                     insert_transition_in_tx(&tx, &disc_transition, &now)?;
 
                     result.external_changes += 1;
+                    result.needs_introspection.push(df.path.clone());
                 }
             } else {
                 // Path not in DB
@@ -549,6 +550,7 @@ impl FileStorage for SqliteStore {
                     insert_transition_in_tx(&tx, &move_transition, &now)?;
 
                     result.moved += 1;
+                    result.needs_introspection.push(df.path.clone());
                 } else {
                     // Case 4: New file
                     let new_id = Uuid::new_v4();
@@ -582,6 +584,7 @@ impl FileStorage for SqliteStore {
                     insert_transition_in_tx(&tx, &disc_transition, &now)?;
 
                     result.new_files += 1;
+                    result.needs_introspection.push(df.path.clone());
                 }
             }
         }
