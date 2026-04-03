@@ -169,9 +169,9 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         bus_reporter
     } else {
         let cli_reporter: Arc<dyn ProgressReporter> = if quiet {
-            Arc::new(BatchProgress::hidden(file_count))
+            Arc::new(BatchProgress::hidden(&events, effective_workers))
         } else {
-            Arc::new(BatchProgress::new(file_count))
+            Arc::new(BatchProgress::new(&events, effective_workers))
         };
         Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]))
     };
