@@ -366,8 +366,8 @@ def build_random_specs(count, seed, duration_range):
             video["fps"], ext, audio_sig, sub_sig,
         )
 
-        if signature in used_signatures:
-            # Bump duration by 1s to force a different content hash
+        while signature in used_signatures:
+            # Bump duration until we find an unused signature
             duration = duration + 1
             signature = (
                 duration, video["codec"], video["size"],
