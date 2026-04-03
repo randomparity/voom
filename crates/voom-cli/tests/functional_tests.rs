@@ -1776,6 +1776,88 @@ mod test_lifecycle_advanced {
         std::time::Duration::from_secs(120)
     }
 
+    /// Generate a scaled test corpus by invoking `scripts/generate-test-corpus`
+    /// with `--count` and optionally `--corrupt`. Returns the path to the
+    /// generated corpus directory.
+    fn generate_scaled_corpus(env: &TestEnv, count: usize, corrupt: usize, seed: u64) -> PathBuf {
+        let corpus_path = env._tempdir.path().join("scaled_corpus");
+        std::fs::create_dir_all(&corpus_path).expect("create scaled corpus dir");
+
+        let script =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/generate-test-corpus");
+        assert!(
+            script.exists(),
+            "generate-test-corpus not found at {}",
+            script.display()
+        );
+
+        let mut cmd = std::process::Command::new("python3");
+        cmd.arg(&script)
+            .arg(&corpus_path)
+            .arg("--duration")
+            .arg("2")
+            .arg("--seed")
+            .arg(seed.to_string())
+            .arg("--skip")
+            .arg("av1-opus,hevc-truehd")
+            .arg("--count")
+            .arg(count.to_string())
+            .arg("--duration-range")
+            .arg("1-3");
+
+        if corrupt > 0 {
+            cmd.arg("--corrupt").arg(corrupt.to_string());
+        }
+
+        let status = cmd
+            .status()
+            .expect("run generate-test-corpus for scaled corpus");
+
+        if !status.success() {
+            eprintln!(
+                "WARNING: generate-test-corpus --count {count} had failures (exit {:?})",
+                status.code()
+            );
+        }
+
+        corpus_path
+    }
+
+    /// Like `populate_multi_root`, but reads from an arbitrary corpus path
+    /// instead of the shared `corpus_dir()`.
+    fn populate_multi_root_from(
+        env: &TestEnv,
+        corpus: &Path,
+        num_roots: usize,
+        max_per_root: usize,
+    ) -> (Vec<PathBuf>, Vec<(usize, String)>) {
+        let mut roots = Vec::new();
+        for i in 0..num_roots {
+            let root = env._tempdir.path().join(format!("root_{i}"));
+            std::fs::create_dir_all(&root).expect("create root dir");
+            roots.push(root);
+        }
+        let mut files: Vec<_> = std::fs::read_dir(corpus)
+            .expect("read corpus")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_file())
+            .collect();
+        files.sort_by_key(|e| e.file_name());
+        let mut assignments = Vec::new();
+        let mut counts = vec![0usize; num_roots];
+        for entry in &files {
+            let target = (0..num_roots)
+                .filter(|&r| max_per_root == 0 || counts[r] < max_per_root)
+                .min_by_key(|&r| counts[r]);
+            let Some(root_idx) = target else { break };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            std::fs::copy(entry.path(), roots[root_idx].join(&name)).expect("copy file");
+            assignments.push((root_idx, name));
+            counts[root_idx] += 1;
+        }
+        (roots, assignments)
+    }
+
     // ───────────────────────────────────────────────────────────────────
     // A. Multi-root scan reconciliation
     // ───────────────────────────────────────────────────────────────────
