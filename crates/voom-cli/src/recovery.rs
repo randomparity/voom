@@ -78,6 +78,21 @@ fn find_orphans_under(dirs: &[PathBuf]) -> Result<Vec<OrphanedBackup>> {
         collect_orphans_in(dir, &mut orphans);
     }
 
+    // Only treat backups as orphans when the original file is missing or empty.
+    // If the original exists with content, the execution likely completed
+    // successfully and keep_backups retained the copy — not a crash orphan.
+    orphans.retain(|o| match std::fs::metadata(&o.original_path) {
+        Ok(meta) if meta.len() > 0 => {
+            tracing::debug!(
+                backup = %o.backup_path.display(),
+                original = %o.original_path.display(),
+                "skipping backup — original file exists (likely retained by keep_backups)"
+            );
+            false
+        }
+        _ => true,
+    });
+
     Ok(orphans)
 }
 
@@ -440,9 +455,8 @@ mod tests {
     fn test_check_and_recover_always_recover_restores_file() {
         let dir = tempfile::tempdir().unwrap();
 
-        // Write the "original" file (as it was modified mid-run and needs restoring)
+        // Original file is missing (crash before output was written)
         let original = dir.path().join("movie.mkv");
-        std::fs::write(&original, b"current content").unwrap();
 
         // Create a backup with the pre-crash content
         let backup_dir = dir.path().join(".voom-backup");
@@ -470,8 +484,8 @@ mod tests {
     fn test_check_and_recover_always_discard_removes_backup() {
         let dir = tempfile::tempdir().unwrap();
 
+        // Original file is missing (crash scenario)
         let original = dir.path().join("movie.mkv");
-        std::fs::write(&original, b"current").unwrap();
 
         let backup_dir = dir.path().join(".voom-backup");
         std::fs::create_dir_all(&backup_dir).unwrap();
@@ -487,11 +501,55 @@ mod tests {
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store).unwrap();
 
         assert_eq!(recovered, 1);
-        // Original should be unchanged
-        let content = std::fs::read(&original).unwrap();
-        assert_eq!(content, b"current");
+        // Original should not exist (was never written, and discard doesn't restore)
+        assert!(
+            !original.exists(),
+            "original should not exist in discard mode"
+        );
         // Backup should be removed
         assert!(!vbak.exists(), "backup should be discarded");
+    }
+
+    #[test]
+    fn test_find_orphans_skips_backup_when_original_exists() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Original file exists with content (successful execution with keep_backups)
+        let original = dir.path().join("movie.mkv");
+        std::fs::write(&original, b"processed content").unwrap();
+
+        let backup_dir = dir.path().join(".voom-backup");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let _vbak = backup_dir.join("movie.mkv.20240315120000.vbak");
+        std::fs::write(&_vbak, b"pre-processing backup").unwrap();
+
+        let orphans = find_orphans_under(&[dir.path().to_path_buf()]).unwrap();
+        assert!(
+            orphans.is_empty(),
+            "backup should not be treated as orphan when original exists with content"
+        );
+    }
+
+    #[test]
+    fn test_find_orphans_detects_backup_when_original_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Original file exists but is empty (crash during write)
+        let original = dir.path().join("movie.mkv");
+        std::fs::write(&original, b"").unwrap();
+
+        let backup_dir = dir.path().join(".voom-backup");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let vbak = backup_dir.join("movie.mkv.20240315120000.vbak");
+        std::fs::write(&vbak, b"backup content").unwrap();
+
+        let orphans = find_orphans_under(&[dir.path().to_path_buf()]).unwrap();
+        assert_eq!(
+            orphans.len(),
+            1,
+            "empty original should be treated as crash orphan"
+        );
+        assert_eq!(orphans[0].backup_path, vbak);
     }
 
     #[test]
