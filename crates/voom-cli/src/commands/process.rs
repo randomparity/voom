@@ -98,6 +98,20 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         }
     }
 
+    // Check for orphaned backups left by a previous crashed execution
+    match crate::recovery::check_and_recover_under(&config.recovery, &paths, store.as_ref()) {
+        Ok(recovered) if recovered > 0 && !plan_only && !quiet => {
+            eprintln!(
+                "{} {} {} from crashed execution",
+                console::style("Recovered").bold().green(),
+                recovered,
+                if recovered == 1 { "file" } else { "files" }
+            );
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "crash recovery check failed"),
+    }
+
     if token.is_cancelled() {
         if !plan_only && !quiet {
             eprintln!("{}", style("Interrupted before discovery.").yellow());

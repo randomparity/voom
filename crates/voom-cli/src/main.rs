@@ -13,6 +13,7 @@ mod output;
 mod paths;
 mod policy_map;
 mod progress;
+mod recovery;
 mod stats;
 mod tools;
 
