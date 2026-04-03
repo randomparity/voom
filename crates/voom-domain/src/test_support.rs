@@ -103,6 +103,7 @@ pub struct InMemoryStore {
     files: Mutex<HashMap<Uuid, MediaFile>>,
     jobs: Mutex<HashMap<Uuid, Job>>,
     snapshots: Mutex<Vec<LibrarySnapshot>>,
+    event_log: Mutex<Vec<crate::storage::EventLogRecord>>,
 }
 
 impl InMemoryStore {
@@ -111,6 +112,7 @@ impl InMemoryStore {
             files: Mutex::new(HashMap::new()),
             jobs: Mutex::new(HashMap::new()),
             snapshots: Mutex::new(Vec::new()),
+            event_log: Mutex::new(Vec::new()),
         }
     }
 
@@ -472,19 +474,57 @@ impl HealthCheckStorage for InMemoryStore {
 }
 
 impl crate::storage::EventLogStorage for InMemoryStore {
-    fn insert_event_log(&self, _record: &crate::storage::EventLogRecord) -> Result<i64> {
-        Ok(0)
+    fn insert_event_log(&self, record: &crate::storage::EventLogRecord) -> Result<i64> {
+        let mut log = self.event_log.lock().unwrap();
+        let rowid = (log.len() as i64) + 1;
+        let mut stored = record.clone();
+        stored.rowid = rowid;
+        log.push(stored);
+        Ok(rowid)
     }
 
     fn list_event_log(
         &self,
-        _filters: &crate::storage::EventLogFilters,
+        filters: &crate::storage::EventLogFilters,
     ) -> Result<Vec<crate::storage::EventLogRecord>> {
-        Ok(Vec::new())
+        let log = self.event_log.lock().unwrap();
+        let results = log
+            .iter()
+            .filter(|r| {
+                if let Some(ref et) = filters.event_type {
+                    let matches = if let Some(prefix) = et.strip_suffix('*') {
+                        r.event_type.starts_with(prefix)
+                    } else {
+                        r.event_type == *et
+                    };
+                    if !matches {
+                        return false;
+                    }
+                }
+                if let Some(since) = filters.since_rowid {
+                    if r.rowid <= since {
+                        return false;
+                    }
+                }
+                true
+            })
+            .take(filters.limit.map(|l| l as usize).unwrap_or(usize::MAX))
+            .cloned()
+            .collect();
+        Ok(results)
     }
 
-    fn prune_event_log(&self, _keep_last: u64) -> Result<u64> {
-        Ok(0)
+    fn prune_event_log(&self, keep_last: u64) -> Result<u64> {
+        let mut log = self.event_log.lock().unwrap();
+        let len = log.len();
+        let keep = keep_last as usize;
+        if len > keep {
+            let removed = len - keep;
+            *log = log.split_off(removed);
+            Ok(removed as u64)
+        } else {
+            Ok(0)
+        }
     }
 }
 

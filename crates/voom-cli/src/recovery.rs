@@ -32,12 +32,25 @@ pub fn check_and_recover_under(
     scan_dirs: &[PathBuf],
     store: &dyn voom_domain::storage::StorageTrait,
 ) -> Result<u64> {
-    let orphans = find_orphans_under(scan_dirs)?;
-    if orphans.is_empty() {
+    let all_backups = find_orphans_under(scan_dirs)?;
+    if all_backups.is_empty() {
         return Ok(0);
     }
 
-    tracing::info!(count = orphans.len(), "found orphaned backup files");
+    let orphans: Vec<_> = all_backups
+        .into_iter()
+        .filter(|b| is_crash_orphan(&b.original_path, store))
+        .collect();
+
+    if orphans.is_empty() {
+        tracing::debug!("found backup files, none are crash orphans");
+        return Ok(0);
+    }
+
+    tracing::info!(
+        count = orphans.len(),
+        "found orphaned backup files from crashed executions"
+    );
 
     let mut resolved = 0u64;
     for orphan in &orphans {
@@ -71,29 +84,67 @@ pub fn check_and_recover_under(
 }
 
 /// Walk each directory looking for `.vbak` files inside `.voom-backup/` subdirectories.
+///
+/// Returns all backup files found; callers must use `is_crash_orphan` to filter
+/// to genuine orphans from crashed executions.
 fn find_orphans_under(dirs: &[PathBuf]) -> Result<Vec<OrphanedBackup>> {
-    let mut orphans = Vec::new();
+    let mut backups = Vec::new();
 
     for dir in dirs {
-        collect_orphans_in(dir, &mut orphans);
+        collect_orphans_in(dir, &mut backups);
     }
 
-    // Only treat backups as orphans when the original file is missing or empty.
-    // If the original exists with content, the execution likely completed
-    // successfully and keep_backups retained the copy — not a crash orphan.
-    orphans.retain(|o| match std::fs::metadata(&o.original_path) {
-        Ok(meta) if meta.len() > 0 => {
-            tracing::debug!(
-                backup = %o.backup_path.display(),
-                original = %o.original_path.display(),
-                "skipping backup — original file exists (likely retained by keep_backups)"
-            );
+    Ok(backups)
+}
+
+/// Check whether a backup is from an incomplete execution (true = orphan)
+/// or a retained backup from a completed execution (false = not orphan).
+fn is_crash_orphan(original_path: &Path, store: &dyn voom_domain::storage::StorageTrait) -> bool {
+    let path_str = original_path.to_string_lossy();
+    let path_prefix = format!("path={path_str} ");
+
+    let mut filters = voom_domain::storage::EventLogFilters::default();
+    filters.event_type = Some("plan.*".into());
+
+    let events = match store.list_event_log(&filters) {
+        Ok(events) => events,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to query event log for recovery");
+            // Can't determine — treat conservatively as NOT an orphan.
+            return false;
+        }
+    };
+
+    // Find events for this specific path, in chronological order (rowid ASC).
+    // Summary format: "path=/some/path phase=some_phase"
+    let path_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.summary.starts_with(&path_prefix))
+        .collect();
+
+    if path_events.is_empty() {
+        // No events for this path — ambiguous. Not enough evidence to call it an orphan.
+        tracing::debug!(
+            path = %original_path.display(),
+            "no plan events found in event log — skipping recovery"
+        );
+        return false;
+    }
+
+    // Events are ordered rowid ASC so the last element is the most recent.
+    let last_event = path_events.last().expect("checked non-empty above");
+
+    match last_event.event_type.as_str() {
+        "plan.executing" => {
+            // Last event was executing with no completion — crash orphan.
+            true
+        }
+        "plan.completed" | "plan.failed" => {
+            // Execution completed — this is a retained backup, not an orphan.
             false
         }
-        _ => true,
-    });
-
-    Ok(orphans)
+        _ => false,
+    }
 }
 
 /// Recursively collect orphaned `.vbak` files under `dir` using `std::fs::read_dir`.
@@ -330,6 +381,7 @@ fn record_recovery_transition(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use voom_domain::EventLogStorage as _;
 
     // ── infer_original_path ──────────────────────────────────────────────────
 
@@ -449,33 +501,124 @@ mod tests {
         assert_eq!(orphans.len(), 2);
     }
 
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    fn make_backup(dir: &std::path::Path, filename: &str) -> (PathBuf, PathBuf) {
+        let backup_dir = dir.join(".voom-backup");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let vbak = backup_dir.join(format!("{filename}.20240315120000.vbak"));
+        std::fs::write(&vbak, b"backup content").unwrap();
+        let original = dir.join(filename);
+        (vbak, original)
+    }
+
+    fn insert_executing_event(
+        store: &voom_domain::test_support::InMemoryStore,
+        original_path: &std::path::Path,
+    ) {
+        use voom_domain::storage::EventLogRecord;
+        let record = EventLogRecord::new(
+            uuid::Uuid::new_v4(),
+            "plan.executing".to_string(),
+            "{}".to_string(),
+            format!("path={} phase=test", original_path.display()),
+        );
+        store.insert_event_log(&record).unwrap();
+    }
+
+    fn insert_completed_event(
+        store: &voom_domain::test_support::InMemoryStore,
+        original_path: &std::path::Path,
+    ) {
+        use voom_domain::storage::EventLogRecord;
+        let record = EventLogRecord::new(
+            uuid::Uuid::new_v4(),
+            "plan.completed".to_string(),
+            "{}".to_string(),
+            format!("path={} phase=test", original_path.display()),
+        );
+        store.insert_event_log(&record).unwrap();
+    }
+
+    // ── is_crash_orphan ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_crash_orphan_executing_event_returns_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("movie.mkv");
+
+        let store = voom_domain::test_support::InMemoryStore::default();
+        insert_executing_event(&store, &original);
+
+        assert!(is_crash_orphan(&original, &store));
+    }
+
+    #[test]
+    fn test_is_crash_orphan_completed_after_executing_returns_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("movie.mkv");
+
+        let store = voom_domain::test_support::InMemoryStore::default();
+        insert_executing_event(&store, &original);
+        insert_completed_event(&store, &original);
+
+        assert!(!is_crash_orphan(&original, &store));
+    }
+
+    #[test]
+    fn test_is_crash_orphan_no_events_returns_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("movie.mkv");
+
+        let store = voom_domain::test_support::InMemoryStore::default();
+        assert!(!is_crash_orphan(&original, &store));
+    }
+
+    #[test]
+    fn test_is_crash_orphan_only_completed_event_returns_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("movie.mkv");
+
+        let store = voom_domain::test_support::InMemoryStore::default();
+        insert_completed_event(&store, &original);
+
+        assert!(!is_crash_orphan(&original, &store));
+    }
+
+    #[test]
+    fn test_is_crash_orphan_ignores_events_for_different_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("movie.mkv");
+        let other = dir.path().join("other.mkv");
+
+        let store = voom_domain::test_support::InMemoryStore::default();
+        // Insert executing event for a different path
+        insert_executing_event(&store, &other);
+
+        // No events for our path — conservative: not an orphan
+        assert!(!is_crash_orphan(&original, &store));
+    }
+
     // ── check_and_recover_under modes ────────────────────────────────────────
 
     #[test]
     fn test_check_and_recover_always_recover_restores_file() {
         let dir = tempfile::tempdir().unwrap();
+        let (vbak, original) = make_backup(dir.path(), "movie.mkv");
 
-        // Original file is missing (crash before output was written)
-        let original = dir.path().join("movie.mkv");
-
-        // Create a backup with the pre-crash content
-        let backup_dir = dir.path().join(".voom-backup");
-        std::fs::create_dir_all(&backup_dir).unwrap();
-        let vbak = backup_dir.join("movie.mkv.20240315120000.vbak");
-        std::fs::write(&vbak, b"original content").unwrap();
+        let store = voom_domain::test_support::InMemoryStore::default();
+        insert_executing_event(&store, &original);
 
         let config = RecoveryConfig {
             mode: "always_recover".into(),
         };
-
-        let store = voom_domain::test_support::InMemoryStore::default();
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store).unwrap();
 
         assert_eq!(recovered, 1);
         // Original should now have the backup content
         let content = std::fs::read(&original).unwrap();
-        assert_eq!(content, b"original content");
+        assert_eq!(content, b"backup content");
         // Backup file should be gone
         assert!(!vbak.exists(), "backup should be removed after restore");
     }
@@ -483,20 +626,14 @@ mod tests {
     #[test]
     fn test_check_and_recover_always_discard_removes_backup() {
         let dir = tempfile::tempdir().unwrap();
+        let (vbak, original) = make_backup(dir.path(), "movie.mkv");
 
-        // Original file is missing (crash scenario)
-        let original = dir.path().join("movie.mkv");
-
-        let backup_dir = dir.path().join(".voom-backup");
-        std::fs::create_dir_all(&backup_dir).unwrap();
-        let vbak = backup_dir.join("movie.mkv.20240315120000.vbak");
-        std::fs::write(&vbak, b"old backup").unwrap();
+        let store = voom_domain::test_support::InMemoryStore::default();
+        insert_executing_event(&store, &original);
 
         let config = RecoveryConfig {
             mode: "always_discard".into(),
         };
-
-        let store = voom_domain::test_support::InMemoryStore::default();
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store).unwrap();
 
@@ -511,61 +648,58 @@ mod tests {
     }
 
     #[test]
-    fn test_find_orphans_skips_backup_when_original_exists() {
+    fn test_check_and_recover_skips_retained_backup_with_completed_event() {
         let dir = tempfile::tempdir().unwrap();
+        let (vbak, original) = make_backup(dir.path(), "movie.mkv");
 
-        // Original file exists with content (successful execution with keep_backups)
-        let original = dir.path().join("movie.mkv");
-        std::fs::write(&original, b"processed content").unwrap();
+        let store = voom_domain::test_support::InMemoryStore::default();
+        insert_executing_event(&store, &original);
+        insert_completed_event(&store, &original);
 
-        let backup_dir = dir.path().join(".voom-backup");
-        std::fs::create_dir_all(&backup_dir).unwrap();
-        let _vbak = backup_dir.join("movie.mkv.20240315120000.vbak");
-        std::fs::write(&_vbak, b"pre-processing backup").unwrap();
+        let config = RecoveryConfig {
+            mode: "always_recover".into(),
+        };
+        let recovered =
+            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store).unwrap();
 
-        let orphans = find_orphans_under(&[dir.path().to_path_buf()]).unwrap();
-        assert!(
-            orphans.is_empty(),
-            "backup should not be treated as orphan when original exists with content"
-        );
+        // Execution completed — backup is retained, not an orphan
+        assert_eq!(recovered, 0);
+        // Backup must be untouched
+        assert!(vbak.exists(), "retained backup should not be removed");
     }
 
     #[test]
-    fn test_find_orphans_detects_backup_when_original_is_empty() {
+    fn test_check_and_recover_skips_backup_with_no_events() {
         let dir = tempfile::tempdir().unwrap();
+        let (vbak, _original) = make_backup(dir.path(), "movie.mkv");
 
-        // Original file exists but is empty (crash during write)
-        let original = dir.path().join("movie.mkv");
-        std::fs::write(&original, b"").unwrap();
+        let store = voom_domain::test_support::InMemoryStore::default();
+        // No events inserted
 
-        let backup_dir = dir.path().join(".voom-backup");
-        std::fs::create_dir_all(&backup_dir).unwrap();
-        let vbak = backup_dir.join("movie.mkv.20240315120000.vbak");
-        std::fs::write(&vbak, b"backup content").unwrap();
+        let config = RecoveryConfig {
+            mode: "always_recover".into(),
+        };
+        let recovered =
+            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store).unwrap();
 
-        let orphans = find_orphans_under(&[dir.path().to_path_buf()]).unwrap();
-        assert_eq!(
-            orphans.len(),
-            1,
-            "empty original should be treated as crash orphan"
+        assert_eq!(recovered, 0);
+        assert!(
+            vbak.exists(),
+            "backup with no event log evidence should not be touched"
         );
-        assert_eq!(orphans[0].backup_path, vbak);
     }
 
     #[test]
     fn test_check_and_recover_prompt_skips_and_warns() {
         let dir = tempfile::tempdir().unwrap();
+        let (vbak, original) = make_backup(dir.path(), "movie.mkv");
 
-        let backup_dir = dir.path().join(".voom-backup");
-        std::fs::create_dir_all(&backup_dir).unwrap();
-        let vbak = backup_dir.join("movie.mkv.20240315120000.vbak");
-        std::fs::write(&vbak, b"backup").unwrap();
+        let store = voom_domain::test_support::InMemoryStore::default();
+        insert_executing_event(&store, &original);
 
         let config = RecoveryConfig {
             mode: "prompt".into(),
         };
-
-        let store = voom_domain::test_support::InMemoryStore::default();
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store).unwrap();
 
