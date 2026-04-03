@@ -371,13 +371,16 @@ impl FileStorage for SqliteStore {
         }
 
         // --- Pass 2: Match discovered files ---
-        // Pre-load all missing files with a non-NULL expected_hash for move detection.
-        // Both path-bearing and NULL-path records are included; only id and hash are used.
+        // Pre-load missing files with a non-NULL expected_hash for move detection.
+        // Only consider files whose last known path was under a scanned directory —
+        // files outside scanned roots (or with NULL paths) are excluded to prevent
+        // stolen identity across library boundaries.
         let missing_by_hash: HashMap<String, (String, i64)> = {
             let mut stmt = tx
                 .prepare(
-                    "SELECT id, expected_hash, size FROM files \
-                     WHERE status = 'missing' AND expected_hash IS NOT NULL",
+                    "SELECT id, path, expected_hash, size FROM files \
+                     WHERE status = 'missing' AND expected_hash IS NOT NULL \
+                     AND path IS NOT NULL",
                 )
                 .map_err(storage_err("failed to prepare missing lookup"))?;
             let rows = stmt
@@ -385,15 +388,25 @@ impl FileStorage for SqliteStore {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
                     ))
                 })
                 .map_err(storage_err("failed to query missing files"))?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(storage_err("failed to collect missing files"))?;
 
+            // Filter to only files whose last known path falls under a scanned directory
+            let rows: Vec<_> = rows
+                .into_iter()
+                .filter(|(_, path, _, _)| {
+                    let path_obj = Path::new(path);
+                    scanned_dirs.iter().any(|dir| path_obj.starts_with(dir))
+                })
+                .collect();
+
             let mut map = HashMap::new();
-            for (id, hash, size) in rows {
+            for (id, _path, hash, size) in rows {
                 map.entry(hash).or_insert((id, size));
             }
             map
@@ -689,6 +702,70 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored_a.status, FileStatus::Active);
+    }
+
+    #[test]
+    fn reconcile_move_detection_scoped_to_scan_roots() {
+        let store = test_store();
+
+        // File A: in /tv, marked missing with a known hash
+        let mut file_a = MediaFile::new(PathBuf::from("/tv/episode.mkv"));
+        file_a.expected_hash = Some("abc".to_string());
+        file_a.content_hash = Some("abc".to_string());
+        store.upsert_file(&file_a).unwrap();
+        let stored_a = store
+            .file_by_path(Path::new("/tv/episode.mkv"))
+            .unwrap()
+            .unwrap();
+        let file_a_id = stored_a.id;
+        store.mark_missing(&file_a_id).unwrap();
+
+        // File B: already active in /movies (different hash)
+        let mut file_b = MediaFile::new(PathBuf::from("/movies/movie.mkv"));
+        file_b.expected_hash = Some("def".to_string());
+        file_b.content_hash = Some("def".to_string());
+        store.upsert_file(&file_b).unwrap();
+
+        // Discover /movies/new.mkv with the same hash as /tv/episode.mkv
+        // scanning only /movies/ — move detection must NOT steal /tv file's identity
+        let discovered = vec![voom_domain::transition::DiscoveredFile::new(
+            PathBuf::from("/movies/new.mkv"),
+            1000,
+            "abc".to_string(),
+        )];
+        let scanned = vec![PathBuf::from("/movies")];
+        let result = store
+            .reconcile_discovered_files(&discovered, &scanned)
+            .unwrap();
+
+        // /movies/new.mkv should be a brand-new file, not a move of /tv/episode.mkv
+        assert_eq!(result.new_files, 1, "expected 1 new file");
+        assert_eq!(result.moved, 0, "expected no moves");
+
+        // /tv/episode.mkv must still be missing with its original ID
+        let still_missing = store
+            .file_by_path(Path::new("/tv/episode.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            still_missing.status,
+            FileStatus::Missing,
+            "/tv/episode.mkv should still be missing"
+        );
+        assert_eq!(
+            still_missing.id, file_a_id,
+            "/tv/episode.mkv should keep its original UUID"
+        );
+
+        // /movies/new.mkv must have a different UUID from /tv/episode.mkv
+        let new_file = store
+            .file_by_path(Path::new("/movies/new.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            new_file.id, file_a_id,
+            "/movies/new.mkv must have a new UUID, not stolen from /tv/episode.mkv"
+        );
     }
 
     #[test]
