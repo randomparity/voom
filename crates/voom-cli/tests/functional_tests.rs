@@ -2027,16 +2027,47 @@ mod test_lifecycle_advanced {
             .assert()
             .success();
 
-        // The system should detect the hash change. Depending on
-        // implementation: the old UUID goes missing and a new one is
-        // created, OR the same UUID gets an external transition.
+        // Old UUID should be marked missing with an External transition.
+        // New UUID should be created at the same path with a Discovery transition.
         let conn = rusqlite::Connection::open(&db).unwrap();
-        let total_transitions: i64 = conn
-            .query_row("SELECT COUNT(*) FROM file_transitions", [], |r| r.get(0))
+        let old_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE id = ?1",
+                [&original_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_status, "missing", "old UUID should be marked missing");
+
+        let external_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions WHERE file_id = ?1 AND source = 'external'",
+                [&original_id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(
-            total_transitions > initial_transitions,
-            "expected new transitions after external modification"
+            external_count >= 1,
+            "expected External transition on old UUID"
+        );
+
+        let new_id: String = conn
+            .query_row("SELECT id FROM files WHERE status = 'active'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_ne!(new_id, original_id, "new file should have different UUID");
+
+        let discovery_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions WHERE file_id = ?1 AND source = 'discovery'",
+                [&new_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            discovery_count >= 1,
+            "new UUID should have a Discovery transition"
         );
     }
 
@@ -2381,20 +2412,20 @@ mod test_lifecycle_advanced {
             "expected at least 1 voom transition after processing, got {voom_transitions}"
         );
 
-        // Verify the transition has executor/phase detail and plan_id
+        // Verify the transition has executor:phase detail format and plan_id
         let conn = rusqlite::Connection::open(&db).unwrap();
-        let has_detail: bool = conn
+        let has_structured_detail: bool = conn
             .query_row(
                 "SELECT COUNT(*) > 0 FROM file_transitions \
-                 WHERE source = 'voom' AND source_detail IS NOT NULL \
+                 WHERE source = 'voom' AND instr(source_detail, ':') > 0 \
                  AND plan_id IS NOT NULL",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         assert!(
-            has_detail,
-            "voom transitions should have source_detail and plan_id"
+            has_structured_detail,
+            "voom transitions should have executor:phase source_detail and plan_id"
         );
     }
 
