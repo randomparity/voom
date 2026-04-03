@@ -13,6 +13,10 @@ pub struct MediaFile {
     pub path: PathBuf,
     pub size: u64,
     pub content_hash: Option<String>,
+    #[serde(default)]
+    pub expected_hash: Option<String>,
+    #[serde(default)]
+    pub status: crate::transition::FileStatus,
     pub container: Container,
     pub duration: f64,
     pub bitrate: Option<u32>,
@@ -30,6 +34,8 @@ impl MediaFile {
             path,
             size: 0,
             content_hash: None,
+            expected_hash: None,
+            status: crate::transition::FileStatus::Active,
             container: Container::Other,
             duration: 0.0,
             bitrate: None,

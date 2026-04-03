@@ -20,6 +20,7 @@ pub mod temp_file;
     clippy::return_self_not_must_use
 )]
 pub mod test_support;
+pub mod transition;
 pub mod utils;
 
 pub use bad_file::{BadFile, BadFileSource};
@@ -43,4 +44,7 @@ pub use storage::{
     FileHistoryStorage, FileStorage, HealthCheckFilters, HealthCheckRecord, HealthCheckStorage,
     JobFilters, JobStorage, MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage,
     SnapshotStorage, StatsStorage, StorageTrait,
+};
+pub use transition::{
+    DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
 };
