@@ -27,17 +27,6 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
 
     let paths = resolve_paths(&args.paths)?;
 
-    // Auto-prune stale file entries under each scanned directory
-    for path in &paths {
-        match store.prune_missing_files_under(path) {
-            Ok(n) if n > 0 && !quiet => {
-                eprintln!("Pruned {n} stale entries under {}.", path.display());
-            }
-            Ok(_) => {}
-            Err(e) => tracing::warn!(path = %path.display(), error = %e, "auto-prune failed"),
-        }
-    }
-
     if !quiet {
         let path_list: Vec<_> = paths
             .iter()
@@ -199,6 +188,49 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
         }
     }
 
+    // Batch reconciliation: detect moves, external changes, and missing files.
+    // Requires content hashes — skip if --no-hash was specified.
+    if hash_files {
+        let discovered: Vec<voom_domain::transition::DiscoveredFile> = all_events
+            .iter()
+            .filter_map(|e| {
+                e.content_hash.as_ref().map(|hash| {
+                    voom_domain::transition::DiscoveredFile::new(
+                        e.path.clone(),
+                        e.size,
+                        hash.clone(),
+                    )
+                })
+            })
+            .collect();
+
+        let reconcile_result = store.reconcile_discovered_files(&discovered, &paths)?;
+
+        if !quiet {
+            if reconcile_result.missing > 0 {
+                eprintln!(
+                    "  {} {} files no longer on disk",
+                    style("Missing").dim(),
+                    reconcile_result.missing
+                );
+            }
+            if reconcile_result.moved > 0 {
+                eprintln!(
+                    "  {} {} files moved/renamed",
+                    style("Moved").dim(),
+                    reconcile_result.moved
+                );
+            }
+            if reconcile_result.external_changes > 0 {
+                eprintln!(
+                    "  {} {} files changed externally",
+                    style("Changed").dim(),
+                    reconcile_result.external_changes
+                );
+            }
+        }
+    }
+
     // Dispatch FileDiscovered events through the kernel so subscribers react:
     // - sqlite-store records each file in the discovered_files staging table
     // - ffprobe-introspector enqueues JobType::Introspect jobs
@@ -210,16 +242,35 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
         kernel.dispatch(Event::FileDiscovered(event.clone()));
     }
 
-    let probe = if quiet {
-        ProbeProgress::hidden(all_events.len())
+    // With hashing enabled, skip re-introspecting files whose hash matches
+    // the stored expected_hash (i.e., files that haven't changed).
+    let needs_introspection: Vec<_> = if hash_files {
+        all_events
+            .iter()
+            .filter(|e| {
+                store
+                    .file_by_path(&e.path)
+                    .ok()
+                    .flatten()
+                    .map_or(true, |f| {
+                        f.expected_hash.as_deref() != e.content_hash.as_deref()
+                    })
+            })
+            .collect()
     } else {
-        ProbeProgress::new(all_events.len())
+        all_events.iter().collect()
+    };
+
+    let probe = if quiet {
+        ProbeProgress::hidden(needs_introspection.len())
+    } else {
+        ProbeProgress::new(needs_introspection.len())
     };
     let mut introspected = 0u64;
     let mut errors = 0u64;
     let total = all_events.len() as u64;
 
-    for (i, event) in all_events.iter().enumerate() {
+    for (i, event) in needs_introspection.iter().enumerate() {
         if token.is_cancelled() {
             break;
         }
@@ -289,6 +340,24 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
             },
             HumanDuration(total_elapsed),
         );
+    }
+
+    // Prune old missing records based on retention config.
+    let retention_days = config.pruning.retention_days;
+    if retention_days > 0 {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(i64::from(retention_days));
+        match store.purge_missing(cutoff) {
+            Ok(n) if n > 0 && !quiet => {
+                eprintln!(
+                    "  {} {} stale records (missing >{} days)",
+                    style("Purged").dim(),
+                    n,
+                    retention_days
+                );
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "purge failed"),
+        }
     }
 
     // Capture a library snapshot for trend tracking
