@@ -3079,20 +3079,14 @@ mod test_lifecycle_advanced {
              got {discovery_count} for {active} active files"
         );
 
-        // Count media files in the directory (the full set process will see)
-        let media_file_count: usize = std::fs::read_dir(&media)
-            .expect("read media dir")
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                let name = e.file_name().to_string_lossy().to_lowercase();
-                name.ends_with(".mkv") || name.ends_with(".mp4")
-            })
-            .count();
-
-        // Process with --plan-only --force-rescan to force process to
-        // encounter ALL files including corrupt ones (without --force-rescan,
-        // corrupt files are pre-filtered as "bad" from scan). This verifies
-        // corrupt files don't crash the batch and valid files still get plans.
+        // Process with --dry-run --force-rescan to force process to
+        // encounter ALL files including corrupt ones. Without --force-rescan,
+        // process pre-filters corrupt files via the bad_files table, so they
+        // never reach process_single_file.
+        //
+        // --dry-run prints a summary to stderr: "N processed, M would modify,
+        // K skipped, E errors". We parse this to verify all files (including
+        // corrupt ones) went through the pipeline.
         let policy = env.write_policy("test", TEST_POLICY);
 
         let process_output = env
@@ -3102,46 +3096,85 @@ mod test_lifecycle_advanced {
                 media.to_str().unwrap(),
                 "--policy",
                 policy.to_str().unwrap(),
-                "--plan-only",
+                "--dry-run",
                 "--force-rescan",
                 "--on-error",
                 "continue",
             ])
             .timeout(process_timeout())
             .output()
-            .expect("run process --plan-only --force-rescan");
+            .expect("run process --dry-run --force-rescan");
 
         assert!(
             process_output.status.success(),
-            "process --plan-only --force-rescan failed: {}",
+            "process --dry-run --force-rescan failed: {}",
             String::from_utf8_lossy(&process_output.stderr),
         );
 
-        // --plan-only outputs a JSON array of plans to stdout.
-        // Valid files should produce plans; corrupt files should be
-        // skipped without aborting.
-        let stdout = String::from_utf8_lossy(&process_output.stdout);
-        let plans: serde_json::Value =
-            serde_json::from_str(&stdout).expect("plan-only output should be valid JSON");
-        let plan_count = plans.as_array().map_or(0, |a| a.len());
+        // Parse the summary line to verify all files were processed.
+        // Summary format: "Done. N processed, M would modify, K skipped, E errors (workers: W)"
+        let stderr = String::from_utf8_lossy(&process_output.stderr);
+        let summary_line = stderr
+            .lines()
+            .find(|l| l.contains("processed") && l.contains("errors"));
         assert!(
-            plan_count >= 1,
-            "process should produce plans for valid files, \
-             got {plan_count} plans (with {active} active, \
-             {media_file_count} total media files)"
+            summary_line.is_some(),
+            "process --dry-run should print a summary line.\nstderr: {stderr}"
+        );
+        let summary = summary_line.unwrap();
+
+        // Extract "N processed" — the number before "processed,"
+        let parts: Vec<&str> = summary.split_whitespace().collect();
+        let processed = parts
+            .iter()
+            .position(|&w| w == "processed,")
+            .and_then(|i| {
+                if i > 0 {
+                    parts[i - 1].parse::<u64>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+
+        // Extract "E errors" — the number before "errors"
+        let errors = parts
+            .iter()
+            .position(|&w| w.starts_with("error"))
+            .and_then(|i| {
+                if i > 0 {
+                    parts[i - 1].parse::<u64>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+
+        // Count media files in the directory
+        let media_file_count: u64 = std::fs::read_dir(&media)
+            .expect("read media dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_lowercase();
+                name.ends_with(".mkv") || name.ends_with(".mp4")
+            })
+            .count() as u64;
+
+        // All files (including corrupt ones) must have been processed.
+        // processed + errors should account for every discovered file.
+        assert!(
+            processed + errors >= media_file_count,
+            "all {media_file_count} media files should be processed or error, \
+             got {processed} processed + {errors} errors.\n\
+             Summary: {summary}"
         );
 
-        // When corrupt files are present, plans should be fewer than
-        // total media files — proving corrupt files were encountered
-        // and handled (not that they were silently absent).
-        if corrupt > 0 {
-            assert!(
-                plan_count < media_file_count,
-                "with {corrupt} corrupt files, plan count ({plan_count}) should be \
-                 less than total media files ({media_file_count}) — \
-                 corrupt files should fail to produce plans"
-            );
-        }
+        // At least some files must complete without errors
+        assert!(
+            processed >= 1,
+            "at least 1 file should be processed successfully.\n\
+             Summary: {summary}"
+        );
     }
 }
 
