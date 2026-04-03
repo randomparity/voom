@@ -8,6 +8,44 @@ use serde::{Deserialize, Serialize};
 
 use crate::policy_map::MappingEntry;
 
+/// Crash recovery configuration.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecoveryConfig {
+    #[serde(default = "default_recovery_mode")]
+    pub mode: String,
+}
+
+impl Default for RecoveryConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_recovery_mode(),
+        }
+    }
+}
+
+fn default_recovery_mode() -> String {
+    "prompt".into()
+}
+
+/// Missing file pruning configuration.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PruningConfig {
+    #[serde(default = "default_retention_days")]
+    pub retention_days: u32,
+}
+
+impl Default for PruningConfig {
+    fn default() -> Self {
+        Self {
+            retention_days: default_retention_days(),
+        }
+    }
+}
+
+fn default_retention_days() -> u32 {
+    30
+}
+
 /// Application configuration loaded from TOML.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -29,6 +67,10 @@ pub struct AppConfig {
     /// Per-directory policy mappings: longest matching prefix wins.
     #[serde(default)]
     pub policy_mapping: Vec<MappingEntry>,
+    #[serde(default)]
+    pub recovery: RecoveryConfig,
+    #[serde(default)]
+    pub pruning: PruningConfig,
 }
 
 impl std::fmt::Debug for AppConfig {
@@ -43,6 +85,8 @@ impl std::fmt::Debug for AppConfig {
             .field("plugin", &self.plugin)
             .field("default_policy", &self.default_policy)
             .field("policy_mapping", &self.policy_mapping)
+            .field("recovery", &self.recovery)
+            .field("pruning", &self.pruning)
             .finish()
     }
 }
@@ -75,6 +119,8 @@ impl Default for AppConfig {
             plugin: HashMap::new(),
             default_policy: None,
             policy_mapping: Vec::new(),
+            recovery: RecoveryConfig::default(),
+            pruning: PruningConfig::default(),
         }
     }
 }
@@ -238,6 +284,15 @@ pub fn default_config_contents() -> String {
 # [plugin.radarr-metadata]
 # radarr_url = "http://localhost:7878"
 # api_key = "your-radarr-api-key"
+
+# Crash recovery: what to do with orphaned backups from interrupted executions.
+# mode = "always_recover" | "always_discard" | "prompt"
+[recovery]
+mode = "prompt"
+
+# Missing file pruning: how long to keep records for files no longer on disk.
+[pruning]
+retention_days = 30
 "#
     )
 }
@@ -445,6 +500,14 @@ mod tests {
         assert!(
             contents.contains("[[policy_mapping]]"),
             "should document policy_mapping"
+        );
+        assert!(
+            contents.contains("[recovery]"),
+            "should have recovery section"
+        );
+        assert!(
+            contents.contains("[pruning]"),
+            "should have pruning section"
         );
     }
 
