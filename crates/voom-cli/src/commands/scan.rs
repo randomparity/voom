@@ -123,6 +123,19 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     let disc_errors = discovery_errors.load(Ordering::Relaxed);
 
     if all_events.is_empty() {
+        // Even with no files on disk, run reconciliation so that previously
+        // known files under the scanned directories are marked missing.
+        if hash_files {
+            let reconcile_result = store.reconcile_discovered_files(&[], &paths)?;
+            if !quiet && reconcile_result.missing > 0 {
+                eprintln!(
+                    "  {} {} files no longer on disk",
+                    style("Missing").dim(),
+                    reconcile_result.missing
+                );
+            }
+        }
+
         if !quiet {
             if orphans > 0 {
                 eprintln!(

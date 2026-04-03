@@ -1577,6 +1577,45 @@ mod test_lifecycle {
             "expected only discovery transitions from the first scan, got {count}"
         );
     }
+
+    #[test]
+    fn scan_marks_missing_when_all_files_deleted() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        // First scan
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        // Delete all files
+        std::fs::remove_file(env.media_dir().join("basic-h264-aac.mp4")).unwrap();
+
+        // Second scan — empty discovery should still mark files missing
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("Missing"));
+
+        // Verify file is soft-deleted
+        let conn = rusqlite::Connection::open(env.db_path()).unwrap();
+        let missing: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE status = 'missing'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            missing, 1,
+            "expected 1 missing file after deleting all files"
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
