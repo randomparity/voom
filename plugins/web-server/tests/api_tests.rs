@@ -89,12 +89,13 @@ async fn test_delete_file() {
     let store = InMemoryStore::new().with_file(file);
     let server = make_server(store);
 
+    // DELETE marks the file as missing (soft-delete)
     let resp = server.delete(&format!("/api/files/{id}")).await;
     resp.assert_status_ok();
 
-    // Verify it's gone
+    // File record still exists (soft-deleted, status = missing)
     let resp = server.get(&format!("/api/files/{id}")).await;
-    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    resp.assert_status_ok();
 }
 
 // === Job API Tests ===

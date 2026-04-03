@@ -125,7 +125,7 @@ pub async fn delete_file(
         return Err(WebError::NotFound(format!("File {id} not found")));
     }
 
-    spawn_store_op(move || store.delete_file(&id)).await?;
+    spawn_store_op(move || store.mark_missing(&id)).await?;
     Ok(Json(DeleteResponse { deleted: true }))
 }
 

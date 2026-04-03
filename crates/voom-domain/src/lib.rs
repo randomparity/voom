@@ -41,7 +41,7 @@ pub use stats::{
 };
 pub use storage::{
     BadFileFilters, BadFileStorage, EventLogFilters, EventLogRecord, EventLogStorage, FileFilters,
-    FileHistoryStorage, FileStorage, HealthCheckFilters, HealthCheckRecord, HealthCheckStorage,
+    FileStorage, FileTransitionStorage, HealthCheckFilters, HealthCheckRecord, HealthCheckStorage,
     JobFilters, JobStorage, MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage,
     SnapshotStorage, StatsStorage, StorageTrait,
 };

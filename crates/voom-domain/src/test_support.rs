@@ -24,10 +24,13 @@ use crate::stats::{
     SnapshotTrigger, SubtitleStats, VideoStats,
 };
 use crate::storage::{
-    BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage,
+    BadFileFilters, BadFileStorage, FileFilters, FileStorage, FileTransitionStorage,
     HealthCheckFilters, HealthCheckRecord, HealthCheckStorage, JobFilters, JobStorage,
     MaintenanceStorage, PageStats, PlanStorage, PlanSummary, PluginDataStorage, SnapshotStorage,
     StatsStorage,
+};
+use crate::transition::{
+    DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
 };
 
 /// Create a standard test `MediaFile` with video, two audio, and one subtitle track.
@@ -67,6 +70,9 @@ pub fn test_media_file() -> MediaFile {
 }
 
 fn matches_filter(file: &MediaFile, filters: &FileFilters) -> bool {
+    if !filters.include_missing && file.status == FileStatus::Missing {
+        return false;
+    }
     if let Some(container) = filters.container {
         if file.container != container {
             return false;
@@ -179,8 +185,43 @@ impl FileStorage for InMemoryStore {
         Ok(count as u64)
     }
 
-    fn delete_file(&self, id: &Uuid) -> Result<()> {
-        self.files.lock().unwrap().remove(id);
+    fn mark_missing(&self, id: &Uuid) -> Result<()> {
+        let mut files = self.files.lock().unwrap();
+        if let Some(file) = files.get_mut(id) {
+            file.status = FileStatus::Missing;
+        }
+        Ok(())
+    }
+
+    fn reactivate_file(&self, id: &Uuid, new_path: &Path) -> Result<()> {
+        let mut files = self.files.lock().unwrap();
+        if let Some(file) = files.get_mut(id) {
+            file.status = FileStatus::Active;
+            file.path = new_path.to_path_buf();
+        }
+        Ok(())
+    }
+
+    fn purge_missing(&self, _older_than: chrono::DateTime<chrono::Utc>) -> Result<u64> {
+        let mut files = self.files.lock().unwrap();
+        let before = files.len();
+        files.retain(|_, f| f.status != FileStatus::Missing);
+        Ok((before - files.len()) as u64)
+    }
+
+    fn reconcile_discovered_files(
+        &self,
+        _discovered: &[DiscoveredFile],
+        _scanned_dirs: &[std::path::PathBuf],
+    ) -> Result<ReconcileResult> {
+        Ok(ReconcileResult::default())
+    }
+
+    fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()> {
+        let mut files = self.files.lock().unwrap();
+        if let Some(file) = files.get_mut(id) {
+            file.expected_hash = Some(hash.to_string());
+        }
         Ok(())
     }
 }
@@ -331,9 +372,17 @@ impl PlanStorage for InMemoryStore {
     }
 }
 
-impl FileHistoryStorage for InMemoryStore {
-    fn file_history(&self, _path: &Path) -> Result<Vec<crate::storage::FileHistoryEntry>> {
-        Ok(vec![])
+impl FileTransitionStorage for InMemoryStore {
+    fn record_transition(&self, _: &FileTransition) -> Result<()> {
+        Ok(())
+    }
+
+    fn transitions_for_file(&self, _: &Uuid) -> Result<Vec<FileTransition>> {
+        Ok(Vec::new())
+    }
+
+    fn transitions_by_source(&self, _: TransitionSource) -> Result<Vec<FileTransition>> {
+        Ok(Vec::new())
     }
 }
 

@@ -1,12 +1,13 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::params;
 use uuid::Uuid;
 
 use voom_domain::errors::Result;
 use voom_domain::media::MediaFile;
 use voom_domain::storage::{FileFilters, FileStorage};
+use voom_domain::transition::{DiscoveredFile, ReconcileResult};
 
 use super::{
     escape_like, format_datetime, other_storage_err, row_to_file, storage_err, FileRow, SqlQuery,
@@ -43,19 +44,6 @@ impl FileStorage for SqliteStore {
         let tx = conn
             .transaction()
             .map_err(storage_err("failed to begin transaction"))?;
-
-        // Archive old file state to history before updating
-        if existing_id.is_some() {
-            tx.execute(
-                "INSERT INTO file_history (id, file_id, path, content_hash, container, track_count, introspected_at, archived_at)
-                 SELECT ?1, f.id, f.path, f.content_hash, f.container,
-                        (SELECT COUNT(*) FROM tracks WHERE file_id = f.id),
-                        f.introspected_at, ?2
-                 FROM files f WHERE f.path = ?3",
-                params![Uuid::new_v4().to_string(), &now, &path_str],
-            )
-            .map_err(storage_err("failed to archive file history"))?;
-        }
 
         // Delete old tracks before upserting
         tx.execute(
@@ -269,10 +257,32 @@ impl FileStorage for SqliteStore {
         Ok(count)
     }
 
-    fn delete_file(&self, id: &Uuid) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute("DELETE FROM files WHERE id = ?1", params![id.to_string()])
-            .map_err(storage_err("failed to delete file"))?;
+    fn mark_missing(&self, _id: &Uuid) -> Result<()> {
+        // Stub: real implementation in Task 3 (schema migration adds status column)
+        Ok(())
+    }
+
+    fn reactivate_file(&self, _id: &Uuid, _new_path: &Path) -> Result<()> {
+        // Stub: real implementation in Task 3
+        Ok(())
+    }
+
+    fn purge_missing(&self, _older_than: DateTime<Utc>) -> Result<u64> {
+        // Stub: real implementation in Task 3
+        Ok(0)
+    }
+
+    fn reconcile_discovered_files(
+        &self,
+        _discovered: &[DiscoveredFile],
+        _scanned_dirs: &[PathBuf],
+    ) -> Result<ReconcileResult> {
+        // Stub: real implementation in Task 5
+        Ok(ReconcileResult::default())
+    }
+
+    fn update_expected_hash(&self, _id: &Uuid, _hash: &str) -> Result<()> {
+        // Stub: real implementation in Task 3
         Ok(())
     }
 }

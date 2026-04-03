@@ -10,6 +10,7 @@ use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::{Container, MediaFile};
 use crate::plan::Plan;
 use crate::stats::{LibrarySnapshot, ProcessingStats, SnapshotTrigger};
+use crate::transition::{DiscoveredFile, FileTransition, ReconcileResult, TransitionSource};
 
 /// Filters for querying jobs from storage.
 #[non_exhaustive]
@@ -40,6 +41,8 @@ pub struct FileFilters {
     pub path_prefix: Option<String>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+    /// When `true`, include files with `Missing` status. Default: `false`.
+    pub include_missing: bool,
 }
 
 // --- Focused sub-traits ---
@@ -55,7 +58,21 @@ pub trait FileStorage: Send + Sync {
     fn list_files(&self, filters: &FileFilters) -> Result<Vec<MediaFile>>;
     /// Count total files matching the given filters (ignoring limit/offset).
     fn count_files(&self, filters: &FileFilters) -> Result<u64>;
-    fn delete_file(&self, id: &Uuid) -> Result<()>;
+    /// Mark a file as missing (soft-delete). The record is retained for history.
+    fn mark_missing(&self, id: &Uuid) -> Result<()>;
+    /// Restore a missing file to active status, updating its path.
+    fn reactivate_file(&self, id: &Uuid, new_path: &Path) -> Result<()>;
+    /// Permanently delete all files with Missing status older than `older_than`.
+    /// Returns the number of rows purged.
+    fn purge_missing(&self, older_than: DateTime<Utc>) -> Result<u64>;
+    /// Reconcile a batch of discovered files against stored state.
+    fn reconcile_discovered_files(
+        &self,
+        discovered: &[DiscoveredFile],
+        scanned_dirs: &[PathBuf],
+    ) -> Result<ReconcileResult>;
+    /// Update the expected hash for a file (set after a successful voom operation).
+    fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()>;
 }
 
 /// Job queue operations.
@@ -91,12 +108,17 @@ pub trait PlanStorage: Send + Sync {
     fn plan_stats_by_phase(&self) -> Result<Vec<PlanPhaseStat>>;
 }
 
-/// File history snapshots.
+/// File lifecycle transition recording.
 ///
 /// # Errors
 /// Methods return `VoomError::Storage` on database failures.
-pub trait FileHistoryStorage: Send + Sync {
-    fn file_history(&self, path: &Path) -> Result<Vec<FileHistoryEntry>>;
+pub trait FileTransitionStorage: Send + Sync {
+    /// Record a single file transition.
+    fn record_transition(&self, transition: &FileTransition) -> Result<()>;
+    /// Retrieve all transitions for a specific file, ordered by `created_at`.
+    fn transitions_for_file(&self, file_id: &Uuid) -> Result<Vec<FileTransition>>;
+    /// Retrieve all transitions with the given source, ordered by `created_at`.
+    fn transitions_by_source(&self, source: TransitionSource) -> Result<Vec<FileTransition>>;
 }
 
 /// Processing statistics recording.
@@ -309,7 +331,7 @@ pub trait StorageTrait:
     FileStorage
     + JobStorage
     + PlanStorage
-    + FileHistoryStorage
+    + FileTransitionStorage
     + StatsStorage
     + PluginDataStorage
     + BadFileStorage
@@ -325,7 +347,7 @@ impl<T> StorageTrait for T where
     T: FileStorage
         + JobStorage
         + PlanStorage
-        + FileHistoryStorage
+        + FileTransitionStorage
         + StatsStorage
         + PluginDataStorage
         + BadFileStorage
@@ -449,92 +471,6 @@ impl PlanSummary {
             created_at,
             executed_at: None,
             result: None,
-        }
-    }
-}
-
-/// Row data for reconstructing a [`FileHistoryEntry`] from storage.
-#[non_exhaustive]
-#[derive(Debug, Clone)]
-pub struct StoredHistoryRow {
-    pub id: Uuid,
-    pub file_id: Uuid,
-    pub path: PathBuf,
-    pub content_hash: Option<String>,
-    pub container: Container,
-    pub track_count: u32,
-    pub introspected_at: DateTime<Utc>,
-    pub archived_at: DateTime<Utc>,
-}
-
-impl StoredHistoryRow {
-    #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        id: Uuid,
-        file_id: Uuid,
-        path: PathBuf,
-        content_hash: Option<String>,
-        container: Container,
-        track_count: u32,
-        introspected_at: DateTime<Utc>,
-        archived_at: DateTime<Utc>,
-    ) -> Self {
-        Self {
-            id,
-            file_id,
-            path,
-            content_hash,
-            container,
-            track_count,
-            introspected_at,
-            archived_at,
-        }
-    }
-}
-
-/// A historical snapshot of a file's state before it was updated.
-#[non_exhaustive]
-#[derive(Debug, Clone)]
-pub struct FileHistoryEntry {
-    pub id: Uuid,
-    pub file_id: Uuid,
-    pub path: PathBuf,
-    pub content_hash: Option<String>,
-    pub container: Container,
-    pub track_count: u32,
-    pub introspected_at: DateTime<Utc>,
-    pub archived_at: DateTime<Utc>,
-}
-
-impl FileHistoryEntry {
-    /// Create a new history entry by snapshotting a file's current state.
-    #[must_use]
-    pub fn from_file(file: &MediaFile, archived_at: DateTime<Utc>) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            file_id: file.id,
-            path: file.path.clone(),
-            content_hash: file.content_hash.clone(),
-            container: file.container,
-            track_count: u32::try_from(file.tracks.len()).unwrap_or(u32::MAX),
-            introspected_at: file.introspected_at,
-            archived_at,
-        }
-    }
-
-    /// Reconstruct a history entry from stored fields (e.g., database rows).
-    #[must_use]
-    pub fn from_stored(row: StoredHistoryRow) -> Self {
-        Self {
-            id: row.id,
-            file_id: row.file_id,
-            path: row.path,
-            content_hash: row.content_hash,
-            container: row.container,
-            track_count: row.track_count,
-            introspected_at: row.introspected_at,
-            archived_at: row.archived_at,
         }
     }
 }

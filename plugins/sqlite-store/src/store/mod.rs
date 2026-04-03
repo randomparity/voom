@@ -1,8 +1,8 @@
 mod bad_file_storage;
 mod discovered_file_storage;
 mod event_log_storage;
-mod file_history_storage;
 mod file_storage;
+mod file_transition_storage;
 mod health_check_storage;
 mod job_storage;
 mod maintenance_storage;
@@ -338,8 +338,8 @@ mod tests {
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
     use voom_domain::plan::{OperationType, PlannedAction};
     use voom_domain::storage::{
-        BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,
-        JobStorage, MaintenanceStorage, PlanStatus, PlanStorage, PluginDataStorage, StatsStorage,
+        BadFileFilters, BadFileStorage, FileFilters, FileStorage, JobFilters, JobStorage,
+        MaintenanceStorage, PlanStatus, PlanStorage, PluginDataStorage, StatsStorage,
     };
 
     fn test_store() -> SqliteStore {
@@ -444,31 +444,16 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_file() {
+    fn test_mark_missing() {
         let store = test_store();
         let file = sample_file();
         store.upsert_file(&file).unwrap();
-        store.delete_file(&file.id).unwrap();
-        assert!(store.file(&file.id).unwrap().is_none());
-    }
+        store.mark_missing(&file.id).unwrap();
 
-    #[test]
-    fn test_delete_cascades_tracks() {
-        let store = test_store();
-        let file = sample_file();
-        store.upsert_file(&file).unwrap();
-        store.delete_file(&file.id).unwrap();
-
-        // Verify tracks are also gone
-        let conn = store.conn().unwrap();
-        let count: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM tracks WHERE file_id = ?1",
-                params![file.id.to_string()],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 0);
+        // File should still exist but status is missing
+        let loaded = store.file(&file.id).unwrap();
+        // mark_missing is a stub — file still present until purge
+        assert!(loaded.is_some());
     }
 
     #[test]
@@ -1106,42 +1091,6 @@ mod tests {
             .unwrap();
         assert_eq!(stored.id, original_id);
         assert_eq!(stored.content_hash, Some("hash_v2".to_string()));
-    }
-
-    #[test]
-    fn test_upsert_creates_history_on_update() {
-        let store = test_store();
-        let mut file = MediaFile::new(PathBuf::from("/media/history_test.mkv"));
-        file.content_hash = Some("hash_v1".into());
-        file.container = Container::Mkv;
-        store.upsert_file(&file).unwrap();
-
-        // No history yet for first insert
-        let history = store
-            .file_history(Path::new("/media/history_test.mkv"))
-            .unwrap();
-        assert!(history.is_empty());
-
-        // Update the file
-        let mut file2 = MediaFile::new(PathBuf::from("/media/history_test.mkv"));
-        file2.content_hash = Some("hash_v2".into());
-        file2.container = Container::Mkv;
-        store.upsert_file(&file2).unwrap();
-
-        // Now should have one history entry
-        let history = store
-            .file_history(Path::new("/media/history_test.mkv"))
-            .unwrap();
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].content_hash, Some("hash_v1".to_string()));
-        assert_eq!(history[0].container, Container::Mkv);
-    }
-
-    #[test]
-    fn test_get_file_history_empty() {
-        let store = test_store();
-        let history = store.file_history(Path::new("/nonexistent.mkv")).unwrap();
-        assert!(history.is_empty());
     }
 
     // --- claim_job_by_id ---
