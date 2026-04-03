@@ -294,6 +294,7 @@ def build_random_specs(count, seed, duration_range):
     """
     rng = random.Random(seed)
     used_names = set()
+    used_signatures = set()
     specs = []
 
     video_codecs = ["libx264", "libx265"]
@@ -352,6 +353,28 @@ def build_random_specs(count, seed, duration_range):
 
         # Duration for this file (stored on spec, used in generation loop)
         duration = file_rng.randint(dur_min, dur_max)
+
+        # Build content signature for hash uniqueness
+        audio_sig = tuple(
+            (t["codec"], t["channels"]) for t in audio
+        )
+        sub_sig = tuple(
+            (s["format"], s.get("lang", "und")) for s in subs
+        )
+        signature = (
+            duration, video["codec"], video["size"],
+            video["fps"], ext, audio_sig, sub_sig,
+        )
+
+        if signature in used_signatures:
+            # Bump duration by 1s to force a different content hash
+            duration = duration + 1
+            signature = (
+                duration, video["codec"], video["size"],
+                video["fps"], ext, audio_sig, sub_sig,
+            )
+
+        used_signatures.add(signature)
 
         specs.append({
             "stem": stem,
