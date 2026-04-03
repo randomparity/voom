@@ -207,25 +207,18 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
 /// interpolation safe by construction.
 pub(crate) enum PruneTarget {
     BadFiles,
-    Plans,
-    ProcessingStats,
-    Files,
 }
 
 impl PruneTarget {
     fn table(&self) -> &'static str {
         match self {
             Self::BadFiles => "bad_files",
-            Self::Plans => "plans",
-            Self::ProcessingStats => "processing_stats",
-            Self::Files => "files",
         }
     }
 
     fn column(&self) -> &'static str {
         match self {
-            Self::BadFiles | Self::Files => "id",
-            Self::Plans | Self::ProcessingStats => "file_id",
+            Self::BadFiles => "id",
         }
     }
 }
@@ -831,7 +824,17 @@ mod tests {
         let pruned = store.prune_missing_files().unwrap();
         assert_eq!(pruned, 1);
 
-        // File should be gone
+        // File should be marked as missing (soft-delete)
+        let result = store.file(&file.id).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().status, voom_domain::FileStatus::Missing);
+
+        // Now purge the missing file (after retention period)
+        let now = chrono::Utc::now();
+        let purged = store.purge_missing(now).unwrap();
+        assert_eq!(purged, 1);
+
+        // Now the file should be gone
         assert!(store.file(&file.id).unwrap().is_none());
     }
 
@@ -854,7 +857,26 @@ mod tests {
             .unwrap();
         assert_eq!(pruned, 1);
 
-        // file_a should be gone, file_b should remain
+        // file_a should be marked as missing, file_b should remain active
+        let file_a_result = store.file(&file_a.id).unwrap();
+        assert!(file_a_result.is_some());
+        assert_eq!(
+            file_a_result.unwrap().status,
+            voom_domain::FileStatus::Missing
+        );
+        let file_b_result = store.file(&file_b.id).unwrap();
+        assert!(file_b_result.is_some());
+        assert_eq!(
+            file_b_result.unwrap().status,
+            voom_domain::FileStatus::Active
+        );
+
+        // Purge file_a after retention period
+        let now = chrono::Utc::now();
+        let purged = store.purge_missing(now).unwrap();
+        assert_eq!(purged, 1);
+
+        // Now file_a should be gone, file_b should still exist
         assert!(store.file(&file_a.id).unwrap().is_none());
         assert!(store.file(&file_b.id).unwrap().is_some());
     }
@@ -894,7 +916,23 @@ mod tests {
             .unwrap();
         assert_eq!(pruned, 1);
 
-        // File, plans, and stats should all be gone
+        // File should be marked as missing (soft-delete)
+        let file_result = store.file(&file.id).unwrap();
+        assert!(file_result.is_some());
+        assert_eq!(
+            file_result.unwrap().status,
+            voom_domain::FileStatus::Missing
+        );
+
+        // Plans should still exist (they're cleaned up only during purge_missing)
+        assert!(!store.plans_for_file(&file.id).unwrap().is_empty());
+
+        // Purge the missing file and its dependents
+        let now = chrono::Utc::now();
+        let purged = store.purge_missing(now).unwrap();
+        assert_eq!(purged, 1);
+
+        // Now file, plans, and stats should all be gone
         assert!(store.file(&file.id).unwrap().is_none());
         assert!(store.plans_for_file(&file.id).unwrap().is_empty());
     }

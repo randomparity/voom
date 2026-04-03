@@ -22,7 +22,8 @@ impl MaintenanceStorage for SqliteStore {
     fn prune_missing_files_under(&self, root: &Path) -> Result<u64> {
         let root_str = escape_like(&root.to_string_lossy());
 
-        // Also prune bad_files whose paths no longer exist under root
+        // Hard-delete bad_files whose paths no longer exist under root.
+        // bad_files don't have lifecycle tracking.
         {
             let bad_files: Vec<(String, String)> = {
                 let conn = self.conn()?;
@@ -44,11 +45,11 @@ impl MaintenanceStorage for SqliteStore {
             self.chunked_delete(PruneTarget::BadFiles, &missing_bad_ids)?;
         }
 
-        // Phase 1: Query file paths under root (release connection after)
+        // Phase 1: Query active files under root (release connection after)
         let files: Vec<(String, String)> = {
             let conn = self.conn()?;
             let mut stmt = conn
-                .prepare("SELECT id, path FROM files WHERE path LIKE ?1 || '%' ESCAPE '\\'")
+                .prepare("SELECT id, path FROM files WHERE status = 'active' AND path LIKE ?1 || '%' ESCAPE '\\'")
                 .map_err(storage_err("failed to prepare prune query"))?;
 
             let result = stmt
@@ -60,24 +61,31 @@ impl MaintenanceStorage for SqliteStore {
         };
 
         // Phase 2: Check filesystem (no connection held)
-        let missing_ids: Vec<&str> = files
+        let missing_ids: Vec<uuid::Uuid> = files
             .iter()
             .filter(|(_, path)| !Path::new(path).exists())
-            .map(|(id, _)| id.as_str())
+            .filter_map(|(id, _)| uuid::Uuid::parse_str(id).ok())
             .collect();
 
         if missing_ids.is_empty() {
             return Ok(0);
         }
 
-        // Phase 3: Delete dependents then files.
-        // Explicit deletion of plans and processing_stats ensures cleanup works
-        // on existing databases where CASCADE constraints may be missing.
-        self.chunked_delete(PruneTarget::Plans, &missing_ids)?;
-        self.chunked_delete(PruneTarget::ProcessingStats, &missing_ids)?;
-        let pruned = self.chunked_delete(PruneTarget::Files, &missing_ids)?;
+        // Phase 3: Mark missing files with soft-delete.
+        // Lifecycle-based purge is done separately via purge_missing() on FileStorage.
+        let conn = self.conn()?;
+        let now = super::format_datetime(&chrono::Utc::now());
+        let mut marked = 0u64;
+        for id in &missing_ids {
+            conn.execute(
+                "UPDATE files SET status = 'missing', missing_since = ?1 WHERE id = ?2 AND status = 'active'",
+                params![&now, id.to_string()],
+            )
+            .map_err(storage_err("failed to mark file missing"))?;
+            marked += 1;
+        }
 
-        Ok(pruned)
+        Ok(marked)
     }
 
     fn table_row_counts(&self) -> Result<Vec<(String, u64)>> {
