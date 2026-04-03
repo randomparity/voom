@@ -1495,6 +1495,11 @@ mod tests {
 
         assert_eq!(result.new_files, 1);
         assert_eq!(result.unchanged, 0);
+        assert_eq!(result.needs_introspection.len(), 1);
+        assert_eq!(
+            result.needs_introspection[0],
+            PathBuf::from("/movies/new.mkv")
+        );
 
         let file = store
             .file_by_path(Path::new("/movies/new.mkv"))
@@ -1527,6 +1532,11 @@ mod tests {
         assert_eq!(result.unchanged, 1);
         assert_eq!(result.new_files, 0);
         assert_eq!(result.external_changes, 0);
+        assert_eq!(
+            result.needs_introspection.len(),
+            0,
+            "unchanged files need no introspection"
+        );
 
         let transitions = store.transitions_for_file(&file.id).unwrap();
         assert_eq!(transitions.len(), 0, "no transitions for unchanged file");
@@ -1548,6 +1558,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.external_changes, 1);
+        assert_eq!(result.needs_introspection.len(), 1);
+        assert_eq!(
+            result.needs_introspection[0],
+            PathBuf::from("/movies/modified.mkv")
+        );
 
         // Old file should be missing with NULL path
         let old_file = store.file(&original_id).unwrap().expect("old file exists");
@@ -1608,6 +1623,11 @@ mod tests {
 
         assert_eq!(result.moved, 1);
         assert_eq!(result.new_files, 0);
+        assert_eq!(result.needs_introspection.len(), 1);
+        assert_eq!(
+            result.needs_introspection[0],
+            PathBuf::from("/movies/new_name.mkv")
+        );
 
         // Same UUID, new path
         let loaded = store.file(&original_id).unwrap().expect("file exists");
