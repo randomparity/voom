@@ -872,7 +872,43 @@ def main():
         "--verbose", action="store_true",
         help="Show full ffmpeg output",
     )
+    parser.add_argument(
+        "--count", type=int, default=0, metavar="N",
+        help="Generate N additional random files alongside the manifest",
+    )
+    parser.add_argument(
+        "--duration-range", default="1-5", metavar="MIN-MAX",
+        help="Duration range in seconds for random files (default: 1-5)",
+    )
+    parser.add_argument(
+        "--corrupt", default="0", metavar="N_OR_PCT",
+        help="Corrupt N files (or N%% of --count) from the random set",
+    )
     args = parser.parse_args()
+
+    # Parse duration range
+    try:
+        dur_parts = args.duration_range.split("-")
+        dur_range = (int(dur_parts[0]), int(dur_parts[1]))
+        if dur_range[0] < 1 or dur_range[1] < dur_range[0]:
+            raise ValueError
+    except (ValueError, IndexError):
+        print(f"Error: --duration-range must be MIN-MAX (e.g., 1-5), got '{args.duration_range}'",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Parse corrupt count
+    corrupt_str = args.corrupt.strip()
+    if corrupt_str.endswith("%"):
+        corrupt_pct = float(corrupt_str[:-1]) / 100.0
+        corrupt_count = max(0, int(corrupt_pct * args.count + 0.999))  # round up
+    else:
+        corrupt_count = int(corrupt_str)
+
+    if corrupt_count > 0 and args.count < corrupt_count:
+        print(f"Error: --corrupt {corrupt_count} requires --count >= {corrupt_count}",
+              file=sys.stderr)
+        sys.exit(1)
 
     dest = Path(args.dest)
     rng = random.Random(args.seed)
@@ -890,7 +926,13 @@ def main():
             continue
         specs.append(spec)
 
-    if not specs:
+    # Generate random specs if --count is set
+    random_specs = []
+    if args.count > 0:
+        random_specs = build_random_specs(args.count, args.seed, dur_range)
+        specs.extend(random_specs)
+
+    if not specs and args.count == 0:
         print("No files to generate (check --only / --skip filters).", file=sys.stderr)
         sys.exit(1)
 
@@ -931,8 +973,10 @@ def main():
             # Reset RNG per-file but derived from seed + index for reproducibility
             file_rng = random.Random(args.seed + idx)
 
+            file_duration = spec.get("duration_override", args.duration)
+
             try:
-                cmd, outfile = build_ffmpeg_cmd(spec, dest, args.duration, file_rng, tmpdir)
+                cmd, outfile = build_ffmpeg_cmd(spec, dest, file_duration, file_rng, tmpdir)
             except Exception as e:
                 print(f"[{idx}/{total}] FAILED {filename} — error building command: {e}")
                 fail_count += 1
@@ -982,6 +1026,13 @@ def main():
                 print(f"FAILED ({e})")
                 fail_count += 1
 
+    # Apply corruption to selected random files
+    corrupt_results = []
+    if corrupt_count > 0 and not args.dry_run:
+        corrupt_results = select_and_corrupt(dest, random_specs, corrupt_count, args.seed)
+        for filename, ctype, desc in corrupt_results:
+            print(f"  CORRUPTED {filename} — {ctype}: {desc}")
+
     # Summary
     print()
     if args.dry_run:
@@ -992,6 +1043,8 @@ def main():
             parts.append(f"{skip_count} skipped")
         if fail_count:
             parts.append(f"{fail_count} failed")
+        if corrupt_results:
+            parts.append(f"{len(corrupt_results)} corrupted")
         print(f"Summary: {', '.join(parts)}")
         if total_size:
             print(f"Total size: {format_size(total_size)}")
