@@ -2251,31 +2251,31 @@ mod test_lifecycle_advanced {
             .assert()
             .success();
 
-        // Move detection should match by hash and reuse the UUID
+        // Move detection must match by hash and reuse the original UUID
         let conn = rusqlite::Connection::open(&db).unwrap();
-        let id_status: Option<String> = conn
+        let status: String = conn
             .query_row(
                 "SELECT status FROM files WHERE id = ?1",
                 [&original_id],
                 |r| r.get(0),
             )
-            .ok();
+            .expect("original UUID should still exist in DB");
+        assert_eq!(
+            status, "active",
+            "original UUID should be reactivated via move detection"
+        );
 
-        // If move detection worked: same UUID, active, detected_move transition
-        if id_status.as_deref() == Some("active") {
-            let moves = count_transitions_by_detail(&db, "detected_move");
-            assert!(
-                moves >= 1,
-                "expected detected_move transition for reappeared file"
-            );
-        } else {
-            // Alternatively, the system may create a new file record
-            let active = count_by_status(&db, "active");
-            assert!(
-                active >= 1,
-                "file should be tracked under a new or existing UUID"
-            );
-        }
+        assert_eq!(
+            count_by_status(&db, "missing"),
+            0,
+            "no files should remain missing after move detection"
+        );
+
+        let moves = count_transitions_by_detail(&db, "detected_move");
+        assert!(
+            moves >= 1,
+            "expected detected_move transition for reappeared file"
+        );
     }
 
     #[test]
@@ -2877,6 +2877,28 @@ mod test_lifecycle_advanced {
             .timeout(process_timeout())
             .assert()
             .success();
+
+        // The valid file (hevc-surround) must still be processed despite
+        // the corrupt file. Verify it was discovered, introspected (has
+        // tracks in DB), and is active — proving the batch wasn't aborted.
+        let db = env.db_path();
+        let (file_id, status) = file_by_path_contains(&db, "hevc-surround")
+            .expect("valid file should be tracked in DB");
+        assert_eq!(status, "active", "valid file should remain active");
+
+        // Introspection must have run — check that tracks exist for this file
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let track_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tracks WHERE file_id = ?1",
+                [&file_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            track_count >= 1,
+            "valid file should have tracks after introspection, got {track_count}"
+        );
     }
 }
 
