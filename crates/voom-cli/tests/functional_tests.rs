@@ -124,6 +124,11 @@ impl TestEnv {
         std::fs::write(&path, content).expect("write policy");
         path
     }
+
+    /// Path to the SQLite database for this environment.
+    fn db_path(&self) -> PathBuf {
+        self.voom_dir.join("voom.db")
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1398,6 +1403,179 @@ mod test_tools {
         let json: serde_json::Value = serde_json::from_str(&stdout)
             .expect("tools list --format json should produce valid JSON");
         assert!(json.is_array());
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_lifecycle — file lifecycle tracking (soft-delete, transitions, moves)
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_lifecycle {
+    use super::*;
+
+    #[test]
+    fn scan_soft_deletes_missing_files() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac", "hevc-surround"]);
+
+        // First scan
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        // Delete one file
+        std::fs::remove_file(env.media_dir().join("basic-h264-aac.mp4")).unwrap();
+
+        // Second scan — should mark missing, not delete
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("Missing"));
+
+        // Verify: file is soft-deleted (still in DB with status='missing')
+        let conn = rusqlite::Connection::open(env.db_path()).unwrap();
+        let missing: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE status = 'missing'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(missing, 1, "expected 1 missing file");
+
+        let active: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE status = 'active'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active, 1, "expected 1 active file");
+    }
+
+    #[test]
+    fn scan_records_discovery_transitions() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        // Verify: a discovery transition was recorded
+        let conn = rusqlite::Connection::open(env.db_path()).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions WHERE source = 'discovery'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            count >= 1,
+            "expected at least 1 discovery transition, got {count}"
+        );
+    }
+
+    #[test]
+    fn scan_detects_file_move() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        // First scan
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        // Get the original file's UUID
+        let conn = rusqlite::Connection::open(env.db_path()).unwrap();
+        let original_id: String = conn
+            .query_row("SELECT id FROM files WHERE status = 'active'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        // Rename the file
+        let old_path = env.media_dir().join("basic-h264-aac.mp4");
+        let new_path = env.media_dir().join("renamed-file.mp4");
+        std::fs::rename(&old_path, &new_path).unwrap();
+
+        // Second scan — should detect move
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("Moved"));
+
+        // Verify: same UUID, new path
+        let (id_after, path_after): (String, String) = conn
+            .query_row(
+                "SELECT id, path FROM files WHERE status = 'active'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(id_after, original_id, "UUID should be preserved after move");
+        assert!(
+            path_after.contains("renamed-file"),
+            "path should be updated to renamed-file, got: {path_after}"
+        );
+
+        // Verify: transition with source_detail = 'detected_move'
+        let move_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions WHERE source_detail = 'detected_move'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            move_count >= 1,
+            "expected a detected_move transition, got {move_count}"
+        );
+    }
+
+    #[test]
+    fn scan_unchanged_files_skip_introspection() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        // First scan — creates discovery transitions
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        // Second scan of unchanged files — should not add new transitions
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        // Only the discovery transitions from the first scan should exist
+        let conn = rusqlite::Connection::open(env.db_path()).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM file_transitions", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            count <= 2,
+            "expected only discovery transitions from the first scan, got {count}"
+        );
     }
 }
 
