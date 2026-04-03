@@ -1813,16 +1813,33 @@ mod test_lifecycle_advanced {
             cmd.arg("--corrupt").arg(corrupt.to_string());
         }
 
-        let status = cmd
-            .status()
+        let output = cmd
+            .output()
             .expect("run generate-test-corpus for scaled corpus");
 
-        if !status.success() {
-            eprintln!(
-                "WARNING: generate-test-corpus --count {count} had failures (exit {:?})",
-                status.code()
-            );
-        }
+        assert!(
+            output.status.success(),
+            "generate-test-corpus --count {count} failed (exit {:?}):\nstdout: {}\nstderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+
+        // Validate that the generator actually produced the expected files
+        let media_files: Vec<_> = std::fs::read_dir(&corpus_path)
+            .expect("read scaled corpus dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_lowercase();
+                name.ends_with(".mkv") || name.ends_with(".mp4")
+            })
+            .collect();
+
+        assert!(
+            media_files.len() >= count,
+            "generate-test-corpus produced {} media files, expected at least {count}",
+            media_files.len(),
+        );
 
         corpus_path
     }
