@@ -67,7 +67,7 @@ fn parse_optional_json(
 pub(crate) fn row_to_file(row: &Row<'_>) -> rusqlite::Result<FileRow> {
     Ok(FileRow {
         id: row.get("id")?,
-        path: row.get("path")?,
+        path: row.get::<_, Option<String>>("path")?.unwrap_or_default(),
         size: row.get("size")?,
         content_hash: row.get("content_hash")?,
         expected_hash: row.get("expected_hash")?,

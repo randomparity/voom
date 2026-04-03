@@ -1437,4 +1437,207 @@ mod tests {
         assert_eq!(q.params.len(), 1);
         assert_eq!(q.params[0], "10000", "limit should be clamped to 10000");
     }
+
+    // --- Batch reconciliation ---
+
+    use voom_domain::storage::FileTransitionStorage;
+    use voom_domain::transition::{DiscoveredFile, FileStatus, TransitionSource};
+
+    fn discovered(path: &str, size: u64, hash: &str) -> DiscoveredFile {
+        DiscoveredFile::new(PathBuf::from(path), size, hash.into())
+    }
+
+    #[test]
+    fn reconcile_new_file() {
+        let store = test_store();
+        let files = vec![discovered("/movies/new.mkv", 1000, "hash_new")];
+        let result = store
+            .reconcile_discovered_files(&files, &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        assert_eq!(result.new_files, 1);
+        assert_eq!(result.unchanged, 0);
+
+        let file = store
+            .file_by_path(Path::new("/movies/new.mkv"))
+            .unwrap()
+            .expect("file should exist after reconciliation");
+        assert_eq!(file.expected_hash.as_deref(), Some("hash_new"));
+        assert_eq!(file.content_hash.as_deref(), Some("hash_new"));
+        assert_eq!(file.size, 1000);
+        assert_eq!(file.status, FileStatus::Active);
+
+        let transitions = store.transitions_for_file(&file.id).unwrap();
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].source, TransitionSource::Discovery);
+        assert_eq!(transitions[0].to_hash, "hash_new");
+    }
+
+    #[test]
+    fn reconcile_unchanged_file() {
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/movies/unchanged.mkv"));
+        file.content_hash = Some("hash_same".into());
+        file.expected_hash = Some("hash_same".into());
+        store.upsert_file(&file).unwrap();
+
+        let files = vec![discovered("/movies/unchanged.mkv", 1000, "hash_same")];
+        let result = store
+            .reconcile_discovered_files(&files, &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        assert_eq!(result.unchanged, 1);
+        assert_eq!(result.new_files, 0);
+        assert_eq!(result.external_changes, 0);
+
+        let transitions = store.transitions_for_file(&file.id).unwrap();
+        assert_eq!(transitions.len(), 0, "no transitions for unchanged file");
+    }
+
+    #[test]
+    fn reconcile_external_modification() {
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/movies/modified.mkv"));
+        file.size = 500;
+        file.content_hash = Some("hash_old".into());
+        file.expected_hash = Some("hash_old".into());
+        store.upsert_file(&file).unwrap();
+        let original_id = file.id;
+
+        let files = vec![discovered("/movies/modified.mkv", 600, "hash_new")];
+        let result = store
+            .reconcile_discovered_files(&files, &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        assert_eq!(result.external_changes, 1);
+
+        // Old file should be missing with NULL path
+        let old_file = store.file(&original_id).unwrap().expect("old file exists");
+        assert_eq!(old_file.status, FileStatus::Missing);
+
+        // New file should exist at the same path with different UUID
+        let new_file = store
+            .file_by_path(Path::new("/movies/modified.mkv"))
+            .unwrap()
+            .expect("new file exists");
+        assert_ne!(new_file.id, original_id);
+        assert_eq!(new_file.expected_hash.as_deref(), Some("hash_new"));
+
+        // Both should have transitions
+        let old_transitions = store.transitions_for_file(&original_id).unwrap();
+        assert_eq!(old_transitions.len(), 1);
+        assert_eq!(old_transitions[0].source, TransitionSource::External);
+
+        let new_transitions = store.transitions_for_file(&new_file.id).unwrap();
+        assert_eq!(new_transitions.len(), 1);
+        assert_eq!(new_transitions[0].source, TransitionSource::Discovery);
+    }
+
+    #[test]
+    fn reconcile_missing_file() {
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/movies/gone.mkv"));
+        file.content_hash = Some("hash_gone".into());
+        file.expected_hash = Some("hash_gone".into());
+        store.upsert_file(&file).unwrap();
+
+        let result = store
+            .reconcile_discovered_files(&[], &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        assert_eq!(result.missing, 1);
+
+        let loaded = store.file(&file.id).unwrap().expect("file still in DB");
+        assert_eq!(loaded.status, FileStatus::Missing);
+    }
+
+    #[test]
+    fn reconcile_move_detected() {
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/movies/old_name.mkv"));
+        file.content_hash = Some("hash_moved".into());
+        file.expected_hash = Some("hash_moved".into());
+        store.upsert_file(&file).unwrap();
+        let original_id = file.id;
+
+        // Mark missing first (simulates previous scan not finding it)
+        store.mark_missing(&file.id).unwrap();
+
+        let files = vec![discovered("/movies/new_name.mkv", 1000, "hash_moved")];
+        let result = store
+            .reconcile_discovered_files(&files, &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        assert_eq!(result.moved, 1);
+        assert_eq!(result.new_files, 0);
+
+        // Same UUID, new path
+        let loaded = store.file(&original_id).unwrap().expect("file exists");
+        assert_eq!(loaded.path, PathBuf::from("/movies/new_name.mkv"));
+        assert_eq!(loaded.status, FileStatus::Active);
+
+        let transitions = store.transitions_for_file(&original_id).unwrap();
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].source, TransitionSource::Discovery);
+        assert_eq!(
+            transitions[0].source_detail.as_deref(),
+            Some("detected_move")
+        );
+    }
+
+    #[test]
+    fn reconcile_scoped_to_scanned_dirs() {
+        let store = test_store();
+        let mut movie = MediaFile::new(PathBuf::from("/movies/a.mkv"));
+        movie.content_hash = Some("hash_a".into());
+        movie.expected_hash = Some("hash_a".into());
+        store.upsert_file(&movie).unwrap();
+
+        let mut tv = MediaFile::new(PathBuf::from("/tv/b.mkv"));
+        tv.content_hash = Some("hash_b".into());
+        tv.expected_hash = Some("hash_b".into());
+        store.upsert_file(&tv).unwrap();
+
+        // Scan only /movies/ with nothing found
+        let result = store
+            .reconcile_discovered_files(&[], &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        assert_eq!(result.missing, 1);
+
+        let movie_loaded = store.file(&movie.id).unwrap().expect("movie in DB");
+        assert_eq!(movie_loaded.status, FileStatus::Missing);
+
+        let tv_loaded = store.file(&tv.id).unwrap().expect("tv in DB");
+        assert_eq!(tv_loaded.status, FileStatus::Active);
+    }
+
+    #[test]
+    fn reconcile_reappeared_file() {
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/movies/back.mkv"));
+        file.content_hash = Some("hash_back".into());
+        file.expected_hash = Some("hash_back".into());
+        store.upsert_file(&file).unwrap();
+        let original_id = file.id;
+
+        store.mark_missing(&file.id).unwrap();
+
+        // Rediscover at same path with same hash
+        let files = vec![discovered("/movies/back.mkv", 1000, "hash_back")];
+        let result = store
+            .reconcile_discovered_files(&files, &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        // Should count as moved (same hash found on missing record)
+        // or unchanged if path matches — the spec says path not in DB for move.
+        // But the file IS in DB at this path (just missing). Let's check:
+        // Path exists in DB + hash matches expected_hash → unchanged, reactivate.
+        let loaded = store.file(&original_id).unwrap().expect("file exists");
+        assert_eq!(loaded.status, FileStatus::Active);
+        assert_eq!(loaded.path, PathBuf::from("/movies/back.mkv"));
+
+        // Should be counted as unchanged (path exists, hash matches)
+        assert_eq!(result.unchanged, 1);
+    }
 }
