@@ -2539,7 +2539,7 @@ mod test_lifecycle_advanced {
             .args(["history", file.to_str().unwrap()])
             .assert()
             .success()
-            .stdout(predicate::str::contains("history entries for"));
+            .stdout(predicate::str::contains("transition entries for"));
     }
 
     // ───────────────────────────────────────────────────────────────────
@@ -2567,14 +2567,17 @@ mod test_lifecycle_advanced {
         let backup_dir = env.media_dir().join(".voom-backup");
         std::fs::create_dir_all(&backup_dir).unwrap();
         let original = env.media_dir().join("hevc-surround.mkv");
-        let backup_name = "hevc-surround.20260403120000.vbak";
+        let backup_name = "hevc-surround.mkv.20260403120000.vbak";
         let backup_path = backup_dir.join(backup_name);
         std::fs::copy(&original, &backup_path).unwrap();
 
         // Insert a plan.executing event (so the backup is treated as a
         // crash orphan, not a normal completed backup)
         let db = env.db_path();
-        let summary = format!("path={} phase=normalize", original.display());
+        // Use canonicalize so the path matches what recovery infers from
+        // the on-disk backup path (macOS resolves /var -> /private/var).
+        let canon_original = std::fs::canonicalize(&original).unwrap();
+        let summary = format!("path={} phase=normalize", canon_original.display());
         insert_event_log(&db, "plan.executing", &summary);
 
         // Run process — crash recovery should restore the backup
@@ -2621,12 +2624,13 @@ mod test_lifecycle_advanced {
         let backup_dir = env.media_dir().join(".voom-backup");
         std::fs::create_dir_all(&backup_dir).unwrap();
         let original = env.media_dir().join("hevc-surround.mkv");
-        let backup_name = "hevc-surround.20260403120000.vbak";
+        let backup_name = "hevc-surround.mkv.20260403120000.vbak";
         let backup_path = backup_dir.join(backup_name);
         std::fs::copy(&original, &backup_path).unwrap();
 
         let db = env.db_path();
-        let summary = format!("path={} phase=normalize", original.display());
+        let canon_original = std::fs::canonicalize(&original).unwrap();
+        let summary = format!("path={} phase=normalize", canon_original.display());
         insert_event_log(&db, "plan.executing", &summary);
 
         env.voom()
@@ -2674,12 +2678,13 @@ mod test_lifecycle_advanced {
         let backup_dir = env.media_dir().join(".voom-backup");
         std::fs::create_dir_all(&backup_dir).unwrap();
         let original = env.media_dir().join("hevc-surround.mkv");
-        let backup_name = "hevc-surround.20260403120000.vbak";
+        let backup_name = "hevc-surround.mkv.20260403120000.vbak";
         let backup_path = backup_dir.join(backup_name);
         std::fs::copy(&original, &backup_path).unwrap();
 
         let db = env.db_path();
-        let summary = format!("path={} phase=normalize", original.display());
+        let canon_original = std::fs::canonicalize(&original).unwrap();
+        let summary = format!("path={} phase=normalize", canon_original.display());
         insert_event_log(&db, "plan.executing", &summary);
         insert_event_log(&db, "plan.completed", &summary);
 
@@ -2791,8 +2796,10 @@ mod test_lifecycle_advanced {
             .unwrap();
         }
 
-        // Set retention to 0 so all missing files get purged
-        set_pruning_retention(&env, 0);
+        // Set retention to 1 day — the backdated missing_since (2020) is
+        // well past any positive threshold.  Using 0 would skip purging
+        // entirely because `db prune` guards with `if retention_days > 0`.
+        set_pruning_retention(&env, 1);
 
         // Run db prune
         env.voom().args(["db", "prune"]).assert().success();
@@ -2926,7 +2933,7 @@ mod test_history {
             .args(["history", file.to_str().unwrap()])
             .assert()
             .success()
-            .stdout(predicate::str::contains("history entries for"));
+            .stdout(predicate::str::contains("transition entries for"));
     }
 }
 
