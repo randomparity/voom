@@ -1630,6 +1630,7 @@ mod test_lifecycle_advanced {
         num_roots: usize,
         lifecycle_iterations: usize,
         corrupt_files: usize,
+        random_files: usize,
     }
 
     fn scale_preset() -> ScalePreset {
@@ -1642,18 +1643,21 @@ mod test_lifecycle_advanced {
                 num_roots: 3,
                 lifecycle_iterations: 5,
                 corrupt_files: 3,
+                random_files: 20,
             },
             "large" => ScalePreset {
                 files_per_root: 0,
                 num_roots: 4,
                 lifecycle_iterations: 10,
                 corrupt_files: 5,
+                random_files: 50,
             },
             _ => ScalePreset {
                 files_per_root: 3,
                 num_roots: 2,
                 lifecycle_iterations: 3,
                 corrupt_files: 1,
+                random_files: 0,
             },
         }
     }
@@ -2367,8 +2371,15 @@ mod test_lifecycle_advanced {
 
         let env = TestEnv::new();
         let preset = scale_preset();
-        let (roots, _assignments) =
-            populate_multi_root(&env, preset.num_roots, preset.files_per_root);
+
+        // Use scaled corpus when the preset requests random files,
+        // otherwise fall back to the shared corpus.
+        let (roots, _assignments) = if preset.random_files > 0 {
+            let corpus = generate_scaled_corpus(&env, preset.random_files, 0, 42);
+            populate_multi_root_from(&env, &corpus, preset.num_roots, preset.files_per_root)
+        } else {
+            populate_multi_root(&env, preset.num_roots, preset.files_per_root)
+        };
 
         // Initial scan of all roots
         for root in &roots {
