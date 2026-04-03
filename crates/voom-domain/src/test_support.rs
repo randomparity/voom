@@ -224,6 +224,27 @@ impl FileStorage for InMemoryStore {
         }
         Ok(())
     }
+
+    fn mark_missing_paths(
+        &self,
+        discovered_paths: &[PathBuf],
+        scanned_dirs: &[PathBuf],
+    ) -> Result<u32> {
+        let discovered_set: std::collections::HashSet<&PathBuf> = discovered_paths.iter().collect();
+        let mut files = self.files.lock().unwrap();
+        let mut marked = 0u32;
+        for file in files.values_mut() {
+            if file.status != FileStatus::Active {
+                continue;
+            }
+            let under_scanned = scanned_dirs.iter().any(|dir| file.path.starts_with(dir));
+            if under_scanned && !discovered_set.contains(&file.path) {
+                file.status = FileStatus::Missing;
+                marked += 1;
+            }
+        }
+        Ok(marked)
+    }
 }
 
 impl JobStorage for InMemoryStore {

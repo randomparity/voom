@@ -71,6 +71,13 @@ pub trait FileStorage: Send + Sync {
         discovered: &[DiscoveredFile],
         scanned_dirs: &[PathBuf],
     ) -> Result<ReconcileResult>;
+    /// Mark active files under `scanned_dirs` as missing if their path is not
+    /// in `discovered_paths`. This is a path-only operation — no hash needed.
+    fn mark_missing_paths(
+        &self,
+        discovered_paths: &[PathBuf],
+        scanned_dirs: &[PathBuf],
+    ) -> Result<u32>;
     /// Update the expected hash for a file (set after a successful voom operation).
     fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()>;
 }

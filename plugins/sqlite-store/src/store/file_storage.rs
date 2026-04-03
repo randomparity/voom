@@ -603,9 +603,119 @@ impl FileStorage for SqliteStore {
         .map_err(storage_err("failed to update expected_hash"))?;
         Ok(())
     }
+
+    fn mark_missing_paths(
+        &self,
+        discovered_paths: &[PathBuf],
+        scanned_dirs: &[PathBuf],
+    ) -> Result<u32> {
+        let conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+
+        let mut stmt = conn
+            .prepare("SELECT id, path FROM files WHERE status = 'active' AND path IS NOT NULL")
+            .map_err(storage_err("failed to prepare missing-path check"))?;
+        let active_files: Vec<(String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(storage_err("failed to query active files"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err("failed to collect active files"))?;
+
+        let discovered_set: HashSet<String> = discovered_paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+
+        let mut marked = 0u32;
+        for (id, path) in &active_files {
+            let path_obj = std::path::Path::new(path);
+            let under_scanned = scanned_dirs.iter().any(|dir| path_obj.starts_with(dir));
+            if under_scanned && !discovered_set.contains(path.as_str()) {
+                conn.execute(
+                    "UPDATE files SET status = 'missing', missing_since = ?1 \
+                     WHERE id = ?2 AND status = 'active'",
+                    params![&now, id],
+                )
+                .map_err(storage_err("failed to mark missing"))?;
+                marked += 1;
+            }
+        }
+        Ok(marked)
+    }
 }
 
 use super::OptionalExt;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use voom_domain::media::MediaFile;
+    use voom_domain::storage::FileStorage;
+    use voom_domain::transition::FileStatus;
+
+    fn test_store() -> SqliteStore {
+        SqliteStore::in_memory().expect("in-memory store")
+    }
+
+    fn active_file(path: &str) -> MediaFile {
+        let mut file = MediaFile::new(PathBuf::from(path));
+        file.content_hash = Some("abc123".to_string());
+        file.expected_hash = Some("abc123".to_string());
+        file
+    }
+
+    #[test]
+    fn mark_missing_paths_basic() {
+        let store = test_store();
+        let file_a = active_file("/media/a.mkv");
+        let file_b = active_file("/media/b.mkv");
+        store.upsert_file(&file_a).unwrap();
+        store.upsert_file(&file_b).unwrap();
+
+        // Only a.mkv is in discovered set — b.mkv should be marked missing
+        let discovered = vec![PathBuf::from("/media/a.mkv")];
+        let scanned = vec![PathBuf::from("/media")];
+        let count = store.mark_missing_paths(&discovered, &scanned).unwrap();
+
+        assert_eq!(count, 1);
+        let stored_b = store
+            .file_by_path(std::path::Path::new("/media/b.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored_b.status, FileStatus::Missing);
+        let stored_a = store
+            .file_by_path(std::path::Path::new("/media/a.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored_a.status, FileStatus::Active);
+    }
+
+    #[test]
+    fn mark_missing_paths_scoped_to_scanned_dirs() {
+        let store = test_store();
+        let movies_file = active_file("/movies/film.mkv");
+        let tv_file = active_file("/tv/show.mkv");
+        store.upsert_file(&movies_file).unwrap();
+        store.upsert_file(&tv_file).unwrap();
+
+        // Scan only /movies with nothing discovered — only /movies file should be marked
+        let scanned = vec![PathBuf::from("/movies")];
+        let count = store.mark_missing_paths(&[], &scanned).unwrap();
+
+        assert_eq!(count, 1);
+        let stored_movie = store
+            .file_by_path(std::path::Path::new("/movies/film.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored_movie.status, FileStatus::Missing);
+        let stored_tv = store
+            .file_by_path(std::path::Path::new("/tv/show.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored_tv.status, FileStatus::Active);
+    }
+}
 
 fn insert_transition_in_tx(
     tx: &rusqlite::Transaction<'_>,

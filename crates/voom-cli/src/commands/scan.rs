@@ -134,6 +134,15 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
                     reconcile_result.missing
                 );
             }
+        } else {
+            let missing = store.mark_missing_paths(&[], &paths)?;
+            if !quiet && missing > 0 {
+                eprintln!(
+                    "  {} {} files no longer on disk",
+                    style("Missing").dim(),
+                    missing
+                );
+            }
         }
 
         if !quiet {
@@ -199,6 +208,25 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
                 disc_error_suffix,
             );
         }
+    }
+
+    // Mark missing files — path-only, no hash needed.
+    // When hashing is enabled, reconcile_discovered_files handles this internally.
+    // When hashing is disabled, we still need to detect deleted files.
+    let path_missing_count = if !hash_files {
+        let discovered_paths: Vec<std::path::PathBuf> =
+            all_events.iter().map(|e| e.path.clone()).collect();
+        store.mark_missing_paths(&discovered_paths, &paths)?
+    } else {
+        0
+    };
+
+    if !quiet && path_missing_count > 0 {
+        eprintln!(
+            "  {} {} files no longer on disk",
+            style("Missing").dim(),
+            path_missing_count
+        );
     }
 
     // Batch reconciliation: detect moves, external changes, and missing files.
