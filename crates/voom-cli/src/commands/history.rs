@@ -12,26 +12,8 @@ pub fn run(args: HistoryArgs) -> Result<()> {
 
     let path = args.file.canonicalize().unwrap_or(args.file.clone());
 
-    let file = store
-        .file_by_path(&path)
-        .map_err(|e| anyhow::anyhow!("failed to look up file: {e}"))?;
-
-    let Some(file) = file else {
-        if args.format.is_machine() {
-            if matches!(args.format, OutputFormat::Json) {
-                println!("[]");
-            }
-            return Ok(());
-        }
-        eprintln!(
-            "{}",
-            style(format!("No file found at {}", path.display())).dim()
-        );
-        return Ok(());
-    };
-
     let transitions = store
-        .transitions_for_file(&file.id)
+        .transitions_for_path(&path)
         .map_err(|e| anyhow::anyhow!("failed to retrieve transitions: {e}"))?;
 
     if transitions.is_empty() {
