@@ -218,14 +218,21 @@ fn collect_global_backups(
         }
     };
 
-    // Build a map from filename -> pending op path for matching.
-    let pending_by_filename: std::collections::HashMap<String, &Path> = pending
-        .iter()
-        .filter_map(|op| {
-            let filename = op.file_path.file_name()?.to_string_lossy().to_string();
-            Some((filename, op.file_path.as_path()))
-        })
-        .collect();
+    // Build a map from filename -> pending op paths for matching.
+    // Multiple pending ops can share the same basename (e.g.
+    // /movies/a/movie.mkv and /movies/b/movie.mkv). We collect all
+    // of them and skip recovery when the match is ambiguous.
+    let mut pending_by_filename: std::collections::HashMap<String, Vec<&Path>> =
+        std::collections::HashMap::new();
+    for op in pending {
+        if let Some(filename) = op.file_path.file_name() {
+            let filename = filename.to_string_lossy().to_string();
+            pending_by_filename
+                .entry(filename)
+                .or_default()
+                .push(op.file_path.as_path());
+        }
+    }
 
     // UUID format: 8-4-4-4-12 hex digits = 36 chars.
     // Global backup format: <uuid>_<original_filename>
@@ -259,10 +266,20 @@ fn collect_global_backups(
         }
         let original_filename = &backup_filename[UUID_LEN + 1..];
 
-        if let Some(&original_path) = pending_by_filename.get(original_filename) {
+        if let Some(paths) = pending_by_filename.get(original_filename) {
+            if paths.len() > 1 {
+                tracing::warn!(
+                    backup = %path.display(),
+                    filename = original_filename,
+                    candidates = paths.len(),
+                    "ambiguous global backup — multiple pending ops share \
+                     this filename, skipping to avoid restoring to wrong path"
+                );
+                continue;
+            }
             backups.push(OrphanedBackup {
                 backup_path: path,
-                original_path: original_path.to_path_buf(),
+                original_path: paths[0].to_path_buf(),
                 size,
             });
         }
@@ -797,6 +814,44 @@ mod tests {
         assert!(
             !vbak.exists(),
             "global backup should be removed after restore"
+        );
+    }
+
+    #[test]
+    fn test_global_backup_skipped_when_filename_ambiguous() {
+        let media_dir = tempfile::tempdir().unwrap();
+        let global_dir = tempfile::tempdir().unwrap();
+
+        // Create a global backup for "movie.mkv"
+        let backup_id = uuid::Uuid::new_v4();
+        let vbak = global_dir.path().join(format!("{backup_id}_movie.mkv"));
+        std::fs::write(&vbak, b"backup content").unwrap();
+
+        let canonical_media = std::fs::canonicalize(media_dir.path()).unwrap();
+
+        // Two pending ops with the same basename but different paths
+        let original_a = canonical_media.join("a").join("movie.mkv");
+        let original_b = canonical_media.join("b").join("movie.mkv");
+
+        let store = voom_domain::test_support::InMemoryStore::default();
+        insert_pending_op(&store, &original_a);
+        insert_pending_op(&store, &original_b);
+
+        let config = RecoveryConfig {
+            mode: "always_recover".into(),
+        };
+        let recovered = check_and_recover_under(
+            &config,
+            &[media_dir.path().to_path_buf()],
+            &store,
+            Some(global_dir.path()),
+        )
+        .unwrap();
+
+        assert_eq!(recovered, 0, "ambiguous filename should not be recovered");
+        assert!(
+            vbak.exists(),
+            "backup should be untouched when match is ambiguous"
         );
     }
 }
