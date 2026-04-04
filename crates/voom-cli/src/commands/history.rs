@@ -16,23 +16,34 @@ const MAX_PREDECESSORS: usize = 50;
 /// file IDs in lineage order (oldest first, current last).
 fn collect_lineage(store: &dyn FileStorage, start_id: Uuid) -> Vec<Uuid> {
     let mut chain = vec![start_id];
+    let mut seen = std::collections::HashSet::from([start_id]);
     let mut current = start_id;
+    let mut exhausted = true;
 
     for _ in 0..MAX_PREDECESSORS {
         match store.predecessor_of(&current) {
             Ok(Some(pred)) => {
+                if !seen.insert(pred.id) {
+                    tracing::warn!("cycle detected in predecessor chain at {}", pred.id);
+                    exhausted = false;
+                    break;
+                }
                 chain.push(pred.id);
                 current = pred.id;
             }
-            Ok(None) => break,
+            Ok(None) => {
+                exhausted = false;
+                break;
+            }
             Err(e) => {
                 tracing::warn!("failed to walk predecessor chain: {e}");
+                exhausted = false;
                 break;
             }
         }
     }
 
-    if chain.len() > MAX_PREDECESSORS {
+    if exhausted {
         tracing::warn!("predecessor chain exceeded {MAX_PREDECESSORS} entries, truncating");
     }
 
@@ -130,6 +141,7 @@ pub fn run(args: HistoryArgs) -> Result<()> {
             );
 
             let mut table = output::new_table();
+            let col_count = if has_lineage { 6 } else { 5 };
             if has_lineage {
                 table.set_header(vec![
                     "#",
@@ -152,7 +164,7 @@ pub fn run(args: HistoryArgs) -> Result<()> {
                             let sep = style("── external modification ──").dim().to_string();
                             let mut sep_row: Vec<comfy_table::Cell> =
                                 vec![comfy_table::Cell::new(""), comfy_table::Cell::new(&sep)];
-                            for _ in 2..6 {
+                            for _ in 2..col_count {
                                 sep_row.push(comfy_table::Cell::new(""));
                             }
                             table.add_row(sep_row);
