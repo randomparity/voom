@@ -348,6 +348,29 @@ impl FileStorage for SqliteStore {
         Ok(())
     }
 
+    fn predecessor_of(&self, successor_id: &Uuid) -> Result<Option<MediaFile>> {
+        let conn = self.conn()?;
+        let file_row: Option<FileRow> = conn
+            .query_row(
+                "SELECT id, path, size, content_hash, expected_hash, status, \
+                 container, duration, bitrate, tags, plugin_metadata, introspected_at \
+                 FROM files WHERE superseded_by = ?1",
+                params![successor_id.to_string()],
+                row_to_file,
+            )
+            .optional()
+            .map_err(storage_err("failed to query predecessor"))?;
+
+        match file_row {
+            Some(fr) => {
+                let id = super::parse_uuid(&fr.id)?;
+                let tracks = self.load_tracks(&conn, &id)?;
+                Ok(Some(fr.to_media_file(tracks)?))
+            }
+            None => Ok(None),
+        }
+    }
+
     fn mark_missing_paths(
         &self,
         discovered_paths: &[PathBuf],
@@ -828,6 +851,41 @@ mod tests {
             new_file.id, file_a_id,
             "/movies/new.mkv must have a new UUID, not stolen from /tv/episode.mkv"
         );
+    }
+
+    #[test]
+    fn predecessor_of_returns_none_when_no_predecessor() {
+        let store = test_store();
+        let file = active_file("/media/movie.mkv");
+        store.upsert_file(&file).unwrap();
+
+        let result = store.predecessor_of(&file.id).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn predecessor_of_follows_superseded_by_link() {
+        let store = test_store();
+
+        // Create old file, then manually set superseded_by
+        let old_file = active_file("/media/old.mkv");
+        store.upsert_file(&old_file).unwrap();
+        let new_file = active_file("/media/movie.mkv");
+        store.upsert_file(&new_file).unwrap();
+
+        // Manually set the link (reconciliation will do this in Task 3)
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET superseded_by = ?1 WHERE id = ?2",
+                rusqlite::params![new_file.id.to_string(), old_file.id.to_string()],
+            )
+            .unwrap();
+        }
+
+        let predecessor = store.predecessor_of(&new_file.id).unwrap();
+        assert!(predecessor.is_some(), "should find predecessor");
+        assert_eq!(predecessor.unwrap().id, old_file.id);
     }
 
     #[test]
