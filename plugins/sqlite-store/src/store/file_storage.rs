@@ -354,12 +354,14 @@ impl FileStorage for SqliteStore {
             .query_row(
                 "SELECT id, path, size, content_hash, expected_hash, status, \
                  container, duration, bitrate, tags, plugin_metadata, introspected_at \
-                 FROM files WHERE superseded_by = ?1",
+                 FROM files WHERE superseded_by = ?1 LIMIT 1",
                 params![successor_id.to_string()],
                 row_to_file,
             )
             .optional()
-            .map_err(storage_err("failed to query predecessor"))?;
+            .map_err(storage_err(&format!(
+                "failed to query predecessor for {successor_id}"
+            )))?;
 
         match file_row {
             Some(fr) => {
