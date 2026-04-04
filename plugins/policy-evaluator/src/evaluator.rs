@@ -94,8 +94,26 @@ pub fn evaluate_with_context(
 /// phase executes and the file is re-introspected, the next phase is
 /// evaluated against the updated file state.
 ///
-/// `phase_outcomes` tracks prior phase results for `depends_on` / `run_if`
-/// resolution.
+/// # Examples
+///
+/// ```
+/// use std::collections::HashMap;
+/// use std::path::PathBuf;
+/// use voom_domain::media::MediaFile;
+/// use voom_dsl::compile_policy;
+/// use voom_policy_evaluator::evaluator::evaluate_single_phase;
+///
+/// let policy = compile_policy(r#"policy "demo" {
+///     phase init {
+///         container mkv
+///     }
+/// }"#).unwrap();
+///
+/// let file = MediaFile::new(PathBuf::from("/movies/test.mkv"));
+/// let plan = evaluate_single_phase("init", &policy, &file, &HashMap::new(), None);
+/// assert!(plan.is_some());
+/// assert_eq!(plan.unwrap().phase_name, "init");
+/// ```
 #[must_use]
 pub fn evaluate_single_phase(
     phase_name: &str,

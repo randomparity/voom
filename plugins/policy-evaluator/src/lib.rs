@@ -28,8 +28,29 @@ impl PolicyEvaluator {
         Self
     }
 
-    /// Evaluate a compiled policy against a media file, producing an [`evaluator::EvaluationResult`]
-    /// with plans for all phases and per-phase outcomes.
+    /// Evaluate a compiled policy against a media file.
+    ///
+    /// Returns an [`evaluator::EvaluationResult`] containing plans for all phases.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    /// use voom_domain::media::MediaFile;
+    /// use voom_dsl::compile_policy;
+    /// use voom_policy_evaluator::PolicyEvaluator;
+    ///
+    /// let policy = compile_policy(r#"policy "demo" {
+    ///     phase init {
+    ///         container mkv
+    ///     }
+    /// }"#).unwrap();
+    ///
+    /// let file = MediaFile::new(PathBuf::from("/movies/test.mkv"));
+    /// let result = PolicyEvaluator::new().evaluate(&policy, &file);
+    /// assert_eq!(result.plans.len(), 1);
+    /// assert_eq!(result.plans[0].phase_name, "init");
+    /// ```
     pub fn evaluate(
         &self,
         policy: &CompiledPolicy,
