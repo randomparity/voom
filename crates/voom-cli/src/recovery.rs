@@ -31,9 +31,15 @@ pub fn check_and_recover_under(
     config: &RecoveryConfig,
     scan_dirs: &[PathBuf],
     store: &dyn voom_domain::storage::StorageTrait,
+    global_backup_dir: Option<&Path>,
 ) -> Result<u64> {
     let pending = store.list_pending_ops().unwrap_or_default();
-    let all_backups = find_orphans_under(scan_dirs)?;
+    let mut all_backups = find_orphans_under(scan_dirs)?;
+
+    // Also scan the global backup directory if configured.
+    if let Some(global_dir) = global_backup_dir {
+        collect_global_backups(global_dir, &pending, &mut all_backups);
+    }
 
     if pending.is_empty() && all_backups.is_empty() {
         return Ok(0);
@@ -183,6 +189,81 @@ fn collect_vbak_files(backup_dir: &Path, orphans: &mut Vec<OrphanedBackup>) {
                     "could not infer original path from backup filename, skipping"
                 );
             }
+        }
+    }
+}
+
+/// Collect backup files from a global backup directory and match them to
+/// pending operations by filename.
+///
+/// Global-mode backups use the format `<uuid>_<filename>` (no `.vbak`
+/// extension, no timestamp). We extract the original filename by stripping
+/// the 36-char UUID prefix + underscore, then match against pending
+/// operation paths' filenames.
+fn collect_global_backups(
+    global_dir: &Path,
+    pending: &[voom_domain::storage::PendingOperation],
+    backups: &mut Vec<OrphanedBackup>,
+) {
+    let entries = match std::fs::read_dir(global_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::debug!(
+                path = %global_dir.display(),
+                error = %e,
+                "cannot read global backup dir for recovery"
+            );
+            return;
+        }
+    };
+
+    // Build a map from filename -> pending op path for matching.
+    let pending_by_filename: std::collections::HashMap<String, &Path> = pending
+        .iter()
+        .filter_map(|op| {
+            let filename = op.file_path.file_name()?.to_string_lossy().to_string();
+            Some((filename, op.file_path.as_path()))
+        })
+        .collect();
+
+    // UUID format: 8-4-4-4-12 hex digits = 36 chars.
+    // Global backup format: <uuid>_<original_filename>
+    // So the underscore separator is at index 36.
+    const UUID_LEN: usize = 36;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let meta = match entry.metadata() {
+            Ok(m) if m.is_file() => m,
+            _ => continue,
+        };
+        let size = meta.len();
+        let backup_filename = match path.file_name() {
+            Some(f) => f.to_string_lossy().to_string(),
+            None => continue,
+        };
+
+        // Global format: <uuid>_<original_filename>
+        // UUID is exactly 36 chars, followed by underscore.
+        if backup_filename.len() <= UUID_LEN + 1 {
+            continue;
+        }
+        if backup_filename.as_bytes()[UUID_LEN] != b'_' {
+            continue;
+        }
+        // Validate UUID prefix
+        let uuid_part = &backup_filename[..UUID_LEN];
+        if uuid::Uuid::parse_str(uuid_part).is_err() {
+            continue;
+        }
+        let original_filename = &backup_filename[UUID_LEN + 1..];
+
+        if let Some(&original_path) = pending_by_filename.get(original_filename) {
+            backups.push(OrphanedBackup {
+                backup_path: path,
+                original_path: original_path.to_path_buf(),
+                size,
+            });
         }
     }
 }
@@ -523,7 +604,7 @@ mod tests {
             mode: "always_recover".into(),
         };
         let recovered =
-            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store).unwrap();
+            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
 
         assert_eq!(recovered, 1, "backup with pending op should be recovered");
     }
@@ -540,7 +621,7 @@ mod tests {
             mode: "always_recover".into(),
         };
         let recovered =
-            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store).unwrap();
+            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
 
         assert_eq!(recovered, 0);
         assert!(
@@ -564,7 +645,7 @@ mod tests {
             mode: "always_recover".into(),
         };
         let recovered =
-            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store).unwrap();
+            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
 
         assert_eq!(recovered, 0);
         // Stale pending op should have been cleaned up
@@ -586,7 +667,7 @@ mod tests {
             mode: "always_recover".into(),
         };
         let recovered =
-            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store).unwrap();
+            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
 
         assert_eq!(recovered, 1);
         let content = std::fs::read(&original).unwrap();
@@ -606,7 +687,7 @@ mod tests {
             mode: "always_discard".into(),
         };
         let recovered =
-            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store).unwrap();
+            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
 
         assert_eq!(recovered, 1);
         assert!(
@@ -628,7 +709,7 @@ mod tests {
             mode: "always_recover".into(),
         };
         let recovered =
-            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store).unwrap();
+            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
 
         assert_eq!(recovered, 0);
         assert!(
@@ -649,7 +730,7 @@ mod tests {
             mode: "prompt".into(),
         };
         let recovered =
-            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store).unwrap();
+            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
 
         assert_eq!(recovered, 0);
         assert!(vbak.exists());
@@ -668,12 +749,50 @@ mod tests {
         let config = RecoveryConfig {
             mode: "always_recover".into(),
         };
-        check_and_recover_under(&config, &[dir.path().to_path_buf()], &store).unwrap();
+        check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
 
         let remaining = store.list_pending_ops().unwrap();
         assert!(
             remaining.is_empty(),
             "pending op should be deleted after recovery"
+        );
+    }
+
+    #[test]
+    fn test_check_and_recover_finds_global_dir_backup() {
+        let media_dir = tempfile::tempdir().unwrap();
+        let global_dir = tempfile::tempdir().unwrap();
+
+        // Create a backup in the global directory using the real format:
+        // <uuid>_<filename> (no .vbak extension, no timestamp)
+        let backup_id = uuid::Uuid::new_v4();
+        let vbak = global_dir.path().join(format!("{backup_id}_movie.mkv"));
+        std::fs::write(&vbak, b"backup content").unwrap();
+
+        let canonical_media = std::fs::canonicalize(media_dir.path()).unwrap();
+        let original = canonical_media.join("movie.mkv");
+
+        let store = voom_domain::test_support::InMemoryStore::default();
+        insert_pending_op(&store, &original);
+
+        let config = RecoveryConfig {
+            mode: "always_recover".into(),
+        };
+        let recovered = check_and_recover_under(
+            &config,
+            &[media_dir.path().to_path_buf()],
+            &store,
+            Some(global_dir.path()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            recovered, 1,
+            "should find and recover backup from global dir"
+        );
+        assert!(
+            !vbak.exists(),
+            "global backup should be removed after restore"
         );
     }
 }

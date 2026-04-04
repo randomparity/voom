@@ -99,7 +99,27 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
     }
 
     // Check for orphaned backups left by a previous crashed execution
-    match crate::recovery::check_and_recover_under(&config.recovery, &paths, store.as_ref()) {
+    // Extract backup-manager's global backup dir from plugin config, if set.
+    let global_backup_dir: Option<std::path::PathBuf> =
+        config.plugin.get("backup-manager").and_then(|t| {
+            let use_global = t
+                .get("use_global_dir")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if use_global {
+                t.get("backup_dir")
+                    .and_then(|v| v.as_str())
+                    .map(std::path::PathBuf::from)
+            } else {
+                None
+            }
+        });
+    match crate::recovery::check_and_recover_under(
+        &config.recovery,
+        &paths,
+        store.as_ref(),
+        global_backup_dir.as_deref(),
+    ) {
         Ok(recovered) if recovered > 0 && !plan_only && !quiet => {
             eprintln!(
                 "{} {} {} from crashed execution",
