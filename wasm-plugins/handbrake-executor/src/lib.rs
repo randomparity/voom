@@ -206,56 +206,73 @@ fn build_handbrake_args(
         args.push(preset.to_string());
     }
 
-    // Apply per-action parameters.
     for action in actions {
         match action.operation {
             OperationType::TranscodeVideo => {
-                if let ActionParams::Transcode { codec, settings } = &action.parameters {
-                    args.push("--encoder".to_string());
-                    args.push(codec.clone());
-                    if let Some(q) = settings.crf {
-                        args.push("--quality".to_string());
-                        args.push(q.to_string());
-                    }
-                    if let Some(ref p) = settings.preset {
-                        // Only push preset from action params if not already set by config
-                        if config.as_ref().and_then(|c| c.preset.as_deref()).is_none() {
-                            args.push("--preset".to_string());
-                            args.push(p.clone());
-                        }
-                    }
-                    if let Some(ref b) = settings.bitrate {
-                        args.push("--vb".to_string());
-                        args.push(b.clone());
-                    }
-                }
+                apply_video_args(&mut args, action, config);
             }
             OperationType::TranscodeAudio => {
-                if let ActionParams::Transcode { codec, settings } = &action.parameters {
-                    args.push("--aencoder".to_string());
-                    args.push(codec.clone());
-                    if let Some(ref b) = settings.bitrate {
-                        args.push("--ab".to_string());
-                        args.push(b.clone());
-                    }
-                    if let Some(ref ch) = settings.channels {
-                        let mixdown = match ch.to_count() {
-                            Some(1) => "mono",
-                            Some(6) => "5point1",
-                            Some(8) => "7point1",
-                            // 2, None ("preserve"), or unknown
-                            _ => "stereo",
-                        };
-                        args.push("--mixdown".to_string());
-                        args.push(mixdown.to_string());
-                    }
-                }
+                apply_audio_args(&mut args, action);
             }
             _ => {}
         }
     }
 
     args
+}
+
+/// Append video encoder arguments from a `TranscodeVideo` action.
+fn apply_video_args(
+    args: &mut Vec<String>,
+    action: &voom_plugin_sdk::domain::PlannedAction,
+    config: &Option<HandbrakeConfig>,
+) {
+    let ActionParams::Transcode { codec, settings } = &action.parameters else {
+        return;
+    };
+    args.push("--encoder".to_string());
+    args.push(codec.clone());
+    if let Some(q) = settings.crf {
+        args.push("--quality".to_string());
+        args.push(q.to_string());
+    }
+    if let Some(ref p) = settings.preset {
+        // Only push preset from action params if not already set by config
+        if config.as_ref().and_then(|c| c.preset.as_deref()).is_none() {
+            args.push("--preset".to_string());
+            args.push(p.clone());
+        }
+    }
+    if let Some(ref b) = settings.bitrate {
+        args.push("--vb".to_string());
+        args.push(b.clone());
+    }
+}
+
+/// Append audio encoder arguments from a `TranscodeAudio` action.
+fn apply_audio_args(
+    args: &mut Vec<String>,
+    action: &voom_plugin_sdk::domain::PlannedAction,
+) {
+    let ActionParams::Transcode { codec, settings } = &action.parameters else {
+        return;
+    };
+    args.push("--aencoder".to_string());
+    args.push(codec.clone());
+    if let Some(ref b) = settings.bitrate {
+        args.push("--ab".to_string());
+        args.push(b.clone());
+    }
+    if let Some(ref ch) = settings.channels {
+        let mixdown = match ch.to_count() {
+            Some(1) => "mono",
+            Some(6) => "5point1",
+            Some(8) => "7point1",
+            _ => "stereo",
+        };
+        args.push("--mixdown".to_string());
+        args.push(mixdown.to_string());
+    }
 }
 
 // --- Config ---

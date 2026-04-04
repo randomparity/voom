@@ -324,281 +324,14 @@ impl FileStorage for SqliteStore {
 
         let mut result = ReconcileResult::default();
 
-        // Build set of discovered paths for fast lookup
         let discovered_paths: HashSet<String> = discovered
             .iter()
             .map(|d| d.path.to_string_lossy().to_string())
             .collect();
 
-        // --- Pass 1: Mark missing ---
-        // Find active files under scanned_dirs that are NOT in the discovered set.
-        {
-            let mut missing_stmt = tx
-                .prepare(
-                    "SELECT id, path, expected_hash, size FROM files \
-                     WHERE status = 'active' AND path IS NOT NULL",
-                )
-                .map_err(storage_err("failed to prepare missing scan"))?;
-
-            let active_files: Vec<(String, String, Option<String>, i64)> = missing_stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                })
-                .map_err(storage_err("failed to query active files"))?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(storage_err("failed to collect active files"))?;
-
-            for (id, path, _expected_hash, _size) in &active_files {
-                let path_obj = Path::new(path);
-                let under_scanned = scanned_dirs.iter().any(|dir| path_obj.starts_with(dir));
-                if under_scanned && !discovered_paths.contains(path.as_str()) {
-                    tx.execute(
-                        "UPDATE files SET status = 'missing', missing_since = ?1 \
-                         WHERE id = ?2 AND status = 'active'",
-                        params![&now, id],
-                    )
-                    .map_err(storage_err("failed to mark file missing"))?;
-                    result.missing += 1;
-                }
-            }
-        }
-
-        // --- Pass 2: Match discovered files ---
-        // Pre-load missing files with a non-NULL expected_hash for move detection.
-        // Only consider files whose last known path was under a scanned directory —
-        // files outside scanned roots (or with NULL paths) are excluded to prevent
-        // stolen identity across library boundaries.
-        let missing_by_hash: HashMap<String, (String, i64)> = {
-            let mut stmt = tx
-                .prepare(
-                    "SELECT id, path, expected_hash, size FROM files \
-                     WHERE status = 'missing' AND expected_hash IS NOT NULL \
-                     AND path IS NOT NULL",
-                )
-                .map_err(storage_err("failed to prepare missing lookup"))?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                })
-                .map_err(storage_err("failed to query missing files"))?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(storage_err("failed to collect missing files"))?;
-
-            // Filter to only files whose last known path falls under a scanned directory
-            let rows: Vec<_> = rows
-                .into_iter()
-                .filter(|(_, path, _, _)| {
-                    let path_obj = Path::new(path);
-                    scanned_dirs.iter().any(|dir| path_obj.starts_with(dir))
-                })
-                .collect();
-
-            let mut map = HashMap::new();
-            for (id, _path, hash, size) in rows {
-                map.entry(hash).or_insert((id, size));
-            }
-            map
-        };
-
-        // Track which missing file IDs have been consumed by move detection
-        let mut consumed_missing: HashSet<String> = HashSet::new();
-
-        for df in discovered {
-            let path_str = df.path.to_string_lossy().to_string();
-            let filename = df
-                .path
-                .file_name()
-                .map(|f| f.to_string_lossy().to_string())
-                .unwrap_or_default();
-
-            // Check if path exists in DB
-            let existing: Option<(String, Option<String>, i64)> = tx
-                .query_row(
-                    "SELECT id, expected_hash, size FROM files \
-                     WHERE path = ?1",
-                    params![&path_str],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                            row.get::<_, i64>(2)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(storage_err("failed to check existing file"))?;
-
-            if let Some((existing_id, expected_hash, existing_size)) = existing {
-                // Path exists in DB
-                let hash_matches = expected_hash
-                    .as_ref()
-                    .is_none_or(|eh| eh == &df.content_hash);
-
-                if hash_matches {
-                    // Case 1: Unchanged (or legacy with NULL expected_hash)
-                    // Update size/metadata if needed, reactivate if missing
-                    tx.execute(
-                        "UPDATE files SET size = ?1, content_hash = ?2, \
-                         status = 'active', missing_since = NULL, \
-                         updated_at = ?3 WHERE id = ?4",
-                        params![df.size as i64, &df.content_hash, &now, &existing_id],
-                    )
-                    .map_err(storage_err("failed to update unchanged file"))?;
-
-                    // Set expected_hash if it was NULL (legacy backfill)
-                    if expected_hash.is_none() {
-                        tx.execute(
-                            "UPDATE files SET expected_hash = ?1 WHERE id = ?2",
-                            params![&df.content_hash, &existing_id],
-                        )
-                        .map_err(storage_err("failed to backfill expected_hash"))?;
-                    }
-                    result.unchanged += 1;
-                } else {
-                    // Case 2: External modification
-                    // Record external transition on old file
-                    let old_id = super::parse_uuid(&existing_id)?;
-                    let ext_transition = FileTransition::new(
-                        old_id,
-                        df.path.clone(),
-                        df.content_hash.clone(),
-                        df.size,
-                        TransitionSource::External,
-                    )
-                    .with_from(expected_hash, Some(existing_size as u64));
-                    insert_transition_in_tx(&tx, &ext_transition, &now)?;
-
-                    // Clear old record's path and mark missing
-                    tx.execute(
-                        "UPDATE files SET path = NULL, status = 'missing', \
-                         missing_since = ?1 WHERE id = ?2",
-                        params![&now, &existing_id],
-                    )
-                    .map_err(storage_err("failed to clear old file for external change"))?;
-
-                    // Create new record at this path
-                    let new_id = Uuid::new_v4();
-                    tx.execute(
-                        "INSERT INTO files \
-                         (id, path, filename, size, content_hash, \
-                          expected_hash, status, container, duration, \
-                          tags, plugin_metadata, introspected_at, \
-                          created_at, updated_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', \
-                                 'other', 0.0, '{}', '{}', ?7, ?7, ?7)",
-                        params![
-                            new_id.to_string(),
-                            &path_str,
-                            &filename,
-                            df.size as i64,
-                            &df.content_hash,
-                            &df.content_hash,
-                            &now,
-                        ],
-                    )
-                    .map_err(storage_err("failed to insert new file for external change"))?;
-
-                    // Record discovery transition on new file
-                    let disc_transition = FileTransition::new(
-                        new_id,
-                        df.path.clone(),
-                        df.content_hash.clone(),
-                        df.size,
-                        TransitionSource::Discovery,
-                    );
-                    insert_transition_in_tx(&tx, &disc_transition, &now)?;
-
-                    result.external_changes += 1;
-                    result.needs_introspection.push(df.path.clone());
-                }
-            } else {
-                // Path not in DB
-                // Check for move: hash matches a missing file?
-                let move_match = missing_by_hash
-                    .get(&df.content_hash)
-                    .filter(|(id, _)| !consumed_missing.contains(id))
-                    .map(|(id, size)| (id.clone(), *size));
-
-                if let Some((missing_id, _missing_size)) = move_match {
-                    // Case 3: Move detected
-                    consumed_missing.insert(missing_id.clone());
-
-                    tx.execute(
-                        "UPDATE files SET path = ?1, filename = ?2, \
-                         size = ?3, content_hash = ?4, \
-                         status = 'active', missing_since = NULL, \
-                         updated_at = ?5 WHERE id = ?6",
-                        params![
-                            &path_str,
-                            &filename,
-                            df.size as i64,
-                            &df.content_hash,
-                            &now,
-                            &missing_id,
-                        ],
-                    )
-                    .map_err(storage_err("failed to reactivate moved file"))?;
-
-                    let file_uuid = super::parse_uuid(&missing_id)?;
-                    let move_transition = FileTransition::new(
-                        file_uuid,
-                        df.path.clone(),
-                        df.content_hash.clone(),
-                        df.size,
-                        TransitionSource::Discovery,
-                    )
-                    .with_detail("detected_move");
-                    insert_transition_in_tx(&tx, &move_transition, &now)?;
-
-                    result.moved += 1;
-                    result.needs_introspection.push(df.path.clone());
-                } else {
-                    // Case 4: New file
-                    let new_id = Uuid::new_v4();
-                    tx.execute(
-                        "INSERT INTO files \
-                         (id, path, filename, size, content_hash, \
-                          expected_hash, status, container, duration, \
-                          tags, plugin_metadata, introspected_at, \
-                          created_at, updated_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', \
-                                 'other', 0.0, '{}', '{}', ?7, ?7, ?7)",
-                        params![
-                            new_id.to_string(),
-                            &path_str,
-                            &filename,
-                            df.size as i64,
-                            &df.content_hash,
-                            &df.content_hash,
-                            &now,
-                        ],
-                    )
-                    .map_err(storage_err("failed to insert new file"))?;
-
-                    let disc_transition = FileTransition::new(
-                        new_id,
-                        df.path.clone(),
-                        df.content_hash.clone(),
-                        df.size,
-                        TransitionSource::Discovery,
-                    );
-                    insert_transition_in_tx(&tx, &disc_transition, &now)?;
-
-                    result.new_files += 1;
-                    result.needs_introspection.push(df.path.clone());
-                }
-            }
-        }
+        result.missing = mark_missing_files(&tx, scanned_dirs, &discovered_paths, &now)?;
+        let missing_by_hash = build_missing_hash_index(&tx, scanned_dirs)?;
+        match_discovered_files(&tx, discovered, &missing_by_hash, &now, &mut result)?;
 
         tx.commit()
             .map_err(storage_err("failed to commit reconciliation"))?;
@@ -653,6 +386,311 @@ impl FileStorage for SqliteStore {
         }
         Ok(marked)
     }
+}
+
+/// Pass 1: Mark active files under scanned dirs as missing if not in discovered set.
+fn mark_missing_files(
+    tx: &rusqlite::Transaction<'_>,
+    scanned_dirs: &[PathBuf],
+    discovered_paths: &HashSet<String>,
+    now: &str,
+) -> Result<u32> {
+    let mut stmt = tx
+        .prepare(
+            "SELECT id, path, expected_hash, size FROM files \
+             WHERE status = 'active' AND path IS NOT NULL",
+        )
+        .map_err(storage_err("failed to prepare missing scan"))?;
+
+    let active_files: Vec<(String, String, Option<String>, i64)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(storage_err("failed to query active files"))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(storage_err("failed to collect active files"))?;
+
+    let mut missing = 0u32;
+    for (id, path, _expected_hash, _size) in &active_files {
+        let path_obj = Path::new(path);
+        let under_scanned = scanned_dirs.iter().any(|dir| path_obj.starts_with(dir));
+        if under_scanned && !discovered_paths.contains(path.as_str()) {
+            tx.execute(
+                "UPDATE files SET status = 'missing', missing_since = ?1 \
+                 WHERE id = ?2 AND status = 'active'",
+                params![now, id],
+            )
+            .map_err(storage_err("failed to mark file missing"))?;
+            missing += 1;
+        }
+    }
+    Ok(missing)
+}
+
+/// Build a hash-to-(id, size) index of missing files scoped to scanned dirs.
+fn build_missing_hash_index(
+    tx: &rusqlite::Transaction<'_>,
+    scanned_dirs: &[PathBuf],
+) -> Result<HashMap<String, (String, i64)>> {
+    let mut stmt = tx
+        .prepare(
+            "SELECT id, path, expected_hash, size FROM files \
+             WHERE status = 'missing' AND expected_hash IS NOT NULL \
+             AND path IS NOT NULL",
+        )
+        .map_err(storage_err("failed to prepare missing lookup"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(storage_err("failed to query missing files"))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(storage_err("failed to collect missing files"))?;
+
+    let mut map = HashMap::new();
+    for (id, path, hash, size) in rows {
+        let path_obj = Path::new(&path);
+        if scanned_dirs.iter().any(|dir| path_obj.starts_with(dir)) {
+            map.entry(hash).or_insert((id, size));
+        }
+    }
+    Ok(map)
+}
+
+/// Pass 2: Match each discovered file against DB (unchanged, external change, move, or new).
+fn match_discovered_files(
+    tx: &rusqlite::Transaction<'_>,
+    discovered: &[DiscoveredFile],
+    missing_by_hash: &HashMap<String, (String, i64)>,
+    now: &str,
+    result: &mut ReconcileResult,
+) -> Result<()> {
+    let mut consumed_missing: HashSet<String> = HashSet::new();
+
+    for df in discovered {
+        let path_str = df.path.to_string_lossy().to_string();
+
+        let existing: Option<(String, Option<String>, i64)> = tx
+            .query_row(
+                "SELECT id, expected_hash, size FROM files WHERE path = ?1",
+                params![&path_str],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(storage_err("failed to check existing file"))?;
+
+        if let Some((existing_id, expected_hash, existing_size)) = existing {
+            reconcile_existing_path(
+                tx,
+                df,
+                &existing_id,
+                expected_hash,
+                existing_size,
+                now,
+                result,
+            )?;
+        } else {
+            reconcile_new_path(tx, df, missing_by_hash, &mut consumed_missing, now, result)?;
+        }
+    }
+    Ok(())
+}
+
+/// Handle a discovered file whose path already exists in the DB.
+fn reconcile_existing_path(
+    tx: &rusqlite::Transaction<'_>,
+    df: &DiscoveredFile,
+    existing_id: &str,
+    expected_hash: Option<String>,
+    existing_size: i64,
+    now: &str,
+    result: &mut ReconcileResult,
+) -> Result<()> {
+    let path_str = df.path.to_string_lossy().to_string();
+    let filename = df
+        .path
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let hash_matches = expected_hash
+        .as_ref()
+        .is_none_or(|eh| eh == &df.content_hash);
+
+    if hash_matches {
+        tx.execute(
+            "UPDATE files SET size = ?1, content_hash = ?2, \
+             status = 'active', missing_since = NULL, \
+             updated_at = ?3 WHERE id = ?4",
+            params![df.size as i64, &df.content_hash, now, existing_id],
+        )
+        .map_err(storage_err("failed to update unchanged file"))?;
+
+        if expected_hash.is_none() {
+            tx.execute(
+                "UPDATE files SET expected_hash = ?1 WHERE id = ?2",
+                params![&df.content_hash, existing_id],
+            )
+            .map_err(storage_err("failed to backfill expected_hash"))?;
+        }
+        result.unchanged += 1;
+    } else {
+        let old_id = super::parse_uuid(existing_id)?;
+        let ext_transition = FileTransition::new(
+            old_id,
+            df.path.clone(),
+            df.content_hash.clone(),
+            df.size,
+            TransitionSource::External,
+        )
+        .with_from(expected_hash, Some(existing_size as u64));
+        insert_transition_in_tx(tx, &ext_transition, now)?;
+
+        tx.execute(
+            "UPDATE files SET path = NULL, status = 'missing', \
+             missing_since = ?1 WHERE id = ?2",
+            params![now, existing_id],
+        )
+        .map_err(storage_err("failed to clear old file for external change"))?;
+
+        let new_id = Uuid::new_v4();
+        tx.execute(
+            "INSERT INTO files \
+             (id, path, filename, size, content_hash, \
+              expected_hash, status, container, duration, \
+              tags, plugin_metadata, introspected_at, \
+              created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', \
+                     'other', 0.0, '{}', '{}', ?7, ?7, ?7)",
+            params![
+                new_id.to_string(),
+                path_str,
+                filename,
+                df.size as i64,
+                &df.content_hash,
+                &df.content_hash,
+                now,
+            ],
+        )
+        .map_err(storage_err("failed to insert new file for external change"))?;
+
+        let disc_transition = FileTransition::new(
+            new_id,
+            df.path.clone(),
+            df.content_hash.clone(),
+            df.size,
+            TransitionSource::Discovery,
+        );
+        insert_transition_in_tx(tx, &disc_transition, now)?;
+
+        result.external_changes += 1;
+        result.needs_introspection.push(df.path.clone());
+    }
+    Ok(())
+}
+
+/// Handle a discovered file whose path is not yet in the DB (move or new).
+fn reconcile_new_path(
+    tx: &rusqlite::Transaction<'_>,
+    df: &DiscoveredFile,
+    missing_by_hash: &HashMap<String, (String, i64)>,
+    consumed_missing: &mut HashSet<String>,
+    now: &str,
+    result: &mut ReconcileResult,
+) -> Result<()> {
+    let path_str = df.path.to_string_lossy().to_string();
+    let filename = df
+        .path
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let move_match = missing_by_hash
+        .get(&df.content_hash)
+        .filter(|(id, _)| !consumed_missing.contains(id))
+        .map(|(id, size)| (id.clone(), *size));
+
+    if let Some((missing_id, _missing_size)) = move_match {
+        consumed_missing.insert(missing_id.clone());
+
+        tx.execute(
+            "UPDATE files SET path = ?1, filename = ?2, \
+             size = ?3, content_hash = ?4, \
+             status = 'active', missing_since = NULL, \
+             updated_at = ?5 WHERE id = ?6",
+            params![
+                path_str,
+                filename,
+                df.size as i64,
+                &df.content_hash,
+                now,
+                &missing_id,
+            ],
+        )
+        .map_err(storage_err("failed to reactivate moved file"))?;
+
+        let file_uuid = super::parse_uuid(&missing_id)?;
+        let move_transition = FileTransition::new(
+            file_uuid,
+            df.path.clone(),
+            df.content_hash.clone(),
+            df.size,
+            TransitionSource::Discovery,
+        )
+        .with_detail("detected_move");
+        insert_transition_in_tx(tx, &move_transition, now)?;
+
+        result.moved += 1;
+        result.needs_introspection.push(df.path.clone());
+    } else {
+        let new_id = Uuid::new_v4();
+        tx.execute(
+            "INSERT INTO files \
+             (id, path, filename, size, content_hash, \
+              expected_hash, status, container, duration, \
+              tags, plugin_metadata, introspected_at, \
+              created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', \
+                     'other', 0.0, '{}', '{}', ?7, ?7, ?7)",
+            params![
+                new_id.to_string(),
+                path_str,
+                filename,
+                df.size as i64,
+                &df.content_hash,
+                &df.content_hash,
+                now,
+            ],
+        )
+        .map_err(storage_err("failed to insert new file"))?;
+
+        let disc_transition = FileTransition::new(
+            new_id,
+            df.path.clone(),
+            df.content_hash.clone(),
+            df.size,
+            TransitionSource::Discovery,
+        );
+        insert_transition_in_tx(tx, &disc_transition, now)?;
+
+        result.new_files += 1;
+        result.needs_introspection.push(df.path.clone());
+    }
+    Ok(())
 }
 
 use super::OptionalExt;
