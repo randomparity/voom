@@ -421,7 +421,8 @@ fn gather_processing_stats(conn: &rusqlite::Connection) -> Result<ProcessingAggr
 
     let outcomes = query_distribution(
         conn,
-        "SELECT outcome, COUNT(*) FROM processing_stats \
+        "SELECT outcome, COUNT(*) FROM file_transitions \
+         WHERE outcome IS NOT NULL \
          GROUP BY outcome ORDER BY COUNT(*) DESC",
         &[],
     )?;
@@ -429,10 +430,9 @@ fn gather_processing_stats(conn: &rusqlite::Connection) -> Result<ProcessingAggr
     let (total_time, total_saved) = conn
         .query_row(
             "SELECT COALESCE(SUM(duration_ms), 0), \
-                    COALESCE(SUM(CASE WHEN file_size_before IS NOT NULL \
-                        AND file_size_after IS NOT NULL \
-                        THEN file_size_before - file_size_after ELSE 0 END), 0) \
-             FROM processing_stats",
+                    COALESCE(SUM(CASE WHEN from_size IS NOT NULL \
+                        THEN from_size - to_size ELSE 0 END), 0) \
+             FROM file_transitions WHERE source = 'voom'",
             [],
             |row| {
                 let time: i64 = row.get(0)?;

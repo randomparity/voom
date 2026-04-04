@@ -741,8 +741,11 @@ fn insert_transition_in_tx(
     tx.execute(
         "INSERT INTO file_transitions \
          (id, file_id, path, from_hash, to_hash, from_size, to_size, \
-          source, source_detail, plan_id, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+          source, source_detail, plan_id, \
+          duration_ms, actions_taken, tracks_modified, outcome, \
+          policy_name, phase_name, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \
+                 ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             t.id.to_string(),
             t.file_id.to_string(),
@@ -754,6 +757,12 @@ fn insert_transition_in_tx(
             t.source.as_str(),
             t.source_detail.as_deref(),
             t.plan_id.map(|id| id.to_string()),
+            t.duration_ms.map(|v| v as i64),
+            t.actions_taken.map(i64::from),
+            t.tracks_modified.map(i64::from),
+            t.outcome.map(|o| o.as_str()),
+            t.policy_name.as_deref(),
+            t.phase_name.as_deref(),
             now,
         ],
     )

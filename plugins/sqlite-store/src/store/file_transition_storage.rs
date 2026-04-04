@@ -4,6 +4,7 @@ use rusqlite::params;
 use uuid::Uuid;
 
 use voom_domain::errors::Result;
+use voom_domain::stats::ProcessingOutcome;
 use voom_domain::storage::FileTransitionStorage;
 use voom_domain::transition::{FileTransition, TransitionSource};
 
@@ -14,8 +15,12 @@ impl FileTransitionStorage for SqliteStore {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO file_transitions \
-             (id, file_id, path, from_hash, to_hash, from_size, to_size, source, source_detail, plan_id, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             (id, file_id, path, from_hash, to_hash, from_size, to_size, \
+              source, source_detail, plan_id, \
+              duration_ms, actions_taken, tracks_modified, outcome, \
+              policy_name, phase_name, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \
+                     ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 t.id.to_string(),
                 t.file_id.to_string(),
@@ -27,6 +32,12 @@ impl FileTransitionStorage for SqliteStore {
                 t.source.as_str(),
                 t.source_detail.as_deref().filter(|s| !s.is_empty()),
                 t.plan_id.map(|id| id.to_string()),
+                t.duration_ms.map(|v| v as i64),
+                t.actions_taken.map(i64::from),
+                t.tracks_modified.map(i64::from),
+                t.outcome.map(|o| o.as_str()),
+                t.policy_name.as_deref(),
+                t.phase_name.as_deref(),
                 format_datetime(&t.created_at),
             ],
         )
@@ -39,7 +50,9 @@ impl FileTransitionStorage for SqliteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT id, file_id, path, from_hash, to_hash, from_size, to_size, \
-                 source, source_detail, plan_id, created_at \
+                 source, source_detail, plan_id, \
+                 duration_ms, actions_taken, tracks_modified, outcome, \
+                 policy_name, phase_name, created_at \
                  FROM file_transitions WHERE file_id = ?1 ORDER BY created_at",
             )
             .map_err(storage_err("failed to prepare transitions_for_file query"))?;
@@ -58,7 +71,9 @@ impl FileTransitionStorage for SqliteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT id, file_id, path, from_hash, to_hash, from_size, to_size, \
-                 source, source_detail, plan_id, created_at \
+                 source, source_detail, plan_id, \
+                 duration_ms, actions_taken, tracks_modified, outcome, \
+                 policy_name, phase_name, created_at \
                  FROM file_transitions WHERE source = ?1 ORDER BY created_at",
             )
             .map_err(storage_err("failed to prepare transitions_by_source query"))?;
@@ -77,7 +92,9 @@ impl FileTransitionStorage for SqliteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT id, file_id, path, from_hash, to_hash, from_size, to_size, \
-                 source, source_detail, plan_id, created_at \
+                 source, source_detail, plan_id, \
+                 duration_ms, actions_taken, tracks_modified, outcome, \
+                 policy_name, phase_name, created_at \
                  FROM file_transitions WHERE path = ?1 ORDER BY created_at ASC",
             )
             .map_err(storage_err("failed to prepare transitions_for_path query"))?;
@@ -96,17 +113,17 @@ impl FileTransitionStorage for SqliteStore {
 }
 
 fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition> {
-    let id_str: String = row.get("id")?;
-    let file_id_str: String = row.get("file_id")?;
-    let path_str: String = row.get("path")?;
-    let from_hash: Option<String> = row.get("from_hash")?;
-    let to_hash: String = row.get("to_hash")?;
-    let from_size: Option<i64> = row.get("from_size")?;
-    let to_size: i64 = row.get("to_size")?;
-    let source_str: String = row.get("source")?;
-    let source_detail: Option<String> = row.get("source_detail")?;
-    let plan_id_str: Option<String> = row.get("plan_id")?;
-    let created_at_str: String = row.get("created_at")?;
+    let id_str: String = row.get(0)?;
+    let file_id_str: String = row.get(1)?;
+    let path_str: String = row.get(2)?;
+    let from_hash: Option<String> = row.get(3)?;
+    let to_hash: String = row.get(4)?;
+    let from_size: Option<i64> = row.get(5)?;
+    let to_size: i64 = row.get(6)?;
+    let source_str: String = row.get(7)?;
+    let source_detail: Option<String> = row.get(8)?;
+    let plan_id_str: Option<String> = row.get(9)?;
+    let created_at_str: String = row.get(16)?;
 
     let id = parse_uuid_for_row(&id_str, "file_transitions.id")?;
     let file_id = parse_uuid_for_row(&file_id_str, "file_transitions.file_id")?;
@@ -136,6 +153,14 @@ fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition
     t.from_size = from_size.map(|v| v as u64);
     t.source_detail = source_detail.filter(|s| !s.is_empty());
     t.plan_id = plan_id;
+    t.duration_ms = row.get::<_, Option<i64>>(10)?.map(|v| v as u64);
+    t.actions_taken = row.get::<_, Option<i64>>(11)?.map(|v| v as u32);
+    t.tracks_modified = row.get::<_, Option<i64>>(12)?.map(|v| v as u32);
+    t.outcome = row
+        .get::<_, Option<String>>(13)?
+        .and_then(|s| ProcessingOutcome::parse(&s));
+    t.policy_name = row.get(14)?;
+    t.phase_name = row.get(15)?;
     t.created_at = created_at;
     Ok(t)
 }

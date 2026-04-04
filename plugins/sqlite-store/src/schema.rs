@@ -89,25 +89,17 @@ CREATE TABLE IF NOT EXISTS file_transitions (
     source TEXT NOT NULL,
     source_detail TEXT,
     plan_id TEXT,
+    duration_ms INTEGER,
+    actions_taken INTEGER,
+    tracks_modified INTEGER,
+    outcome TEXT,
+    policy_name TEXT,
+    phase_name TEXT,
     created_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_transitions_file ON file_transitions(file_id);
 CREATE INDEX IF NOT EXISTS idx_transitions_source ON file_transitions(source);
-
-CREATE TABLE IF NOT EXISTS processing_stats (
-    id TEXT PRIMARY KEY,
-    file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-    policy_name TEXT NOT NULL,
-    phase_name TEXT NOT NULL,
-    outcome TEXT NOT NULL,
-    duration_ms INTEGER NOT NULL,
-    actions_taken INTEGER NOT NULL,
-    tracks_modified INTEGER NOT NULL,
-    file_size_before INTEGER,
-    file_size_after INTEGER,
-    created_at TEXT NOT NULL
-);
 
 CREATE TABLE IF NOT EXISTS plugin_data (
     plugin_name TEXT NOT NULL,
@@ -171,7 +163,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_files_superseded_by_unique
 CREATE INDEX IF NOT EXISTS idx_tracks_file ON tracks(file_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, priority);
 CREATE INDEX IF NOT EXISTS idx_plans_file ON plans(file_id);
-CREATE INDEX IF NOT EXISTS idx_stats_file ON processing_stats(file_id);
 CREATE INDEX IF NOT EXISTS idx_bad_files_path ON bad_files(path);
 
 CREATE TABLE IF NOT EXISTS subtitles (
@@ -224,7 +215,6 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "tracks",
         "jobs",
         "plans",
-        "processing_stats",
         "file_transitions",
         "plugin_data",
         "bad_files",
@@ -251,6 +241,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     migrate_plans_columns(conn, &has_column)?;
     migrate_files_columns(conn, &has_column)?;
     migrate_indexes_and_constraints(conn)?;
+    migrate_processing_stats_into_transitions(conn, &has_column)?;
 
     Ok(())
 }
@@ -491,6 +482,27 @@ fn migrate_indexes_and_constraints(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Add processing-stats columns to file_transitions and drop legacy
+/// processing_stats table.
+fn migrate_processing_stats_into_transitions(
+    conn: &Connection,
+    has_column: &dyn Fn(&str, &str) -> rusqlite::Result<bool>,
+) -> rusqlite::Result<()> {
+    if !has_column("file_transitions", "duration_ms")? {
+        conn.execute_batch(
+            "ALTER TABLE file_transitions ADD COLUMN duration_ms INTEGER;\
+             ALTER TABLE file_transitions ADD COLUMN actions_taken INTEGER;\
+             ALTER TABLE file_transitions ADD COLUMN tracks_modified INTEGER;\
+             ALTER TABLE file_transitions ADD COLUMN outcome TEXT;\
+             ALTER TABLE file_transitions ADD COLUMN policy_name TEXT;\
+             ALTER TABLE file_transitions ADD COLUMN phase_name TEXT;",
+        )?;
+    }
+    // Drop the legacy table if it exists.
+    conn.execute_batch("DROP TABLE IF EXISTS processing_stats")?;
+    Ok(())
+}
+
 /// Configure `SQLite` connection for optimal performance.
 pub fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -525,7 +537,7 @@ mod tests {
         assert!(tables.contains(&"tracks".to_string()));
         assert!(tables.contains(&"jobs".to_string()));
         assert!(tables.contains(&"plans".to_string()));
-        assert!(tables.contains(&"processing_stats".to_string()));
+        assert!(!tables.contains(&"processing_stats".to_string()));
         assert!(tables.contains(&"plugin_data".to_string()));
         assert!(tables.contains(&"file_transitions".to_string()));
         assert!(tables.contains(&"bad_files".to_string()));
