@@ -432,7 +432,8 @@ fn gather_processing_stats(conn: &rusqlite::Connection) -> Result<ProcessingAggr
             "SELECT COALESCE(SUM(duration_ms), 0), \
                     COALESCE(SUM(CASE WHEN from_size IS NOT NULL \
                         THEN from_size - to_size ELSE 0 END), 0) \
-             FROM file_transitions WHERE source = 'voom'",
+             FROM file_transitions \
+             WHERE source = 'voom' AND outcome = 'success'",
             [],
             |row| {
                 let time: i64 = row.get(0)?;

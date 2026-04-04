@@ -113,17 +113,17 @@ impl FileTransitionStorage for SqliteStore {
 }
 
 fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition> {
-    let id_str: String = row.get(0)?;
-    let file_id_str: String = row.get(1)?;
-    let path_str: String = row.get(2)?;
-    let from_hash: Option<String> = row.get(3)?;
-    let to_hash: String = row.get(4)?;
-    let from_size: Option<i64> = row.get(5)?;
-    let to_size: i64 = row.get(6)?;
-    let source_str: String = row.get(7)?;
-    let source_detail: Option<String> = row.get(8)?;
-    let plan_id_str: Option<String> = row.get(9)?;
-    let created_at_str: String = row.get(16)?;
+    let id_str: String = row.get("id")?;
+    let file_id_str: String = row.get("file_id")?;
+    let path_str: String = row.get("path")?;
+    let from_hash: Option<String> = row.get("from_hash")?;
+    let to_hash: String = row.get("to_hash")?;
+    let from_size: Option<i64> = row.get("from_size")?;
+    let to_size: i64 = row.get("to_size")?;
+    let source_str: String = row.get("source")?;
+    let source_detail: Option<String> = row.get("source_detail")?;
+    let plan_id_str: Option<String> = row.get("plan_id")?;
+    let created_at_str: String = row.get("created_at")?;
 
     let id = parse_uuid_for_row(&id_str, "file_transitions.id")?;
     let file_id = parse_uuid_for_row(&file_id_str, "file_transitions.file_id")?;
@@ -141,6 +141,11 @@ fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition
         )
     })?;
 
+    let duration_ms: Option<i64> = row.get("duration_ms")?;
+    let actions_taken: Option<i64> = row.get("actions_taken")?;
+    let tracks_modified: Option<i64> = row.get("tracks_modified")?;
+    let outcome_str: Option<String> = row.get("outcome")?;
+
     let mut t = FileTransition::new(
         file_id,
         PathBuf::from(path_str),
@@ -153,14 +158,17 @@ fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition
     t.from_size = from_size.map(|v| v as u64);
     t.source_detail = source_detail.filter(|s| !s.is_empty());
     t.plan_id = plan_id;
-    t.duration_ms = row.get::<_, Option<i64>>(10)?.map(|v| v as u64);
-    t.actions_taken = row.get::<_, Option<i64>>(11)?.map(|v| v as u32);
-    t.tracks_modified = row.get::<_, Option<i64>>(12)?.map(|v| v as u32);
-    t.outcome = row
-        .get::<_, Option<String>>(13)?
-        .and_then(|s| ProcessingOutcome::parse(&s));
-    t.policy_name = row.get(14)?;
-    t.phase_name = row.get(15)?;
+    t.duration_ms = duration_ms.map(|v| v as u64);
+    t.actions_taken = actions_taken.map(|v| v as u32);
+    t.tracks_modified = tracks_modified.map(|v| v as u32);
+    t.outcome = outcome_str.and_then(|s| {
+        ProcessingOutcome::parse(&s).or_else(|| {
+            tracing::warn!(value = %s, "unknown ProcessingOutcome in file_transitions");
+            None
+        })
+    });
+    t.policy_name = row.get("policy_name")?;
+    t.phase_name = row.get("phase_name")?;
     t.created_at = created_at;
     Ok(t)
 }

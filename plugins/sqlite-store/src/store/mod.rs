@@ -330,10 +330,12 @@ mod tests {
     use voom_domain::job::{Job, JobStatus};
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
     use voom_domain::plan::{OperationType, PlannedAction};
+    use voom_domain::stats::ProcessingOutcome;
     use voom_domain::storage::{
-        BadFileFilters, BadFileStorage, FileFilters, FileStorage, JobFilters, JobStorage,
-        MaintenanceStorage, PlanStatus, PlanStorage, PluginDataStorage,
+        BadFileFilters, BadFileStorage, FileFilters, FileStorage, FileTransitionStorage,
+        JobFilters, JobStorage, MaintenanceStorage, PlanStatus, PlanStorage, PluginDataStorage,
     };
+    use voom_domain::transition::{FileTransition, TransitionSource};
 
     fn test_store() -> SqliteStore {
         SqliteStore::in_memory().unwrap()
@@ -738,6 +740,107 @@ mod tests {
         assert_eq!(plans[0].policy_name, "default");
         assert_eq!(plans[0].status, PlanStatus::Pending);
         assert_eq!(plans[0].policy_hash.as_deref(), Some("abc123"));
+    }
+
+    // --- Transition processing stats ---
+
+    #[test]
+    fn test_transition_processing_stats_roundtrip() {
+        let store = test_store();
+        let file = sample_file();
+        store.upsert_file(&file).unwrap();
+
+        let plan_id = Uuid::new_v4();
+        let t = FileTransition::new(
+            file.id,
+            file.path.clone(),
+            "newhash".into(),
+            900_000,
+            TransitionSource::Voom,
+        )
+        .with_from(Some("oldhash".into()), Some(1_000_000))
+        .with_plan_id(plan_id)
+        .with_processing(
+            1234,
+            3,
+            2,
+            ProcessingOutcome::Success,
+            "default",
+            "normalize",
+        );
+
+        store.record_transition(&t).unwrap();
+
+        let rows = store.transitions_for_file(&file.id).unwrap();
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.duration_ms, Some(1234));
+        assert_eq!(r.actions_taken, Some(3));
+        assert_eq!(r.tracks_modified, Some(2));
+        assert_eq!(r.outcome, Some(ProcessingOutcome::Success));
+        assert_eq!(r.policy_name.as_deref(), Some("default"));
+        assert_eq!(r.phase_name.as_deref(), Some("normalize"));
+        assert_eq!(r.from_size, Some(1_000_000));
+        assert_eq!(r.to_size, 900_000);
+    }
+
+    #[test]
+    fn test_prune_missing_files_under_cleans_dependents() {
+        let store = test_store();
+
+        let mut file = MediaFile::new(PathBuf::from("/media/movies/dep.mkv"));
+        file.content_hash = Some("dep".to_string());
+        store.upsert_file(&file).unwrap();
+
+        // Save a plan referencing this file
+        let mut plan = voom_domain::plan::Plan::new(file.clone(), "test", "normalize");
+        plan.actions = vec![PlannedAction::track_op(
+            OperationType::SetDefault,
+            0,
+            voom_domain::plan::ActionParams::Empty,
+            "set default",
+        )];
+        let _plan_id = store.save_plan(&plan).unwrap();
+
+        // Record a transition with processing stats
+        let t = FileTransition::new(
+            file.id,
+            file.path.clone(),
+            "newhash".into(),
+            900,
+            TransitionSource::Voom,
+        )
+        .with_from(Some("dep".into()), Some(1000))
+        .with_plan_id(plan.id)
+        .with_processing(1000, 1, 1, ProcessingOutcome::Success, "test", "normalize");
+
+        store.record_transition(&t).unwrap();
+
+        // Prune — file is missing from disk
+        let pruned = store
+            .prune_missing_files_under(Path::new("/media/movies"))
+            .unwrap();
+        assert_eq!(pruned, 1);
+
+        // File should be marked as missing (soft-delete)
+        let file_result = store.file(&file.id).unwrap();
+        assert!(file_result.is_some());
+        assert_eq!(
+            file_result.unwrap().status,
+            voom_domain::FileStatus::Missing
+        );
+
+        // Plans should still exist (cleaned up only during purge_missing)
+        assert!(!store.plans_for_file(&file.id).unwrap().is_empty());
+
+        // Purge the missing file and its dependents
+        let now = chrono::Utc::now();
+        let purged = store.purge_missing(now).unwrap();
+        assert_eq!(purged, 1);
+
+        // Now file, plans should all be gone
+        assert!(store.file(&file.id).unwrap().is_none());
+        assert!(store.plans_for_file(&file.id).unwrap().is_empty());
     }
 
     // --- Plugin data ---
@@ -1391,8 +1494,7 @@ mod tests {
 
     // --- Batch reconciliation ---
 
-    use voom_domain::storage::FileTransitionStorage;
-    use voom_domain::transition::{DiscoveredFile, FileStatus, FileTransition, TransitionSource};
+    use voom_domain::transition::{DiscoveredFile, FileStatus};
 
     fn discovered(path: &str, size: u64, hash: &str) -> DiscoveredFile {
         DiscoveredFile::new(PathBuf::from(path), size, hash.into())

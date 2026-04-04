@@ -488,15 +488,21 @@ fn migrate_processing_stats_into_transitions(
     conn: &Connection,
     has_column: &dyn Fn(&str, &str) -> rusqlite::Result<bool>,
 ) -> rusqlite::Result<()> {
-    if !has_column("file_transitions", "duration_ms")? {
-        conn.execute_batch(
-            "ALTER TABLE file_transitions ADD COLUMN duration_ms INTEGER;\
-             ALTER TABLE file_transitions ADD COLUMN actions_taken INTEGER;\
-             ALTER TABLE file_transitions ADD COLUMN tracks_modified INTEGER;\
-             ALTER TABLE file_transitions ADD COLUMN outcome TEXT;\
-             ALTER TABLE file_transitions ADD COLUMN policy_name TEXT;\
-             ALTER TABLE file_transitions ADD COLUMN phase_name TEXT;",
-        )?;
+    let columns = [
+        "duration_ms INTEGER",
+        "actions_taken INTEGER",
+        "tracks_modified INTEGER",
+        "outcome TEXT",
+        "policy_name TEXT",
+        "phase_name TEXT",
+    ];
+    for col_def in &columns {
+        let col_name = col_def.split_whitespace().next().unwrap_or(col_def);
+        if !has_column("file_transitions", col_name)? {
+            conn.execute_batch(&format!(
+                "ALTER TABLE file_transitions ADD COLUMN {col_def};"
+            ))?;
+        }
     }
     // Drop the legacy table if it exists.
     conn.execute_batch("DROP TABLE IF EXISTS processing_stats")?;

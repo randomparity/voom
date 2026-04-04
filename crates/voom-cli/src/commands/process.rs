@@ -857,11 +857,13 @@ async fn process_single_file_execute(
         let plan_clone = plan.clone();
         let file_clone = current_file.clone();
         let kernel_clone = ctx.kernel.clone();
+        let start = std::time::Instant::now();
         let exec_outcome = tokio::task::spawn_blocking(move || {
             execute_single_plan(&plan_clone, &file_clone, &kernel_clone)
         })
         .await
         .map_err(|e| format!("plan execution join error: {e}"))?;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
 
         match exec_outcome {
             PlanOutcome::Success { executor } => {
@@ -869,8 +871,15 @@ async fn process_single_file_execute(
                 if check_size_increase(&plan, &current_file, ctx) {
                     continue;
                 }
-                current_file =
-                    handle_plan_success(plan, &current_file, &executor, keep_backups, ctx).await;
+                current_file = handle_plan_success(
+                    plan,
+                    &current_file,
+                    &executor,
+                    elapsed_ms,
+                    keep_backups,
+                    ctx,
+                )
+                .await;
             }
             PlanOutcome::Failed(failed) => {
                 dispatch_plan_failure(failed, &plan.phase_name, ctx);
@@ -999,6 +1008,7 @@ async fn handle_plan_success(
     plan: voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
     executor: &str,
+    elapsed_ms: u64,
     keep_backups: bool,
     ctx: &ProcessContext<'_>,
 ) -> voom_domain::media::MediaFile {
@@ -1029,20 +1039,43 @@ async fn handle_plan_success(
     );
 
     let plan_id = plan.id;
+    let actions_taken = plan.actions.len() as u32;
+    let tracks_modified = plan
+        .actions
+        .iter()
+        .filter(|a| a.track_index.is_some())
+        .count() as u32;
+    let policy_name = plan.policy_name.clone();
     let phase_name = plan.phase_name.clone();
 
     let new_file = reintrospect_file(file, &[plan], ctx).await;
 
-    record_file_transition(file, &new_file, executor, &phase_name, plan_id, ctx);
+    record_file_transition(
+        file,
+        &new_file,
+        executor,
+        elapsed_ms,
+        actions_taken,
+        tracks_modified,
+        &policy_name,
+        &phase_name,
+        plan_id,
+        ctx,
+    );
 
     new_file
 }
 
 /// Record a file transition in the store if the content hash changed.
+#[allow(clippy::too_many_arguments)]
 fn record_file_transition(
     old_file: &voom_domain::media::MediaFile,
     new_file: &voom_domain::media::MediaFile,
     executor: &str,
+    elapsed_ms: u64,
+    actions_taken: u32,
+    tracks_modified: u32,
+    policy_name: &str,
     phase_name: &str,
     plan_id: uuid::Uuid,
     ctx: &ProcessContext<'_>,
@@ -1059,7 +1092,15 @@ fn record_file_transition(
     )
     .with_from(old_file.content_hash.clone(), Some(old_file.size))
     .with_detail(format!("{executor}:{phase_name}"))
-    .with_plan_id(plan_id);
+    .with_plan_id(plan_id)
+    .with_processing(
+        elapsed_ms,
+        actions_taken,
+        tracks_modified,
+        voom_domain::ProcessingOutcome::Success,
+        policy_name,
+        phase_name,
+    );
 
     if let Err(e) = ctx.store.record_transition(&transition) {
         tracing::warn!(error = %e, "failed to record transition");
