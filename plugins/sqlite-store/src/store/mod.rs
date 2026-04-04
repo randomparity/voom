@@ -11,7 +11,6 @@ mod plan_storage;
 mod plugin_data_storage;
 mod row_mappers;
 mod snapshot_storage;
-mod stats_storage;
 mod subtitle_storage;
 
 use std::collections::HashMap;
@@ -333,7 +332,7 @@ mod tests {
     use voom_domain::plan::{OperationType, PlannedAction};
     use voom_domain::storage::{
         BadFileFilters, BadFileStorage, FileFilters, FileStorage, JobFilters, JobStorage,
-        MaintenanceStorage, PlanStatus, PlanStorage, PluginDataStorage, StatsStorage,
+        MaintenanceStorage, PlanStatus, PlanStorage, PluginDataStorage,
     };
 
     fn test_store() -> SqliteStore {
@@ -741,37 +740,6 @@ mod tests {
         assert_eq!(plans[0].policy_hash.as_deref(), Some("abc123"));
     }
 
-    // --- Stats ---
-
-    #[test]
-    fn test_record_stats() {
-        let store = test_store();
-        let file = sample_file();
-        store.upsert_file(&file).unwrap();
-
-        let mut stats =
-            voom_domain::stats::ProcessingStats::new(file.id, "default".into(), "normalize".into());
-        stats.outcome = voom_domain::stats::ProcessingOutcome::Success;
-        stats.duration_ms = 1500;
-        stats.actions_taken = 3;
-        stats.tracks_modified = 2;
-        stats.file_size_before = Some(1_500_000_000);
-        stats.file_size_after = Some(1_400_000_000);
-
-        store.record_stats(&stats).unwrap();
-
-        // Verify via direct query
-        let conn = store.conn().unwrap();
-        let count: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM processing_stats WHERE file_id = ?1",
-                params![file.id.to_string()],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1);
-    }
-
     // --- Plugin data ---
 
     #[test]
@@ -880,62 +848,6 @@ mod tests {
         // Now file_a should be gone, file_b should still exist
         assert!(store.file(&file_a.id).unwrap().is_none());
         assert!(store.file(&file_b.id).unwrap().is_some());
-    }
-
-    #[test]
-    fn test_prune_missing_files_under_cleans_dependents() {
-        let store = test_store();
-
-        let mut file = MediaFile::new(PathBuf::from("/media/movies/dep.mkv"));
-        file.content_hash = Some("dep".to_string());
-        store.upsert_file(&file).unwrap();
-
-        // Save a plan referencing this file
-        let mut plan = voom_domain::plan::Plan::new(file.clone(), "test", "normalize");
-        plan.actions = vec![PlannedAction::track_op(
-            OperationType::SetDefault,
-            0,
-            voom_domain::plan::ActionParams::Empty,
-            "set default",
-        )];
-        let _plan_id = store.save_plan(&plan).unwrap();
-
-        // Record stats referencing this file
-        let mut stats =
-            voom_domain::stats::ProcessingStats::new(file.id, "test".into(), "normalize".into());
-        stats.outcome = voom_domain::stats::ProcessingOutcome::Success;
-        stats.duration_ms = 1000;
-        stats.actions_taken = 1;
-        stats.tracks_modified = 1;
-        stats.file_size_before = Some(1000);
-        stats.file_size_after = Some(900);
-        store.record_stats(&stats).unwrap();
-
-        // Prune — file is missing from disk
-        let pruned = store
-            .prune_missing_files_under(Path::new("/media/movies"))
-            .unwrap();
-        assert_eq!(pruned, 1);
-
-        // File should be marked as missing (soft-delete)
-        let file_result = store.file(&file.id).unwrap();
-        assert!(file_result.is_some());
-        assert_eq!(
-            file_result.unwrap().status,
-            voom_domain::FileStatus::Missing
-        );
-
-        // Plans should still exist (they're cleaned up only during purge_missing)
-        assert!(!store.plans_for_file(&file.id).unwrap().is_empty());
-
-        // Purge the missing file and its dependents
-        let now = chrono::Utc::now();
-        let purged = store.purge_missing(now).unwrap();
-        assert_eq!(purged, 1);
-
-        // Now file, plans, and stats should all be gone
-        assert!(store.file(&file.id).unwrap().is_none());
-        assert!(store.plans_for_file(&file.id).unwrap().is_empty());
     }
 
     #[test]

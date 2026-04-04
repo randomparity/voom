@@ -37,13 +37,13 @@ pub use plan::{
 pub use safeguard::{SafeguardKind, SafeguardViolation};
 pub use stats::{
     AudioStats, FileStats, JobAggregateStats, LibrarySnapshot, ProcessingAggregateStats,
-    ProcessingOutcome, ProcessingStats, SnapshotTrigger, SubtitleStats, VideoStats,
+    ProcessingOutcome, SnapshotTrigger, SubtitleStats, VideoStats,
 };
 pub use storage::{
     BadFileFilters, BadFileStorage, EventLogFilters, EventLogRecord, EventLogStorage, FileFilters,
     FileStorage, FileTransitionStorage, HealthCheckFilters, HealthCheckRecord, HealthCheckStorage,
     JobFilters, JobStorage, MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage,
-    SnapshotStorage, StatsStorage, StorageTrait,
+    SnapshotStorage, StorageTrait,
 };
 pub use transition::{
     DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
