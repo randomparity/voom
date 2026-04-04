@@ -18,6 +18,10 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub yes: bool,
 
+    /// Skip the process lock (use if a previous run crashed and left a stale lock)
+    #[arg(long, global = true)]
+    pub force: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }

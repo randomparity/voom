@@ -62,6 +62,7 @@ parking_lot.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 dirs = "5"
+fs2 = "0.4"
 toml = { workspace = true }
 
 [features]

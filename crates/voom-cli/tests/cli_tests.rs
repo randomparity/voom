@@ -2,7 +2,10 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 fn voom() -> Command {
-    Command::cargo_bin("voom").unwrap()
+    let mut cmd = Command::cargo_bin("voom").unwrap();
+    // Always pass --force so parallel integration tests don't fight over the process lock.
+    cmd.arg("--force");
+    cmd
 }
 
 // === Basic CLI structure ===

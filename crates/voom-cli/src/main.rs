@@ -9,6 +9,7 @@ mod cli;
 mod commands;
 mod config;
 mod introspect;
+mod lock;
 mod output;
 mod paths;
 mod policy_map;
@@ -54,6 +55,14 @@ async fn main() -> Result<()> {
 
     let global_yes = cli.yes;
 
+    // Acquire exclusive lock for mutating commands, unless --force is set.
+    let _lock = if !cli.force && command_needs_lock(&cli.command) {
+        let config = config::load_config()?;
+        Some(lock::ProcessLock::acquire(&config.data_dir)?)
+    } else {
+        None
+    };
+
     match cli.command {
         Commands::Scan(args) => commands::scan::run(args, quiet, token).await,
         Commands::Inspect(args) => commands::inspect::run(args),
@@ -76,6 +85,21 @@ async fn main() -> Result<()> {
         Commands::Init => commands::init::run(),
         Commands::Status => commands::status::run(),
         Commands::Completions(args) => commands::completions::run(args),
+    }
+}
+
+/// Returns true for commands that write to the database or modify files on disk.
+///
+/// Read-only commands (report, status, history, inspect, etc.) skip the lock.
+fn command_needs_lock(command: &Commands) -> bool {
+    use cli::JobsCommands;
+    match command {
+        Commands::Scan(_) | Commands::Process(_) | Commands::Serve(_) | Commands::Db(_) => true,
+        Commands::Jobs(sub) => matches!(
+            sub,
+            JobsCommands::Cancel { .. } | JobsCommands::Retry { .. } | JobsCommands::Clear { .. }
+        ),
+        _ => false,
     }
 }
 
@@ -144,6 +168,65 @@ fn verbosity_filter(verbose: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_command_needs_lock_mutating_commands() {
+        use clap::Parser;
+        let cases = [
+            vec!["voom", "scan", "/media"],
+            vec!["voom", "process", "/media"],
+            vec!["voom", "serve"],
+            vec!["voom", "db", "prune"],
+            vec!["voom", "jobs", "cancel", "abc"],
+            vec!["voom", "jobs", "retry", "abc"],
+            vec!["voom", "jobs", "clear"],
+        ];
+        for args in &cases {
+            let cli = Cli::parse_from(args);
+            assert!(
+                command_needs_lock(&cli.command),
+                "expected lock for: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_command_needs_lock_readonly_commands() {
+        use clap::Parser;
+        let cases = [
+            vec!["voom", "doctor"],
+            vec!["voom", "inspect", "f.mkv"],
+            vec!["voom", "report"],
+            vec!["voom", "status"],
+            vec!["voom", "jobs", "list"],
+            vec!["voom", "jobs", "status", "abc"],
+            vec!["voom", "files", "list"],
+            vec!["voom", "history", "f.mkv"],
+        ];
+        for args in &cases {
+            let cli = Cli::parse_from(args);
+            assert!(
+                !command_needs_lock(&cli.command),
+                "expected no lock for: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_force_flag_default_false() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["voom", "doctor"]);
+        assert!(!cli.force);
+    }
+
+    #[test]
+    fn test_force_flag_global() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["voom", "--force", "doctor"]);
+        assert!(cli.force);
+        let cli = Cli::parse_from(["voom", "scan", "/media", "--force"]);
+        assert!(cli.force);
+    }
 
     #[test]
     fn test_verbosity_mapping() {
