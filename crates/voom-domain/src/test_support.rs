@@ -229,6 +229,10 @@ impl FileStorage for InMemoryStore {
         Ok(())
     }
 
+    fn predecessor_of(&self, _successor_id: &Uuid) -> Result<Option<MediaFile>> {
+        Ok(None)
+    }
+
     fn mark_missing_paths(
         &self,
         discovered_paths: &[PathBuf],

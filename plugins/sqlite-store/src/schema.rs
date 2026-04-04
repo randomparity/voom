@@ -165,7 +165,6 @@ CREATE INDEX IF NOT EXISTS idx_event_log_type ON event_log(event_type);
 
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 CREATE INDEX IF NOT EXISTS idx_files_hash ON files(content_hash);
-CREATE INDEX IF NOT EXISTS idx_files_superseded_by ON files(superseded_by);
 CREATE INDEX IF NOT EXISTS idx_tracks_file ON tracks(file_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, priority);
 CREATE INDEX IF NOT EXISTS idx_plans_file ON plans(file_id);
