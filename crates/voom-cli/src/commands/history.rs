@@ -12,9 +12,17 @@ pub fn run(args: HistoryArgs) -> Result<()> {
 
     let path = args.file.canonicalize().unwrap_or(args.file.clone());
 
-    let transitions = store
-        .transitions_for_path(&path)
-        .map_err(|e| anyhow::anyhow!("failed to retrieve transitions: {e}"))?;
+    // Look up by file identity first to capture lineage across renames.
+    // Fall back to path-based lookup for files not in the database
+    // (e.g., deleted files where only transition records remain).
+    let transitions = match store.file_by_path(&path) {
+        Ok(Some(file)) => store
+            .transitions_for_file(&file.id)
+            .map_err(|e| anyhow::anyhow!("failed to retrieve transitions: {e}"))?,
+        _ => store
+            .transitions_for_path(&path)
+            .map_err(|e| anyhow::anyhow!("failed to retrieve transitions: {e}"))?,
+    };
 
     if transitions.is_empty() {
         if args.format.is_machine() {
