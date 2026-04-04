@@ -94,7 +94,7 @@ async fn main() -> Result<()> {
 fn command_needs_lock(command: &Commands) -> bool {
     use cli::{BackupCommands, FilesCommands, JobsCommands};
     match command {
-        Commands::Scan(_) | Commands::Process(_) | Commands::Serve(_) | Commands::Db(_) => true,
+        Commands::Scan(_) | Commands::Process(_) | Commands::Db(_) => true,
         Commands::Jobs(sub) => matches!(
             sub,
             JobsCommands::Cancel { .. } | JobsCommands::Retry { .. } | JobsCommands::Clear { .. }
@@ -180,7 +180,6 @@ mod tests {
         let cases = [
             vec!["voom", "scan", "/media"],
             vec!["voom", "process", "/media"],
-            vec!["voom", "serve"],
             vec!["voom", "db", "prune"],
             vec!["voom", "jobs", "cancel", "abc"],
             vec!["voom", "jobs", "retry", "abc"],
@@ -206,6 +205,7 @@ mod tests {
             vec!["voom", "inspect", "f.mkv"],
             vec!["voom", "report"],
             vec!["voom", "status"],
+            vec!["voom", "serve"],
             vec!["voom", "jobs", "list"],
             vec!["voom", "jobs", "status", "abc"],
             vec!["voom", "files", "list"],

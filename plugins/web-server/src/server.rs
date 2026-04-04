@@ -19,6 +19,7 @@ pub struct ServerConfig {
     pub template_dir: Option<String>,
     pub auth_token: Option<String>,
     pub plugin_info: Vec<crate::api::plugins::PluginInfoResponse>,
+    pub data_dir: Option<std::path::PathBuf>,
 }
 
 impl ServerConfig {
@@ -30,6 +31,7 @@ impl ServerConfig {
             template_dir: None,
             auth_token: None,
             plugin_info: Vec::new(),
+            data_dir: None,
         }
     }
 }
@@ -60,8 +62,8 @@ pub async fn start_server(
     }
 
     let templates = load_templates(config.template_dir.as_deref())?;
-    let state =
-        AppState::new(store, templates, config.auth_token).with_plugin_info(config.plugin_info);
+    let state = AppState::new(store, templates, config.auth_token, config.data_dir)
+        .with_plugin_info(config.plugin_info);
     let router = build_router(state).layer(DefaultBodyLimit::max(2 * 1024 * 1024)); // 2 MiB
 
     let address = format!("{}:{}", config.host, config.port);
@@ -160,6 +162,7 @@ mod tests {
             template_dir: None,
             auth_token: Some("secret".into()),
             plugin_info: vec![],
+            data_dir: None,
         };
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 8080);
@@ -175,6 +178,7 @@ mod tests {
             template_dir: Some("/tmp/templates".into()),
             auth_token: None,
             plugin_info: vec![],
+            data_dir: None,
         };
         let cloned = config.clone();
         assert_eq!(cloned.host, "0.0.0.0");

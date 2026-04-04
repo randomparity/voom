@@ -41,6 +41,10 @@ subtle = "2"
 # Rate limiting
 governor = { workspace = true }
 
+# File locking (used by delete_file handler to acquire the process lock)
+fs2 = "0.4"
+anyhow.workspace = true
+
 # Errors & logging
 thiserror.workspace = true
 tracing.workspace = true

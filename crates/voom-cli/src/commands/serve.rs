@@ -105,6 +105,7 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     let mut server_config = ServerConfig::new(args.host, args.port);
     server_config.auth_token = config.auth_token;
     server_config.plugin_info = plugin_info;
+    server_config.data_dir = Some(config.data_dir.clone());
 
     let shutdown = async move { token.cancelled().await };
     start_server(server_config, store, shutdown).await?;

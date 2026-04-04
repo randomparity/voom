@@ -43,6 +43,7 @@ pub struct AppState {
     auth_token: Option<String>,
     pub sse_client_count: Arc<AtomicU32>,
     pub plugin_info: Arc<Vec<crate::api::plugins::PluginInfoResponse>>,
+    pub data_dir: Option<std::path::PathBuf>,
 }
 
 impl AppState {
@@ -50,6 +51,7 @@ impl AppState {
         store: Arc<dyn StorageTrait>,
         templates: tera::Tera,
         auth_token: Option<String>,
+        data_dir: Option<std::path::PathBuf>,
     ) -> Self {
         let (sse_tx, _) = broadcast::channel(256);
         Self {
@@ -59,6 +61,7 @@ impl AppState {
             auth_token,
             sse_client_count: Arc::new(AtomicU32::new(0)),
             plugin_info: Arc::new(Vec::new()),
+            data_dir,
         }
     }
 
@@ -98,7 +101,7 @@ pub(crate) fn make_test_state(auth_token: Option<String>) -> AppState {
     use voom_domain::test_support::InMemoryStore;
     let store = Arc::new(InMemoryStore::new());
     let templates = tera::Tera::default();
-    AppState::new(store, templates, auth_token)
+    AppState::new(store, templates, auth_token, None)
 }
 
 #[cfg(test)]
