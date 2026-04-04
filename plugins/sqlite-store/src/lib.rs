@@ -10,7 +10,7 @@ use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
 use voom_domain::storage::{
     BadFileStorage, EventLogRecord, EventLogStorage, FileStorage, HealthCheckRecord,
-    HealthCheckStorage, PlanStorage, PluginDataStorage,
+    HealthCheckStorage, PendingOpsStorage, PlanStorage, PluginDataStorage,
 };
 use voom_kernel::{Plugin, PluginContext};
 
@@ -98,6 +98,21 @@ impl Plugin for SqliteStorePlugin {
                 store.upsert_bad_file(&bad_file)?;
                 tracing::info!(path = %e.path.display(), error = %e.error, "stored bad file");
             }
+            Event::PlanExecuting(e) => {
+                let op = voom_domain::storage::PendingOperation {
+                    id: e.plan_id,
+                    file_path: e.path.clone(),
+                    phase_name: e.phase_name.clone(),
+                    started_at: chrono::Utc::now(),
+                };
+                if let Err(err) = store.insert_pending_op(&op) {
+                    tracing::warn!(
+                        error = %err,
+                        plan_id = %e.plan_id,
+                        "failed to insert pending operation"
+                    );
+                }
+            }
             // sqlite-store runs at priority 100, so executors (priority 39/40)
             // have already processed the plan by the time we record it here.
             // This is audit-after-execution by design, not a race condition.
@@ -109,6 +124,13 @@ impl Plugin for SqliteStorePlugin {
                 tracing::info!(path = %e.path.display(), phase = %e.phase_name, "plan completed");
                 store
                     .update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Completed)?;
+                if let Err(err) = store.delete_pending_op(&e.plan_id) {
+                    tracing::warn!(
+                        error = %err,
+                        plan_id = %e.plan_id,
+                        "failed to delete pending operation on completion"
+                    );
+                }
             }
             Event::PlanSkipped(e) => {
                 tracing::info!(
@@ -122,6 +144,13 @@ impl Plugin for SqliteStorePlugin {
             Event::PlanFailed(e) => {
                 tracing::info!(path = %e.path.display(), phase = %e.phase_name, error = %e.error, "plan failed");
                 store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Failed)?;
+                if let Err(err) = store.delete_pending_op(&e.plan_id) {
+                    tracing::warn!(
+                        error = %err,
+                        plan_id = %e.plan_id,
+                        "failed to delete pending operation on failure"
+                    );
+                }
             }
             Event::MetadataEnriched(e) => {
                 let key = format!("metadata:{}", e.path.display());
