@@ -276,6 +276,56 @@ fn parse_max_height(spec: &str) -> Option<u32> {
     }
 }
 
+/// Resolve the effective HW acceleration config for a transcode action.
+///
+/// Per-action `hw` overrides take precedence over the system-wide config.
+/// Returns `None` when the action explicitly requests `hw: "none"`.
+fn resolve_effective_hw<'a>(
+    settings: &voom_domain::plan::TranscodeSettings,
+    hw_accel: Option<&'a HwAccelConfig>,
+    owned_config: &'a mut Option<HwAccelConfig>,
+) -> Option<&'a HwAccelConfig> {
+    match settings.hw.as_deref() {
+        Some("none") => None,
+        Some(backend) => {
+            let cfg = hwaccel::config_from_backend_with_system(backend, hw_accel);
+            if cfg.enabled() {
+                *owned_config = Some(cfg);
+                owned_config.as_ref()
+            } else {
+                hw_accel
+            }
+        }
+        None => hw_accel,
+    }
+}
+
+/// Build the list of video filters from transcode settings.
+///
+/// Combines scale (from `max_resolution`) and tonemap (from `hdr_mode`)
+/// filters into a single list suitable for joining with commas.
+fn collect_video_filters(settings: &voom_domain::plan::TranscodeSettings) -> Vec<String> {
+    let mut filters: Vec<String> = Vec::new();
+
+    if let Some(ref max_res) = settings.max_resolution {
+        if let Some(max_h) = parse_max_height(max_res) {
+            let algo = settings.scale_algorithm.as_deref().unwrap_or("lanczos");
+            filters.push(format!("scale=-2:'min(ih,{max_h})':flags={algo}"));
+        }
+    }
+
+    if settings.hdr_mode.as_deref() == Some("tonemap") {
+        filters.push(
+            "zscale=t=linear:npl=100,format=gbrpf32le,\
+             zscale=p=bt709,tonemap=hable:desat=0,\
+             zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+                .to_string(),
+        );
+    }
+
+    filters
+}
+
 fn apply_transcode_video(
     mut cmd: FfmpegCommand,
     action: &PlannedAction,
@@ -285,23 +335,8 @@ fn apply_transcode_video(
         return Ok(cmd);
     };
 
-    // Resolve effective HW config: per-action override or system-wide.
-    // Per-action overrides inherit validated encoders from the system
-    // config so we don't bypass startup validation.
-    let effective_config: Option<HwAccelConfig>;
-    let effective_hw: Option<&HwAccelConfig> = match settings.hw.as_deref() {
-        Some("none") => None,
-        Some(backend) => {
-            let cfg = hwaccel::config_from_backend_with_system(backend, hw_accel);
-            if cfg.enabled() {
-                effective_config = Some(cfg);
-                effective_config.as_ref()
-            } else {
-                hw_accel
-            }
-        }
-        None => hw_accel,
-    };
+    let mut owned_config: Option<HwAccelConfig> = None;
+    let effective_hw = resolve_effective_hw(settings, hw_accel, &mut owned_config);
 
     // Check hw_fallback: when false, error if HW encoder isn't available
     let hw_requested = settings.hw.as_deref().is_some_and(|v| v != "none");
@@ -355,26 +390,7 @@ fn apply_transcode_video(
         cmd = cmd.arg("-b:v").arg(brate);
     }
 
-    // Collect video filters — ffmpeg only accepts one `-vf` argument,
-    // so multiple filters must be combined with commas.
-    let mut filters: Vec<String> = Vec::new();
-
-    if let Some(ref max_res) = settings.max_resolution {
-        if let Some(max_h) = parse_max_height(max_res) {
-            let algo = settings.scale_algorithm.as_deref().unwrap_or("lanczos");
-            filters.push(format!("scale=-2:'min(ih,{max_h})':flags={algo}"));
-        }
-    }
-
-    if settings.hdr_mode.as_deref() == Some("tonemap") {
-        filters.push(
-            "zscale=t=linear:npl=100,format=gbrpf32le,\
-             zscale=p=bt709,tonemap=hable:desat=0,\
-             zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
-                .to_string(),
-        );
-    }
-
+    let filters = collect_video_filters(settings);
     if !filters.is_empty() {
         cmd = cmd.video_filter(&filters.join(","));
     }

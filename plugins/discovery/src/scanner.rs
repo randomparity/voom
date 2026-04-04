@@ -168,25 +168,18 @@ fn hash_file_full(file: &mut fs::File) -> Result<String> {
     Ok(format!("{:016x}", hasher.digest()))
 }
 
-/// Scan a directory for media files.
-pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>> {
-    if !options.root.exists() {
-        return Err(VoomError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("directory not found: {}", options.root.display()),
-        )));
-    }
-
+/// Walk a directory tree collecting media file paths and sizes.
+///
+/// Returns the collected `(path, size)` pairs and the count of orphaned
+/// voom temp files that were skipped. Reports progress via `on_progress`.
+fn walk_media_files(options: &ScanOptions) -> (Vec<(PathBuf, u64)>, usize) {
     let walker = if options.recursive {
         WalkDir::new(&options.root).follow_links(false)
     } else {
         WalkDir::new(&options.root).max_depth(1).follow_links(false)
     };
 
-    // Collect media file paths with sizes, reporting progress as we discover them.
-    // Size is captured from walkdir metadata so it's available even if the file
-    // disappears before hashing.
-    let mut media_paths: Vec<(std::path::PathBuf, u64)> = Vec::new();
+    let mut media_paths: Vec<(PathBuf, u64)> = Vec::new();
     let mut orphaned_temp_count: usize = 0;
     for entry in walker.into_iter().filter_map(|e| {
         e.map_err(|err| {
@@ -227,6 +220,20 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
         }
     }
 
+    (media_paths, orphaned_temp_count)
+}
+
+/// Scan a directory for media files.
+pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>> {
+    if !options.root.exists() {
+        return Err(VoomError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("directory not found: {}", options.root.display()),
+        )));
+    }
+
+    let (media_paths, _orphaned) = walk_media_files(options);
+
     tracing::info!(
         root = %options.root.display(),
         count = media_paths.len(),
@@ -239,7 +246,7 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
 
     // Process files in parallel using rayon, with a semaphore to limit
     // concurrent open file descriptors during hashing.
-    let process_file = |(path, walk_size): &(std::path::PathBuf, u64)| {
+    let process_file = |(path, walk_size): &(PathBuf, u64)| {
         let _guard = fd_sem.guard();
         let result = build_event(path, *walk_size, options.hash_files);
         let current = processed.fetch_add(1, Ordering::Relaxed) + 1;
