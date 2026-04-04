@@ -323,41 +323,46 @@ fn format_condition(cond: &ConditionNode, out: &mut String) {
         ConditionNode::AudioIsMultiLanguage => out.push_str("audio_is_multi_language"),
         ConditionNode::IsDubbed => out.push_str("is_dubbed"),
         ConditionNode::IsOriginal => out.push_str("is_original"),
-        ConditionNode::And(items) => {
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(" and ");
-                }
-                let needs_parens = matches!(item, ConditionNode::Or(_));
-                if needs_parens {
-                    out.push('(');
-                }
-                format_condition(item, out);
-                if needs_parens {
-                    out.push(')');
-                }
-            }
+        ConditionNode::And(items) => format_and_condition(items, out),
+        ConditionNode::Or(items) => format_or_condition(items, out),
+        ConditionNode::Not(inner) => format_not_condition(inner, out),
+    }
+}
+
+fn format_and_condition(items: &[ConditionNode], out: &mut String) {
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push_str(" and ");
         }
-        ConditionNode::Or(items) => {
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(" or ");
-                }
-                format_condition(item, out);
-            }
+        let needs_parens = matches!(item, ConditionNode::Or(_));
+        if needs_parens {
+            out.push('(');
         }
-        ConditionNode::Not(inner) => {
-            out.push_str("not ");
-            let needs_parens =
-                matches!(inner.as_ref(), ConditionNode::And(_) | ConditionNode::Or(_));
-            if needs_parens {
-                out.push('(');
-            }
-            format_condition(inner, out);
-            if needs_parens {
-                out.push(')');
-            }
+        format_condition(item, out);
+        if needs_parens {
+            out.push(')');
         }
+    }
+}
+
+fn format_or_condition(items: &[ConditionNode], out: &mut String) {
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push_str(" or ");
+        }
+        format_condition(item, out);
+    }
+}
+
+fn format_not_condition(inner: &ConditionNode, out: &mut String) {
+    out.push_str("not ");
+    let needs_parens = matches!(inner, ConditionNode::And(_) | ConditionNode::Or(_));
+    if needs_parens {
+        out.push('(');
+    }
+    format_condition(inner, out);
+    if needs_parens {
+        out.push(')');
     }
 }
 
@@ -375,31 +380,19 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
             let _ = write!(out, "lang in [{}]", langs.join(", "));
         }
         FilterNode::LangCompare(op, lang) => {
-            out.push_str("lang ");
-            format_compare_op(op, out);
-            out.push(' ');
-            out.push_str(lang);
+            format_field_compare("lang", op, lang, out);
         }
         FilterNode::LangField(op, path) => {
-            out.push_str("lang ");
-            format_compare_op(op, out);
-            out.push(' ');
-            out.push_str(&path.join("."));
+            format_field_compare("lang", op, &path.join("."), out);
         }
         FilterNode::CodecIn(codecs) => {
             let _ = write!(out, "codec in [{}]", codecs.join(", "));
         }
         FilterNode::CodecCompare(op, codec) => {
-            out.push_str("codec ");
-            format_compare_op(op, out);
-            out.push(' ');
-            out.push_str(codec);
+            format_field_compare("codec", op, codec, out);
         }
         FilterNode::CodecField(op, path) => {
-            out.push_str("codec ");
-            format_compare_op(op, out);
-            out.push(' ');
-            out.push_str(&path.join("."));
+            format_field_compare("codec", op, &path.join("."), out);
         }
         FilterNode::Channels(op, val) => {
             out.push_str("channels ");
@@ -417,40 +410,54 @@ fn format_filter(filter: &FilterNode, out: &mut String) {
         FilterNode::TitleMatches(s) => {
             let _ = write!(out, "title matches \"{}\"", escape_string(s));
         }
-        FilterNode::And(items) => {
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(" and ");
-                }
-                let needs_parens = matches!(item, FilterNode::Or(_));
-                if needs_parens {
-                    out.push('(');
-                }
-                format_filter(item, out);
-                if needs_parens {
-                    out.push(')');
-                }
-            }
+        FilterNode::And(items) => format_filter_and(items, out),
+        FilterNode::Or(items) => format_filter_or(items, out),
+        FilterNode::Not(inner) => format_filter_not(inner, out),
+    }
+}
+
+fn format_field_compare(field: &str, op: &CompareOp, value: &str, out: &mut String) {
+    out.push_str(field);
+    out.push(' ');
+    format_compare_op(op, out);
+    out.push(' ');
+    out.push_str(value);
+}
+
+fn format_filter_and(items: &[FilterNode], out: &mut String) {
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push_str(" and ");
         }
-        FilterNode::Or(items) => {
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(" or ");
-                }
-                format_filter(item, out);
-            }
+        let needs_parens = matches!(item, FilterNode::Or(_));
+        if needs_parens {
+            out.push('(');
         }
-        FilterNode::Not(inner) => {
-            out.push_str("not ");
-            let needs_parens = matches!(inner.as_ref(), FilterNode::And(_) | FilterNode::Or(_));
-            if needs_parens {
-                out.push('(');
-            }
-            format_filter(inner, out);
-            if needs_parens {
-                out.push(')');
-            }
+        format_filter(item, out);
+        if needs_parens {
+            out.push(')');
         }
+    }
+}
+
+fn format_filter_or(items: &[FilterNode], out: &mut String) {
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push_str(" or ");
+        }
+        format_filter(item, out);
+    }
+}
+
+fn format_filter_not(inner: &FilterNode, out: &mut String) {
+    out.push_str("not ");
+    let needs_parens = matches!(inner, FilterNode::And(_) | FilterNode::Or(_));
+    if needs_parens {
+        out.push('(');
+    }
+    format_filter(inner, out);
+    if needs_parens {
+        out.push(')');
     }
 }
 
