@@ -83,6 +83,9 @@ pub trait FileStorage: Send + Sync {
     /// Find the file that was superseded by the given file (predecessor lookup).
     /// Returns the file whose `superseded_by` field equals `successor_id`.
     fn predecessor_of(&self, successor_id: &Uuid) -> Result<Option<MediaFile>>;
+    /// Lightweight predecessor lookup — returns only the UUID, no tracks.
+    /// Used by lineage chain walking where only the ID is needed.
+    fn predecessor_id_of(&self, successor_id: &Uuid) -> Result<Option<Uuid>>;
 }
 
 /// Job queue operations.

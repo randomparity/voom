@@ -233,6 +233,10 @@ impl FileStorage for InMemoryStore {
         Ok(None)
     }
 
+    fn predecessor_id_of(&self, _successor_id: &Uuid) -> Result<Option<Uuid>> {
+        Ok(None)
+    }
+
     fn mark_missing_paths(
         &self,
         discovered_paths: &[PathBuf],
