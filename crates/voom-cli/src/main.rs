@@ -92,12 +92,17 @@ async fn main() -> Result<()> {
 ///
 /// Read-only commands (report, status, history, inspect, etc.) skip the lock.
 fn command_needs_lock(command: &Commands) -> bool {
-    use cli::JobsCommands;
+    use cli::{BackupCommands, FilesCommands, JobsCommands};
     match command {
         Commands::Scan(_) | Commands::Process(_) | Commands::Serve(_) | Commands::Db(_) => true,
         Commands::Jobs(sub) => matches!(
             sub,
             JobsCommands::Cancel { .. } | JobsCommands::Retry { .. } | JobsCommands::Clear { .. }
+        ),
+        Commands::Files(sub) => matches!(sub, FilesCommands::Delete { .. }),
+        Commands::Backup(sub) => matches!(
+            sub,
+            BackupCommands::Restore { .. } | BackupCommands::Cleanup { .. }
         ),
         _ => false,
     }
@@ -180,6 +185,9 @@ mod tests {
             vec!["voom", "jobs", "cancel", "abc"],
             vec!["voom", "jobs", "retry", "abc"],
             vec!["voom", "jobs", "clear"],
+            vec!["voom", "files", "delete", "abc"],
+            vec!["voom", "backup", "restore", "/tmp/f.vbak"],
+            vec!["voom", "backup", "cleanup", "/tmp"],
         ];
         for args in &cases {
             let cli = Cli::parse_from(args);
@@ -201,6 +209,8 @@ mod tests {
             vec!["voom", "jobs", "list"],
             vec!["voom", "jobs", "status", "abc"],
             vec!["voom", "files", "list"],
+            vec!["voom", "files", "show", "abc"],
+            vec!["voom", "backup", "list", "/tmp"],
             vec!["voom", "history", "f.mkv"],
         ];
         for args in &cases {
