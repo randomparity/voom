@@ -324,16 +324,18 @@ fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>, warnings: &mut 
         }
     }
 
-    // Detect set_tag / delete_tag conflicts
+    check_tag_conflicts(phase, errors);
+    check_track_conflicts(phase, &kept_targets, &removed_targets, errors);
+}
+
+fn check_tag_conflicts(phase: &PhaseNode, errors: &mut Vec<DslError>) {
     let mut set_tag_keys: HashSet<&str> = HashSet::new();
     let mut delete_tag_keys: HashSet<&str> = HashSet::new();
-    let mut has_clear_tags = false;
     let mut clear_tags_index: Option<usize> = None;
 
     for (i, spanned_op) in phase.operations.iter().enumerate() {
         match &spanned_op.node {
             OperationNode::ClearTags => {
-                has_clear_tags = true;
                 clear_tags_index = Some(i);
             }
             OperationNode::SetTag { tag, .. } => {
@@ -360,27 +362,34 @@ fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>, warnings: &mut 
     }
 
     // Warn if set_tag appears before clear_tags (clear will undo the set)
-    if has_clear_tags && !set_tag_keys.is_empty() {
-        let clear_idx = clear_tags_index.unwrap();
-        for (i, spanned_op) in phase.operations.iter().enumerate() {
-            if let OperationNode::SetTag { tag, .. } = &spanned_op.node {
-                if i < clear_idx {
-                    errors.push(DslError::validation(
-                        spanned_op.span.line,
-                        spanned_op.span.col,
-                        format!(
-                            "set_tag \"{tag}\" appears before clear_tags and will be overwritten"
-                        ),
-                    ));
+    if let Some(clear_idx) = clear_tags_index {
+        if !set_tag_keys.is_empty() {
+            for (i, spanned_op) in phase.operations.iter().enumerate() {
+                if let OperationNode::SetTag { tag, .. } = &spanned_op.node {
+                    if i < clear_idx {
+                        errors.push(DslError::validation(
+                            spanned_op.span.line,
+                            spanned_op.span.col,
+                            format!(
+                                "set_tag \"{tag}\" appears before clear_tags and will be overwritten"
+                            ),
+                        ));
+                    }
                 }
             }
         }
     }
+}
 
-    // Check for unfiltered keep+remove on the same broad target category
-    for &(target, keep_filtered) in &kept_targets {
+fn check_track_conflicts(
+    phase: &PhaseNode,
+    kept_targets: &[(&str, bool)],
+    removed_targets: &[(&str, bool)],
+    errors: &mut Vec<DslError>,
+) {
+    for &(target, keep_filtered) in kept_targets {
         let broad_category = broad_track_category(target);
-        for &(removed, remove_filtered) in &removed_targets {
+        for &(removed, remove_filtered) in removed_targets {
             if broad_track_category(removed) == broad_category && !keep_filtered && !remove_filtered
             {
                 errors.push(DslError::validation(
@@ -436,47 +445,10 @@ fn validate_operation(
             codec,
             settings,
         } => {
-            validate_track_target(target, line, col, errors);
-            validate_codec(codec, line, col, errors);
-            validate_codec_track_type(target, codec, line, col, errors);
-            for (_, val) in settings {
-                validate_value(val, line, col, errors);
-            }
-            validate_transcode_keys(settings, line, col, errors);
-            validate_hw_settings(settings, line, col, errors);
-            if target == "video" {
-                validate_video_transcode_settings(settings, line, col, errors);
-            } else {
-                reject_video_only_keys(settings, target, line, col, errors);
-            }
+            validate_transcode_operation(target, codec, settings, line, col, errors);
         }
         OperationNode::Synthesize { settings, .. } => {
-            for setting in settings {
-                match setting {
-                    SynthSetting::Codec(c) => validate_codec(c, line, col, errors),
-                    SynthSetting::Language(lang) => {
-                        if lang != "inherit" && !language::is_valid_language(lang) {
-                            errors.push(DslError::validation(
-                                line,
-                                col,
-                                format!("unknown language code \"{lang}\""),
-                            ));
-                        }
-                    }
-                    SynthSetting::Source(f) | SynthSetting::SkipIfExists(f) => {
-                        validate_filter(f, line, col, errors, warnings);
-                    }
-                    SynthSetting::Channels(v) => {
-                        validate_synth_channels(v, line, col, errors);
-                    }
-                    SynthSetting::Position(v) => {
-                        validate_synth_position(v, line, col, errors);
-                    }
-                    SynthSetting::Bitrate(_)
-                    | SynthSetting::Title(_)
-                    | SynthSetting::CreateIf(_) => {}
-                }
-            }
+            validate_synthesize_operation(settings, line, col, errors, warnings);
         }
         OperationNode::When(when) => {
             validate_when(when, errors, warnings);
@@ -569,6 +541,62 @@ fn validate_operation(
     }
 }
 
+fn validate_transcode_operation(
+    target: &str,
+    codec: &str,
+    settings: &[(String, Value)],
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    validate_track_target(target, line, col, errors);
+    validate_codec(codec, line, col, errors);
+    validate_codec_track_type(target, codec, line, col, errors);
+    for (_, val) in settings {
+        validate_value(val, line, col, errors);
+    }
+    validate_transcode_keys(settings, line, col, errors);
+    validate_hw_settings(settings, line, col, errors);
+    if target == "video" {
+        validate_video_transcode_settings(settings, line, col, errors);
+    } else {
+        reject_video_only_keys(settings, target, line, col, errors);
+    }
+}
+
+fn validate_synthesize_operation(
+    settings: &[SynthSetting],
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+    warnings: &mut Vec<DslWarning>,
+) {
+    for setting in settings {
+        match setting {
+            SynthSetting::Codec(c) => validate_codec(c, line, col, errors),
+            SynthSetting::Language(lang) => {
+                if lang != "inherit" && !language::is_valid_language(lang) {
+                    errors.push(DslError::validation(
+                        line,
+                        col,
+                        format!("unknown language code \"{lang}\""),
+                    ));
+                }
+            }
+            SynthSetting::Source(f) | SynthSetting::SkipIfExists(f) => {
+                validate_filter(f, line, col, errors, warnings);
+            }
+            SynthSetting::Channels(v) => {
+                validate_synth_channels(v, line, col, errors);
+            }
+            SynthSetting::Position(v) => {
+                validate_synth_position(v, line, col, errors);
+            }
+            SynthSetting::Bitrate(_) | SynthSetting::Title(_) | SynthSetting::CreateIf(_) => {}
+        }
+    }
+}
+
 fn validate_track_target(target: &str, line: usize, col: usize, errors: &mut Vec<DslError>) {
     let valid = [
         "video",
@@ -643,14 +671,7 @@ fn validate_field_path(
             // Only warn when the name is close to a known plugin (likely typo).
             // Names far from all known plugins are assumed to be WASM plugins
             // and should not trigger a warning.
-            let mut best: Option<(&str, usize)> = None;
-            for &known in KNOWN_PLUGIN_NAMES {
-                let dist = edit_distance(plugin_name, known);
-                if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
-                    best = Some((known, dist));
-                }
-            }
-            if let Some((suggestion, _)) = best {
+            if let Some(suggestion) = suggest_from(plugin_name, KNOWN_PLUGIN_NAMES) {
                 warnings.push(DslWarning::new(
                     line,
                     col,
@@ -789,37 +810,14 @@ fn validate_transcode_keys(
             ));
             continue;
         }
-        if !KNOWN_TRANSCODE_KEYS.contains(&key.as_str()) {
-            let mut best: Option<(&str, usize)> = None;
-            for &known in KNOWN_TRANSCODE_KEYS {
-                let dist = edit_distance(key, known);
-                if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
-                    best = Some((known, dist));
-                }
-            }
-            if let Some((suggestion, _)) = best {
-                errors.push(DslError::validation_with_suggestion(
-                    line,
-                    col,
-                    format!(
-                        "unknown transcode setting \"{key}\", \
-                         expected one of: {}",
-                        KNOWN_TRANSCODE_KEYS.join(", ")
-                    ),
-                    format!("did you mean \"{suggestion}\"?"),
-                ));
-            } else {
-                errors.push(DslError::validation(
-                    line,
-                    col,
-                    format!(
-                        "unknown transcode setting \"{key}\", \
-                         expected one of: {}",
-                        KNOWN_TRANSCODE_KEYS.join(", ")
-                    ),
-                ));
-            }
-        }
+        validate_ident_against(
+            key,
+            "transcode setting",
+            KNOWN_TRANSCODE_KEYS,
+            line,
+            col,
+            errors,
+        );
     }
 }
 
@@ -862,6 +860,81 @@ fn validate_codec_track_type(
 }
 
 const VALID_HW_VALUES: &[&str] = &["auto", "nvenc", "qsv", "vaapi", "videotoolbox", "none"];
+
+/// Find the best did-you-mean suggestion from `known` values for `input`.
+/// Returns `Some(suggestion)` if a known value is within edit distance 3.
+fn suggest_from<'a>(input: &str, known: &[&'a str]) -> Option<&'a str> {
+    let mut best: Option<(&str, usize)> = None;
+    for &candidate in known {
+        let dist = edit_distance(input, candidate);
+        if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
+            best = Some((candidate, dist));
+        }
+    }
+    best.map(|(s, _)| s)
+}
+
+/// Validate an identifier against a known list, pushing an error with
+/// an optional did-you-mean suggestion.
+fn validate_ident_against(
+    input: &str,
+    kind: &str,
+    known: &[&str],
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    if known.contains(&input) {
+        return;
+    }
+    let known_list = known.join(", ");
+    let msg = format!("unknown {kind} \"{input}\", expected one of: {known_list}");
+    if let Some(suggestion) = suggest_from(input, known) {
+        errors.push(DslError::validation_with_suggestion(
+            line,
+            col,
+            msg,
+            format!("did you mean \"{suggestion}\"?"),
+        ));
+    } else {
+        errors.push(DslError::validation(line, col, msg));
+    }
+}
+
+/// Validate a Value that can be a named identifier or a numeric value.
+/// `number_check_fn` returns `Some(error_message)` if the number is invalid,
+/// or `None` if it's acceptable.
+fn validate_named_or_numeric(
+    val: &Value,
+    kind: &str,
+    known_names: &[&str],
+    number_check_fn: impl FnOnce(f64, &str) -> Option<String>,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    match val {
+        Value::Number(n, raw) => {
+            if let Some(msg) = number_check_fn(*n, raw) {
+                errors.push(DslError::validation(line, col, msg));
+            }
+        }
+        Value::Ident(s) => {
+            validate_ident_against(s, &format!("{kind} value"), known_names, line, col, errors);
+        }
+        _ => {
+            errors.push(DslError::validation(
+                line,
+                col,
+                format!(
+                    "invalid {kind} value, \
+                     expected a number or one of: {}",
+                    known_names.join(", ")
+                ),
+            ));
+        }
+    }
+}
 
 fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
@@ -1024,36 +1097,8 @@ fn validate_ident_setting(
         _ => None,
     };
     if let Some(name) = name {
-        if !valid.contains(&name) {
-            let valid_list = valid.join(", ");
-            let mut best: Option<(&str, usize)> = None;
-            for &v in valid {
-                let dist = edit_distance(name, v);
-                if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
-                    best = Some((v, dist));
-                }
-            }
-            if let Some((suggestion, _)) = best {
-                errors.push(DslError::validation_with_suggestion(
-                    line,
-                    col,
-                    format!(
-                        "unknown {key} value \"{name}\", \
-                         expected one of: {valid_list}"
-                    ),
-                    format!("did you mean \"{suggestion}\"?"),
-                ));
-            } else {
-                errors.push(DslError::validation(
-                    line,
-                    col,
-                    format!(
-                        "unknown {key} value \"{name}\", \
-                         expected one of: {valid_list}"
-                    ),
-                ));
-            }
-        }
+        let kind = format!("{key} value");
+        validate_ident_against(name, &kind, valid, line, col, errors);
     } else {
         errors.push(DslError::validation(
             line,
@@ -1076,152 +1121,64 @@ const KNOWN_CHANNEL_NAMES: &[&str] = &["mono", "stereo", "5.1", "surround", "7.1
 const KNOWN_POSITION_NAMES: &[&str] = &["after_source", "last", "beginning"];
 
 fn validate_synth_channels(val: &Value, line: usize, col: usize, errors: &mut Vec<DslError>) {
-    match val {
-        Value::Number(n, raw) => {
+    validate_named_or_numeric(
+        val,
+        "channels",
+        KNOWN_CHANNEL_NAMES,
+        |n, raw| {
             if raw == "5.1" || raw == "7.1" {
-                return;
+                return None;
             }
             if has_number_suffix(raw) {
-                errors.push(DslError::validation(
-                    line,
-                    col,
-                    format!(
-                        "invalid channels value \"{raw}\", \
-                         suffixed numbers are not valid here; \
-                         expected a positive integer or one of: {}",
-                        KNOWN_CHANNEL_NAMES.join(", ")
-                    ),
-                ));
-            } else if n.fract() != 0.0 || *n <= 0.0 || *n > f64::from(u32::MAX) {
-                errors.push(DslError::validation(
-                    line,
-                    col,
-                    format!(
-                        "invalid channels value \"{raw}\", \
-                         expected a positive integer or one of: {}",
-                        KNOWN_CHANNEL_NAMES.join(", ")
-                    ),
-                ));
-            }
-        }
-        Value::Ident(s) => {
-            if !KNOWN_CHANNEL_NAMES.contains(&s.as_str()) {
-                let mut best: Option<(&str, usize)> = None;
-                for &known in KNOWN_CHANNEL_NAMES {
-                    let dist = edit_distance(s, known);
-                    if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
-                        best = Some((known, dist));
-                    }
-                }
-                if let Some((suggestion, _)) = best {
-                    errors.push(DslError::validation_with_suggestion(
-                        line,
-                        col,
-                        format!(
-                            "unknown channels value \"{s}\", \
-                             expected one of: {}",
-                            KNOWN_CHANNEL_NAMES.join(", ")
-                        ),
-                        format!("did you mean \"{suggestion}\"?"),
-                    ));
-                } else {
-                    errors.push(DslError::validation(
-                        line,
-                        col,
-                        format!(
-                            "unknown channels value \"{s}\", \
-                             expected one of: {}",
-                            KNOWN_CHANNEL_NAMES.join(", ")
-                        ),
-                    ));
-                }
-            }
-        }
-        _ => {
-            errors.push(DslError::validation(
-                line,
-                col,
-                format!(
-                    "invalid channels value, \
-                     expected a number or one of: {}",
+                return Some(format!(
+                    "invalid channels value \"{raw}\", \
+                     suffixed numbers are not valid here; \
+                     expected a positive integer or one of: {}",
                     KNOWN_CHANNEL_NAMES.join(", ")
-                ),
-            ));
-        }
-    }
+                ));
+            }
+            if n.fract() != 0.0 || n <= 0.0 || n > f64::from(u32::MAX) {
+                return Some(format!(
+                    "invalid channels value \"{raw}\", \
+                     expected a positive integer or one of: {}",
+                    KNOWN_CHANNEL_NAMES.join(", ")
+                ));
+            }
+            None
+        },
+        line,
+        col,
+        errors,
+    );
 }
 
 fn validate_synth_position(val: &Value, line: usize, col: usize, errors: &mut Vec<DslError>) {
-    match val {
-        Value::Number(n, raw) => {
+    validate_named_or_numeric(
+        val,
+        "position",
+        KNOWN_POSITION_NAMES,
+        |n, raw| {
             if has_number_suffix(raw) {
-                errors.push(DslError::validation(
-                    line,
-                    col,
-                    format!(
-                        "invalid position value \"{raw}\", \
-                         suffixed numbers are not valid here; \
-                         expected a non-negative integer or one of: {}",
-                        KNOWN_POSITION_NAMES.join(", ")
-                    ),
-                ));
-            } else if n.fract() != 0.0 || *n < 0.0 || *n > f64::from(u32::MAX) {
-                errors.push(DslError::validation(
-                    line,
-                    col,
-                    format!(
-                        "invalid position value \"{raw}\", \
-                         expected a non-negative integer or one of: {}",
-                        KNOWN_POSITION_NAMES.join(", ")
-                    ),
-                ));
-            }
-        }
-        Value::Ident(s) => {
-            if !KNOWN_POSITION_NAMES.contains(&s.as_str()) {
-                let mut best: Option<(&str, usize)> = None;
-                for &known in KNOWN_POSITION_NAMES {
-                    let dist = edit_distance(s, known);
-                    if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
-                        best = Some((known, dist));
-                    }
-                }
-                if let Some((suggestion, _)) = best {
-                    errors.push(DslError::validation_with_suggestion(
-                        line,
-                        col,
-                        format!(
-                            "unknown position value \"{s}\", \
-                             expected one of: {}",
-                            KNOWN_POSITION_NAMES.join(", ")
-                        ),
-                        format!("did you mean \"{suggestion}\"?"),
-                    ));
-                } else {
-                    errors.push(DslError::validation(
-                        line,
-                        col,
-                        format!(
-                            "unknown position value \"{s}\", \
-                             expected one of: {}",
-                            KNOWN_POSITION_NAMES.join(", ")
-                        ),
-                    ));
-                }
-            }
-        }
-        _ => {
-            errors.push(DslError::validation(
-                line,
-                col,
-                format!(
-                    "invalid position value, \
-                     expected a number or one of: {}",
+                return Some(format!(
+                    "invalid position value \"{raw}\", \
+                     suffixed numbers are not valid here; \
+                     expected a non-negative integer or one of: {}",
                     KNOWN_POSITION_NAMES.join(", ")
-                ),
-            ));
-        }
-    }
+                ));
+            }
+            if n.fract() != 0.0 || n < 0.0 || n > f64::from(u32::MAX) {
+                return Some(format!(
+                    "invalid position value \"{raw}\", \
+                     expected a non-negative integer or one of: {}",
+                    KNOWN_POSITION_NAMES.join(", ")
+                ));
+            }
+            None
+        },
+        line,
+        col,
+        errors,
+    );
 }
 
 const KNOWN_ACTIONS_KEYS: &[&str] = &["clear_all_default", "clear_all_forced", "clear_all_titles"];
@@ -1234,35 +1191,14 @@ fn validate_actions_settings(
 ) {
     for (key, val) in settings {
         if !KNOWN_ACTIONS_KEYS.contains(&key.as_str()) {
-            let mut best: Option<(&str, usize)> = None;
-            for &known in KNOWN_ACTIONS_KEYS {
-                let dist = edit_distance(key, known);
-                if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
-                    best = Some((known, dist));
-                }
-            }
-            if let Some((suggestion, _)) = best {
-                errors.push(DslError::validation_with_suggestion(
-                    line,
-                    col,
-                    format!(
-                        "unknown actions setting \"{key}\", \
-                         expected one of: {}",
-                        KNOWN_ACTIONS_KEYS.join(", ")
-                    ),
-                    format!("did you mean \"{suggestion}\"?"),
-                ));
-            } else {
-                errors.push(DslError::validation(
-                    line,
-                    col,
-                    format!(
-                        "unknown actions setting \"{key}\", \
-                         expected one of: {}",
-                        KNOWN_ACTIONS_KEYS.join(", ")
-                    ),
-                ));
-            }
+            validate_ident_against(
+                key,
+                "actions setting",
+                KNOWN_ACTIONS_KEYS,
+                line,
+                col,
+                errors,
+            );
         } else if !matches!(val, Value::Bool(_)) {
             errors.push(DslError::validation(
                 line,
