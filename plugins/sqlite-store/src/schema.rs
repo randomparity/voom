@@ -240,6 +240,20 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         Ok(columns.iter().any(|c| c == column))
     };
 
+    migrate_plans_columns(conn, &has_column)?;
+    migrate_files_columns(conn, &has_column)?;
+    migrate_transitions_table(conn)?;
+    migrate_missing_tables(conn)?;
+    migrate_indexes_and_constraints(conn)?;
+
+    Ok(())
+}
+
+/// Migrate plans table columns added after initial schema.
+fn migrate_plans_columns(
+    conn: &Connection,
+    has_column: &dyn Fn(&str, &str) -> rusqlite::Result<bool>,
+) -> rusqlite::Result<()> {
     if !has_column("plans", "skip_reason")? {
         conn.execute_batch("ALTER TABLE plans ADD COLUMN skip_reason TEXT")?;
     }
@@ -249,8 +263,14 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if !has_column("plans", "evaluated_at")? {
         conn.execute_batch("ALTER TABLE plans ADD COLUMN evaluated_at TEXT")?;
     }
+    Ok(())
+}
 
-    // Add new lifecycle columns to files table if missing.
+/// Migrate files table lifecycle columns added after initial schema.
+fn migrate_files_columns(
+    conn: &Connection,
+    has_column: &dyn Fn(&str, &str) -> rusqlite::Result<bool>,
+) -> rusqlite::Result<()> {
     if !has_column("files", "expected_hash")? {
         conn.execute_batch("ALTER TABLE files ADD COLUMN expected_hash TEXT")?;
     }
@@ -260,8 +280,11 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if !has_column("files", "missing_since")? {
         conn.execute_batch("ALTER TABLE files ADD COLUMN missing_since TEXT")?;
     }
+    Ok(())
+}
 
-    // Drop legacy file_history table if it exists; replace with file_transitions.
+/// Drop legacy `file_history` table and create `file_transitions` if needed.
+fn migrate_transitions_table(conn: &Connection) -> rusqlite::Result<()> {
     let has_file_history: bool = conn.query_row(
         "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='file_history'",
         [],
@@ -271,7 +294,6 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch("DROP TABLE IF EXISTS file_history")?;
     }
 
-    // Create file_transitions table if missing.
     let has_file_transitions: bool = conn.query_row(
         "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='file_transitions'",
         [],
@@ -296,14 +318,21 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             CREATE INDEX IF NOT EXISTS idx_transitions_source ON file_transitions(source);",
         )?;
     }
+    Ok(())
+}
 
-    // Create discovered_files table if missing (added in sprint 13).
-    let has_discovered: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='discovered_files'",
-        [],
-        |row| row.get(0),
-    )?;
-    if !has_discovered {
+/// Create tables that may be missing from older databases.
+fn migrate_missing_tables(conn: &Connection) -> rusqlite::Result<()> {
+    let table_missing = |name: &str| -> rusqlite::Result<bool> {
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
+            [name],
+            |row| row.get(0),
+        )?;
+        Ok(!exists)
+    };
+
+    if table_missing("discovered_files")? {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS discovered_files (
                 id TEXT PRIMARY KEY,
@@ -318,13 +347,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
-    // Create health_checks table if missing.
-    let has_health_checks: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='health_checks'",
-        [],
-        |row| row.get(0),
-    )?;
-    if !has_health_checks {
+    if table_missing("health_checks")? {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS health_checks (
                 id TEXT PRIMARY KEY,
@@ -338,13 +361,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
-    // Create event_log table if missing.
-    let has_event_log: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='event_log'",
-        [],
-        |row| row.get(0),
-    )?;
-    if !has_event_log {
+    if table_missing("event_log")? {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS event_log (
                 rowid INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -358,13 +375,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
-    // Create subtitles table if missing.
-    let has_subtitles: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='subtitles'",
-        [],
-        |row| row.get(0),
-    )?;
-    if !has_subtitles {
+    if table_missing("subtitles")? {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS subtitles (
                 id INTEGER PRIMARY KEY,
@@ -380,13 +391,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
-    // Create library_snapshots table if missing.
-    let has_snapshots: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='library_snapshots'",
-        [],
-        |row| row.get(0),
-    )?;
-    if !has_snapshots {
+    if table_missing("library_snapshots")? {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS library_snapshots (
                 id TEXT PRIMARY KEY,
@@ -402,13 +407,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
-    // Create pending_operations table if missing.
-    let has_pending_ops: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='pending_operations'",
-        [],
-        |row| row.get(0),
-    )?;
-    if !has_pending_ops {
+    if table_missing("pending_operations")? {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS pending_operations (
                 id TEXT PRIMARY KEY,
@@ -419,34 +418,38 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
-    // Create index on tracks(track_type) if missing.
-    let has_track_type_idx: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND name='idx_tracks_type'",
-        [],
-        |row| row.get(0),
-    )?;
-    if !has_track_type_idx {
+    Ok(())
+}
+
+/// Create missing indexes and add constraints to existing tables.
+fn migrate_indexes_and_constraints(conn: &Connection) -> rusqlite::Result<()> {
+    let has_index = |name: &str| -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND name=?1",
+            [name],
+            |row| row.get(0),
+        )
+    };
+
+    if !has_index("idx_tracks_type")? {
         conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tracks_type ON tracks(track_type);")?;
     }
 
     // Add UNIQUE constraint on subtitles(file_path, subtitle_path) for existing
     // databases that created the table before the constraint was added.
-    if has_subtitles {
-        let has_unique_idx: bool = conn.query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master \
-             WHERE type='index' AND name='idx_subtitles_unique'",
-            [],
-            |row| row.get(0),
+    let has_subtitles: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='subtitles'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_subtitles && !has_index("idx_subtitles_unique")? {
+        conn.execute_batch(
+            "DELETE FROM subtitles WHERE id NOT IN (
+                SELECT MIN(id) FROM subtitles GROUP BY file_path, subtitle_path
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_subtitles_unique \
+                ON subtitles(file_path, subtitle_path);",
         )?;
-        if !has_unique_idx {
-            conn.execute_batch(
-                "DELETE FROM subtitles WHERE id NOT IN (
-                    SELECT MIN(id) FROM subtitles GROUP BY file_path, subtitle_path
-                );
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_subtitles_unique \
-                    ON subtitles(file_path, subtitle_path);",
-            )?;
-        }
     }
 
     Ok(())

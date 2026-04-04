@@ -76,160 +76,19 @@ impl Plugin for SqliteStorePlugin {
         };
 
         match event {
-            Event::FileDiscovered(e) => {
-                let path_str = e.path.to_string_lossy();
-                store.upsert_discovered_file(&path_str, e.size, e.content_hash.as_deref())?;
-                tracing::info!(path = %e.path.display(), "stored discovered file");
-            }
-            Event::FileIntrospected(e) => {
-                store.upsert_file(&e.file)?;
-                // Auto-clear any bad file entry when introspection succeeds
-                store.delete_bad_file_by_path(&e.file.path)?;
-                tracing::info!(path = %e.file.path.display(), "stored introspected file");
-            }
-            Event::FileIntrospectionFailed(e) => {
-                let bad_file = voom_domain::bad_file::BadFile::new(
-                    e.path.clone(),
-                    e.size,
-                    e.content_hash.clone(),
-                    e.error.clone(),
-                    e.error_source,
-                );
-                store.upsert_bad_file(&bad_file)?;
-                tracing::info!(path = %e.path.display(), error = %e.error, "stored bad file");
-            }
-            Event::PlanExecuting(e) => {
-                let op = voom_domain::storage::PendingOperation {
-                    id: e.plan_id,
-                    file_path: e.path.clone(),
-                    phase_name: e.phase_name.clone(),
-                    started_at: chrono::Utc::now(),
-                };
-                if let Err(err) = store.insert_pending_op(&op) {
-                    tracing::warn!(
-                        error = %err,
-                        plan_id = %e.plan_id,
-                        "failed to insert pending operation"
-                    );
-                }
-            }
-            // sqlite-store runs at priority 100, so executors (priority 39/40)
-            // have already processed the plan by the time we record it here.
-            // This is audit-after-execution by design, not a race condition.
-            Event::PlanCreated(e) => {
-                let plan_id = store.save_plan(&e.plan)?;
-                tracing::info!(%plan_id, "stored plan");
-            }
-            Event::PlanCompleted(e) => {
-                tracing::info!(path = %e.path.display(), phase = %e.phase_name, "plan completed");
-                store
-                    .update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Completed)?;
-                if let Err(err) = store.delete_pending_op(&e.plan_id) {
-                    tracing::warn!(
-                        error = %err,
-                        plan_id = %e.plan_id,
-                        "failed to delete pending operation on completion"
-                    );
-                }
-            }
-            Event::PlanSkipped(e) => {
-                tracing::info!(
-                    path = %e.path.display(),
-                    phase = %e.phase_name,
-                    reason = %e.skip_reason,
-                    "plan skipped"
-                );
-                store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Skipped)?;
-            }
-            Event::PlanFailed(e) => {
-                tracing::info!(path = %e.path.display(), phase = %e.phase_name, error = %e.error, "plan failed");
-                store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Failed)?;
-                if let Err(err) = store.delete_pending_op(&e.plan_id) {
-                    tracing::warn!(
-                        error = %err,
-                        plan_id = %e.plan_id,
-                        "failed to delete pending operation on failure"
-                    );
-                }
-            }
-            Event::MetadataEnriched(e) => {
-                let key = format!("metadata:{}", e.path.display());
-                let value = serde_json::to_vec(&e.metadata).map_err(|err| {
-                    voom_domain::VoomError::Storage {
-                        kind: voom_domain::errors::StorageErrorKind::Other,
-                        message: format!("failed to serialize enriched metadata: {err}"),
-                    }
-                })?;
-                store.set_plugin_data(&e.source, &key, &value)?;
-                tracing::info!(
-                    path = %e.path.display(),
-                    source = %e.source,
-                    "stored enriched metadata"
-                );
-            }
-            Event::ToolDetected(e) => {
-                let key = format!("tool:{}", e.tool_name);
-                let value = serde_json::json!({
-                    "tool_name": e.tool_name,
-                    "version": e.version,
-                    "path": e.path,
-                });
-                let bytes =
-                    serde_json::to_vec(&value).map_err(|err| voom_domain::VoomError::Storage {
-                        kind: voom_domain::errors::StorageErrorKind::Other,
-                        message: format!("failed to serialize tool info: {err}"),
-                    })?;
-                store.set_plugin_data("tool-detector", &key, &bytes)?;
-                tracing::info!(
-                    tool = %e.tool_name,
-                    version = %e.version,
-                    "stored detected tool"
-                );
-            }
-            Event::ExecutorCapabilities(e) => {
-                let key = format!("executor_capabilities:{}", e.plugin_name);
-                let bytes =
-                    serde_json::to_vec(e).map_err(|err| voom_domain::VoomError::Storage {
-                        kind: voom_domain::errors::StorageErrorKind::Other,
-                        message: format!("failed to serialize executor capabilities: {err}"),
-                    })?;
-                store.set_plugin_data(&e.plugin_name, &key, &bytes)?;
-                tracing::info!(
-                    plugin = %e.plugin_name,
-                    codecs_decoders = e.codecs.decoders.len(),
-                    codecs_encoders = e.codecs.encoders.len(),
-                    formats = e.formats.len(),
-                    hw_accels = e.hw_accels.len(),
-                    "stored executor capabilities"
-                );
-            }
-            Event::HealthStatus(e) => {
-                let record = HealthCheckRecord::new(&e.check_name, e.passed, e.details.clone());
-                store.insert_health_check(&record)?;
-                if e.passed {
-                    tracing::info!(
-                        check = %e.check_name,
-                        "stored health check (passed)"
-                    );
-                } else {
-                    tracing::warn!(
-                        check = %e.check_name,
-                        details = ?e.details,
-                        "stored health check (FAILED)"
-                    );
-                }
-            }
-            Event::SubtitleGenerated(e) => {
-                if let Err(err) = store.upsert_subtitle(
-                    &e.path.to_string_lossy(),
-                    &e.subtitle_path.to_string_lossy(),
-                    &e.language,
-                    e.forced,
-                    e.title.as_deref(),
-                ) {
-                    tracing::warn!(error = %err, "failed to store subtitle record");
-                }
-            }
+            Event::FileDiscovered(e) => handle_file_discovered(store, e)?,
+            Event::FileIntrospected(e) => handle_file_introspected(store, e)?,
+            Event::FileIntrospectionFailed(e) => handle_file_introspection_failed(store, e)?,
+            Event::PlanExecuting(e) => handle_plan_executing(store, e),
+            Event::PlanCreated(e) => handle_plan_created(store, e)?,
+            Event::PlanCompleted(e) => handle_plan_completed(store, e)?,
+            Event::PlanSkipped(e) => handle_plan_skipped(store, e)?,
+            Event::PlanFailed(e) => handle_plan_failed(store, e)?,
+            Event::MetadataEnriched(e) => handle_metadata_enriched(store, e)?,
+            Event::ToolDetected(e) => handle_tool_detected(store, e)?,
+            Event::ExecutorCapabilities(e) => handle_executor_capabilities(store, e)?,
+            Event::HealthStatus(e) => handle_health_status(store, e)?,
+            Event::SubtitleGenerated(e) => handle_subtitle_generated(store, e),
             _ => {
                 tracing::trace!(
                     event_type = event.event_type(),
@@ -238,26 +97,7 @@ impl Plugin for SqliteStorePlugin {
             }
         }
 
-        // Log every event to the event_log table (best-effort).
-        let log_record = EventLogRecord::new(
-            uuid::Uuid::new_v4(),
-            event.event_type().to_string(),
-            serde_json::to_string(event).unwrap_or_default(),
-            event.summary(),
-        );
-        match store.insert_event_log(&log_record) {
-            Ok(rowid) => {
-                // Auto-prune: every 1000th insert, keep last 10_000 rows
-                if rowid % 1000 == 0 {
-                    if let Err(e) = store.prune_event_log(10_000) {
-                        tracing::warn!(error = %e, "event log prune failed");
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "event log insert failed");
-            }
-        }
+        log_event(store, event);
 
         Ok(None)
     }
@@ -282,6 +122,229 @@ impl Plugin for SqliteStorePlugin {
     fn shutdown(&self) -> Result<()> {
         tracing::info!("sqlite store shutting down");
         Ok(())
+    }
+}
+
+fn handle_file_discovered(
+    store: &SqliteStore,
+    e: &voom_domain::events::FileDiscoveredEvent,
+) -> Result<()> {
+    let path_str = e.path.to_string_lossy();
+    store.upsert_discovered_file(&path_str, e.size, e.content_hash.as_deref())?;
+    tracing::info!(path = %e.path.display(), "stored discovered file");
+    Ok(())
+}
+
+fn handle_file_introspected(
+    store: &SqliteStore,
+    e: &voom_domain::events::FileIntrospectedEvent,
+) -> Result<()> {
+    store.upsert_file(&e.file)?;
+    store.delete_bad_file_by_path(&e.file.path)?;
+    tracing::info!(path = %e.file.path.display(), "stored introspected file");
+    Ok(())
+}
+
+fn handle_file_introspection_failed(
+    store: &SqliteStore,
+    e: &voom_domain::events::FileIntrospectionFailedEvent,
+) -> Result<()> {
+    let bad_file = voom_domain::bad_file::BadFile::new(
+        e.path.clone(),
+        e.size,
+        e.content_hash.clone(),
+        e.error.clone(),
+        e.error_source,
+    );
+    store.upsert_bad_file(&bad_file)?;
+    tracing::info!(path = %e.path.display(), error = %e.error, "stored bad file");
+    Ok(())
+}
+
+fn handle_plan_executing(store: &SqliteStore, e: &voom_domain::events::PlanExecutingEvent) {
+    let op = voom_domain::storage::PendingOperation {
+        id: e.plan_id,
+        file_path: e.path.clone(),
+        phase_name: e.phase_name.clone(),
+        started_at: chrono::Utc::now(),
+    };
+    if let Err(err) = store.insert_pending_op(&op) {
+        tracing::warn!(
+            error = %err,
+            plan_id = %e.plan_id,
+            "failed to insert pending operation"
+        );
+    }
+}
+
+// sqlite-store runs at priority 100, so executors (priority 39/40)
+// have already processed the plan by the time we record it here.
+// This is audit-after-execution by design, not a race condition.
+fn handle_plan_created(
+    store: &SqliteStore,
+    e: &voom_domain::events::PlanCreatedEvent,
+) -> Result<()> {
+    let plan_id = store.save_plan(&e.plan)?;
+    tracing::info!(%plan_id, "stored plan");
+    Ok(())
+}
+
+fn handle_plan_completed(
+    store: &SqliteStore,
+    e: &voom_domain::events::PlanCompletedEvent,
+) -> Result<()> {
+    tracing::info!(path = %e.path.display(), phase = %e.phase_name, "plan completed");
+    store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Completed)?;
+    if let Err(err) = store.delete_pending_op(&e.plan_id) {
+        tracing::warn!(
+            error = %err,
+            plan_id = %e.plan_id,
+            "failed to delete pending operation on completion"
+        );
+    }
+    Ok(())
+}
+
+fn handle_plan_skipped(
+    store: &SqliteStore,
+    e: &voom_domain::events::PlanSkippedEvent,
+) -> Result<()> {
+    tracing::info!(
+        path = %e.path.display(),
+        phase = %e.phase_name,
+        reason = %e.skip_reason,
+        "plan skipped"
+    );
+    store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Skipped)?;
+    Ok(())
+}
+
+fn handle_plan_failed(store: &SqliteStore, e: &voom_domain::events::PlanFailedEvent) -> Result<()> {
+    tracing::info!(path = %e.path.display(), phase = %e.phase_name, error = %e.error, "plan failed");
+    store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Failed)?;
+    if let Err(err) = store.delete_pending_op(&e.plan_id) {
+        tracing::warn!(
+            error = %err,
+            plan_id = %e.plan_id,
+            "failed to delete pending operation on failure"
+        );
+    }
+    Ok(())
+}
+
+fn handle_metadata_enriched(
+    store: &SqliteStore,
+    e: &voom_domain::events::MetadataEnrichedEvent,
+) -> Result<()> {
+    let key = format!("metadata:{}", e.path.display());
+    let value = serde_json::to_vec(&e.metadata).map_err(|err| voom_domain::VoomError::Storage {
+        kind: voom_domain::errors::StorageErrorKind::Other,
+        message: format!("failed to serialize enriched metadata: {err}"),
+    })?;
+    store.set_plugin_data(&e.source, &key, &value)?;
+    tracing::info!(
+        path = %e.path.display(),
+        source = %e.source,
+        "stored enriched metadata"
+    );
+    Ok(())
+}
+
+fn handle_tool_detected(
+    store: &SqliteStore,
+    e: &voom_domain::events::ToolDetectedEvent,
+) -> Result<()> {
+    let key = format!("tool:{}", e.tool_name);
+    let value = serde_json::json!({
+        "tool_name": e.tool_name,
+        "version": e.version,
+        "path": e.path,
+    });
+    let bytes = serde_json::to_vec(&value).map_err(|err| voom_domain::VoomError::Storage {
+        kind: voom_domain::errors::StorageErrorKind::Other,
+        message: format!("failed to serialize tool info: {err}"),
+    })?;
+    store.set_plugin_data("tool-detector", &key, &bytes)?;
+    tracing::info!(
+        tool = %e.tool_name,
+        version = %e.version,
+        "stored detected tool"
+    );
+    Ok(())
+}
+
+fn handle_executor_capabilities(
+    store: &SqliteStore,
+    e: &voom_domain::events::ExecutorCapabilitiesEvent,
+) -> Result<()> {
+    let key = format!("executor_capabilities:{}", e.plugin_name);
+    let bytes = serde_json::to_vec(e).map_err(|err| voom_domain::VoomError::Storage {
+        kind: voom_domain::errors::StorageErrorKind::Other,
+        message: format!("failed to serialize executor capabilities: {err}"),
+    })?;
+    store.set_plugin_data(&e.plugin_name, &key, &bytes)?;
+    tracing::info!(
+        plugin = %e.plugin_name,
+        codecs_decoders = e.codecs.decoders.len(),
+        codecs_encoders = e.codecs.encoders.len(),
+        formats = e.formats.len(),
+        hw_accels = e.hw_accels.len(),
+        "stored executor capabilities"
+    );
+    Ok(())
+}
+
+fn handle_health_status(
+    store: &SqliteStore,
+    e: &voom_domain::events::HealthStatusEvent,
+) -> Result<()> {
+    let record = HealthCheckRecord::new(&e.check_name, e.passed, e.details.clone());
+    store.insert_health_check(&record)?;
+    if e.passed {
+        tracing::info!(
+            check = %e.check_name,
+            "stored health check (passed)"
+        );
+    } else {
+        tracing::warn!(
+            check = %e.check_name,
+            details = ?e.details,
+            "stored health check (FAILED)"
+        );
+    }
+    Ok(())
+}
+
+fn handle_subtitle_generated(store: &SqliteStore, e: &voom_domain::events::SubtitleGeneratedEvent) {
+    if let Err(err) = store.upsert_subtitle(
+        &e.path.to_string_lossy(),
+        &e.subtitle_path.to_string_lossy(),
+        &e.language,
+        e.forced,
+        e.title.as_deref(),
+    ) {
+        tracing::warn!(error = %err, "failed to store subtitle record");
+    }
+}
+
+fn log_event(store: &SqliteStore, event: &Event) {
+    let log_record = EventLogRecord::new(
+        uuid::Uuid::new_v4(),
+        event.event_type().to_string(),
+        serde_json::to_string(event).unwrap_or_default(),
+        event.summary(),
+    );
+    match store.insert_event_log(&log_record) {
+        Ok(rowid) => {
+            if rowid % 1000 == 0 {
+                if let Err(e) = store.prune_event_log(10_000) {
+                    tracing::warn!(error = %e, "event log prune failed");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "event log insert failed");
+        }
     }
 }
 

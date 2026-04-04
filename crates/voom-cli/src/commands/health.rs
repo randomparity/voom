@@ -182,42 +182,26 @@ fn print_encoder_block(hw_encoders: &[String], backend: HwAccelBackend, device: 
     }
 }
 
-fn print_hw_accel_status(app_config: &config::AppConfig, ffmpeg_path: &std::path::Path) {
-    println!();
-    println!("{}", style("Hardware acceleration:").bold());
-
-    let hwaccels_output = std::process::Command::new(ffmpeg_path)
-        .args(["-hwaccels", "-hide_banner"])
-        .output();
-
-    let hw_accels = match hwaccels_output {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            parse_hwaccels(&stdout)
-        }
-        Err(_) => return,
-    };
-
+/// Resolve and print the HW acceleration backend. Returns `None` if no
+/// backend is available (and prints the appropriate status line).
+fn print_hw_backend(
+    hw_accel_override: Option<&str>,
+    hw_accels: &[String],
+) -> Option<HwAccelBackend> {
     if !hw_accels.is_empty() {
         println!("  Available ... {}", hw_accels.join(", "));
     }
 
-    let hw_accel_override = app_config
-        .plugin
-        .get("ffmpeg-executor")
-        .and_then(|t| t.get("hw_accel"))
-        .and_then(|v| v.as_str());
+    let (config, source) = resolve_hw_config(hw_accel_override, hw_accels);
 
-    let (config, source) = resolve_hw_config(hw_accel_override, &hw_accels);
-
-    let backend = match config.backend {
+    match config.backend {
         Some(backend) => {
             println!(
                 "  Backend ... {} {}",
                 style(backend_label(backend)).green(),
                 style(format!("({source})")).dim()
             );
-            backend
+            Some(backend)
         }
         None => {
             if source == "disabled" {
@@ -229,20 +213,47 @@ fn print_hw_accel_status(app_config: &config::AppConfig, ffmpeg_path: &std::path
             } else {
                 println!("  Backend ... {}", style("none detected").yellow());
             }
-            return;
-        }
-    };
-
-    let devices = enumerate_gpus(backend);
-    if !devices.is_empty() {
-        println!();
-        println!("  {}:", gpu_section_header(backend));
-        for device in &devices {
-            println!("    {}", gpu_display_label(device, backend));
+            None
         }
     }
+}
 
-    // Show configured GPU device from config
+/// Print HW encoder validation results, grouped by device when available.
+fn print_hw_encoders(hw_encoders: &[String], devices: &[GpuDevice], backend: HwAccelBackend) {
+    if hw_encoders.is_empty() {
+        return;
+    }
+    if devices.is_empty() {
+        println!();
+        println!("  HW Encoders:");
+        for enc in hw_encoders {
+            if validate_hw_encoder(enc) {
+                println!("    {:<20}{}", enc, style("OK (device validated)").green());
+            } else {
+                println!("    {:<20}{}", enc, style("UNSUPPORTED").yellow());
+            }
+        }
+    } else {
+        for device in devices {
+            print_encoder_block(hw_encoders, backend, device);
+        }
+    }
+}
+
+/// Print HW decoder availability.
+fn print_hw_decoders(hw_decoders: &[String]) {
+    if hw_decoders.is_empty() {
+        return;
+    }
+    println!();
+    println!("  HW Decoders:");
+    for dec in hw_decoders {
+        println!("    {:<20}{}", dec, style("available").green());
+    }
+}
+
+/// Print the configured GPU device status line.
+fn print_configured_gpu(app_config: &config::AppConfig, devices: &[GpuDevice]) {
     if let Some(device_id) = app_config
         .plugin
         .get("ffmpeg-executor")
@@ -265,6 +276,45 @@ fn print_hw_accel_status(app_config: &config::AppConfig, ffmpeg_path: &std::path
             );
         }
     }
+}
+
+fn print_hw_accel_status(app_config: &config::AppConfig, ffmpeg_path: &std::path::Path) {
+    println!();
+    println!("{}", style("Hardware acceleration:").bold());
+
+    let hwaccels_output = std::process::Command::new(ffmpeg_path)
+        .args(["-hwaccels", "-hide_banner"])
+        .output();
+
+    let hw_accels = match hwaccels_output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            parse_hwaccels(&stdout)
+        }
+        Err(_) => return,
+    };
+
+    let hw_accel_override = app_config
+        .plugin
+        .get("ffmpeg-executor")
+        .and_then(|t| t.get("hw_accel"))
+        .and_then(|v| v.as_str());
+
+    let backend = match print_hw_backend(hw_accel_override, &hw_accels) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let devices = enumerate_gpus(backend);
+    if !devices.is_empty() {
+        println!();
+        println!("  {}:", gpu_section_header(backend));
+        for device in &devices {
+            println!("    {}", gpu_display_label(device, backend));
+        }
+    }
+
+    print_configured_gpu(app_config, &devices);
 
     let encoders_output = std::process::Command::new(ffmpeg_path)
         .args(["-encoders", "-hide_banner"])
@@ -276,36 +326,13 @@ fn print_hw_accel_status(app_config: &config::AppConfig, ffmpeg_path: &std::path
     if let Ok(output) = encoders_output {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let hw_encoders = parse_hw_implementations(&stdout);
-        if !hw_encoders.is_empty() {
-            if devices.is_empty() {
-                // Fallback: no GPU enumeration, single block
-                println!();
-                println!("  HW Encoders:");
-                for enc in &hw_encoders {
-                    if validate_hw_encoder(enc) {
-                        println!("    {:<20}{}", enc, style("OK (device validated)").green());
-                    } else {
-                        println!("    {:<20}{}", enc, style("UNSUPPORTED").yellow());
-                    }
-                }
-            } else {
-                for device in &devices {
-                    print_encoder_block(&hw_encoders, backend, device);
-                }
-            }
-        }
+        print_hw_encoders(&hw_encoders, &devices, backend);
     }
 
     if let Ok(output) = decoders_output {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let hw_decoders = parse_hw_implementations(&stdout);
-        if !hw_decoders.is_empty() {
-            println!();
-            println!("  HW Decoders:");
-            for dec in &hw_decoders {
-                println!("    {:<20}{}", dec, style("available").green());
-            }
-        }
+        print_hw_decoders(&hw_decoders);
     }
 }
 

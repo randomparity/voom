@@ -3,6 +3,7 @@
 type WitHttpResult = Result<(u16, Vec<(String, String)>, Vec<u8>), String>;
 
 /// Expand `~` at the start of a path string to `$HOME`.
+#[cfg(feature = "wasm")]
 fn expand_tilde(path: &str) -> std::path::PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = std::env::var_os("HOME") {
@@ -653,16 +654,11 @@ pub mod wasm {
         Ok(())
     }
 
-    fn register_host_instance(
-        linker: &mut wasmtime::component::Linker<HostState>,
-        instance_name: &str,
-    ) -> Result<(), WasmLoadError> {
-        let mut root = linker.root();
-        let mut host_instance = root
-            .instance(instance_name)
-            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
+    /// Type alias for the linker instance builder used by registration helpers.
+    type HostLinkerInstance<'a> = wasmtime::component::LinkerInstance<'a, HostState>;
 
-        host_instance
+    fn register_log_func(instance: &mut HostLinkerInstance<'_>) -> Result<(), WasmLoadError> {
+        instance
             .func_wrap(
                 "log",
                 |ctx: wasmtime::StoreContextMut<'_, HostState>, (level, message): (u32, String)| {
@@ -678,9 +674,13 @@ pub mod wasm {
                     Ok(())
                 },
             )
-            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))
+    }
 
-        host_instance
+    fn register_plugin_data_funcs(
+        instance: &mut HostLinkerInstance<'_>,
+    ) -> Result<(), WasmLoadError> {
+        instance
             .func_wrap(
                 "get-plugin-data",
                 |ctx: wasmtime::StoreContextMut<'_, HostState>, (key,): (String,)| {
@@ -690,7 +690,7 @@ pub mod wasm {
             )
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-        host_instance
+        instance
             .func_wrap(
                 "set-plugin-data",
                 |mut ctx: wasmtime::StoreContextMut<'_, HostState>,
@@ -701,12 +701,16 @@ pub mod wasm {
             )
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
+        Ok(())
+    }
+
+    fn register_run_tool_func(instance: &mut HostLinkerInstance<'_>) -> Result<(), WasmLoadError> {
         // Capability enforcement for run-tool is currently coarse-grained:
-        // it checks whether the plugin has any "execute:*" capability, but does
-        // not verify specific operations (e.g., "execute:transcode_video" vs
-        // "execute:convert_container"). Fine-grained per-operation enforcement
-        // is tracked for a future sprint.
-        host_instance
+        // it checks whether the plugin has any "execute:*" capability, but
+        // does not verify specific operations (e.g., "execute:transcode_video"
+        // vs "execute:convert_container"). Fine-grained per-operation
+        // enforcement is tracked for a future sprint.
+        instance
             .func_wrap(
                 "run-tool",
                 |ctx: wasmtime::StoreContextMut<'_, HostState>,
@@ -725,9 +729,11 @@ pub mod wasm {
                     Ok((wit_result,))
                 },
             )
-            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))
+    }
 
-        host_instance
+    fn register_http_funcs(instance: &mut HostLinkerInstance<'_>) -> Result<(), WasmLoadError> {
+        instance
             .func_wrap(
                 "http-get",
                 |ctx: wasmtime::StoreContextMut<'_, HostState>,
@@ -742,7 +748,7 @@ pub mod wasm {
             )
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-        host_instance
+        instance
             .func_wrap(
                 "http-post",
                 |ctx: wasmtime::StoreContextMut<'_, HostState>,
@@ -757,7 +763,13 @@ pub mod wasm {
             )
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-        host_instance
+        Ok(())
+    }
+
+    fn register_filesystem_funcs(
+        instance: &mut HostLinkerInstance<'_>,
+    ) -> Result<(), WasmLoadError> {
+        instance
             .func_wrap(
                 "write-file",
                 |ctx: wasmtime::StoreContextMut<'_, HostState>,
@@ -768,13 +780,12 @@ pub mod wasm {
             )
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-        host_instance
+        instance
             .func_wrap(
                 "read-file-metadata",
                 |ctx: wasmtime::StoreContextMut<'_, HostState>,
                  (path,): (String,)|
                  -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
-                    // Security: empty allowed_paths = deny all.
                     if ctx.data().allowed_paths.is_empty() {
                         return Ok((Err(format!(
                             "path '{path}' is not within allowed directories"
@@ -822,16 +833,16 @@ pub mod wasm {
             )
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
-        host_instance
+        instance
             .func_wrap(
                 "list-files",
                 |ctx: wasmtime::StoreContextMut<'_, HostState>,
                  (dir, pattern): (String, String)|
                  -> Result<(Result<Vec<String>, String>,), wasmtime::Error> {
-                    // Security: empty allowed_paths = deny all.
                     if ctx.data().allowed_paths.is_empty() {
                         return Ok((Err(format!(
-                            "directory '{dir}' is not within allowed directories"
+                            "directory '{dir}' is not within \
+                             allowed directories"
                         )),));
                     }
 
@@ -849,7 +860,8 @@ pub mod wasm {
                         .any(|p| canonical.starts_with(p));
                     if !allowed {
                         return Ok((Err(format!(
-                            "directory '{dir}' is not within allowed directories"
+                            "directory '{dir}' is not within \
+                             allowed directories"
                         )),));
                     }
 
@@ -873,6 +885,24 @@ pub mod wasm {
                 },
             )
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
+
+        Ok(())
+    }
+
+    fn register_host_instance(
+        linker: &mut wasmtime::component::Linker<HostState>,
+        instance_name: &str,
+    ) -> Result<(), WasmLoadError> {
+        let mut root = linker.root();
+        let mut instance = root
+            .instance(instance_name)
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
+
+        register_log_func(&mut instance)?;
+        register_plugin_data_funcs(&mut instance)?;
+        register_run_tool_func(&mut instance)?;
+        register_http_funcs(&mut instance)?;
+        register_filesystem_funcs(&mut instance)?;
 
         Ok(())
     }

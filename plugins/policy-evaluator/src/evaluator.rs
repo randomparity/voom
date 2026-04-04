@@ -115,6 +115,53 @@ pub fn evaluate_single_phase(
     ))
 }
 
+/// Check whether a phase should be skipped based on `skip_when`, `run_if`,
+/// and `depends_on` conditions. Returns `Some(reason)` if skipped.
+fn check_skip_conditions(
+    phase: &CompiledPhase,
+    file: &MediaFile,
+    phase_outcomes: &HashMap<String, EvaluationOutcome>,
+    eval_ctx: &EvalContext<'_>,
+) -> Option<String> {
+    if let Some(ref cond) = phase.skip_when {
+        if evaluate_condition(cond, file, eval_ctx) {
+            return Some("skip_when condition met".into());
+        }
+    }
+
+    if let Some(ref run_if) = phase.run_if {
+        let should_run = match phase_outcomes.get(&run_if.phase) {
+            Some(outcome) => match run_if.trigger {
+                RunIfTrigger::Modified => {
+                    matches!(outcome, EvaluationOutcome::Executed { modified: true })
+                }
+                RunIfTrigger::Completed => {
+                    matches!(outcome, EvaluationOutcome::Executed { .. })
+                }
+            },
+            None => false,
+        };
+        if !should_run {
+            return Some(format!(
+                "run_if {}.{} not satisfied",
+                run_if.phase,
+                match run_if.trigger {
+                    RunIfTrigger::Modified => "modified",
+                    RunIfTrigger::Completed => "completed",
+                }
+            ));
+        }
+    }
+
+    for dep in &phase.depends_on {
+        if phase_outcomes.get(dep).is_none() {
+            return Some(format!("dependency '{dep}' not yet executed"));
+        }
+    }
+
+    None
+}
+
 /// Evaluate a single phase against a file.
 fn evaluate_phase(
     phase: &CompiledPhase,
@@ -130,41 +177,9 @@ fn evaluate_phase(
         Some(policy.source_hash.clone())
     };
 
-    if let Some(ref cond) = phase.skip_when {
-        if evaluate_condition(cond, file, eval_ctx) {
-            plan.skip_reason = Some("skip_when condition met".into());
-            return plan;
-        }
-    }
-
-    if let Some(ref run_if) = phase.run_if {
-        let should_run = match phase_outcomes.get(&run_if.phase) {
-            Some(outcome) => match run_if.trigger {
-                RunIfTrigger::Modified => {
-                    matches!(outcome, EvaluationOutcome::Executed { modified: true })
-                }
-                RunIfTrigger::Completed => matches!(outcome, EvaluationOutcome::Executed { .. }),
-            },
-            None => false, // Referenced phase hasn't run
-        };
-        if !should_run {
-            plan.skip_reason = Some(format!(
-                "run_if {}.{} not satisfied",
-                run_if.phase,
-                match run_if.trigger {
-                    RunIfTrigger::Modified => "modified",
-                    RunIfTrigger::Completed => "completed",
-                }
-            ));
-            return plan;
-        }
-    }
-
-    for dep in &phase.depends_on {
-        if phase_outcomes.get(dep).is_none() {
-            plan.skip_reason = Some(format!("dependency '{dep}' not yet executed"));
-            return plan;
-        }
+    if let Some(reason) = check_skip_conditions(phase, file, phase_outcomes, eval_ctx) {
+        plan.skip_reason = Some(reason);
+        return plan;
     }
 
     let mut ctx = PhaseContext {
@@ -505,57 +520,71 @@ fn emit_clear_title(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext)
     ));
 }
 
+fn emit_defaults_none(target: &TrackTarget, tracks: &[&Track], ctx: &mut PhaseContext) {
+    for track in tracks {
+        if track.is_default {
+            emit_clear_default(target, track, "", ctx);
+        }
+    }
+}
+
+fn emit_defaults_first(target: &TrackTarget, tracks: &[&Track], ctx: &mut PhaseContext) {
+    if let Some((first_track, rest)) = tracks.split_first() {
+        if !first_track.is_default {
+            emit_set_default(target, first_track, "", ctx);
+        }
+        for track in rest {
+            if track.is_default {
+                emit_clear_default(target, track, "", ctx);
+            }
+        }
+    }
+}
+
+fn emit_defaults_first_per_language(
+    target: &TrackTarget,
+    tracks: &[&Track],
+    ctx: &mut PhaseContext,
+) {
+    let mut seen_langs: HashSet<String> = HashSet::new();
+    for track in tracks {
+        let is_first = seen_langs.insert(track.language.clone());
+        if is_first && !track.is_default {
+            emit_set_default(
+                target,
+                track,
+                &format!(" (first for lang '{}')", track.language),
+                ctx,
+            );
+        } else if !is_first && track.is_default {
+            emit_clear_default(
+                target,
+                track,
+                &format!(" (not first for lang '{}')", track.language),
+                ctx,
+            );
+        }
+    }
+}
+
+fn emit_defaults_all(target: &TrackTarget, tracks: &[&Track], ctx: &mut PhaseContext) {
+    for track in tracks {
+        if !track.is_default {
+            emit_set_default(target, track, "", ctx);
+        }
+    }
+}
+
 fn emit_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
     for default in defaults {
         let tracks = tracks_for_target(ctx.file, &default.target);
         match default.strategy {
-            DefaultStrategy::None => {
-                for track in &tracks {
-                    if track.is_default {
-                        emit_clear_default(&default.target, track, "", ctx);
-                    }
-                }
-            }
-            DefaultStrategy::First => {
-                if let Some((first_track, rest)) = tracks.split_first() {
-                    if !first_track.is_default {
-                        emit_set_default(&default.target, first_track, "", ctx);
-                    }
-                    for track in rest {
-                        if track.is_default {
-                            emit_clear_default(&default.target, track, "", ctx);
-                        }
-                    }
-                }
-            }
+            DefaultStrategy::None => emit_defaults_none(&default.target, &tracks, ctx),
+            DefaultStrategy::First => emit_defaults_first(&default.target, &tracks, ctx),
             DefaultStrategy::FirstPerLanguage => {
-                let mut seen_langs: HashSet<String> = HashSet::new();
-                for track in &tracks {
-                    let is_first = seen_langs.insert(track.language.clone());
-                    if is_first && !track.is_default {
-                        emit_set_default(
-                            &default.target,
-                            track,
-                            &format!(" (first for lang '{}')", track.language),
-                            ctx,
-                        );
-                    } else if !is_first && track.is_default {
-                        emit_clear_default(
-                            &default.target,
-                            track,
-                            &format!(" (not first for lang '{}')", track.language),
-                            ctx,
-                        );
-                    }
-                }
+                emit_defaults_first_per_language(&default.target, &tracks, ctx);
             }
-            DefaultStrategy::All => {
-                for track in &tracks {
-                    if !track.is_default {
-                        emit_set_default(&default.target, track, "", ctx);
-                    }
-                }
-            }
+            DefaultStrategy::All => emit_defaults_all(&default.target, &tracks, ctx),
         }
     }
 }
@@ -941,6 +970,39 @@ fn target_str(target: &TrackTarget) -> &'static str {
 ///
 /// Skips validation entirely when the capability map is empty (no
 /// executors reported capabilities).
+/// Check a single action's parameters against known capabilities,
+/// pushing warnings and updating the running encoder intersection.
+fn check_action_capabilities<'a>(
+    action: &PlannedAction,
+    capabilities: &'a CapabilityMap,
+    all_encoders: &mut Option<HashSet<&'a str>>,
+    warnings: &mut Vec<String>,
+) {
+    match &action.parameters {
+        ActionParams::Transcode { codec, .. } => {
+            let executors = capabilities.encoders_for(codec);
+            if executors.is_empty() {
+                warnings.push(format!("No executor supports encoder '{codec}'"));
+            }
+            intersect_executors(all_encoders, &executors);
+        }
+        ActionParams::Synthesize { codec: Some(c), .. } => {
+            let executors = capabilities.encoders_for(c);
+            if executors.is_empty() {
+                warnings.push(format!("No executor supports encoder '{c}'"));
+            }
+            intersect_executors(all_encoders, &executors);
+        }
+        ActionParams::Container { container } => {
+            let fmt = container.ffmpeg_format_name().unwrap_or(container.as_str());
+            if !capabilities.has_format(fmt) {
+                warnings.push(format!("No executor supports format '{fmt}'"));
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn apply_capability_hints(plans: &mut [Plan], capabilities: &CapabilityMap) {
     if capabilities.is_empty() {
         return;
@@ -952,35 +1014,13 @@ pub fn apply_capability_hints(plans: &mut [Plan], capabilities: &CapabilityMap) 
         }
 
         let mut all_encoders: Option<HashSet<&str>> = None;
+        let mut warnings: Vec<String> = Vec::new();
 
         for action in &plan.actions {
-            match &action.parameters {
-                ActionParams::Transcode { codec, .. } => {
-                    let executors = capabilities.encoders_for(codec);
-                    if executors.is_empty() {
-                        plan.warnings
-                            .push(format!("No executor supports encoder '{codec}'"));
-                    }
-                    intersect_executors(&mut all_encoders, &executors);
-                }
-                ActionParams::Synthesize { codec: Some(c), .. } => {
-                    let executors = capabilities.encoders_for(c);
-                    if executors.is_empty() {
-                        plan.warnings
-                            .push(format!("No executor supports encoder '{c}'"));
-                    }
-                    intersect_executors(&mut all_encoders, &executors);
-                }
-                ActionParams::Container { container } => {
-                    let fmt = container.ffmpeg_format_name().unwrap_or(container.as_str());
-                    if !capabilities.has_format(fmt) {
-                        plan.warnings
-                            .push(format!("No executor supports format '{fmt}'"));
-                    }
-                }
-                _ => {}
-            }
+            check_action_capabilities(action, capabilities, &mut all_encoders, &mut warnings);
         }
+
+        plan.warnings.extend(warnings);
 
         if let Some(ref candidates) = all_encoders {
             if candidates.len() == 1 {

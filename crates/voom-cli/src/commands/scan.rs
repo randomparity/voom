@@ -1,6 +1,8 @@
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::app;
 use crate::cli::ScanArgs;
@@ -13,7 +15,7 @@ use console::style;
 use indicatif::HumanDuration;
 use tokio_util::sync::CancellationToken;
 use voom_domain::bad_file::BadFileSource;
-use voom_domain::events::Event;
+use voom_domain::events::{Event, FileDiscoveredEvent};
 
 /// Run the scan command.
 ///
@@ -24,8 +26,9 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     let config = config::load_config()?;
     let app::BootstrapResult { kernel, store, .. } = app::bootstrap_kernel_with_store(&config)?;
     let kernel = Arc::new(kernel);
-
     let paths = resolve_paths(&args.paths)?;
+    let hash_files = !args.no_hash;
+    let start = Instant::now();
 
     if !quiet {
         let path_list: Vec<_> = paths
@@ -35,8 +38,79 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
         eprintln!("{} {}", style("Scanning").bold(), path_list.join(", "));
     }
 
-    let discovery = voom_discovery::DiscoveryPlugin::new();
+    let (mut all_events, orphans, disc_errors) =
+        run_discovery(&args, &paths, hash_files, quiet, &kernel)?;
 
+    // Deduplicate events by path in case multiple scan roots overlap
+    let mut seen = HashSet::new();
+    all_events.retain(|e| seen.insert(e.path.clone()));
+
+    if all_events.is_empty() {
+        handle_empty_scan(&*store, &paths, hash_files, orphans, quiet, args.format)?;
+        return Ok(());
+    }
+
+    if !quiet {
+        print_discovery_summary(
+            all_events.len(),
+            start.elapsed(),
+            hash_files,
+            orphans,
+            disc_errors,
+        );
+    }
+
+    mark_missing_without_hash(&*store, &all_events, &paths, hash_files, quiet)?;
+    let reconcile_paths = reconcile_files(&*store, &all_events, &paths, hash_files, quiet)?;
+
+    // Dispatch FileDiscovered events through the kernel so subscribers react.
+    for event in &all_events {
+        kernel.dispatch(Event::FileDiscovered(event.clone()));
+    }
+
+    let needs_introspection = filter_for_introspection(&all_events, &reconcile_paths);
+    let (introspected, errors) = run_introspection(
+        &needs_introspection,
+        &kernel,
+        config.ffprobe_path(),
+        &token,
+        quiet,
+    )
+    .await;
+
+    print_scan_summary(
+        &all_events,
+        introspected,
+        errors,
+        start.elapsed(),
+        token.is_cancelled(),
+        quiet,
+        args.format,
+    );
+
+    if token.is_cancelled() {
+        return Ok(());
+    }
+
+    purge_stale_records(&*store, config.pruning.retention_days, quiet);
+    capture_snapshot(&*store);
+
+    if let Some(format) = args.format {
+        output::format_scan_results(&format_results(&all_events), format);
+    }
+
+    Ok(())
+}
+
+/// Run filesystem discovery across all paths, returning events and counters.
+fn run_discovery(
+    args: &ScanArgs,
+    paths: &[PathBuf],
+    hash_files: bool,
+    quiet: bool,
+    kernel: &Arc<voom_kernel::Kernel>,
+) -> Result<(Vec<FileDiscoveredEvent>, u64, u64)> {
+    let discovery = voom_discovery::DiscoveryPlugin::new();
     let progress = if quiet {
         DiscoveryProgress::hidden()
     } else {
@@ -44,29 +118,20 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     };
     let orphan_count = Arc::new(AtomicU64::new(0));
     let discovery_errors = Arc::new(AtomicU64::new(0));
-    let start = Instant::now();
-    let hash_files = !args.no_hash;
-
-    let mut all_events = Vec::new();
-
-    // Cumulative counters so the progress bar shows totals across all
-    // directories instead of resetting per directory.
     let cumulative_discovered = Arc::new(AtomicU64::new(0));
     let processing_base = Arc::new(AtomicU64::new(0));
+    let mut all_events = Vec::new();
 
-    for path in &paths {
-        // Reset bar to spinner so stale position/length from the previous
-        // directory's processing phase doesn't bleed into this discovery.
+    for path in paths {
         progress.reset_to_spinner();
 
         let progress_clone = progress.clone();
-        let orphan_count_clone = orphan_count.clone();
-        let discovery_errors_clone = discovery_errors.clone();
-        let kernel_for_errors = kernel.clone();
+        let orphan_clone = orphan_count.clone();
+        let errors_clone = discovery_errors.clone();
+        let kernel_clone = kernel.clone();
         let cum_disc = cumulative_discovered.clone();
         let proc_base = processing_base.clone();
-
-        let pre_scan_discovered = cumulative_discovered.load(Ordering::Relaxed);
+        let pre_scan = cumulative_discovered.load(Ordering::Relaxed);
 
         let mut options = voom_discovery::ScanOptions::new(path.clone());
         options.recursive = args.recursive;
@@ -87,14 +152,14 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
                 progress_clone.on_processing(base + current, base + total, &path, action);
             }
             voom_discovery::ScanProgress::OrphanedTempFiles { count } => {
-                orphan_count_clone.fetch_add(count as u64, Ordering::Relaxed);
+                orphan_clone.fetch_add(count as u64, Ordering::Relaxed);
             }
         }));
         options.on_error = Some(Box::new(move |path, size, error| {
             tracing::warn!(path = %path.display(), error = %error, "discovery error");
-            discovery_errors_clone.fetch_add(1, Ordering::Relaxed);
+            errors_clone.fetch_add(1, Ordering::Relaxed);
             crate::introspect::dispatch_failure(
-                &kernel_for_errors,
+                &kernel_clone,
                 path,
                 size,
                 None,
@@ -105,211 +170,207 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
 
         let events = discovery.scan(&options).context("filesystem scan failed")?;
 
-        // Update processing base so the next directory's progress continues
-        // from where this one left off.
-        let dir_discovered = cumulative_discovered.load(Ordering::Relaxed) - pre_scan_discovered;
+        let dir_discovered = cumulative_discovered.load(Ordering::Relaxed) - pre_scan;
         processing_base.fetch_add(dir_discovered, Ordering::Relaxed);
-
         all_events.extend(events);
     }
 
     progress.finish();
 
-    // Deduplicate events by path in case multiple scan roots overlap
-    let mut seen = std::collections::HashSet::new();
-    all_events.retain(|e| seen.insert(e.path.clone()));
-
     let orphans = orphan_count.load(Ordering::Relaxed);
-    let disc_errors = discovery_errors.load(Ordering::Relaxed);
+    let errors = discovery_errors.load(Ordering::Relaxed);
+    Ok((all_events, orphans, errors))
+}
 
-    if all_events.is_empty() {
-        // Even with no files on disk, run reconciliation so that previously
-        // known files under the scanned directories are marked missing.
-        if hash_files {
-            let reconcile_result = store.reconcile_discovered_files(&[], &paths)?;
-            if !quiet && reconcile_result.missing > 0 {
-                eprintln!(
-                    "  {} {} files no longer on disk",
-                    style("Missing").dim(),
-                    reconcile_result.missing
-                );
-            }
-        } else {
-            let missing = store.mark_missing_paths(&[], &paths)?;
-            if !quiet && missing > 0 {
-                eprintln!(
-                    "  {} {} files no longer on disk",
-                    style("Missing").dim(),
-                    missing
-                );
-            }
+/// Handle the case where discovery found no files. Runs reconciliation
+/// to mark previously known files as missing, then prints output.
+fn handle_empty_scan(
+    store: &dyn voom_domain::storage::StorageTrait,
+    paths: &[PathBuf],
+    hash_files: bool,
+    orphans: u64,
+    quiet: bool,
+    format: Option<crate::cli::OutputFormat>,
+) -> Result<()> {
+    if hash_files {
+        let result = store.reconcile_discovered_files(&[], paths)?;
+        if !quiet && result.missing > 0 {
+            print_missing_count(result.missing);
         }
-
-        if !quiet {
-            if orphans > 0 {
-                eprintln!(
-                    "{} ({} orphaned temp {} skipped)",
-                    style("No media files found.").yellow(),
-                    orphans,
-                    if orphans == 1 { "file" } else { "files" },
-                );
-            } else {
-                eprintln!("{}", style("No media files found.").yellow());
-            }
-        }
-        if matches!(args.format, Some(crate::cli::OutputFormat::Json)) {
-            println!("[]");
-        }
-        return Ok(());
-    }
-
-    // Show discovery/hashing summary
-    if !quiet {
-        let discovery_elapsed = start.elapsed();
-        let orphan_suffix = if orphans > 0 {
-            format!(
-                " ({} orphaned temp {} skipped)",
-                orphans,
-                if orphans == 1 { "file" } else { "files" }
-            )
-        } else {
-            String::new()
-        };
-        let disc_error_suffix = if disc_errors > 0 {
-            format!(
-                ", {} discovery {}",
-                disc_errors,
-                if disc_errors == 1 { "error" } else { "errors" }
-            )
-        } else {
-            String::new()
-        };
-        if hash_files {
-            let elapsed_ms = discovery_elapsed.as_millis();
-            let elapsed_str = if elapsed_ms < 1000 {
-                format!("{elapsed_ms}ms")
-            } else {
-                format!("{}", HumanDuration(discovery_elapsed))
-            };
-            eprintln!(
-                "  {} {} files, hashed in {}{}{}",
-                style("Discovered").dim(),
-                all_events.len(),
-                elapsed_str,
-                orphan_suffix,
-                disc_error_suffix,
-            );
-        } else {
-            eprintln!(
-                "  {} {} files (hashing skipped){}{}",
-                style("Discovered").dim(),
-                all_events.len(),
-                orphan_suffix,
-                disc_error_suffix,
-            );
-        }
-    }
-
-    // Mark missing files — path-only, no hash needed.
-    // When hashing is enabled, reconcile_discovered_files handles this internally.
-    // When hashing is disabled, we still need to detect deleted files.
-    let path_missing_count = if !hash_files {
-        let discovered_paths: Vec<std::path::PathBuf> =
-            all_events.iter().map(|e| e.path.clone()).collect();
-        store.mark_missing_paths(&discovered_paths, &paths)?
     } else {
-        0
+        let missing = store.mark_missing_paths(&[], paths)?;
+        if !quiet && missing > 0 {
+            print_missing_count(missing);
+        }
+    }
+
+    if !quiet {
+        if orphans > 0 {
+            eprintln!(
+                "{} ({} orphaned temp {} skipped)",
+                style("No media files found.").yellow(),
+                orphans,
+                if orphans == 1 { "file" } else { "files" },
+            );
+        } else {
+            eprintln!("{}", style("No media files found.").yellow());
+        }
+    }
+
+    if matches!(format, Some(crate::cli::OutputFormat::Json)) {
+        println!("[]");
+    }
+    Ok(())
+}
+
+/// Print the discovery/hashing summary line.
+fn print_discovery_summary(
+    file_count: usize,
+    elapsed: Duration,
+    hash_files: bool,
+    orphans: u64,
+    disc_errors: u64,
+) {
+    let orphan_suffix = if orphans > 0 {
+        format!(
+            " ({} orphaned temp {} skipped)",
+            orphans,
+            if orphans == 1 { "file" } else { "files" }
+        )
+    } else {
+        String::new()
+    };
+    let error_suffix = if disc_errors > 0 {
+        format!(
+            ", {} discovery {}",
+            disc_errors,
+            if disc_errors == 1 { "error" } else { "errors" }
+        )
+    } else {
+        String::new()
     };
 
-    if !quiet && path_missing_count > 0 {
+    if hash_files {
+        let elapsed_str = if elapsed.as_millis() < 1000 {
+            format!("{}ms", elapsed.as_millis())
+        } else {
+            format!("{}", HumanDuration(elapsed))
+        };
         eprintln!(
-            "  {} {} files no longer on disk",
-            style("Missing").dim(),
-            path_missing_count
+            "  {} {} files, hashed in {}{}{}",
+            style("Discovered").dim(),
+            file_count,
+            elapsed_str,
+            orphan_suffix,
+            error_suffix,
+        );
+    } else {
+        eprintln!(
+            "  {} {} files (hashing skipped){}{}",
+            style("Discovered").dim(),
+            file_count,
+            orphan_suffix,
+            error_suffix,
         );
     }
+}
 
-    // Batch reconciliation: detect moves, external changes, and missing files.
-    // Requires content hashes — skip if --no-hash was specified.
-    let reconcile_introspect_paths: Option<std::collections::HashSet<std::path::PathBuf>> =
-        if hash_files {
-            let discovered: Vec<voom_domain::transition::DiscoveredFile> = all_events
-                .iter()
-                .filter_map(|e| {
-                    e.content_hash.as_ref().map(|hash| {
-                        voom_domain::transition::DiscoveredFile::new(
-                            e.path.clone(),
-                            e.size,
-                            hash.clone(),
-                        )
-                    })
-                })
-                .collect();
+/// Mark files as missing using path-only comparison (no hash needed).
+/// Only runs when hashing is disabled; with hashing, reconcile handles it.
+fn mark_missing_without_hash(
+    store: &dyn voom_domain::storage::StorageTrait,
+    events: &[FileDiscoveredEvent],
+    paths: &[PathBuf],
+    hash_files: bool,
+    quiet: bool,
+) -> Result<()> {
+    if hash_files {
+        return Ok(());
+    }
+    let discovered: Vec<PathBuf> = events.iter().map(|e| e.path.clone()).collect();
+    let missing = store.mark_missing_paths(&discovered, paths)?;
+    if !quiet && missing > 0 {
+        print_missing_count(missing);
+    }
+    Ok(())
+}
 
-            let reconcile_result = store.reconcile_discovered_files(&discovered, &paths)?;
-
-            if !quiet {
-                if reconcile_result.missing > 0 {
-                    eprintln!(
-                        "  {} {} files no longer on disk",
-                        style("Missing").dim(),
-                        reconcile_result.missing
-                    );
-                }
-                if reconcile_result.moved > 0 {
-                    eprintln!(
-                        "  {} {} files moved/renamed",
-                        style("Moved").dim(),
-                        reconcile_result.moved
-                    );
-                }
-                if reconcile_result.external_changes > 0 {
-                    eprintln!(
-                        "  {} {} files changed externally",
-                        style("Changed").dim(),
-                        reconcile_result.external_changes
-                    );
-                }
-            }
-
-            Some(reconcile_result.needs_introspection.into_iter().collect())
-        } else {
-            None
-        };
-
-    // Dispatch FileDiscovered events through the kernel so subscribers react:
-    // - sqlite-store records each file in the discovered_files staging table
-    // - ffprobe-introspector enqueues JobType::Introspect jobs
-    //
-    // The CLI still drives introspection directly (below) for deterministic
-    // progress reporting. The enqueued introspect jobs are not consumed here;
-    // they exist for future daemon-mode use (issue #36).
-    for event in &all_events {
-        kernel.dispatch(Event::FileDiscovered(event.clone()));
+/// Batch reconciliation: detect moves, external changes, and missing files.
+/// Returns the set of paths needing introspection, or None if hashing is off.
+fn reconcile_files(
+    store: &dyn voom_domain::storage::StorageTrait,
+    events: &[FileDiscoveredEvent],
+    paths: &[PathBuf],
+    hash_files: bool,
+    quiet: bool,
+) -> Result<Option<HashSet<PathBuf>>> {
+    if !hash_files {
+        return Ok(None);
     }
 
-    // With hashing enabled, use reconciliation results to determine which files
-    // need introspection (new, moved, externally changed). Without hashing,
-    // introspect everything.
-    let needs_introspection: Vec<_> = if let Some(ref introspect_set) = reconcile_introspect_paths {
-        all_events
-            .iter()
-            .filter(|e| introspect_set.contains(&e.path))
-            .collect()
-    } else {
-        all_events.iter().collect()
-    };
+    let discovered: Vec<voom_domain::transition::DiscoveredFile> = events
+        .iter()
+        .filter_map(|e| {
+            e.content_hash.as_ref().map(|hash| {
+                voom_domain::transition::DiscoveredFile::new(e.path.clone(), e.size, hash.clone())
+            })
+        })
+        .collect();
 
-    let probe = if quiet {
-        ProbeProgress::hidden(needs_introspection.len())
+    let result = store.reconcile_discovered_files(&discovered, paths)?;
+
+    if !quiet {
+        if result.missing > 0 {
+            print_missing_count(result.missing);
+        }
+        if result.moved > 0 {
+            eprintln!(
+                "  {} {} files moved/renamed",
+                style("Moved").dim(),
+                result.moved
+            );
+        }
+        if result.external_changes > 0 {
+            eprintln!(
+                "  {} {} files changed externally",
+                style("Changed").dim(),
+                result.external_changes
+            );
+        }
+    }
+
+    Ok(Some(result.needs_introspection.into_iter().collect()))
+}
+
+/// Filter events to only those needing introspection based on reconciliation.
+fn filter_for_introspection<'a>(
+    events: &'a [FileDiscoveredEvent],
+    reconcile_paths: &'a Option<HashSet<PathBuf>>,
+) -> Vec<&'a FileDiscoveredEvent> {
+    if let Some(set) = reconcile_paths {
+        events.iter().filter(|e| set.contains(&e.path)).collect()
     } else {
-        ProbeProgress::new(needs_introspection.len())
+        events.iter().collect()
+    }
+}
+
+/// Run ffprobe introspection on files. Returns (introspected, errors) counts.
+async fn run_introspection(
+    events: &[&FileDiscoveredEvent],
+    kernel: &Arc<voom_kernel::Kernel>,
+    ffprobe_path: Option<&str>,
+    token: &CancellationToken,
+    quiet: bool,
+) -> (u64, u64) {
+    let probe = if quiet {
+        ProbeProgress::hidden(events.len())
+    } else {
+        ProbeProgress::new(events.len())
     };
     let mut introspected = 0u64;
     let mut errors = 0u64;
-    let total = all_events.len() as u64;
 
-    for (i, event) in needs_introspection.iter().enumerate() {
+    for (i, event) in events.iter().enumerate() {
         if token.is_cancelled() {
             break;
         }
@@ -319,98 +380,112 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
             event.path.clone(),
             event.size,
             event.content_hash.clone(),
-            &kernel,
-            config.ffprobe_path(),
+            kernel,
+            ffprobe_path,
         )
         .await
         {
-            Ok(_file) => {
-                introspected += 1;
-            }
+            Ok(_file) => introspected += 1,
             Err(e) => {
-                tracing::warn!(path = %event.path.display(), error = %e, "introspection failed");
+                tracing::warn!(
+                    path = %event.path.display(),
+                    error = %e,
+                    "introspection failed"
+                );
                 errors += 1;
             }
         }
-
         probe.inc();
     }
 
     probe.finish();
+    (introspected, errors)
+}
 
-    let total_elapsed = start.elapsed();
-    if token.is_cancelled() {
+/// Print the final scan summary (completion or interruption).
+fn print_scan_summary(
+    events: &[FileDiscoveredEvent],
+    introspected: u64,
+    errors: u64,
+    elapsed: Duration,
+    cancelled: bool,
+    quiet: bool,
+    format: Option<crate::cli::OutputFormat>,
+) {
+    let total = events.len() as u64;
+    let error_suffix = if errors > 0 {
+        format!(", {} {}", errors, style("errors").red())
+    } else {
+        String::new()
+    };
+
+    if cancelled {
         if !quiet {
             eprintln!(
                 "\n{} {} files discovered, {}/{} introspected{} ({})",
                 style("Interrupted.").bold().yellow(),
-                all_events.len(),
+                events.len(),
                 introspected,
                 total,
-                if errors > 0 {
-                    format!(", {} {}", errors, style("errors").red())
-                } else {
-                    String::new()
-                },
-                HumanDuration(total_elapsed),
+                error_suffix,
+                HumanDuration(elapsed),
             );
         }
-        // Emit valid output for machine formats even on interruption
-        if let Some(format) = args.format {
-            let results: Vec<_> = all_events
-                .iter()
-                .map(|e| (e.path.clone(), e.size, e.content_hash.clone()))
-                .collect();
-            output::format_scan_results(&results, format);
+        if let Some(format) = format {
+            output::format_scan_results(&format_results(events), format);
         }
-        return Ok(());
+        return;
     }
 
     if !quiet {
         eprintln!(
             "\n{} {} files discovered, {} introspected{} ({})",
             style("Done.").bold().green(),
-            all_events.len(),
+            events.len(),
             introspected,
-            if errors > 0 {
-                format!(", {} {}", errors, style("errors").red())
-            } else {
-                String::new()
-            },
-            HumanDuration(total_elapsed),
+            error_suffix,
+            HumanDuration(elapsed),
         );
     }
+}
 
-    // Prune old missing records based on retention config.
-    let retention_days = config.pruning.retention_days;
-    if retention_days > 0 {
-        let cutoff = chrono::Utc::now() - chrono::Duration::days(i64::from(retention_days));
-        match store.purge_missing(cutoff) {
-            Ok(n) if n > 0 && !quiet => {
-                eprintln!(
-                    "  {} {} stale records (missing >{} days)",
-                    style("Purged").dim(),
-                    n,
-                    retention_days
-                );
-            }
-            Ok(_) => {}
-            Err(e) => tracing::warn!(error = %e, "purge failed"),
+/// Purge stale missing records based on retention config.
+fn purge_stale_records(
+    store: &dyn voom_domain::storage::StorageTrait,
+    retention_days: u32,
+    quiet: bool,
+) {
+    if retention_days == 0 {
+        return;
+    }
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(i64::from(retention_days));
+    match store.purge_missing(cutoff) {
+        Ok(n) if n > 0 && !quiet => {
+            eprintln!(
+                "  {} {} stale records (missing >{} days)",
+                style("Purged").dim(),
+                n,
+                retention_days
+            );
         }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "purge failed"),
     }
+}
 
-    // Capture a library snapshot for trend tracking
-    capture_snapshot(&*store);
+fn print_missing_count(count: u32) {
+    eprintln!(
+        "  {} {} files no longer on disk",
+        style("Missing").dim(),
+        count
+    );
+}
 
-    if let Some(format) = args.format {
-        let results: Vec<_> = all_events
-            .iter()
-            .map(|e| (e.path.clone(), e.size, e.content_hash.clone()))
-            .collect();
-        output::format_scan_results(&results, format);
-    }
-
-    Ok(())
+fn format_results(events: &[FileDiscoveredEvent]) -> Vec<(PathBuf, u64, Option<String>)> {
+    events
+        .iter()
+        .map(|e| (e.path.clone(), e.size, e.content_hash.clone()))
+        .collect()
 }
 
 fn capture_snapshot(store: &dyn voom_domain::storage::SnapshotStorage) {
