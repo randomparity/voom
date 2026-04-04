@@ -165,6 +165,7 @@ CREATE INDEX IF NOT EXISTS idx_event_log_type ON event_log(event_type);
 
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 CREATE INDEX IF NOT EXISTS idx_files_hash ON files(content_hash);
+CREATE INDEX IF NOT EXISTS idx_files_superseded_by ON files(superseded_by);
 CREATE INDEX IF NOT EXISTS idx_tracks_file ON tracks(file_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, priority);
 CREATE INDEX IF NOT EXISTS idx_plans_file ON plans(file_id);
@@ -241,6 +242,8 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         Ok(columns.iter().any(|c| c == column))
     };
 
+    // Table creation must precede column migrations: has_column queries
+    // require the target table to exist.
     migrate_missing_tables(conn)?;
     migrate_transitions_table(conn)?;
     migrate_plans_columns(conn, &has_column)?;
@@ -290,10 +293,7 @@ fn migrate_files_columns(
         conn.execute_batch("ALTER TABLE files ADD COLUMN missing_since TEXT")?;
     }
     if !has_column("files", "superseded_by")? {
-        conn.execute_batch(
-            "ALTER TABLE files ADD COLUMN superseded_by TEXT;\
-             CREATE INDEX IF NOT EXISTS idx_files_superseded_by ON files(superseded_by);",
-        )?;
+        conn.execute_batch("ALTER TABLE files ADD COLUMN superseded_by TEXT")?;
     }
     Ok(())
 }
@@ -455,6 +455,13 @@ fn migrate_indexes_and_constraints(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tracks_type ON tracks(track_type);")?;
     }
 
+    if !has_index("idx_files_superseded_by")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_files_superseded_by \
+             ON files(superseded_by);",
+        )?;
+    }
+
     // Add UNIQUE constraint on subtitles(file_path, subtitle_path) for existing
     // databases that created the table before the constraint was added.
     let has_subtitles: bool = conn.query_row(
@@ -550,6 +557,26 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
+    }
+
+    #[test]
+    fn test_fresh_schema_has_superseded_by_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        create_schema(&conn).unwrap();
+
+        let has_index: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' \
+                 AND name='idx_files_superseded_by'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            has_index,
+            "fresh database should have idx_files_superseded_by"
+        );
     }
 
     #[test]
