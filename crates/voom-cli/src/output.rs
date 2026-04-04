@@ -301,49 +301,46 @@ pub fn format_executor_capabilities(
                 caps.hw_accels.join(", ")
             );
         }
-        if !caps.codecs.decoders.is_empty() || !caps.codecs.encoders.is_empty() {
-            println!("{}", style("Codecs:").bold());
-            if !caps.codecs.decoders.is_empty() {
-                println!(
-                    "  {} ({}): {}",
-                    style("Decoders").bold(),
-                    caps.codecs.decoders.len(),
-                    caps.codecs.decoders.join(", ")
-                );
-            }
-            if !caps.codecs.encoders.is_empty() {
-                println!(
-                    "  {} ({}): {}",
-                    style("Encoders").bold(),
-                    caps.codecs.encoders.len(),
-                    caps.codecs.encoders.join(", ")
-                );
-            }
-            if !caps.codecs.hw_decoders.is_empty() {
-                println!(
-                    "  {} ({}): {}",
-                    style("HW Decoders").bold(),
-                    caps.codecs.hw_decoders.len(),
-                    caps.codecs.hw_decoders.join(", ")
-                );
-            }
-            if !caps.codecs.hw_encoders.is_empty() {
-                println!(
-                    "  {} ({}): {}",
-                    style("HW Encoders").bold(),
-                    caps.codecs.hw_encoders.len(),
-                    caps.codecs.hw_encoders.join(", ")
-                );
-            }
-        }
-        if !caps.formats.is_empty() {
+        print_codec_section(&caps.codecs);
+        print_format_section(&caps.formats);
+    }
+}
+
+/// Print the codec subsections (decoders, encoders, HW decoders, HW encoders).
+fn print_codec_section(codecs: &voom_domain::events::CodecCapabilities) {
+    if codecs.decoders.is_empty() && codecs.encoders.is_empty() {
+        return;
+    }
+    println!("{}", style("Codecs:").bold());
+
+    let sections: &[(&str, &[String])] = &[
+        ("Decoders", &codecs.decoders),
+        ("Encoders", &codecs.encoders),
+        ("HW Decoders", &codecs.hw_decoders),
+        ("HW Encoders", &codecs.hw_encoders),
+    ];
+
+    for (label, items) in sections {
+        if !items.is_empty() {
             println!(
-                "{} ({}): {}",
-                style("Formats:").bold(),
-                caps.formats.len(),
-                caps.formats.join(", ")
+                "  {} ({}): {}",
+                style(label).bold(),
+                items.len(),
+                items.join(", ")
             );
         }
+    }
+}
+
+/// Print the supported formats section.
+fn print_format_section(formats: &[String]) {
+    if !formats.is_empty() {
+        println!(
+            "{} ({}): {}",
+            style("Formats:").bold(),
+            formats.len(),
+            formats.join(", ")
+        );
     }
 }
 

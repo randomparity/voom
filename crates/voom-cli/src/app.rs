@@ -244,47 +244,8 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
         );
     }
 
-    // WASM plugins — loaded from the configured directory (if it exists).
     #[cfg(feature = "wasm")]
-    {
-        let wasm_dir = config
-            .plugins
-            .wasm_dir
-            .clone()
-            .unwrap_or_else(|| config.data_dir.join("plugins").join("wasm"));
-
-        if wasm_dir.is_dir() {
-            match voom_kernel::loader::wasm::WasmPluginLoader::new() {
-                Ok(loader) => {
-                    // Pass disabled set so plugins are skipped before compilation.
-                    let skip_set: std::collections::HashSet<String> =
-                        disabled.iter().cloned().collect();
-                    let results =
-                        loader.load_dir_with_config_skip(&wasm_dir, &config.plugin, &skip_set);
-                    for result in results {
-                        match result {
-                            Ok((plugin, priority)) => {
-                                let name = plugin.name().to_string();
-                                // WASM plugins are already initialized during load
-                                // (WasmPluginLoader::load_with_manifest handles init).
-                                // Priority comes from manifest (default: 70).
-                                kernel.register_plugin(plugin, priority)?;
-                                tracing::info!(plugin = %name, priority, "WASM plugin loaded");
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "failed to load WASM plugin");
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to create WASM plugin loader");
-                }
-            }
-        } else {
-            tracing::debug!(dir = %wasm_dir.display(), "WASM plugins directory not found, skipping");
-        }
-    }
+    load_wasm_plugins(&mut kernel, config, disabled)?;
 
     Ok(BootstrapResult {
         kernel,
@@ -292,6 +253,49 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
         job_queue,
         collector,
     })
+}
+
+/// Load WASM plugins from the configured directory into the kernel.
+#[cfg(feature = "wasm")]
+fn load_wasm_plugins(kernel: &mut Kernel, config: &AppConfig, disabled: &[String]) -> Result<()> {
+    let wasm_dir = config
+        .plugins
+        .wasm_dir
+        .clone()
+        .unwrap_or_else(|| config.data_dir.join("plugins").join("wasm"));
+
+    if !wasm_dir.is_dir() {
+        tracing::debug!(
+            dir = %wasm_dir.display(),
+            "WASM plugins directory not found, skipping"
+        );
+        return Ok(());
+    }
+
+    let loader = match voom_kernel::loader::wasm::WasmPluginLoader::new() {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to create WASM plugin loader");
+            return Ok(());
+        }
+    };
+
+    let skip_set: std::collections::HashSet<String> = disabled.iter().cloned().collect();
+    let results = loader.load_dir_with_config_skip(&wasm_dir, &config.plugin, &skip_set);
+    for result in results {
+        match result {
+            Ok((plugin, priority)) => {
+                let name = plugin.name().to_string();
+                kernel.register_plugin(plugin, priority)?;
+                tracing::info!(plugin = %name, priority, "WASM plugin loaded");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load WASM plugin");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Open a standalone storage handle for commands that need only storage,

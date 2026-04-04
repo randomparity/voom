@@ -71,29 +71,7 @@ pub fn check_and_recover_under(
 
     if orphans.is_empty() {
         if !pending.is_empty() {
-            // Canonicalize scan dirs for reliable prefix matching.
-            let canonical_dirs: Vec<PathBuf> = scan_dirs
-                .iter()
-                .filter_map(|d| std::fs::canonicalize(d).ok())
-                .collect();
-
-            // Stale pending ops with no backups — clean up only those
-            // whose paths fall under the current scan dirs.
-            // Skip ambiguous global-dir matches and out-of-scope paths.
-            for op in &pending {
-                if ambiguous_paths.contains(&op.file_path) {
-                    continue;
-                }
-                if !path_is_under_any(&op.file_path, &canonical_dirs) {
-                    continue;
-                }
-                tracing::warn!(
-                    plan_id = %op.id,
-                    path = %op.file_path.display(),
-                    "stale pending operation with no backup — removing"
-                );
-                let _ = store.delete_pending_op(&op.id);
-            }
+            clean_stale_pending_ops(&pending, scan_dirs, &ambiguous_paths, store);
         }
         return Ok(0);
     }
@@ -105,38 +83,85 @@ pub fn check_and_recover_under(
 
     let mut resolved = 0u64;
     for orphan in &orphans {
-        let result = match config.mode.as_str() {
-            "always_recover" => recover(orphan, store),
-            "always_discard" => discard(orphan, store),
-            other => {
-                anyhow::bail!(
-                    "unsupported recovery mode '{}' — \
-                     use 'always_recover' or 'always_discard' in config.toml \
-                     [recovery] section",
-                    other
-                );
-            }
-        };
-        match result {
-            Ok(()) => {
-                resolved += 1;
-                // Clean up the pending operation row(s) for this path.
-                let path_str = orphan.original_path.to_string_lossy().to_string();
-                for op in pending
-                    .iter()
-                    .filter(|op| *op.file_path.to_string_lossy() == path_str)
-                {
-                    let _ = store.delete_pending_op(&op.id);
-                }
-            }
-            Err(e) => tracing::warn!(
-                backup = %orphan.backup_path.display(),
-                error = %e,
-                "failed to resolve orphaned backup"
-            ),
+        match resolve_single_orphan(orphan, config, store, &pending) {
+            Ok(true) => resolved += 1,
+            Ok(false) => {}
+            Err(e) => return Err(e),
         }
     }
     Ok(resolved)
+}
+
+/// Remove stale pending operations that have no corresponding backup files,
+/// scoped to the given scan directories. Ambiguous paths are preserved.
+fn clean_stale_pending_ops(
+    pending: &[voom_domain::storage::PendingOperation],
+    scan_dirs: &[PathBuf],
+    ambiguous_paths: &std::collections::HashSet<PathBuf>,
+    store: &dyn voom_domain::storage::StorageTrait,
+) {
+    let canonical_dirs: Vec<PathBuf> = scan_dirs
+        .iter()
+        .filter_map(|d| std::fs::canonicalize(d).ok())
+        .collect();
+
+    for op in pending {
+        if ambiguous_paths.contains(&op.file_path) {
+            continue;
+        }
+        if !path_is_under_any(&op.file_path, &canonical_dirs) {
+            continue;
+        }
+        tracing::warn!(
+            plan_id = %op.id,
+            path = %op.file_path.display(),
+            "stale pending operation with no backup — removing"
+        );
+        let _ = store.delete_pending_op(&op.id);
+    }
+}
+
+/// Resolve a single orphaned backup according to the recovery mode.
+/// Returns `Ok(true)` if the orphan was resolved, `Ok(false)` if resolution
+/// failed (logged as a warning), or `Err` for unsupported modes.
+fn resolve_single_orphan(
+    orphan: &OrphanedBackup,
+    config: &RecoveryConfig,
+    store: &dyn voom_domain::storage::StorageTrait,
+    pending: &[voom_domain::storage::PendingOperation],
+) -> Result<bool> {
+    let result = match config.mode.as_str() {
+        "always_recover" => recover(orphan, store),
+        "always_discard" => discard(orphan, store),
+        other => {
+            anyhow::bail!(
+                "unsupported recovery mode '{}' — \
+                 use 'always_recover' or 'always_discard' in config.toml \
+                 [recovery] section",
+                other
+            );
+        }
+    };
+    match result {
+        Ok(()) => {
+            let path_str = orphan.original_path.to_string_lossy().to_string();
+            for op in pending
+                .iter()
+                .filter(|op| *op.file_path.to_string_lossy() == path_str)
+            {
+                let _ = store.delete_pending_op(&op.id);
+            }
+            Ok(true)
+        }
+        Err(e) => {
+            tracing::warn!(
+                backup = %orphan.backup_path.display(),
+                error = %e,
+                "failed to resolve orphaned backup"
+            );
+            Ok(false)
+        }
+    }
 }
 
 /// Walk each directory looking for `.vbak` files inside `.voom-backup/` subdirectories.

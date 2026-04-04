@@ -64,54 +64,8 @@ pub fn run(args: ReportArgs) -> Result<()> {
     }
 
     match args.format {
-        OutputFormat::Json => {
-            let report = serde_json::json!({
-                "total_files": files.len(),
-                "total_size": files.iter().map(|f| f.size).sum::<u64>(),
-                "containers": stats::container_counts(&files),
-                "codecs": codec_counts(&files),
-            });
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&report).expect("report is serializable")
-            );
-        }
-        OutputFormat::Table => {
-            println!("{}", style("Library Report").bold().underlined());
-            println!();
-
-            let total_size: u64 = files.iter().map(|f| f.size).sum();
-            let total_duration: f64 = files.iter().map(|f| f.duration).sum();
-
-            println!(
-                "  {} files, {}, {}",
-                style(files.len()).bold(),
-                style(voom_domain::utils::format::format_size(total_size)).cyan(),
-                style(voom_domain::utils::format::format_duration(total_duration)).dim(),
-            );
-            println!();
-
-            // Container breakdown
-            println!("{}", style("Containers:").bold());
-            let containers = stats::container_counts(&files);
-            let mut table = output::new_table();
-            table.set_header(vec!["Container", "Count"]);
-            for (container, count) in &containers {
-                table.add_row(vec![Cell::new(container), Cell::new(count)]);
-            }
-            println!("{table}");
-            println!();
-
-            // Codec breakdown
-            println!("{}", style("Codecs:").bold());
-            let codecs = codec_counts(&files);
-            let mut table = output::new_table();
-            table.set_header(vec!["Codec", "Count"]);
-            for (codec, count) in &codecs {
-                table.add_row(vec![Cell::new(codec), Cell::new(count)]);
-            }
-            println!("{table}");
-        }
+        OutputFormat::Json => print_library_json(&files),
+        OutputFormat::Table => print_library_table(&files),
         OutputFormat::Plain => {
             for file in &files {
                 println!("{}", file.path.display());
@@ -120,6 +74,56 @@ pub fn run(args: ReportArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_library_json(files: &[voom_domain::MediaFile]) {
+    let report = serde_json::json!({
+        "total_files": files.len(),
+        "total_size": files.iter().map(|f| f.size).sum::<u64>(),
+        "containers": stats::container_counts(files),
+        "codecs": codec_counts(files),
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).expect("report is serializable")
+    );
+}
+
+fn print_library_table(files: &[voom_domain::MediaFile]) {
+    println!("{}", style("Library Report").bold().underlined());
+    println!();
+
+    let total_size: u64 = files.iter().map(|f| f.size).sum();
+    let total_duration: f64 = files.iter().map(|f| f.duration).sum();
+
+    println!(
+        "  {} files, {}, {}",
+        style(files.len()).bold(),
+        style(voom_domain::utils::format::format_size(total_size)).cyan(),
+        style(voom_domain::utils::format::format_duration(total_duration)).dim(),
+    );
+    println!();
+
+    // Container breakdown
+    println!("{}", style("Containers:").bold());
+    let containers = stats::container_counts(files);
+    let mut table = output::new_table();
+    table.set_header(vec!["Container", "Count"]);
+    for (container, count) in &containers {
+        table.add_row(vec![Cell::new(container), Cell::new(count)]);
+    }
+    println!("{table}");
+    println!();
+
+    // Codec breakdown
+    println!("{}", style("Codecs:").bold());
+    let codecs = codec_counts(files);
+    let mut table = output::new_table();
+    table.set_header(vec!["Codec", "Count"]);
+    for (codec, count) in &codecs {
+        table.add_row(vec![Cell::new(codec), Cell::new(count)]);
+    }
+    println!("{table}");
 }
 
 fn run_issues_report(files: &[voom_domain::MediaFile], format: &OutputFormat) -> Result<()> {
@@ -148,90 +152,96 @@ fn run_issues_report(files: &[voom_domain::MediaFile], format: &OutputFormat) ->
     }
 
     match format {
-        OutputFormat::Json => {
-            let entries: Vec<serde_json::Value> = files_with_issues
-                .iter()
-                .map(|(f, violations)| {
-                    serde_json::json!({
-                        "path": f.path.display().to_string(),
-                        "violations": violations,
-                    })
-                })
-                .collect();
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&entries).expect("report is serializable")
-            );
-        }
-        OutputFormat::Table => {
-            println!(
-                "{} ({} files)",
-                style("Safeguard Violations").bold().underlined(),
-                files_with_issues.len()
-            );
-            println!();
-            let mut table = output::new_table();
-            table.set_header(vec!["Path", "Violation", "Phase", "Message"]);
-            for (f, violations) in &files_with_issues {
-                let path = f
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                for v in violations {
-                    table.add_row(vec![
-                        Cell::new(&path),
-                        Cell::new(v.kind.as_str()),
-                        Cell::new(&v.phase_name),
-                        Cell::new(&v.message),
-                    ]);
-                }
-            }
-            println!("{table}");
-        }
-        OutputFormat::Plain => {
-            for (f, violations) in &files_with_issues {
-                for v in violations {
-                    println!("{}\t{}", f.path.display(), v.kind.as_str());
-                }
-            }
-        }
+        OutputFormat::Json => print_issues_json(&files_with_issues),
+        OutputFormat::Table => print_issues_table(&files_with_issues),
+        OutputFormat::Plain => print_issues_plain(&files_with_issues),
     }
 
     Ok(())
 }
 
-fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()> {
-    let stats = store
-        .plan_stats_by_phase()
-        .context("failed to query plan stats")?;
+fn print_issues_json(
+    files_with_issues: &[(
+        &voom_domain::MediaFile,
+        Vec<voom_domain::SafeguardViolation>,
+    )],
+) {
+    let entries: Vec<serde_json::Value> = files_with_issues
+        .iter()
+        .map(|(f, violations)| {
+            serde_json::json!({
+                "path": f.path.display().to_string(),
+                "violations": violations,
+            })
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&entries).expect("report is serializable")
+    );
+}
 
-    if stats.is_empty() {
-        if format.is_machine() {
-            if matches!(format, OutputFormat::Json) {
-                println!("[]");
-            }
-            return Ok(());
+fn print_issues_table(
+    files_with_issues: &[(
+        &voom_domain::MediaFile,
+        Vec<voom_domain::SafeguardViolation>,
+    )],
+) {
+    println!(
+        "{} ({} files)",
+        style("Safeguard Violations").bold().underlined(),
+        files_with_issues.len()
+    );
+    println!();
+    let mut table = output::new_table();
+    table.set_header(vec!["Path", "Violation", "Phase", "Message"]);
+    for (f, violations) in files_with_issues {
+        let path = f
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        for v in violations {
+            table.add_row(vec![
+                Cell::new(&path),
+                Cell::new(v.kind.as_str()),
+                Cell::new(&v.phase_name),
+                Cell::new(&v.message),
+            ]);
         }
-        eprintln!(
-            "{}",
-            style("No plan data. Run 'voom process' first.").yellow()
-        );
-        return Ok(());
     }
+    println!("{table}");
+}
 
-    #[derive(Default)]
-    struct PhaseAgg {
-        completed: u64,
-        skipped: u64,
-        failed: u64,
-        skip_reasons: HashMap<String, u64>,
+fn print_issues_plain(
+    files_with_issues: &[(
+        &voom_domain::MediaFile,
+        Vec<voom_domain::SafeguardViolation>,
+    )],
+) {
+    for (f, violations) in files_with_issues {
+        for v in violations {
+            println!("{}\t{}", f.path.display(), v.kind.as_str());
+        }
     }
+}
 
+#[derive(Default)]
+struct PhaseAgg {
+    completed: u64,
+    skipped: u64,
+    failed: u64,
+    skip_reasons: HashMap<String, u64>,
+}
+
+/// Aggregate raw plan stats into per-phase summaries, preserving insertion order.
+fn aggregate_plan_stats(
+    stats: &[voom_domain::storage::PlanPhaseStat],
+) -> (Vec<String>, HashMap<String, PhaseAgg>) {
     let mut phases: Vec<String> = Vec::new();
     let mut by_phase: HashMap<String, PhaseAgg> = HashMap::new();
 
-    for stat in &stats {
+    for stat in stats {
         if !by_phase.contains_key(&stat.phase_name) {
             phases.push(stat.phase_name.clone());
         }
@@ -253,67 +263,97 @@ fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()
         }
     }
 
-    match format {
-        OutputFormat::Json => {
-            let entries: Vec<serde_json::Value> = phases
-                .iter()
-                .map(|name| {
-                    let ps = by_phase.get(name).expect("phase exists");
-                    let mut val = serde_json::json!({
-                        "phase": name,
-                        "completed": ps.completed,
-                        "skipped": ps.skipped,
-                        "failed": ps.failed,
-                    });
-                    if !ps.skip_reasons.is_empty() {
-                        val["skip_reasons"] = serde_json::json!(ps.skip_reasons);
-                    }
-                    val
-                })
-                .collect();
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&entries).expect("report is serializable")
-            );
-        }
-        OutputFormat::Table => {
-            println!("{}", style("Plan Processing Summary").bold().underlined());
-            println!();
+    (phases, by_phase)
+}
 
-            let mut table = output::new_table();
-            table.set_header(vec![
-                "Phase",
-                "Completed",
-                "Skipped",
-                "Failed",
-                "Top Skip Reasons",
-            ]);
-            for name in &phases {
-                let ps = by_phase.get(name).expect("phase exists");
-                let reasons = output::format_skip_reasons(&ps.skip_reasons, 3);
-                table.add_row(vec![
-                    Cell::new(name),
-                    Cell::new(ps.completed),
-                    Cell::new(ps.skipped),
-                    Cell::new(ps.failed),
-                    Cell::new(&reasons),
-                ]);
+fn print_plans_json(phases: &[String], by_phase: &HashMap<String, PhaseAgg>) {
+    let entries: Vec<serde_json::Value> = phases
+        .iter()
+        .map(|name| {
+            let ps = by_phase.get(name).expect("phase exists");
+            let mut val = serde_json::json!({
+                "phase": name,
+                "completed": ps.completed,
+                "skipped": ps.skipped,
+                "failed": ps.failed,
+            });
+            if !ps.skip_reasons.is_empty() {
+                val["skip_reasons"] = serde_json::json!(ps.skip_reasons);
             }
-            println!("{table}");
-        }
-        OutputFormat::Plain => {
-            for name in &phases {
-                let ps = by_phase.get(name).expect("phase exists");
-                let status = if ps.failed > 0 {
-                    "failed"
-                } else if ps.completed > 0 {
-                    "completed"
-                } else {
-                    "skipped"
-                };
-                println!("{name}\t{status}");
+            val
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&entries).expect("report is serializable")
+    );
+}
+
+fn print_plans_table(phases: &[String], by_phase: &HashMap<String, PhaseAgg>) {
+    println!("{}", style("Plan Processing Summary").bold().underlined());
+    println!();
+
+    let mut table = output::new_table();
+    table.set_header(vec![
+        "Phase",
+        "Completed",
+        "Skipped",
+        "Failed",
+        "Top Skip Reasons",
+    ]);
+    for name in phases {
+        let ps = by_phase.get(name).expect("phase exists");
+        let reasons = output::format_skip_reasons(&ps.skip_reasons, 3);
+        table.add_row(vec![
+            Cell::new(name),
+            Cell::new(ps.completed),
+            Cell::new(ps.skipped),
+            Cell::new(ps.failed),
+            Cell::new(&reasons),
+        ]);
+    }
+    println!("{table}");
+}
+
+fn print_plans_plain(phases: &[String], by_phase: &HashMap<String, PhaseAgg>) {
+    for name in phases {
+        let ps = by_phase.get(name).expect("phase exists");
+        let status = if ps.failed > 0 {
+            "failed"
+        } else if ps.completed > 0 {
+            "completed"
+        } else {
+            "skipped"
+        };
+        println!("{name}\t{status}");
+    }
+}
+
+fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()> {
+    let stats = store
+        .plan_stats_by_phase()
+        .context("failed to query plan stats")?;
+
+    if stats.is_empty() {
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!("[]");
             }
+            return Ok(());
         }
+        eprintln!(
+            "{}",
+            style("No plan data. Run 'voom process' first.").yellow()
+        );
+        return Ok(());
+    }
+
+    let (phases, by_phase) = aggregate_plan_stats(&stats);
+
+    match format {
+        OutputFormat::Json => print_plans_json(&phases, &by_phase),
+        OutputFormat::Table => print_plans_table(&phases, &by_phase),
+        OutputFormat::Plain => print_plans_plain(&phases, &by_phase),
     }
 
     Ok(())
