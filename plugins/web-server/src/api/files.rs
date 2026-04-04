@@ -145,6 +145,8 @@ pub async fn delete_file(
 /// web mutations and CLI mutations are mutually exclusive.
 fn acquire_process_lock(data_dir: &std::path::Path) -> anyhow::Result<std::fs::File> {
     use fs2::FileExt;
+    std::fs::create_dir_all(data_dir)
+        .map_err(|e| anyhow::anyhow!("create data dir {}: {e}", data_dir.display()))?;
     let path = data_dir.join("voom.lock");
     let file = std::fs::File::options()
         .create(true)
