@@ -403,7 +403,12 @@ impl FfmpegExecutorPlugin {
         )];
 
         let produced_events = vec![
-            Event::PlanExecuting(PlanExecutingEvent::new(event.path.clone(), phase_name, 1)),
+            Event::PlanExecuting(PlanExecutingEvent::new(
+                plan.id,
+                event.path.clone(),
+                phase_name,
+                1,
+            )),
             Event::PlanCreated(voom_domain::events::PlanCreatedEvent::new(plan)),
         ];
 
@@ -952,6 +957,7 @@ mod tests {
     fn test_on_event_ignores_other_events() {
         let plugin = FfmpegExecutorPlugin::new();
         let event = Event::PlanExecuting(PlanExecutingEvent::new(
+            uuid::Uuid::new_v4(),
             PathBuf::from("/test.mp4"),
             "process",
             1,

@@ -1209,6 +1209,7 @@ fn execute_single_plan(
     kernel: &voom_kernel::Kernel,
 ) -> PlanOutcome {
     let r = kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent::new(
+        plan.id,
         file.path.clone(),
         plan.phase_name.clone(),
         plan.actions.len(),
