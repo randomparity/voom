@@ -271,7 +271,7 @@ When VOOM detects an external modification, it orphans the old UUID and creates 
 
 **Severity:** Medium. This is architecturally correct (the content IS different), but the user experience is confusing. "Why did VOOM forget everything about this file?"
 
-**Mitigation:** Could add a `superseded_by` field linking old UUID to new UUID, creating a chain. Not implemented.
+**Mitigation:** Implemented via `superseded_by` chain. See [File Identity and Lineage](file-identity-and-lineage.md) for details.
 
 ### 4. Crash recovery depends on event log not being pruned
 

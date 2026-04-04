@@ -1,10 +1,70 @@
 use anyhow::Result;
 use console::style;
+use uuid::Uuid;
+use voom_domain::storage::{FileStorage, FileTransitionStorage};
+use voom_domain::transition::FileTransition;
 use voom_domain::utils::format;
 
 use crate::app;
 use crate::cli::{HistoryArgs, OutputFormat};
 use crate::output;
+
+/// Maximum predecessors to walk (prevents infinite loops from corrupt data).
+const MAX_PREDECESSORS: usize = 50;
+
+/// Walk the superseded_by chain backward from `start_id`, collecting all
+/// file IDs in lineage order (oldest first, current last).
+fn collect_lineage(store: &dyn FileStorage, start_id: Uuid) -> Vec<Uuid> {
+    let mut chain = vec![start_id];
+    let mut seen = std::collections::HashSet::from([start_id]);
+    let mut current = start_id;
+
+    loop {
+        if chain.len() > MAX_PREDECESSORS {
+            tracing::warn!(
+                "predecessor chain exceeded {MAX_PREDECESSORS} entries, \
+                 truncating"
+            );
+            break;
+        }
+
+        match store.predecessor_id_of(&current) {
+            Ok(Some(pred_id)) => {
+                if !seen.insert(pred_id) {
+                    tracing::warn!("cycle detected in predecessor chain at {}", pred_id);
+                    break;
+                }
+                chain.push(pred_id);
+                current = pred_id;
+            }
+            Ok(None) => break,
+            Err(e) => {
+                tracing::warn!("failed to walk predecessor chain: {e}");
+                break;
+            }
+        }
+    }
+
+    chain.reverse(); // oldest first
+    chain
+}
+
+/// Collect transitions for an entire lineage chain.
+fn collect_lineage_transitions(
+    store: &dyn FileTransitionStorage,
+    lineage: &[Uuid],
+) -> Vec<FileTransition> {
+    let mut all_transitions = Vec::new();
+    for file_id in lineage {
+        match store.transitions_for_file(file_id) {
+            Ok(transitions) => all_transitions.extend(transitions),
+            Err(e) => {
+                tracing::warn!("failed to load transitions for {file_id}: {e}");
+            }
+        }
+    }
+    all_transitions
+}
 
 pub fn run(args: HistoryArgs) -> Result<()> {
     let config = crate::config::load_config()?;
@@ -19,9 +79,10 @@ pub fn run(args: HistoryArgs) -> Result<()> {
         .file_by_path(&path)
         .map_err(|e| anyhow::anyhow!("failed to look up file: {e}"))?
     {
-        Some(file) => store
-            .transitions_for_file(&file.id)
-            .map_err(|e| anyhow::anyhow!("failed to retrieve transitions: {e}"))?,
+        Some(file) => {
+            let lineage = collect_lineage(store.as_ref(), file.id);
+            collect_lineage_transitions(store.as_ref(), &lineage)
+        }
         None => store
             .transitions_for_path(&path)
             .map_err(|e| anyhow::anyhow!("failed to retrieve transitions: {e}"))?,
@@ -68,6 +129,9 @@ pub fn run(args: HistoryArgs) -> Result<()> {
             );
         }
         OutputFormat::Table => {
+            let has_lineage = transitions.len() > 1
+                && transitions.windows(2).any(|w| w[0].file_id != w[1].file_id);
+
             println!(
                 "{} for {}:\n",
                 style(format!("{} transition entries", transitions.len())).bold(),
@@ -75,9 +139,38 @@ pub fn run(args: HistoryArgs) -> Result<()> {
             );
 
             let mut table = output::new_table();
-            table.set_header(vec!["#", "Date", "Source", "From Hash", "To Hash"]);
+            let col_count = if has_lineage { 6 } else { 5 };
+            if has_lineage {
+                table.set_header(vec![
+                    "#",
+                    "Date",
+                    "Source",
+                    "File ID",
+                    "From Hash",
+                    "To Hash",
+                ]);
+            } else {
+                table.set_header(vec!["#", "Date", "Source", "From Hash", "To Hash"]);
+            }
+
+            let mut prev_file_id: Option<Uuid> = None;
 
             for (i, t) in transitions.iter().enumerate() {
+                if has_lineage {
+                    if let Some(prev) = prev_file_id {
+                        if prev != t.file_id {
+                            let sep = style("── external modification ──").dim().to_string();
+                            let mut sep_row: Vec<comfy_table::Cell> =
+                                vec![comfy_table::Cell::new(""), comfy_table::Cell::new(&sep)];
+                            for _ in 2..col_count {
+                                sep_row.push(comfy_table::Cell::new(""));
+                            }
+                            table.add_row(sep_row);
+                        }
+                    }
+                    prev_file_id = Some(t.file_id);
+                }
+
                 let date = format::format_display(&t.created_at);
                 let from = t
                     .from_hash
@@ -86,13 +179,21 @@ pub fn run(args: HistoryArgs) -> Result<()> {
                     .unwrap_or("—");
                 let to = output::hash_preview(&t.to_hash);
 
-                table.add_row(vec![
+                let mut row = vec![
                     comfy_table::Cell::new(i + 1),
                     comfy_table::Cell::new(date),
                     comfy_table::Cell::new(t.source.as_str()),
-                    comfy_table::Cell::new(from),
-                    comfy_table::Cell::new(to),
-                ]);
+                ];
+
+                if has_lineage {
+                    let short_id = &t.file_id.to_string()[..8];
+                    row.push(comfy_table::Cell::new(format!("{short_id}...")));
+                }
+
+                row.push(comfy_table::Cell::new(from));
+                row.push(comfy_table::Cell::new(to));
+
+                table.add_row(row);
             }
 
             println!("{table}");

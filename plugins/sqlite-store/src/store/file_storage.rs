@@ -348,6 +348,47 @@ impl FileStorage for SqliteStore {
         Ok(())
     }
 
+    fn predecessor_of(&self, successor_id: &Uuid) -> Result<Option<MediaFile>> {
+        let conn = self.conn()?;
+        let file_row: Option<FileRow> = conn
+            .query_row(
+                "SELECT id, path, size, content_hash, expected_hash, status, \
+                 container, duration, bitrate, tags, plugin_metadata, introspected_at \
+                 FROM files WHERE superseded_by = ?1 LIMIT 1",
+                params![successor_id.to_string()],
+                row_to_file,
+            )
+            .optional()
+            .map_err(storage_err(&format!(
+                "failed to query predecessor for {successor_id}"
+            )))?;
+
+        match file_row {
+            Some(fr) => {
+                let id = super::parse_uuid(&fr.id)?;
+                let tracks = self.load_tracks(&conn, &id)?;
+                Ok(Some(fr.to_media_file(tracks)?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn predecessor_id_of(&self, successor_id: &Uuid) -> Result<Option<Uuid>> {
+        let conn = self.conn()?;
+        let id_str: Option<String> = conn
+            .query_row(
+                "SELECT id FROM files WHERE superseded_by = ?1 LIMIT 1",
+                params![successor_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_err(&format!(
+                "failed to query predecessor id for {successor_id}"
+            )))?;
+
+        id_str.map(|s| super::parse_uuid(&s)).transpose()
+    }
+
     fn mark_missing_paths(
         &self,
         discovered_paths: &[PathBuf],
@@ -561,14 +602,13 @@ fn reconcile_existing_path(
         .with_from(expected_hash, Some(existing_size as u64));
         insert_transition_in_tx(tx, &ext_transition, now)?;
 
+        let new_id = Uuid::new_v4();
         tx.execute(
             "UPDATE files SET path = NULL, status = 'missing', \
-             missing_since = ?1 WHERE id = ?2",
-            params![now, existing_id],
+             missing_since = ?1, superseded_by = ?2 WHERE id = ?3",
+            params![now, new_id.to_string(), existing_id],
         )
         .map_err(storage_err("failed to clear old file for external change"))?;
-
-        let new_id = Uuid::new_v4();
         tx.execute(
             "INSERT INTO files \
              (id, path, filename, size, content_hash, \
@@ -828,6 +868,173 @@ mod tests {
             new_file.id, file_a_id,
             "/movies/new.mkv must have a new UUID, not stolen from /tv/episode.mkv"
         );
+    }
+
+    #[test]
+    fn predecessor_of_returns_none_when_no_predecessor() {
+        let store = test_store();
+        let file = active_file("/media/movie.mkv");
+        store.upsert_file(&file).unwrap();
+
+        let result = store.predecessor_of(&file.id).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn predecessor_of_follows_superseded_by_link() {
+        let store = test_store();
+
+        // Create old file, then manually set superseded_by
+        let old_file = active_file("/media/old.mkv");
+        store.upsert_file(&old_file).unwrap();
+        let new_file = active_file("/media/movie.mkv");
+        store.upsert_file(&new_file).unwrap();
+
+        // Manually set the link (reconciliation will do this in Task 3)
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET superseded_by = ?1 WHERE id = ?2",
+                rusqlite::params![new_file.id.to_string(), old_file.id.to_string()],
+            )
+            .unwrap();
+        }
+
+        let predecessor = store.predecessor_of(&new_file.id).unwrap();
+        assert!(predecessor.is_some(), "should find predecessor");
+        assert_eq!(predecessor.unwrap().id, old_file.id);
+    }
+
+    #[test]
+    fn reconcile_external_change_sets_superseded_by() {
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+
+        let mut file = MediaFile::new(PathBuf::from("/media/movie.mkv"));
+        file.content_hash = Some("original_hash".to_string());
+        store.upsert_file(&file).unwrap();
+        let old_id = store
+            .file_by_path(std::path::Path::new("/media/movie.mkv"))
+            .unwrap()
+            .unwrap()
+            .id;
+        // upsert_file doesn't persist expected_hash; set it explicitly so reconciliation
+        // detects a hash mismatch and treats this as an external modification.
+        store
+            .update_expected_hash(&old_id, "original_hash")
+            .unwrap();
+
+        let discovered = vec![DiscoveredFile::new(
+            PathBuf::from("/media/movie.mkv"),
+            2000,
+            "new_hash".to_string(),
+        )];
+        let scanned = vec![PathBuf::from("/media")];
+        let result = store
+            .reconcile_discovered_files(&discovered, &scanned)
+            .unwrap();
+
+        assert_eq!(result.external_changes, 1);
+
+        let new_file = store
+            .file_by_path(std::path::Path::new("/media/movie.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_ne!(new_file.id, old_id, "new file should have a different UUID");
+
+        let predecessor = store.predecessor_of(&new_file.id).unwrap();
+        assert!(predecessor.is_some(), "new file should have a predecessor");
+        assert_eq!(
+            predecessor.unwrap().id,
+            old_id,
+            "predecessor should be the old file"
+        );
+    }
+
+    #[test]
+    fn reconcile_successive_external_changes_build_chain() {
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+
+        let mut file = MediaFile::new(PathBuf::from("/media/movie.mkv"));
+        file.content_hash = Some("hash_v1".to_string());
+        store.upsert_file(&file).unwrap();
+        let id_v1 = store
+            .file_by_path(std::path::Path::new("/media/movie.mkv"))
+            .unwrap()
+            .unwrap()
+            .id;
+        // upsert_file doesn't persist expected_hash; set it explicitly.
+        store.update_expected_hash(&id_v1, "hash_v1").unwrap();
+
+        // First external modification: v1 -> v2
+        let discovered = vec![DiscoveredFile::new(
+            PathBuf::from("/media/movie.mkv"),
+            2000,
+            "hash_v2".to_string(),
+        )];
+        let scanned = vec![PathBuf::from("/media")];
+        store
+            .reconcile_discovered_files(&discovered, &scanned)
+            .unwrap();
+        let id_v2 = store
+            .file_by_path(std::path::Path::new("/media/movie.mkv"))
+            .unwrap()
+            .unwrap()
+            .id;
+
+        // Second external modification: v2 -> v3
+        let discovered = vec![DiscoveredFile::new(
+            PathBuf::from("/media/movie.mkv"),
+            3000,
+            "hash_v3".to_string(),
+        )];
+        store
+            .reconcile_discovered_files(&discovered, &scanned)
+            .unwrap();
+        let file_v3 = store
+            .file_by_path(std::path::Path::new("/media/movie.mkv"))
+            .unwrap()
+            .unwrap();
+
+        // Walk the chain backward: v3 -> v2 -> v1
+        let pred_v2 = store.predecessor_of(&file_v3.id).unwrap();
+        assert!(pred_v2.is_some(), "v3 should have predecessor v2");
+        assert_eq!(pred_v2.as_ref().unwrap().id, id_v2);
+
+        let pred_v1 = store.predecessor_of(&id_v2).unwrap();
+        assert!(pred_v1.is_some(), "v2 should have predecessor v1");
+        assert_eq!(pred_v1.as_ref().unwrap().id, id_v1);
+
+        let pred_none = store.predecessor_of(&id_v1).unwrap();
+        assert!(pred_none.is_none(), "v1 should have no predecessor");
+    }
+
+    #[test]
+    fn predecessor_id_of_returns_just_uuid() {
+        let store = test_store();
+
+        let old_file = active_file("/media/old.mkv");
+        store.upsert_file(&old_file).unwrap();
+        let new_file = active_file("/media/movie.mkv");
+        store.upsert_file(&new_file).unwrap();
+
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET superseded_by = ?1 WHERE id = ?2",
+                rusqlite::params![new_file.id.to_string(), old_file.id.to_string()],
+            )
+            .unwrap();
+        }
+
+        let pred_id = store.predecessor_id_of(&new_file.id).unwrap();
+        assert_eq!(pred_id, Some(old_file.id));
+
+        let no_pred = store.predecessor_id_of(&old_file.id).unwrap();
+        assert!(no_pred.is_none());
     }
 
     #[test]

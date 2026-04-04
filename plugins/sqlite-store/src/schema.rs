@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS files (
     expected_hash TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     missing_since TEXT,
+    superseded_by TEXT,
     container TEXT NOT NULL,
     duration REAL,
     bitrate INTEGER,
@@ -164,6 +165,9 @@ CREATE INDEX IF NOT EXISTS idx_event_log_type ON event_log(event_type);
 
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 CREATE INDEX IF NOT EXISTS idx_files_hash ON files(content_hash);
+CREATE INDEX IF NOT EXISTS idx_files_superseded_by ON files(superseded_by);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_files_superseded_by_unique
+    ON files(superseded_by) WHERE superseded_by IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tracks_file ON tracks(file_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, priority);
 CREATE INDEX IF NOT EXISTS idx_plans_file ON plans(file_id);
@@ -240,10 +244,12 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         Ok(columns.iter().any(|c| c == column))
     };
 
+    // Table creation must precede column migrations: has_column queries
+    // require the target table to exist.
+    migrate_missing_tables(conn)?;
+    migrate_transitions_table(conn)?;
     migrate_plans_columns(conn, &has_column)?;
     migrate_files_columns(conn, &has_column)?;
-    migrate_transitions_table(conn)?;
-    migrate_missing_tables(conn)?;
     migrate_indexes_and_constraints(conn)?;
 
     Ok(())
@@ -254,6 +260,14 @@ fn migrate_plans_columns(
     conn: &Connection,
     has_column: &dyn Fn(&str, &str) -> rusqlite::Result<bool>,
 ) -> rusqlite::Result<()> {
+    let plans_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='plans'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !plans_exists {
+        return Ok(());
+    }
     if !has_column("plans", "skip_reason")? {
         conn.execute_batch("ALTER TABLE plans ADD COLUMN skip_reason TEXT")?;
     }
@@ -279,6 +293,9 @@ fn migrate_files_columns(
     }
     if !has_column("files", "missing_since")? {
         conn.execute_batch("ALTER TABLE files ADD COLUMN missing_since TEXT")?;
+    }
+    if !has_column("files", "superseded_by")? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN superseded_by TEXT")?;
     }
     Ok(())
 }
@@ -431,8 +448,27 @@ fn migrate_indexes_and_constraints(conn: &Connection) -> rusqlite::Result<()> {
         )
     };
 
-    if !has_index("idx_tracks_type")? {
+    let tracks_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tracks'",
+        [],
+        |row| row.get(0),
+    )?;
+    if tracks_exists && !has_index("idx_tracks_type")? {
         conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tracks_type ON tracks(track_type);")?;
+    }
+
+    if !has_index("idx_files_superseded_by")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_files_superseded_by \
+             ON files(superseded_by);",
+        )?;
+    }
+
+    if !has_index("idx_files_superseded_by_unique")? {
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_files_superseded_by_unique \
+             ON files(superseded_by) WHERE superseded_by IS NOT NULL;",
+        )?;
     }
 
     // Add UNIQUE constraint on subtitles(file_path, subtitle_path) for existing
@@ -530,5 +566,114 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
+    }
+
+    #[test]
+    fn test_fresh_schema_has_superseded_by_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        create_schema(&conn).unwrap();
+
+        let has_index: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' \
+                 AND name='idx_files_superseded_by'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            has_index,
+            "fresh database should have idx_files_superseded_by"
+        );
+    }
+
+    #[test]
+    fn test_superseded_by_unique_constraint() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        create_schema(&conn).unwrap();
+
+        // Insert two files
+        conn.execute_batch(
+            "INSERT INTO files (id, path, filename, size, content_hash, \
+             container, introspected_at, created_at, updated_at) \
+             VALUES ('aaa', '/a.mkv', 'a.mkv', 100, 'h1', 'mkv', \
+                     '2026-01-01', '2026-01-01', '2026-01-01');
+             INSERT INTO files (id, path, filename, size, content_hash, \
+             container, introspected_at, created_at, updated_at) \
+             VALUES ('bbb', '/b.mkv', 'b.mkv', 100, 'h2', 'mkv', \
+                     '2026-01-01', '2026-01-01', '2026-01-01');",
+        )
+        .unwrap();
+
+        // First file superseded by 'ccc' — should succeed
+        conn.execute(
+            "UPDATE files SET superseded_by = 'ccc' WHERE id = 'aaa'",
+            [],
+        )
+        .unwrap();
+
+        // Second file also superseded by 'ccc' — should fail (UNIQUE violation)
+        let result = conn.execute(
+            "UPDATE files SET superseded_by = 'ccc' WHERE id = 'bbb'",
+            [],
+        );
+        assert!(
+            result.is_err(),
+            "duplicate superseded_by should violate UNIQUE constraint"
+        );
+
+        // Multiple NULLs are allowed (only non-NULL values are unique)
+        conn.execute("UPDATE files SET superseded_by = NULL WHERE id = 'aaa'", [])
+            .unwrap();
+    }
+
+    #[test]
+    fn test_migrate_adds_superseded_by_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        // Create schema WITHOUT superseded_by to simulate old DB
+        conn.execute_batch(
+            "CREATE TABLE files (
+                id TEXT PRIMARY KEY,
+                path TEXT UNIQUE,
+                filename TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                expected_hash TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                missing_since TEXT,
+                container TEXT NOT NULL,
+                duration REAL,
+                bitrate INTEGER,
+                tags TEXT,
+                plugin_metadata TEXT,
+                introspected_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+        )
+        .unwrap();
+
+        // Run migration
+        migrate(&conn).unwrap();
+
+        // Verify superseded_by column exists and is nullable
+        conn.execute(
+            "UPDATE files SET superseded_by = 'test-uuid' WHERE id = 'nonexistent'",
+            [],
+        )
+        .unwrap();
+
+        // Verify index exists
+        let has_index: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND name='idx_files_superseded_by'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(has_index, "idx_files_superseded_by index should exist");
     }
 }
