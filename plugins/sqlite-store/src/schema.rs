@@ -166,6 +166,8 @@ CREATE INDEX IF NOT EXISTS idx_event_log_type ON event_log(event_type);
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 CREATE INDEX IF NOT EXISTS idx_files_hash ON files(content_hash);
 CREATE INDEX IF NOT EXISTS idx_files_superseded_by ON files(superseded_by);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_files_superseded_by_unique
+    ON files(superseded_by) WHERE superseded_by IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tracks_file ON tracks(file_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, priority);
 CREATE INDEX IF NOT EXISTS idx_plans_file ON plans(file_id);
@@ -462,6 +464,13 @@ fn migrate_indexes_and_constraints(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if !has_index("idx_files_superseded_by_unique")? {
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_files_superseded_by_unique \
+             ON files(superseded_by) WHERE superseded_by IS NOT NULL;",
+        )?;
+    }
+
     // Add UNIQUE constraint on subtitles(file_path, subtitle_path) for existing
     // databases that created the table before the constraint was added.
     let has_subtitles: bool = conn.query_row(
@@ -577,6 +586,47 @@ mod tests {
             has_index,
             "fresh database should have idx_files_superseded_by"
         );
+    }
+
+    #[test]
+    fn test_superseded_by_unique_constraint() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        create_schema(&conn).unwrap();
+
+        // Insert two files
+        conn.execute_batch(
+            "INSERT INTO files (id, path, filename, size, content_hash, \
+             container, introspected_at, created_at, updated_at) \
+             VALUES ('aaa', '/a.mkv', 'a.mkv', 100, 'h1', 'mkv', \
+                     '2026-01-01', '2026-01-01', '2026-01-01');
+             INSERT INTO files (id, path, filename, size, content_hash, \
+             container, introspected_at, created_at, updated_at) \
+             VALUES ('bbb', '/b.mkv', 'b.mkv', 100, 'h2', 'mkv', \
+                     '2026-01-01', '2026-01-01', '2026-01-01');",
+        )
+        .unwrap();
+
+        // First file superseded by 'ccc' — should succeed
+        conn.execute(
+            "UPDATE files SET superseded_by = 'ccc' WHERE id = 'aaa'",
+            [],
+        )
+        .unwrap();
+
+        // Second file also superseded by 'ccc' — should fail (UNIQUE violation)
+        let result = conn.execute(
+            "UPDATE files SET superseded_by = 'ccc' WHERE id = 'bbb'",
+            [],
+        );
+        assert!(
+            result.is_err(),
+            "duplicate superseded_by should violate UNIQUE constraint"
+        );
+
+        // Multiple NULLs are allowed (only non-NULL values are unique)
+        conn.execute("UPDATE files SET superseded_by = NULL WHERE id = 'aaa'", [])
+            .unwrap();
     }
 
     #[test]
