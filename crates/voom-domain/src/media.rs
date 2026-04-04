@@ -29,6 +29,28 @@ pub struct MediaFile {
 }
 
 impl MediaFile {
+    /// Create a new `MediaFile` with default metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    /// use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    ///
+    /// let file = MediaFile::new(PathBuf::from("/movies/test.mkv"))
+    ///     .with_container(Container::Mkv)
+    ///     .with_duration(7200.0)
+    ///     .with_tracks(vec![
+    ///         Track::new(0, TrackType::Video, "h264".into()),
+    ///         Track::new(1, TrackType::AudioMain, "aac".into()),
+    ///     ]);
+    ///
+    /// assert_eq!(file.container, Container::Mkv);
+    /// assert_eq!(file.duration, 7200.0);
+    /// assert_eq!(file.tracks.len(), 2);
+    /// assert_eq!(file.video_tracks().len(), 1);
+    /// assert_eq!(file.audio_tracks().len(), 1);
+    /// ```
     #[must_use]
     pub fn new(path: PathBuf) -> Self {
         Self {
@@ -155,6 +177,23 @@ impl Default for Track {
 }
 
 impl Track {
+    /// Create a new track with the given index, type, and codec.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use voom_domain::media::{Track, TrackType};
+    ///
+    /// let video = Track::new(0, TrackType::Video, "hevc".into());
+    /// assert_eq!(video.index, 0);
+    /// assert!(video.track_type.is_video());
+    /// assert_eq!(video.codec, "hevc");
+    /// assert_eq!(video.language, "und"); // default
+    ///
+    /// let audio = Track::new(1, TrackType::AudioMain, "aac".into());
+    /// assert!(audio.track_type.is_audio());
+    /// assert!(!audio.track_type.is_subtitle());
+    /// ```
     #[must_use]
     pub fn new(index: u32, track_type: TrackType, codec: String) -> Self {
         Self {
@@ -184,6 +223,18 @@ pub enum TrackType {
 }
 
 impl TrackType {
+    /// Returns `true` for all audio track type variants.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use voom_domain::media::TrackType;
+    ///
+    /// assert!(TrackType::AudioMain.is_audio());
+    /// assert!(TrackType::AudioCommentary.is_audio());
+    /// assert!(!TrackType::Video.is_audio());
+    /// assert!(!TrackType::SubtitleMain.is_audio());
+    /// ```
     #[must_use]
     pub fn is_audio(&self) -> bool {
         matches!(
@@ -242,6 +293,19 @@ impl TrackType {
     }
 }
 
+/// Parse a `TrackType` from its string representation.
+///
+/// # Examples
+///
+/// ```
+/// use voom_domain::media::TrackType;
+///
+/// let tt: TrackType = "audio_main".parse().unwrap();
+/// assert!(tt.is_audio());
+///
+/// let bad: Result<TrackType, _> = "not_a_type".parse();
+/// assert!(bad.is_err());
+/// ```
 impl std::str::FromStr for TrackType {
     type Err = crate::errors::VoomError;
 
@@ -282,6 +346,17 @@ pub enum Container {
 
 impl Container {
     /// Parse a container format from a file extension.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use voom_domain::media::Container;
+    ///
+    /// assert_eq!(Container::from_extension("mkv"), Container::Mkv);
+    /// assert_eq!(Container::from_extension("mp4"), Container::Mp4);
+    /// assert_eq!(Container::from_extension("MKV"), Container::Mkv); // case-insensitive
+    /// assert_eq!(Container::from_extension("xyz"), Container::Other);
+    /// ```
     #[must_use]
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_ascii_lowercase().as_str() {

@@ -8,6 +8,22 @@ use std::fmt::Write;
 use crate::ast::*;
 
 /// Format a [`PolicyAst`] into a pretty-printed source string.
+///
+/// # Examples
+///
+/// ```
+/// use voom_dsl::{parse_policy, format_policy};
+///
+/// let ast = parse_policy(r#"policy "demo" {
+///     phase init {
+///         container mkv
+///     }
+/// }"#).unwrap();
+///
+/// let formatted = format_policy(&ast);
+/// assert!(formatted.contains("policy \"demo\""));
+/// assert!(formatted.contains("container mkv"));
+/// ```
 #[must_use]
 pub fn format_policy(ast: &PolicyAst) -> String {
     let mut out = String::new();

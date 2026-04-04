@@ -21,8 +21,27 @@ pub struct PluginInfoData {
 impl PluginInfoData {
     /// Create a new `PluginInfoData` with only the required fields.
     ///
-    /// Description, author, license, and homepage default to empty
-    /// strings. Use the builder-style setters to populate them.
+    /// Use the builder-style setters to populate optional metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use voom_plugin_sdk::PluginInfoData;
+    /// use voom_domain::capabilities::Capability;
+    ///
+    /// let info = PluginInfoData::new(
+    ///     "my-plugin",
+    ///     "1.0.0",
+    ///     vec![Capability::Evaluate],
+    /// )
+    /// .with_description("Evaluates policies")
+    /// .with_author("VOOM Contributors")
+    /// .with_license("MIT");
+    ///
+    /// assert_eq!(info.name, "my-plugin");
+    /// assert_eq!(info.description, "Evaluates policies");
+    /// assert_eq!(info.license, "MIT");
+    /// ```
     #[must_use]
     pub fn new(
         name: impl Into<String>,

@@ -6,6 +6,21 @@ use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::Event;
 
 /// Deserialize a domain Event from `MessagePack` bytes (as received from the host).
+///
+/// # Examples
+///
+/// ```
+/// use std::path::PathBuf;
+/// use voom_plugin_sdk::{serialize_event, deserialize_event};
+/// use voom_domain::events::{Event, FileDiscoveredEvent};
+///
+/// let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+///     PathBuf::from("/test.mkv"), 42, None,
+/// ));
+/// let bytes = serialize_event(&event).unwrap();
+/// let restored = deserialize_event(&bytes).unwrap();
+/// assert_eq!(restored.event_type(), "file.discovered");
+/// ```
 pub fn deserialize_event(payload: &[u8]) -> Result<Event> {
     rmp_serde::from_slice(payload)
         .map_err(|e| VoomError::Wasm(format!("failed to deserialize event: {e}")))
@@ -30,10 +45,24 @@ pub fn serialize_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 /// Load a plugin config from a `get_plugin_data("config")` provider.
 ///
 /// This is a convenience for the common pattern of loading JSON config
-/// from the host's plugin data store:
+/// from the host's plugin data store.
 ///
-/// ```rust,ignore
-/// let config: Option<MyConfig> = load_plugin_config(|key| host.get_plugin_data(key));
+/// # Examples
+///
+/// ```
+/// use serde::Deserialize;
+/// use voom_plugin_sdk::load_plugin_config;
+///
+/// #[derive(Deserialize)]
+/// struct MyConfig {
+///     enabled: bool,
+/// }
+///
+/// let config: Option<MyConfig> = load_plugin_config(|key| {
+///     assert_eq!(key, "config");
+///     Some(br#"{"enabled": true}"#.to_vec())
+/// });
+/// assert!(config.unwrap().enabled);
 /// ```
 pub fn load_plugin_config<T: DeserializeOwned>(
     get_data: impl FnOnce(&str) -> Option<Vec<u8>>,
@@ -44,11 +73,25 @@ pub fn load_plugin_config<T: DeserializeOwned>(
 /// Like [`load_plugin_config`], but includes the plugin name in the warning
 /// log when deserialization fails.
 ///
-/// ```rust,ignore
+/// # Examples
+///
+/// ```
+/// use serde::Deserialize;
+/// use voom_plugin_sdk::load_plugin_config_named;
+///
+/// #[derive(Deserialize)]
+/// struct MyConfig {
+///     threshold: u32,
+/// }
+///
 /// let config: Option<MyConfig> = load_plugin_config_named(
 ///     Some("my-plugin"),
-///     |key| host.get_plugin_data(key),
+///     |key| {
+///         assert_eq!(key, "config");
+///         Some(br#"{"threshold": 10}"#.to_vec())
+///     },
 /// );
+/// assert_eq!(config.unwrap().threshold, 10);
 /// ```
 pub fn load_plugin_config_named<T: DeserializeOwned>(
     plugin_name: Option<&str>,

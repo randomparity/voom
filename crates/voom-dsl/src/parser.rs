@@ -36,6 +36,22 @@ fn leading_keyword(text: &str) -> &str {
 const MAX_NESTING_DEPTH: usize = 100;
 
 /// Parse a `.voom` source string into a [`PolicyAst`].
+///
+/// # Examples
+///
+/// ```
+/// use voom_dsl::parse_policy;
+///
+/// let ast = parse_policy(r#"policy "demo" {
+///     phase cleanup {
+///         remove audio where lang == und
+///     }
+/// }"#).unwrap();
+///
+/// assert_eq!(ast.name, "demo");
+/// assert_eq!(ast.phases.len(), 1);
+/// assert_eq!(ast.phases[0].name, "cleanup");
+/// ```
 pub fn parse_policy(input: &str) -> Result<PolicyAst> {
     if input.len() > MAX_POLICY_SIZE {
         return Err(DslError::parse(

@@ -136,7 +136,27 @@ impl PluginContext {
     ///
     /// # Errors
     /// Returns `VoomError::Plugin` if the config JSON cannot be deserialized
-    /// into `T` (e.g. due to a typo in a config key).
+    /// into `T`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    /// use serde::Deserialize;
+    /// use voom_kernel::PluginContext;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct MyConfig {
+    ///     threshold: u32,
+    /// }
+    ///
+    /// let ctx = PluginContext::new(
+    ///     serde_json::json!({"threshold": 42}),
+    ///     PathBuf::from("/tmp/plugin-data"),
+    /// );
+    /// let config: MyConfig = ctx.parse_config().unwrap();
+    /// assert_eq!(config.threshold, 42);
+    /// ```
     pub fn parse_config<T: serde::de::DeserializeOwned>(&self) -> Result<T> {
         serde_json::from_value(self.config.clone()).map_err(|e| {
             voom_domain::errors::VoomError::Plugin {
@@ -148,6 +168,40 @@ impl PluginContext {
 }
 
 /// The kernel that manages plugins and event dispatch.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use voom_domain::capabilities::Capability;
+/// use voom_domain::events::{Event, EventResult, FileDiscoveredEvent};
+/// use voom_kernel::{Kernel, Plugin};
+///
+/// struct EchoPlugin;
+///
+/// impl Plugin for EchoPlugin {
+///     fn name(&self) -> &str { "echo" }
+///     fn version(&self) -> &str { "0.1.0" }
+///     fn capabilities(&self) -> &[Capability] { &[] }
+///     fn handles(&self, event_type: &str) -> bool {
+///         event_type == Event::FILE_DISCOVERED
+///     }
+///     fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
+///         Ok(Some(EventResult::new("echo")))
+///     }
+/// }
+///
+/// let mut kernel = Kernel::new();
+/// kernel.register_plugin(Arc::new(EchoPlugin), 100).unwrap();
+/// assert_eq!(kernel.subscriber_count(), 1);
+///
+/// let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+///     "/test.mkv".into(), 42, None,
+/// ));
+/// let results = kernel.dispatch(event);
+/// assert_eq!(results.len(), 1);
+/// assert_eq!(results[0].plugin_name, "echo");
+/// ```
 pub struct Kernel {
     pub registry: registry::PluginRegistry,
     pub(crate) bus: bus::EventBus,

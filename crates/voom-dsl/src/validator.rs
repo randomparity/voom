@@ -24,6 +24,20 @@ use crate::errors::{DslError, DslWarning, ValidationErrors};
 
 /// Validate a parsed AST for semantic correctness.
 /// Returns `Ok(())` if valid, or `Err(ValidationErrors)` with all errors found.
+///
+/// # Examples
+///
+/// ```
+/// use voom_dsl::{parse_policy, validate};
+///
+/// let ast = parse_policy(r#"policy "demo" {
+///     phase init {
+///         container mkv
+///     }
+/// }"#).unwrap();
+///
+/// assert!(validate(&ast).is_ok());
+/// ```
 pub fn validate(ast: &PolicyAst) -> std::result::Result<(), ValidationErrors> {
     let (_warnings, result) = validate_collecting_warnings(ast);
     result
