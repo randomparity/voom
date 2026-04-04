@@ -18,7 +18,6 @@ use crate::errors::{Result, StorageErrorKind, VoomError};
 use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::{Container, MediaFile, Track, TrackType};
 use crate::plan::Plan;
-use crate::stats::ProcessingStats;
 use crate::stats::{
     AudioStats, FileStats, JobAggregateStats, LibrarySnapshot, ProcessingAggregateStats,
     SnapshotTrigger, SubtitleStats, VideoStats,
@@ -27,7 +26,7 @@ use crate::storage::{
     BadFileFilters, BadFileStorage, FileFilters, FileStorage, FileTransitionStorage,
     HealthCheckFilters, HealthCheckRecord, HealthCheckStorage, JobFilters, JobStorage,
     MaintenanceStorage, PageStats, PendingOperation, PendingOpsStorage, PlanStorage, PlanSummary,
-    PluginDataStorage, SnapshotStorage, StatsStorage,
+    PluginDataStorage, SnapshotStorage,
 };
 use crate::transition::{
     DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
@@ -420,12 +419,6 @@ impl FileTransitionStorage for InMemoryStore {
 
     fn transitions_for_path(&self, _: &Path) -> Result<Vec<FileTransition>> {
         Ok(Vec::new())
-    }
-}
-
-impl StatsStorage for InMemoryStore {
-    fn record_stats(&self, _stats: &ProcessingStats) -> Result<()> {
-        Ok(())
     }
 }
 

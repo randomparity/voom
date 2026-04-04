@@ -2549,6 +2549,28 @@ mod test_lifecycle_advanced {
             has_structured_detail,
             "voom transitions should have executor:phase source_detail and plan_id"
         );
+
+        // Verify processing stats fields are populated on voom transitions
+        let has_processing_stats: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM file_transitions \
+                 WHERE source = 'voom' \
+                 AND duration_ms IS NOT NULL \
+                 AND actions_taken IS NOT NULL \
+                 AND tracks_modified IS NOT NULL \
+                 AND outcome IS NOT NULL \
+                 AND policy_name IS NOT NULL \
+                 AND phase_name IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            has_processing_stats,
+            "voom transitions should have processing stats \
+             (duration_ms, actions_taken, tracks_modified, outcome, \
+             policy_name, phase_name)"
+        );
     }
 
     #[test]

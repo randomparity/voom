@@ -4,6 +4,7 @@ use rusqlite::params;
 use uuid::Uuid;
 
 use voom_domain::errors::Result;
+use voom_domain::stats::ProcessingOutcome;
 use voom_domain::storage::FileTransitionStorage;
 use voom_domain::transition::{FileTransition, TransitionSource};
 
@@ -14,8 +15,12 @@ impl FileTransitionStorage for SqliteStore {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO file_transitions \
-             (id, file_id, path, from_hash, to_hash, from_size, to_size, source, source_detail, plan_id, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             (id, file_id, path, from_hash, to_hash, from_size, to_size, \
+              source, source_detail, plan_id, \
+              duration_ms, actions_taken, tracks_modified, outcome, \
+              policy_name, phase_name, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \
+                     ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 t.id.to_string(),
                 t.file_id.to_string(),
@@ -27,6 +32,12 @@ impl FileTransitionStorage for SqliteStore {
                 t.source.as_str(),
                 t.source_detail.as_deref().filter(|s| !s.is_empty()),
                 t.plan_id.map(|id| id.to_string()),
+                t.duration_ms.map(|v| v as i64),
+                t.actions_taken.map(i64::from),
+                t.tracks_modified.map(i64::from),
+                t.outcome.map(|o| o.as_str()),
+                t.policy_name.as_deref(),
+                t.phase_name.as_deref(),
                 format_datetime(&t.created_at),
             ],
         )
@@ -39,7 +50,9 @@ impl FileTransitionStorage for SqliteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT id, file_id, path, from_hash, to_hash, from_size, to_size, \
-                 source, source_detail, plan_id, created_at \
+                 source, source_detail, plan_id, \
+                 duration_ms, actions_taken, tracks_modified, outcome, \
+                 policy_name, phase_name, created_at \
                  FROM file_transitions WHERE file_id = ?1 ORDER BY created_at",
             )
             .map_err(storage_err("failed to prepare transitions_for_file query"))?;
@@ -58,7 +71,9 @@ impl FileTransitionStorage for SqliteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT id, file_id, path, from_hash, to_hash, from_size, to_size, \
-                 source, source_detail, plan_id, created_at \
+                 source, source_detail, plan_id, \
+                 duration_ms, actions_taken, tracks_modified, outcome, \
+                 policy_name, phase_name, created_at \
                  FROM file_transitions WHERE source = ?1 ORDER BY created_at",
             )
             .map_err(storage_err("failed to prepare transitions_by_source query"))?;
@@ -77,7 +92,9 @@ impl FileTransitionStorage for SqliteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT id, file_id, path, from_hash, to_hash, from_size, to_size, \
-                 source, source_detail, plan_id, created_at \
+                 source, source_detail, plan_id, \
+                 duration_ms, actions_taken, tracks_modified, outcome, \
+                 policy_name, phase_name, created_at \
                  FROM file_transitions WHERE path = ?1 ORDER BY created_at ASC",
             )
             .map_err(storage_err("failed to prepare transitions_for_path query"))?;
@@ -124,6 +141,11 @@ fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition
         )
     })?;
 
+    let duration_ms: Option<i64> = row.get("duration_ms")?;
+    let actions_taken: Option<i64> = row.get("actions_taken")?;
+    let tracks_modified: Option<i64> = row.get("tracks_modified")?;
+    let outcome_str: Option<String> = row.get("outcome")?;
+
     let mut t = FileTransition::new(
         file_id,
         PathBuf::from(path_str),
@@ -136,6 +158,17 @@ fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition
     t.from_size = from_size.map(|v| v as u64);
     t.source_detail = source_detail.filter(|s| !s.is_empty());
     t.plan_id = plan_id;
+    t.duration_ms = duration_ms.map(|v| v as u64);
+    t.actions_taken = actions_taken.map(|v| v as u32);
+    t.tracks_modified = tracks_modified.map(|v| v as u32);
+    t.outcome = outcome_str.and_then(|s| {
+        ProcessingOutcome::parse(&s).or_else(|| {
+            tracing::warn!(value = %s, "unknown ProcessingOutcome in file_transitions");
+            None
+        })
+    });
+    t.policy_name = row.get("policy_name")?;
+    t.phase_name = row.get("phase_name")?;
     t.created_at = created_at;
     Ok(t)
 }

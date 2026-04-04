@@ -9,7 +9,7 @@ use crate::errors::Result;
 use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::{Container, MediaFile};
 use crate::plan::Plan;
-use crate::stats::{LibrarySnapshot, ProcessingStats, SnapshotTrigger};
+use crate::stats::{LibrarySnapshot, SnapshotTrigger};
 use crate::transition::{DiscoveredFile, FileTransition, ReconcileResult, TransitionSource};
 
 /// Filters for querying jobs from storage.
@@ -136,14 +136,6 @@ pub trait FileTransitionStorage: Send + Sync {
     /// Ordered by `created_at`. This includes transitions from superseded file
     /// records that were replaced at this path.
     fn transitions_for_path(&self, path: &Path) -> Result<Vec<FileTransition>>;
-}
-
-/// Processing statistics recording.
-///
-/// # Errors
-/// Methods return `VoomError::Storage` on database failures.
-pub trait StatsStorage: Send + Sync {
-    fn record_stats(&self, stats: &ProcessingStats) -> Result<()>;
 }
 
 /// Plugin key-value data storage.
@@ -368,7 +360,6 @@ pub trait StorageTrait:
     + JobStorage
     + PlanStorage
     + FileTransitionStorage
-    + StatsStorage
     + PluginDataStorage
     + BadFileStorage
     + MaintenanceStorage
@@ -385,7 +376,6 @@ impl<T> StorageTrait for T where
         + JobStorage
         + PlanStorage
         + FileTransitionStorage
-        + StatsStorage
         + PluginDataStorage
         + BadFileStorage
         + MaintenanceStorage
