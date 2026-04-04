@@ -196,6 +196,13 @@ CREATE TABLE IF NOT EXISTS library_snapshots (
 CREATE INDEX IF NOT EXISTS idx_snapshots_captured
     ON library_snapshots(captured_at);
 CREATE INDEX IF NOT EXISTS idx_tracks_type ON tracks(track_type);
+
+CREATE TABLE IF NOT EXISTS pending_operations (
+    id TEXT PRIMARY KEY,
+    file_path TEXT NOT NULL,
+    phase_name TEXT NOT NULL,
+    started_at TEXT NOT NULL
+);
 "#;
 
 /// Initialize the database schema.
@@ -222,6 +229,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "event_log",
         "subtitles",
         "library_snapshots",
+        "pending_operations",
     ];
     let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
         assert!(KNOWN_TABLES.contains(&table), "unknown table: {table}");
@@ -394,6 +402,23 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    // Create pending_operations table if missing.
+    let has_pending_ops: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='pending_operations'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_pending_ops {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pending_operations (
+                id TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                phase_name TEXT NOT NULL,
+                started_at TEXT NOT NULL
+            );",
+        )?;
+    }
+
     // Create index on tracks(track_type) if missing.
     let has_track_type_idx: bool = conn.query_row(
         "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND name='idx_tracks_type'",
@@ -470,6 +495,7 @@ mod tests {
         assert!(tables.contains(&"event_log".to_string()));
         assert!(tables.contains(&"subtitles".to_string()));
         assert!(tables.contains(&"library_snapshots".to_string()));
+        assert!(tables.contains(&"pending_operations".to_string()));
     }
 
     #[test]

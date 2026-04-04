@@ -326,6 +326,25 @@ pub trait MaintenanceStorage: Send + Sync {
     fn page_stats(&self) -> Result<PageStats>;
 }
 
+/// A record of an in-flight plan execution, used for crash recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingOperation {
+    pub id: Uuid,
+    pub file_path: PathBuf,
+    pub phase_name: String,
+    pub started_at: DateTime<Utc>,
+}
+
+/// Pending operation tracking for crash recovery.
+///
+/// # Errors
+/// Methods return `VoomError::Storage` on database failures.
+pub trait PendingOpsStorage: Send + Sync {
+    fn insert_pending_op(&self, op: &PendingOperation) -> Result<()>;
+    fn delete_pending_op(&self, plan_id: &Uuid) -> Result<()>;
+    fn list_pending_ops(&self) -> Result<Vec<PendingOperation>>;
+}
+
 /// Composed storage interface encompassing all sub-traits.
 ///
 /// All methods are synchronous (blocking) since rusqlite is synchronous.
@@ -346,6 +365,7 @@ pub trait StorageTrait:
     + HealthCheckStorage
     + EventLogStorage
     + SnapshotStorage
+    + PendingOpsStorage
 {
 }
 
@@ -362,6 +382,7 @@ impl<T> StorageTrait for T where
         + HealthCheckStorage
         + EventLogStorage
         + SnapshotStorage
+        + PendingOpsStorage
 {
 }
 

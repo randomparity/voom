@@ -6,6 +6,7 @@ mod file_transition_storage;
 mod health_check_storage;
 mod job_storage;
 mod maintenance_storage;
+mod pending_ops_storage;
 mod plan_storage;
 mod plugin_data_storage;
 mod row_mappers;

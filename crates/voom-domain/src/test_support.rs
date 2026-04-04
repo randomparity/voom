@@ -26,8 +26,8 @@ use crate::stats::{
 use crate::storage::{
     BadFileFilters, BadFileStorage, FileFilters, FileStorage, FileTransitionStorage,
     HealthCheckFilters, HealthCheckRecord, HealthCheckStorage, JobFilters, JobStorage,
-    MaintenanceStorage, PageStats, PlanStorage, PlanSummary, PluginDataStorage, SnapshotStorage,
-    StatsStorage,
+    MaintenanceStorage, PageStats, PendingOperation, PendingOpsStorage, PlanStorage, PlanSummary,
+    PluginDataStorage, SnapshotStorage, StatsStorage,
 };
 use crate::transition::{
     DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
@@ -104,6 +104,7 @@ pub struct InMemoryStore {
     jobs: Mutex<HashMap<Uuid, Job>>,
     snapshots: Mutex<Vec<LibrarySnapshot>>,
     event_log: Mutex<Vec<crate::storage::EventLogRecord>>,
+    pub pending_ops: Mutex<Vec<PendingOperation>>,
 }
 
 impl InMemoryStore {
@@ -113,6 +114,7 @@ impl InMemoryStore {
             jobs: Mutex::new(HashMap::new()),
             snapshots: Mutex::new(Vec::new()),
             event_log: Mutex::new(Vec::new()),
+            pending_ops: Mutex::new(Vec::new()),
         }
     }
 
@@ -596,5 +598,28 @@ impl MaintenanceStorage for InMemoryStore {
             page_count: 0,
             freelist_count: 0,
         })
+    }
+}
+
+impl PendingOpsStorage for InMemoryStore {
+    fn insert_pending_op(&self, op: &PendingOperation) -> Result<()> {
+        let mut ops = self.pending_ops.lock().unwrap();
+        ops.retain(|o| o.id != op.id);
+        ops.push(op.clone());
+        Ok(())
+    }
+
+    fn delete_pending_op(&self, plan_id: &Uuid) -> Result<()> {
+        self.pending_ops
+            .lock()
+            .unwrap()
+            .retain(|o| o.id != *plan_id);
+        Ok(())
+    }
+
+    fn list_pending_ops(&self) -> Result<Vec<PendingOperation>> {
+        let mut ops = self.pending_ops.lock().unwrap().clone();
+        ops.sort_by_key(|o| o.started_at);
+        Ok(ops)
     }
 }
