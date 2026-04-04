@@ -2125,7 +2125,7 @@ mod test_lifecycle_advanced {
         let db = env.db_path();
         let (original_id, _) =
             file_by_path_contains(&db, "basic-h264-aac").expect("file should exist");
-        let initial_transitions = transition_count_for_file(&db, &original_id);
+        let _initial_transitions = transition_count_for_file(&db, &original_id);
 
         // Modify the file externally (append bytes to change hash)
         let file_path = env.media_dir().join("basic-h264-aac.mp4");
