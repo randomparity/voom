@@ -67,6 +67,22 @@ impl Event {
     pub const HEALTH_STATUS: &str = "health.status";
 
     /// One-line human-readable summary of the event payload.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    /// use voom_domain::events::{Event, FileDiscoveredEvent};
+    ///
+    /// let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+    ///     PathBuf::from("/movies/test.mkv"),
+    ///     1_500_000,
+    ///     Some("abc123".into()),
+    /// ));
+    /// let summary = event.summary();
+    /// assert!(summary.contains("/movies/test.mkv"));
+    /// assert!(summary.contains("1500000"));
+    /// ```
     #[must_use]
     pub fn summary(&self) -> String {
         match self {

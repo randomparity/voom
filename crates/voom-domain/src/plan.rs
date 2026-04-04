@@ -36,6 +36,32 @@ pub struct Plan {
 }
 
 impl Plan {
+    /// Create a new empty plan for a file and phase.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    /// use voom_domain::media::MediaFile;
+    /// use voom_domain::plan::{
+    ///     ActionParams, OperationType, Plan, PlannedAction,
+    /// };
+    ///
+    /// let file = MediaFile::new(PathBuf::from("/movies/test.mkv"));
+    /// let plan = Plan::new(file, "my-policy", "init")
+    ///     .with_action(PlannedAction::track_op(
+    ///         OperationType::SetDefault,
+    ///         0,
+    ///         ActionParams::Empty,
+    ///         "set track 0 as default",
+    ///     ))
+    ///     .with_warning("track has no language tag");
+    ///
+    /// assert!(!plan.is_empty());
+    /// assert!(!plan.is_skipped());
+    /// assert_eq!(plan.actions.len(), 1);
+    /// assert_eq!(plan.warnings.len(), 1);
+    /// ```
     #[must_use]
     pub fn new(
         file: MediaFile,
@@ -101,7 +127,21 @@ pub struct PlannedAction {
 }
 
 impl PlannedAction {
-    /// Create a new planned action for a file-level operation (no track index).
+    /// Create a planned action for a file-level operation (no track index).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use voom_domain::media::Container;
+    /// use voom_domain::plan::{ActionParams, OperationType, PlannedAction};
+    ///
+    /// let action = PlannedAction::file_op(
+    ///     OperationType::ConvertContainer,
+    ///     ActionParams::Container { container: Container::Mkv },
+    ///     "convert to MKV",
+    /// );
+    /// assert!(action.track_index.is_none());
+    /// ```
     #[must_use]
     pub fn file_op(
         operation: OperationType,
@@ -116,7 +156,24 @@ impl PlannedAction {
         }
     }
 
-    /// Create a new planned action targeting a specific track.
+    /// Create a planned action targeting a specific track.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use voom_domain::plan::{ActionParams, OperationType, PlannedAction};
+    ///
+    /// let action = PlannedAction::track_op(
+    ///     OperationType::RemoveTrack,
+    ///     2,
+    ///     ActionParams::RemoveTrack {
+    ///         reason: "unwanted commentary".into(),
+    ///         track_type: voom_domain::media::TrackType::AudioCommentary,
+    ///     },
+    ///     "remove commentary track",
+    /// );
+    /// assert_eq!(action.track_index, Some(2));
+    /// ```
     #[must_use]
     pub fn track_op(
         operation: OperationType,
@@ -516,8 +573,17 @@ pub enum OperationType {
 impl OperationType {
     /// Parse an `OperationType` from its canonical string representation.
     ///
-    /// Returns `None` for unrecognised strings (e.g., from external WIT plugins using a
-    /// newer schema version).
+    /// Returns `None` for unrecognised strings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use voom_domain::plan::OperationType;
+    ///
+    /// assert_eq!(OperationType::parse("set_default"), Some(OperationType::SetDefault));
+    /// assert_eq!(OperationType::parse("transcode_video"), Some(OperationType::TranscodeVideo));
+    /// assert_eq!(OperationType::parse("unknown"), None);
+    /// ```
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s {
