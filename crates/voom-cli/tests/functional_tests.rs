@@ -1758,6 +1758,18 @@ mod test_lifecycle_advanced {
         .unwrap();
     }
 
+    fn insert_pending_op(db: &std::path::Path, file_path: &str, phase: &str) {
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO pending_operations (id, file_path, phase_name, started_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![id, file_path, phase, now],
+        )
+        .unwrap();
+    }
+
     fn set_recovery_mode(env: &TestEnv, mode: &str) {
         let config_path = env.voom_dir.join("config.toml");
         let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
@@ -2689,6 +2701,7 @@ mod test_lifecycle_advanced {
         let canon_original = std::fs::canonicalize(&original).unwrap();
         let summary = format!("path={} phase=normalize", canon_original.display());
         insert_event_log(&db, "plan.executing", &summary);
+        insert_pending_op(&db, &canon_original.to_string_lossy(), "normalize");
 
         // Run process — crash recovery should restore the backup
         env.voom()
@@ -2742,6 +2755,7 @@ mod test_lifecycle_advanced {
         let canon_original = std::fs::canonicalize(&original).unwrap();
         let summary = format!("path={} phase=normalize", canon_original.display());
         insert_event_log(&db, "plan.executing", &summary);
+        insert_pending_op(&db, &canon_original.to_string_lossy(), "normalize");
 
         env.voom()
             .args([
@@ -3175,6 +3189,38 @@ mod test_lifecycle_advanced {
             "at least 1 file should be processed successfully.\n\
              Summary: {summary}"
         );
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // G. Lock contention
+    // ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn lock_prevents_concurrent_scan() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        let (roots, _) = populate_multi_root(&env, 1, 2);
+
+        // Hold the lock on the voom data dir.
+        std::fs::create_dir_all(&env.voom_dir).unwrap();
+        let lock_path = env.voom_dir.join("voom.lock");
+        let lock_file = std::fs::File::create(&lock_path).unwrap();
+        use fs2::FileExt;
+        lock_file.lock_exclusive().unwrap();
+
+        // Second voom scan should fail because lock is held.
+        env.voom()
+            .args(["scan", roots[0].to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(10))
+            .assert()
+            .failure();
+
+        // --force should bypass the lock.
+        env.voom()
+            .args(["--force", "scan", roots[0].to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
     }
 }
 
