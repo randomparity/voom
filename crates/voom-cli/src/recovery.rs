@@ -37,8 +37,12 @@ pub fn check_and_recover_under(
     let mut all_backups = find_orphans_under(scan_dirs)?;
 
     // Also scan the global backup directory if configured.
+    // Ambiguous matches (multiple pending ops with the same filename)
+    // are skipped — collect their paths so we don't delete those
+    // pending ops as "stale".
+    let mut ambiguous_paths: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     if let Some(global_dir) = global_backup_dir {
-        collect_global_backups(global_dir, &pending, &mut all_backups);
+        collect_global_backups(global_dir, &pending, &mut all_backups, &mut ambiguous_paths);
     }
 
     if pending.is_empty() && all_backups.is_empty() {
@@ -63,7 +67,13 @@ pub fn check_and_recover_under(
     if orphans.is_empty() {
         if !pending.is_empty() {
             // Stale pending ops with no backups — clean them up.
+            // Skip any that were ambiguous in global-dir matching:
+            // those still have real backups on disk, just can't be
+            // unambiguously matched.
             for op in &pending {
+                if ambiguous_paths.contains(&op.file_path) {
+                    continue;
+                }
                 tracing::warn!(
                     plan_id = %op.id,
                     path = %op.file_path.display(),
@@ -205,6 +215,7 @@ fn collect_global_backups(
     global_dir: &Path,
     pending: &[voom_domain::storage::PendingOperation],
     backups: &mut Vec<OrphanedBackup>,
+    ambiguous_paths: &mut std::collections::HashSet<PathBuf>,
 ) {
     let entries = match std::fs::read_dir(global_dir) {
         Ok(e) => e,
@@ -266,20 +277,25 @@ fn collect_global_backups(
         }
         let original_filename = &backup_filename[UUID_LEN + 1..];
 
-        if let Some(paths) = pending_by_filename.get(original_filename) {
-            if paths.len() > 1 {
+        if let Some(matched_paths) = pending_by_filename.get(original_filename) {
+            if matched_paths.len() > 1 {
                 tracing::warn!(
                     backup = %path.display(),
                     filename = original_filename,
-                    candidates = paths.len(),
+                    candidates = matched_paths.len(),
                     "ambiguous global backup — multiple pending ops share \
                      this filename, skipping to avoid restoring to wrong path"
                 );
+                // Record all ambiguous paths so they aren't deleted
+                // as "stale" pending ops.
+                for p in matched_paths {
+                    ambiguous_paths.insert(p.to_path_buf());
+                }
                 continue;
             }
             backups.push(OrphanedBackup {
                 backup_path: path,
-                original_path: paths[0].to_path_buf(),
+                original_path: matched_paths[0].to_path_buf(),
                 size,
             });
         }
@@ -852,6 +868,16 @@ mod tests {
         assert!(
             vbak.exists(),
             "backup should be untouched when match is ambiguous"
+        );
+
+        // Pending ops must NOT be deleted — they still have real
+        // backups on disk, just can't be unambiguously matched.
+        use voom_domain::storage::PendingOpsStorage as _;
+        let remaining = store.list_pending_ops().unwrap();
+        assert_eq!(
+            remaining.len(),
+            2,
+            "ambiguous pending ops should be preserved, not deleted as stale"
         );
     }
 }
