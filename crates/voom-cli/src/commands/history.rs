@@ -18,33 +18,31 @@ fn collect_lineage(store: &dyn FileStorage, start_id: Uuid) -> Vec<Uuid> {
     let mut chain = vec![start_id];
     let mut seen = std::collections::HashSet::from([start_id]);
     let mut current = start_id;
-    let mut exhausted = true;
 
-    for _ in 0..MAX_PREDECESSORS {
-        match store.predecessor_of(&current) {
-            Ok(Some(pred)) => {
-                if !seen.insert(pred.id) {
-                    tracing::warn!("cycle detected in predecessor chain at {}", pred.id);
-                    exhausted = false;
+    loop {
+        if chain.len() > MAX_PREDECESSORS {
+            tracing::warn!(
+                "predecessor chain exceeded {MAX_PREDECESSORS} entries, \
+                 truncating"
+            );
+            break;
+        }
+
+        match store.predecessor_id_of(&current) {
+            Ok(Some(pred_id)) => {
+                if !seen.insert(pred_id) {
+                    tracing::warn!("cycle detected in predecessor chain at {}", pred_id);
                     break;
                 }
-                chain.push(pred.id);
-                current = pred.id;
+                chain.push(pred_id);
+                current = pred_id;
             }
-            Ok(None) => {
-                exhausted = false;
-                break;
-            }
+            Ok(None) => break,
             Err(e) => {
                 tracing::warn!("failed to walk predecessor chain: {e}");
-                exhausted = false;
                 break;
             }
         }
-    }
-
-    if exhausted {
-        tracing::warn!("predecessor chain exceeded {MAX_PREDECESSORS} entries, truncating");
     }
 
     chain.reverse(); // oldest first
