@@ -85,12 +85,13 @@ pub fn check_and_recover_under(
         let result = match config.mode.as_str() {
             "always_recover" => recover(orphan, store),
             "always_discard" => discard(orphan, store),
-            _ => {
-                tracing::warn!(
-                    backup = %orphan.backup_path.display(),
-                    "orphaned backup found — set recovery.mode in config.toml"
+            other => {
+                anyhow::bail!(
+                    "unsupported recovery mode '{}' — \
+                     use 'always_recover' or 'always_discard' in config.toml \
+                     [recovery] section",
+                    other
                 );
-                continue;
             }
         };
         match result {
@@ -719,9 +720,9 @@ mod tests {
     }
 
     #[test]
-    fn test_check_and_recover_prompt_skips_and_warns() {
+    fn test_check_and_recover_unsupported_mode_returns_error() {
         let dir = tempfile::tempdir().unwrap();
-        let (vbak, original) = make_backup(dir.path(), "movie.mkv");
+        let (_vbak, original) = make_backup(dir.path(), "movie.mkv");
 
         let store = voom_domain::test_support::InMemoryStore::default();
         insert_pending_op(&store, &original);
@@ -729,11 +730,14 @@ mod tests {
         let config = RecoveryConfig {
             mode: "prompt".into(),
         };
-        let recovered =
-            check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
+        let result = check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None);
 
-        assert_eq!(recovered, 0);
-        assert!(vbak.exists());
+        assert!(result.is_err(), "unsupported mode should return an error");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("unsupported recovery mode"),
+            "error should mention unsupported mode, got: {msg}"
+        );
     }
 
     #[test]

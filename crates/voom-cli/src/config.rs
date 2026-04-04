@@ -24,7 +24,7 @@ impl Default for RecoveryConfig {
 }
 
 fn default_recovery_mode() -> String {
-    "prompt".into()
+    "always_recover".into()
 }
 
 /// Missing file pruning configuration.
@@ -288,7 +288,7 @@ pub fn default_config_contents() -> String {
 # Crash recovery: what to do with orphaned backups from interrupted executions.
 # mode = "always_recover" | "always_discard" | "prompt"
 [recovery]
-mode = "prompt"
+mode = "always_recover"
 
 # Missing file pruning: how long to keep records for files no longer on disk.
 [pruning]
@@ -337,6 +337,15 @@ mod tests {
     use super::*;
 
     // ── Default config ───────────────────────────────────────
+
+    #[test]
+    fn test_default_recovery_mode_is_always_recover() {
+        let config = AppConfig::default();
+        assert_eq!(
+            config.recovery.mode, "always_recover",
+            "default recovery mode should be always_recover, not prompt"
+        );
+    }
 
     #[test]
     fn test_default_config_has_expected_fields() {
