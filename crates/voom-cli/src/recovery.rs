@@ -24,6 +24,11 @@ pub struct OrphanedBackup {
     pub size: u64,
 }
 
+/// Returns true if `path` is under any of `dirs` (prefix match on components).
+fn path_is_under_any(path: &Path, dirs: &[PathBuf]) -> bool {
+    dirs.iter().any(|dir| path.starts_with(dir))
+}
+
 /// Scan `scan_dirs` for orphaned `.vbak` files and resolve them per `config`.
 ///
 /// Returns the number of files successfully resolved (restored or discarded).
@@ -66,12 +71,20 @@ pub fn check_and_recover_under(
 
     if orphans.is_empty() {
         if !pending.is_empty() {
-            // Stale pending ops with no backups — clean them up.
-            // Skip any that were ambiguous in global-dir matching:
-            // those still have real backups on disk, just can't be
-            // unambiguously matched.
+            // Canonicalize scan dirs for reliable prefix matching.
+            let canonical_dirs: Vec<PathBuf> = scan_dirs
+                .iter()
+                .filter_map(|d| std::fs::canonicalize(d).ok())
+                .collect();
+
+            // Stale pending ops with no backups — clean up only those
+            // whose paths fall under the current scan dirs.
+            // Skip ambiguous global-dir matches and out-of-scope paths.
             for op in &pending {
                 if ambiguous_paths.contains(&op.file_path) {
+                    continue;
+                }
+                if !path_is_under_any(&op.file_path, &canonical_dirs) {
                     continue;
                 }
                 tracing::warn!(
@@ -669,8 +682,10 @@ mod tests {
         use voom_domain::storage::PendingOpsStorage as _;
 
         let dir = tempfile::tempdir().unwrap();
-        // No backup file created, just a pending op
-        let original = dir.path().join("movie.mkv");
+        let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
+        // No backup file created, just a pending op.
+        // Use canonical path so prefix matching works across platforms.
+        let original = canonical_dir.join("movie.mkv");
 
         let store = voom_domain::test_support::InMemoryStore::default();
         insert_pending_op(&store, &original);
@@ -830,6 +845,55 @@ mod tests {
         assert!(
             !vbak.exists(),
             "global backup should be removed after restore"
+        );
+    }
+
+    #[test]
+    fn test_path_is_under_any() {
+        let dirs = vec![
+            PathBuf::from("/library/movies"),
+            PathBuf::from("/library/tv"),
+        ];
+        assert!(path_is_under_any(
+            Path::new("/library/movies/film.mkv"),
+            &dirs
+        ));
+        assert!(path_is_under_any(
+            Path::new("/library/tv/show/s01e01.mkv"),
+            &dirs
+        ));
+        assert!(!path_is_under_any(
+            Path::new("/library/music/song.flac"),
+            &dirs
+        ));
+        assert!(!path_is_under_any(Path::new("/other/file.mkv"), &dirs));
+    }
+
+    #[test]
+    fn test_stale_pending_op_outside_scan_dir_is_preserved() {
+        use voom_domain::storage::PendingOpsStorage as _;
+
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let canonical_b = std::fs::canonicalize(dir_b.path()).unwrap();
+
+        // Pending op for a file under dir_b, but we only scan dir_a.
+        let original_b = canonical_b.join("show.mkv");
+        let store = voom_domain::test_support::InMemoryStore::default();
+        insert_pending_op(&store, &original_b);
+
+        let config = RecoveryConfig {
+            mode: "always_recover".into(),
+        };
+        let recovered =
+            check_and_recover_under(&config, &[dir_a.path().to_path_buf()], &store, None).unwrap();
+
+        assert_eq!(recovered, 0);
+        let remaining = store.list_pending_ops().unwrap();
+        assert_eq!(
+            remaining.len(),
+            1,
+            "pending op outside scan dirs should NOT be deleted"
         );
     }
 
