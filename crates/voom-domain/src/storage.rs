@@ -126,6 +126,10 @@ pub trait FileTransitionStorage: Send + Sync {
     fn transitions_for_file(&self, file_id: &Uuid) -> Result<Vec<FileTransition>>;
     /// Retrieve all transitions with the given source, ordered by `created_at`.
     fn transitions_by_source(&self, source: TransitionSource) -> Result<Vec<FileTransition>>;
+    /// Retrieve all transitions recorded at a specific path, across all file IDs.
+    /// Ordered by `created_at`. This includes transitions from superseded file
+    /// records that were replaced at this path.
+    fn transitions_for_path(&self, path: &Path) -> Result<Vec<FileTransition>>;
 }
 
 /// Processing statistics recording.

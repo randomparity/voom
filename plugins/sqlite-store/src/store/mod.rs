@@ -1480,7 +1480,7 @@ mod tests {
     // --- Batch reconciliation ---
 
     use voom_domain::storage::FileTransitionStorage;
-    use voom_domain::transition::{DiscoveredFile, FileStatus, TransitionSource};
+    use voom_domain::transition::{DiscoveredFile, FileStatus, FileTransition, TransitionSource};
 
     fn discovered(path: &str, size: u64, hash: &str) -> DiscoveredFile {
         DiscoveredFile::new(PathBuf::from(path), size, hash.into())
@@ -1773,5 +1773,54 @@ mod tests {
         assert_eq!(result.moved, 1);
         assert_eq!(result.new_files, 1);
         assert_eq!(result.unchanged, 0);
+    }
+
+    // --- transitions_for_path ---
+
+    #[test]
+    fn transitions_for_path_spans_file_ids() {
+        let store = test_store();
+        let path = PathBuf::from("/movies/movie.mkv");
+        let old_id = Uuid::new_v4();
+        let new_id = Uuid::new_v4();
+
+        // Insert a file at the path so schema constraints are satisfied
+        let mut file = MediaFile::new(path.clone());
+        file.id = old_id;
+        store.upsert_file(&file).expect("insert old file");
+
+        // Record a transition on the old file
+        let t1 = FileTransition::new(
+            old_id,
+            path.clone(),
+            "hash_old".into(),
+            1000,
+            TransitionSource::Discovery,
+        );
+        store.record_transition(&t1).expect("record t1");
+
+        // Record a transition on the new file at the same path
+        let t2 = FileTransition::new(
+            new_id,
+            path.clone(),
+            "hash_new".into(),
+            2000,
+            TransitionSource::External,
+        );
+        store.record_transition(&t2).expect("record t2");
+
+        // Query by path should return both
+        let results = store
+            .transitions_for_path(&path)
+            .expect("transitions_for_path");
+        assert_eq!(
+            results.len(),
+            2,
+            "should find transitions from both file IDs"
+        );
+
+        let file_ids: std::collections::HashSet<Uuid> = results.iter().map(|t| t.file_id).collect();
+        assert!(file_ids.contains(&old_id));
+        assert!(file_ids.contains(&new_id));
     }
 }

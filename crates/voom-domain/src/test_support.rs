@@ -409,6 +409,10 @@ impl FileTransitionStorage for InMemoryStore {
     fn transitions_by_source(&self, _: TransitionSource) -> Result<Vec<FileTransition>> {
         Ok(Vec::new())
     }
+
+    fn transitions_for_path(&self, _: &Path) -> Result<Vec<FileTransition>> {
+        Ok(Vec::new())
+    }
 }
 
 impl StatsStorage for InMemoryStore {

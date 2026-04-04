@@ -71,6 +71,28 @@ impl FileTransitionStorage for SqliteStore {
 
         Ok(rows)
     }
+
+    fn transitions_for_path(&self, path: &std::path::Path) -> Result<Vec<FileTransition>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, file_id, path, from_hash, to_hash, from_size, to_size, \
+                 source, source_detail, plan_id, created_at \
+                 FROM file_transitions WHERE path = ?1 ORDER BY created_at ASC",
+            )
+            .map_err(storage_err("failed to prepare transitions_for_path query"))?;
+
+        let rows = stmt
+            .query_map(
+                params![path.to_string_lossy().to_string()],
+                row_to_transition,
+            )
+            .map_err(storage_err("failed to query transitions for path"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err("failed to collect transitions for path"))?;
+
+        Ok(rows)
+    }
 }
 
 fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition> {
