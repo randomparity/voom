@@ -3222,6 +3222,153 @@ mod test_lifecycle_advanced {
             .assert()
             .success();
     }
+
+    // ───────────────────────────────────────────────────────────────────
+    // H. Crash recovery with global backup directory
+    // ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn crash_recovery_global_backup_dir() {
+        require_tool!("ffprobe");
+        require_tool!("mkvmerge");
+        require_tool!("mkvpropedit");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+        set_recovery_mode(&env, "always_recover");
+
+        // Create a global backup directory inside the voom data dir
+        let global_dir = env.voom_dir.join("global-backups");
+        std::fs::create_dir_all(&global_dir).unwrap();
+
+        // Append backup-manager config to the existing config.toml
+        let config_path = env.voom_dir.join("config.toml");
+        let mut config_content = std::fs::read_to_string(&config_path).unwrap_or_default();
+        config_content.push_str(&format!(
+            "\n[plugin.backup-manager]\nbackup_dir = \"{}\"\n\
+             use_global_dir = true\n",
+            global_dir.display()
+        ));
+        std::fs::write(&config_path, &config_content).unwrap();
+
+        // Scan to populate DB
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // Create a fake backup in the global dir (simulating crash).
+        // Global backup format: <uuid>_<filename> (no .vbak extension).
+        let original = env.media_dir().join("hevc-surround.mkv");
+        let original_data = std::fs::read(&original).unwrap();
+        let vbak_name = format!("{}_hevc-surround.mkv", uuid::Uuid::new_v4());
+        let vbak_path = global_dir.join(&vbak_name);
+        std::fs::write(&vbak_path, &original_data).unwrap();
+
+        // Insert pending op (with canonicalized path)
+        let db = env.db_path();
+        let canon_original = std::fs::canonicalize(&original).unwrap();
+        insert_pending_op(&db, &canon_original.to_string_lossy(), "normalize");
+        insert_event_log(
+            &db,
+            "plan.executing",
+            &format!("path={} phase=normalize", canon_original.display()),
+        );
+
+        // Run process — should find backup in global dir and recover
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--no-backup",
+            ])
+            .timeout(process_timeout())
+            .assert()
+            .success();
+
+        // Verify: global backup should be cleaned up
+        assert!(
+            !vbak_path.exists(),
+            "global backup should be removed after recovery"
+        );
+
+        // Verify: recovery transition recorded
+        let restored = count_transitions_by_detail(&db, "%restored%");
+        assert!(restored >= 1, "expected crash_recovery:restored transition");
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // I. History lineage across external replacement
+    // ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn history_shows_lineage_across_external_replacement() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+
+        // Scan to create initial transitions
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        let original = env.media_dir().join("hevc-surround.mkv");
+
+        // Get initial history
+        let output1 = env
+            .voom()
+            .args(["history", original.to_str().unwrap(), "--format", "json"])
+            .timeout(std::time::Duration::from_secs(30))
+            .output()
+            .expect("run history");
+        let json1: serde_json::Value =
+            serde_json::from_slice(&output1.stdout).expect("parse history JSON");
+        let count_before = json1.as_array().map_or(0, |a| a.len());
+
+        // Simulate external replacement: overwrite file with different
+        // content, then re-scan. Reconciliation should create a new
+        // file ID and record an external transition on the old one.
+        std::fs::write(&original, b"externally replaced content").unwrap();
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(scan_timeout())
+            .assert()
+            .success();
+
+        // History should show transitions from BOTH file IDs
+        let output2 = env
+            .voom()
+            .args(["history", original.to_str().unwrap(), "--format", "json"])
+            .timeout(std::time::Duration::from_secs(30))
+            .output()
+            .expect("run history after replacement");
+        let json2: serde_json::Value =
+            serde_json::from_slice(&output2.stdout).expect("parse history JSON");
+        let entries = json2.as_array().expect("history should be array");
+
+        assert!(
+            entries.len() > count_before,
+            "history should have more entries after external \
+             replacement (before: {count_before}, after: {})",
+            entries.len()
+        );
+
+        // Should contain both discovery and external source types
+        let sources: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| e["source"].as_str())
+            .collect();
+        assert!(
+            sources.contains(&"external"),
+            "history should include external transition, \
+             got: {sources:?}"
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
