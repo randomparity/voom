@@ -3,6 +3,7 @@
 pub mod scanner;
 
 pub use scanner::hash_file;
+pub use scanner::normalize_path;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
