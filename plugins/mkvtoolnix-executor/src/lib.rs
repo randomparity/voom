@@ -248,7 +248,12 @@ impl MkvtoolnixExecutorPlugin {
         )];
 
         let produced_events = vec![
-            Event::PlanExecuting(PlanExecutingEvent::new(event.path.clone(), phase_name, 1)),
+            Event::PlanExecuting(PlanExecutingEvent::new(
+                plan.id,
+                event.path.clone(),
+                phase_name,
+                1,
+            )),
             Event::PlanCreated(voom_domain::events::PlanCreatedEvent::new(plan)),
         ];
 

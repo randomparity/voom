@@ -1,14 +1,16 @@
 mod bad_file_storage;
 mod discovered_file_storage;
 mod event_log_storage;
-mod file_history_storage;
 mod file_storage;
+mod file_transition_storage;
 mod health_check_storage;
 mod job_storage;
 mod maintenance_storage;
+mod pending_ops_storage;
 mod plan_storage;
 mod plugin_data_storage;
 mod row_mappers;
+mod snapshot_storage;
 mod stats_storage;
 mod subtitle_storage;
 
@@ -206,25 +208,18 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
 /// interpolation safe by construction.
 pub(crate) enum PruneTarget {
     BadFiles,
-    Plans,
-    ProcessingStats,
-    Files,
 }
 
 impl PruneTarget {
     fn table(&self) -> &'static str {
         match self {
             Self::BadFiles => "bad_files",
-            Self::Plans => "plans",
-            Self::ProcessingStats => "processing_stats",
-            Self::Files => "files",
         }
     }
 
     fn column(&self) -> &'static str {
         match self {
-            Self::BadFiles | Self::Files => "id",
-            Self::Plans | Self::ProcessingStats => "file_id",
+            Self::BadFiles => "id",
         }
     }
 }
@@ -337,8 +332,8 @@ mod tests {
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
     use voom_domain::plan::{OperationType, PlannedAction};
     use voom_domain::storage::{
-        BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage, JobFilters,
-        JobStorage, MaintenanceStorage, PlanStatus, PlanStorage, PluginDataStorage, StatsStorage,
+        BadFileFilters, BadFileStorage, FileFilters, FileStorage, JobFilters, JobStorage,
+        MaintenanceStorage, PlanStatus, PlanStorage, PluginDataStorage, StatsStorage,
     };
 
     fn test_store() -> SqliteStore {
@@ -443,31 +438,16 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_file() {
+    fn test_mark_missing() {
         let store = test_store();
         let file = sample_file();
         store.upsert_file(&file).unwrap();
-        store.delete_file(&file.id).unwrap();
-        assert!(store.file(&file.id).unwrap().is_none());
-    }
+        store.mark_missing(&file.id).unwrap();
 
-    #[test]
-    fn test_delete_cascades_tracks() {
-        let store = test_store();
-        let file = sample_file();
-        store.upsert_file(&file).unwrap();
-        store.delete_file(&file.id).unwrap();
-
-        // Verify tracks are also gone
-        let conn = store.conn().unwrap();
-        let count: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM tracks WHERE file_id = ?1",
-                params![file.id.to_string()],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 0);
+        // File should still exist but status is missing
+        let loaded = store.file(&file.id).unwrap();
+        // mark_missing is a stub — file still present until purge
+        assert!(loaded.is_some());
     }
 
     #[test]
@@ -845,7 +825,17 @@ mod tests {
         let pruned = store.prune_missing_files().unwrap();
         assert_eq!(pruned, 1);
 
-        // File should be gone
+        // File should be marked as missing (soft-delete)
+        let result = store.file(&file.id).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().status, voom_domain::FileStatus::Missing);
+
+        // Now purge the missing file (after retention period)
+        let now = chrono::Utc::now();
+        let purged = store.purge_missing(now).unwrap();
+        assert_eq!(purged, 1);
+
+        // Now the file should be gone
         assert!(store.file(&file.id).unwrap().is_none());
     }
 
@@ -868,7 +858,26 @@ mod tests {
             .unwrap();
         assert_eq!(pruned, 1);
 
-        // file_a should be gone, file_b should remain
+        // file_a should be marked as missing, file_b should remain active
+        let file_a_result = store.file(&file_a.id).unwrap();
+        assert!(file_a_result.is_some());
+        assert_eq!(
+            file_a_result.unwrap().status,
+            voom_domain::FileStatus::Missing
+        );
+        let file_b_result = store.file(&file_b.id).unwrap();
+        assert!(file_b_result.is_some());
+        assert_eq!(
+            file_b_result.unwrap().status,
+            voom_domain::FileStatus::Active
+        );
+
+        // Purge file_a after retention period
+        let now = chrono::Utc::now();
+        let purged = store.purge_missing(now).unwrap();
+        assert_eq!(purged, 1);
+
+        // Now file_a should be gone, file_b should still exist
         assert!(store.file(&file_a.id).unwrap().is_none());
         assert!(store.file(&file_b.id).unwrap().is_some());
     }
@@ -908,7 +917,23 @@ mod tests {
             .unwrap();
         assert_eq!(pruned, 1);
 
-        // File, plans, and stats should all be gone
+        // File should be marked as missing (soft-delete)
+        let file_result = store.file(&file.id).unwrap();
+        assert!(file_result.is_some());
+        assert_eq!(
+            file_result.unwrap().status,
+            voom_domain::FileStatus::Missing
+        );
+
+        // Plans should still exist (they're cleaned up only during purge_missing)
+        assert!(!store.plans_for_file(&file.id).unwrap().is_empty());
+
+        // Purge the missing file and its dependents
+        let now = chrono::Utc::now();
+        let purged = store.purge_missing(now).unwrap();
+        assert_eq!(purged, 1);
+
+        // Now file, plans, and stats should all be gone
         assert!(store.file(&file.id).unwrap().is_none());
         assert!(store.plans_for_file(&file.id).unwrap().is_empty());
     }
@@ -1105,42 +1130,6 @@ mod tests {
             .unwrap();
         assert_eq!(stored.id, original_id);
         assert_eq!(stored.content_hash, Some("hash_v2".to_string()));
-    }
-
-    #[test]
-    fn test_upsert_creates_history_on_update() {
-        let store = test_store();
-        let mut file = MediaFile::new(PathBuf::from("/media/history_test.mkv"));
-        file.content_hash = Some("hash_v1".into());
-        file.container = Container::Mkv;
-        store.upsert_file(&file).unwrap();
-
-        // No history yet for first insert
-        let history = store
-            .file_history(Path::new("/media/history_test.mkv"))
-            .unwrap();
-        assert!(history.is_empty());
-
-        // Update the file
-        let mut file2 = MediaFile::new(PathBuf::from("/media/history_test.mkv"));
-        file2.content_hash = Some("hash_v2".into());
-        file2.container = Container::Mkv;
-        store.upsert_file(&file2).unwrap();
-
-        // Now should have one history entry
-        let history = store
-            .file_history(Path::new("/media/history_test.mkv"))
-            .unwrap();
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].content_hash, Some("hash_v1".to_string()));
-        assert_eq!(history[0].container, Container::Mkv);
-    }
-
-    #[test]
-    fn test_get_file_history_empty() {
-        let store = test_store();
-        let history = store.file_history(Path::new("/nonexistent.mkv")).unwrap();
-        assert!(history.is_empty());
     }
 
     // --- claim_job_by_id ---
@@ -1486,5 +1475,352 @@ mod tests {
         assert!(q.sql.contains("LIMIT"), "expected LIMIT clause");
         assert_eq!(q.params.len(), 1);
         assert_eq!(q.params[0], "10000", "limit should be clamped to 10000");
+    }
+
+    // --- Batch reconciliation ---
+
+    use voom_domain::storage::FileTransitionStorage;
+    use voom_domain::transition::{DiscoveredFile, FileStatus, FileTransition, TransitionSource};
+
+    fn discovered(path: &str, size: u64, hash: &str) -> DiscoveredFile {
+        DiscoveredFile::new(PathBuf::from(path), size, hash.into())
+    }
+
+    #[test]
+    fn reconcile_new_file() {
+        let store = test_store();
+        let files = vec![discovered("/movies/new.mkv", 1000, "hash_new")];
+        let result = store
+            .reconcile_discovered_files(&files, &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        assert_eq!(result.new_files, 1);
+        assert_eq!(result.unchanged, 0);
+        assert_eq!(result.needs_introspection.len(), 1);
+        assert_eq!(
+            result.needs_introspection[0],
+            PathBuf::from("/movies/new.mkv")
+        );
+
+        let file = store
+            .file_by_path(Path::new("/movies/new.mkv"))
+            .unwrap()
+            .expect("file should exist after reconciliation");
+        assert_eq!(file.expected_hash.as_deref(), Some("hash_new"));
+        assert_eq!(file.content_hash.as_deref(), Some("hash_new"));
+        assert_eq!(file.size, 1000);
+        assert_eq!(file.status, FileStatus::Active);
+
+        let transitions = store.transitions_for_file(&file.id).unwrap();
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].source, TransitionSource::Discovery);
+        assert_eq!(transitions[0].to_hash, "hash_new");
+    }
+
+    #[test]
+    fn reconcile_unchanged_file() {
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/movies/unchanged.mkv"));
+        file.content_hash = Some("hash_same".into());
+        store.upsert_file(&file).unwrap();
+        store.update_expected_hash(&file.id, "hash_same").unwrap();
+
+        let files = vec![discovered("/movies/unchanged.mkv", 1000, "hash_same")];
+        let result = store
+            .reconcile_discovered_files(&files, &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        assert_eq!(result.unchanged, 1);
+        assert_eq!(result.new_files, 0);
+        assert_eq!(result.external_changes, 0);
+        assert_eq!(
+            result.needs_introspection.len(),
+            0,
+            "unchanged files need no introspection"
+        );
+
+        let transitions = store.transitions_for_file(&file.id).unwrap();
+        assert_eq!(transitions.len(), 0, "no transitions for unchanged file");
+    }
+
+    #[test]
+    fn reconcile_external_modification() {
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/movies/modified.mkv"));
+        file.size = 500;
+        file.content_hash = Some("hash_old".into());
+        store.upsert_file(&file).unwrap();
+        store.update_expected_hash(&file.id, "hash_old").unwrap();
+        let original_id = file.id;
+
+        let files = vec![discovered("/movies/modified.mkv", 600, "hash_new")];
+        let result = store
+            .reconcile_discovered_files(&files, &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        assert_eq!(result.external_changes, 1);
+        assert_eq!(result.needs_introspection.len(), 1);
+        assert_eq!(
+            result.needs_introspection[0],
+            PathBuf::from("/movies/modified.mkv")
+        );
+
+        // Old file should be missing with NULL path
+        let old_file = store.file(&original_id).unwrap().expect("old file exists");
+        assert_eq!(old_file.status, FileStatus::Missing);
+
+        // New file should exist at the same path with different UUID
+        let new_file = store
+            .file_by_path(Path::new("/movies/modified.mkv"))
+            .unwrap()
+            .expect("new file exists");
+        assert_ne!(new_file.id, original_id);
+        assert_eq!(new_file.expected_hash.as_deref(), Some("hash_new"));
+
+        // Both should have transitions
+        let old_transitions = store.transitions_for_file(&original_id).unwrap();
+        assert_eq!(old_transitions.len(), 1);
+        assert_eq!(old_transitions[0].source, TransitionSource::External);
+
+        let new_transitions = store.transitions_for_file(&new_file.id).unwrap();
+        assert_eq!(new_transitions.len(), 1);
+        assert_eq!(new_transitions[0].source, TransitionSource::Discovery);
+    }
+
+    #[test]
+    fn reconcile_missing_file() {
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/movies/gone.mkv"));
+        file.content_hash = Some("hash_gone".into());
+        store.upsert_file(&file).unwrap();
+        store.update_expected_hash(&file.id, "hash_gone").unwrap();
+
+        let result = store
+            .reconcile_discovered_files(&[], &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        assert_eq!(result.missing, 1);
+
+        let loaded = store.file(&file.id).unwrap().expect("file still in DB");
+        assert_eq!(loaded.status, FileStatus::Missing);
+    }
+
+    #[test]
+    fn reconcile_move_detected() {
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/movies/old_name.mkv"));
+        file.content_hash = Some("hash_moved".into());
+        store.upsert_file(&file).unwrap();
+        store.update_expected_hash(&file.id, "hash_moved").unwrap();
+        let original_id = file.id;
+
+        // Mark missing first (simulates previous scan not finding it)
+        store.mark_missing(&file.id).unwrap();
+
+        let files = vec![discovered("/movies/new_name.mkv", 1000, "hash_moved")];
+        let result = store
+            .reconcile_discovered_files(&files, &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        assert_eq!(result.moved, 1);
+        assert_eq!(result.new_files, 0);
+        assert_eq!(result.needs_introspection.len(), 1);
+        assert_eq!(
+            result.needs_introspection[0],
+            PathBuf::from("/movies/new_name.mkv")
+        );
+
+        // Same UUID, new path
+        let loaded = store.file(&original_id).unwrap().expect("file exists");
+        assert_eq!(loaded.path, PathBuf::from("/movies/new_name.mkv"));
+        assert_eq!(loaded.status, FileStatus::Active);
+
+        let transitions = store.transitions_for_file(&original_id).unwrap();
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].source, TransitionSource::Discovery);
+        assert_eq!(
+            transitions[0].source_detail.as_deref(),
+            Some("detected_move")
+        );
+    }
+
+    #[test]
+    fn reconcile_scoped_to_scanned_dirs() {
+        let store = test_store();
+        let mut movie = MediaFile::new(PathBuf::from("/movies/a.mkv"));
+        movie.content_hash = Some("hash_a".into());
+        store.upsert_file(&movie).unwrap();
+        store.update_expected_hash(&movie.id, "hash_a").unwrap();
+
+        let mut tv = MediaFile::new(PathBuf::from("/tv/b.mkv"));
+        tv.content_hash = Some("hash_b".into());
+        store.upsert_file(&tv).unwrap();
+        store.update_expected_hash(&tv.id, "hash_b").unwrap();
+
+        // Scan only /movies/ with nothing found
+        let result = store
+            .reconcile_discovered_files(&[], &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        assert_eq!(result.missing, 1);
+
+        let movie_loaded = store.file(&movie.id).unwrap().expect("movie in DB");
+        assert_eq!(movie_loaded.status, FileStatus::Missing);
+
+        let tv_loaded = store.file(&tv.id).unwrap().expect("tv in DB");
+        assert_eq!(tv_loaded.status, FileStatus::Active);
+    }
+
+    #[test]
+    fn reconcile_reappeared_file() {
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/movies/back.mkv"));
+        file.content_hash = Some("hash_back".into());
+        store.upsert_file(&file).unwrap();
+        store.update_expected_hash(&file.id, "hash_back").unwrap();
+        let original_id = file.id;
+
+        store.mark_missing(&file.id).unwrap();
+
+        // Rediscover at same path with same hash
+        let files = vec![discovered("/movies/back.mkv", 1000, "hash_back")];
+        let result = store
+            .reconcile_discovered_files(&files, &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        // Should count as moved (same hash found on missing record)
+        // or unchanged if path matches — the spec says path not in DB for move.
+        // But the file IS in DB at this path (just missing). Let's check:
+        // Path exists in DB + hash matches expected_hash → unchanged, reactivate.
+        let loaded = store.file(&original_id).unwrap().expect("file exists");
+        assert_eq!(loaded.status, FileStatus::Active);
+        assert_eq!(loaded.path, PathBuf::from("/movies/back.mkv"));
+
+        // Should be counted as unchanged (path exists, hash matches)
+        assert_eq!(result.unchanged, 1);
+    }
+
+    #[test]
+    fn reconcile_path_prefix_boundary_no_false_match() {
+        // /movies should NOT match /movies2/file.mkv — component-level check required
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/movies2/file.mkv"));
+        file.content_hash = Some("hash_m2".into());
+        store.upsert_file(&file).unwrap();
+        store.update_expected_hash(&file.id, "hash_m2").unwrap();
+
+        // Scan /movies (no trailing slash) with no discovered files
+        let result = store
+            .reconcile_discovered_files(&[], &[PathBuf::from("/movies")])
+            .unwrap();
+
+        // /movies2/file.mkv is not under /movies — must NOT be marked missing
+        assert_eq!(result.missing, 0);
+        let loaded = store.file(&file.id).unwrap().expect("file still in DB");
+        assert_eq!(loaded.status, FileStatus::Active);
+    }
+
+    #[test]
+    fn reconcile_null_expected_hash_legacy_file_counts_as_unchanged() {
+        // A file with NULL expected_hash re-discovered with any hash should be unchanged
+        let store = test_store();
+        let mut file = MediaFile::new(PathBuf::from("/movies/legacy.mkv"));
+        file.content_hash = Some("old_hash".into());
+        file.expected_hash = None; // legacy file — no expected_hash
+        store.upsert_file(&file).unwrap();
+
+        let files = vec![discovered("/movies/legacy.mkv", 1000, "new_hash")];
+        let result = store
+            .reconcile_discovered_files(&files, &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        // NULL expected_hash means we cannot detect external modification;
+        // treat as unchanged and backfill expected_hash
+        assert_eq!(result.unchanged, 1);
+        assert_eq!(result.external_changes, 0);
+
+        let loaded = store
+            .file_by_path(Path::new("/movies/legacy.mkv"))
+            .unwrap()
+            .expect("file exists");
+        // expected_hash should now be backfilled with the discovered hash
+        assert_eq!(loaded.expected_hash.as_deref(), Some("new_hash"));
+        assert_eq!(loaded.status, FileStatus::Active);
+    }
+
+    #[test]
+    fn reconcile_duplicate_hash_in_discovered_one_move_one_new() {
+        // Two discovered files share the same content_hash.
+        // One missing file has that hash → exactly one move, one new file.
+        let store = test_store();
+        let mut missing_file = MediaFile::new(PathBuf::from("/movies/original.mkv"));
+        missing_file.content_hash = Some("shared_hash".into());
+        store.upsert_file(&missing_file).unwrap();
+        store
+            .update_expected_hash(&missing_file.id, "shared_hash")
+            .unwrap();
+        store.mark_missing(&missing_file.id).unwrap();
+
+        let files = vec![
+            discovered("/movies/copy_a.mkv", 1000, "shared_hash"),
+            discovered("/movies/copy_b.mkv", 1000, "shared_hash"),
+        ];
+        let result = store
+            .reconcile_discovered_files(&files, &[PathBuf::from("/movies/")])
+            .unwrap();
+
+        // First match consumes the missing record; second must be a new file
+        assert_eq!(result.moved, 1);
+        assert_eq!(result.new_files, 1);
+        assert_eq!(result.unchanged, 0);
+    }
+
+    // --- transitions_for_path ---
+
+    #[test]
+    fn transitions_for_path_spans_file_ids() {
+        let store = test_store();
+        let path = PathBuf::from("/movies/movie.mkv");
+        let old_id = Uuid::new_v4();
+        let new_id = Uuid::new_v4();
+
+        // Insert a file at the path so schema constraints are satisfied
+        let mut file = MediaFile::new(path.clone());
+        file.id = old_id;
+        store.upsert_file(&file).expect("insert old file");
+
+        // Record a transition on the old file
+        let t1 = FileTransition::new(
+            old_id,
+            path.clone(),
+            "hash_old".into(),
+            1000,
+            TransitionSource::Discovery,
+        );
+        store.record_transition(&t1).expect("record t1");
+
+        // Record a transition on the new file at the same path
+        let t2 = FileTransition::new(
+            new_id,
+            path.clone(),
+            "hash_new".into(),
+            2000,
+            TransitionSource::External,
+        );
+        store.record_transition(&t2).expect("record t2");
+
+        // Query by path should return both
+        let results = store
+            .transitions_for_path(&path)
+            .expect("transitions_for_path");
+        assert_eq!(
+            results.len(),
+            2,
+            "should find transitions from both file IDs"
+        );
+
+        let file_ids: std::collections::HashSet<Uuid> = results.iter().map(|t| t.file_id).collect();
+        assert!(file_ids.contains(&old_id));
+        assert!(file_ids.contains(&new_id));
     }
 }

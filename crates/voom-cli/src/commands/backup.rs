@@ -16,16 +16,20 @@ struct VbakEntry {
 
 pub fn run(cmd: BackupCommands, global_yes: bool) -> Result<()> {
     match cmd {
-        BackupCommands::List { path, format } => list(&path, format),
+        BackupCommands::List { paths, format } => list(&paths, format),
         BackupCommands::Restore { backup_path, yes } => restore(&backup_path, yes || global_yes),
-        BackupCommands::Cleanup { path, yes } => cleanup(&path, yes || global_yes),
+        BackupCommands::Cleanup { paths, yes } => cleanup(&paths, yes || global_yes),
     }
 }
 
-fn list(root: &Path, format: OutputFormat) -> Result<()> {
-    let entries = scan_vbak_files(root)?;
+fn list(roots: &[PathBuf], format: OutputFormat) -> Result<()> {
+    let mut all_entries = Vec::new();
+    for root in roots {
+        let entries = scan_vbak_files(root)?;
+        all_entries.extend(entries);
+    }
 
-    if entries.is_empty() {
+    if all_entries.is_empty() {
         if format.is_machine() {
             if matches!(format, OutputFormat::Json) {
                 println!("[]");
@@ -34,10 +38,12 @@ fn list(root: &Path, format: OutputFormat) -> Result<()> {
         }
         eprintln!(
             "{}",
-            style(format!("No .vbak files found under {}", root.display())).dim()
+            style("No .vbak files found under the given path(s).").dim()
         );
         return Ok(());
     }
+
+    let entries = all_entries;
 
     match format {
         OutputFormat::Json => {
@@ -116,16 +122,22 @@ fn restore(backup_path: &Path, yes: bool) -> Result<()> {
     Ok(())
 }
 
-fn cleanup(root: &Path, yes: bool) -> Result<()> {
-    let entries = scan_vbak_files(root)?;
+fn cleanup(roots: &[PathBuf], yes: bool) -> Result<()> {
+    let mut all_entries = Vec::new();
+    for root in roots {
+        let entries = scan_vbak_files(root)?;
+        all_entries.extend(entries);
+    }
 
-    if entries.is_empty() {
+    if all_entries.is_empty() {
         println!(
             "{}",
-            style(format!("No .vbak files found under {}", root.display())).dim()
+            style("No .vbak files found under the given path(s).").dim()
         );
         return Ok(());
     }
+
+    let entries = all_entries;
 
     let total_size: u64 = entries.iter().map(|e| e.size).sum();
     eprintln!(

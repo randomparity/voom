@@ -18,6 +18,10 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub yes: bool,
 
+    /// Skip the process lock (use if a previous run crashed and left a stale lock)
+    #[arg(long, global = true)]
+    pub force: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -103,8 +107,9 @@ pub enum Commands {
 
 #[derive(clap::Args)]
 pub struct ScanArgs {
-    /// Directory to scan for media files
-    pub path: PathBuf,
+    /// Directories to scan for media files
+    #[arg(required = true, num_args = 1..)]
+    pub paths: Vec<PathBuf>,
 
     /// Recurse into subdirectories
     #[arg(short, long, default_value_t = true)]
@@ -143,8 +148,9 @@ pub struct InspectArgs {
 
 #[derive(clap::Args)]
 pub struct ProcessArgs {
-    /// Directory or file to process
-    pub path: PathBuf,
+    /// Directories or files to process
+    #[arg(required = true, num_args = 1..)]
+    pub paths: Vec<PathBuf>,
 
     /// Policy file (.voom) to apply to all files
     #[arg(short, long, conflicts_with = "policy_map")]
@@ -306,6 +312,14 @@ pub struct ReportArgs {
     /// Show per-phase plan processing summary
     #[arg(long)]
     pub plans: bool,
+
+    /// Show deep library statistics
+    #[arg(long)]
+    pub stats: bool,
+
+    /// Show snapshot history (N most recent)
+    #[arg(long)]
+    pub history: Option<u32>,
 }
 
 // === Serve ===
@@ -420,8 +434,9 @@ pub struct HistoryArgs {
 pub enum BackupCommands {
     /// List backup files
     List {
-        /// Directory to scan for backups
-        path: PathBuf,
+        /// Directories to scan for backups
+        #[arg(required = true, num_args = 1..)]
+        paths: Vec<PathBuf>,
         /// Output format
         #[arg(short, long, default_value = "table")]
         format: OutputFormat,
@@ -436,8 +451,9 @@ pub enum BackupCommands {
     },
     /// Remove all backup files
     Cleanup {
-        /// Directory to scan for backups
-        path: PathBuf,
+        /// Directories to scan for backups
+        #[arg(required = true, num_args = 1..)]
+        paths: Vec<PathBuf>,
         /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
@@ -694,7 +710,7 @@ mod tests {
         let cli = parse(&["voom", "scan", "/media"]);
         match cli.command {
             Commands::Scan(args) => {
-                assert_eq!(args.path, PathBuf::from("/media"));
+                assert_eq!(args.paths, vec![PathBuf::from("/media")]);
                 assert!(args.recursive);
                 assert_eq!(args.workers, 0);
                 assert!(!args.no_hash);
@@ -806,7 +822,7 @@ mod tests {
         let cli = parse(&["voom", "process", "/media", "--policy", "my.voom"]);
         match cli.command {
             Commands::Process(args) => {
-                assert_eq!(args.path, PathBuf::from("/media"));
+                assert_eq!(args.paths, vec![PathBuf::from("/media")]);
                 assert_eq!(args.policy, Some(PathBuf::from("my.voom")));
                 assert!(args.policy_map.is_none());
                 assert!(!args.dry_run);
@@ -1594,8 +1610,8 @@ mod tests {
     fn test_backup_list() {
         let cli = parse(&["voom", "backup", "list", "/media"]);
         match cli.command {
-            Commands::Backup(BackupCommands::List { path, .. }) => {
-                assert_eq!(path, PathBuf::from("/media"));
+            Commands::Backup(BackupCommands::List { paths, .. }) => {
+                assert_eq!(paths, vec![PathBuf::from("/media")]);
             }
             _ => panic!("expected Backup List"),
         }
@@ -1633,8 +1649,8 @@ mod tests {
     fn test_backup_cleanup() {
         let cli = parse(&["voom", "backup", "cleanup", "/media", "--yes"]);
         match cli.command {
-            Commands::Backup(BackupCommands::Cleanup { path, yes }) => {
-                assert_eq!(path, PathBuf::from("/media"));
+            Commands::Backup(BackupCommands::Cleanup { paths, yes }) => {
+                assert_eq!(paths, vec![PathBuf::from("/media")]);
                 assert!(yes);
             }
             _ => panic!("expected Backup Cleanup"),
@@ -1644,6 +1660,92 @@ mod tests {
     #[test]
     fn test_backup_cleanup_requires_path() {
         assert!(try_parse(&["voom", "backup", "cleanup"]).is_err());
+    }
+
+    #[test]
+    fn test_scan_multiple_paths() {
+        let cli = parse(&["voom", "scan", "/movies", "/series"]);
+        match cli.command {
+            Commands::Scan(args) => {
+                assert_eq!(
+                    args.paths,
+                    vec![PathBuf::from("/movies"), PathBuf::from("/series")]
+                );
+            }
+            _ => panic!("expected Scan"),
+        }
+    }
+
+    #[test]
+    fn test_scan_single_path_still_works() {
+        let cli = parse(&["voom", "scan", "/media"]);
+        match cli.command {
+            Commands::Scan(args) => {
+                assert_eq!(args.paths, vec![PathBuf::from("/media")]);
+            }
+            _ => panic!("expected Scan"),
+        }
+    }
+
+    #[test]
+    fn test_scan_requires_at_least_one_path() {
+        assert!(try_parse(&["voom", "scan"]).is_err());
+    }
+
+    #[test]
+    fn test_process_multiple_paths() {
+        let cli = parse(&[
+            "voom", "process", "/movies", "/series", "--policy", "p.voom",
+        ]);
+        match cli.command {
+            Commands::Process(args) => {
+                assert_eq!(
+                    args.paths,
+                    vec![PathBuf::from("/movies"), PathBuf::from("/series")]
+                );
+            }
+            _ => panic!("expected Process"),
+        }
+    }
+
+    #[test]
+    fn test_process_single_path_still_works() {
+        let cli = parse(&["voom", "process", "/media", "--policy", "p.voom"]);
+        match cli.command {
+            Commands::Process(args) => {
+                assert_eq!(args.paths, vec![PathBuf::from("/media")]);
+            }
+            _ => panic!("expected Process"),
+        }
+    }
+
+    #[test]
+    fn test_backup_list_multiple_paths() {
+        let cli = parse(&["voom", "backup", "list", "/movies", "/series"]);
+        match cli.command {
+            Commands::Backup(BackupCommands::List { paths, .. }) => {
+                assert_eq!(
+                    paths,
+                    vec![PathBuf::from("/movies"), PathBuf::from("/series")]
+                );
+            }
+            _ => panic!("expected Backup List"),
+        }
+    }
+
+    #[test]
+    fn test_backup_cleanup_multiple_paths() {
+        let cli = parse(&["voom", "backup", "cleanup", "/movies", "/series", "--yes"]);
+        match cli.command {
+            Commands::Backup(BackupCommands::Cleanup { paths, yes }) => {
+                assert_eq!(
+                    paths,
+                    vec![PathBuf::from("/movies"), PathBuf::from("/series")]
+                );
+                assert!(yes);
+            }
+            _ => panic!("expected Backup Cleanup"),
+        }
     }
 
     // ── Files subcommands ─────────────────────────────────────

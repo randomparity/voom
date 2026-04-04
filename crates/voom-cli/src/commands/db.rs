@@ -32,10 +32,27 @@ fn prune() -> Result<()> {
         println!("{}", style("No stale entries found.").dim());
     } else {
         println!(
-            "{} Pruned {} stale entries.",
+            "{} Marked {} files as missing.",
             style("OK").bold().green(),
             style(count).bold()
         );
+    }
+
+    // Purge missing files older than retention period
+    let retention_days = config.pruning.retention_days;
+    if retention_days > 0 {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(i64::from(retention_days));
+        match store.purge_missing(cutoff) {
+            Ok(n) if n > 0 => {
+                println!(
+                    "{} Purged {} missing file records.",
+                    style("OK").bold().green(),
+                    style(n).bold()
+                );
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "purge_missing failed"),
+        }
     }
 
     // Prune health checks using the default retention period

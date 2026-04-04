@@ -11,9 +11,23 @@ pub fn run(args: HistoryArgs) -> Result<()> {
     let store = app::open_store(&config)?;
 
     let path = args.file.canonicalize().unwrap_or(args.file.clone());
-    let entries = store.file_history(&path)?;
 
-    if entries.is_empty() {
+    // Look up by file identity first to capture lineage across renames.
+    // Fall back to path-based lookup for files not in the database
+    // (e.g., deleted files where only transition records remain).
+    let transitions = match store
+        .file_by_path(&path)
+        .map_err(|e| anyhow::anyhow!("failed to look up file: {e}"))?
+    {
+        Some(file) => store
+            .transitions_for_file(&file.id)
+            .map_err(|e| anyhow::anyhow!("failed to retrieve transitions: {e}"))?,
+        None => store
+            .transitions_for_path(&path)
+            .map_err(|e| anyhow::anyhow!("failed to retrieve transitions: {e}"))?,
+    };
+
+    if transitions.is_empty() {
         if args.format.is_machine() {
             if matches!(args.format, OutputFormat::Json) {
                 println!("[]");
@@ -29,18 +43,21 @@ pub fn run(args: HistoryArgs) -> Result<()> {
 
     match args.format {
         OutputFormat::Json => {
-            let json: Vec<serde_json::Value> = entries
+            let json: Vec<serde_json::Value> = transitions
                 .iter()
-                .map(|e| {
+                .map(|t| {
                     serde_json::json!({
-                        "id": e.id.to_string(),
-                        "file_id": e.file_id.to_string(),
-                        "path": e.path.display().to_string(),
-                        "container": e.container.as_str(),
-                        "track_count": e.track_count,
-                        "content_hash": e.content_hash,
-                        "introspected_at": e.introspected_at.to_rfc3339(),
-                        "archived_at": e.archived_at.to_rfc3339(),
+                        "id": t.id.to_string(),
+                        "file_id": t.file_id.to_string(),
+                        "path": t.path.display().to_string(),
+                        "from_hash": t.from_hash,
+                        "to_hash": t.to_hash,
+                        "from_size": t.from_size,
+                        "to_size": t.to_size,
+                        "source": t.source.as_str(),
+                        "source_detail": t.source_detail,
+                        "plan_id": t.plan_id.map(|id| id.to_string()),
+                        "created_at": t.created_at.to_rfc3339(),
                     })
                 })
                 .collect();
@@ -53,39 +70,40 @@ pub fn run(args: HistoryArgs) -> Result<()> {
         OutputFormat::Table => {
             println!(
                 "{} for {}:\n",
-                style(format!("{} history entries", entries.len())).bold(),
+                style(format!("{} transition entries", transitions.len())).bold(),
                 style(path.display()).cyan()
             );
 
             let mut table = output::new_table();
-            table.set_header(vec!["#", "Date", "Container", "Tracks", "Hash"]);
+            table.set_header(vec!["#", "Date", "Source", "From Hash", "To Hash"]);
 
-            for (i, entry) in entries.iter().enumerate() {
-                let date = format::format_display(&entry.archived_at);
-                let hash = entry
-                    .content_hash
+            for (i, t) in transitions.iter().enumerate() {
+                let date = format::format_display(&t.created_at);
+                let from = t
+                    .from_hash
                     .as_deref()
                     .map(output::hash_preview)
                     .unwrap_or("—");
+                let to = output::hash_preview(&t.to_hash);
 
                 table.add_row(vec![
                     comfy_table::Cell::new(i + 1),
                     comfy_table::Cell::new(date),
-                    comfy_table::Cell::new(entry.container.as_str()),
-                    comfy_table::Cell::new(entry.track_count),
-                    comfy_table::Cell::new(hash),
+                    comfy_table::Cell::new(t.source.as_str()),
+                    comfy_table::Cell::new(from),
+                    comfy_table::Cell::new(to),
                 ]);
             }
 
             println!("{table}");
         }
         OutputFormat::Plain => {
-            for entry in &entries {
+            for t in &transitions {
                 println!(
                     "{}\t{}\t{}",
-                    entry.archived_at.format("%Y-%m-%d %H:%M:%S"),
-                    entry.container.as_str(),
-                    entry.path.display(),
+                    t.created_at.format("%Y-%m-%d %H:%M:%S"),
+                    t.source.as_str(),
+                    t.path.display(),
                 );
             }
         }

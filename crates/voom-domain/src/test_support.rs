@@ -19,10 +19,18 @@ use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::{Container, MediaFile, Track, TrackType};
 use crate::plan::Plan;
 use crate::stats::ProcessingStats;
+use crate::stats::{
+    AudioStats, FileStats, JobAggregateStats, LibrarySnapshot, ProcessingAggregateStats,
+    SnapshotTrigger, SubtitleStats, VideoStats,
+};
 use crate::storage::{
-    BadFileFilters, BadFileStorage, FileFilters, FileHistoryStorage, FileStorage,
+    BadFileFilters, BadFileStorage, FileFilters, FileStorage, FileTransitionStorage,
     HealthCheckFilters, HealthCheckRecord, HealthCheckStorage, JobFilters, JobStorage,
-    MaintenanceStorage, PageStats, PlanStorage, PlanSummary, PluginDataStorage, StatsStorage,
+    MaintenanceStorage, PageStats, PendingOperation, PendingOpsStorage, PlanStorage, PlanSummary,
+    PluginDataStorage, SnapshotStorage, StatsStorage,
+};
+use crate::transition::{
+    DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
 };
 
 /// Create a standard test `MediaFile` with video, two audio, and one subtitle track.
@@ -62,6 +70,9 @@ pub fn test_media_file() -> MediaFile {
 }
 
 fn matches_filter(file: &MediaFile, filters: &FileFilters) -> bool {
+    if !filters.include_missing && file.status == FileStatus::Missing {
+        return false;
+    }
     if let Some(container) = filters.container {
         if file.container != container {
             return false;
@@ -91,6 +102,9 @@ fn matches_filter(file: &MediaFile, filters: &FileFilters) -> bool {
 pub struct InMemoryStore {
     files: Mutex<HashMap<Uuid, MediaFile>>,
     jobs: Mutex<HashMap<Uuid, Job>>,
+    snapshots: Mutex<Vec<LibrarySnapshot>>,
+    event_log: Mutex<Vec<crate::storage::EventLogRecord>>,
+    pub pending_ops: Mutex<Vec<PendingOperation>>,
 }
 
 impl InMemoryStore {
@@ -98,6 +112,9 @@ impl InMemoryStore {
         Self {
             files: Mutex::new(HashMap::new()),
             jobs: Mutex::new(HashMap::new()),
+            snapshots: Mutex::new(Vec::new()),
+            event_log: Mutex::new(Vec::new()),
+            pending_ops: Mutex::new(Vec::new()),
         }
     }
 
@@ -172,9 +189,65 @@ impl FileStorage for InMemoryStore {
         Ok(count as u64)
     }
 
-    fn delete_file(&self, id: &Uuid) -> Result<()> {
-        self.files.lock().unwrap().remove(id);
+    fn mark_missing(&self, id: &Uuid) -> Result<()> {
+        let mut files = self.files.lock().unwrap();
+        if let Some(file) = files.get_mut(id) {
+            file.status = FileStatus::Missing;
+        }
         Ok(())
+    }
+
+    fn reactivate_file(&self, id: &Uuid, new_path: &Path) -> Result<()> {
+        let mut files = self.files.lock().unwrap();
+        if let Some(file) = files.get_mut(id) {
+            file.status = FileStatus::Active;
+            file.path = new_path.to_path_buf();
+        }
+        Ok(())
+    }
+
+    fn purge_missing(&self, _older_than: chrono::DateTime<chrono::Utc>) -> Result<u64> {
+        let mut files = self.files.lock().unwrap();
+        let before = files.len();
+        files.retain(|_, f| f.status != FileStatus::Missing);
+        Ok((before - files.len()) as u64)
+    }
+
+    fn reconcile_discovered_files(
+        &self,
+        _discovered: &[DiscoveredFile],
+        _scanned_dirs: &[std::path::PathBuf],
+    ) -> Result<ReconcileResult> {
+        Ok(ReconcileResult::default())
+    }
+
+    fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()> {
+        let mut files = self.files.lock().unwrap();
+        if let Some(file) = files.get_mut(id) {
+            file.expected_hash = Some(hash.to_string());
+        }
+        Ok(())
+    }
+
+    fn mark_missing_paths(
+        &self,
+        discovered_paths: &[PathBuf],
+        scanned_dirs: &[PathBuf],
+    ) -> Result<u32> {
+        let discovered_set: std::collections::HashSet<&PathBuf> = discovered_paths.iter().collect();
+        let mut files = self.files.lock().unwrap();
+        let mut marked = 0u32;
+        for file in files.values_mut() {
+            if file.status != FileStatus::Active {
+                continue;
+            }
+            let under_scanned = scanned_dirs.iter().any(|dir| file.path.starts_with(dir));
+            if under_scanned && !discovered_set.contains(&file.path) {
+                file.status = FileStatus::Missing;
+                marked += 1;
+            }
+        }
+        Ok(marked)
     }
 }
 
@@ -324,9 +397,21 @@ impl PlanStorage for InMemoryStore {
     }
 }
 
-impl FileHistoryStorage for InMemoryStore {
-    fn file_history(&self, _path: &Path) -> Result<Vec<crate::storage::FileHistoryEntry>> {
-        Ok(vec![])
+impl FileTransitionStorage for InMemoryStore {
+    fn record_transition(&self, _: &FileTransition) -> Result<()> {
+        Ok(())
+    }
+
+    fn transitions_for_file(&self, _: &Uuid) -> Result<Vec<FileTransition>> {
+        Ok(Vec::new())
+    }
+
+    fn transitions_by_source(&self, _: TransitionSource) -> Result<Vec<FileTransition>> {
+        Ok(Vec::new())
+    }
+
+    fn transitions_for_path(&self, _: &Path) -> Result<Vec<FileTransition>> {
+        Ok(Vec::new())
     }
 }
 
@@ -395,19 +480,102 @@ impl HealthCheckStorage for InMemoryStore {
 }
 
 impl crate::storage::EventLogStorage for InMemoryStore {
-    fn insert_event_log(&self, _record: &crate::storage::EventLogRecord) -> Result<i64> {
-        Ok(0)
+    fn insert_event_log(&self, record: &crate::storage::EventLogRecord) -> Result<i64> {
+        let mut log = self.event_log.lock().unwrap();
+        let rowid = (log.len() as i64) + 1;
+        let mut stored = record.clone();
+        stored.rowid = rowid;
+        log.push(stored);
+        Ok(rowid)
     }
 
     fn list_event_log(
         &self,
-        _filters: &crate::storage::EventLogFilters,
+        filters: &crate::storage::EventLogFilters,
     ) -> Result<Vec<crate::storage::EventLogRecord>> {
-        Ok(Vec::new())
+        let log = self.event_log.lock().unwrap();
+        let results = log
+            .iter()
+            .filter(|r| {
+                if let Some(ref et) = filters.event_type {
+                    let matches = if let Some(prefix) = et.strip_suffix('*') {
+                        r.event_type.starts_with(prefix)
+                    } else {
+                        r.event_type == *et
+                    };
+                    if !matches {
+                        return false;
+                    }
+                }
+                if let Some(since) = filters.since_rowid {
+                    if r.rowid <= since {
+                        return false;
+                    }
+                }
+                true
+            })
+            .take(filters.limit.map(|l| l as usize).unwrap_or(usize::MAX))
+            .cloned()
+            .collect();
+        Ok(results)
     }
 
-    fn prune_event_log(&self, _keep_last: u64) -> Result<u64> {
-        Ok(0)
+    fn prune_event_log(&self, keep_last: u64) -> Result<u64> {
+        let mut log = self.event_log.lock().unwrap();
+        let len = log.len();
+        let keep = keep_last as usize;
+        if len > keep {
+            let removed = len - keep;
+            *log = log.split_off(removed);
+            Ok(removed as u64)
+        } else {
+            Ok(0)
+        }
+    }
+}
+
+impl SnapshotStorage for InMemoryStore {
+    fn gather_library_stats(&self, trigger: SnapshotTrigger) -> Result<LibrarySnapshot> {
+        Ok(LibrarySnapshot {
+            id: Uuid::new_v4(),
+            captured_at: chrono::Utc::now(),
+            trigger,
+            files: FileStats::default(),
+            video: VideoStats::default(),
+            audio: AudioStats::default(),
+            subtitles: SubtitleStats::default(),
+            processing: ProcessingAggregateStats::default(),
+            jobs: JobAggregateStats::default(),
+        })
+    }
+
+    fn save_snapshot(&self, snapshot: &LibrarySnapshot) -> Result<()> {
+        self.snapshots.lock().unwrap().push(snapshot.clone());
+        Ok(())
+    }
+
+    fn latest_snapshot(&self) -> Result<Option<LibrarySnapshot>> {
+        Ok(self.snapshots.lock().unwrap().last().cloned())
+    }
+
+    fn list_snapshots(&self, limit: u32) -> Result<Vec<LibrarySnapshot>> {
+        let snaps = self.snapshots.lock().unwrap();
+        let mut result: Vec<_> = snaps.iter().rev().take(limit as usize).cloned().collect();
+        result.reverse();
+        Ok(result)
+    }
+
+    fn prune_snapshots(&self, keep_last: u32) -> Result<u64> {
+        let mut snaps = self.snapshots.lock().unwrap();
+        let len = snaps.len();
+        let keep = keep_last as usize;
+        if len > keep {
+            let removed = len - keep;
+            *snaps = snaps.split_off(removed);
+            Ok(removed as u64)
+        } else {
+            Ok(0)
+        }
     }
 }
 
@@ -434,5 +602,28 @@ impl MaintenanceStorage for InMemoryStore {
             page_count: 0,
             freelist_count: 0,
         })
+    }
+}
+
+impl PendingOpsStorage for InMemoryStore {
+    fn insert_pending_op(&self, op: &PendingOperation) -> Result<()> {
+        let mut ops = self.pending_ops.lock().unwrap();
+        ops.retain(|o| o.id != op.id);
+        ops.push(op.clone());
+        Ok(())
+    }
+
+    fn delete_pending_op(&self, plan_id: &Uuid) -> Result<()> {
+        self.pending_ops
+            .lock()
+            .unwrap()
+            .retain(|o| o.id != *plan_id);
+        Ok(())
+    }
+
+    fn list_pending_ops(&self) -> Result<Vec<PendingOperation>> {
+        let mut ops = self.pending_ops.lock().unwrap().clone();
+        ops.sort_by_key(|o| o.started_at);
+        Ok(ops)
     }
 }

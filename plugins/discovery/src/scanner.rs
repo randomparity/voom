@@ -1,10 +1,11 @@
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use rayon::prelude::*;
+use unicode_normalization::UnicodeNormalization;
 use walkdir::WalkDir;
 use xxhash_rust::xxh3::Xxh3;
 
@@ -13,6 +14,20 @@ use voom_domain::events::FileDiscoveredEvent;
 use voom_domain::temp_file::is_voom_temp;
 
 use crate::ScanOptions;
+
+/// Normalize a file path for consistent storage and comparison.
+///
+/// Applies two transformations:
+/// 1. `fs::canonicalize()` — resolves symlinks and macOS /var → /private/var
+/// 2. Unicode NFC normalization — recomposes macOS NFD-decomposed filenames
+///
+/// Falls back to the raw path if canonicalization fails (e.g., file deleted
+/// between walk and normalization).
+pub fn normalize_path(path: &Path) -> PathBuf {
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let normalized: String = canonical.to_string_lossy().nfc().collect();
+    PathBuf::from(normalized)
+}
 
 /// Maximum concurrent open file handles during hashing to avoid exhausting
 /// the process file descriptor limit under heavy parallelism.
@@ -200,7 +215,7 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
                     path: path.clone(),
                 });
             }
-            media_paths.push((path, size));
+            media_paths.push((normalize_path(&path), size));
         }
     }
 
@@ -290,6 +305,53 @@ fn build_event(path: &Path, walk_size: u64, compute_hash: bool) -> Result<FileDi
 }
 
 #[cfg(test)]
+mod normalize_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_normalize_path_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.mkv");
+        std::fs::write(&file, b"data").unwrap();
+        let result = normalize_path(&file);
+        assert!(result.is_absolute());
+        assert_eq!(result.file_name().unwrap(), "test.mkv");
+    }
+
+    #[test]
+    fn test_normalize_path_missing_file_returns_raw() {
+        let path = PathBuf::from("/nonexistent/file.mkv");
+        let result = normalize_path(&path);
+        assert_eq!(result, path, "missing file should return raw path");
+    }
+
+    #[test]
+    fn test_normalize_path_nfc_normalization() {
+        // é as NFD (e + combining acute) vs NFC (single codepoint)
+        let nfd = "caf\u{0065}\u{0301}.mkv";
+        let nfc = "caf\u{00e9}.mkv";
+        let nfd_path = PathBuf::from(nfd);
+        let result = normalize_path(&nfd_path);
+        let result_str = result.to_string_lossy();
+        assert!(
+            result_str.contains('\u{00e9}'),
+            "should contain NFC é, got: {result_str}"
+        );
+        assert!(
+            !result_str.contains('\u{0301}'),
+            "should not contain combining accent after NFC"
+        );
+        let nfc_result = normalize_path(&PathBuf::from(nfc));
+        assert_eq!(
+            result.to_string_lossy(),
+            nfc_result.to_string_lossy(),
+            "NFD and NFC inputs should produce identical normalized paths"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -367,7 +429,9 @@ mod tests {
         let events = scan_directory(&options).unwrap();
         // Should only find the file under "real/", not under "link/"
         assert_eq!(events.len(), 1);
-        assert!(events[0].path.starts_with(&real_dir));
+        // normalize_path canonicalizes paths, so compare against canonical real_dir
+        let canonical_real_dir = std::fs::canonicalize(&real_dir).unwrap_or(real_dir);
+        assert!(events[0].path.starts_with(&canonical_real_dir));
     }
 
     #[test]

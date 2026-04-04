@@ -20,6 +20,7 @@ pub mod temp_file;
     clippy::return_self_not_must_use
 )]
 pub mod test_support;
+pub mod transition;
 pub mod utils;
 
 pub use bad_file::{BadFile, BadFileSource};
@@ -34,10 +35,16 @@ pub use plan::{
     TranscodeChannels, TranscodeSettings,
 };
 pub use safeguard::{SafeguardKind, SafeguardViolation};
-pub use stats::{ProcessingOutcome, ProcessingStats};
+pub use stats::{
+    AudioStats, FileStats, JobAggregateStats, LibrarySnapshot, ProcessingAggregateStats,
+    ProcessingOutcome, ProcessingStats, SnapshotTrigger, SubtitleStats, VideoStats,
+};
 pub use storage::{
     BadFileFilters, BadFileStorage, EventLogFilters, EventLogRecord, EventLogStorage, FileFilters,
-    FileHistoryStorage, FileStorage, HealthCheckFilters, HealthCheckRecord, HealthCheckStorage,
+    FileStorage, FileTransitionStorage, HealthCheckFilters, HealthCheckRecord, HealthCheckStorage,
     JobFilters, JobStorage, MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage,
-    StatsStorage, StorageTrait,
+    SnapshotStorage, StatsStorage, StorageTrait,
+};
+pub use transition::{
+    DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
 };

@@ -83,8 +83,25 @@ For indicatif templates with bars/counters (where the overhead is rendered by in
 
 When review agents surface pre-existing issues that are out of scope for the current branch, or a plan chooses to defer issues that might be out-of-scope, create a GitHub issue for each rather than fixing them in-place. This keeps branches focused and ensures deferred work is tracked.
 
+## Pre-Commit Checks
+- After implementing changes, always run `cargo test` and `cargo clippy` before committing. If tests fail, fix them before proceeding.
+- Run `cargo fmt` before every commit. Never commit without formatting first.
+
+## Git Workflow
+- When staging commits, be precise about which files to include. Use `git add <specific-files>` rather than `git add .` to avoid staging unrelated changes.
+
+## Handling Test Errors
+There is no such thing as a pre-existing test error. If you encoutner a test error while making changes then **YOU** are responsible for fixing it, no matter the original source or the software module that displays the error. This work **CANNOT** be deferred to a Github issue.
+
+## Planning
+- When asked to create a plan, produce a written deliverable quickly. Limit exploration to 5 minutes max before starting to write. Do not over-explore the codebase.
+
+## Project Structure
+- This is a Rust workspace with WASM plugins. Always check that changes compile with `cargo build` and that WASM plugins build separately if modified.
+
 ## Configuration
 
 - App config: TOML at `~/.config/voom/config.toml`
 - Plugin data: `~/.config/voom/plugins/<name>/`
 - WASM plugins directory: `~/.config/voom/plugins/wasm/`
+

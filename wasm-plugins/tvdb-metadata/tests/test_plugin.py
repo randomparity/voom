@@ -228,3 +228,15 @@ class TestExceptionHandling:
         result = plugin_module.on_event(event)
         # Either returns None (not a valid event) or handles gracefully
         assert result is None
+
+
+class TestLogging:
+    """Logging failures should not affect plugin execution."""
+
+    def test_log_bridge_failure_is_non_fatal(self, monkeypatch):
+        class BrokenBridge:
+            def log(self, level, message):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(plugin_module, "_get_host_bridge", lambda: BrokenBridge())
+        plugin_module._log("warn", "test message")

@@ -66,16 +66,10 @@ class TvdbClient:
             return self._token
 
         # Check plugin data for cached token
-        cached = self._host.get_plugin_data("tvdb_token")
-        if cached is not None:
-            try:
-                token_data = json.loads(bytes(cached))
-                token = token_data.get("token")
-                if token:
-                    self._token = token
-                    return self._token
-            except (json.JSONDecodeError, KeyError, TypeError):
-                pass
+        cached_token = self._load_cached_token()
+        if cached_token is not None:
+            self._token = cached_token
+            return self._token
 
         # Request new token
         url = f"{TVDB_API_BASE}/login"
@@ -133,13 +127,9 @@ class TvdbClient:
         """
         # Check cache (no TTL — plugin data is per-lifetime only)
         cache_key = f"search:{name[:128].lower()}"
-        cached = self._host.get_plugin_data(cache_key)
-        if cached is not None:
-            try:
-                cache_data = json.loads(bytes(cached))
-                return cache_data["results"]
-            except (json.JSONDecodeError, KeyError, TypeError):
-                pass
+        cached_results = self._load_cached_search_results(cache_key)
+        if cached_results is not None:
+            return cached_results
 
         # Query API
         encoded_name = _url_quote(name, safe="")
@@ -151,6 +141,30 @@ class TvdbClient:
         self._host.set_plugin_data(cache_key, cache_data.encode("utf-8"))
 
         return series_list
+
+    def _load_cached_token(self) -> str | None:
+        """Return a cached token, or None if the cache is absent/invalid."""
+        cached = self._host.get_plugin_data("tvdb_token")
+        if cached is None:
+            return None
+        try:
+            token_data = json.loads(bytes(cached))
+        except (json.JSONDecodeError, TypeError):
+            return None
+        token = token_data.get("token")
+        return token if token else None
+
+    def _load_cached_search_results(self, cache_key: str) -> list[dict] | None:
+        """Return cached search results, or None if the cache is absent/invalid."""
+        cached = self._host.get_plugin_data(cache_key)
+        if cached is None:
+            return None
+        try:
+            cache_data = json.loads(bytes(cached))
+            results = cache_data["results"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return None
+        return results if isinstance(results, list) else None
 
     def get_episodes(self, series_id: int, season: int) -> list[dict]:
         """Get episodes for a series/season.

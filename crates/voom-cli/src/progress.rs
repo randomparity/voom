@@ -5,6 +5,7 @@
 //! - [`ProbeProgress`] — determinate bar for introspection loops
 //! - [`BatchProgress`] — determinate bar implementing [`ProgressReporter`]
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -12,8 +13,10 @@ use std::time::{Duration, Instant};
 
 use console::style;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
+use parking_lot::Mutex;
 
 use crate::output::{max_filename_len, shrink_filename, PROGRESS_FIXED_WIDTH};
+use voom_domain::events::FileDiscoveredEvent;
 use voom_job_manager::progress::ProgressReporter;
 
 const TICK_INTERVAL: Duration = Duration::from_millis(80);
@@ -21,6 +24,13 @@ const SPINNER_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 const BAR_CHARS: &str = "#>-";
 const BAR_TEMPLATE: &str = "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}";
 const SPINNER_TEMPLATE: &str = "{spinner:.green} {msg}";
+const MIN_JOB_WEIGHT: f64 = 1.0;
+const ETA_WARMUP_JOBS: usize = 2;
+const ETA_WARMUP_ELAPSED: Duration = Duration::from_secs(10);
+const ETA_PROGRESS_CAP: f64 = 0.98;
+const ETA_SMOOTHING_ALPHA: f64 = 0.35;
+const ETA_MAX_STEP_UP: f64 = 1.30;
+const ETA_MAX_STEP_DOWN: f64 = 0.75;
 
 /// Format an ETA string from elapsed time and progress counts.
 ///
@@ -94,6 +104,19 @@ impl DiscoveryProgress {
         }
     }
 
+    /// Reset from bar back to spinner for a new discovery phase.
+    ///
+    /// Called between directories so the progress bar doesn't show stale
+    /// position/length from the previous directory's processing phase.
+    pub fn reset_to_spinner(&self) {
+        if self.transitioned.swap(false, Ordering::Relaxed) {
+            self.pb.set_style(spinner_style());
+            self.pb.set_position(0);
+            self.pb.set_length(0);
+            self.pb.set_message("Discovering...");
+        }
+    }
+
     /// Update for a newly discovered file.
     pub fn on_discovered(&self, count: usize, path: &Path) {
         let prefix = format!("Discovering... {count} files found \u{2014} ");
@@ -105,12 +128,14 @@ impl DiscoveryProgress {
     /// Update for a processing step (hashing/scanning).
     ///
     /// Transitions from spinner to determinate bar on the first call.
+    /// Always updates bar length to support cumulative totals across
+    /// multiple scan directories.
     pub fn on_processing(&self, current: usize, total: usize, path: &Path, action: &str) {
         // Relaxed is sufficient: a duplicate set_style call is harmless (ProgressBar is thread-safe).
         if !self.transitioned.swap(true, Ordering::Relaxed) {
-            self.pb.set_length(total as u64);
             self.pb.set_style(bar_style());
         }
+        self.pb.set_length(total as u64);
         let eta = format_eta(self.start.elapsed(), current, total);
         let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + action.len() + 1 + eta.len());
         let name = truncated_filename(path, max_name);
@@ -179,46 +204,27 @@ impl ProbeProgress {
 /// [`CompositeReporter`](voom_job_manager::progress::CompositeReporter).
 pub struct BatchProgress {
     overall: ProgressBar,
-    start: Instant,
-    total: u64,
+    state: Mutex<BatchEtaState>,
 }
 
 impl BatchProgress {
     /// Create a new batch processing progress bar.
-    pub fn new(total: usize) -> Self {
+    pub fn new(files: &[FileDiscoveredEvent], workers: usize) -> Self {
+        let total = files.len();
         let overall = ProgressBar::new(total as u64);
         overall.set_style(bar_style());
         overall.enable_steady_tick(TICK_INTERVAL);
         Self {
             overall,
-            start: Instant::now(),
-            total: total as u64,
+            state: Mutex::new(BatchEtaState::new(files, workers)),
         }
     }
 
     /// Create a hidden (no-op) progress bar for quiet/scripted mode.
-    pub fn hidden(total: usize) -> Self {
+    pub fn hidden(files: &[FileDiscoveredEvent], workers: usize) -> Self {
         Self {
             overall: ProgressBar::hidden(),
-            start: Instant::now(),
-            total: total as u64,
-        }
-    }
-
-    fn eta_string(&self) -> String {
-        let pos = self.overall.position();
-        if pos == 0 {
-            return String::new();
-        }
-        let rate = pos as f64 / self.start.elapsed().as_secs_f64();
-        let remaining = (self.total - pos) as f64 / rate;
-        if remaining.is_finite() && remaining > 0.0 {
-            format!(
-                ", ETA {}",
-                HumanDuration(Duration::from_secs(remaining as u64))
-            )
-        } else {
-            String::new()
+            state: Mutex::new(BatchEtaState::new(files, workers)),
         }
     }
 }
@@ -231,7 +237,10 @@ impl ProgressReporter for BatchProgress {
             if let Ok(payload) =
                 serde_json::from_value::<crate::introspect::DiscoveredFilePayload>(raw.clone())
             {
-                let eta = self.eta_string();
+                let eta = {
+                    let mut state = self.state.lock();
+                    state.on_job_start(job.id, &payload)
+                };
                 let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len());
                 let name = truncated_filename(std::path::Path::new(&payload.path), max_name);
                 self.overall.set_message(format!("{name}{eta}"));
@@ -239,7 +248,17 @@ impl ProgressReporter for BatchProgress {
         }
     }
 
-    fn on_job_progress(&self, _id: uuid::Uuid, _progress: f64, _msg: Option<&str>) {}
+    fn on_job_progress(&self, id: uuid::Uuid, progress: f64, _msg: Option<&str>) {
+        let eta = {
+            let mut state = self.state.lock();
+            state.on_job_progress(id, progress)
+        };
+        if let Some((path, eta)) = eta {
+            let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len());
+            let name = truncated_filename(std::path::Path::new(&path), max_name);
+            self.overall.set_message(format!("{name}{eta}"));
+        }
+    }
 
     fn on_job_complete(&self, _id: uuid::Uuid, _success: bool, error: Option<&str>) {
         if let Some(err) = error {
@@ -247,7 +266,16 @@ impl ProgressReporter for BatchProgress {
                 eprintln!("{} {err}", style("ERROR:").bold().red());
             });
         }
+        let eta = {
+            let mut state = self.state.lock();
+            state.on_job_complete(_id)
+        };
         self.overall.inc(1);
+        if let Some((path, eta)) = eta {
+            let max_name = max_filename_len(PROGRESS_FIXED_WIDTH + eta.len());
+            let name = truncated_filename(std::path::Path::new(&path), max_name);
+            self.overall.set_message(format!("{name}{eta}"));
+        }
     }
 
     fn on_batch_complete(&self, _completed: u64, _failed: u64) {
@@ -255,9 +283,307 @@ impl ProgressReporter for BatchProgress {
     }
 }
 
+#[derive(Clone, Debug)]
+struct RunningJobState {
+    path: String,
+    weight: f64,
+    started_at: Instant,
+    progress: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EtaConfidence {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug)]
+struct EtaEstimate {
+    eta: Option<Duration>,
+    confidence: EtaConfidence,
+    remaining_work: f64,
+}
+
+#[derive(Debug)]
+struct BatchEtaState {
+    batch_started_at: Instant,
+    queued_weights: HashMap<String, f64>,
+    running_jobs: HashMap<uuid::Uuid, RunningJobState>,
+    completed_job_durations: Vec<Duration>,
+    completed_weight: f64,
+    completed_jobs: usize,
+    effective_workers: usize,
+    displayed_eta_secs: Option<f64>,
+    current_path: Option<String>,
+}
+
+impl BatchEtaState {
+    fn new(files: &[FileDiscoveredEvent], workers: usize) -> Self {
+        let mut queued_weights = HashMap::with_capacity(files.len());
+        for file in files {
+            let path = file.path.to_string_lossy().into_owned();
+            let weight = job_weight(file.size);
+            queued_weights.insert(path, weight);
+        }
+
+        Self {
+            batch_started_at: Instant::now(),
+            queued_weights,
+            running_jobs: HashMap::new(),
+            completed_job_durations: Vec::new(),
+            completed_weight: 0.0,
+            completed_jobs: 0,
+            effective_workers: workers.max(1),
+            displayed_eta_secs: None,
+            current_path: None,
+        }
+    }
+
+    fn on_job_start(
+        &mut self,
+        job_id: uuid::Uuid,
+        payload: &crate::introspect::DiscoveredFilePayload,
+    ) -> String {
+        let weight = self
+            .queued_weights
+            .remove(&payload.path)
+            .unwrap_or_else(|| job_weight(payload.size));
+        self.current_path = Some(payload.path.clone());
+        self.running_jobs.insert(
+            job_id,
+            RunningJobState {
+                path: payload.path.clone(),
+                weight,
+                started_at: Instant::now(),
+                progress: None,
+            },
+        );
+        self.eta_string()
+    }
+
+    fn on_job_progress(&mut self, job_id: uuid::Uuid, progress: f64) -> Option<(String, String)> {
+        let running = self.running_jobs.get_mut(&job_id)?;
+        running.progress = Some(progress.clamp(0.0, 1.0));
+        self.current_path = Some(running.path.clone());
+        Some((running.path.clone(), self.eta_string()))
+    }
+
+    fn on_job_complete(&mut self, job_id: uuid::Uuid) -> Option<(String, String)> {
+        let finished = self.running_jobs.remove(&job_id)?;
+        let elapsed = finished.started_at.elapsed();
+        self.completed_weight += finished.weight;
+        self.completed_jobs += 1;
+        self.completed_job_durations.push(elapsed);
+        self.current_path = self
+            .running_jobs
+            .values()
+            .next()
+            .map(|job| job.path.clone())
+            .or_else(|| self.current_path.clone());
+        self.current_path
+            .clone()
+            .map(|path| (path, self.eta_string()))
+    }
+
+    fn eta_string(&mut self) -> String {
+        let estimate = self.estimate();
+        match estimate.eta {
+            Some(eta) if eta > Duration::ZERO => {
+                let _confidence = estimate.confidence;
+                let _remaining_work = estimate.remaining_work;
+                format!(", ETA {}", HumanDuration(eta))
+            }
+            _ => String::new(),
+        }
+    }
+
+    fn estimate(&mut self) -> EtaEstimate {
+        let remaining_work = self.remaining_weight();
+        if remaining_work <= 0.0 {
+            self.displayed_eta_secs = None;
+            return EtaEstimate {
+                eta: None,
+                confidence: EtaConfidence::High,
+                remaining_work: 0.0,
+            };
+        }
+
+        let elapsed = self.batch_started_at.elapsed();
+        if self.completed_jobs < ETA_WARMUP_JOBS && elapsed < ETA_WARMUP_ELAPSED {
+            return EtaEstimate {
+                eta: None,
+                confidence: EtaConfidence::Low,
+                remaining_work,
+            };
+        }
+
+        let seconds_per_weight = match self.seconds_per_weight() {
+            Some(value) if value.is_finite() && value > 0.0 => value,
+            _ => {
+                return EtaEstimate {
+                    eta: None,
+                    confidence: EtaConfidence::Low,
+                    remaining_work,
+                };
+            }
+        };
+
+        let mut loads: Vec<f64> = self
+            .running_jobs
+            .values()
+            .map(|job| self.predicted_remaining_runtime_secs(job, seconds_per_weight))
+            .collect();
+
+        if loads.len() < self.effective_workers {
+            loads.resize(self.effective_workers, 0.0);
+        }
+
+        let mut queued_durations: Vec<f64> = self
+            .queued_weights
+            .values()
+            .map(|weight| weight * seconds_per_weight)
+            .filter(|duration| duration.is_finite() && *duration > 0.0)
+            .collect();
+        queued_durations.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+
+        for duration in queued_durations {
+            if let Some((slot, _)) = loads
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            {
+                loads[slot] += duration;
+            }
+        }
+
+        let raw_eta_secs = loads.into_iter().fold(0.0_f64, f64::max);
+        let eta = self.smooth_eta(raw_eta_secs);
+        let confidence = if self.completed_jobs >= ETA_WARMUP_JOBS * 3 {
+            EtaConfidence::High
+        } else {
+            EtaConfidence::Medium
+        };
+        EtaEstimate {
+            eta: duration_from_secs(eta),
+            confidence,
+            remaining_work,
+        }
+    }
+
+    fn seconds_per_weight(&self) -> Option<f64> {
+        let mut observed_weight = self.completed_weight;
+        let mut observed_runtime_secs: f64 = self
+            .completed_job_durations
+            .iter()
+            .map(Duration::as_secs_f64)
+            .sum();
+
+        if observed_weight <= 0.0 {
+            return None;
+        }
+
+        for running in self.running_jobs.values() {
+            if let Some(progress) = self.progress_for_job(running, None) {
+                if progress > 0.0 {
+                    observed_weight += running.weight * progress;
+                    observed_runtime_secs += running.started_at.elapsed().as_secs_f64();
+                }
+            }
+        }
+
+        if observed_runtime_secs <= 0.0 || observed_weight <= 0.0 {
+            None
+        } else {
+            Some(observed_runtime_secs / observed_weight)
+        }
+    }
+
+    fn predicted_remaining_runtime_secs(
+        &self,
+        job: &RunningJobState,
+        seconds_per_weight: f64,
+    ) -> f64 {
+        let elapsed = job.started_at.elapsed().as_secs_f64();
+        let expected_total = (job.weight * seconds_per_weight).max(elapsed);
+
+        if let Some(progress) = self.progress_for_job(job, Some(seconds_per_weight)) {
+            if progress > 0.0 {
+                let inferred_total = (elapsed / progress).max(expected_total);
+                return (inferred_total - elapsed).max(0.0);
+            }
+        }
+
+        (expected_total - elapsed).max(0.0)
+    }
+
+    fn progress_for_job(
+        &self,
+        job: &RunningJobState,
+        seconds_per_weight: Option<f64>,
+    ) -> Option<f64> {
+        if let Some(progress) = job.progress {
+            return Some(progress.clamp(0.0, ETA_PROGRESS_CAP));
+        }
+
+        let seconds_per_weight = seconds_per_weight?;
+        let expected_total = job.weight * seconds_per_weight;
+        if expected_total <= 0.0 {
+            return None;
+        }
+
+        Some((job.started_at.elapsed().as_secs_f64() / expected_total).clamp(0.0, ETA_PROGRESS_CAP))
+    }
+
+    fn remaining_weight(&self) -> f64 {
+        let in_flight_weight: f64 = self
+            .running_jobs
+            .values()
+            .map(|job| {
+                let progress = self
+                    .progress_for_job(job, self.seconds_per_weight())
+                    .unwrap_or(0.0);
+                job.weight * (1.0 - progress)
+            })
+            .sum();
+        let queued_weight: f64 = self.queued_weights.values().sum();
+        in_flight_weight + queued_weight
+    }
+
+    fn smooth_eta(&mut self, raw_eta_secs: f64) -> f64 {
+        if !raw_eta_secs.is_finite() || raw_eta_secs <= 0.0 {
+            self.displayed_eta_secs = None;
+            return 0.0;
+        }
+
+        let next = match self.displayed_eta_secs {
+            Some(previous) => {
+                let smoothed = previous + ETA_SMOOTHING_ALPHA * (raw_eta_secs - previous);
+                smoothed.clamp(previous * ETA_MAX_STEP_DOWN, previous * ETA_MAX_STEP_UP)
+            }
+            None => raw_eta_secs,
+        };
+        self.displayed_eta_secs = Some(next);
+        next
+    }
+}
+
+fn job_weight(size: u64) -> f64 {
+    (size as f64).max(MIN_JOB_WEIGHT)
+}
+
+fn duration_from_secs(secs: f64) -> Option<Duration> {
+    if secs.is_finite() && secs > 0.0 {
+        Some(Duration::from_secs_f64(secs))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn test_format_eta_zero_current_returns_empty() {
@@ -296,5 +622,121 @@ mod tests {
     fn test_truncated_filename_no_filename() {
         let path = Path::new("/");
         assert_eq!(truncated_filename(path, 40), "");
+    }
+
+    #[test]
+    fn test_batch_eta_state_waits_for_warmup() {
+        let files = vec![
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/a.mkv"), 100, None),
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/b.mkv"), 100, None),
+        ];
+        let mut state = BatchEtaState::new(&files, 1);
+        let job_id = uuid::Uuid::new_v4();
+        let payload = crate::introspect::DiscoveredFilePayload {
+            path: "/tmp/a.mkv".into(),
+            size: 100,
+            content_hash: None,
+        };
+        assert_eq!(state.on_job_start(job_id, &payload), "");
+    }
+
+    #[test]
+    fn test_batch_eta_state_accounts_for_queued_heavy_tail() {
+        let files = vec![
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/small-1.mkv"), 1, None),
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/small-2.mkv"), 1, None),
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/large.mkv"), 100, None),
+        ];
+        let mut state = BatchEtaState::new(&files, 1);
+        state.batch_started_at = Instant::now() - Duration::from_secs(12);
+
+        let first = crate::introspect::DiscoveredFilePayload {
+            path: "/tmp/small-1.mkv".into(),
+            size: 1,
+            content_hash: None,
+        };
+        let second = crate::introspect::DiscoveredFilePayload {
+            path: "/tmp/small-2.mkv".into(),
+            size: 1,
+            content_hash: None,
+        };
+        state.on_job_start(uuid::Uuid::new_v4(), &first);
+        let first_id = *state.running_jobs.keys().next().unwrap();
+        let start = state.running_jobs.get_mut(&first_id).unwrap();
+        start.started_at = Instant::now() - Duration::from_secs(1);
+        state.on_job_complete(first_id);
+
+        state.on_job_start(uuid::Uuid::new_v4(), &second);
+        let second_id = *state.running_jobs.keys().next().unwrap();
+        let start = state.running_jobs.get_mut(&second_id).unwrap();
+        start.started_at = Instant::now() - Duration::from_secs(1);
+        state.on_job_complete(second_id);
+
+        let estimate = state.estimate();
+        assert!(estimate.eta.unwrap_or_default() >= Duration::from_secs(50));
+    }
+
+    #[test]
+    fn test_batch_eta_state_accounts_for_concurrency() {
+        let files = vec![
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/a.mkv"), 10, None),
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/b.mkv"), 10, None),
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/c.mkv"), 10, None),
+            FileDiscoveredEvent::new(PathBuf::from("/tmp/d.mkv"), 10, None),
+        ];
+        let mut state = BatchEtaState::new(&files, 2);
+        state.batch_started_at = Instant::now() - Duration::from_secs(20);
+
+        let payload_a = crate::introspect::DiscoveredFilePayload {
+            path: "/tmp/a.mkv".into(),
+            size: 10,
+            content_hash: None,
+        };
+        let payload_b = crate::introspect::DiscoveredFilePayload {
+            path: "/tmp/b.mkv".into(),
+            size: 10,
+            content_hash: None,
+        };
+
+        state.on_job_start(uuid::Uuid::new_v4(), &payload_a);
+        let first_id = state
+            .running_jobs
+            .iter()
+            .find(|(_, job)| job.path == "/tmp/a.mkv")
+            .map(|(id, _)| *id)
+            .unwrap();
+        state.running_jobs.get_mut(&first_id).unwrap().started_at =
+            Instant::now() - Duration::from_secs(10);
+        state.on_job_complete(first_id);
+
+        state.on_job_start(uuid::Uuid::new_v4(), &payload_b);
+        let second_id = state
+            .running_jobs
+            .iter()
+            .find(|(_, job)| job.path == "/tmp/b.mkv")
+            .map(|(id, _)| *id)
+            .unwrap();
+        state.running_jobs.get_mut(&second_id).unwrap().started_at =
+            Instant::now() - Duration::from_secs(10);
+        state.on_job_complete(second_id);
+
+        let payload_c = crate::introspect::DiscoveredFilePayload {
+            path: "/tmp/c.mkv".into(),
+            size: 10,
+            content_hash: None,
+        };
+        let payload_d = crate::introspect::DiscoveredFilePayload {
+            path: "/tmp/d.mkv".into(),
+            size: 10,
+            content_hash: None,
+        };
+        state.on_job_start(uuid::Uuid::new_v4(), &payload_c);
+        state.on_job_start(uuid::Uuid::new_v4(), &payload_d);
+        for running in state.running_jobs.values_mut() {
+            running.started_at = Instant::now() - Duration::from_secs(5);
+        }
+
+        let estimate = state.estimate();
+        assert!(estimate.eta.unwrap_or_default() < Duration::from_secs(15));
     }
 }

@@ -406,6 +406,7 @@ impl PlanCreatedEvent {
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanExecutingEvent {
+    pub plan_id: Uuid,
     pub path: PathBuf,
     pub phase_name: String,
     pub action_count: usize,
@@ -413,8 +414,14 @@ pub struct PlanExecutingEvent {
 
 impl PlanExecutingEvent {
     #[must_use]
-    pub fn new(path: PathBuf, phase_name: impl Into<String>, action_count: usize) -> Self {
+    pub fn new(
+        plan_id: Uuid,
+        path: PathBuf,
+        phase_name: impl Into<String>,
+        action_count: usize,
+    ) -> Self {
         Self {
+            plan_id,
             path,
             phase_name: phase_name.into(),
             action_count,
@@ -736,6 +743,7 @@ mod tests {
         assert_eq!(event.event_type(), "file.discovered");
 
         let event = Event::PlanExecuting(PlanExecutingEvent {
+            plan_id: Uuid::new_v4(),
             path: PathBuf::from("/test.mkv"),
             phase_name: "normalize".into(),
             action_count: 3,

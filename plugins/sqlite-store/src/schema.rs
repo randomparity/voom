@@ -4,10 +4,13 @@ use rusqlite::Connection;
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY,
-    path TEXT NOT NULL UNIQUE,
+    path TEXT UNIQUE,
     filename TEXT NOT NULL,
     size INTEGER NOT NULL,
     content_hash TEXT NOT NULL,
+    expected_hash TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    missing_since TEXT,
     container TEXT NOT NULL,
     duration REAL,
     bitrate INTEGER,
@@ -74,18 +77,22 @@ CREATE TABLE IF NOT EXISTS plans (
     result TEXT
 );
 
-CREATE TABLE IF NOT EXISTS file_history (
+CREATE TABLE IF NOT EXISTS file_transitions (
     id TEXT PRIMARY KEY,
     file_id TEXT NOT NULL,
     path TEXT NOT NULL,
-    content_hash TEXT NOT NULL,
-    container TEXT NOT NULL,
-    track_count INTEGER NOT NULL,
-    introspected_at TEXT NOT NULL,
-    archived_at TEXT NOT NULL
+    from_hash TEXT,
+    to_hash TEXT NOT NULL,
+    from_size INTEGER,
+    to_size INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    source_detail TEXT,
+    plan_id TEXT,
+    created_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_file_history_file ON file_history(file_id);
+CREATE INDEX IF NOT EXISTS idx_transitions_file ON file_transitions(file_id);
+CREATE INDEX IF NOT EXISTS idx_transitions_source ON file_transitions(source);
 
 CREATE TABLE IF NOT EXISTS processing_stats (
     id TEXT PRIMARY KEY,
@@ -175,6 +182,27 @@ CREATE TABLE IF NOT EXISTS subtitles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_subtitles_file ON subtitles(file_path);
+
+CREATE TABLE IF NOT EXISTS library_snapshots (
+    id TEXT PRIMARY KEY,
+    captured_at TEXT NOT NULL,
+    trigger TEXT NOT NULL,
+    total_files INTEGER NOT NULL,
+    total_size_bytes INTEGER NOT NULL,
+    total_duration_secs REAL NOT NULL,
+    snapshot_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_captured
+    ON library_snapshots(captured_at);
+CREATE INDEX IF NOT EXISTS idx_tracks_type ON tracks(track_type);
+
+CREATE TABLE IF NOT EXISTS pending_operations (
+    id TEXT PRIMARY KEY,
+    file_path TEXT NOT NULL,
+    phase_name TEXT NOT NULL,
+    started_at TEXT NOT NULL
+);
 "#;
 
 /// Initialize the database schema.
@@ -193,13 +221,15 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "jobs",
         "plans",
         "processing_stats",
-        "file_history",
+        "file_transitions",
         "plugin_data",
         "bad_files",
         "discovered_files",
         "health_checks",
         "event_log",
         "subtitles",
+        "library_snapshots",
+        "pending_operations",
     ];
     let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
         assert!(KNOWN_TABLES.contains(&table), "unknown table: {table}");
@@ -218,6 +248,53 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     }
     if !has_column("plans", "evaluated_at")? {
         conn.execute_batch("ALTER TABLE plans ADD COLUMN evaluated_at TEXT")?;
+    }
+
+    // Add new lifecycle columns to files table if missing.
+    if !has_column("files", "expected_hash")? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN expected_hash TEXT")?;
+    }
+    if !has_column("files", "status")? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")?;
+    }
+    if !has_column("files", "missing_since")? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN missing_since TEXT")?;
+    }
+
+    // Drop legacy file_history table if it exists; replace with file_transitions.
+    let has_file_history: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='file_history'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_file_history {
+        conn.execute_batch("DROP TABLE IF EXISTS file_history")?;
+    }
+
+    // Create file_transitions table if missing.
+    let has_file_transitions: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='file_transitions'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_file_transitions {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS file_transitions (
+                id TEXT PRIMARY KEY,
+                file_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                from_hash TEXT,
+                to_hash TEXT NOT NULL,
+                from_size INTEGER,
+                to_size INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                source_detail TEXT,
+                plan_id TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_transitions_file ON file_transitions(file_id);
+            CREATE INDEX IF NOT EXISTS idx_transitions_source ON file_transitions(source);",
+        )?;
     }
 
     // Create discovered_files table if missing (added in sprint 13).
@@ -303,6 +380,55 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    // Create library_snapshots table if missing.
+    let has_snapshots: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='library_snapshots'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_snapshots {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS library_snapshots (
+                id TEXT PRIMARY KEY,
+                captured_at TEXT NOT NULL,
+                trigger TEXT NOT NULL,
+                total_files INTEGER NOT NULL,
+                total_size_bytes INTEGER NOT NULL,
+                total_duration_secs REAL NOT NULL,
+                snapshot_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_snapshots_captured
+                ON library_snapshots(captured_at);",
+        )?;
+    }
+
+    // Create pending_operations table if missing.
+    let has_pending_ops: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='pending_operations'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_pending_ops {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pending_operations (
+                id TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                phase_name TEXT NOT NULL,
+                started_at TEXT NOT NULL
+            );",
+        )?;
+    }
+
+    // Create index on tracks(track_type) if missing.
+    let has_track_type_idx: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='index' AND name='idx_tracks_type'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_track_type_idx {
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tracks_type ON tracks(track_type);")?;
+    }
+
     // Add UNIQUE constraint on subtitles(file_path, subtitle_path) for existing
     // databases that created the table before the constraint was added.
     if has_subtitles {
@@ -362,12 +488,14 @@ mod tests {
         assert!(tables.contains(&"plans".to_string()));
         assert!(tables.contains(&"processing_stats".to_string()));
         assert!(tables.contains(&"plugin_data".to_string()));
-        assert!(tables.contains(&"file_history".to_string()));
+        assert!(tables.contains(&"file_transitions".to_string()));
         assert!(tables.contains(&"bad_files".to_string()));
         assert!(tables.contains(&"discovered_files".to_string()));
         assert!(tables.contains(&"health_checks".to_string()));
         assert!(tables.contains(&"event_log".to_string()));
         assert!(tables.contains(&"subtitles".to_string()));
+        assert!(tables.contains(&"library_snapshots".to_string()));
+        assert!(tables.contains(&"pending_operations".to_string()));
     }
 
     #[test]

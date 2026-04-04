@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::config;
+use crate::paths::resolve_paths;
 use crate::policy_map::{PolicyMatch, PolicyResolver};
 use crate::progress::{BatchProgress, DiscoveryProgress};
 use voom_domain::bad_file::BadFileSource;
@@ -64,32 +65,71 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
     let kernel = Arc::new(kernel);
     let capabilities = Arc::new(collector.snapshot());
 
-    let path = args
-        .path
-        .canonicalize()
-        .with_context(|| format!("Path not found: {}", args.path.display()))?;
+    let paths = resolve_paths(&args.paths)?;
 
-    let root = if path.is_file() {
-        path.parent()
+    let root = if paths.len() == 1 && paths[0].is_file() {
+        paths[0]
+            .parent()
             .ok_or_else(|| {
-                anyhow::anyhow!("cannot determine parent directory of {}", path.display())
+                anyhow::anyhow!(
+                    "cannot determine parent directory of {}",
+                    paths[0].display()
+                )
             })?
             .to_path_buf()
     } else {
-        path.clone()
+        paths[0].clone()
     };
 
     let resolver = build_policy_resolver(&args, &config, &root)?;
 
     if !plan_only && !quiet {
-        print_run_header(&resolver.summary(), &path, dry_run);
+        let path_list: Vec<_> = paths.iter().map(|p| p.display().to_string()).collect();
+        let display_paths = path_list.join(", ");
+        print_run_header(&resolver.summary(), &display_paths, dry_run);
     }
 
-    // Auto-prune stale file entries under the target directory
-    match store.prune_missing_files_under(&path) {
-        Ok(n) if n > 0 && !plan_only && !quiet => eprintln!("Pruned {n} stale entries."),
+    // Auto-prune stale file entries under the target directories
+    for path in &paths {
+        match store.prune_missing_files_under(path) {
+            Ok(n) if n > 0 && !plan_only && !quiet => eprintln!("Pruned {n} stale entries."),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
+        }
+    }
+
+    // Check for orphaned backups left by a previous crashed execution
+    // Extract backup-manager's global backup dir from plugin config, if set.
+    let global_backup_dir: Option<std::path::PathBuf> =
+        config.plugin.get("backup-manager").and_then(|t| {
+            let use_global = t
+                .get("use_global_dir")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if use_global {
+                t.get("backup_dir")
+                    .and_then(|v| v.as_str())
+                    .map(std::path::PathBuf::from)
+            } else {
+                None
+            }
+        });
+    match crate::recovery::check_and_recover_under(
+        &config.recovery,
+        &paths,
+        store.as_ref(),
+        global_backup_dir.as_deref(),
+    ) {
+        Ok(recovered) if recovered > 0 && !plan_only && !quiet => {
+            eprintln!(
+                "{} {} {} from crashed execution",
+                console::style("Recovered").bold().green(),
+                recovered,
+                if recovered == 1 { "file" } else { "files" }
+            );
+        }
         Ok(_) => {}
-        Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
+        Err(e) => tracing::warn!(error = %e, "crash recovery check failed"),
     }
 
     if token.is_cancelled() {
@@ -99,7 +139,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         return Ok(());
     }
 
-    let mut events = discover_files(&path, &args, &kernel, quiet)?;
+    let mut events = discover_files(&paths, &args, &kernel, quiet)?;
     if events.is_empty() {
         if plan_only {
             println!("[]");
@@ -163,9 +203,9 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         bus_reporter
     } else {
         let cli_reporter: Arc<dyn ProgressReporter> = if quiet {
-            Arc::new(BatchProgress::hidden(file_count))
+            Arc::new(BatchProgress::hidden(&events, effective_workers))
         } else {
-            Arc::new(BatchProgress::new(file_count))
+            Arc::new(BatchProgress::new(&events, effective_workers))
         };
         Arc::new(CompositeReporter::new(vec![cli_reporter, bus_reporter]))
     };
@@ -236,7 +276,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
                 effective_workers,
                 dry_run,
                 backup_bytes: backup_total,
-                path: &path,
+                paths: &paths,
             });
         }
         print_phase_breakdown(&counters_for_summary.phase_stats.lock(), &all_phase_names);
@@ -270,7 +310,7 @@ fn build_policy_resolver(
 }
 
 /// Print the header line describing what we are about to do.
-fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
+fn print_run_header(policy_name: &str, path_display: &str, dry_run: bool) {
     eprintln!(
         "{} policy {} to {}{}",
         if dry_run {
@@ -279,7 +319,7 @@ fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
             style("Applying").bold()
         },
         style(policy_name).cyan(),
-        style(path.display()).cyan(),
+        style(path_display).cyan(),
         if dry_run {
             " (no changes will be made)"
         } else {
@@ -299,50 +339,82 @@ fn print_run_header(policy_name: &str, path: &std::path::Path, dry_run: bool) {
 /// Introspection is still driven directly by `process_single_file` for
 /// deterministic progress reporting.
 fn discover_files(
-    path: &std::path::Path,
+    paths: &[std::path::PathBuf],
     args: &ProcessArgs,
     kernel: &voom_kernel::Kernel,
     quiet: bool,
 ) -> Result<Vec<voom_domain::events::FileDiscoveredEvent>> {
     let discovery = voom_discovery::DiscoveryPlugin::new();
-    let mut options = voom_discovery::ScanOptions::new(path.to_path_buf());
-    options.hash_files = !args.no_backup;
-    options.workers = args.workers;
+    let hash_files = !args.no_backup;
 
     let progress = if quiet {
         DiscoveryProgress::hidden()
     } else {
         DiscoveryProgress::new()
     };
-    let progress_clone = progress.clone();
-    let hash_files = options.hash_files;
-    options.on_progress = Some(Box::new(move |p| match p {
-        voom_discovery::ScanProgress::Discovered { count, path } => {
-            progress_clone.on_discovered(count, &path);
-        }
-        voom_discovery::ScanProgress::Processing {
-            current,
-            total,
-            path,
-        } => {
-            let action = if hash_files { "Hashing" } else { "Scanning" };
-            progress_clone.on_processing(current, total, &path, action);
-        }
-        voom_discovery::ScanProgress::OrphanedTempFiles { .. } => {}
-    }));
 
     let discovery_errors: Arc<Mutex<Vec<(std::path::PathBuf, u64, String)>>> =
         Arc::new(Mutex::new(Vec::new()));
-    let errors_clone = discovery_errors.clone();
-    options.on_error = Some(Box::new(move |path, size, error| {
-        tracing::warn!(path = %path.display(), error = %error, "discovery error");
-        errors_clone.lock().push((path, size, error));
-    }));
 
-    let events = discovery.scan(&options).context("filesystem scan failed")?;
+    let mut all_events: Vec<voom_domain::events::FileDiscoveredEvent> = Vec::new();
+
+    // Cumulative counters so the progress bar shows totals across all
+    // directories instead of resetting per directory.
+    let cumulative_discovered = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let processing_base = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+    for path in paths {
+        // Reset bar to spinner so stale position/length from the previous
+        // directory's processing phase doesn't bleed into this discovery.
+        progress.reset_to_spinner();
+
+        let mut options = voom_discovery::ScanOptions::new(path.clone());
+        options.hash_files = hash_files;
+        options.workers = args.workers;
+
+        let progress_clone = progress.clone();
+        let cum_disc = cumulative_discovered.clone();
+        let proc_base = processing_base.clone();
+        let pre_scan_discovered = cumulative_discovered.load(std::sync::atomic::Ordering::Relaxed);
+
+        options.on_progress = Some(Box::new(move |p| match p {
+            voom_discovery::ScanProgress::Discovered { count: _, path } => {
+                let cumulative = cum_disc.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                progress_clone.on_discovered(cumulative as usize, &path);
+            }
+            voom_discovery::ScanProgress::Processing {
+                current,
+                total,
+                path,
+            } => {
+                let base = proc_base.load(std::sync::atomic::Ordering::Relaxed) as usize;
+                let action = if hash_files { "Hashing" } else { "Scanning" };
+                progress_clone.on_processing(base + current, base + total, &path, action);
+            }
+            voom_discovery::ScanProgress::OrphanedTempFiles { .. } => {}
+        }));
+
+        let errors_clone = discovery_errors.clone();
+        options.on_error = Some(Box::new(move |path, size, error| {
+            tracing::warn!(path = %path.display(), error = %error, "discovery error");
+            errors_clone.lock().push((path, size, error));
+        }));
+
+        let events = discovery.scan(&options).context("filesystem scan failed")?;
+
+        let dir_discovered =
+            cumulative_discovered.load(std::sync::atomic::Ordering::Relaxed) - pre_scan_discovered;
+        processing_base.fetch_add(dir_discovered, std::sync::atomic::Ordering::Relaxed);
+
+        all_events.extend(events);
+    }
+
     progress.finish();
 
-    for event in &events {
+    let mut seen = std::collections::HashSet::new();
+    all_events.retain(|e| seen.insert(e.path.clone()));
+
+    for event in &all_events {
         let results = kernel.dispatch(Event::FileDiscovered(event.clone()));
         log_plugin_errors(&results);
     }
@@ -358,7 +430,7 @@ fn discover_files(
         );
     }
 
-    Ok(events)
+    Ok(all_events)
 }
 
 /// Log any `plugin.error` events produced during event dispatch so
@@ -773,7 +845,7 @@ async fn process_single_file_execute(
         .map_err(|e| format!("plan execution join error: {e}"))?;
 
         match exec_outcome {
-            PlanOutcome::Success => {
+            PlanOutcome::Success { executor } => {
                 any_executed = true;
 
                 // Size-increase guard
@@ -844,8 +916,39 @@ async fn process_single_file_execute(
                     PhaseOutcomeKind::Completed,
                 );
 
+                // Capture plan fields before moving plan into reintrospect_file
+                let plan_id = plan.id;
+                let phase_name = plan.phase_name.clone();
+
                 // Re-introspect so the next phase sees updated file state
-                current_file = reintrospect_file(&current_file, &[plan], ctx).await;
+                let new_file = reintrospect_file(&current_file, &[plan], ctx).await;
+
+                // Record transition only if the hash actually changed
+                let hash_changed = new_file.content_hash != current_file.content_hash;
+                if hash_changed {
+                    let transition = voom_domain::FileTransition::new(
+                        current_file.id,
+                        new_file.path.clone(),
+                        new_file.content_hash.clone().unwrap_or_default(),
+                        new_file.size,
+                        voom_domain::TransitionSource::Voom,
+                    )
+                    .with_from(current_file.content_hash.clone(), Some(current_file.size))
+                    .with_detail(format!("{executor}:{phase_name}"))
+                    .with_plan_id(plan_id);
+
+                    if let Err(e) = ctx.store.record_transition(&transition) {
+                        tracing::warn!(error = %e, "failed to record transition");
+                    }
+
+                    if let Some(ref hash) = new_file.content_hash {
+                        if let Err(e) = ctx.store.update_expected_hash(&current_file.id, hash) {
+                            tracing::warn!(error = %e, "failed to update expected_hash");
+                        }
+                    }
+                }
+
+                current_file = new_file;
             }
             PlanOutcome::Failed(failed) => {
                 let r = ctx.kernel.dispatch(Event::PlanFailed(failed));
@@ -1107,7 +1210,7 @@ fn resolve_post_execution_path(
 /// Result of executing a single plan via the event bus.
 enum PlanOutcome {
     /// An executor claimed and completed the plan.
-    Success,
+    Success { executor: String },
     /// Execution failed (executor error or unclaimed).
     Failed(PlanFailedEvent),
 }
@@ -1126,6 +1229,7 @@ fn execute_single_plan(
     kernel: &voom_kernel::Kernel,
 ) -> PlanOutcome {
     let r = kernel.dispatch(Event::PlanExecuting(PlanExecutingEvent::new(
+        plan.id,
         file.path.clone(),
         plan.phase_name.clone(),
         plan.actions.len(),
@@ -1139,7 +1243,12 @@ fn execute_single_plan(
     let exec_error = results.iter().find_map(|r| r.execution_error.clone());
 
     if claimed && exec_error.is_none() {
-        PlanOutcome::Success
+        let executor = results
+            .iter()
+            .find(|r| r.claimed)
+            .map(|r| r.plugin_name.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        PlanOutcome::Success { executor }
     } else if let Some(error) = exec_error {
         let mut failed =
             PlanFailedEvent::new(plan.id, file.path.clone(), plan.phase_name.clone(), error);
@@ -1180,7 +1289,7 @@ struct SummaryContext<'a> {
     effective_workers: usize,
     dry_run: bool,
     backup_bytes: u64,
-    path: &'a std::path::Path,
+    paths: &'a [std::path::PathBuf],
 }
 
 /// Print the final summary line after processing.
@@ -1212,12 +1321,13 @@ fn print_summary(ctx: &SummaryContext<'_>) {
     );
 
     if ctx.backup_bytes > 0 && ctx.modified > 0 && !ctx.dry_run {
+        let path_args: Vec<_> = ctx.paths.iter().map(|p| p.display().to_string()).collect();
         eprintln!(
             "{} {} backups retained ({}) \u{2014} delete with: find {} -name '*.vbak' -delete",
             style("Info:").bold(),
             style(ctx.modified).cyan(),
             style(format_size(ctx.backup_bytes)).cyan(),
-            ctx.path.display(),
+            path_args.join(" "),
         );
     }
 

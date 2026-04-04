@@ -16,3 +16,6 @@ wasm-plugins/*/Cargo.lock
 .desloppify/
 .claude/agent-memory/
 scorecard.png
+
+# More Claude agent ignores
+docs/superpowers/

@@ -9,11 +9,19 @@ use crate::cli::{OutputFormat, ReportArgs};
 use crate::config;
 use crate::output;
 use crate::stats;
-use voom_domain::storage::PlanStorage;
+use voom_domain::stats::SnapshotTrigger;
+use voom_domain::storage::{PlanStorage, SnapshotStorage};
 
 pub fn run(args: ReportArgs) -> Result<()> {
     let config = config::load_config()?;
     let store = app::open_store(&config)?;
+
+    if args.stats {
+        return run_stats_report(&*store, &args.format);
+    }
+    if let Some(n) = args.history {
+        return run_history_report(&*store, &args.format, n);
+    }
 
     if args.plans {
         return run_plans_report(&*store, &args.format);
@@ -304,6 +312,230 @@ fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()
                     "skipped"
                 };
                 println!("{name}\t{status}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_stats_report(store: &dyn SnapshotStorage, format: &OutputFormat) -> Result<()> {
+    let snapshot = store
+        .gather_library_stats(SnapshotTrigger::Manual)
+        .context("failed to gather library statistics")?;
+
+    match format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&snapshot).context("failed to serialize snapshot")?
+            );
+        }
+        OutputFormat::Table => print_stats_table(&snapshot),
+        OutputFormat::Plain => print_stats_plain(&snapshot),
+    }
+
+    Ok(())
+}
+
+fn print_stats_table(snapshot: &voom_domain::stats::LibrarySnapshot) {
+    use voom_domain::utils::format::{format_duration, format_size};
+
+    let f = &snapshot.files;
+    println!("{}", style("Library Overview").bold().underlined());
+    println!(
+        "  {} files, {}, {}",
+        style(f.total_count).bold(),
+        style(format_size(f.total_size_bytes)).cyan(),
+        style(format_duration(f.total_duration_secs)).dim(),
+    );
+    println!(
+        "  Avg size: {}  Max: {}  Min: {}",
+        style(format_size(f.avg_size_bytes)).dim(),
+        style(format_size(f.max_size_bytes)).dim(),
+        style(format_size(f.min_size_bytes)).dim(),
+    );
+    println!();
+
+    print_pair_table("Containers", "Container", "Count", &f.container_counts);
+
+    let v = &snapshot.video;
+    print_pair_table("Video Codecs", "Codec", "Count", &v.codec_counts);
+    print_pair_table(
+        "Video Resolutions",
+        "Resolution",
+        "Count",
+        &v.resolution_counts,
+    );
+    println!(
+        "  HDR: {}  VFR: {}",
+        style(v.hdr_count).bold(),
+        style(v.vfr_count).bold(),
+    );
+    println!();
+
+    let a = &snapshot.audio;
+    print_pair_table("Audio Types", "Type", "Count", &a.type_counts);
+    let top_langs: Vec<_> = a.language_counts.iter().take(20).cloned().collect();
+    print_pair_table("Audio Languages (top 20)", "Language", "Count", &top_langs);
+    print_pair_table("Audio Codecs", "Codec", "Count", &a.codec_counts);
+
+    let s = &snapshot.subtitles;
+    print_pair_table(
+        "Subtitles by Language",
+        "Language",
+        "Count",
+        &s.language_counts,
+    );
+
+    let p = &snapshot.processing;
+    println!("{}", style("Processing").bold().underlined());
+    if !p.plans_by_status.is_empty() {
+        let mut table = output::new_table();
+        table.set_header(vec!["Status", "Count"]);
+        for (status, count) in &p.plans_by_status {
+            table.add_row(vec![Cell::new(status), Cell::new(count)]);
+        }
+        println!("{table}");
+    }
+    let size_label = if p.total_size_saved_bytes >= 0 {
+        format!("{} saved", format_size(p.total_size_saved_bytes as u64))
+    } else {
+        format!(
+            "{} added",
+            format_size(p.total_size_saved_bytes.unsigned_abs())
+        )
+    };
+    println!(
+        "  Total time: {}  Size change: {}",
+        style(format_duration(p.total_processing_time_ms as f64 / 1000.0)).dim(),
+        style(size_label).dim(),
+    );
+    println!();
+
+    let j = &snapshot.jobs;
+    if !j.by_status.is_empty() {
+        print_pair_table("Jobs", "Status", "Count", &j.by_status);
+    }
+}
+
+fn print_stats_plain(snapshot: &voom_domain::stats::LibrarySnapshot) {
+    let f = &snapshot.files;
+    println!("total_files={}", f.total_count);
+    println!("total_size={}", f.total_size_bytes);
+    println!("total_duration_secs={:.1}", f.total_duration_secs);
+    println!("avg_size={}", f.avg_size_bytes);
+    println!("max_size={}", f.max_size_bytes);
+    println!("min_size={}", f.min_size_bytes);
+    println!("hdr_count={}", snapshot.video.hdr_count);
+    println!("vfr_count={}", snapshot.video.vfr_count);
+    for (name, count) in &f.container_counts {
+        println!("container_{name}={count}");
+    }
+    for (name, count) in &snapshot.video.codec_counts {
+        println!("video_codec_{name}={count}");
+    }
+    for (name, count) in &snapshot.audio.codec_counts {
+        println!("audio_codec_{name}={count}");
+    }
+    for (name, count) in &snapshot.subtitles.language_counts {
+        println!("subtitle_lang_{name}={count}");
+    }
+    for (status, count) in &snapshot.processing.plans_by_status {
+        println!("plan_status_{status}={count}");
+    }
+    for (status, count) in &snapshot.jobs.by_status {
+        println!("job_status_{status}={count}");
+    }
+}
+
+fn print_pair_table(title: &str, col1: &str, col2: &str, data: &[(String, u64)]) {
+    if data.is_empty() {
+        return;
+    }
+    println!("{}", style(title).bold());
+    let mut table = output::new_table();
+    table.set_header(vec![col1, col2]);
+    for (key, count) in data {
+        table.add_row(vec![Cell::new(key), Cell::new(count)]);
+    }
+    println!("{table}");
+    println!();
+}
+
+fn run_history_report(
+    store: &dyn SnapshotStorage,
+    format: &OutputFormat,
+    limit: u32,
+) -> Result<()> {
+    let snapshots = store
+        .list_snapshots(limit)
+        .context("failed to list snapshots")?;
+
+    if snapshots.is_empty() {
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!(
+            "{}",
+            style("No snapshots yet. Run 'voom scan' or 'voom report --stats' first.").yellow()
+        );
+        return Ok(());
+    }
+
+    match format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&snapshots)
+                    .context("failed to serialize snapshots")?
+            );
+        }
+        OutputFormat::Table => {
+            use voom_domain::utils::format::format_size;
+
+            println!("{}", style("Snapshot History").bold().underlined());
+            println!();
+            let mut table = output::new_table();
+            table.set_header(vec![
+                "Timestamp",
+                "Trigger",
+                "Files",
+                "Total Size",
+                "Duration",
+                "HDR",
+                "VFR",
+            ]);
+            for snap in &snapshots {
+                table.add_row(vec![
+                    Cell::new(snap.captured_at.format("%Y-%m-%d %H:%M:%S")),
+                    Cell::new(snap.trigger.as_str()),
+                    Cell::new(snap.files.total_count),
+                    Cell::new(format_size(snap.files.total_size_bytes)),
+                    Cell::new(voom_domain::utils::format::format_duration(
+                        snap.files.total_duration_secs,
+                    )),
+                    Cell::new(snap.video.hdr_count),
+                    Cell::new(snap.video.vfr_count),
+                ]);
+            }
+            println!("{table}");
+        }
+        OutputFormat::Plain => {
+            for snap in &snapshots {
+                println!(
+                    "{}\t{}\t{}\t{}\t{:.0}\t{}\t{}",
+                    snap.captured_at.format("%Y-%m-%d %H:%M:%S"),
+                    snap.trigger.as_str(),
+                    snap.files.total_count,
+                    snap.files.total_size_bytes,
+                    snap.files.total_duration_secs,
+                    snap.video.hdr_count,
+                    snap.video.vfr_count,
+                );
             }
         }
     }

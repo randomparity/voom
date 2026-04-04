@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from tvdb_metadata.tvdb_client import TvdbClient, TvdbError
 
 from helpers import MockHost, MockHttpResponse
@@ -60,11 +62,20 @@ class TestAuthentication:
             body=b'{"status":"failure"}',
         ))
         client = TvdbClient.from_config(mock_host)
-        try:
+        with pytest.raises(TvdbError) as excinfo:
             client.authenticate()
-            assert False, "Should have raised TvdbError"
-        except TvdbError as e:
-            assert "401" in str(e)
+        assert "401" in str(excinfo.value)
+
+    def test_invalid_cached_token_refetches(self, mock_host):
+        mock_host.set_config({"api_key": "test-key"})
+        mock_host._data["tvdb_token"] = b"not json"
+        mock_host.set_http_response("/v4/login", MockHttpResponse(
+            status=200,
+            body=json.dumps({"data": {"token": "fresh-token"}}).encode(),
+        ))
+        client = TvdbClient.from_config(mock_host)
+        token = client.authenticate()
+        assert token == "fresh-token"
 
 
 class TestSearchSeries:
@@ -113,11 +124,8 @@ class TestGetEpisodes:
             body=b"server error",
         ))
         client = TvdbClient.from_config(mock_host)
-        try:
+        with pytest.raises(TvdbError):
             client.get_episodes(99999, 1)
-            assert False, "Should have raised"
-        except TvdbError:
-            pass
 
 
 class TestLookup:
@@ -187,6 +195,13 @@ class TestLookupEdgeCases:
         client = TvdbClient.from_config(mock_host_with_tvdb)
         result = client.lookup("Test Show", season=1, episode=1)
         assert result is None
+
+    def test_lookup_with_invalid_cached_search_refetches(self, mock_host_with_tvdb):
+        mock_host_with_tvdb._data["search:breaking bad"] = b"not json"
+        client = TvdbClient.from_config(mock_host_with_tvdb)
+        metadata = client.lookup("Breaking Bad", season=1, episode=1)
+        assert metadata is not None
+        assert metadata["episode_name"] == "Pilot"
 
 
 class TestBestMatch:

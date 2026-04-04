@@ -157,10 +157,12 @@ fn delete(id: &str, yes: bool) -> Result<()> {
         return Ok(());
     }
 
-    store.delete_file(&uuid).context("failed to delete file")?;
+    store
+        .mark_missing(&uuid)
+        .context("failed to mark file as missing")?;
 
     println!(
-        "{} Deleted {} from database",
+        "{} Marked {} as missing in database",
         style("✓").green(),
         style(file.path.display()).cyan()
     );

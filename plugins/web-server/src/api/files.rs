@@ -116,6 +116,16 @@ pub async fn delete_file(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<DeleteResponse>, WebError> {
+    // Acquire the process lock for the duration of this mutation.
+    let _lock = if let Some(data_dir) = &state.data_dir {
+        Some(
+            acquire_process_lock(data_dir)
+                .map_err(|e| WebError::Internal(format!("failed to acquire process lock: {e}")))?,
+        )
+    } else {
+        None
+    };
+
     let store_check = state.store.clone();
     let store = state.store.clone();
 
@@ -125,8 +135,32 @@ pub async fn delete_file(
         return Err(WebError::NotFound(format!("File {id} not found")));
     }
 
-    spawn_store_op(move || store.delete_file(&id)).await?;
+    spawn_store_op(move || store.mark_missing(&id)).await?;
     Ok(Json(DeleteResponse { deleted: true }))
+}
+
+/// Acquire an exclusive file lock on `<data_dir>/voom.lock`.
+///
+/// Uses the same lock file as `ProcessLock` in voom-cli so that
+/// web mutations and CLI mutations are mutually exclusive.
+fn acquire_process_lock(data_dir: &std::path::Path) -> anyhow::Result<std::fs::File> {
+    use fs2::FileExt;
+    std::fs::create_dir_all(data_dir)
+        .map_err(|e| anyhow::anyhow!("create data dir {}: {e}", data_dir.display()))?;
+    let path = data_dir.join("voom.lock");
+    let file = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| anyhow::anyhow!("open lock file {}: {e}", path.display()))?;
+    file.try_lock_exclusive().map_err(|_| {
+        anyhow::anyhow!(
+            "Another voom process is running (lock held on {})",
+            path.display()
+        )
+    })?;
+    Ok(file)
 }
 
 #[cfg(test)]

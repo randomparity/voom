@@ -52,6 +52,119 @@ HANDLER_POOL = [
     "GPAC ISO Video Handler", "GPAC ISO Audio Handler",
 ]
 
+# ---------------------------------------------------------------------------
+# Naming pools for random file generation
+# ---------------------------------------------------------------------------
+
+MOVIE_TITLE_POOL = [
+    "The Silent Echo", "Crimson Meridian", "Neon Reef",
+    "Orbital Descent", "Dustwalker", "Iron Chorus",
+    "Abyssal Reach", "The Vanishing Gradient", "Solstice Run",
+    "Waypoint Zero", "The Last Cartographer", "Parallax",
+    "Black Meridian", "The Obsidian Gate", "Phantom Corridor",
+    "Static Bloom", "Voidrunner", "The Copper Key",
+    "Fractured Light", "Signal Drift", "Terminal Velocity",
+    "Hollow Earth", "The Glass Frontier", "Midnight Protocol",
+    "Starfall", "The Iron Bloom", "Chroma Shift",
+    "Deep Current", "The Pale Beyond", "Atlas Point",
+]
+
+FOREIGN_TITLE_POOL = [
+    "Café Páramo", "Über den Wolken", "La Dernière Nuit",
+    "El Sueño Eterno", "Der letzte Horizont", "Le Cercle Rouge",
+    "Nocturne d'Argent", "Sous les étoiles", "Die Stille Welt",
+    "Märchenstunde", "Añoranza", "Éclipse Totale",
+    "Flüsterwald", "Pièce Montée", "Täuschung",
+]
+
+EPISODE_TITLE_POOL = [
+    "The Last Stand", "Inversion", "Pilot", "Reckoning",
+    "Zero Hour", "Convergence", "Fallout", "Awakening",
+    "Crossfire", "Echoes", "The Signal", "Chrysalis",
+]
+
+QUALITY_TAGS = ["480p", "720p", "1080p", "2160p", "4K"]
+
+SOURCE_TAGS = [
+    "BluRay", "WEB-DL", "HDTV", "REMUX", "BDRip",
+    "DVDRip", "WEBRip", "AMZN", "NF",
+]
+
+GROUP_TAGS = [
+    "SPARKS", "YTS.MX", "RARBG", "FGT", "EVO",
+    "FLUX", "NOGRP", "AMIABLE", "ROVERS", "GECKOS",
+]
+
+EDITION_TAGS = [
+    "Extended Cut", "Director's Cut", "Theatrical",
+    "Unrated", "Remastered", "IMAX",
+]
+
+
+def generate_filename(rng, used_names):
+    """Generate a unique realistic media filename (without extension).
+
+    Returns a stem string. Retries on collision with used_names set.
+    """
+    for _ in range(100):
+        stem = _build_filename_stem(rng)
+        if stem not in used_names:
+            used_names.add(stem)
+            return stem
+    # Fallback: append random suffix
+    stem = _build_filename_stem(rng) + f"-{rng.randint(10000, 99999)}"
+    used_names.add(stem)
+    return stem
+
+
+def _build_filename_stem(rng):
+    """Build a single filename stem from random pools."""
+    # 30% chance of foreign title
+    if rng.random() < 0.30:
+        title = rng.choice(FOREIGN_TITLE_POOL)
+    else:
+        title = rng.choice(MOVIE_TITLE_POOL)
+
+    # 40% TV episode, 60% movie
+    if rng.random() < 0.40:
+        season = rng.randint(1, 8)
+        episode = rng.randint(1, 24)
+        ep_title = rng.choice(EPISODE_TITLE_POOL)
+        parts = [title, f"S{season:02d}E{episode:02d}", ep_title]
+    else:
+        year = rng.randint(2018, 2026)
+        parts = [title, str(year)]
+
+    # Quality and source tags
+    parts.append(rng.choice(QUALITY_TAGS))
+    if rng.random() < 0.7:
+        parts.append(rng.choice(SOURCE_TAGS))
+
+    # 20% chance of edition tag (with brackets/parens)
+    if rng.random() < 0.20:
+        edition = rng.choice(EDITION_TAGS)
+        bracket_style = rng.choice(["({e})", "[{e}]", "{e}"])
+        parts.append(bracket_style.format(e=edition))
+
+    # Group tag (70%)
+    if rng.random() < 0.70:
+        group = rng.choice(GROUP_TAGS)
+        group_style = rng.choice(["-{g}", "[{g}]", "({g})"])
+        parts.append(group_style.format(g=group))
+
+    # Separator style: dots (60%), spaces (15%), dashes (15%), underscores (10%)
+    r = rng.random()
+    if r < 0.60:
+        sep = "."
+    elif r < 0.75:
+        sep = " "
+    elif r < 0.90:
+        sep = "-"
+    else:
+        sep = "_"
+
+    return sep.join(parts)
+
 
 def random_timestamp(rng):
     """Return a random ISO 8601 timestamp between 2018 and 2025."""
@@ -172,6 +285,189 @@ def build_manifest():
             "requires_encoder": "truehd",
         },
     ]
+
+
+def build_random_specs(count, seed, duration_range):
+    """Generate `count` random file specs with unique names and varied properties.
+
+    Uses only safe codecs (h264/h265, aac/ac3/mp3/flac) in MKV/MP4 containers.
+    """
+    rng = random.Random(seed)
+    used_names = set()
+    used_signatures = set()
+    specs = []
+
+    video_codecs = ["libx264", "libx265"]
+    resolutions = ["640x360", "854x480", "1280x720", "1920x1080", "3840x2160"]
+    fps_choices = [24, 25, 30]
+    audio_codecs = ["aac", "ac3", "mp3", "flac"]
+    audio_channels = [1, 2, 6]
+    sub_formats = ["srt", "ass"]
+    containers = ["mkv", "mp4"]
+    dur_min, dur_max = duration_range
+
+    for i in range(count):
+        # Per-file RNG derived from seed + offset (manifest count + i)
+        file_rng = random.Random(seed + 1000 + i)
+
+        ext = file_rng.choice(containers)
+        stem = generate_filename(file_rng, used_names)
+
+        # Video
+        video = {
+            "codec": file_rng.choice(video_codecs),
+            "size": file_rng.choice(resolutions),
+            "fps": file_rng.choice(fps_choices),
+        }
+
+        # Audio: 1-3 tracks
+        num_audio = file_rng.randint(1, 3)
+        audio = []
+        for j in range(num_audio):
+            codec = file_rng.choice(audio_codecs)
+            # flac doesn't support 6-channel in simple mode; limit to stereo
+            if codec == "flac":
+                ch = file_rng.choice([1, 2])
+            else:
+                ch = file_rng.choice(audio_channels)
+            track = {"codec": codec, "channels": ch}
+            if j > 0:
+                track["lang"] = file_rng.choice(LANG_POOL)
+                track["title"] = file_rng.choice(AUDIO_TITLE_POOL)
+            audio.append(track)
+
+        # Subtitles: 0-2 tracks (only for MKV; MP4 subtitle support is limited)
+        if ext == "mkv":
+            num_subs = file_rng.randint(0, 2)
+        else:
+            num_subs = 0
+        subs = []
+        for j in range(num_subs):
+            sub = {
+                "format": file_rng.choice(sub_formats),
+                "lang": file_rng.choice(LANG_POOL),
+            }
+            if file_rng.random() < 0.10:
+                sub["forced"] = True
+            subs.append(sub)
+
+        # Duration for this file (stored on spec, used in generation loop)
+        duration = file_rng.randint(dur_min, dur_max)
+
+        # Build content signature for hash uniqueness
+        audio_sig = tuple(
+            (t["codec"], t["channels"]) for t in audio
+        )
+        sub_sig = tuple(
+            (s["format"], s.get("lang", "und")) for s in subs
+        )
+        signature = (
+            duration, video["codec"], video["size"],
+            video["fps"], ext, audio_sig, sub_sig,
+        )
+
+        while signature in used_signatures:
+            # Bump duration until we find an unused signature
+            duration = duration + 1
+            signature = (
+                duration, video["codec"], video["size"],
+                video["fps"], ext, audio_sig, sub_sig,
+            )
+
+        used_signatures.add(signature)
+
+        specs.append({
+            "stem": stem,
+            "ext": ext,
+            "video": video,
+            "audio": audio,
+            "subs": subs,
+            "special": [],
+            "duration_override": duration,
+        })
+
+    return specs
+
+
+# ---------------------------------------------------------------------------
+# File corruption for error-path testing
+# ---------------------------------------------------------------------------
+
+CORRUPTION_TYPES = ["truncated", "header_damage", "mid_stream", "zero_length", "wrong_extension"]
+
+
+def apply_corruption(file_path, corruption_type, rng):
+    """Corrupt a generated file in-place. Returns a description string."""
+    size = file_path.stat().st_size
+    if size == 0:
+        return "skipped (already empty)"
+
+    if corruption_type == "truncated":
+        cut_pct = rng.randint(10, 80)
+        new_size = max(1, size * cut_pct // 100)
+        data = file_path.read_bytes()[:new_size]
+        file_path.write_bytes(data)
+        return f"truncated to {cut_pct}% ({new_size} bytes)"
+
+    elif corruption_type == "header_damage":
+        damage_size = min(rng.randint(64, 512), size)
+        data = bytearray(file_path.read_bytes())
+        for i in range(damage_size):
+            data[i] = rng.randint(0, 255)
+        file_path.write_bytes(bytes(data))
+        return f"header damaged ({damage_size} bytes)"
+
+    elif corruption_type == "mid_stream":
+        block_size = min(rng.randint(1024, 4096), size // 2)
+        quarter = max(1, size // 4)
+        offset = rng.randint(quarter, max(quarter, size - quarter - block_size))
+        data = bytearray(file_path.read_bytes())
+        for i in range(min(block_size, len(data) - offset)):
+            data[offset + i] = rng.randint(0, 255)
+        file_path.write_bytes(bytes(data))
+        return f"mid-stream corruption ({block_size} bytes at offset {offset})"
+
+    elif corruption_type == "zero_length":
+        file_path.write_bytes(b"")
+        return "truncated to zero bytes"
+
+    elif corruption_type == "wrong_extension":
+        current_ext = file_path.suffix
+        if current_ext == ".mkv":
+            new_ext = ".mp4"
+        elif current_ext == ".mp4":
+            new_ext = ".mkv"
+        else:
+            new_ext = ".mkv"
+        new_path = file_path.with_suffix(new_ext)
+        file_path.rename(new_path)
+        return f"extension changed {current_ext} -> {new_ext}"
+
+    return "unknown corruption type"
+
+
+def select_and_corrupt(dest, random_specs, corrupt_count, seed):
+    """Select `corrupt_count` files from `random_specs` and corrupt them.
+
+    Returns list of (filename, corruption_type, description) tuples.
+    """
+    if corrupt_count <= 0 or not random_specs:
+        return []
+
+    rng = random.Random(seed + 9999)
+    targets = rng.sample(random_specs, min(corrupt_count, len(random_specs)))
+    results = []
+
+    for spec in targets:
+        filename = f"{spec['stem']}.{spec['ext']}"
+        filepath = dest / filename
+        if not filepath.exists():
+            continue
+        ctype = rng.choice(CORRUPTION_TYPES)
+        desc = apply_corruption(filepath, ctype, rng)
+        results.append((filename, ctype, desc))
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -599,7 +895,43 @@ def main():
         "--verbose", action="store_true",
         help="Show full ffmpeg output",
     )
+    parser.add_argument(
+        "--count", type=int, default=0, metavar="N",
+        help="Generate N additional random files alongside the manifest",
+    )
+    parser.add_argument(
+        "--duration-range", default="1-5", metavar="MIN-MAX",
+        help="Duration range in seconds for random files (default: 1-5)",
+    )
+    parser.add_argument(
+        "--corrupt", default="0", metavar="N_OR_PCT",
+        help="Corrupt N files (or N%% of --count) from the random set",
+    )
     args = parser.parse_args()
+
+    # Parse duration range
+    try:
+        dur_parts = args.duration_range.split("-")
+        dur_range = (int(dur_parts[0]), int(dur_parts[1]))
+        if dur_range[0] < 1 or dur_range[1] < dur_range[0]:
+            raise ValueError
+    except (ValueError, IndexError):
+        print(f"Error: --duration-range must be MIN-MAX (e.g., 1-5), got '{args.duration_range}'",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Parse corrupt count
+    corrupt_str = args.corrupt.strip()
+    if corrupt_str.endswith("%"):
+        corrupt_pct = float(corrupt_str[:-1]) / 100.0
+        corrupt_count = max(0, int(corrupt_pct * args.count + 0.999))  # round up
+    else:
+        corrupt_count = int(corrupt_str)
+
+    if corrupt_count > 0 and args.count < corrupt_count:
+        print(f"Error: --corrupt {corrupt_count} requires --count >= {corrupt_count}",
+              file=sys.stderr)
+        sys.exit(1)
 
     dest = Path(args.dest)
     rng = random.Random(args.seed)
@@ -617,7 +949,13 @@ def main():
             continue
         specs.append(spec)
 
-    if not specs:
+    # Generate random specs if --count is set
+    random_specs = []
+    if args.count > 0:
+        random_specs = build_random_specs(args.count, args.seed, dur_range)
+        specs.extend(random_specs)
+
+    if not specs and args.count == 0:
         print("No files to generate (check --only / --skip filters).", file=sys.stderr)
         sys.exit(1)
 
@@ -658,8 +996,10 @@ def main():
             # Reset RNG per-file but derived from seed + index for reproducibility
             file_rng = random.Random(args.seed + idx)
 
+            file_duration = spec.get("duration_override", args.duration)
+
             try:
-                cmd, outfile = build_ffmpeg_cmd(spec, dest, args.duration, file_rng, tmpdir)
+                cmd, outfile = build_ffmpeg_cmd(spec, dest, file_duration, file_rng, tmpdir)
             except Exception as e:
                 print(f"[{idx}/{total}] FAILED {filename} — error building command: {e}")
                 fail_count += 1
@@ -709,6 +1049,13 @@ def main():
                 print(f"FAILED ({e})")
                 fail_count += 1
 
+    # Apply corruption to selected random files
+    corrupt_results = []
+    if corrupt_count > 0 and not args.dry_run:
+        corrupt_results = select_and_corrupt(dest, random_specs, corrupt_count, args.seed)
+        for filename, ctype, desc in corrupt_results:
+            print(f"  CORRUPTED {filename} — {ctype}: {desc}")
+
     # Summary
     print()
     if args.dry_run:
@@ -719,6 +1066,8 @@ def main():
             parts.append(f"{skip_count} skipped")
         if fail_count:
             parts.append(f"{fail_count} failed")
+        if corrupt_results:
+            parts.append(f"{len(corrupt_results)} corrupted")
         print(f"Summary: {', '.join(parts)}")
         if total_size:
             print(f"Total size: {format_size(total_size)}")

@@ -1,9 +1,10 @@
 //! Stats-related API endpoints.
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::Json;
 use serde::Serialize;
 
+use voom_domain::stats::{LibrarySnapshot, SnapshotTrigger};
 use voom_domain::storage::FileFilters;
 
 use crate::errors::{spawn_store_op, WebError};
@@ -37,6 +38,38 @@ pub async fn get_stats(State(state): State<AppState>) -> Result<Json<DashboardSt
             .map(|(status, count)| JobStatusCount { status, count })
             .collect(),
     }))
+}
+
+/// GET /api/stats/library — live library statistics
+#[tracing::instrument(skip(state))]
+pub async fn get_library_stats(
+    State(state): State<AppState>,
+) -> Result<Json<LibrarySnapshot>, WebError> {
+    let store = state.store.clone();
+    let snapshot =
+        spawn_store_op(move || store.gather_library_stats(SnapshotTrigger::Manual)).await?;
+    Ok(Json(snapshot))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct HistoryParams {
+    #[serde(default = "default_limit")]
+    pub limit: u32,
+}
+
+fn default_limit() -> u32 {
+    20
+}
+
+/// GET /api/stats/history?limit=20 — snapshot history
+#[tracing::instrument(skip(state))]
+pub async fn get_stats_history(
+    State(state): State<AppState>,
+    Query(params): Query<HistoryParams>,
+) -> Result<Json<Vec<LibrarySnapshot>>, WebError> {
+    let store = state.store.clone();
+    let snapshots = spawn_store_op(move || store.list_snapshots(params.limit)).await?;
+    Ok(Json(snapshots))
 }
 
 #[cfg(test)]
@@ -89,5 +122,17 @@ mod tests {
         let json = serde_json::to_value(&count).unwrap();
         assert_eq!(json["status"], "running");
         assert_eq!(json["count"], 3);
+    }
+
+    #[test]
+    fn test_history_params_default_limit() {
+        let params: HistoryParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(params.limit, 20);
+    }
+
+    #[test]
+    fn test_history_params_explicit_limit() {
+        let params: HistoryParams = serde_json::from_str(r#"{"limit": 50}"#).unwrap();
+        assert_eq!(params.limit, 50);
     }
 }

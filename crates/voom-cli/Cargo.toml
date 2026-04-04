@@ -62,6 +62,7 @@ parking_lot.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 dirs = "5"
+fs2 = "0.4"
 toml = { workspace = true }
 
 [features]
@@ -74,6 +75,10 @@ workspace = true
 
 [dev-dependencies]
 assert_cmd = "2"
+chrono.workspace = true
 predicates = "3"
+rand = "0.10"
+rusqlite.workspace = true
 tempfile.workspace = true
+uuid.workspace = true
 voom-domain = { workspace = true, features = ["testing"] }

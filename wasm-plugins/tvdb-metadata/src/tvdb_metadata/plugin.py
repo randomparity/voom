@@ -76,20 +76,9 @@ def get_info():
     # When running under componentize-py, this returns a WIT PluginInfo record.
     # For native testing, we return a plain dict.
     if _host_module is not None and hasattr(_host_module, "__package__"):
-        # Under componentize-py: import the generated types
-        try:
-            from voom.plugin.plugin import PluginInfo, Capability, EnrichCap  # type: ignore[import]
-            return PluginInfo(
-                name="tvdb-metadata",
-                version="0.1.0",
-                description="TV metadata enrichment via TVDB API v4",
-                author="David Christensen",
-                license="MIT",
-                homepage="https://github.com/randomparity/voom",
-                capabilities=[Capability.enrich_metadata(EnrichCap(source="tvdb"))],
-            )
-        except ImportError:
-            pass
+        wit_info = _make_wit_plugin_info()
+        if wit_info is not None:
+            return wit_info
 
     # Fallback for testing: return a simple object
     return {
@@ -119,34 +108,15 @@ def on_event(event) -> "object | None":
     The event payload is MessagePack bytes matching rmp_serde's format:
       {"FileIntrospected": {"file": {...}}}
     """
-    event_type = event.event_type if hasattr(event, "event_type") else event.get("event_type", "")
-    payload = event.payload if hasattr(event, "payload") else event.get("payload", b"")
-
-    if event_type != "file.introspected":
+    if _event_type(event) != "file.introspected":
         return None
 
-    # Deserialize the MessagePack event payload
-    try:
-        variant, data = unpack_event(bytes(payload))
-    except Exception as e:
-        _log("warn", f"Failed to deserialize event: {e}")
-        return None
-
-    if variant != "FileIntrospected":
-        return None
-
-    file_data = data.get("file")
-    if not file_data or not isinstance(file_data, dict):
-        _log("warn", f"FileIntrospected payload missing 'file' key: {list(data.keys())}")
-        return None
-    file_path = file_data.get("path", "")
-    if not file_path:
-        _log("warn", "FileIntrospected payload has empty path")
+    file_path = _extract_file_path(event)
+    if file_path is None:
         return None
 
     _log("info", f"Processing file for TVDB lookup: {file_path}")
 
-    # Parse filename for episode info
     info = parse_filename(file_path)
     if info is None:
         _log("debug", f"No episode pattern found in: {file_path}")
@@ -154,48 +124,15 @@ def on_event(event) -> "object | None":
 
     _log("info", f"Parsed: {info.series_name} S{info.season_number:02d}E{info.episode_number:02d}")
 
-    # Create TVDB client from config
-    host_funcs = _get_host_bridge()
-    if host_funcs is None:
-        _log("warn", "No host functions available")
-        return None
-
-    client = TvdbClient.from_config(host_funcs)
+    client = _make_client()
     if client is None:
-        _log("warn", "No TVDB config found (set api_key via plugin data)")
         return None
 
-    # Look up episode metadata
-    try:
-        metadata = client.lookup(
-            series_name=info.series_name,
-            season=info.season_number,
-            episode=info.episode_number,
-            year=info.year,
-        )
-    except Exception as e:
-        _log("error", f"TVDB lookup failed: {e}")
-        return None
-
+    metadata = _lookup_metadata(client, info)
     if metadata is None:
-        _log("info", f"No TVDB match for: {info.series_name}")
         return None
 
-    # Build MetadataEnriched event
-    enriched_payload = pack_event("MetadataEnriched", {
-        "path": file_path,
-        "source": "tvdb",
-        "metadata": metadata,
-    })
-
-    # Return event result
-    return _make_event_result(
-        plugin_name="tvdb-metadata",
-        produced_events=[{
-            "event_type": "metadata.enriched",
-            "payload": list(enriched_payload),
-        }],
-    )
+    return _build_metadata_result(file_path, metadata)
 
 
 # --- Internal helpers ---
@@ -221,7 +158,110 @@ def _log(level: str, message: str):
         try:
             bridge.log(level, message)
         except Exception:
-            pass
+            return
+
+
+def _make_wit_plugin_info():
+    """Build the generated WIT PluginInfo record when bindings are present."""
+    try:
+        from voom.plugin.plugin import PluginInfo, Capability, EnrichCap  # type: ignore[import]
+    except ImportError:
+        return None
+    return PluginInfo(
+        name="tvdb-metadata",
+        version="0.1.0",
+        description="TV metadata enrichment via TVDB API v4",
+        author="David Christensen",
+        license="MIT",
+        homepage="https://github.com/randomparity/voom",
+        capabilities=[Capability.enrich_metadata(EnrichCap(source="tvdb"))],
+    )
+
+
+def _event_type(event) -> str:
+    """Extract the event type from a WIT record or test dict."""
+    return event.event_type if hasattr(event, "event_type") else event.get("event_type", "")
+
+
+def _event_payload(event) -> bytes:
+    """Extract raw event payload bytes from a WIT record or test dict."""
+    payload = event.payload if hasattr(event, "payload") else event.get("payload", b"")
+    return bytes(payload)
+
+
+def _unpack_file_introspected(event) -> dict | None:
+    """Deserialize FileIntrospected event payloads."""
+    try:
+        variant, data = unpack_event(_event_payload(event))
+    except Exception as e:
+        _log("warn", f"Failed to deserialize event: {e}")
+        return None
+    if variant != "FileIntrospected":
+        return None
+    return data
+
+
+def _extract_file_path(event) -> str | None:
+    """Validate the event payload and return the introspected file path."""
+    data = _unpack_file_introspected(event)
+    if data is None:
+        return None
+    file_data = data.get("file")
+    if not file_data or not isinstance(file_data, dict):
+        _log("warn", f"FileIntrospected payload missing 'file' key: {list(data.keys())}")
+        return None
+    file_path = file_data.get("path", "")
+    if not file_path:
+        _log("warn", "FileIntrospected payload has empty path")
+        return None
+    return file_path
+
+
+def _make_client() -> TvdbClient | None:
+    """Create a configured TVDB client from host bindings."""
+    host_funcs = _get_host_bridge()
+    if host_funcs is None:
+        _log("warn", "No host functions available")
+        return None
+    client = TvdbClient.from_config(host_funcs)
+    if client is None:
+        _log("warn", "No TVDB config found (set api_key via plugin data)")
+        return None
+    return client
+
+
+def _lookup_metadata(client: TvdbClient, info) -> dict | None:
+    """Run the TVDB lookup while keeping failures non-fatal to the plugin."""
+    try:
+        metadata = client.lookup(
+            series_name=info.series_name,
+            season=info.season_number,
+            episode=info.episode_number,
+            year=info.year,
+        )
+    except Exception as e:
+        _log("error", f"TVDB lookup failed: {e}")
+        return None
+    if metadata is None:
+        _log("info", f"No TVDB match for: {info.series_name}")
+        return None
+    return metadata
+
+
+def _build_metadata_result(file_path: str, metadata: dict):
+    """Build the MetadataEnriched event result."""
+    enriched_payload = pack_event("MetadataEnriched", {
+        "path": file_path,
+        "source": "tvdb",
+        "metadata": metadata,
+    })
+    return _make_event_result(
+        plugin_name="tvdb-metadata",
+        produced_events=[{
+            "event_type": "metadata.enriched",
+            "payload": list(enriched_payload),
+        }],
+    )
 
 
 def _make_event_result(plugin_name: str, produced_events: list, data=None):
