@@ -11,8 +11,8 @@ use voom_domain::storage::{FileFilters, FileStorage};
 use voom_domain::transition::{DiscoveredFile, FileTransition, ReconcileResult, TransitionSource};
 
 use super::{
-    escape_like, format_datetime, other_storage_err, row_to_file, storage_err, FileRow, SqlQuery,
-    SqliteStore,
+    escape_like, format_datetime, other_storage_err, row_to_file, storage_err, FileRow,
+    OptionalExt, SqlQuery, SqliteStore,
 };
 
 impl FileStorage for SqliteStore {
@@ -693,7 +693,33 @@ fn reconcile_new_path(
     Ok(())
 }
 
-use super::OptionalExt;
+fn insert_transition_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    t: &FileTransition,
+    now: &str,
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO file_transitions \
+         (id, file_id, path, from_hash, to_hash, from_size, to_size, \
+          source, source_detail, plan_id, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            t.id.to_string(),
+            t.file_id.to_string(),
+            t.path.to_string_lossy().to_string(),
+            t.from_hash.as_deref(),
+            t.to_hash,
+            t.from_size.map(|v| v as i64),
+            t.to_size as i64,
+            t.source.as_str(),
+            t.source_detail.as_deref(),
+            t.plan_id.map(|id| id.to_string()),
+            now,
+        ],
+    )
+    .map_err(storage_err("failed to insert transition"))?;
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -828,32 +854,4 @@ mod tests {
             .unwrap();
         assert_eq!(stored_tv.status, FileStatus::Active);
     }
-}
-
-fn insert_transition_in_tx(
-    tx: &rusqlite::Transaction<'_>,
-    t: &FileTransition,
-    now: &str,
-) -> Result<()> {
-    tx.execute(
-        "INSERT INTO file_transitions \
-         (id, file_id, path, from_hash, to_hash, from_size, to_size, \
-          source, source_detail, plan_id, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![
-            t.id.to_string(),
-            t.file_id.to_string(),
-            t.path.to_string_lossy().to_string(),
-            t.from_hash.as_deref(),
-            t.to_hash,
-            t.from_size.map(|v| v as i64),
-            t.to_size as i64,
-            t.source.as_str(),
-            t.source_detail.as_deref(),
-            t.plan_id.map(|id| id.to_string()),
-            now,
-        ],
-    )
-    .map_err(storage_err("failed to insert transition"))?;
-    Ok(())
 }

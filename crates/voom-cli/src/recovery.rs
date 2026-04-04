@@ -575,7 +575,7 @@ mod tests {
         let vbak = backup_dir.join("test.mkv.20240315120000.vbak");
         std::fs::write(&vbak, b"backup content").unwrap();
 
-        let orphans = find_orphans_under(&[real_dir.clone()]).unwrap();
+        let orphans = find_orphans_under(std::slice::from_ref(&real_dir)).unwrap();
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].backup_path, vbak);
         assert_eq!(orphans[0].original_path, real_dir.join("test.mkv"));
