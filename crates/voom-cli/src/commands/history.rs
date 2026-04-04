@@ -2,7 +2,7 @@ use anyhow::Result;
 use console::style;
 use uuid::Uuid;
 use voom_domain::storage::{FileStorage, FileTransitionStorage};
-use voom_domain::transition::FileTransition;
+use voom_domain::transition::{FileTransition, TransitionSource};
 use voom_domain::utils::format;
 
 use crate::app;
@@ -118,6 +118,12 @@ pub fn run(args: HistoryArgs) -> Result<()> {
                         "source": t.source.as_str(),
                         "source_detail": t.source_detail,
                         "plan_id": t.plan_id.map(|id| id.to_string()),
+                        "duration_ms": t.duration_ms,
+                        "actions_taken": t.actions_taken,
+                        "tracks_modified": t.tracks_modified,
+                        "outcome": t.outcome.map(|o| o.as_str()),
+                        "policy_name": &t.policy_name,
+                        "phase_name": &t.phase_name,
                         "created_at": t.created_at.to_rfc3339(),
                     })
                 })
@@ -139,18 +145,19 @@ pub fn run(args: HistoryArgs) -> Result<()> {
             );
 
             let mut table = output::new_table();
-            let col_count = if has_lineage { 6 } else { 5 };
+            let col_count = if has_lineage { 7 } else { 6 };
             if has_lineage {
                 table.set_header(vec![
                     "#",
                     "Date",
                     "Source",
                     "File ID",
+                    "Size",
                     "From Hash",
                     "To Hash",
                 ]);
             } else {
-                table.set_header(vec!["#", "Date", "Source", "From Hash", "To Hash"]);
+                table.set_header(vec!["#", "Date", "Source", "Size", "From Hash", "To Hash"]);
             }
 
             let mut prev_file_id: Option<Uuid> = None;
@@ -179,10 +186,32 @@ pub fn run(args: HistoryArgs) -> Result<()> {
                     .unwrap_or("—");
                 let to = output::hash_preview(&t.to_hash);
 
+                let source_display = match (&t.source, &t.phase_name, &t.outcome) {
+                    (TransitionSource::Voom, Some(phase), Some(outcome)) => {
+                        format!("voom:{phase} ({})", outcome.as_str())
+                    }
+                    _ => t.source.as_str().to_string(),
+                };
+
+                let size_cell = match t.from_size {
+                    Some(from_sz) => {
+                        let delta = t.to_size as i64 - from_sz as i64;
+                        let formatted = format::format_size(t.to_size);
+                        if delta == 0 {
+                            formatted
+                        } else if delta < 0 {
+                            format!("{formatted} (-{})", format::format_size((-delta) as u64))
+                        } else {
+                            format!("{formatted} (+{})", format::format_size(delta as u64))
+                        }
+                    }
+                    None => format::format_size(t.to_size),
+                };
+
                 let mut row = vec![
                     comfy_table::Cell::new(i + 1),
                     comfy_table::Cell::new(date),
-                    comfy_table::Cell::new(t.source.as_str()),
+                    comfy_table::Cell::new(source_display),
                 ];
 
                 if has_lineage {
@@ -190,6 +219,7 @@ pub fn run(args: HistoryArgs) -> Result<()> {
                     row.push(comfy_table::Cell::new(format!("{short_id}...")));
                 }
 
+                row.push(comfy_table::Cell::new(size_cell));
                 row.push(comfy_table::Cell::new(from));
                 row.push(comfy_table::Cell::new(to));
 
