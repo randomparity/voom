@@ -6,6 +6,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::stats::ProcessingOutcome;
+
 /// Whether a file is currently present and accessible.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -104,6 +106,18 @@ pub struct FileTransition {
     pub plan_id: Option<Uuid>,
     /// When this transition was recorded.
     pub created_at: DateTime<Utc>,
+    /// Processing duration in milliseconds (only for source=Voom transitions).
+    pub duration_ms: Option<u64>,
+    /// Number of actions executed (only for source=Voom transitions).
+    pub actions_taken: Option<u32>,
+    /// Number of tracks modified (only for source=Voom transitions).
+    pub tracks_modified: Option<u32>,
+    /// Processing outcome (only for source=Voom transitions).
+    pub outcome: Option<ProcessingOutcome>,
+    /// Policy name that produced this transition (only for source=Voom transitions).
+    pub policy_name: Option<String>,
+    /// Phase name within the policy (only for source=Voom transitions).
+    pub phase_name: Option<String>,
 }
 
 impl FileTransition {
@@ -132,6 +146,12 @@ impl FileTransition {
             source_detail: None,
             plan_id: None,
             created_at: Utc::now(),
+            duration_ms: None,
+            actions_taken: None,
+            tracks_modified: None,
+            outcome: None,
+            policy_name: None,
+            phase_name: None,
         }
     }
 
@@ -154,6 +174,26 @@ impl FileTransition {
     #[must_use]
     pub fn with_plan_id(mut self, plan_id: Uuid) -> Self {
         self.plan_id = Some(plan_id);
+        self
+    }
+
+    /// Attach processing statistics to this transition.
+    #[must_use]
+    pub fn with_processing(
+        mut self,
+        duration_ms: u64,
+        actions_taken: u32,
+        tracks_modified: u32,
+        outcome: ProcessingOutcome,
+        policy_name: impl Into<String>,
+        phase_name: impl Into<String>,
+    ) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self.actions_taken = Some(actions_taken);
+        self.tracks_modified = Some(tracks_modified);
+        self.outcome = Some(outcome);
+        self.policy_name = Some(policy_name.into());
+        self.phase_name = Some(phase_name.into());
         self
     }
 }
@@ -303,6 +343,37 @@ mod tests {
         assert_eq!(df.path, PathBuf::from("/movies/test.mkv"));
         assert_eq!(df.size, 12345);
         assert_eq!(df.content_hash, "abc123");
+    }
+
+    #[test]
+    fn test_file_transition_with_processing_stats() {
+        let file_id = Uuid::new_v4();
+        let plan_id = Uuid::new_v4();
+        let t = FileTransition::new(
+            file_id,
+            PathBuf::from("/movies/test.mkv"),
+            "newhash".into(),
+            2000,
+            TransitionSource::Voom,
+        )
+        .with_from(Some("oldhash".into()), Some(3000))
+        .with_detail("mkvtoolnix:normalize")
+        .with_plan_id(plan_id)
+        .with_processing(
+            150,
+            3,
+            2,
+            ProcessingOutcome::Success,
+            "default",
+            "normalize",
+        );
+
+        assert_eq!(t.duration_ms, Some(150));
+        assert_eq!(t.actions_taken, Some(3));
+        assert_eq!(t.tracks_modified, Some(2));
+        assert_eq!(t.outcome, Some(ProcessingOutcome::Success));
+        assert_eq!(t.policy_name.as_deref(), Some("default"));
+        assert_eq!(t.phase_name.as_deref(), Some("normalize"));
     }
 
     #[test]
