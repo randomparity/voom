@@ -16,8 +16,8 @@ use crate::policy_map::{PolicyMatch, PolicyResolver};
 use crate::progress::{BatchProgress, DiscoveryProgress};
 use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{
-    Event, JobCompletedEvent, JobProgressEvent, JobStartedEvent, PlanCompletedEvent,
-    PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent, PlanSkippedEvent,
+    Event, IntrospectCompleteEvent, JobCompletedEvent, JobProgressEvent, JobStartedEvent,
+    PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent, PlanSkippedEvent,
 };
 use voom_domain::plan::OperationType;
 use voom_domain::utils::format::format_size;
@@ -195,6 +195,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
     let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
     let ffprobe_path = Arc::new(ffprobe_path);
     let counters_for_summary = counters.clone();
+    let kernel_for_completion = kernel.clone();
     let _results = pool
         .process_batch(
             items,
@@ -226,6 +227,12 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
             reporter.clone(),
         )
         .await;
+
+    if !token.is_cancelled() {
+        kernel_for_completion.dispatch(Event::IntrospectComplete(IntrospectCompleteEvent::new(
+            pool.completed_count(),
+        )));
+    }
 
     print_run_results(&RunResultsContext {
         counters: &counters_for_summary,
