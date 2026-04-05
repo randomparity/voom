@@ -38,7 +38,13 @@ impl FileTransitionStorage for SqliteStore {
                 t.outcome.map(|o| o.as_str()),
                 t.policy_name.as_deref(),
                 t.phase_name.as_deref(),
-                t.metadata_snapshot.as_ref().and_then(|s| s.to_json().ok()),
+                t.metadata_snapshot.as_ref().and_then(|s| {
+                    s.to_json()
+                        .map_err(
+                            |e| tracing::warn!(error = %e, "failed to serialize metadata_snapshot"),
+                        )
+                        .ok()
+                }),
                 format_datetime(&t.created_at),
             ],
         )

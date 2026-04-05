@@ -893,6 +893,41 @@ mod tests {
     }
 
     #[test]
+    fn test_transition_snapshot_serialization_succeeds() {
+        use voom_domain::snapshot::MetadataSnapshot;
+
+        let store = test_store();
+        let file = sample_file();
+        store.upsert_file(&file).unwrap();
+
+        let snap: MetadataSnapshot = serde_json::from_value(serde_json::json!({
+            "container": "mkv",
+            "video_tracks": 1,
+            "audio_tracks": 1,
+            "subtitle_tracks": 0,
+            "codecs": ["hevc", "aac"],
+            "resolution": "1920x1080",
+            "duration_secs": 120.5,
+        }))
+        .expect("valid JSON");
+
+        let t = FileTransition::new(
+            file.id,
+            PathBuf::from("/media/movies/test.mkv"),
+            "hash1".into(),
+            1000,
+            TransitionSource::Discovery,
+        )
+        .with_metadata_snapshot(snap.clone());
+
+        store.record_transition(&t).unwrap();
+
+        let rows = store.transitions_for_file(&file.id).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].metadata_snapshot, Some(snap));
+    }
+
+    #[test]
     fn test_prune_missing_files_under_cleans_dependents() {
         let store = test_store();
 
