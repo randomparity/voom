@@ -245,7 +245,7 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     }
 
     #[cfg(feature = "wasm")]
-    load_wasm_plugins(&mut kernel, config, disabled)?;
+    load_wasm_plugins(&mut kernel, config, disabled, store.clone())?;
 
     Ok(BootstrapResult {
         kernel,
@@ -257,7 +257,12 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
 
 /// Load WASM plugins from the configured directory into the kernel.
 #[cfg(feature = "wasm")]
-fn load_wasm_plugins(kernel: &mut Kernel, config: &AppConfig, disabled: &[String]) -> Result<()> {
+fn load_wasm_plugins(
+    kernel: &mut Kernel,
+    config: &AppConfig,
+    disabled: &[String],
+    store: Arc<dyn voom_domain::storage::StorageTrait>,
+) -> Result<()> {
     let wasm_dir = config
         .plugins
         .wasm_dir
@@ -281,7 +286,8 @@ fn load_wasm_plugins(kernel: &mut Kernel, config: &AppConfig, disabled: &[String
     };
 
     let skip_set: std::collections::HashSet<String> = disabled.iter().cloned().collect();
-    let results = loader.load_dir_with_config_skip(&wasm_dir, &config.plugin, &skip_set);
+    let results =
+        loader.load_dir_with_config_skip(&wasm_dir, &config.plugin, &skip_set, Some(store));
     for result in results {
         match result {
             Ok((plugin, priority)) => {

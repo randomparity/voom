@@ -253,4 +253,88 @@ mod tests {
             .unwrap();
         assert!(empty.is_empty());
     }
+
+    fn open_sqlite_store() -> Arc<dyn voom_domain::storage::StorageTrait> {
+        Arc::new(
+            voom_sqlite_store::store::SqliteStore::in_memory()
+                .expect("open in-memory SQLite store"),
+        )
+    }
+
+    #[test]
+    fn test_storage_backed_plugin_store_roundtrip() {
+        let store = open_sqlite_store();
+        let adapter = StorageBackedPluginStore::new(store);
+
+        // Initially empty
+        assert!(adapter.get("my-plugin", "key1").unwrap().is_none());
+
+        // Write and read back
+        adapter.set("my-plugin", "key1", b"hello").unwrap();
+        let val = adapter.get("my-plugin", "key1").unwrap();
+        assert_eq!(val.as_deref(), Some(b"hello".as_ref()));
+
+        // Overwrite
+        adapter.set("my-plugin", "key1", b"world").unwrap();
+        let val = adapter.get("my-plugin", "key1").unwrap();
+        assert_eq!(val.as_deref(), Some(b"world".as_ref()));
+
+        // Delete
+        adapter.delete("my-plugin", "key1").unwrap();
+        assert!(adapter.get("my-plugin", "key1").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_storage_backed_plugin_store_namespace_isolation() {
+        let store = open_sqlite_store();
+        let adapter = StorageBackedPluginStore::new(store);
+
+        adapter.set("plugin-a", "key", b"aaa").unwrap();
+        adapter.set("plugin-b", "key", b"bbb").unwrap();
+
+        assert_eq!(
+            adapter.get("plugin-a", "key").unwrap().as_deref(),
+            Some(b"aaa".as_ref())
+        );
+        assert_eq!(
+            adapter.get("plugin-b", "key").unwrap().as_deref(),
+            Some(b"bbb".as_ref())
+        );
+    }
+
+    #[test]
+    fn test_storage_backed_transition_store_roundtrip() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{FileTransition, TransitionSource};
+
+        let store = open_sqlite_store();
+        let file_id = uuid::Uuid::new_v4();
+        let path = PathBuf::from("/movies/test.mkv");
+        let t = FileTransition::new(
+            file_id,
+            path.clone(),
+            "hash789".into(),
+            5000,
+            TransitionSource::Voom,
+        );
+        store.record_transition(&t).expect("record transition");
+
+        let adapter = StorageBackedTransitionStore::new(store);
+
+        // Query by file ID
+        let by_id = adapter.transitions_for_file(&file_id).unwrap();
+        assert_eq!(by_id.len(), 1);
+        assert_eq!(by_id[0].to_hash, "hash789");
+
+        // Query by path
+        let by_path = adapter.transitions_for_path(&path).unwrap();
+        assert_eq!(by_path.len(), 1);
+        assert_eq!(by_path[0].to_hash, "hash789");
+
+        // Non-existent path returns empty
+        let empty = adapter
+            .transitions_for_path(&PathBuf::from("/other.mkv"))
+            .unwrap();
+        assert!(empty.is_empty());
+    }
 }
