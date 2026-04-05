@@ -6,7 +6,10 @@
 mod functions;
 mod store;
 
-pub use store::{InMemoryPluginStore, StorageBackedPluginStore, WasmPluginStore};
+pub use store::{
+    InMemoryPluginStore, InMemoryTransitionStore, StorageBackedPluginStore,
+    StorageBackedTransitionStore, WasmPluginStore, WasmTransitionStore,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
