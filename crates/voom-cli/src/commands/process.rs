@@ -61,6 +61,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         store,
         collector,
         job_queue,
+        ..
     } = app::bootstrap_kernel_with_store(&config)?;
     let kernel = Arc::new(kernel);
     let capabilities = Arc::new(collector.snapshot());
