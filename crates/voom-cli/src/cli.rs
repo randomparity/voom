@@ -324,6 +324,14 @@ pub struct ReportArgs {
     /// Show snapshot history (N most recent)
     #[arg(long)]
     pub history: Option<u32>,
+
+    /// Show space savings breakdown by executor, phase, and time period
+    #[arg(long)]
+    pub savings: bool,
+
+    /// Time period for savings grouping: day, week, month (default: none)
+    #[arg(long, requires = "savings")]
+    pub period: Option<String>,
 }
 
 // === Serve ===
