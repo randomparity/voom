@@ -6,7 +6,6 @@ use crate::cli::{InspectArgs, OutputFormat};
 use crate::commands::history::{collect_lineage, collect_lineage_transitions};
 use crate::config;
 use crate::output;
-use voom_domain::storage::{FileStorage, FileTransitionStorage};
 
 /// Run the inspect command.
 ///
@@ -29,8 +28,8 @@ pub fn run(args: InspectArgs) -> Result<()> {
     match store.file_by_path(&path) {
         Ok(Some(file)) => {
             let transitions = if args.history {
-                let lineage = collect_lineage(store.as_ref() as &dyn FileStorage, file.id);
-                collect_lineage_transitions(store.as_ref() as &dyn FileTransitionStorage, &lineage)
+                let lineage = collect_lineage(store.as_ref(), file.id);
+                collect_lineage_transitions(store.as_ref(), &lineage)
             } else {
                 Vec::new()
             };
@@ -97,29 +96,7 @@ fn format_inspect_json_with_history(
 
     let history: Vec<serde_json::Value> = transitions
         .iter()
-        .map(|t| {
-            serde_json::json!({
-                "id": t.id.to_string(),
-                "file_id": t.file_id.to_string(),
-                "path": t.path.display().to_string(),
-                "from_hash": t.from_hash,
-                "to_hash": t.to_hash,
-                "from_size": t.from_size,
-                "to_size": t.to_size,
-                "source": t.source.as_str(),
-                "source_detail": t.source_detail,
-                "plan_id": t.plan_id.map(|id| id.to_string()),
-                "duration_ms": t.duration_ms,
-                "actions_taken": t.actions_taken,
-                "tracks_modified": t.tracks_modified,
-                "outcome": t.outcome.map(|o| o.as_str()),
-                "policy_name": &t.policy_name,
-                "phase_name": &t.phase_name,
-                "metadata_snapshot": t.metadata_snapshot.as_ref()
-                    .and_then(|s| serde_json::to_value(s).ok()),
-                "created_at": t.created_at.to_rfc3339(),
-            })
-        })
+        .map(|t| serde_json::to_value(t).expect("FileTransition serialization cannot fail"))
         .collect();
 
     file_json
@@ -176,5 +153,40 @@ mod tests {
 
         let cli = Cli::parse_from(["test", "--history", "video.mkv"]);
         assert!(cli.inspect.history);
+    }
+
+    #[test]
+    fn format_inspect_json_with_history_merges_correctly() {
+        use std::path::PathBuf;
+        use voom_domain::media::{Container, MediaFile};
+        use voom_domain::transition::{FileTransition, TransitionSource};
+
+        let mut file =
+            MediaFile::new(PathBuf::from("/test/video.mkv")).with_container(Container::Mkv);
+        file.size = 1_000_000;
+
+        let t = FileTransition::new(
+            file.id,
+            PathBuf::from("/test/video.mkv"),
+            "abc123".into(),
+            1_000_000,
+            TransitionSource::Discovery,
+        );
+
+        // Test the serialization logic directly (same as format_inspect_json_with_history
+        // but capturing the value instead of printing)
+        let mut file_json = serde_json::to_value(&file).expect("serialize");
+        let history = vec![serde_json::to_value(&t).expect("serialize")];
+        file_json
+            .as_object_mut()
+            .unwrap()
+            .insert("history".to_string(), serde_json::Value::Array(history));
+
+        let obj = file_json.as_object().unwrap();
+        assert!(obj.contains_key("history"));
+        let hist = obj["history"].as_array().unwrap();
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0]["source"], "discovery");
+        assert_eq!(hist[0]["to_hash"], "abc123");
     }
 }

@@ -135,29 +135,7 @@ pub fn run(args: HistoryArgs) -> Result<()> {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = transitions
                 .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "id": t.id.to_string(),
-                        "file_id": t.file_id.to_string(),
-                        "path": t.path.display().to_string(),
-                        "from_hash": t.from_hash,
-                        "to_hash": t.to_hash,
-                        "from_size": t.from_size,
-                        "to_size": t.to_size,
-                        "source": t.source.as_str(),
-                        "source_detail": t.source_detail,
-                        "plan_id": t.plan_id.map(|id| id.to_string()),
-                        "duration_ms": t.duration_ms,
-                        "actions_taken": t.actions_taken,
-                        "tracks_modified": t.tracks_modified,
-                        "outcome": t.outcome.map(|o| o.as_str()),
-                        "policy_name": &t.policy_name,
-                        "phase_name": &t.phase_name,
-                        "metadata_snapshot": t.metadata_snapshot.as_ref()
-                            .and_then(|s| serde_json::to_value(s).ok()),
-                        "created_at": t.created_at.to_rfc3339(),
-                    })
-                })
+                .map(|t| serde_json::to_value(t).expect("FileTransition serialization cannot fail"))
                 .collect();
             println!(
                 "{}",
