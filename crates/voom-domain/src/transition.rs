@@ -44,6 +44,7 @@ impl FileStatus {
 /// What initiated a file transition.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum TransitionSource {
     /// File was discovered (created or first seen) during a scan.
     Discovery,
@@ -460,5 +461,25 @@ mod tests {
             let back: TransitionSource = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(back, source);
         }
+    }
+
+    #[test]
+    fn transition_source_serializes_as_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&TransitionSource::Discovery).unwrap(),
+            "\"discovery\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TransitionSource::Voom).unwrap(),
+            "\"voom\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TransitionSource::External).unwrap(),
+            "\"external\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TransitionSource::Unknown).unwrap(),
+            "\"unknown\""
+        );
     }
 }

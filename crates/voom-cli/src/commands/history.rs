@@ -2,8 +2,7 @@ use anyhow::Result;
 use console::style;
 use uuid::Uuid;
 use voom_domain::storage::{FileStorage, FileTransitionStorage};
-use voom_domain::transition::{FileTransition, TransitionSource};
-use voom_domain::utils::format;
+use voom_domain::transition::FileTransition;
 
 use crate::app;
 use crate::cli::{HistoryArgs, OutputFormat};
@@ -14,7 +13,7 @@ const MAX_PREDECESSORS: usize = 50;
 
 /// Walk the superseded_by chain backward from `start_id`, collecting all
 /// file IDs in lineage order (oldest first, current last).
-fn collect_lineage(store: &dyn FileStorage, start_id: Uuid) -> Vec<Uuid> {
+pub(crate) fn collect_lineage(store: &dyn FileStorage, start_id: Uuid) -> Vec<Uuid> {
     let mut chain = vec![start_id];
     let mut seen = std::collections::HashSet::from([start_id]);
     let mut current = start_id;
@@ -50,7 +49,7 @@ fn collect_lineage(store: &dyn FileStorage, start_id: Uuid) -> Vec<Uuid> {
 }
 
 /// Collect transitions for an entire lineage chain.
-fn collect_lineage_transitions(
+pub(crate) fn collect_lineage_transitions(
     store: &dyn FileTransitionStorage,
     lineage: &[Uuid],
 ) -> Vec<FileTransition> {
@@ -67,7 +66,7 @@ fn collect_lineage_transitions(
 }
 
 /// Format a metadata snapshot as a compact table cell string.
-fn format_snapshot_cell(snap: &voom_domain::snapshot::MetadataSnapshot) -> String {
+pub(crate) fn format_snapshot_cell(snap: &voom_domain::snapshot::MetadataSnapshot) -> String {
     let mut parts = Vec::new();
 
     if let Some(ref res) = snap.resolution {
@@ -136,29 +135,7 @@ pub fn run(args: HistoryArgs) -> Result<()> {
         OutputFormat::Json => {
             let json: Vec<serde_json::Value> = transitions
                 .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "id": t.id.to_string(),
-                        "file_id": t.file_id.to_string(),
-                        "path": t.path.display().to_string(),
-                        "from_hash": t.from_hash,
-                        "to_hash": t.to_hash,
-                        "from_size": t.from_size,
-                        "to_size": t.to_size,
-                        "source": t.source.as_str(),
-                        "source_detail": t.source_detail,
-                        "plan_id": t.plan_id.map(|id| id.to_string()),
-                        "duration_ms": t.duration_ms,
-                        "actions_taken": t.actions_taken,
-                        "tracks_modified": t.tracks_modified,
-                        "outcome": t.outcome.map(|o| o.as_str()),
-                        "policy_name": &t.policy_name,
-                        "phase_name": &t.phase_name,
-                        "metadata_snapshot": t.metadata_snapshot.as_ref()
-                            .and_then(|s| serde_json::to_value(s).ok()),
-                        "created_at": t.created_at.to_rfc3339(),
-                    })
-                })
+                .map(|t| serde_json::to_value(t).expect("FileTransition serialization cannot fail"))
                 .collect();
             println!(
                 "{}",
@@ -167,113 +144,12 @@ pub fn run(args: HistoryArgs) -> Result<()> {
             );
         }
         OutputFormat::Table => {
-            let has_lineage = transitions.len() > 1
-                && transitions.windows(2).any(|w| w[0].file_id != w[1].file_id);
-
             println!(
                 "{} for {}:\n",
                 style(format!("{} transition entries", transitions.len())).bold(),
                 style(path.display()).cyan()
             );
-
-            let mut table = output::new_table();
-            let col_count = if has_lineage { 8 } else { 7 };
-            if has_lineage {
-                table.set_header(vec![
-                    "#",
-                    "Date",
-                    "Source",
-                    "File ID",
-                    "Size",
-                    "From Hash",
-                    "To Hash",
-                    "Media",
-                ]);
-            } else {
-                table.set_header(vec![
-                    "#",
-                    "Date",
-                    "Source",
-                    "Size",
-                    "From Hash",
-                    "To Hash",
-                    "Media",
-                ]);
-            }
-
-            let mut prev_file_id: Option<Uuid> = None;
-
-            for (i, t) in transitions.iter().enumerate() {
-                if has_lineage {
-                    if let Some(prev) = prev_file_id {
-                        if prev != t.file_id {
-                            let sep = style("── external modification ──").dim().to_string();
-                            let mut sep_row: Vec<comfy_table::Cell> =
-                                vec![comfy_table::Cell::new(""), comfy_table::Cell::new(&sep)];
-                            for _ in 2..col_count {
-                                sep_row.push(comfy_table::Cell::new(""));
-                            }
-                            table.add_row(sep_row);
-                        }
-                    }
-                    prev_file_id = Some(t.file_id);
-                }
-
-                let date = format::format_display(&t.created_at);
-                let from = t
-                    .from_hash
-                    .as_deref()
-                    .map(output::hash_preview)
-                    .unwrap_or("—");
-                let to = output::hash_preview(&t.to_hash);
-
-                let source_display = match (&t.source, &t.phase_name, &t.outcome) {
-                    (TransitionSource::Voom, Some(phase), Some(outcome)) => {
-                        format!("voom:{phase} ({})", outcome.as_str())
-                    }
-                    _ => t.source.as_str().to_string(),
-                };
-
-                let size_cell = match t.from_size {
-                    Some(from_sz) => {
-                        let delta = t.to_size as i64 - from_sz as i64;
-                        let formatted = format::format_size(t.to_size);
-                        if delta == 0 {
-                            formatted
-                        } else if delta < 0 {
-                            format!("{formatted} (-{})", format::format_size((-delta) as u64))
-                        } else {
-                            format!("{formatted} (+{})", format::format_size(delta as u64))
-                        }
-                    }
-                    None => format::format_size(t.to_size),
-                };
-
-                let mut row = vec![
-                    comfy_table::Cell::new(i + 1),
-                    comfy_table::Cell::new(date),
-                    comfy_table::Cell::new(source_display),
-                ];
-
-                if has_lineage {
-                    let short_id = &t.file_id.to_string()[..8];
-                    row.push(comfy_table::Cell::new(format!("{short_id}...")));
-                }
-
-                row.push(comfy_table::Cell::new(size_cell));
-                row.push(comfy_table::Cell::new(from));
-                row.push(comfy_table::Cell::new(to));
-
-                let media_cell = t
-                    .metadata_snapshot
-                    .as_ref()
-                    .map(format_snapshot_cell)
-                    .unwrap_or_else(|| "\u{2014}".to_string());
-                row.push(comfy_table::Cell::new(media_cell));
-
-                table.add_row(row);
-            }
-
+            let table = output::render_transitions_table(&transitions);
             println!("{table}");
         }
         OutputFormat::Plain => {
