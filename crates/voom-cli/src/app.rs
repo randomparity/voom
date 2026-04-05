@@ -15,9 +15,6 @@ pub struct BootstrapResult {
     pub store: Arc<dyn voom_domain::storage::StorageTrait>,
     pub job_queue: Arc<voom_job_manager::queue::JobQueue>,
     pub collector: Arc<CapabilityCollectorPlugin>,
-    // Used by the report command (Task 8). Suppress dead_code until that task lands.
-    #[allow(dead_code)]
-    pub report: Arc<voom_report::ReportPlugin>,
 }
 
 // Plugin priority scheme (lower number = runs first during event dispatch).
@@ -253,20 +250,20 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     load_wasm_plugins(&mut kernel, config, disabled, store.clone())?;
 
     // Report plugin — registered for event subscription (ScanComplete, IntrospectComplete).
-    // Also exposed directly via BootstrapResult for query access.
     // Store is injected at construction; init() is a no-op so we skip init_and_register.
-    let report_plugin = Arc::new(voom_report::ReportPlugin::new(Arc::clone(&store)));
-    kernel.register_plugin(
-        Arc::clone(&report_plugin) as Arc<dyn voom_kernel::Plugin>,
-        PRIORITY_REPORT,
-    )?;
+    if !disabled.iter().any(|d| d == "report") {
+        let report_plugin = Arc::new(voom_report::ReportPlugin::new(Arc::clone(&store)));
+        kernel.register_plugin(
+            report_plugin as Arc<dyn voom_kernel::Plugin>,
+            PRIORITY_REPORT,
+        )?;
+    }
 
     Ok(BootstrapResult {
         kernel,
         store,
         job_queue,
         collector,
-        report: report_plugin,
     })
 }
 
