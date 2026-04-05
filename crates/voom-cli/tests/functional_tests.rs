@@ -2960,7 +2960,7 @@ mod test_lifecycle_advanced {
         // Report should also exclude missing files
         let report_output = env
             .voom()
-            .args(["report", "--stats"])
+            .args(["report", "--library"])
             .output()
             .expect("run report");
         let report_stdout = String::from_utf8_lossy(&report_output.stdout);

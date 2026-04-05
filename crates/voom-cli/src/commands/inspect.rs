@@ -54,7 +54,9 @@ pub fn run(args: InspectArgs) -> Result<()> {
                         println!("{table}");
                     }
                 }
-                OutputFormat::Plain => println!("{}", file.path.display()),
+                OutputFormat::Plain | OutputFormat::Csv => {
+                    println!("{}", file.path.display());
+                }
             }
             return Ok(());
         }
@@ -82,7 +84,9 @@ pub fn run(args: InspectArgs) -> Result<()> {
     match args.format {
         OutputFormat::Json => output::format_file_json(&event.file),
         OutputFormat::Table => output::format_file_info(&event.file, args.tracks_only),
-        OutputFormat::Plain => println!("{}", event.file.path.display()),
+        OutputFormat::Plain | OutputFormat::Csv => {
+            println!("{}", event.file.path.display());
+        }
     }
 
     Ok(())

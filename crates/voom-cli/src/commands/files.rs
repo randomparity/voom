@@ -110,7 +110,7 @@ fn list(filters: FileFilters, format: OutputFormat) -> Result<()> {
                 println!("Showing {showing} of {total_usize} files");
             }
         }
-        OutputFormat::Plain => {
+        OutputFormat::Plain | OutputFormat::Csv => {
             for file in &files {
                 println!("{}", file.path.display());
             }
@@ -133,7 +133,7 @@ fn show(id: &str, format: OutputFormat) -> Result<()> {
     match format {
         OutputFormat::Json => output::format_file_json(&file),
         OutputFormat::Table => output::format_file_info(&file, false),
-        OutputFormat::Plain => println!("{}", file.path.display()),
+        OutputFormat::Plain | OutputFormat::Csv => println!("{}", file.path.display()),
     }
     Ok(())
 }

@@ -123,6 +123,9 @@ ureq = "2"
 wait-timeout = "0.2"
 scopeguard = "1"
 
+# CSV
+csv = "1"
+
 # Rate limiting
 governor = "0.10"
 
