@@ -14,7 +14,7 @@ const MAX_PREDECESSORS: usize = 50;
 
 /// Walk the superseded_by chain backward from `start_id`, collecting all
 /// file IDs in lineage order (oldest first, current last).
-fn collect_lineage(store: &dyn FileStorage, start_id: Uuid) -> Vec<Uuid> {
+pub(crate) fn collect_lineage(store: &dyn FileStorage, start_id: Uuid) -> Vec<Uuid> {
     let mut chain = vec![start_id];
     let mut seen = std::collections::HashSet::from([start_id]);
     let mut current = start_id;
@@ -50,7 +50,7 @@ fn collect_lineage(store: &dyn FileStorage, start_id: Uuid) -> Vec<Uuid> {
 }
 
 /// Collect transitions for an entire lineage chain.
-fn collect_lineage_transitions(
+pub(crate) fn collect_lineage_transitions(
     store: &dyn FileTransitionStorage,
     lineage: &[Uuid],
 ) -> Vec<FileTransition> {
@@ -67,7 +67,7 @@ fn collect_lineage_transitions(
 }
 
 /// Format a metadata snapshot as a compact table cell string.
-fn format_snapshot_cell(snap: &voom_domain::snapshot::MetadataSnapshot) -> String {
+pub(crate) fn format_snapshot_cell(snap: &voom_domain::snapshot::MetadataSnapshot) -> String {
     let mut parts = Vec::new();
 
     if let Some(ref res) = snap.resolution {
