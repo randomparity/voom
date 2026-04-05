@@ -131,6 +131,66 @@
     {% endif %}
 </div>
 
+{% if transitions | default(value=[]) | length > 0 %}
+<div class="card mb-1">
+    <div class="card-header">
+        <h2>History ({{ transitions | length }})</h2>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>When</th>
+                <th>Source</th>
+                <th>Detail</th>
+                <th>Size Before</th>
+                <th>Size After</th>
+                <th>Delta</th>
+                <th>Duration</th>
+                <th>Hash</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for t in transitions %}
+            <tr>
+                <td><time class="text-secondary">{{ t.created_at | default(value="--") }}</time></td>
+                <td>
+                    <span class="badge badge-{{ t.source_label }}">
+                        {{ t.source_label }}
+                    </span>
+                </td>
+                <td>
+                    {% if t.policy_name %}
+                        {{ t.policy_name | default(value="") }} / {{ t.phase_name | default(value="") }}
+                    {% elif t.source_detail %}
+                        {{ t.source_detail }}
+                    {% else %}
+                        --
+                    {% endif %}
+                </td>
+                <td class="mono">{{ t.from_size_human | default(value="--") }}</td>
+                <td class="mono">{{ t.to_size_human }}</td>
+                <td class="mono">
+                    {% if t.size_delta %}
+                        {% if t.size_decreased %}
+                            <span class="text-success-strong">{{ t.size_delta }}</span>
+                        {% else %}
+                            <span class="text-danger-strong">{{ t.size_delta }}</span>
+                        {% endif %}
+                    {% else %}
+                        --
+                    {% endif %}
+                </td>
+                <td class="mono text-secondary">{{ t.duration_human | default(value="--") }}</td>
+                <td class="mono text-secondary" title="{{ t.to_hash | default(value='') }}">
+                    {{ t.to_hash | default(value="--") | truncate(length=12, end="…") }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 {% if plans | default(value=[]) | length > 0 %}
 <div class="card">
     <div class="card-header">
