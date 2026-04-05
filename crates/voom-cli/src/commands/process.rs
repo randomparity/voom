@@ -723,7 +723,8 @@ fn process_single_file_dry_run(
     compiled: &voom_dsl::CompiledPolicy,
     ctx: &ProcessContext<'_>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
-    let result = orchestrate_plans(compiled, file, ctx.capabilities);
+    let mut result = orchestrate_plans(compiled, file, ctx.capabilities);
+    annotate_disk_space_violations(&mut result, file);
 
     collect_safeguard_violations(file, &result, ctx);
 
@@ -1125,6 +1126,50 @@ fn check_disk_space(
     );
     record_failure_transition(file, plan.id, "", &plan.policy_name, &plan.phase_name, ctx);
     true
+}
+
+/// Annotate plans with `DiskSpaceLow` safeguard violations for dry-run reporting.
+///
+/// Unlike real execution (which skips the plan entirely), dry-run mode attaches
+/// the violation to the plan so it appears in `--plan-only` JSON output.
+fn annotate_disk_space_violations(
+    result: &mut voom_phase_orchestrator::OrchestrationResult,
+    file: &voom_domain::media::MediaFile,
+) {
+    let check_path = file.path.parent().unwrap_or(std::path::Path::new("/"));
+
+    let available = match voom_domain::utils::disk::available_space(check_path) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                path = %file.path.display(),
+                error = %e,
+                "disk space check failed during dry-run, skipping annotation"
+            );
+            return;
+        }
+    };
+
+    for plan in &mut result.plans {
+        if plan.is_skipped() || plan.is_empty() {
+            continue;
+        }
+        let required = voom_domain::utils::disk::estimate_required_space(plan, file.size);
+        if available < required {
+            let message = format!(
+                "insufficient disk space: need {} but only {} available on {}",
+                format_size(required),
+                format_size(available),
+                check_path.display(),
+            );
+            plan.safeguard_violations
+                .push(voom_domain::SafeguardViolation::new(
+                    voom_domain::SafeguardKind::DiskSpaceLow,
+                    message,
+                    &plan.phase_name,
+                ));
+        }
+    }
 }
 
 /// Handle a successfully executed plan: dispatch completion, re-introspect,
