@@ -857,6 +857,10 @@ async fn process_single_file_execute(
 
         // Pre-execution safeguard: check disk space
         if check_disk_space(&plan, &current_file, ctx) {
+            phase_outcomes.insert(
+                phase_name.clone(),
+                voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
+            );
             continue;
         }
 
@@ -883,6 +887,10 @@ async fn process_single_file_execute(
             PlanOutcome::Success { executor } => {
                 any_executed = true;
                 if check_size_increase(&plan, &current_file, ctx) {
+                    phase_outcomes.insert(
+                        phase_name.clone(),
+                        voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
+                    );
                     continue;
                 }
                 current_file = handle_plan_success(
