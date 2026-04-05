@@ -1091,7 +1091,7 @@ fn record_file_transition(
         voom_domain::TransitionSource::Voom,
     )
     .with_from(old_file.content_hash.clone(), Some(old_file.size))
-    .with_detail(format!("{executor}:{phase_name}"))
+    .with_detail(executor)
     .with_plan_id(plan_id)
     .with_processing(
         elapsed_ms,
