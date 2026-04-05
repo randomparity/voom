@@ -15,7 +15,7 @@ use console::style;
 use indicatif::HumanDuration;
 use tokio_util::sync::CancellationToken;
 use voom_domain::bad_file::BadFileSource;
-use voom_domain::events::{Event, FileDiscoveredEvent};
+use voom_domain::events::{Event, FileDiscoveredEvent, ScanCompleteEvent};
 
 /// Run the scan command.
 ///
@@ -93,7 +93,10 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     }
 
     purge_stale_records(&*store, config.pruning.retention_days, quiet);
-    capture_snapshot(&*store);
+    kernel.dispatch(Event::ScanComplete(ScanCompleteEvent::new(
+        all_events.len() as u64,
+        introspected,
+    )));
 
     if let Some(format) = args.format {
         output::format_scan_results(&format_results(&all_events), format);
@@ -486,19 +489,6 @@ fn format_results(events: &[FileDiscoveredEvent]) -> Vec<(PathBuf, u64, Option<S
         .iter()
         .map(|e| (e.path.clone(), e.size, e.content_hash.clone()))
         .collect()
-}
-
-fn capture_snapshot(store: &dyn voom_domain::storage::SnapshotStorage) {
-    match store.gather_library_stats(voom_domain::stats::SnapshotTrigger::ScanComplete) {
-        Ok(snapshot) => {
-            if let Err(e) = store.save_snapshot(&snapshot) {
-                tracing::warn!(error = %e, "failed to save library snapshot");
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to gather library stats for snapshot");
-        }
-    }
 }
 
 #[cfg(test)]

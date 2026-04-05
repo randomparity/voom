@@ -772,12 +772,27 @@ pub struct ScanCompleteEvent {
     pub files_introspected: u64,
 }
 
+impl ScanCompleteEvent {
+    pub fn new(files_discovered: u64, files_introspected: u64) -> Self {
+        Self {
+            files_discovered,
+            files_introspected,
+        }
+    }
+}
+
 /// Emitted when introspection completes for a batch of files.
 /// The report plugin subscribes to this to auto-capture a library snapshot.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntrospectCompleteEvent {
     pub files_introspected: u64,
+}
+
+impl IntrospectCompleteEvent {
+    pub fn new(files_introspected: u64) -> Self {
+        Self { files_introspected }
+    }
 }
 
 #[cfg(test)]
