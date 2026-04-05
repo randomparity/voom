@@ -761,6 +761,7 @@ When running `voom serve`, the following REST API is available:
 | GET | `/api/files` | List files (with filters) |
 | GET | `/api/files/:id` | Get file details |
 | DELETE | `/api/files/:id` | Delete a file record |
+| GET | `/api/files/:id/transitions` | Get file transition history |
 
 ### Jobs
 
@@ -780,7 +781,9 @@ When running `voom serve`, the following REST API is available:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/stats` | Get library statistics |
+| GET | `/api/stats` | Get summary statistics |
+| GET | `/api/stats/library` | Get full library statistics |
+| GET | `/api/stats/history` | Get statistics snapshot history |
 
 ### Policy
 
@@ -788,6 +791,18 @@ When running `voom serve`, the following REST API is available:
 |--------|----------|-------------|
 | POST | `/api/policy/validate` | Validate policy source |
 | POST | `/api/policy/format` | Format policy source |
+
+### Tools
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/tools` | List detected external tools |
+
+### Health
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/health` | Get system health status |
 
 ### Events
 
