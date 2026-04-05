@@ -1070,7 +1070,7 @@ fn check_size_increase(
 /// Check whether sufficient disk space is available before executing a plan.
 ///
 /// Returns `true` if space is insufficient and the phase should be skipped
-/// (a `SafeguardViolation` is recorded and `PlanFailed` dispatched).
+/// (a `PlanFailed` event is dispatched and the failure is recorded).
 /// Returns `false` to proceed normally.
 fn check_disk_space(
     plan: &voom_domain::plan::Plan,
