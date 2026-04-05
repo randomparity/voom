@@ -195,8 +195,6 @@ pub fn format_file_json(file: &MediaFile) {
 
 /// Render a transitions list as a formatted table string.
 /// Returns an empty string if `transitions` is empty.
-// Used by the inspect command (Task 4); suppress dead_code until wired up.
-#[allow(dead_code)]
 pub fn render_transitions_table(transitions: &[FileTransition]) -> String {
     use crate::commands::history::format_snapshot_cell;
 

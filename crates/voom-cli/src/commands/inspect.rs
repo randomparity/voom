@@ -3,8 +3,10 @@ use console::style;
 
 use crate::app;
 use crate::cli::{InspectArgs, OutputFormat};
+use crate::commands::history::{collect_lineage, collect_lineage_transitions};
 use crate::config;
 use crate::output;
+use voom_domain::storage::{FileStorage, FileTransitionStorage};
 
 /// Run the inspect command.
 ///
@@ -26,9 +28,33 @@ pub fn run(args: InspectArgs) -> Result<()> {
 
     match store.file_by_path(&path) {
         Ok(Some(file)) => {
+            let transitions = if args.history {
+                let lineage = collect_lineage(store.as_ref() as &dyn FileStorage, file.id);
+                collect_lineage_transitions(store.as_ref() as &dyn FileTransitionStorage, &lineage)
+            } else {
+                Vec::new()
+            };
+
             match args.format {
-                OutputFormat::Json => output::format_file_json(&file),
-                OutputFormat::Table => output::format_file_info(&file, args.tracks_only),
+                OutputFormat::Json => {
+                    if args.history {
+                        format_inspect_json_with_history(&file, &transitions);
+                    } else {
+                        output::format_file_json(&file);
+                    }
+                }
+                OutputFormat::Table => {
+                    output::format_file_info(&file, args.tracks_only);
+                    if args.history && !transitions.is_empty() {
+                        println!();
+                        println!(
+                            "{}",
+                            style(format!("History ({} transitions)", transitions.len())).bold()
+                        );
+                        let table = output::render_transitions_table(&transitions);
+                        println!("{table}");
+                    }
+                }
                 OutputFormat::Plain => println!("{}", file.path.display()),
             }
             return Ok(());
@@ -63,6 +89,51 @@ pub fn run(args: InspectArgs) -> Result<()> {
     Ok(())
 }
 
+fn format_inspect_json_with_history(
+    file: &voom_domain::MediaFile,
+    transitions: &[voom_domain::transition::FileTransition],
+) {
+    let mut file_json = serde_json::to_value(file).expect("MediaFile serialization cannot fail");
+
+    let history: Vec<serde_json::Value> = transitions
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "id": t.id.to_string(),
+                "file_id": t.file_id.to_string(),
+                "path": t.path.display().to_string(),
+                "from_hash": t.from_hash,
+                "to_hash": t.to_hash,
+                "from_size": t.from_size,
+                "to_size": t.to_size,
+                "source": t.source.as_str(),
+                "source_detail": t.source_detail,
+                "plan_id": t.plan_id.map(|id| id.to_string()),
+                "duration_ms": t.duration_ms,
+                "actions_taken": t.actions_taken,
+                "tracks_modified": t.tracks_modified,
+                "outcome": t.outcome.map(|o| o.as_str()),
+                "policy_name": &t.policy_name,
+                "phase_name": &t.phase_name,
+                "metadata_snapshot": t.metadata_snapshot.as_ref()
+                    .and_then(|s| serde_json::to_value(s).ok()),
+                "created_at": t.created_at.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    file_json
+        .as_object_mut()
+        .expect("MediaFile serializes to an object")
+        .insert("history".to_string(), serde_json::Value::Array(history));
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&file_json)
+            .expect("serde_json::Value serialization cannot fail")
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +148,33 @@ mod tests {
         };
         let result = run(args);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn inspect_args_history_flag_defaults_to_false() {
+        use clap::Parser;
+
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            inspect: InspectArgs,
+        }
+
+        let cli = Cli::parse_from(["test", "video.mkv"]);
+        assert!(!cli.inspect.history);
+    }
+
+    #[test]
+    fn inspect_args_history_flag_parses() {
+        use clap::Parser;
+
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            inspect: InspectArgs,
+        }
+
+        let cli = Cli::parse_from(["test", "--history", "video.mkv"]);
+        assert!(cli.inspect.history);
     }
 }
