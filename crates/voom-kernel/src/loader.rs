@@ -275,6 +275,11 @@ pub mod wasm {
         /// Like [`WasmPluginLoader::load_dir_with_config`] but skips plugins in the `skip_plugins` set
         /// before compilation, and returns `(plugin, priority)` tuples where
         /// priority comes from the manifest (default: 70).
+        ///
+        /// **Note:** Plugins loaded via this method do not receive storage-backed
+        /// plugin data or transition history. Use
+        /// [`load_dir_with_config_skip_storage`](Self::load_dir_with_config_skip_storage)
+        /// to wire storage into each plugin's `HostState`.
         pub fn load_dir_with_config_skip(
             &self,
             dir: &Path,
@@ -363,12 +368,12 @@ pub mod wasm {
                     if let Some(ref s) = storage {
                         let state = host_state
                             .get_or_insert_with(|| HostState::new(plugin_name.clone()));
-                        state.storage = Some(Arc::new(
-                            StorageBackedPluginStore::new(s.clone()),
-                        ));
-                        state.transition_store = Some(Arc::new(
-                            StorageBackedTransitionStore::new(s.clone()),
-                        ));
+                        let plugin_store: Arc<dyn crate::host::WasmPluginStore> =
+                            Arc::new(StorageBackedPluginStore::new(s.clone()));
+                        let transition_store: Arc<dyn crate::host::WasmTransitionStore> =
+                            Arc::new(StorageBackedTransitionStore::new(s.clone()));
+                        state.storage = Some(plugin_store);
+                        state.transition_store = Some(transition_store);
                     }
 
                     let priority = manifest.as_ref().map(|m| m.priority).unwrap_or(70);

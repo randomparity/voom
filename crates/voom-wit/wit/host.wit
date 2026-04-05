@@ -30,11 +30,15 @@ interface host {
     /// Log a message at the given level.
     log: func(level: log-level, message: string);
 
-    /// Query file transitions by file ID.
+    /// Query file transitions by file ID (sandboxed to media library paths).
     /// Returns MessagePack-serialized list of file-transition records.
+    /// NOTE: returns `list<u8>` (MessagePack), not `list<file-transition>`.
+    /// The file-transition record in types.wit documents the wire format;
+    /// plugins must deserialize the MessagePack blob to access fields.
     get-file-transitions: func(file-id: string) -> result<list<u8>, string>;
 
-    /// Query file transitions by filesystem path.
+    /// Query file transitions by filesystem path (sandboxed to allowed paths).
     /// Returns MessagePack-serialized list of file-transition records.
+    /// See get-file-transitions note on serialization format.
     get-path-transitions: func(path: string) -> result<list<u8>, string>;
 }

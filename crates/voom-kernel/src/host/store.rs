@@ -89,7 +89,8 @@ impl InMemoryTransitionStore {
         }
     }
 
-    /// Record a transition (test helper).
+    /// Record a transition (test helper — not part of the `WasmTransitionStore` trait).
+    #[cfg(test)]
     pub fn record_transition(
         &self,
         transition: &voom_domain::transition::FileTransition,
@@ -137,6 +138,7 @@ pub struct StorageBackedTransitionStore {
 }
 
 impl StorageBackedTransitionStore {
+    #[must_use]
     pub fn new(store: Arc<dyn voom_domain::storage::StorageTrait>) -> Self {
         Self { store }
     }

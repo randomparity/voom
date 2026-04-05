@@ -275,7 +275,22 @@ impl HostState {
 
     /// Query transitions for a file by its filesystem path.
     /// Returns MessagePack-serialized `Vec<FileTransition>`.
+    ///
+    /// Enforces the same `allowed_paths` sandbox as other filesystem-aware
+    /// host functions: if the plugin has a non-empty path allowlist, the
+    /// query path must fall within it.
     pub fn get_path_transitions(&self, path: &str) -> Result<Vec<u8>, String> {
+        if !self.allowed_paths.is_empty() {
+            let canonical =
+                std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+            let allowed = self.allowed_paths.iter().any(|p| canonical.starts_with(p));
+            if !allowed {
+                return Err(format!(
+                    "path '{path}' is not within allowed directories for plugin '{}'",
+                    self.plugin_name
+                ));
+            }
+        }
         let store = self.transition_store.as_ref().ok_or_else(|| {
             "file transition history not available \
                  (no transition store configured)"
@@ -509,5 +524,72 @@ mod tests {
         let transitions: Vec<FileTransition> = rmp_serde::from_slice(&bytes).expect("deserialize");
         assert_eq!(transitions.len(), 1);
         assert_eq!(transitions[0].to_hash, "hash456");
+    }
+
+    #[test]
+    fn test_get_file_transitions_preserves_metadata_snapshot() {
+        use crate::host::InMemoryTransitionStore;
+        use std::path::PathBuf;
+        use voom_domain::media::{Container, MediaFile, Track, TrackType};
+        use voom_domain::snapshot::MetadataSnapshot;
+        use voom_domain::transition::{FileTransition, TransitionSource};
+
+        let store = Arc::new(InMemoryTransitionStore::new());
+        let file_id = uuid::Uuid::new_v4();
+
+        let file = MediaFile::new(PathBuf::from("/movies/test.mkv"))
+            .with_container(Container::Mkv)
+            .with_duration(7200.0)
+            .with_tracks(vec![
+                Track::new(0, TrackType::Video, "hevc".into()),
+                Track::new(1, TrackType::AudioMain, "aac".into()),
+            ]);
+        let snap = MetadataSnapshot::from_media_file(&file);
+
+        let t = FileTransition::new(
+            file_id,
+            PathBuf::from("/movies/test.mkv"),
+            "hash789".into(),
+            2_000_000,
+            TransitionSource::Voom,
+        )
+        .with_metadata_snapshot(snap.clone());
+        store.record_transition(&t).unwrap();
+
+        let state = HostState::new("test".into()).with_transition_store(store);
+        let bytes = state.get_file_transitions(&file_id).unwrap();
+        let transitions: Vec<FileTransition> = rmp_serde::from_slice(&bytes).expect("deserialize");
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].metadata_snapshot, Some(snap));
+    }
+
+    #[test]
+    fn test_get_path_transitions_blocked_by_allowed_paths() {
+        use crate::host::InMemoryTransitionStore;
+
+        let store = Arc::new(InMemoryTransitionStore::new());
+        let state = HostState::new("test".into())
+            .with_transition_store(store)
+            .with_paths(vec![std::path::PathBuf::from("/movies")]);
+
+        let result = state.get_path_transitions("/etc/passwd");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("not within allowed directories"));
+    }
+
+    #[test]
+    fn test_get_path_transitions_allowed_by_empty_paths() {
+        use crate::host::InMemoryTransitionStore;
+
+        let store = Arc::new(InMemoryTransitionStore::new());
+        // Empty allowed_paths = no restrictions (unlike tools which deny all).
+        // This matches the read-file-metadata pattern: no paths configured
+        // means the plugin has no filesystem sandbox, so queries are unrestricted.
+        let state = HostState::new("test".into()).with_transition_store(store);
+
+        let result = state.get_path_transitions("/movies/test.mkv");
+        assert!(result.is_ok());
     }
 }
