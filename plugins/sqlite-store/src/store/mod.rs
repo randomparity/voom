@@ -1932,6 +1932,39 @@ mod tests {
         assert_eq!(result.unchanged, 0);
     }
 
+    // --- corrupt metadata_snapshot recovery ---
+
+    #[test]
+    fn test_transition_corrupt_metadata_snapshot_returns_none() {
+        let store = test_store();
+        let file = sample_file();
+        store.upsert_file(&file).unwrap();
+
+        let t = FileTransition::new(
+            file.id,
+            PathBuf::from("/movies/corrupt.mkv"),
+            "hash1".into(),
+            1000,
+            TransitionSource::Discovery,
+        );
+        store.record_transition(&t).unwrap();
+
+        // Corrupt the snapshot JSON directly via raw SQL
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE file_transitions SET metadata_snapshot = 'not valid json' WHERE file_id = ?1",
+                rusqlite::params![file.id.to_string()],
+            )
+            .unwrap();
+        }
+
+        // Reading should succeed — corrupt snapshot becomes None
+        let rows = store.transitions_for_file(&file.id).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].metadata_snapshot, None);
+    }
+
     // --- transitions_for_path ---
 
     #[test]
