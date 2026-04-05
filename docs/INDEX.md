@@ -11,3 +11,5 @@
 | [functional-test-plan.md](functional-test-plan.md) | QA test plan covering all user-facing features |
 | [troubleshooting.md](troubleshooting.md) | Troubleshooting guide for common issues |
 | [TODO.md](TODO.md) | Outstanding work items |
+| [file-identity-and-lineage.md](file-identity-and-lineage.md) | File identity continuity and lineage tracking |
+| [file-lifecycle-tracking-architecture.md](file-lifecycle-tracking-architecture.md) | Architecture for file lifecycle and transition tracking |
