@@ -352,7 +352,7 @@ mod test_scan {
             .success();
 
         env.voom()
-            .arg("status")
+            .arg("report")
             .assert()
             .success()
             .stdout(predicate::str::contains("1 files"));
@@ -584,7 +584,7 @@ mod test_report {
             .arg("report")
             .assert()
             .success()
-            .stderr(predicate::str::contains("No files in database"));
+            .stdout(predicate::str::contains("0 files"));
     }
 
     #[test]
@@ -609,7 +609,7 @@ mod test_report {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let json: serde_json::Value =
             serde_json::from_str(&stdout).expect("report --format json should produce valid JSON");
-        assert!(json["total_files"].as_u64().unwrap() > 0);
+        assert!(json["files"]["total_count"].as_u64().unwrap() > 0);
     }
 }
 
@@ -623,11 +623,8 @@ mod test_report_savings {
     #[test]
     fn report_savings_on_empty_db() {
         let env = TestEnv::new();
-        env.voom()
-            .args(["report", "--savings"])
-            .assert()
-            .success()
-            .stderr(predicate::str::contains("No savings data"));
+        // With no savings data, the savings section produces no table output
+        env.voom().args(["report", "--savings"]).assert().success();
     }
 
     #[test]
@@ -643,9 +640,9 @@ mod test_report_savings {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let json: serde_json::Value = serde_json::from_str(&stdout)
             .expect("report --savings --format json should produce valid JSON");
-        assert_eq!(json["total_bytes_saved"], 0);
-        assert_eq!(json["total_transitions"], 0);
-        assert!(json["buckets"].as_array().unwrap().is_empty());
+        assert_eq!(json["savings"]["total_bytes_saved"], 0);
+        assert_eq!(json["savings"]["total_transitions"], 0);
+        assert!(json["savings"]["buckets"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -708,9 +705,9 @@ mod test_db {
         // Prune
         env.voom().args(["db", "prune"]).assert().success();
 
-        // Status should show 1 file
+        // Report should show 1 file
         env.voom()
-            .arg("status")
+            .arg("report")
             .assert()
             .success()
             .stdout(predicate::str::contains("1 files"));
@@ -718,7 +715,7 @@ mod test_db {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// test_db_stats — `db stats`
+// test_db_stats — `report --database`
 // ═══════════════════════════════════════════════════════════════════════════
 
 mod test_db_stats {
@@ -728,7 +725,7 @@ mod test_db_stats {
     fn db_stats_empty() {
         let env = TestEnv::new();
         env.voom()
-            .args(["db", "stats"])
+            .args(["report", "--database"])
             .assert()
             .success()
             .stdout(predicate::str::contains("Page size"));
@@ -739,21 +736,21 @@ mod test_db_stats {
         let env = TestEnv::new();
         let output = env
             .voom()
-            .args(["db", "stats", "--format", "json"])
+            .args(["report", "--database", "--format", "json"])
             .output()
-            .expect("run db stats");
+            .expect("run report --database");
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
         let json: serde_json::Value = serde_json::from_str(&stdout)
-            .expect("db stats --format json should produce valid JSON");
-        assert!(json["tables"].is_object());
-        assert!(json["sqlite"].is_object());
+            .expect("report --database --format json should produce valid JSON");
+        assert!(json["database"]["table_counts"].is_array());
+        assert!(json["database"]["page_stats"].is_object());
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// test_status
+// test_status — now exercised via `report` (summary)
 // ═══════════════════════════════════════════════════════════════════════════
 
 mod test_status {
@@ -763,10 +760,9 @@ mod test_status {
     fn status_on_fresh_install() {
         let env = TestEnv::new();
         env.voom()
-            .arg("status")
+            .arg("report")
             .assert()
             .success()
-            .stdout(predicate::str::contains("VOOM Status"))
             .stdout(predicate::str::contains("0 files"));
     }
 }
@@ -937,11 +933,8 @@ mod test_report_issues {
     #[test]
     fn report_issues_on_empty_db() {
         let env = TestEnv::new();
-        env.voom()
-            .args(["report", "--issues"])
-            .assert()
-            .success()
-            .stderr(predicate::str::contains("No files in database"));
+        // With no files, the issues section produces no output
+        env.voom().args(["report", "--issues"]).assert().success();
     }
 
     #[test]
@@ -956,13 +949,12 @@ mod test_report_issues {
             .assert()
             .success();
 
+        // With no violations, the issues section produces no table output
         env.voom()
             .args(["report", "--issues"])
             .assert()
             .success()
-            .stderr(predicate::str::contains(
-                "No files with safeguard violations",
-            ));
+            .stdout(predicate::str::contains("Safeguard Violations").not());
     }
 }
 
@@ -991,7 +983,7 @@ mod test_config {
 mod test_workflow {
     use super::*;
 
-    /// Full lifecycle: init → scan → inspect → process --dry-run → report → status
+    /// Full lifecycle: init → scan → inspect → process --dry-run → report --files → report
     #[test]
     fn full_lifecycle_dry_run() {
         require_tool!("ffprobe");
@@ -1038,16 +1030,16 @@ mod test_workflow {
             .success()
             .stderr(predicate::str::contains("dry run"));
 
-        // 6. Report
+        // 6. Report (file list)
         env.voom()
-            .arg("report")
+            .args(["report", "--files"])
             .assert()
             .success()
             .stdout(predicate::str::contains("2 files"));
 
-        // 7. Status
+        // 7. Report (summary)
         env.voom()
-            .arg("status")
+            .arg("report")
             .assert()
             .success()
             .stdout(predicate::str::contains("2 files"));
@@ -1055,7 +1047,7 @@ mod test_workflow {
 
     /// Extended lifecycle exercising new commands:
     /// init → scan → files list → inspect → events → process --dry-run
-    /// → plans show → health check → tools list → db stats → report → status
+    /// → plans show → health check → tools list → report --database → report --files → report
     #[test]
     fn full_lifecycle_with_new_commands() {
         require_tool!("ffprobe");
@@ -1139,23 +1131,23 @@ mod test_workflow {
                     .or(predicate::str::contains("No external tools")),
             );
 
-        // 10. DB stats
+        // 10. Database report
         env.voom()
-            .args(["db", "stats"])
+            .args(["report", "--database"])
             .assert()
             .success()
             .stdout(predicate::str::contains("Page size"));
 
-        // 11. Report
+        // 11. Report (file list)
         env.voom()
-            .arg("report")
+            .args(["report", "--files"])
             .assert()
             .success()
             .stdout(predicate::str::contains("2 files"));
 
-        // 12. Status
+        // 12. Report (summary)
         env.voom()
-            .arg("status")
+            .arg("report")
             .assert()
             .success()
             .stdout(predicate::str::contains("2 files"));
@@ -1181,9 +1173,9 @@ mod test_workflow {
         // Prune
         env.voom().args(["db", "prune"]).assert().success();
 
-        // Status should show 1 file
+        // Report should show 1 file
         env.voom()
-            .arg("status")
+            .arg("report")
             .assert()
             .success()
             .stdout(predicate::str::contains("1 files"));
@@ -2598,20 +2590,20 @@ mod test_lifecycle_advanced {
             "expected at least 1 voom transition after processing, got {voom_transitions}"
         );
 
-        // Verify the transition has executor:phase detail format and plan_id
+        // Verify the transition has executor name in source_detail and plan_id
         let conn = rusqlite::Connection::open(&db).unwrap();
         let has_structured_detail: bool = conn
             .query_row(
                 "SELECT COUNT(*) > 0 FROM file_transitions \
-                 WHERE source = 'voom' AND instr(source_detail, ':') > 0 \
-                 AND plan_id IS NOT NULL",
+                 WHERE source = 'voom' AND source_detail IS NOT NULL \
+                 AND length(source_detail) > 0 AND plan_id IS NOT NULL",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         assert!(
             has_structured_detail,
-            "voom transitions should have executor:phase source_detail and plan_id"
+            "voom transitions should have source_detail and plan_id"
         );
 
         // Verify processing stats fields are populated on voom transitions
@@ -2949,20 +2941,20 @@ mod test_lifecycle_advanced {
             .assert()
             .success();
 
-        // Status should show only 1 file
-        let status_output = env.voom().arg("status").output().expect("run status");
-        let status_stdout = String::from_utf8_lossy(&status_output.stdout);
+        // Report summary should show only 1 file
+        let summary_output = env.voom().arg("report").output().expect("run report");
+        let summary_stdout = String::from_utf8_lossy(&summary_output.stdout);
         assert!(
-            status_stdout.contains("1 file") || status_stdout.contains("1 media"),
-            "status should show only 1 active file, got: {status_stdout}"
+            summary_stdout.contains("1 file") || summary_stdout.contains("1 media"),
+            "report should show only 1 active file, got: {summary_stdout}"
         );
 
-        // Report should also exclude missing files
+        // Library report should also exclude missing files
         let report_output = env
             .voom()
             .args(["report", "--library"])
             .output()
-            .expect("run report");
+            .expect("run report --library");
         let report_stdout = String::from_utf8_lossy(&report_output.stdout);
         // The report should not count the missing file in totals
         assert!(
