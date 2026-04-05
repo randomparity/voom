@@ -2111,4 +2111,44 @@ mod tests {
         assert_eq!(file.tracks[0].language, "und");
         assert_eq!(file.tracks[1].language, "fre");
     }
+
+    #[test]
+    fn test_check_disk_space_passes_with_enough_space() {
+        // Use a tempdir — the local filesystem should have plenty of space.
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.mkv");
+        std::fs::write(&file_path, vec![0u8; 1024]).unwrap();
+
+        let mut file = MediaFile::new(file_path);
+        file.size = 1024;
+
+        let plan = test_plan("normalize", false);
+
+        let kernel = voom_kernel::Kernel::new();
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_domain::test_support::InMemoryStore::new());
+        let capabilities = voom_domain::CapabilityMap::new();
+        let counters = RunCounters::new();
+        let token = CancellationToken::new();
+        let resolver = PolicyResolver::from_single(
+            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
+                .unwrap(),
+            dir.path(),
+        );
+        let ctx = ProcessContext {
+            resolver: &resolver,
+            kernel: Arc::new(kernel),
+            store,
+            dry_run: false,
+            plan_only: false,
+            flag_size_increase: false,
+            token: &token,
+            ffprobe_path: None,
+            capabilities: &capabilities,
+            counters: &counters,
+        };
+
+        // Should return false (enough space)
+        assert!(!check_disk_space(&plan, &file, &ctx));
+    }
 }
