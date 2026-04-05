@@ -522,6 +522,234 @@ voom completions fish > ~/.config/fish/completions/voom.fish
 
 ---
 
+### `voom files`
+
+File queries against the database.
+
+#### `voom files list`
+
+List media files with optional filters.
+
+```
+voom files list [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--container <CONTAINER>` | *none* | Filter by container format (e.g. `mkv`, `mp4`) |
+| `--codec <CODEC>` | *none* | Filter by codec (e.g. `h265`, `aac`) |
+| `--lang <LANG>` | *none* | Filter by language code (e.g. `eng`, `fra`) |
+| `--path-prefix <PREFIX>` | *none* | Filter by path prefix |
+| `-n`, `--limit <N>` | `100` | Maximum number of files to display |
+| `--offset <N>` | `0` | Number of files to skip |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+#### `voom files show`
+
+Show details for a specific file by UUID.
+
+```
+voom files show <ID> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<ID>` | *required* | UUID of the media file record |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+#### `voom files delete`
+
+Delete a file record from the database by UUID.
+
+```
+voom files delete <ID> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<ID>` | *required* | UUID of the media file record |
+| `--yes` | `false` | Skip confirmation prompt |
+
+**Examples:**
+
+```bash
+voom files list --container mkv --codec h265
+voom files list --lang eng --limit 50
+voom files show 550e8400-e29b-41d4-a716-446655440000
+voom files delete 550e8400-e29b-41d4-a716-446655440000 --yes
+```
+
+---
+
+### `voom plans`
+
+Plan inspection.
+
+#### `voom plans show`
+
+Show plans for a file by UUID or file path.
+
+```
+voom plans show <FILE> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<FILE>` | *required* | UUID or file path of the media file |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+**Examples:**
+
+```bash
+voom plans show 550e8400-e29b-41d4-a716-446655440000
+voom plans show /media/movies/film.mkv --format json
+```
+
+---
+
+### `voom events`
+
+View the event log.
+
+```
+voom events [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-F`, `--follow` | `false` | Keep streaming new events as they arrive |
+| `--filter <PATTERN>` | *none* | Filter by event type pattern (e.g. `file.discovered`, `job.*`) |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+| `-n`, `--limit <N>` | `50` | Maximum number of events to display |
+
+**Examples:**
+
+```bash
+voom events
+voom events --follow
+voom events --filter "file.*" --limit 100
+voom events --filter "job.*" --format json
+```
+
+---
+
+### `voom tools`
+
+External tool management.
+
+#### `voom tools list`
+
+List all detected external tools and their status.
+
+```
+voom tools list [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+#### `voom tools info`
+
+Show detailed information about a specific tool.
+
+```
+voom tools info <NAME> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<NAME>` | *required* | Name of the tool (e.g. `ffmpeg`, `mkvmerge`) |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+**Examples:**
+
+```bash
+voom tools list
+voom tools list --format json
+voom tools info ffmpeg
+voom tools info mkvmerge --format json
+```
+
+---
+
+### `voom history`
+
+Show the change history (transitions) for a media file.
+
+```
+voom history <FILE> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<FILE>` | *required* | Path to the media file |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+**Examples:**
+
+```bash
+voom history /media/movies/film.mkv
+voom history /media/movies/film.mkv --format json
+```
+
+---
+
+### `voom backup`
+
+Backup management.
+
+#### `voom backup list`
+
+List backups (`.vbak` files) in one or more directories.
+
+```
+voom backup list <PATH>... [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<PATH>...` | *required* | Directories to search for backups (one or more) |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+#### `voom backup restore`
+
+Restore a file from a `.vbak` backup.
+
+```
+voom backup restore <BACKUP_PATH> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<BACKUP_PATH>` | *required* | Path to the `.vbak` file to restore |
+| `--yes` | `false` | Skip confirmation prompt |
+
+#### `voom backup cleanup`
+
+Remove all backup files from one or more directories.
+
+```
+voom backup cleanup <PATH>... [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<PATH>...` | *required* | Directories to remove backups from (one or more) |
+| `--yes` | `false` | Skip confirmation prompt |
+
+**Examples:**
+
+```bash
+voom backup list /media/movies
+voom backup list /media/movies /media/tv --format json
+voom backup restore /media/movies/film.mkv.vbak
+voom backup restore /media/movies/film.mkv.vbak --yes
+voom backup cleanup /media/movies --yes
+```
+
+---
+
 ## REST API
 
 When running `voom serve`, the following REST API is available:
