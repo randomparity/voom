@@ -765,6 +765,7 @@ impl HealthStatusEvent {
 
 /// Emitted when a scan completes (discovery + introspection).
 /// The report plugin subscribes to this to auto-capture a library snapshot.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanCompleteEvent {
     pub files_discovered: u64,
@@ -773,6 +774,7 @@ pub struct ScanCompleteEvent {
 
 /// Emitted when introspection completes for a batch of files.
 /// The report plugin subscribes to this to auto-capture a library snapshot.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntrospectCompleteEvent {
     pub files_introspected: u64,
