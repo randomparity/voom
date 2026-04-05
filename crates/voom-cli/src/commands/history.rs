@@ -124,6 +124,17 @@ pub fn run(args: HistoryArgs) -> Result<()> {
                         "outcome": t.outcome.map(|o| o.as_str()),
                         "policy_name": &t.policy_name,
                         "phase_name": &t.phase_name,
+                        "metadata_snapshot": t.metadata_snapshot.as_ref().map(|s| {
+                            serde_json::json!({
+                                "container": s.container,
+                                "video_tracks": s.video_tracks,
+                                "audio_tracks": s.audio_tracks,
+                                "subtitle_tracks": s.subtitle_tracks,
+                                "codecs": s.codecs,
+                                "resolution": s.resolution,
+                                "duration_secs": s.duration_secs,
+                            })
+                        }),
                         "created_at": t.created_at.to_rfc3339(),
                     })
                 })
