@@ -61,7 +61,7 @@ fn list(format: OutputFormat) -> Result<()> {
             println!("{} tool(s) detected:\n", style(tools.len()).bold());
             println!("{table}");
         }
-        OutputFormat::Plain => {
+        OutputFormat::Plain | OutputFormat::Csv => {
             for t in &tools {
                 println!("{}", t.name);
             }
@@ -156,7 +156,7 @@ fn info(name: String, format: OutputFormat) -> Result<()> {
                 output::format_executor_capabilities(exec_name, caps);
             }
         }
-        OutputFormat::Plain => {
+        OutputFormat::Plain | OutputFormat::Csv => {
             println!("name\t{}", tool.name);
             println!("version\t{}", sanitize_for_display(&tool.version));
             println!("path\t{}", tool.path.display());

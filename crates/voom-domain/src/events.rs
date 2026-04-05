@@ -41,6 +41,11 @@ pub enum Event {
     ExecutorCapabilities(ExecutorCapabilitiesEvent),
     PluginError(PluginErrorEvent),
     HealthStatus(HealthStatusEvent),
+    /// Emitted at the end of a scan. Consumed by the report plugin to
+    /// auto-capture a library snapshot.
+    ScanComplete(ScanCompleteEvent),
+    /// Emitted at the end of a standalone introspection pass.
+    IntrospectComplete(IntrospectCompleteEvent),
 }
 
 impl Event {
@@ -65,6 +70,8 @@ impl Event {
     pub const EXECUTOR_CAPABILITIES: &str = "executor.capabilities";
     pub const PLUGIN_ERROR: &str = "plugin.error";
     pub const HEALTH_STATUS: &str = "health.status";
+    pub const SCAN_COMPLETE: &str = "scan.complete";
+    pub const INTROSPECT_COMPLETE: &str = "introspect.complete";
 
     /// One-line human-readable summary of the event payload.
     ///
@@ -176,6 +183,15 @@ impl Event {
                     e.job_type, e.priority, e.requester
                 )
             }
+            Event::ScanComplete(e) => {
+                format!(
+                    "files_discovered={} files_introspected={}",
+                    e.files_discovered, e.files_introspected
+                )
+            }
+            Event::IntrospectComplete(e) => {
+                format!("files_introspected={}", e.files_introspected)
+            }
         }
     }
 
@@ -201,6 +217,8 @@ impl Event {
             Event::ExecutorCapabilities(_) => Self::EXECUTOR_CAPABILITIES,
             Event::PluginError(_) => Self::PLUGIN_ERROR,
             Event::HealthStatus(_) => Self::HEALTH_STATUS,
+            Event::ScanComplete(_) => Self::SCAN_COMPLETE,
+            Event::IntrospectComplete(_) => Self::INTROSPECT_COMPLETE,
         }
     }
 }
@@ -745,6 +763,40 @@ impl HealthStatusEvent {
     }
 }
 
+/// Emitted when a scan completes (discovery + introspection).
+/// The report plugin subscribes to this to auto-capture a library snapshot.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanCompleteEvent {
+    pub files_discovered: u64,
+    pub files_introspected: u64,
+}
+
+impl ScanCompleteEvent {
+    #[must_use]
+    pub fn new(files_discovered: u64, files_introspected: u64) -> Self {
+        Self {
+            files_discovered,
+            files_introspected,
+        }
+    }
+}
+
+/// Emitted when introspection completes for a batch of files.
+/// The report plugin subscribes to this to auto-capture a library snapshot.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntrospectCompleteEvent {
+    pub files_introspected: u64,
+}
+
+impl IntrospectCompleteEvent {
+    #[must_use]
+    pub fn new(files_introspected: u64) -> Self {
+        Self { files_introspected }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1034,6 +1086,29 @@ mod tests {
             "no GPU available",
         ));
         assert_eq!(event.event_type(), "plan.skipped");
+    }
+
+    #[test]
+    fn test_scan_complete_event_type() {
+        let event = Event::ScanComplete(ScanCompleteEvent {
+            files_discovered: 42,
+            files_introspected: 40,
+        });
+        assert_eq!(event.event_type(), "scan.complete");
+        let json = serde_json::to_string(&event).expect("serialize");
+        let deserialized: Event = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized.event_type(), "scan.complete");
+    }
+
+    #[test]
+    fn test_introspect_complete_event_type() {
+        let event = Event::IntrospectComplete(IntrospectCompleteEvent {
+            files_introspected: 15,
+        });
+        assert_eq!(event.event_type(), "introspect.complete");
+        let json = serde_json::to_string(&event).expect("serialize");
+        let deserialized: Event = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized.event_type(), "introspect.complete");
     }
 
     #[test]

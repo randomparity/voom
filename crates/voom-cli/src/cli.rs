@@ -96,9 +96,6 @@ pub enum Commands {
     /// First-time setup
     Init,
 
-    /// Show library and daemon status
-    Status,
-
     /// Generate shell completions
     Completions(CompletionsArgs),
 }
@@ -305,33 +302,49 @@ pub enum JobsCommands {
 
 #[derive(clap::Args)]
 pub struct ReportArgs {
-    /// Output format
+    /// Output format (auto-detected: table for TTY, json for pipe)
     #[arg(short, long, default_value = "table")]
     pub format: OutputFormat,
 
-    /// Show only files with safeguard violations (processing issues)
+    /// Show full library statistics
     #[arg(long)]
-    pub issues: bool,
+    pub library: bool,
 
     /// Show per-phase plan processing summary
     #[arg(long)]
     pub plans: bool,
 
-    /// Show deep library statistics
+    /// Show space savings breakdown
     #[arg(long)]
-    pub stats: bool,
+    pub savings: bool,
+
+    /// Time period for savings grouping: day, week, month
+    #[arg(long, requires = "savings")]
+    pub period: Option<String>,
 
     /// Show snapshot history (N most recent)
     #[arg(long)]
     pub history: Option<u32>,
 
-    /// Show space savings breakdown by executor, phase, and time period
+    /// Show files with safeguard violations
     #[arg(long)]
-    pub savings: bool,
+    pub issues: bool,
 
-    /// Time period for savings grouping: day, week, month (default: none)
-    #[arg(long, requires = "savings")]
-    pub period: Option<String>,
+    /// Show database row counts and page stats
+    #[arg(long)]
+    pub database: bool,
+
+    /// Show all report sections
+    #[arg(long)]
+    pub all: bool,
+
+    /// Capture and persist a new snapshot
+    #[arg(long)]
+    pub snapshot: bool,
+
+    /// List files (was previously the default)
+    #[arg(long)]
+    pub files: bool,
 }
 
 // === Serve ===
@@ -377,12 +390,6 @@ pub enum DbCommands {
         /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
-    },
-    /// Show database size, row counts, and fragmentation
-    Stats {
-        /// Output format
-        #[arg(short, long, default_value = "table")]
-        format: OutputFormat,
     },
 }
 
@@ -592,12 +599,13 @@ pub enum OutputFormat {
     Table,
     Json,
     Plain,
+    Csv,
 }
 
 impl OutputFormat {
     /// Returns true for formats intended for machine consumption (piping, scripting).
     pub fn is_machine(&self) -> bool {
-        matches!(self, Self::Json | Self::Plain)
+        matches!(self, Self::Json | Self::Plain | Self::Csv)
     }
 }
 
@@ -1246,26 +1254,6 @@ mod tests {
     }
 
     #[test]
-    fn test_db_stats() {
-        let cli = parse(&["voom", "db", "stats"]);
-        assert!(matches!(
-            cli.command,
-            Commands::Db(DbCommands::Stats { .. })
-        ));
-    }
-
-    #[test]
-    fn test_db_stats_json_format() {
-        let cli = parse(&["voom", "db", "stats", "-f", "json"]);
-        match cli.command {
-            Commands::Db(DbCommands::Stats { format }) => {
-                assert!(matches!(format, OutputFormat::Json));
-            }
-            _ => panic!("expected Stats"),
-        }
-    }
-
-    #[test]
     fn test_process_force_rescan() {
         let cli = parse(&[
             "voom",
@@ -1479,12 +1467,6 @@ mod tests {
     fn test_init_subcommand() {
         let cli = parse(&["voom", "init"]);
         assert!(matches!(cli.command, Commands::Init));
-    }
-
-    #[test]
-    fn test_status_subcommand() {
-        let cli = parse(&["voom", "status"]);
-        assert!(matches!(cli.command, Commands::Status));
     }
 
     // ── Invalid input ────────────────────────────────────────

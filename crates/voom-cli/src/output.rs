@@ -154,7 +154,7 @@ pub fn format_scan_results(
             }
             println!("{table}");
         }
-        OutputFormat::Plain => {
+        OutputFormat::Plain | OutputFormat::Csv => {
             for (path, _, _) in files {
                 println!("{}", path.display());
             }

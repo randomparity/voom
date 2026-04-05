@@ -48,7 +48,7 @@ fn run_default(
             let json: Vec<serde_json::Value> = records.iter().map(record_to_json).collect();
             println!("{}", serde_json::to_string_pretty(&json)?);
         }
-        OutputFormat::Plain => {
+        OutputFormat::Plain | OutputFormat::Csv => {
             for r in &records {
                 println!(
                     "{}\t{}\t{}",
@@ -127,7 +127,7 @@ fn print_follow_row(format: &OutputFormat, r: &voom_domain::storage::EventLogRec
         OutputFormat::Json => {
             println!("{}", record_to_json(r));
         }
-        OutputFormat::Plain => {
+        OutputFormat::Plain | OutputFormat::Csv => {
             println!(
                 "{}\t{}\t{}",
                 r.event_type,

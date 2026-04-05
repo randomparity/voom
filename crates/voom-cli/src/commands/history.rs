@@ -152,7 +152,7 @@ pub fn run(args: HistoryArgs) -> Result<()> {
             let table = output::render_transitions_table(&transitions);
             println!("{table}");
         }
-        OutputFormat::Plain => {
+        OutputFormat::Plain | OutputFormat::Csv => {
             for t in &transitions {
                 println!(
                     "{}\t{}\t{}",

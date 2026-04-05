@@ -19,6 +19,7 @@ members = [
     "plugins/web-server",
     "plugins/health-checker",
     "plugins/bus-tracer",
+    "plugins/report",
     "crates/voom-process",
     "crates/voom-cli",
 ]
@@ -66,6 +67,7 @@ voom-job-manager = { path = "plugins/job-manager" }
 voom-web-server = { path = "plugins/web-server" }
 voom-health-checker = { path = "plugins/health-checker" }
 voom-bus-tracer = { path = "plugins/bus-tracer" }
+voom-report = { path = "plugins/report" }
 
 # Async
 tokio = { version = "1", features = ["full"] }
@@ -120,6 +122,9 @@ ureq = "2"
 # Subprocess & cleanup
 wait-timeout = "0.2"
 scopeguard = "1"
+
+# CSV
+csv = "1"
 
 # Rate limiting
 governor = "0.10"

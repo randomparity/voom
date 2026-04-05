@@ -32,6 +32,7 @@ voom-job-manager.workspace = true
 voom-web-server.workspace = true
 voom-health-checker.workspace = true
 voom-bus-tracer.workspace = true
+voom-report.workspace = true
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -49,6 +50,9 @@ tokio-util.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+
+# CSV
+csv = { workspace = true }
 
 # Errors & logging
 anyhow.workspace = true

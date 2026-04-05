@@ -77,7 +77,7 @@ fn list(roots: &[PathBuf], format: OutputFormat) -> Result<()> {
             }
             println!("{table}");
         }
-        OutputFormat::Plain => {
+        OutputFormat::Plain | OutputFormat::Csv => {
             for entry in &entries {
                 println!("{}", entry.backup_path.display());
             }

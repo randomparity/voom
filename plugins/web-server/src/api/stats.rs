@@ -2,42 +2,40 @@
 
 use axum::extract::{Query, State};
 use axum::Json;
-use serde::Serialize;
 
-use voom_domain::stats::{LibrarySnapshot, SnapshotTrigger};
-use voom_domain::storage::FileFilters;
+use voom_domain::errors::VoomError;
+use voom_domain::stats::LibrarySnapshot;
+use voom_report::{ReportPlugin, ReportRequest, ReportSection};
 
 use crate::errors::{spawn_store_op, WebError};
 use crate::state::AppState;
 
-use super::jobs::JobStatusCount;
-
-#[derive(Debug, Serialize)]
-#[non_exhaustive]
-pub struct DashboardStats {
-    pub total_files: usize,
-    pub job_status_counts: Vec<JobStatusCount>,
-}
-
 /// GET /api/stats -- dashboard statistics
 #[tracing::instrument(skip(state))]
-pub async fn get_stats(State(state): State<AppState>) -> Result<Json<DashboardStats>, WebError> {
+pub async fn get_stats(State(state): State<AppState>) -> Result<Json<serde_json::Value>, WebError> {
     let store = state.store.clone();
-
-    let (total_files, job_counts) = spawn_store_op(move || {
-        let total_files = store.count_files(&FileFilters::default())?;
-        let job_counts = store.count_jobs_by_status()?;
-        Ok((total_files, job_counts))
+    let result = spawn_store_op(move || {
+        let request = ReportRequest::summary();
+        ReportPlugin::query(store.as_ref(), &request).map_err(|e| VoomError::Other(e.into()))
     })
     .await?;
 
-    Ok(Json(DashboardStats {
-        total_files: total_files as usize,
-        job_status_counts: job_counts
-            .into_iter()
-            .map(|(status, count)| JobStatusCount { status, count })
-            .collect(),
-    }))
+    let library = result.library.as_ref();
+    let total_files = library.map_or(0, |s| s.files.total_count);
+    let job_counts: Vec<serde_json::Value> = library
+        .map(|s| {
+            s.jobs
+                .by_status
+                .iter()
+                .map(|(status, count)| serde_json::json!({"status": status, "count": count}))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(Json(serde_json::json!({
+        "total_files": total_files,
+        "job_status_counts": job_counts,
+    })))
 }
 
 /// GET /api/stats/library — live library statistics
@@ -46,8 +44,15 @@ pub async fn get_library_stats(
     State(state): State<AppState>,
 ) -> Result<Json<LibrarySnapshot>, WebError> {
     let store = state.store.clone();
-    let snapshot =
-        spawn_store_op(move || store.gather_library_stats(SnapshotTrigger::Manual)).await?;
+    let result = spawn_store_op(move || {
+        let request = ReportRequest::new(vec![ReportSection::Library]);
+        ReportPlugin::query(store.as_ref(), &request).map_err(|e| VoomError::Other(e.into()))
+    })
+    .await?;
+
+    let snapshot = result
+        .library
+        .ok_or_else(|| WebError::Internal("library section missing from report".into()))?;
     Ok(Json(snapshot))
 }
 
@@ -75,54 +80,6 @@ pub async fn get_stats_history(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use voom_domain::job::JobStatus;
-
-    #[test]
-    fn test_dashboard_stats_serialization() {
-        let stats = DashboardStats {
-            total_files: 42,
-            job_status_counts: vec![
-                JobStatusCount {
-                    status: JobStatus::Pending,
-                    count: 5,
-                },
-                JobStatusCount {
-                    status: JobStatus::Completed,
-                    count: 37,
-                },
-            ],
-        };
-        let json = serde_json::to_value(&stats).unwrap();
-        assert_eq!(json["total_files"], 42);
-        let jobs = json["job_status_counts"].as_array().unwrap();
-        assert_eq!(jobs.len(), 2);
-        assert_eq!(jobs[0]["status"], "pending");
-        assert_eq!(jobs[0]["count"], 5);
-        assert_eq!(jobs[1]["status"], "completed");
-        assert_eq!(jobs[1]["count"], 37);
-    }
-
-    #[test]
-    fn test_dashboard_stats_empty() {
-        let stats = DashboardStats {
-            total_files: 0,
-            job_status_counts: vec![],
-        };
-        let json = serde_json::to_value(&stats).unwrap();
-        assert_eq!(json["total_files"], 0);
-        assert_eq!(json["job_status_counts"], serde_json::json!([]));
-    }
-
-    #[test]
-    fn test_job_count_serialization() {
-        let count = JobStatusCount {
-            status: JobStatus::Running,
-            count: 3,
-        };
-        let json = serde_json::to_value(&count).unwrap();
-        assert_eq!(json["status"], "running");
-        assert_eq!(json["count"], 3);
-    }
 
     #[test]
     fn test_history_params_default_limit() {

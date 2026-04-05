@@ -217,6 +217,7 @@ pub const KNOWN_PLUGIN_NAMES: &[&str] = &[
     "ffmpeg-executor",
     "backup-manager",
     "job-manager",
+    "report",
 ];
 
 /// Generate a default config.toml with all options commented out and documented.
@@ -457,7 +458,7 @@ mod tests {
 
     #[test]
     fn test_known_plugin_names_count() {
-        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 11);
+        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 12);
     }
 
     #[test]

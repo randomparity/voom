@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Write as _;
 
 use anyhow::{Context, Result};
 use comfy_table::Cell;
@@ -8,381 +9,245 @@ use crate::app;
 use crate::cli::{OutputFormat, ReportArgs};
 use crate::config;
 use crate::output;
-use crate::stats;
-use voom_domain::stats::SnapshotTrigger;
-use voom_domain::storage::{FileTransitionStorage, PlanStorage, SnapshotStorage};
+use voom_domain::stats::{LibrarySnapshot, SavingsReport, TimePeriod};
+use voom_domain::storage::PlanPhaseStat;
+use voom_report::{
+    DatabaseStats, IssueReport, ReportPlugin, ReportRequest, ReportResult, ReportSection,
+};
 
 pub fn run(args: ReportArgs) -> Result<()> {
     let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
-    if args.stats {
-        return run_stats_report(&*store, &args.format);
+    if args.snapshot {
+        let snapshot =
+            ReportPlugin::capture_snapshot(&*store, voom_domain::stats::SnapshotTrigger::Manual)?;
+        format_snapshot(&snapshot, &args.format);
+        return Ok(());
+    }
+
+    if args.files {
+        return run_file_list(&*store, &args.format);
+    }
+
+    let request = build_request(&args)?;
+    let result = ReportPlugin::query(&*store, &request)?;
+
+    if is_summary_request(&args) {
+        format_summary(&result, &args.format)?;
+    } else {
+        format_result(&result, &args)?;
+    }
+    Ok(())
+}
+
+fn build_request(args: &ReportArgs) -> Result<ReportRequest> {
+    if args.all {
+        let mut req = ReportRequest::all();
+        if let Some(ref p) = args.period {
+            let period = TimePeriod::parse(p).context(format!(
+                "invalid period '{p}': expected day, week, or month"
+            ))?;
+            req = req.with_period(period);
+        }
+        if let Some(n) = args.history {
+            req = req.with_history_limit(n);
+        }
+        return Ok(req);
+    }
+
+    let mut sections = Vec::new();
+
+    if args.library {
+        sections.push(ReportSection::Library);
+    }
+    if args.plans {
+        sections.push(ReportSection::Plans);
+    }
+    if args.savings {
+        sections.push(ReportSection::Savings);
+    }
+    if args.history.is_some() {
+        sections.push(ReportSection::History);
+    }
+    if args.issues {
+        sections.push(ReportSection::Issues);
+    }
+    if args.database {
+        sections.push(ReportSection::Database);
+    }
+
+    if sections.is_empty() {
+        return Ok(ReportRequest::summary());
+    }
+
+    let mut req = ReportRequest::new(sections);
+    if let Some(ref p) = args.period {
+        let period = TimePeriod::parse(p).context(format!(
+            "invalid period '{p}': expected day, week, or month"
+        ))?;
+        req = req.with_period(period);
     }
     if let Some(n) = args.history {
-        return run_history_report(&*store, &args.format, n);
+        req = req.with_history_limit(n);
     }
-
-    if args.plans {
-        return run_plans_report(&*store, &args.format);
-    }
-
-    if args.savings {
-        return run_savings_report(&*store, &args.format, args.period.as_deref());
-    }
-
-    let files = store
-        .list_files(&voom_domain::FileFilters::default())
-        .context("failed to list files from database")?;
-
-    if files.is_empty() {
-        if args.format.is_machine() {
-            if matches!(args.format, OutputFormat::Json) {
-                // Emit the correct empty schema for the requested sub-report
-                let empty: serde_json::Value = if args.issues {
-                    serde_json::json!([])
-                } else {
-                    serde_json::json!({
-                        "total_files": 0,
-                        "total_size": 0,
-                        "containers": [],
-                        "codecs": [],
-                    })
-                };
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&empty).expect("report is serializable")
-                );
-            }
-            return Ok(());
-        }
-        eprintln!(
-            "{}",
-            style("No files in database. Run 'voom scan' first.").yellow()
-        );
-        return Ok(());
-    }
-
-    if args.issues {
-        return run_issues_report(&files, &args.format);
-    }
-
-    match args.format {
-        OutputFormat::Json => print_library_json(&files),
-        OutputFormat::Table => print_library_table(&files),
-        OutputFormat::Plain => {
-            for file in &files {
-                println!("{}", file.path.display());
-            }
-        }
-    }
-
-    Ok(())
+    Ok(req)
 }
 
-fn print_library_json(files: &[voom_domain::MediaFile]) {
-    let report = serde_json::json!({
-        "total_files": files.len(),
-        "total_size": files.iter().map(|f| f.size).sum::<u64>(),
-        "containers": stats::container_counts(files),
-        "codecs": codec_counts(files),
-    });
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&report).expect("report is serializable")
-    );
+fn is_summary_request(args: &ReportArgs) -> bool {
+    !args.all
+        && !args.library
+        && !args.plans
+        && !args.savings
+        && !args.issues
+        && !args.database
+        && args.history.is_none()
 }
 
-fn print_library_table(files: &[voom_domain::MediaFile]) {
-    println!("{}", style("Library Report").bold().underlined());
-    println!();
-
-    let total_size: u64 = files.iter().map(|f| f.size).sum();
-    let total_duration: f64 = files.iter().map(|f| f.duration).sum();
-
-    println!(
-        "  {} files, {}, {}",
-        style(files.len()).bold(),
-        style(voom_domain::utils::format::format_size(total_size)).cyan(),
-        style(voom_domain::utils::format::format_duration(total_duration)).dim(),
-    );
-    println!();
-
-    // Container breakdown
-    println!("{}", style("Containers:").bold());
-    let containers = stats::container_counts(files);
-    let mut table = output::new_table();
-    table.set_header(vec!["Container", "Count"]);
-    for (container, count) in &containers {
-        table.add_row(vec![Cell::new(container), Cell::new(count)]);
-    }
-    println!("{table}");
-    println!();
-
-    // Codec breakdown
-    println!("{}", style("Codecs:").bold());
-    let codecs = codec_counts(files);
-    let mut table = output::new_table();
-    table.set_header(vec!["Codec", "Count"]);
-    for (codec, count) in &codecs {
-        table.add_row(vec![Cell::new(codec), Cell::new(count)]);
-    }
-    println!("{table}");
-}
-
-fn run_issues_report(files: &[voom_domain::MediaFile], format: &OutputFormat) -> Result<()> {
-    let files_with_issues: Vec<_> = files
-        .iter()
-        .filter_map(|f| {
-            let violations = f.plugin_metadata.get("safeguard_violations")?;
-            let parsed: Vec<voom_domain::SafeguardViolation> =
-                serde_json::from_value(violations.clone()).ok()?;
-            if parsed.is_empty() {
-                return None;
-            }
-            Some((f, parsed))
-        })
-        .collect();
-
-    if files_with_issues.is_empty() {
-        if format.is_machine() {
-            if matches!(format, OutputFormat::Json) {
-                println!("[]");
-            }
-            return Ok(());
-        }
-        eprintln!("{}", style("No files with safeguard violations.").green());
-        return Ok(());
-    }
-
+fn format_snapshot(snapshot: &LibrarySnapshot, format: &OutputFormat) {
     match format {
-        OutputFormat::Json => print_issues_json(&files_with_issues),
-        OutputFormat::Table => print_issues_table(&files_with_issues),
-        OutputFormat::Plain => print_issues_plain(&files_with_issues),
-    }
-
-    Ok(())
-}
-
-fn print_issues_json(
-    files_with_issues: &[(
-        &voom_domain::MediaFile,
-        Vec<voom_domain::SafeguardViolation>,
-    )],
-) {
-    let entries: Vec<serde_json::Value> = files_with_issues
-        .iter()
-        .map(|(f, violations)| {
-            serde_json::json!({
-                "path": f.path.display().to_string(),
-                "violations": violations,
-            })
-        })
-        .collect();
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&entries).expect("report is serializable")
-    );
-}
-
-fn print_issues_table(
-    files_with_issues: &[(
-        &voom_domain::MediaFile,
-        Vec<voom_domain::SafeguardViolation>,
-    )],
-) {
-    println!(
-        "{} ({} files)",
-        style("Safeguard Violations").bold().underlined(),
-        files_with_issues.len()
-    );
-    println!();
-    let mut table = output::new_table();
-    table.set_header(vec!["Path", "Violation", "Phase", "Message"]);
-    for (f, violations) in files_with_issues {
-        let path = f
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        for v in violations {
-            table.add_row(vec![
-                Cell::new(&path),
-                Cell::new(v.kind.as_str()),
-                Cell::new(&v.phase_name),
-                Cell::new(&v.message),
-            ]);
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(snapshot).expect("snapshot is serializable")
+            );
         }
-    }
-    println!("{table}");
-}
-
-fn print_issues_plain(
-    files_with_issues: &[(
-        &voom_domain::MediaFile,
-        Vec<voom_domain::SafeguardViolation>,
-    )],
-) {
-    for (f, violations) in files_with_issues {
-        for v in violations {
-            println!("{}\t{}", f.path.display(), v.kind.as_str());
+        OutputFormat::Table => {
+            println!(
+                "{} Snapshot captured: {} files, {}",
+                style("OK").green().bold(),
+                snapshot.files.total_count,
+                voom_domain::utils::format::format_size(snapshot.files.total_size_bytes),
+            );
+        }
+        OutputFormat::Plain | OutputFormat::Csv => {
+            println!(
+                "snapshot\t{}\t{}",
+                snapshot.files.total_count, snapshot.files.total_size_bytes,
+            );
         }
     }
 }
 
-#[derive(Default)]
-struct PhaseAgg {
-    completed: u64,
-    skipped: u64,
-    failed: u64,
-    skip_reasons: HashMap<String, u64>,
-}
-
-/// Aggregate raw plan stats into per-phase summaries, preserving insertion order.
-fn aggregate_plan_stats(
-    stats: &[voom_domain::storage::PlanPhaseStat],
-) -> (Vec<String>, HashMap<String, PhaseAgg>) {
-    let mut phases: Vec<String> = Vec::new();
-    let mut by_phase: HashMap<String, PhaseAgg> = HashMap::new();
-
-    for stat in stats {
-        if !by_phase.contains_key(&stat.phase_name) {
-            phases.push(stat.phase_name.clone());
+fn format_summary(result: &ReportResult, format: &OutputFormat) -> Result<()> {
+    let Some(ref snapshot) = result.library else {
+        if !format.is_machine() {
+            eprintln!(
+                "{}",
+                style("No files in database. Run 'voom scan' first.").yellow()
+            );
+        } else if matches!(format, OutputFormat::Json) {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"total_files": 0, "total_size": 0})
+                )
+                .expect("json is serializable")
+            );
         }
-        let entry = by_phase.entry(stat.phase_name.clone()).or_default();
-        match stat.status {
-            voom_domain::storage::PlanStatus::Completed => {
-                entry.completed += stat.count;
-            }
-            voom_domain::storage::PlanStatus::Skipped => {
-                entry.skipped += stat.count;
-                if let Some(reason) = &stat.skip_reason {
-                    *entry.skip_reasons.entry(reason.clone()).or_default() += stat.count;
-                }
-            }
-            voom_domain::storage::PlanStatus::Failed => {
-                entry.failed += stat.count;
-            }
-            _ => {}
-        }
-    }
-
-    (phases, by_phase)
-}
-
-fn print_plans_json(phases: &[String], by_phase: &HashMap<String, PhaseAgg>) {
-    let entries: Vec<serde_json::Value> = phases
-        .iter()
-        .map(|name| {
-            let ps = by_phase.get(name).expect("phase exists");
-            let mut val = serde_json::json!({
-                "phase": name,
-                "completed": ps.completed,
-                "skipped": ps.skipped,
-                "failed": ps.failed,
-            });
-            if !ps.skip_reasons.is_empty() {
-                val["skip_reasons"] = serde_json::json!(ps.skip_reasons);
-            }
-            val
-        })
-        .collect();
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&entries).expect("report is serializable")
-    );
-}
-
-fn print_plans_table(phases: &[String], by_phase: &HashMap<String, PhaseAgg>) {
-    println!("{}", style("Plan Processing Summary").bold().underlined());
-    println!();
-
-    let mut table = output::new_table();
-    table.set_header(vec![
-        "Phase",
-        "Completed",
-        "Skipped",
-        "Failed",
-        "Top Skip Reasons",
-    ]);
-    for name in phases {
-        let ps = by_phase.get(name).expect("phase exists");
-        let reasons = output::format_skip_reasons(&ps.skip_reasons, 3);
-        table.add_row(vec![
-            Cell::new(name),
-            Cell::new(ps.completed),
-            Cell::new(ps.skipped),
-            Cell::new(ps.failed),
-            Cell::new(&reasons),
-        ]);
-    }
-    println!("{table}");
-}
-
-fn print_plans_plain(phases: &[String], by_phase: &HashMap<String, PhaseAgg>) {
-    for name in phases {
-        let ps = by_phase.get(name).expect("phase exists");
-        let status = if ps.failed > 0 {
-            "failed"
-        } else if ps.completed > 0 {
-            "completed"
-        } else {
-            "skipped"
-        };
-        println!("{name}\t{status}");
-    }
-}
-
-fn run_plans_report(store: &dyn PlanStorage, format: &OutputFormat) -> Result<()> {
-    let stats = store
-        .plan_stats_by_phase()
-        .context("failed to query plan stats")?;
-
-    if stats.is_empty() {
-        if format.is_machine() {
-            if matches!(format, OutputFormat::Json) {
-                println!("[]");
-            }
-            return Ok(());
-        }
-        eprintln!(
-            "{}",
-            style("No plan data. Run 'voom process' first.").yellow()
-        );
         return Ok(());
-    }
-
-    let (phases, by_phase) = aggregate_plan_stats(&stats);
-
-    match format {
-        OutputFormat::Json => print_plans_json(&phases, &by_phase),
-        OutputFormat::Table => print_plans_table(&phases, &by_phase),
-        OutputFormat::Plain => print_plans_plain(&phases, &by_phase),
-    }
-
-    Ok(())
-}
-
-fn run_stats_report(store: &dyn SnapshotStorage, format: &OutputFormat) -> Result<()> {
-    let snapshot = store
-        .gather_library_stats(SnapshotTrigger::Manual)
-        .context("failed to gather library statistics")?;
+    };
 
     match format {
         OutputFormat::Json => {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&snapshot).context("failed to serialize snapshot")?
+                serde_json::to_string_pretty(snapshot).expect("snapshot is serializable")
             );
         }
-        OutputFormat::Table => print_stats_table(&snapshot),
-        OutputFormat::Plain => print_stats_plain(&snapshot),
-    }
+        OutputFormat::Table => {
+            use voom_domain::utils::format::{format_duration, format_size};
 
+            let f = &snapshot.files;
+            println!("{}", style("Library Summary").bold().underlined());
+            println!(
+                "  {} files, {}, {}",
+                style(f.total_count).bold(),
+                style(format_size(f.total_size_bytes)).cyan(),
+                style(format_duration(f.total_duration_secs)).dim(),
+            );
+
+            if !f.container_counts.is_empty() {
+                let top: Vec<_> = f.container_counts.iter().take(5).collect();
+                let labels: Vec<String> = top.iter().map(|(n, c)| format!("{n} ({c})")).collect();
+                println!("  Containers: {}", labels.join(", "));
+            }
+            if !snapshot.video.codec_counts.is_empty() {
+                let top: Vec<_> = snapshot.video.codec_counts.iter().take(5).collect();
+                let labels: Vec<String> = top.iter().map(|(n, c)| format!("{n} ({c})")).collect();
+                println!("  Video codecs: {}", labels.join(", "));
+            }
+        }
+        OutputFormat::Plain => {
+            let f = &snapshot.files;
+            println!("total_files={}", f.total_count);
+            println!("total_size={}", f.total_size_bytes);
+            println!("total_duration_secs={:.1}", f.total_duration_secs);
+        }
+        OutputFormat::Csv => {
+            write_summary_csv(snapshot)?;
+        }
+    }
     Ok(())
 }
 
-fn print_stats_table(snapshot: &voom_domain::stats::LibrarySnapshot) {
+fn write_summary_csv(snapshot: &LibrarySnapshot) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out, "# library")?;
+    drop(out);
+
+    let stdout = std::io::stdout();
+    let mut wtr = csv::Writer::from_writer(stdout.lock());
+    wtr.write_record(["total_files", "total_size_bytes", "total_duration_secs"])?;
+    wtr.write_record([
+        snapshot.files.total_count.to_string(),
+        snapshot.files.total_size_bytes.to_string(),
+        format!("{:.1}", snapshot.files.total_duration_secs),
+    ])?;
+    wtr.flush()?;
+    Ok(())
+}
+
+fn format_result(result: &ReportResult, args: &ReportArgs) -> Result<()> {
+    match args.format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(result).expect("report result is serializable")
+            );
+        }
+        OutputFormat::Table => format_result_table(result),
+        OutputFormat::Plain => format_result_plain(result),
+        OutputFormat::Csv => format_result_csv(result)?,
+    }
+    Ok(())
+}
+
+// ── Table formatting ────────────────────────────────────────
+
+fn format_result_table(result: &ReportResult) {
+    if let Some(ref snapshot) = result.library {
+        print_stats_table(snapshot);
+    }
+    if let Some(ref stats) = result.plans {
+        print_plans_section_table(stats);
+    }
+    if let Some(ref report) = result.savings {
+        print_savings_section_table(report);
+    }
+    if let Some(ref snapshots) = result.history {
+        print_history_section_table(snapshots);
+    }
+    if let Some(ref issues) = result.issues {
+        print_issues_section_table(issues);
+    }
+    if let Some(ref db) = result.database {
+        print_database_section_table(db);
+    }
+}
+
+fn print_stats_table(snapshot: &LibrarySnapshot) {
     use voom_domain::utils::format::{format_duration, format_size};
 
     let f = &snapshot.files;
@@ -443,16 +308,22 @@ fn print_stats_table(snapshot: &voom_domain::stats::LibrarySnapshot) {
         println!("{table}");
     }
     let size_label = if p.total_size_saved_bytes >= 0 {
-        format!("{} saved", format_size(p.total_size_saved_bytes as u64))
+        format!(
+            "{} saved",
+            voom_domain::utils::format::format_size(p.total_size_saved_bytes as u64)
+        )
     } else {
         format!(
             "{} added",
-            format_size(p.total_size_saved_bytes.unsigned_abs())
+            voom_domain::utils::format::format_size(p.total_size_saved_bytes.unsigned_abs())
         )
     };
     println!(
         "  Total time: {}  Size change: {}",
-        style(format_duration(p.total_processing_time_ms as f64 / 1000.0)).dim(),
+        style(voom_domain::utils::format::format_duration(
+            p.total_processing_time_ms as f64 / 1000.0
+        ))
+        .dim(),
         style(size_label).dim(),
     );
     println!();
@@ -460,36 +331,6 @@ fn print_stats_table(snapshot: &voom_domain::stats::LibrarySnapshot) {
     let j = &snapshot.jobs;
     if !j.by_status.is_empty() {
         print_pair_table("Jobs", "Status", "Count", &j.by_status);
-    }
-}
-
-fn print_stats_plain(snapshot: &voom_domain::stats::LibrarySnapshot) {
-    let f = &snapshot.files;
-    println!("total_files={}", f.total_count);
-    println!("total_size={}", f.total_size_bytes);
-    println!("total_duration_secs={:.1}", f.total_duration_secs);
-    println!("avg_size={}", f.avg_size_bytes);
-    println!("max_size={}", f.max_size_bytes);
-    println!("min_size={}", f.min_size_bytes);
-    println!("hdr_count={}", snapshot.video.hdr_count);
-    println!("vfr_count={}", snapshot.video.vfr_count);
-    for (name, count) in &f.container_counts {
-        println!("container_{name}={count}");
-    }
-    for (name, count) in &snapshot.video.codec_counts {
-        println!("video_codec_{name}={count}");
-    }
-    for (name, count) in &snapshot.audio.codec_counts {
-        println!("audio_codec_{name}={count}");
-    }
-    for (name, count) in &snapshot.subtitles.language_counts {
-        println!("subtitle_lang_{name}={count}");
-    }
-    for (status, count) in &snapshot.processing.plans_by_status {
-        println!("plan_status_{status}={count}");
-    }
-    for (status, count) in &snapshot.jobs.by_status {
-        println!("job_status_{status}={count}");
     }
 }
 
@@ -507,140 +348,83 @@ fn print_pair_table(title: &str, col1: &str, col2: &str, data: &[(String, u64)])
     println!();
 }
 
-fn run_history_report(
-    store: &dyn SnapshotStorage,
-    format: &OutputFormat,
-    limit: u32,
-) -> Result<()> {
-    let snapshots = store
-        .list_snapshots(limit)
-        .context("failed to list snapshots")?;
-
-    if snapshots.is_empty() {
-        if format.is_machine() {
-            if matches!(format, OutputFormat::Json) {
-                println!("[]");
-            }
-            return Ok(());
-        }
-        eprintln!(
-            "{}",
-            style("No snapshots yet. Run 'voom scan' or 'voom report --stats' first.").yellow()
-        );
-        return Ok(());
-    }
-
-    match format {
-        OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&snapshots)
-                    .context("failed to serialize snapshots")?
-            );
-        }
-        OutputFormat::Table => {
-            use voom_domain::utils::format::format_size;
-
-            println!("{}", style("Snapshot History").bold().underlined());
-            println!();
-            let mut table = output::new_table();
-            table.set_header(vec![
-                "Timestamp",
-                "Trigger",
-                "Files",
-                "Total Size",
-                "Duration",
-                "HDR",
-                "VFR",
-            ]);
-            for snap in &snapshots {
-                table.add_row(vec![
-                    Cell::new(snap.captured_at.format("%Y-%m-%d %H:%M:%S")),
-                    Cell::new(snap.trigger.as_str()),
-                    Cell::new(snap.files.total_count),
-                    Cell::new(format_size(snap.files.total_size_bytes)),
-                    Cell::new(voom_domain::utils::format::format_duration(
-                        snap.files.total_duration_secs,
-                    )),
-                    Cell::new(snap.video.hdr_count),
-                    Cell::new(snap.video.vfr_count),
-                ]);
-            }
-            println!("{table}");
-        }
-        OutputFormat::Plain => {
-            for snap in &snapshots {
-                println!(
-                    "{}\t{}\t{}\t{}\t{:.0}\t{}\t{}",
-                    snap.captured_at.format("%Y-%m-%d %H:%M:%S"),
-                    snap.trigger.as_str(),
-                    snap.files.total_count,
-                    snap.files.total_size_bytes,
-                    snap.files.total_duration_secs,
-                    snap.video.hdr_count,
-                    snap.video.vfr_count,
-                );
-            }
-        }
-    }
-
-    Ok(())
+#[derive(Default)]
+struct PhaseAgg {
+    completed: u64,
+    skipped: u64,
+    failed: u64,
+    skip_reasons: HashMap<String, u64>,
 }
 
-fn run_savings_report(
-    store: &dyn FileTransitionStorage,
-    format: &OutputFormat,
-    period_str: Option<&str>,
-) -> Result<()> {
-    let period = match period_str {
-        Some(s) => {
-            let p = voom_domain::stats::TimePeriod::parse(s).context(format!(
-                "invalid period '{s}': expected day, week, or month"
-            ))?;
-            Some(p)
-        }
-        None => None,
-    };
+fn aggregate_plan_stats(stats: &[PlanPhaseStat]) -> (Vec<String>, HashMap<String, PhaseAgg>) {
+    let mut phases: Vec<String> = Vec::new();
+    let mut by_phase: HashMap<String, PhaseAgg> = HashMap::new();
 
-    let report = store
-        .savings_by_provenance(period)
-        .context("failed to query savings report")?;
+    for stat in stats {
+        if !by_phase.contains_key(&stat.phase_name) {
+            phases.push(stat.phase_name.clone());
+        }
+        let entry = by_phase.entry(stat.phase_name.clone()).or_default();
+        match stat.status {
+            voom_domain::storage::PlanStatus::Completed => {
+                entry.completed += stat.count;
+            }
+            voom_domain::storage::PlanStatus::Skipped => {
+                entry.skipped += stat.count;
+                if let Some(reason) = &stat.skip_reason {
+                    *entry.skip_reasons.entry(reason.clone()).or_default() += stat.count;
+                }
+            }
+            voom_domain::storage::PlanStatus::Failed => {
+                entry.failed += stat.count;
+            }
+            _ => {}
+        }
+    }
+
+    (phases, by_phase)
+}
+
+fn print_plans_section_table(stats: &[PlanPhaseStat]) {
+    if stats.is_empty() {
+        return;
+    }
+    let (phases, by_phase) = aggregate_plan_stats(stats);
+
+    println!("{}", style("Plan Processing Summary").bold().underlined());
+    println!();
+
+    let mut table = output::new_table();
+    table.set_header(vec![
+        "Phase",
+        "Completed",
+        "Skipped",
+        "Failed",
+        "Top Skip Reasons",
+    ]);
+    for name in &phases {
+        let ps = by_phase.get(name).expect("phase exists");
+        let reasons = output::format_skip_reasons(&ps.skip_reasons, 3);
+        table.add_row(vec![
+            Cell::new(name),
+            Cell::new(ps.completed),
+            Cell::new(ps.skipped),
+            Cell::new(ps.failed),
+            Cell::new(&reasons),
+        ]);
+    }
+    println!("{table}");
+    println!();
+}
+
+fn print_savings_section_table(report: &SavingsReport) {
+    use voom_domain::utils::format::{format_duration, format_size};
 
     if report.buckets.is_empty() {
-        if format.is_machine() {
-            if matches!(format, OutputFormat::Json) {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&report).expect("report is serializable")
-                );
-            }
-            return Ok(());
-        }
-        eprintln!(
-            "{}",
-            style("No savings data. Run 'voom process' first.").yellow()
-        );
-        return Ok(());
+        return;
     }
 
-    match format {
-        OutputFormat::Json => print_savings_json(&report),
-        OutputFormat::Table => print_savings_table(&report, period.is_some()),
-        OutputFormat::Plain => print_savings_plain(&report, period.is_some()),
-    }
-
-    Ok(())
-}
-
-fn print_savings_json(report: &voom_domain::stats::SavingsReport) {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(report).expect("report is serializable")
-    );
-}
-
-fn print_savings_table(report: &voom_domain::stats::SavingsReport, show_period: bool) {
-    use voom_domain::utils::format::{format_duration, format_size};
+    let show_period = report.buckets.iter().any(|b| b.period.is_some());
 
     println!(
         "{}",
@@ -693,9 +477,176 @@ fn print_savings_table(report: &voom_domain::stats::SavingsReport, show_period: 
         style(total_label).bold(),
         style(report.total_transitions).bold(),
     );
+    println!();
 }
 
-fn print_savings_plain(report: &voom_domain::stats::SavingsReport, show_period: bool) {
+fn print_history_section_table(snapshots: &[LibrarySnapshot]) {
+    use voom_domain::utils::format::{format_duration, format_size};
+
+    if snapshots.is_empty() {
+        return;
+    }
+
+    println!("{}", style("Snapshot History").bold().underlined());
+    println!();
+    let mut table = output::new_table();
+    table.set_header(vec![
+        "Timestamp",
+        "Trigger",
+        "Files",
+        "Total Size",
+        "Duration",
+        "HDR",
+        "VFR",
+    ]);
+    for snap in snapshots {
+        table.add_row(vec![
+            Cell::new(snap.captured_at.format("%Y-%m-%d %H:%M:%S")),
+            Cell::new(snap.trigger.as_str()),
+            Cell::new(snap.files.total_count),
+            Cell::new(format_size(snap.files.total_size_bytes)),
+            Cell::new(format_duration(snap.files.total_duration_secs)),
+            Cell::new(snap.video.hdr_count),
+            Cell::new(snap.video.vfr_count),
+        ]);
+    }
+    println!("{table}");
+    println!();
+}
+
+fn print_issues_section_table(issues: &[IssueReport]) {
+    if issues.is_empty() {
+        return;
+    }
+
+    println!(
+        "{} ({} files)",
+        style("Safeguard Violations").bold().underlined(),
+        issues.len()
+    );
+    println!();
+    let mut table = output::new_table();
+    table.set_header(vec!["Path", "Violation", "Phase", "Message"]);
+    for issue in issues {
+        let path = issue
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        for v in &issue.violations {
+            table.add_row(vec![
+                Cell::new(&path),
+                Cell::new(v.kind.as_str()),
+                Cell::new(&v.phase_name),
+                Cell::new(&v.message),
+            ]);
+        }
+    }
+    println!("{table}");
+    println!();
+}
+
+fn print_database_section_table(db: &DatabaseStats) {
+    use voom_domain::utils::format::format_size;
+
+    println!("{}", style("Database").bold().underlined());
+    println!();
+
+    if !db.table_counts.is_empty() {
+        let mut table = output::new_table();
+        table.set_header(vec!["Table", "Rows"]);
+        for (name, count) in &db.table_counts {
+            table.add_row(vec![Cell::new(name), Cell::new(count)]);
+        }
+        println!("{table}");
+    }
+
+    let ps = &db.page_stats;
+    let total = ps.page_size * ps.page_count;
+    let free = ps.page_size * ps.freelist_count;
+    println!(
+        "  Page size: {}  Pages: {}  Total: {}  Free: {}",
+        style(format_size(ps.page_size)).dim(),
+        style(ps.page_count).dim(),
+        style(format_size(total)).dim(),
+        style(format_size(free)).dim(),
+    );
+    println!();
+}
+
+// ── Plain formatting ────────────────────────────────────────
+
+fn format_result_plain(result: &ReportResult) {
+    if let Some(ref snapshot) = result.library {
+        print_stats_plain(snapshot);
+    }
+    if let Some(ref stats) = result.plans {
+        print_plans_section_plain(stats);
+    }
+    if let Some(ref report) = result.savings {
+        print_savings_section_plain(report);
+    }
+    if let Some(ref snapshots) = result.history {
+        print_history_section_plain(snapshots);
+    }
+    if let Some(ref issues) = result.issues {
+        print_issues_section_plain(issues);
+    }
+    if let Some(ref db) = result.database {
+        print_database_section_plain(db);
+    }
+}
+
+fn print_stats_plain(snapshot: &LibrarySnapshot) {
+    let f = &snapshot.files;
+    println!("total_files={}", f.total_count);
+    println!("total_size={}", f.total_size_bytes);
+    println!("total_duration_secs={:.1}", f.total_duration_secs);
+    println!("avg_size={}", f.avg_size_bytes);
+    println!("max_size={}", f.max_size_bytes);
+    println!("min_size={}", f.min_size_bytes);
+    println!("hdr_count={}", snapshot.video.hdr_count);
+    println!("vfr_count={}", snapshot.video.vfr_count);
+    for (name, count) in &f.container_counts {
+        println!("container_{name}={count}");
+    }
+    for (name, count) in &snapshot.video.codec_counts {
+        println!("video_codec_{name}={count}");
+    }
+    for (name, count) in &snapshot.audio.codec_counts {
+        println!("audio_codec_{name}={count}");
+    }
+    for (name, count) in &snapshot.subtitles.language_counts {
+        println!("subtitle_lang_{name}={count}");
+    }
+    for (status, count) in &snapshot.processing.plans_by_status {
+        println!("plan_status_{status}={count}");
+    }
+    for (status, count) in &snapshot.jobs.by_status {
+        println!("job_status_{status}={count}");
+    }
+}
+
+fn print_plans_section_plain(stats: &[PlanPhaseStat]) {
+    if stats.is_empty() {
+        return;
+    }
+    let (phases, by_phase) = aggregate_plan_stats(stats);
+    for name in &phases {
+        let ps = by_phase.get(name).expect("phase exists");
+        let status = if ps.failed > 0 {
+            "failed"
+        } else if ps.completed > 0 {
+            "completed"
+        } else {
+            "skipped"
+        };
+        println!("{name}\t{status}");
+    }
+}
+
+fn print_savings_section_plain(report: &SavingsReport) {
+    let show_period = report.buckets.iter().any(|b| b.period.is_some());
     for b in &report.buckets {
         let executor = b.executor.as_deref().unwrap_or("-");
         let phase = b.phase.as_deref().unwrap_or("-");
@@ -714,8 +665,438 @@ fn print_savings_plain(report: &voom_domain::stats::SavingsReport, show_period: 
     }
 }
 
+fn print_history_section_plain(snapshots: &[LibrarySnapshot]) {
+    for snap in snapshots {
+        println!(
+            "{}\t{}\t{}\t{}\t{:.0}\t{}\t{}",
+            snap.captured_at.format("%Y-%m-%d %H:%M:%S"),
+            snap.trigger.as_str(),
+            snap.files.total_count,
+            snap.files.total_size_bytes,
+            snap.files.total_duration_secs,
+            snap.video.hdr_count,
+            snap.video.vfr_count,
+        );
+    }
+}
+
+fn print_issues_section_plain(issues: &[IssueReport]) {
+    for issue in issues {
+        for v in &issue.violations {
+            println!("{}\t{}", issue.path.display(), v.kind.as_str());
+        }
+    }
+}
+
+fn print_database_section_plain(db: &DatabaseStats) {
+    for (name, count) in &db.table_counts {
+        println!("table_{name}={count}");
+    }
+    println!("page_size={}", db.page_stats.page_size);
+    println!("page_count={}", db.page_stats.page_count);
+    println!("freelist_count={}", db.page_stats.freelist_count);
+}
+
+// ── CSV formatting ──────────────────────────────────────────
+
+fn format_result_csv(result: &ReportResult) -> Result<()> {
+    if let Some(ref snapshot) = result.library {
+        write_library_csv(snapshot)?;
+    }
+    if let Some(ref stats) = result.plans {
+        write_plans_csv(stats)?;
+    }
+    if let Some(ref report) = result.savings {
+        write_savings_csv(report)?;
+    }
+    if let Some(ref snapshots) = result.history {
+        write_history_csv(snapshots)?;
+    }
+    if let Some(ref issues) = result.issues {
+        write_issues_csv(issues)?;
+    }
+    if let Some(ref db) = result.database {
+        write_database_csv(db)?;
+    }
+    Ok(())
+}
+
+fn write_library_csv(snapshot: &LibrarySnapshot) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out, "# library")?;
+    drop(out);
+
+    let stdout = std::io::stdout();
+    let mut wtr = csv::Writer::from_writer(stdout.lock());
+    wtr.write_record([
+        "total_files",
+        "total_size_bytes",
+        "total_duration_secs",
+        "avg_size_bytes",
+        "max_size_bytes",
+        "min_size_bytes",
+    ])?;
+    wtr.write_record([
+        snapshot.files.total_count.to_string(),
+        snapshot.files.total_size_bytes.to_string(),
+        format!("{:.1}", snapshot.files.total_duration_secs),
+        snapshot.files.avg_size_bytes.to_string(),
+        snapshot.files.max_size_bytes.to_string(),
+        snapshot.files.min_size_bytes.to_string(),
+    ])?;
+    wtr.flush()?;
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out)?;
+    writeln!(out, "# containers")?;
+    drop(out);
+
+    let stdout = std::io::stdout();
+    let mut wtr = csv::Writer::from_writer(stdout.lock());
+    wtr.write_record(["container", "count"])?;
+    for (name, count) in &snapshot.files.container_counts {
+        wtr.write_record([name.as_str(), &count.to_string()])?;
+    }
+    wtr.flush()?;
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out)?;
+    writeln!(out, "# video_codecs")?;
+    drop(out);
+
+    let stdout = std::io::stdout();
+    let mut wtr = csv::Writer::from_writer(stdout.lock());
+    wtr.write_record(["codec", "count"])?;
+    for (name, count) in &snapshot.video.codec_counts {
+        wtr.write_record([name.as_str(), &count.to_string()])?;
+    }
+    wtr.flush()?;
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out)?;
+    drop(out);
+
+    Ok(())
+}
+
+fn write_plans_csv(stats: &[PlanPhaseStat]) -> Result<()> {
+    if stats.is_empty() {
+        return Ok(());
+    }
+    let (phases, by_phase) = aggregate_plan_stats(stats);
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out, "# plans")?;
+    drop(out);
+
+    let stdout = std::io::stdout();
+    let mut wtr = csv::Writer::from_writer(stdout.lock());
+    wtr.write_record(["phase", "completed", "skipped", "failed"])?;
+    for name in &phases {
+        let ps = by_phase.get(name).expect("phase exists");
+        wtr.write_record([
+            name.as_str(),
+            &ps.completed.to_string(),
+            &ps.skipped.to_string(),
+            &ps.failed.to_string(),
+        ])?;
+    }
+    wtr.flush()?;
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out)?;
+    drop(out);
+
+    Ok(())
+}
+
+fn write_savings_csv(report: &SavingsReport) -> Result<()> {
+    if report.buckets.is_empty() {
+        return Ok(());
+    }
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out, "# savings")?;
+    drop(out);
+
+    let stdout = std::io::stdout();
+    let mut wtr = csv::Writer::from_writer(stdout.lock());
+    wtr.write_record([
+        "executor",
+        "phase",
+        "period",
+        "file_count",
+        "transition_count",
+        "bytes_saved",
+        "duration_ms",
+    ])?;
+    for b in &report.buckets {
+        wtr.write_record([
+            b.executor.as_deref().unwrap_or(""),
+            b.phase.as_deref().unwrap_or(""),
+            b.period.as_deref().unwrap_or(""),
+            &b.file_count.to_string(),
+            &b.transition_count.to_string(),
+            &b.bytes_saved.to_string(),
+            &b.duration_ms.to_string(),
+        ])?;
+    }
+    wtr.flush()?;
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out)?;
+    drop(out);
+
+    Ok(())
+}
+
+fn write_history_csv(snapshots: &[LibrarySnapshot]) -> Result<()> {
+    if snapshots.is_empty() {
+        return Ok(());
+    }
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out, "# history")?;
+    drop(out);
+
+    let stdout = std::io::stdout();
+    let mut wtr = csv::Writer::from_writer(stdout.lock());
+    wtr.write_record([
+        "timestamp",
+        "trigger",
+        "files",
+        "total_size_bytes",
+        "total_duration_secs",
+        "hdr_count",
+        "vfr_count",
+    ])?;
+    for snap in snapshots {
+        wtr.write_record([
+            snap.captured_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+            snap.trigger.as_str().to_string(),
+            snap.files.total_count.to_string(),
+            snap.files.total_size_bytes.to_string(),
+            format!("{:.0}", snap.files.total_duration_secs),
+            snap.video.hdr_count.to_string(),
+            snap.video.vfr_count.to_string(),
+        ])?;
+    }
+    wtr.flush()?;
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out)?;
+    drop(out);
+
+    Ok(())
+}
+
+fn write_issues_csv(issues: &[IssueReport]) -> Result<()> {
+    if issues.is_empty() {
+        return Ok(());
+    }
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out, "# issues")?;
+    drop(out);
+
+    let stdout = std::io::stdout();
+    let mut wtr = csv::Writer::from_writer(stdout.lock());
+    wtr.write_record(["path", "violation", "phase", "message"])?;
+    for issue in issues {
+        for v in &issue.violations {
+            wtr.write_record([
+                &issue.path.display().to_string(),
+                v.kind.as_str(),
+                &v.phase_name,
+                &v.message,
+            ])?;
+        }
+    }
+    wtr.flush()?;
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out)?;
+    drop(out);
+
+    Ok(())
+}
+
+fn write_database_csv(db: &DatabaseStats) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out, "# database_tables")?;
+    drop(out);
+
+    let stdout = std::io::stdout();
+    let mut wtr = csv::Writer::from_writer(stdout.lock());
+    wtr.write_record(["table", "rows"])?;
+    for (name, count) in &db.table_counts {
+        wtr.write_record([name.as_str(), &count.to_string()])?;
+    }
+    wtr.flush()?;
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out)?;
+    writeln!(out, "# database_pages")?;
+    drop(out);
+
+    let stdout = std::io::stdout();
+    let mut wtr = csv::Writer::from_writer(stdout.lock());
+    wtr.write_record(["page_size", "page_count", "freelist_count"])?;
+    wtr.write_record([
+        db.page_stats.page_size.to_string(),
+        db.page_stats.page_count.to_string(),
+        db.page_stats.freelist_count.to_string(),
+    ])?;
+    wtr.flush()?;
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out)?;
+    drop(out);
+
+    Ok(())
+}
+
+// ── File list ───────────────────────────────────────────────
+
+fn run_file_list(
+    store: &dyn voom_domain::storage::StorageTrait,
+    format: &OutputFormat,
+) -> Result<()> {
+    let files = store
+        .list_files(&voom_domain::FileFilters::default())
+        .context("failed to list files from database")?;
+
+    if files.is_empty() {
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!(
+            "{}",
+            style("No files in database. Run 'voom scan' first.").yellow()
+        );
+        return Ok(());
+    }
+
+    match format {
+        OutputFormat::Json => print_file_list_json(&files),
+        OutputFormat::Table => print_file_list_table(&files),
+        OutputFormat::Plain => {
+            for file in &files {
+                println!("{}", file.path.display());
+            }
+        }
+        OutputFormat::Csv => print_file_list_csv(&files)?,
+    }
+
+    Ok(())
+}
+
+fn print_file_list_json(files: &[voom_domain::MediaFile]) {
+    let report = serde_json::json!({
+        "total_files": files.len(),
+        "total_size": files.iter().map(|f| f.size).sum::<u64>(),
+        "containers": container_counts(files),
+        "codecs": codec_counts(files),
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).expect("report is serializable")
+    );
+}
+
+fn print_file_list_table(files: &[voom_domain::MediaFile]) {
+    println!("{}", style("Library Report").bold().underlined());
+    println!();
+
+    let total_size: u64 = files.iter().map(|f| f.size).sum();
+    let total_duration: f64 = files.iter().map(|f| f.duration).sum();
+
+    println!(
+        "  {} files, {}, {}",
+        style(files.len()).bold(),
+        style(voom_domain::utils::format::format_size(total_size)).cyan(),
+        style(voom_domain::utils::format::format_duration(total_duration)).dim(),
+    );
+    println!();
+
+    println!("{}", style("Containers:").bold());
+    let containers = container_counts(files);
+    let mut table = output::new_table();
+    table.set_header(vec!["Container", "Count"]);
+    for (container, count) in &containers {
+        table.add_row(vec![Cell::new(container), Cell::new(count)]);
+    }
+    println!("{table}");
+    println!();
+
+    println!("{}", style("Codecs:").bold());
+    let codecs = codec_counts(files);
+    let mut table = output::new_table();
+    table.set_header(vec!["Codec", "Count"]);
+    for (codec, count) in &codecs {
+        table.add_row(vec![Cell::new(codec), Cell::new(count)]);
+    }
+    println!("{table}");
+}
+
+fn print_file_list_csv(files: &[voom_domain::MediaFile]) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut wtr = csv::Writer::from_writer(stdout.lock());
+    wtr.write_record(["path", "size", "duration", "container", "codec"])?;
+    for f in files {
+        let primary_codec = f.tracks.first().map(|t| t.codec.as_str()).unwrap_or("");
+        wtr.write_record([
+            &f.path.display().to_string(),
+            &f.size.to_string(),
+            &format!("{:.1}", f.duration),
+            f.container.as_str(),
+            primary_codec,
+        ])?;
+    }
+    wtr.flush()?;
+    Ok(())
+}
+
+fn count_by<T, I, F>(items: &[T], key_fn: F) -> Vec<(String, usize)>
+where
+    F: Fn(&T) -> I,
+    I: IntoIterator<Item = String>,
+{
+    let mut counts = std::collections::HashMap::new();
+    for item in items {
+        for key in key_fn(item) {
+            *counts.entry(key).or_insert(0usize) += 1;
+        }
+    }
+    let mut sorted: Vec<_> = counts.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted
+}
+
+fn container_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
+    count_by(files, |f| std::iter::once(f.container.as_str().to_string()))
+}
+
 fn codec_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
-    stats::count_by(files, |f| {
+    count_by(files, |f| {
         f.tracks.iter().map(|t| t.codec.clone()).collect::<Vec<_>>()
     })
 }
@@ -757,8 +1138,7 @@ mod tests {
             make_file(&["avc", "aac"]),
         ];
         let counts = codec_counts(&files);
-        // hevc: 2, aac: 2, opus: 1, srt: 1, avc: 1
-        assert_eq!(counts[0].1, 2); // either hevc or aac first (both 2)
+        assert_eq!(counts[0].1, 2);
         assert_eq!(counts[1].1, 2);
     }
 
@@ -769,5 +1149,92 @@ mod tests {
         assert_eq!(counts[0], ("b".to_string(), 3));
         assert_eq!(counts[1], ("c".to_string(), 2));
         assert_eq!(counts[2], ("a".to_string(), 1));
+    }
+
+    #[test]
+    fn test_build_request_no_flags_gives_summary() {
+        let args = ReportArgs {
+            format: OutputFormat::Table,
+            library: false,
+            plans: false,
+            savings: false,
+            period: None,
+            history: None,
+            issues: false,
+            database: false,
+            all: false,
+            snapshot: false,
+            files: false,
+        };
+        let req = build_request(&args).unwrap();
+        assert!(req.includes(ReportSection::Library));
+        assert!(!req.includes(ReportSection::Plans));
+    }
+
+    #[test]
+    fn test_build_request_all_flag() {
+        let args = ReportArgs {
+            format: OutputFormat::Table,
+            library: false,
+            plans: false,
+            savings: false,
+            period: None,
+            history: None,
+            issues: false,
+            database: false,
+            all: true,
+            snapshot: false,
+            files: false,
+        };
+        let req = build_request(&args).unwrap();
+        assert!(req.includes(ReportSection::Library));
+        assert!(req.includes(ReportSection::Plans));
+        assert!(req.includes(ReportSection::Database));
+    }
+
+    #[test]
+    fn test_build_request_specific_sections() {
+        let args = ReportArgs {
+            format: OutputFormat::Table,
+            library: false,
+            plans: true,
+            savings: false,
+            period: None,
+            history: Some(10),
+            issues: false,
+            database: false,
+            all: false,
+            snapshot: false,
+            files: false,
+        };
+        let req = build_request(&args).unwrap();
+        assert!(req.includes(ReportSection::Plans));
+        assert!(req.includes(ReportSection::History));
+        assert!(!req.includes(ReportSection::Library));
+        assert_eq!(req.history_limit, Some(10));
+    }
+
+    #[test]
+    fn test_is_summary_request() {
+        let default_args = ReportArgs {
+            format: OutputFormat::Table,
+            library: false,
+            plans: false,
+            savings: false,
+            period: None,
+            history: None,
+            issues: false,
+            database: false,
+            all: false,
+            snapshot: false,
+            files: false,
+        };
+        assert!(is_summary_request(&default_args));
+
+        let specific_args = ReportArgs {
+            plans: true,
+            ..default_args
+        };
+        assert!(!is_summary_request(&specific_args));
     }
 }

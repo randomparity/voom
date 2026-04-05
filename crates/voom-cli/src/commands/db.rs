@@ -6,7 +6,6 @@ use crate::app;
 use crate::cli::{DbCommands, OutputFormat};
 use crate::config;
 use crate::output;
-use voom_domain::utils::format::format_size;
 
 pub async fn run(cmd: DbCommands, global_yes: bool) -> Result<()> {
     match cmd {
@@ -16,7 +15,6 @@ pub async fn run(cmd: DbCommands, global_yes: bool) -> Result<()> {
         DbCommands::ListBad { path, format } => list_bad(path, format),
         DbCommands::PurgeBad => purge_bad(),
         DbCommands::CleanBad { yes } => clean_bad(yes || global_yes).await,
-        DbCommands::Stats { format } => stats(format),
     }
 }
 
@@ -171,7 +169,7 @@ fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
             println!("{table}");
             println!("\n{} bad files total.", style(bad_files.len()).bold());
         }
-        OutputFormat::Plain => {
+        OutputFormat::Plain | OutputFormat::Csv => {
             for bf in &bad_files {
                 println!("{}", bf.path.display());
             }
@@ -288,79 +286,6 @@ async fn clean_bad(yes: bool) -> Result<()> {
             errors.to_string()
         }
     );
-
-    Ok(())
-}
-
-fn stats(format: OutputFormat) -> Result<()> {
-    let config = config::load_config()?;
-    let db_path = config.data_dir.join("voom.db");
-    let store = app::open_store(&config)?;
-
-    let file_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
-
-    let row_counts = store
-        .table_row_counts()
-        .context("failed to read table row counts")?;
-    let page_stats = store.page_stats().context("failed to read page stats")?;
-
-    match format {
-        OutputFormat::Json => {
-            let tables: serde_json::Map<String, serde_json::Value> = row_counts
-                .iter()
-                .map(|(name, count)| (name.clone(), serde_json::Value::from(*count)))
-                .collect();
-            let json = serde_json::json!({
-                "path": db_path.to_string_lossy(),
-                "file_size": file_size,
-                "tables": tables,
-                "sqlite": {
-                    "page_size": page_stats.page_size,
-                    "page_count": page_stats.page_count,
-                    "freelist_count": page_stats.freelist_count,
-                },
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
-        OutputFormat::Table => {
-            println!(
-                "Database: {} ({})\n",
-                style(db_path.display()).bold(),
-                format_size(file_size)
-            );
-
-            let mut table = output::new_table();
-            table.set_header(vec!["Table", "Rows"]);
-            for (name, count) in &row_counts {
-                table.add_row(vec![Cell::new(name), Cell::new(format!("{count}"))]);
-            }
-            println!("{table}");
-
-            let free_pct = if page_stats.page_count > 0 {
-                #[allow(clippy::cast_precision_loss)]
-                let pct = page_stats.freelist_count as f64 / page_stats.page_count as f64 * 100.0;
-                format!("{pct:.1}%")
-            } else {
-                "0.0%".to_string()
-            };
-
-            println!("\nSQLite internals:");
-            println!(
-                "  Page size:    {} bytes",
-                style(page_stats.page_size).bold()
-            );
-            println!("  Pages:        {}", style(page_stats.page_count).bold());
-            println!(
-                "  Free pages:   {} ({free_pct})",
-                style(page_stats.freelist_count).bold()
-            );
-        }
-        OutputFormat::Plain => {
-            for (name, count) in &row_counts {
-                println!("{name}\t{count}");
-            }
-        }
-    }
 
     Ok(())
 }
