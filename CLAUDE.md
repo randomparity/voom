@@ -87,6 +87,14 @@ When review agents surface pre-existing issues that are out of scope for the cur
 - After implementing changes, always run `cargo test` and `cargo clippy` before committing. If tests fail, fix them before proceeding.
 - Run `cargo fmt` before every commit. Never commit without formatting first.
 
+## Pre-PR Checks
+- Before submitting a PR, the full test suite **including functional tests** must pass:
+  ```bash
+  cargo test                                                         # unit + integration tests
+  cargo test -p voom-cli --features functional -- --test-threads=4   # functional (end-to-end) tests
+  ```
+- Do not submit a PR if any test fails. Fix all failures first.
+
 ## Git Workflow
 - When staging commits, be precise about which files to include. Use `git add <specific-files>` rather than `git add .` to avoid staging unrelated changes.
 

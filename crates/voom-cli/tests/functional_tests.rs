@@ -301,7 +301,7 @@ mod test_scan {
             .timeout(std::time::Duration::from_secs(60))
             .assert()
             .success()
-            .stdout(predicate::str::contains("2 files discovered"));
+            .stderr(predicate::str::contains("2 files discovered"));
     }
 
     #[test]
@@ -315,7 +315,7 @@ mod test_scan {
             .timeout(std::time::Duration::from_secs(60))
             .assert()
             .success()
-            .stdout(predicate::str::contains("hashing skipped"));
+            .stderr(predicate::str::contains("hashing skipped"));
     }
 
     #[test]
@@ -584,7 +584,7 @@ mod test_report {
             .arg("report")
             .assert()
             .success()
-            .stdout(predicate::str::contains("No files in database"));
+            .stderr(predicate::str::contains("No files in database"));
     }
 
     #[test]
@@ -878,7 +878,7 @@ mod test_report_issues {
             .args(["report", "--issues"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("No files in database"));
+            .stderr(predicate::str::contains("No files in database"));
     }
 
     #[test]
@@ -897,7 +897,7 @@ mod test_report_issues {
             .args(["report", "--issues"])
             .assert()
             .success()
-            .stdout(predicate::str::contains(
+            .stderr(predicate::str::contains(
                 "No files with safeguard violations",
             ));
     }
@@ -949,7 +949,7 @@ mod test_workflow {
             .timeout(std::time::Duration::from_secs(60))
             .assert()
             .success()
-            .stdout(predicate::str::contains("2 files discovered"));
+            .stderr(predicate::str::contains("2 files discovered"));
 
         // 4. Inspect (should hit DB)
         let mkv = env.media_dir().join("hevc-surround.mkv");
@@ -973,7 +973,7 @@ mod test_workflow {
             .timeout(std::time::Duration::from_secs(60))
             .assert()
             .success()
-            .stdout(predicate::str::contains("dry run"));
+            .stderr(predicate::str::contains("dry run"));
 
         // 6. Report
         env.voom()
@@ -1011,7 +1011,7 @@ mod test_workflow {
             .timeout(std::time::Duration::from_secs(60))
             .assert()
             .success()
-            .stdout(predicate::str::contains("2 files discovered"));
+            .stderr(predicate::str::contains("2 files discovered"));
 
         // 3. files list
         env.voom()
@@ -1049,7 +1049,7 @@ mod test_workflow {
             .timeout(std::time::Duration::from_secs(60))
             .assert()
             .success()
-            .stdout(predicate::str::contains("dry run"));
+            .stderr(predicate::str::contains("dry run"));
 
         // 7. Plans show (dry-run doesn't persist plans)
         let file_id = first_file_id(&env);
@@ -1057,7 +1057,7 @@ mod test_workflow {
             .args(["plans", "show", &file_id])
             .assert()
             .success()
-            .stdout(predicate::str::contains("No plans found"));
+            .stderr(predicate::str::contains("No plans found"));
 
         // 8. Health check
         env.voom()
@@ -1141,7 +1141,7 @@ mod test_files {
             .args(["files", "list"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("No files in database"));
+            .stderr(predicate::str::contains("No files in database"));
     }
 
     #[test]
@@ -1212,7 +1212,7 @@ mod test_files {
             .args(["files", "delete", &file_id, "--yes"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("Deleted"));
+            .stdout(predicate::str::contains("Marked"));
     }
 }
 
@@ -1241,7 +1241,7 @@ mod test_plans {
             .args(["plans", "show", &file_id])
             .assert()
             .success()
-            .stdout(predicate::str::contains("No plans found"));
+            .stderr(predicate::str::contains("No plans found"));
     }
 
     #[test]
@@ -1276,9 +1276,10 @@ mod test_plans {
             .expect("run plans show");
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stdout.contains("normalize") || stdout.contains("No plans found"),
-            "unexpected plans show output: {stdout}"
+            stdout.contains("normalize") || stderr.contains("No plans found"),
+            "unexpected plans show output — stdout: {stdout}, stderr: {stderr}"
         );
     }
 }
@@ -1297,7 +1298,7 @@ mod test_events {
             .args(["events"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("No events found"));
+            .stderr(predicate::str::contains("No events found"));
     }
 
     #[test]
@@ -1372,7 +1373,7 @@ mod test_health {
             .args(["health", "history"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("No health check records found"));
+            .stderr(predicate::str::contains("No health check records found"));
     }
 }
 
@@ -3401,7 +3402,7 @@ mod test_history {
     use super::*;
 
     #[test]
-    fn history_no_entries() {
+    fn history_after_scan_shows_discovery() {
         require_tool!("ffprobe");
         let env = TestEnv::new();
         env.populate_media(&["basic-h264-aac"]);
@@ -3413,11 +3414,12 @@ mod test_history {
             .assert()
             .success();
 
+        // Scanning now records a discovery transition, so history is present
         env.voom()
             .args(["history", file.to_str().unwrap()])
             .assert()
             .success()
-            .stdout(predicate::str::contains("No history found"));
+            .stdout(predicate::str::contains("transition entries for"));
     }
 
     #[test]
@@ -3466,7 +3468,7 @@ mod test_backup {
             .args(["backup", "list", env.media_dir().to_str().unwrap()])
             .assert()
             .success()
-            .stdout(predicate::str::contains("No .vbak files found"));
+            .stderr(predicate::str::contains("No .vbak files found"));
     }
 
     #[test]
@@ -3497,9 +3499,10 @@ mod test_backup {
             .expect("run backup list");
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stdout.contains("backup(s) found") || stdout.contains("No .vbak files found"),
-            "unexpected backup list output: {stdout}"
+            stdout.contains("backup(s) found") || stderr.contains("No .vbak files found"),
+            "unexpected backup list output — stdout: {stdout}, stderr: {stderr}"
         );
     }
 }
