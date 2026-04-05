@@ -277,19 +277,24 @@ impl HostState {
     /// Returns MessagePack-serialized `Vec<FileTransition>`.
     ///
     /// Enforces the same `allowed_paths` sandbox as other filesystem-aware
-    /// host functions: if the plugin has a non-empty path allowlist, the
-    /// query path must fall within it.
+    /// host functions: requires a non-empty path allowlist and verifies the
+    /// query path falls within it.
     pub fn get_path_transitions(&self, path: &str) -> Result<Vec<u8>, String> {
-        if !self.allowed_paths.is_empty() {
-            let canonical =
-                std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
-            let allowed = self.allowed_paths.iter().any(|p| canonical.starts_with(p));
-            if !allowed {
-                return Err(format!(
-                    "path '{path}' is not within allowed directories for plugin '{}'",
-                    self.plugin_name
-                ));
-            }
+        if self.allowed_paths.is_empty() {
+            return Err(format!(
+                "path '{path}' is not within allowed directories for plugin '{}' \
+                 (no paths configured)",
+                self.plugin_name
+            ));
+        }
+        let canonical =
+            std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+        let allowed = self.allowed_paths.iter().any(|p| canonical.starts_with(p));
+        if !allowed {
+            return Err(format!(
+                "path '{path}' is not within allowed directories for plugin '{}'",
+                self.plugin_name
+            ));
         }
         let store = self.transition_store.as_ref().ok_or_else(|| {
             "file transition history not available \
@@ -494,8 +499,17 @@ mod tests {
     }
 
     #[test]
-    fn test_get_path_transitions_no_store() {
+    fn test_get_path_transitions_no_paths_configured() {
         let state = HostState::new("test".into());
+        let result = state.get_path_transitions("/movies/test.mkv");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no paths configured"));
+    }
+
+    #[test]
+    fn test_get_path_transitions_no_store() {
+        use std::path::PathBuf;
+        let state = HostState::new("test".into()).with_paths(vec![PathBuf::from("/movies")]);
         let result = state.get_path_transitions("/movies/test.mkv");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not available"));
@@ -518,7 +532,9 @@ mod tests {
         );
         store.record_transition(&t).unwrap();
 
-        let state = HostState::new("test".into()).with_transition_store(store);
+        let state = HostState::new("test".into())
+            .with_transition_store(store)
+            .with_paths(vec![PathBuf::from("/movies")]);
 
         let bytes = state.get_path_transitions(&path.to_string_lossy()).unwrap();
         let transitions: Vec<FileTransition> = rmp_serde::from_slice(&bytes).expect("deserialize");
@@ -580,16 +596,15 @@ mod tests {
     }
 
     #[test]
-    fn test_get_path_transitions_allowed_by_empty_paths() {
+    fn test_get_path_transitions_denied_by_empty_paths() {
         use crate::host::InMemoryTransitionStore;
 
         let store = Arc::new(InMemoryTransitionStore::new());
-        // Empty allowed_paths = no restrictions (unlike tools which deny all).
-        // This matches the read-file-metadata pattern: no paths configured
-        // means the plugin has no filesystem sandbox, so queries are unrestricted.
+        // Empty allowed_paths = deny all, matching write_file and run_tool.
         let state = HostState::new("test".into()).with_transition_store(store);
 
         let result = state.get_path_transitions("/movies/test.mkv");
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no paths configured"));
     }
 }
