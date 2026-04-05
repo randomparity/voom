@@ -287,7 +287,7 @@ fn load_wasm_plugins(
 
     let skip_set: std::collections::HashSet<String> = disabled.iter().cloned().collect();
     let results =
-        loader.load_dir_with_config_skip_storage(&wasm_dir, &config.plugin, &skip_set, Some(store));
+        loader.load_dir_with_config_skip(&wasm_dir, &config.plugin, &skip_set, Some(store));
     for result in results {
         match result {
             Ok((plugin, priority)) => {

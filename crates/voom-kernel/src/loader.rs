@@ -266,33 +266,24 @@ pub mod wasm {
             dir: &Path,
             plugin_configs: &std::collections::HashMap<String, toml::Table>,
         ) -> Vec<Result<Arc<dyn Plugin>, WasmLoadError>> {
-            self.load_dir_with_config_skip(dir, plugin_configs, &std::collections::HashSet::new())
-                .into_iter()
-                .map(|r| r.map(|(plugin, _priority)| plugin))
-                .collect()
+            self.load_dir_with_config_skip(
+                dir,
+                plugin_configs,
+                &std::collections::HashSet::new(),
+                None,
+            )
+            .into_iter()
+            .map(|r| r.map(|(plugin, _priority)| plugin))
+            .collect()
         }
 
         /// Like [`WasmPluginLoader::load_dir_with_config`] but skips plugins in the `skip_plugins` set
         /// before compilation, and returns `(plugin, priority)` tuples where
         /// priority comes from the manifest (default: 70).
         ///
-        /// **Note:** Plugins loaded via this method do not receive storage-backed
-        /// plugin data or transition history. Use
-        /// [`load_dir_with_config_skip_storage`](Self::load_dir_with_config_skip_storage)
-        /// to wire storage into each plugin's `HostState`.
+        /// When `storage` is provided, wires storage-backed plugin data and
+        /// transition history into each plugin's [`HostState`].
         pub fn load_dir_with_config_skip(
-            &self,
-            dir: &Path,
-            plugin_configs: &std::collections::HashMap<String, toml::Table>,
-            skip_plugins: &std::collections::HashSet<String>,
-        ) -> Vec<Result<PluginWithPriority, WasmLoadError>> {
-            self.load_dir_with_config_skip_storage(dir, plugin_configs, skip_plugins, None)
-        }
-
-        /// Like [`WasmPluginLoader::load_dir_with_config_skip`] but also wires
-        /// storage-backed plugin data and transition history into each plugin's
-        /// [`HostState`] when `storage` is provided.
-        pub fn load_dir_with_config_skip_storage(
             &self,
             dir: &Path,
             plugin_configs: &std::collections::HashMap<String, toml::Table>,
