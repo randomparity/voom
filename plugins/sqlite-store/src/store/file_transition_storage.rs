@@ -4,7 +4,7 @@ use rusqlite::params;
 use uuid::Uuid;
 
 use voom_domain::errors::Result;
-use voom_domain::stats::ProcessingOutcome;
+use voom_domain::stats::{ProcessingOutcome, SavingsReport, TimePeriod};
 use voom_domain::storage::FileTransitionStorage;
 use voom_domain::transition::{FileTransition, TransitionSource};
 
@@ -92,6 +92,10 @@ impl FileTransitionStorage for SqliteStore {
             .map_err(storage_err("failed to collect transitions by source"))?;
 
         Ok(rows)
+    }
+
+    fn savings_by_provenance(&self, _period: Option<TimePeriod>) -> Result<SavingsReport> {
+        Ok(SavingsReport::default())
     }
 
     fn transitions_for_path(&self, path: &std::path::Path) -> Result<Vec<FileTransition>> {

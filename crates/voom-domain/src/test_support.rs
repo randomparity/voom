@@ -420,6 +420,13 @@ impl FileTransitionStorage for InMemoryStore {
     fn transitions_for_path(&self, _: &Path) -> Result<Vec<FileTransition>> {
         Ok(Vec::new())
     }
+
+    fn savings_by_provenance(
+        &self,
+        _period: Option<crate::stats::TimePeriod>,
+    ) -> Result<crate::stats::SavingsReport> {
+        Ok(crate::stats::SavingsReport::default())
+    }
 }
 
 impl PluginDataStorage for InMemoryStore {
