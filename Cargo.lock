@@ -3404,6 +3404,7 @@ dependencies = [
  "ureq",
  "uuid",
  "voom-domain",
+ "voom-sqlite-store",
  "voom-wit",
  "wait-timeout",
  "wasmtime",
