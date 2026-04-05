@@ -165,7 +165,6 @@ impl Plugin for ReportPlugin {
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
         match event {
             Event::ScanComplete(_) => self.handle_lifecycle_event(SnapshotTrigger::ScanComplete),
-            // TODO(#120): no production code dispatches IntrospectComplete yet
             Event::IntrospectComplete(_) => {
                 self.handle_lifecycle_event(SnapshotTrigger::IntrospectComplete)
             }
