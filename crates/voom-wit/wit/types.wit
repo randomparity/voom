@@ -116,6 +116,52 @@ interface types {
         error-message: option<string>,
     }
 
+    // --- File transition types ---
+
+    enum transition-source {
+        discovery,
+        voom,
+        external,
+        unknown,
+    }
+
+    enum processing-outcome {
+        success,
+        failure,
+        skipped,
+    }
+
+    record metadata-snapshot {
+        container: string,
+        video-tracks: u32,
+        audio-tracks: u32,
+        subtitle-tracks: u32,
+        codecs: list<string>,
+        resolution: option<string>,
+        duration-secs: float64,
+    }
+
+    record file-transition {
+        id: string,
+        file-id: string,
+        path: string,
+        from-hash: option<string>,
+        to-hash: string,
+        from-size: option<u64>,
+        to-size: u64,
+        source: transition-source,
+        source-detail: option<string>,
+        plan-id: option<string>,
+        created-at: string,
+        duration-ms: option<u64>,
+        actions-taken: option<u32>,
+        tracks-modified: option<u32>,
+        outcome: option<processing-outcome>,
+        policy-name: option<string>,
+        phase-name: option<string>,
+        metadata-snapshot: option<metadata-snapshot>,
+    }
+
     // --- Event types ---
 
     record event-data {
