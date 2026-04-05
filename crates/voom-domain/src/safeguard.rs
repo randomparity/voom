@@ -20,6 +20,8 @@ pub enum SafeguardKind {
     NoAudioTrack,
     /// Output file was larger than the input.
     OutputLarger,
+    /// Insufficient free disk space to safely execute the plan.
+    DiskSpaceLow,
 }
 
 impl SafeguardKind {
@@ -30,6 +32,7 @@ impl SafeguardKind {
             Self::NoVideoTrack => "no_video_track",
             Self::NoAudioTrack => "no_audio_track",
             Self::OutputLarger => "output_larger",
+            Self::DiskSpaceLow => "disk_space_low",
         }
     }
 }
@@ -94,6 +97,23 @@ mod tests {
     #[test]
     fn test_serde_roundtrip() {
         let v = SafeguardViolation::new(SafeguardKind::NoAudioTrack, "test message", "normalize");
+        let json = serde_json::to_string(&v).expect("serialize");
+        let deserialized: SafeguardViolation = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized, v);
+    }
+
+    #[test]
+    fn test_safeguard_kind_disk_space_low_display() {
+        assert_eq!(SafeguardKind::DiskSpaceLow.to_string(), "disk_space_low");
+    }
+
+    #[test]
+    fn test_disk_space_low_serde_roundtrip() {
+        let v = SafeguardViolation::new(
+            SafeguardKind::DiskSpaceLow,
+            "need 2.1 GB, only 500 MB available",
+            "normalize",
+        );
         let json = serde_json::to_string(&v).expect("serialize");
         let deserialized: SafeguardViolation = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(deserialized, v);

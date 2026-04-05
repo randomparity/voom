@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "Domain types and utilities for VOOM — Video Orchestration Operations Manager"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

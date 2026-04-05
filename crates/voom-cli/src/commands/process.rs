@@ -723,7 +723,8 @@ fn process_single_file_dry_run(
     compiled: &voom_dsl::CompiledPolicy,
     ctx: &ProcessContext<'_>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
-    let result = orchestrate_plans(compiled, file, ctx.capabilities);
+    let mut result = orchestrate_plans(compiled, file, ctx.capabilities);
+    annotate_disk_space_violations(&mut result, file);
 
     collect_safeguard_violations(file, &result, ctx);
 
@@ -851,6 +852,11 @@ async fn process_single_file_execute(
 
         // Empty plans need no execution
         if plan.is_empty() {
+            continue;
+        }
+
+        // Pre-execution safeguard: check disk space
+        if check_disk_space(&plan, &current_file, ctx) {
             continue;
         }
 
@@ -1059,6 +1065,111 @@ fn check_size_increase(
     );
     record_failure_transition(file, plan.id, "", &plan.policy_name, &plan.phase_name, ctx);
     true
+}
+
+/// Check whether sufficient disk space is available before executing a plan.
+///
+/// Returns `true` if space is insufficient and the phase should be skipped
+/// (a `PlanFailed` event is dispatched and the failure is recorded).
+/// Returns `false` to proceed normally.
+fn check_disk_space(
+    plan: &voom_domain::plan::Plan,
+    file: &voom_domain::media::MediaFile,
+    ctx: &ProcessContext<'_>,
+) -> bool {
+    let check_path = file.path.parent().unwrap_or(std::path::Path::new("/"));
+
+    let available = match voom_domain::utils::disk::available_space(check_path) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                path = %file.path.display(),
+                error = %e,
+                "disk space check failed, proceeding anyway"
+            );
+            return false;
+        }
+    };
+
+    let required = voom_domain::utils::disk::estimate_required_space(plan, file.size);
+
+    if available >= required {
+        return false;
+    }
+
+    let message = format!(
+        "insufficient disk space: need {} but only {} available on {}",
+        format_size(required),
+        format_size(available),
+        check_path.display(),
+    );
+
+    tracing::warn!(
+        path = %file.path.display(),
+        phase = %plan.phase_name,
+        required,
+        available,
+        "{message}"
+    );
+
+    let r = ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
+        plan.id,
+        file.path.clone(),
+        plan.phase_name.clone(),
+        &message,
+    )));
+    log_plugin_errors(&r);
+    record_phase_stat(
+        &ctx.counters.phase_stats,
+        &plan.phase_name,
+        PhaseOutcomeKind::Failed,
+    );
+    record_failure_transition(file, plan.id, "", &plan.policy_name, &plan.phase_name, ctx);
+    true
+}
+
+/// Annotate plans with `DiskSpaceLow` safeguard violations for dry-run reporting.
+///
+/// Unlike real execution (which skips the plan entirely), dry-run mode attaches
+/// the violation to the plan so it appears in `--plan-only` JSON output.
+fn annotate_disk_space_violations(
+    result: &mut voom_phase_orchestrator::OrchestrationResult,
+    file: &voom_domain::media::MediaFile,
+) {
+    let check_path = file.path.parent().unwrap_or(std::path::Path::new("/"));
+
+    let available = match voom_domain::utils::disk::available_space(check_path) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                path = %file.path.display(),
+                error = %e,
+                "disk space check failed during dry-run, skipping annotation"
+            );
+            return;
+        }
+    };
+
+    for plan in &mut result.plans {
+        if plan.is_skipped() || plan.is_empty() {
+            continue;
+        }
+        let required = voom_domain::utils::disk::estimate_required_space(plan, file.size);
+        if available < required {
+            let message = format!(
+                "insufficient disk space: need {} but only {} available on {}",
+                format_size(required),
+                format_size(available),
+                check_path.display(),
+            );
+            plan.safeguard_violations
+                .push(voom_domain::SafeguardViolation::new(
+                    voom_domain::SafeguardKind::DiskSpaceLow,
+                    message,
+                    &plan.phase_name,
+                ));
+        }
+    }
 }
 
 /// Handle a successfully executed plan: dispatch completion, re-introspect,
@@ -1999,5 +2110,45 @@ mod tests {
         apply_detected_languages(&mut file);
         assert_eq!(file.tracks[0].language, "und");
         assert_eq!(file.tracks[1].language, "fre");
+    }
+
+    #[test]
+    fn test_check_disk_space_passes_with_enough_space() {
+        // Use a tempdir — the local filesystem should have plenty of space.
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.mkv");
+        std::fs::write(&file_path, vec![0u8; 1024]).unwrap();
+
+        let mut file = MediaFile::new(file_path);
+        file.size = 1024;
+
+        let plan = test_plan("normalize", false);
+
+        let kernel = voom_kernel::Kernel::new();
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_domain::test_support::InMemoryStore::new());
+        let capabilities = voom_domain::CapabilityMap::new();
+        let counters = RunCounters::new();
+        let token = CancellationToken::new();
+        let resolver = PolicyResolver::from_single(
+            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
+                .unwrap(),
+            dir.path(),
+        );
+        let ctx = ProcessContext {
+            resolver: &resolver,
+            kernel: Arc::new(kernel),
+            store,
+            dry_run: false,
+            plan_only: false,
+            flag_size_increase: false,
+            token: &token,
+            ffprobe_path: None,
+            capabilities: &capabilities,
+            counters: &counters,
+        };
+
+        // Should return false (enough space)
+        assert!(!check_disk_space(&plan, &file, &ctx));
     }
 }
