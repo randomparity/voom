@@ -29,4 +29,12 @@ interface host {
 
     /// Log a message at the given level.
     log: func(level: log-level, message: string);
+
+    /// Query file transitions by file ID.
+    /// Returns MessagePack-serialized list of file-transition records.
+    get-file-transitions: func(file-id: string) -> result<list<u8>, string>;
+
+    /// Query file transitions by filesystem path.
+    /// Returns MessagePack-serialized list of file-transition records.
+    get-path-transitions: func(path: string) -> result<list<u8>, string>;
 }
