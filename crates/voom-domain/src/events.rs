@@ -773,6 +773,7 @@ pub struct ScanCompleteEvent {
 }
 
 impl ScanCompleteEvent {
+    #[must_use]
     pub fn new(files_discovered: u64, files_introspected: u64) -> Self {
         Self {
             files_discovered,
@@ -790,6 +791,7 @@ pub struct IntrospectCompleteEvent {
 }
 
 impl IntrospectCompleteEvent {
+    #[must_use]
     pub fn new(files_introspected: u64) -> Self {
         Self { files_introspected }
     }
