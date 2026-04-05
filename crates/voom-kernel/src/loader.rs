@@ -275,12 +275,32 @@ pub mod wasm {
         /// Like [`WasmPluginLoader::load_dir_with_config`] but skips plugins in the `skip_plugins` set
         /// before compilation, and returns `(plugin, priority)` tuples where
         /// priority comes from the manifest (default: 70).
+        ///
+        /// **Note:** Plugins loaded via this method do not receive storage-backed
+        /// plugin data or transition history. Use
+        /// [`load_dir_with_config_skip_storage`](Self::load_dir_with_config_skip_storage)
+        /// to wire storage into each plugin's `HostState`.
         pub fn load_dir_with_config_skip(
             &self,
             dir: &Path,
             plugin_configs: &std::collections::HashMap<String, toml::Table>,
             skip_plugins: &std::collections::HashSet<String>,
         ) -> Vec<Result<PluginWithPriority, WasmLoadError>> {
+            self.load_dir_with_config_skip_storage(dir, plugin_configs, skip_plugins, None)
+        }
+
+        /// Like [`WasmPluginLoader::load_dir_with_config_skip`] but also wires
+        /// storage-backed plugin data and transition history into each plugin's
+        /// [`HostState`] when `storage` is provided.
+        pub fn load_dir_with_config_skip_storage(
+            &self,
+            dir: &Path,
+            plugin_configs: &std::collections::HashMap<String, toml::Table>,
+            skip_plugins: &std::collections::HashSet<String>,
+            storage: Option<Arc<dyn voom_domain::storage::StorageTrait>>,
+        ) -> Vec<Result<PluginWithPriority, WasmLoadError>> {
+            use crate::host::{StorageBackedPluginStore, StorageBackedTransitionStore};
+
             let entries = match std::fs::read_dir(dir) {
                 Ok(entries) => entries,
                 Err(e) => {
@@ -317,7 +337,7 @@ pub mod wasm {
                         return None;
                     }
 
-                    let host_state = plugin_configs.get(&plugin_name).map(|table| {
+                    let mut host_state = plugin_configs.get(&plugin_name).map(|table| {
                         let config_value = match serde_json::to_value(table) {
                             Ok(v) => v,
                             Err(e) => {
@@ -343,6 +363,18 @@ pub mod wasm {
 
                         state
                     });
+
+                    // Wire storage-backed stores into every plugin when available.
+                    if let Some(ref s) = storage {
+                        let state = host_state
+                            .get_or_insert_with(|| HostState::new(plugin_name.clone()));
+                        let plugin_store: Arc<dyn crate::host::WasmPluginStore> =
+                            Arc::new(StorageBackedPluginStore::new(s.clone()));
+                        let transition_store: Arc<dyn crate::host::WasmTransitionStore> =
+                            Arc::new(StorageBackedTransitionStore::new(s.clone()));
+                        state.storage = Some(plugin_store);
+                        state.transition_store = Some(transition_store);
+                    }
 
                     let priority = manifest.as_ref().map(|m| m.priority).unwrap_or(70);
                     Some(
@@ -677,6 +709,40 @@ pub mod wasm {
             .map_err(|e| WasmLoadError::Linker(e.to_string()))
     }
 
+    fn register_transition_funcs(
+        instance: &mut HostLinkerInstance<'_>,
+    ) -> Result<(), WasmLoadError> {
+        instance
+            .func_wrap(
+                "get-file-transitions",
+                |ctx: wasmtime::StoreContextMut<'_, HostState>,
+                 (file_id,): (String,)|
+                 -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
+                    let uuid = uuid::Uuid::parse_str(&file_id)
+                        .map_err(|e| format!("invalid file ID '{file_id}': {e}"));
+                    let result = match uuid {
+                        Ok(id) => ctx.data().get_file_transitions(&id),
+                        Err(e) => Err(e),
+                    };
+                    Ok((result,))
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
+
+        instance
+            .func_wrap(
+                "get-path-transitions",
+                |ctx: wasmtime::StoreContextMut<'_, HostState>,
+                 (path,): (String,)|
+                 -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
+                    Ok((ctx.data().get_path_transitions(&path),))
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
+
+        Ok(())
+    }
+
     fn register_plugin_data_funcs(
         instance: &mut HostLinkerInstance<'_>,
     ) -> Result<(), WasmLoadError> {
@@ -903,6 +969,7 @@ pub mod wasm {
         register_run_tool_func(&mut instance)?;
         register_http_funcs(&mut instance)?;
         register_filesystem_funcs(&mut instance)?;
+        register_transition_funcs(&mut instance)?;
 
         Ok(())
     }

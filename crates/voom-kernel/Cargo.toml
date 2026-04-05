@@ -21,6 +21,7 @@ rmp-serde = { workspace = true }
 semver = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
+uuid = { workspace = true }
 ureq = { workspace = true, optional = true }
 wait-timeout = { workspace = true, optional = true }
 wasmtime = { workspace = true, optional = true }
@@ -36,5 +37,4 @@ workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 tempfile = { workspace = true }
-uuid = { workspace = true }
 chrono = { workspace = true }

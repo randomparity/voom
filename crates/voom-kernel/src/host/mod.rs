@@ -6,7 +6,10 @@
 mod functions;
 mod store;
 
-pub use store::{InMemoryPluginStore, StorageBackedPluginStore, WasmPluginStore};
+pub use store::{
+    InMemoryPluginStore, InMemoryTransitionStore, StorageBackedPluginStore,
+    StorageBackedTransitionStore, WasmPluginStore, WasmTransitionStore,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -49,6 +52,8 @@ pub struct HostState {
     pub allowed_paths: Vec<PathBuf>,
     /// Shared storage backend for persistent plugin data.
     pub storage: Option<Arc<dyn WasmPluginStore>>,
+    /// Shared transition store for querying file history.
+    pub transition_store: Option<Arc<dyn WasmTransitionStore>>,
     /// Allowed tool names (empty = deny all).
     pub allowed_tools: Vec<String>,
     /// Allowed HTTP domains (empty = deny all, matching `run_tool` semantics).
@@ -71,6 +76,7 @@ impl HostState {
             plugin_data: HashMap::new(),
             allowed_paths: Vec::new(),
             storage: None,
+            transition_store: None,
             allowed_tools: Vec::new(),
             allowed_http_domains: Vec::new(),
             allowed_capabilities: HashSet::new(),
@@ -107,6 +113,12 @@ impl HostState {
     #[must_use]
     pub fn with_storage(mut self, storage: Arc<dyn WasmPluginStore>) -> Self {
         self.storage = Some(storage);
+        self
+    }
+
+    #[must_use]
+    pub fn with_transition_store(mut self, store: Arc<dyn WasmTransitionStore>) -> Self {
+        self.transition_store = Some(store);
         self
     }
 
