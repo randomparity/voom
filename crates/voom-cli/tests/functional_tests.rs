@@ -614,6 +614,69 @@ mod test_report {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// test_report_savings
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_report_savings {
+    use super::*;
+
+    #[test]
+    fn report_savings_on_empty_db() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["report", "--savings"])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("No savings data"));
+    }
+
+    #[test]
+    fn report_savings_json_empty() {
+        let env = TestEnv::new();
+        let output = env
+            .voom()
+            .args(["report", "--savings", "--format", "json"])
+            .output()
+            .expect("run report --savings");
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value = serde_json::from_str(&stdout)
+            .expect("report --savings --format json should produce valid JSON");
+        assert_eq!(json["total_bytes_saved"], 0);
+        assert_eq!(json["total_transitions"], 0);
+        assert!(json["buckets"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn report_savings_with_period_flag() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["report", "--savings", "--period", "month"])
+            .assert()
+            .success();
+    }
+
+    #[test]
+    fn report_savings_invalid_period_fails() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["report", "--savings", "--period", "century"])
+            .assert()
+            .failure();
+    }
+
+    #[test]
+    fn report_savings_period_requires_savings_flag() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["report", "--period", "month"])
+            .assert()
+            .failure();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // test_db
 // ═══════════════════════════════════════════════════════════════════════════
 
