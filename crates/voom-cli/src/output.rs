@@ -600,4 +600,32 @@ mod transition_table_tests {
         let output = render_transitions_table(&[]);
         assert!(output.is_empty());
     }
+
+    #[test]
+    fn render_transitions_table_shows_lineage_separator() {
+        let file_id_a = Uuid::new_v4();
+        let file_id_b = Uuid::new_v4();
+
+        let mut t1 = make_transition(TransitionSource::Discovery, 1_000_000);
+        t1.file_id = file_id_a;
+
+        let mut t2 = make_transition(TransitionSource::Voom, 950_000);
+        t2.file_id = file_id_b;
+
+        let output = render_transitions_table(&[t1, t2]);
+        assert!(output.contains("external modification"));
+        assert!(output.contains("File ID"));
+    }
+
+    #[test]
+    fn render_transitions_table_enriches_voom_source() {
+        use voom_domain::stats::ProcessingOutcome;
+
+        let mut t = make_transition(TransitionSource::Voom, 950_000);
+        t.phase_name = Some("normalize".to_string());
+        t.outcome = Some(ProcessingOutcome::Success);
+
+        let output = render_transitions_table(&[t]);
+        assert!(output.contains("voom:normalize (success)"));
+    }
 }
