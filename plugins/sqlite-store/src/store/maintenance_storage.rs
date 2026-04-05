@@ -92,6 +92,7 @@ impl MaintenanceStorage for SqliteStore {
         let tables = [
             "files",
             "tracks",
+            "subtitles",
             "jobs",
             "plans",
             "file_transitions",
@@ -100,6 +101,8 @@ impl MaintenanceStorage for SqliteStore {
             "discovered_files",
             "health_checks",
             "event_log",
+            "library_snapshots",
+            "pending_operations",
         ];
         let conn = self.conn()?;
         let mut counts = Vec::with_capacity(tables.len());
@@ -130,5 +133,38 @@ impl MaintenanceStorage for SqliteStore {
             page_count,
             freelist_count,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_store() -> SqliteStore {
+        SqliteStore::in_memory().expect("in-memory store")
+    }
+
+    #[test]
+    fn test_table_row_counts_includes_all_tables() {
+        let store = test_store();
+        let counts = store.table_row_counts().expect("row counts");
+        let table_names: Vec<&str> = counts.iter().map(|(name, _)| name.as_str()).collect();
+        for expected in &[
+            "files",
+            "tracks",
+            "subtitles",
+            "jobs",
+            "plans",
+            "file_transitions",
+            "plugin_data",
+            "bad_files",
+            "discovered_files",
+            "health_checks",
+            "event_log",
+            "library_snapshots",
+            "pending_operations",
+        ] {
+            assert!(table_names.contains(expected), "missing table: {expected}");
+        }
     }
 }
