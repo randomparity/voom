@@ -145,6 +145,77 @@ pub struct ProcessingAggregateStats {
     pub bad_files_by_source: Vec<(String, u64)>,
 }
 
+/// A single row in a savings breakdown — one per (executor, phase) pair.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SavingsBucket {
+    /// Executor name (from `source_detail`, e.g. "mkvtoolnix:normalize").
+    /// `None` for transitions missing source_detail.
+    pub executor: Option<String>,
+    /// Phase name (from `phase_name`).
+    /// `None` for transitions missing phase_name.
+    pub phase: Option<String>,
+    /// Time period label (e.g. "2026-04", "2026-W14", "2026-04-05").
+    /// `None` when not grouped by time.
+    pub period: Option<String>,
+    /// Number of successful transitions in this bucket.
+    pub transition_count: u64,
+    /// Total bytes saved (positive = smaller after, negative = larger after).
+    pub bytes_saved: i64,
+    /// Total processing duration in milliseconds.
+    pub duration_ms: u64,
+    /// Total files processed (distinct file_id count).
+    pub file_count: u64,
+}
+
+/// The granularity for time-based savings grouping.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TimePeriod {
+    /// Group by calendar day (YYYY-MM-DD).
+    Day,
+    /// Group by ISO week (YYYY-WNN).
+    Week,
+    /// Group by calendar month (YYYY-MM).
+    #[default]
+    Month,
+}
+
+impl TimePeriod {
+    /// Returns the SQLite strftime format and label prefix for this period.
+    #[must_use]
+    pub fn sql_format(&self) -> &'static str {
+        match self {
+            TimePeriod::Day => "%Y-%m-%d",
+            TimePeriod::Week => "%Y-W%W",
+            TimePeriod::Month => "%Y-%m",
+        }
+    }
+
+    /// Parse from a CLI string.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "day" => Some(TimePeriod::Day),
+            "week" => Some(TimePeriod::Week),
+            "month" => Some(TimePeriod::Month),
+            _ => None,
+        }
+    }
+}
+
+/// Complete savings report containing bucketed breakdowns.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SavingsReport {
+    /// Breakdown by (executor, phase, period).
+    pub buckets: Vec<SavingsBucket>,
+    /// Grand total bytes saved across all buckets.
+    pub total_bytes_saved: i64,
+    /// Grand total transitions across all buckets.
+    pub total_transitions: u64,
+}
+
 /// Aggregate job statistics.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
