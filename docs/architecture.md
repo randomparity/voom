@@ -28,6 +28,7 @@ VOOM (Video Orchestration Operations Manager) is a policy-driven video library m
 │   Discovery ────── Tool Detector ───── Storage                 │
 │   MKVToolNix ───── FFmpeg ──────────── Backup                  │
 │   Job Manager ──── Introspection ───── Bus Tracer              │
+│   Health ───────── Capabilities ────── Report                  │
 │                                                                │
 │     Native Plugins — Library-Only (called directly by CLI)     │
 │                                                                │

@@ -9,10 +9,15 @@ voom [OPTIONS] <COMMAND>
 | Option | Description |
 |--------|-------------|
 | `-v`, `--verbose` | Increase verbosity. `-v` = info, `-vv` = debug, `-vvv` = trace |
+| `-q`, `--quiet` | Suppress progress bars and status messages |
+| `-y`, `--yes` | Assume "yes" to all confirmation prompts (for automation) |
+| `--force` | Skip the process lock (use if a previous run crashed and left a stale lock) |
 | `--version` | Print version |
 | `--help` | Print help |
 
 Verbosity can also be controlled via the `RUST_LOG` environment variable (e.g., `RUST_LOG=debug`).
+
+Output formats accept `table`, `json`, `plain`, or `csv` where applicable.
 
 ---
 
@@ -20,19 +25,19 @@ Verbosity can also be controlled via the `RUST_LOG` environment variable (e.g., 
 
 ### `voom scan`
 
-Discover and introspect media files in a directory.
+Discover and introspect media files in one or more directories.
 
 ```
-voom scan <PATH> [OPTIONS]
+voom scan <PATH>... [OPTIONS]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `<PATH>` | *required* | Directory to scan for media files |
+| `<PATH>...` | *required* | Directories to scan for media files (one or more) |
 | `-r`, `--recursive` | `true` | Recurse into subdirectories |
 | `-w`, `--workers <N>` | `0` (auto) | Number of parallel workers for hashing |
 | `--no-hash` | `false` | Skip content hashing (faster scans) |
-| `--table` | `false` | Show full file table after scan completes |
+| `-f`, `--format <FORMAT>` | *none* | Output format (omit for summary only) |
 
 Before scanning, stale database entries for files that no longer exist under the scanned directory are automatically pruned (along with their associated plans and processing stats).
 
@@ -43,6 +48,7 @@ The scanner walks the directory tree (using rayon for parallelism), identifies m
 ```bash
 voom scan /media/movies -r
 voom scan /media/tv --workers 8 --no-hash
+voom scan /media/movies /media/tv --format table
 ```
 
 ---
@@ -58,8 +64,9 @@ voom inspect <FILE> [OPTIONS]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `<FILE>` | *required* | Media file to inspect |
-| `-f`, `--format <FORMAT>` | `table` | Output format: `table` or `json` |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
 | `--tracks-only` | `false` | Show only track information |
+| `--history` | `false` | Include file transition history (table and json formats) |
 
 **Examples:**
 
@@ -67,6 +74,7 @@ voom inspect <FILE> [OPTIONS]
 voom inspect movie.mkv
 voom inspect movie.mkv --format json
 voom inspect movie.mkv --tracks-only
+voom inspect movie.mkv --history
 ```
 
 ---
@@ -76,25 +84,28 @@ voom inspect movie.mkv --tracks-only
 Apply a policy to media files.
 
 ```
-voom process <PATH> --policy <FILE> [OPTIONS]
+voom process <PATH>... [--policy <FILE> | --policy-map <TOML>] [OPTIONS]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `<PATH>` | *required* | Directory or file to process |
-| `-p`, `--policy <FILE>` | *required* | Policy file (`.voom`) to apply |
+| `<PATH>...` | *required* | Directories or files to process (one or more) |
+| `-p`, `--policy <FILE>` | *optional* | Policy file (`.voom`) to apply to all files (conflicts with `--policy-map`) |
+| `--policy-map <TOML>` | *optional* | TOML file mapping directory prefixes to policies (conflicts with `--policy`) |
 | `--dry-run` | `false` | Show what would be done without making changes |
-| `--on-error <STRATEGY>` | `fail` | Error handling: `skip`, `continue`, or `fail` |
+| `--on-error <STRATEGY>` | `fail` | Error handling: `continue` or `fail` |
 | `-w`, `--workers <N>` | `0` (auto) | Number of parallel workers |
 | `--approve` | `false` | Require interactive approval for each file |
 | `--no-backup` | `false` | Skip creating backups before modifications |
 | `--force-rescan` | `false` | Re-attempt introspection on previously failed files |
+| `--flag-size-increase` | `false` | Tag files whose output is larger than the original |
+| `--plan-only` | `false` | Output raw plans as JSON to stdout without executing (implies --dry-run) |
+| `--priority-by-date` | `false` | Assign job priority based on file modification date |
 
 Before processing, stale database entries for files that no longer exist under the target directory are automatically pruned (along with their associated plans and processing stats). Files that previously failed introspection (tracked as "bad files") are automatically skipped unless `--force-rescan` is set.
 
 Error handling strategies:
 - **`fail`** — Stop processing on first error
-- **`skip`** — Skip the failed file and continue with others
 - **`continue`** — Continue processing remaining phases for the failed file
 
 **Examples:**
@@ -103,11 +114,14 @@ Error handling strategies:
 # Dry run to preview changes
 voom process /media/movies --policy normalize.voom --dry-run
 
-# Process with 4 workers, skipping errors
-voom process /media/movies --policy normalize.voom --workers 4 --on-error skip
+# Process multiple directories with 4 workers
+voom process /media/movies /media/tv --policy normalize.voom --workers 4
 
-# Process with interactive approval
-voom process movie.mkv --policy normalize.voom --approve
+# Process with a policy map
+voom process /media --policy-map policies.toml
+
+# Output plans as JSON without executing
+voom process /media/movies --policy normalize.voom --plan-only
 ```
 
 ---
@@ -150,12 +164,21 @@ Auto-format a policy file in place.
 voom policy format <FILE>
 ```
 
+#### `voom policy diff`
+
+Compare two compiled policies side by side.
+
+```
+voom policy diff <A> <B>
+```
+
 **Examples:**
 
 ```bash
 voom policy validate my-policy.voom
 voom policy format my-policy.voom
 voom policy show my-policy.voom
+voom policy diff old-policy.voom new-policy.voom
 ```
 
 ---
@@ -210,8 +233,14 @@ Job management for background processing.
 List jobs with optional status filter.
 
 ```
-voom jobs list [--status <STATUS>]
+voom jobs list [OPTIONS]
 ```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--status <STATUS>` | *none* | Filter by status |
+| `-n`, `--limit <N>` | `50` | Maximum number of jobs to display |
+| `--offset <N>` | `0` | Number of jobs to skip |
 
 Status values: `pending`, `running`, `completed`, `failed`, `cancelled`.
 
@@ -231,6 +260,27 @@ Cancel a running or pending job.
 voom jobs cancel <ID>
 ```
 
+#### `voom jobs retry`
+
+Retry a failed job.
+
+```
+voom jobs retry <ID>
+```
+
+#### `voom jobs clear`
+
+Delete completed, failed, or cancelled jobs.
+
+```
+voom jobs clear [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--status <STATUS>` | *none* | Only delete jobs with this status |
+| `--yes` | `false` | Skip confirmation prompt |
+
 ---
 
 ### `voom report`
@@ -243,13 +293,27 @@ voom report [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `-f`, `--format <FORMAT>` | `table` | Output format: `table` or `json` |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+| `--library` | `false` | Show full library statistics |
+| `--plans` | `false` | Show per-phase plan processing summary |
+| `--savings` | `false` | Show space savings breakdown |
+| `--period <PERIOD>` | *none* | Time period for savings grouping: `day`, `week`, `month` (requires `--savings`) |
+| `--history <N>` | *none* | Show N most recent snapshots |
+| `--issues` | `false` | Show files with safeguard violations |
+| `--database` | `false` | Show database row counts and page stats |
+| `--all` | `false` | Show all report sections |
+| `--snapshot` | `false` | Capture and persist a new snapshot |
+| `--files` | `false` | List files in the library |
 
 ---
 
-### `voom doctor`
+### `voom health`
 
-Run a system health check. Verifies:
+System health checks and history.
+
+#### `voom health check`
+
+Run live system health checks. Verifies:
 - External tool availability (ffprobe, ffmpeg, mkvpropedit, mkvmerge, mediainfo)
 - Tool versions
 - Configuration validity
@@ -257,8 +321,25 @@ Run a system health check. Verifies:
 - Plugin status
 
 ```bash
-voom doctor
+voom health check
 ```
+
+#### `voom health history`
+
+Show health check history from the database.
+
+```
+voom health history [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--check <NAME>` | *none* | Filter by check name |
+| `--since <DATETIME>` | *none* | Show only records since this datetime (e.g. `2024-01-15` or `2024-01-15T10:30:00`) |
+| `-n`, `--limit <N>` | `50` | Maximum number of records to display |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+> **Note:** `voom doctor` is a hidden alias for `voom health check`.
 
 ---
 
@@ -310,9 +391,13 @@ Reset the database, deleting all data. **This is destructive and cannot be undon
 
 Also removes WAL (`voom.db-wal`) and SHM (`voom.db-shm`) companion files to avoid corruption on next open.
 
-```bash
-voom db reset
 ```
+voom db reset [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--yes` | `false` | Skip confirmation prompt |
 
 #### `voom db list-bad`
 
@@ -325,7 +410,7 @@ voom db list-bad [OPTIONS]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--path <PREFIX>` | *none* | Filter by path prefix |
-| `-f`, `--format <FORMAT>` | `table` | Output format: `table` or `json` |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
 
 Shows path, error message, error source, attempt count, file size, and last seen timestamp.
 
@@ -373,6 +458,36 @@ Open the configuration file in your `$EDITOR`.
 voom config edit
 ```
 
+#### `voom config get`
+
+Get a configuration value by dot-notation key.
+
+```
+voom config get <KEY>
+```
+
+**Examples:**
+
+```bash
+voom config get auth_token
+voom config get plugin.ffmpeg-executor.hw_accel
+```
+
+#### `voom config set`
+
+Set a configuration value by dot-notation key. Auto-detects type (bool, int, float, or string).
+
+```
+voom config set <KEY> <VALUE>
+```
+
+**Examples:**
+
+```bash
+voom config set auth_token mytoken
+voom config set plugin.ffmpeg-executor.hw_accel nvenc
+```
+
 Configuration file location: `~/.config/voom/config.toml`
 
 ---
@@ -383,18 +498,6 @@ Run first-time setup. Creates the configuration directory, default config file a
 
 ```bash
 voom init
-```
-
----
-
-### `voom status`
-
-Show library and daemon status — file counts, container breakdown, bad file count, plugin count, and configuration paths.
-
-If bad files exist, the count is highlighted in red with a hint to run `voom db list-bad`.
-
-```bash
-voom status
 ```
 
 ---
@@ -419,6 +522,234 @@ voom completions fish > ~/.config/fish/completions/voom.fish
 
 ---
 
+### `voom files`
+
+File queries against the database.
+
+#### `voom files list`
+
+List media files with optional filters.
+
+```
+voom files list [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--container <CONTAINER>` | *none* | Filter by container format (e.g. `mkv`, `mp4`) |
+| `--codec <CODEC>` | *none* | Filter by codec (e.g. `h265`, `aac`) |
+| `--lang <LANG>` | *none* | Filter by language code (e.g. `eng`, `fra`) |
+| `--path-prefix <PREFIX>` | *none* | Filter by path prefix |
+| `-n`, `--limit <N>` | `100` | Maximum number of files to display |
+| `--offset <N>` | `0` | Number of files to skip |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+#### `voom files show`
+
+Show details for a specific file by UUID.
+
+```
+voom files show <ID> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<ID>` | *required* | UUID of the media file record |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+#### `voom files delete`
+
+Delete a file record from the database by UUID.
+
+```
+voom files delete <ID> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<ID>` | *required* | UUID of the media file record |
+| `--yes` | `false` | Skip confirmation prompt |
+
+**Examples:**
+
+```bash
+voom files list --container mkv --codec h265
+voom files list --lang eng --limit 50
+voom files show 550e8400-e29b-41d4-a716-446655440000
+voom files delete 550e8400-e29b-41d4-a716-446655440000 --yes
+```
+
+---
+
+### `voom plans`
+
+Plan inspection.
+
+#### `voom plans show`
+
+Show plans for a file by UUID or file path.
+
+```
+voom plans show <FILE> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<FILE>` | *required* | UUID or file path of the media file |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+**Examples:**
+
+```bash
+voom plans show 550e8400-e29b-41d4-a716-446655440000
+voom plans show /media/movies/film.mkv --format json
+```
+
+---
+
+### `voom events`
+
+View the event log.
+
+```
+voom events [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-F`, `--follow` | `false` | Keep streaming new events as they arrive |
+| `--filter <PATTERN>` | *none* | Filter by event type pattern (e.g. `file.discovered`, `job.*`) |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+| `-n`, `--limit <N>` | `50` | Maximum number of events to display |
+
+**Examples:**
+
+```bash
+voom events
+voom events --follow
+voom events --filter "file.*" --limit 100
+voom events --filter "job.*" --format json
+```
+
+---
+
+### `voom tools`
+
+External tool management.
+
+#### `voom tools list`
+
+List all detected external tools and their status.
+
+```
+voom tools list [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+#### `voom tools info`
+
+Show detailed information about a specific tool.
+
+```
+voom tools info <NAME> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<NAME>` | *required* | Name of the tool (e.g. `ffmpeg`, `mkvmerge`) |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+**Examples:**
+
+```bash
+voom tools list
+voom tools list --format json
+voom tools info ffmpeg
+voom tools info mkvmerge --format json
+```
+
+---
+
+### `voom history`
+
+Show the change history (transitions) for a media file.
+
+```
+voom history <FILE> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<FILE>` | *required* | Path to the media file |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+**Examples:**
+
+```bash
+voom history /media/movies/film.mkv
+voom history /media/movies/film.mkv --format json
+```
+
+---
+
+### `voom backup`
+
+Backup management.
+
+#### `voom backup list`
+
+List backups (`.vbak` files) in one or more directories.
+
+```
+voom backup list <PATH>... [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<PATH>...` | *required* | Directories to search for backups (one or more) |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+#### `voom backup restore`
+
+Restore a file from a `.vbak` backup.
+
+```
+voom backup restore <BACKUP_PATH> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<BACKUP_PATH>` | *required* | Path to the `.vbak` file to restore |
+| `--yes` | `false` | Skip confirmation prompt |
+
+#### `voom backup cleanup`
+
+Remove all backup files from one or more directories.
+
+```
+voom backup cleanup <PATH>... [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<PATH>...` | *required* | Directories to remove backups from (one or more) |
+| `--yes` | `false` | Skip confirmation prompt |
+
+**Examples:**
+
+```bash
+voom backup list /media/movies
+voom backup list /media/movies /media/tv --format json
+voom backup restore /media/movies/film.mkv.vbak
+voom backup restore /media/movies/film.mkv.vbak --yes
+voom backup cleanup /media/movies --yes
+```
+
+---
+
 ## REST API
 
 When running `voom serve`, the following REST API is available:
@@ -430,6 +761,7 @@ When running `voom serve`, the following REST API is available:
 | GET | `/api/files` | List files (with filters) |
 | GET | `/api/files/:id` | Get file details |
 | DELETE | `/api/files/:id` | Delete a file record |
+| GET | `/api/files/:id/transitions` | Get file transition history |
 
 ### Jobs
 
@@ -449,7 +781,9 @@ When running `voom serve`, the following REST API is available:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/stats` | Get library statistics |
+| GET | `/api/stats` | Get summary statistics |
+| GET | `/api/stats/library` | Get full library statistics |
+| GET | `/api/stats/history` | Get statistics snapshot history |
 
 ### Policy
 
@@ -457,6 +791,18 @@ When running `voom serve`, the following REST API is available:
 |--------|----------|-------------|
 | POST | `/api/policy/validate` | Validate policy source |
 | POST | `/api/policy/format` | Format policy source |
+
+### Tools
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/tools` | List detected external tools |
+
+### Health
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/health` | Get system health status |
 
 ### Events
 
