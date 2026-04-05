@@ -34,9 +34,9 @@ pub fn run(args: ReportArgs) -> Result<()> {
     let result = ReportPlugin::query(&*store, &request)?;
 
     if is_summary_request(&args) {
-        format_summary(&result, &args.format);
+        format_summary(&result, &args.format)?;
     } else {
-        format_result(&result, &args);
+        format_result(&result, &args)?;
     }
     Ok(())
 }
@@ -129,7 +129,7 @@ fn format_snapshot(snapshot: &LibrarySnapshot, format: &OutputFormat) {
     }
 }
 
-fn format_summary(result: &ReportResult, format: &OutputFormat) {
+fn format_summary(result: &ReportResult, format: &OutputFormat) -> Result<()> {
     let Some(ref snapshot) = result.library else {
         if !format.is_machine() {
             eprintln!(
@@ -145,7 +145,7 @@ fn format_summary(result: &ReportResult, format: &OutputFormat) {
                 .expect("json is serializable")
             );
         }
-        return;
+        return Ok(());
     };
 
     match format {
@@ -185,25 +185,31 @@ fn format_summary(result: &ReportResult, format: &OutputFormat) {
             println!("total_duration_secs={:.1}", f.total_duration_secs);
         }
         OutputFormat::Csv => {
-            write_summary_csv(snapshot);
+            write_summary_csv(snapshot)?;
         }
     }
+    Ok(())
 }
 
-fn write_summary_csv(snapshot: &LibrarySnapshot) {
+fn write_summary_csv(snapshot: &LibrarySnapshot) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out, "# library")?;
+    drop(out);
+
     let stdout = std::io::stdout();
     let mut wtr = csv::Writer::from_writer(stdout.lock());
-    let _ = writeln!(std::io::stderr(), "# library");
-    let _ = wtr.write_record(["total_files", "total_size_bytes", "total_duration_secs"]);
-    let _ = wtr.write_record([
+    wtr.write_record(["total_files", "total_size_bytes", "total_duration_secs"])?;
+    wtr.write_record([
         snapshot.files.total_count.to_string(),
         snapshot.files.total_size_bytes.to_string(),
         format!("{:.1}", snapshot.files.total_duration_secs),
-    ]);
-    let _ = wtr.flush();
+    ])?;
+    wtr.flush()?;
+    Ok(())
 }
 
-fn format_result(result: &ReportResult, args: &ReportArgs) {
+fn format_result(result: &ReportResult, args: &ReportArgs) -> Result<()> {
     match args.format {
         OutputFormat::Json => {
             println!(
@@ -213,8 +219,9 @@ fn format_result(result: &ReportResult, args: &ReportArgs) {
         }
         OutputFormat::Table => format_result_table(result),
         OutputFormat::Plain => format_result_plain(result),
-        OutputFormat::Csv => format_result_csv(result),
+        OutputFormat::Csv => format_result_csv(result)?,
     }
+    Ok(())
 }
 
 // ── Table formatting ────────────────────────────────────────
@@ -692,131 +699,136 @@ fn print_database_section_plain(db: &DatabaseStats) {
 
 // ── CSV formatting ──────────────────────────────────────────
 
-fn format_result_csv(result: &ReportResult) {
+fn format_result_csv(result: &ReportResult) -> Result<()> {
     if let Some(ref snapshot) = result.library {
-        write_library_csv(snapshot);
+        write_library_csv(snapshot)?;
     }
     if let Some(ref stats) = result.plans {
-        write_plans_csv(stats);
+        write_plans_csv(stats)?;
     }
     if let Some(ref report) = result.savings {
-        write_savings_csv(report);
+        write_savings_csv(report)?;
     }
     if let Some(ref snapshots) = result.history {
-        write_history_csv(snapshots);
+        write_history_csv(snapshots)?;
     }
     if let Some(ref issues) = result.issues {
-        write_issues_csv(issues);
+        write_issues_csv(issues)?;
     }
     if let Some(ref db) = result.database {
-        write_database_csv(db);
+        write_database_csv(db)?;
     }
+    Ok(())
 }
 
-fn write_library_csv(snapshot: &LibrarySnapshot) {
+fn write_library_csv(snapshot: &LibrarySnapshot) -> Result<()> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out, "# library");
+    writeln!(out, "# library")?;
     drop(out);
 
     let stdout = std::io::stdout();
     let mut wtr = csv::Writer::from_writer(stdout.lock());
-    let _ = wtr.write_record([
+    wtr.write_record([
         "total_files",
         "total_size_bytes",
         "total_duration_secs",
         "avg_size_bytes",
         "max_size_bytes",
         "min_size_bytes",
-    ]);
-    let _ = wtr.write_record([
+    ])?;
+    wtr.write_record([
         snapshot.files.total_count.to_string(),
         snapshot.files.total_size_bytes.to_string(),
         format!("{:.1}", snapshot.files.total_duration_secs),
         snapshot.files.avg_size_bytes.to_string(),
         snapshot.files.max_size_bytes.to_string(),
         snapshot.files.min_size_bytes.to_string(),
-    ]);
-    let _ = wtr.flush();
+    ])?;
+    wtr.flush()?;
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out);
-    let _ = writeln!(out, "# containers");
+    writeln!(out)?;
+    writeln!(out, "# containers")?;
     drop(out);
 
     let stdout = std::io::stdout();
     let mut wtr = csv::Writer::from_writer(stdout.lock());
-    let _ = wtr.write_record(["container", "count"]);
+    wtr.write_record(["container", "count"])?;
     for (name, count) in &snapshot.files.container_counts {
-        let _ = wtr.write_record([name.as_str(), &count.to_string()]);
+        wtr.write_record([name.as_str(), &count.to_string()])?;
     }
-    let _ = wtr.flush();
+    wtr.flush()?;
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out);
-    let _ = writeln!(out, "# video_codecs");
+    writeln!(out)?;
+    writeln!(out, "# video_codecs")?;
     drop(out);
 
     let stdout = std::io::stdout();
     let mut wtr = csv::Writer::from_writer(stdout.lock());
-    let _ = wtr.write_record(["codec", "count"]);
+    wtr.write_record(["codec", "count"])?;
     for (name, count) in &snapshot.video.codec_counts {
-        let _ = wtr.write_record([name.as_str(), &count.to_string()]);
+        wtr.write_record([name.as_str(), &count.to_string()])?;
     }
-    let _ = wtr.flush();
+    wtr.flush()?;
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out);
+    writeln!(out)?;
     drop(out);
+
+    Ok(())
 }
 
-fn write_plans_csv(stats: &[PlanPhaseStat]) {
+fn write_plans_csv(stats: &[PlanPhaseStat]) -> Result<()> {
     if stats.is_empty() {
-        return;
+        return Ok(());
     }
     let (phases, by_phase) = aggregate_plan_stats(stats);
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out, "# plans");
+    writeln!(out, "# plans")?;
     drop(out);
 
     let stdout = std::io::stdout();
     let mut wtr = csv::Writer::from_writer(stdout.lock());
-    let _ = wtr.write_record(["phase", "completed", "skipped", "failed"]);
+    wtr.write_record(["phase", "completed", "skipped", "failed"])?;
     for name in &phases {
         let ps = by_phase.get(name).expect("phase exists");
-        let _ = wtr.write_record([
+        wtr.write_record([
             name.as_str(),
             &ps.completed.to_string(),
             &ps.skipped.to_string(),
             &ps.failed.to_string(),
-        ]);
+        ])?;
     }
-    let _ = wtr.flush();
+    wtr.flush()?;
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out);
+    writeln!(out)?;
     drop(out);
+
+    Ok(())
 }
 
-fn write_savings_csv(report: &SavingsReport) {
+fn write_savings_csv(report: &SavingsReport) -> Result<()> {
     if report.buckets.is_empty() {
-        return;
+        return Ok(());
     }
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out, "# savings");
+    writeln!(out, "# savings")?;
     drop(out);
 
     let stdout = std::io::stdout();
     let mut wtr = csv::Writer::from_writer(stdout.lock());
-    let _ = wtr.write_record([
+    wtr.write_record([
         "executor",
         "phase",
         "period",
@@ -824,9 +836,9 @@ fn write_savings_csv(report: &SavingsReport) {
         "transition_count",
         "bytes_saved",
         "duration_ms",
-    ]);
+    ])?;
     for b in &report.buckets {
-        let _ = wtr.write_record([
+        wtr.write_record([
             b.executor.as_deref().unwrap_or(""),
             b.phase.as_deref().unwrap_or(""),
             b.period.as_deref().unwrap_or(""),
@@ -834,29 +846,31 @@ fn write_savings_csv(report: &SavingsReport) {
             &b.transition_count.to_string(),
             &b.bytes_saved.to_string(),
             &b.duration_ms.to_string(),
-        ]);
+        ])?;
     }
-    let _ = wtr.flush();
+    wtr.flush()?;
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out);
+    writeln!(out)?;
     drop(out);
+
+    Ok(())
 }
 
-fn write_history_csv(snapshots: &[LibrarySnapshot]) {
+fn write_history_csv(snapshots: &[LibrarySnapshot]) -> Result<()> {
     if snapshots.is_empty() {
-        return;
+        return Ok(());
     }
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out, "# history");
+    writeln!(out, "# history")?;
     drop(out);
 
     let stdout = std::io::stdout();
     let mut wtr = csv::Writer::from_writer(stdout.lock());
-    let _ = wtr.write_record([
+    wtr.write_record([
         "timestamp",
         "trigger",
         "files",
@@ -864,9 +878,9 @@ fn write_history_csv(snapshots: &[LibrarySnapshot]) {
         "total_duration_secs",
         "hdr_count",
         "vfr_count",
-    ]);
+    ])?;
     for snap in snapshots {
-        let _ = wtr.write_record([
+        wtr.write_record([
             snap.captured_at.format("%Y-%m-%d %H:%M:%S").to_string(),
             snap.trigger.as_str().to_string(),
             snap.files.total_count.to_string(),
@@ -874,81 +888,87 @@ fn write_history_csv(snapshots: &[LibrarySnapshot]) {
             format!("{:.0}", snap.files.total_duration_secs),
             snap.video.hdr_count.to_string(),
             snap.video.vfr_count.to_string(),
-        ]);
+        ])?;
     }
-    let _ = wtr.flush();
+    wtr.flush()?;
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out);
+    writeln!(out)?;
     drop(out);
+
+    Ok(())
 }
 
-fn write_issues_csv(issues: &[IssueReport]) {
+fn write_issues_csv(issues: &[IssueReport]) -> Result<()> {
     if issues.is_empty() {
-        return;
+        return Ok(());
     }
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out, "# issues");
+    writeln!(out, "# issues")?;
     drop(out);
 
     let stdout = std::io::stdout();
     let mut wtr = csv::Writer::from_writer(stdout.lock());
-    let _ = wtr.write_record(["path", "violation", "phase", "message"]);
+    wtr.write_record(["path", "violation", "phase", "message"])?;
     for issue in issues {
         for v in &issue.violations {
-            let _ = wtr.write_record([
+            wtr.write_record([
                 &issue.path.display().to_string(),
                 v.kind.as_str(),
                 &v.phase_name,
                 &v.message,
-            ]);
+            ])?;
         }
     }
-    let _ = wtr.flush();
+    wtr.flush()?;
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out);
+    writeln!(out)?;
     drop(out);
+
+    Ok(())
 }
 
-fn write_database_csv(db: &DatabaseStats) {
+fn write_database_csv(db: &DatabaseStats) -> Result<()> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out, "# database_tables");
+    writeln!(out, "# database_tables")?;
     drop(out);
 
     let stdout = std::io::stdout();
     let mut wtr = csv::Writer::from_writer(stdout.lock());
-    let _ = wtr.write_record(["table", "rows"]);
+    wtr.write_record(["table", "rows"])?;
     for (name, count) in &db.table_counts {
-        let _ = wtr.write_record([name.as_str(), &count.to_string()]);
+        wtr.write_record([name.as_str(), &count.to_string()])?;
     }
-    let _ = wtr.flush();
+    wtr.flush()?;
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out);
-    let _ = writeln!(out, "# database_pages");
+    writeln!(out)?;
+    writeln!(out, "# database_pages")?;
     drop(out);
 
     let stdout = std::io::stdout();
     let mut wtr = csv::Writer::from_writer(stdout.lock());
-    let _ = wtr.write_record(["page_size", "page_count", "freelist_count"]);
-    let _ = wtr.write_record([
+    wtr.write_record(["page_size", "page_count", "freelist_count"])?;
+    wtr.write_record([
         db.page_stats.page_size.to_string(),
         db.page_stats.page_count.to_string(),
         db.page_stats.freelist_count.to_string(),
-    ]);
-    let _ = wtr.flush();
+    ])?;
+    wtr.flush()?;
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out);
+    writeln!(out)?;
     drop(out);
+
+    Ok(())
 }
 
 // ── File list ───────────────────────────────────────────────
@@ -983,7 +1003,7 @@ fn run_file_list(
                 println!("{}", file.path.display());
             }
         }
-        OutputFormat::Csv => print_file_list_csv(&files),
+        OutputFormat::Csv => print_file_list_csv(&files)?,
     }
 
     Ok(())
@@ -1037,21 +1057,22 @@ fn print_file_list_table(files: &[voom_domain::MediaFile]) {
     println!("{table}");
 }
 
-fn print_file_list_csv(files: &[voom_domain::MediaFile]) {
+fn print_file_list_csv(files: &[voom_domain::MediaFile]) -> Result<()> {
     let stdout = std::io::stdout();
     let mut wtr = csv::Writer::from_writer(stdout.lock());
-    let _ = wtr.write_record(["path", "size", "duration", "container", "codec"]);
+    wtr.write_record(["path", "size", "duration", "container", "codec"])?;
     for f in files {
         let primary_codec = f.tracks.first().map(|t| t.codec.as_str()).unwrap_or("");
-        let _ = wtr.write_record([
+        wtr.write_record([
             &f.path.display().to_string(),
             &f.size.to_string(),
             &format!("{:.1}", f.duration),
             f.container.as_str(),
             primary_codec,
-        ]);
+        ])?;
     }
-    let _ = wtr.flush();
+    wtr.flush()?;
+    Ok(())
 }
 
 fn count_by<T, I, F>(items: &[T], key_fn: F) -> Vec<(String, usize)>
