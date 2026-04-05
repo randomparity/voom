@@ -104,6 +104,7 @@ pub struct InMemoryStore {
     snapshots: Mutex<Vec<LibrarySnapshot>>,
     event_log: Mutex<Vec<crate::storage::EventLogRecord>>,
     pub pending_ops: Mutex<Vec<PendingOperation>>,
+    pub transitions: Mutex<Vec<FileTransition>>,
 }
 
 impl InMemoryStore {
@@ -114,6 +115,7 @@ impl InMemoryStore {
             snapshots: Mutex::new(Vec::new()),
             event_log: Mutex::new(Vec::new()),
             pending_ops: Mutex::new(Vec::new()),
+            transitions: Mutex::new(Vec::new()),
         }
     }
 
@@ -132,6 +134,15 @@ impl InMemoryStore {
     /// Panics if the internal mutex is poisoned.
     pub fn with_job(self, job: Job) -> Self {
         self.jobs.lock().unwrap().insert(job.id, job);
+        self
+    }
+
+    /// Builder: seed the store with a transition.
+    ///
+    /// # Panics
+    /// Panics if the internal mutex is poisoned.
+    pub fn with_transition(self, transition: FileTransition) -> Self {
+        self.transitions.lock().unwrap().push(transition);
         self
     }
 }
@@ -409,8 +420,15 @@ impl FileTransitionStorage for InMemoryStore {
         Ok(())
     }
 
-    fn transitions_for_file(&self, _: &Uuid) -> Result<Vec<FileTransition>> {
-        Ok(Vec::new())
+    fn transitions_for_file(&self, file_id: &Uuid) -> Result<Vec<FileTransition>> {
+        let ts = self.transitions.lock().unwrap();
+        let mut result: Vec<FileTransition> = ts
+            .iter()
+            .filter(|t| t.file_id == *file_id)
+            .cloned()
+            .collect();
+        result.sort_by_key(|t| t.created_at);
+        Ok(result)
     }
 
     fn transitions_by_source(&self, _: TransitionSource) -> Result<Vec<FileTransition>> {

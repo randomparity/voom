@@ -12,7 +12,7 @@ use crate::api::files::FileFilterParams;
 use crate::errors::{spawn_store_op, WebError};
 use crate::middleware::CspNonce;
 use crate::state::AppState;
-use crate::views::file_views;
+use crate::views::{file_views, transition_views};
 
 type HtmlResult = Result<Html<String>, WebError>;
 
@@ -101,10 +101,11 @@ pub async fn file_detail(
 ) -> HtmlResult {
     let store = state.store.clone();
 
-    let (file, plans) = spawn_store_op(move || {
+    let (file, plans, transitions) = spawn_store_op(move || {
         let file = store.file(&id)?;
         let plans = store.plans_for_file(&id)?;
-        Ok((file, plans))
+        let transitions = store.transitions_for_file(&id)?;
+        Ok((file, plans, transitions))
     })
     .await?;
 
@@ -120,6 +121,8 @@ pub async fn file_detail(
     ctx.insert("file", &file_view);
     ctx.insert("tracks", &tracks_json);
     ctx.insert("plans", &plans);
+    let transition_views_data = transition_views(transitions);
+    ctx.insert("transitions", &transition_views_data);
 
     render(&state.templates, "file_detail.html", &mut ctx, &nonce)
 }

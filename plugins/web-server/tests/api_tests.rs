@@ -626,3 +626,84 @@ async fn test_rate_limit_429_response_format() {
     let secs: u64 = retry_after.to_str().unwrap().parse().unwrap();
     assert!(secs > 0, "Retry-After should be positive");
 }
+
+// === Transition API Tests ===
+
+use voom_domain::transition::{FileTransition, TransitionSource};
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_transitions_empty() {
+    let file = make_test_file("movie.mkv");
+    let id = file.id;
+    let store = InMemoryStore::new().with_file(file);
+    let server = make_server(store);
+
+    let resp = server.get(&format!("/api/files/{id}/transitions")).await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["transitions"], json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_transitions_with_data() {
+    let file = make_test_file("movie.mkv");
+    let id = file.id;
+    let t = FileTransition::new(
+        id,
+        "/media/movie.mkv".into(),
+        "hash1".into(),
+        1_000_000,
+        TransitionSource::Discovery,
+    );
+    let store = InMemoryStore::new().with_file(file).with_transition(t);
+    let server = make_server(store);
+
+    let resp = server.get(&format!("/api/files/{id}/transitions")).await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["transitions"].as_array().unwrap().len(), 1);
+    assert_eq!(body["transitions"][0]["source"], "discovery");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_transitions_filters_by_file_id() {
+    let file_a = make_test_file("a.mkv");
+    let file_b = make_test_file("b.mkv");
+    let id_a = file_a.id;
+    let id_b = file_b.id;
+    let t_a = FileTransition::new(
+        id_a,
+        "/media/a.mkv".into(),
+        "ha".into(),
+        100,
+        TransitionSource::Discovery,
+    );
+    let t_b = FileTransition::new(
+        id_b,
+        "/media/b.mkv".into(),
+        "hb".into(),
+        200,
+        TransitionSource::External,
+    );
+    let store = InMemoryStore::new()
+        .with_file(file_a)
+        .with_file(file_b)
+        .with_transition(t_a)
+        .with_transition(t_b);
+    let server = make_server(store);
+
+    let resp = server.get(&format!("/api/files/{id_a}/transitions")).await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    let ts = body["transitions"].as_array().unwrap();
+    assert_eq!(ts.len(), 1);
+    assert_eq!(ts[0]["source"], "discovery");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_transitions_file_not_found() {
+    let server = make_server(InMemoryStore::new());
+    let id = Uuid::new_v4();
+    let resp = server.get(&format!("/api/files/{id}/transitions")).await;
+    resp.assert_status_not_found();
+}

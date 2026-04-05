@@ -25,6 +25,10 @@ pub fn build_router(state: AppState) -> Router {
             "/files/:id",
             get(api::files::get_file).delete(api::files::delete_file),
         )
+        .route(
+            "/files/:id/transitions",
+            get(api::transitions::list_transitions),
+        )
         .route("/jobs", get(api::jobs::list_jobs))
         .route("/jobs/stats", get(api::jobs::get_job_stats))
         .route("/jobs/:id", get(api::jobs::get_job))
