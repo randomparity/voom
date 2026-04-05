@@ -882,7 +882,19 @@ async fn process_single_file_execute(
                 .await;
             }
             PlanOutcome::Failed(failed) => {
-                dispatch_plan_failure(failed, &plan.phase_name, ctx);
+                let plan_id = plan.id;
+                let policy_name = plan.policy_name.clone();
+                let phase_name = plan.phase_name.clone();
+                let executor = failed.plugin_name.clone().unwrap_or_default();
+                dispatch_plan_failure(failed, &phase_name, ctx);
+                record_failure_transition(
+                    &current_file,
+                    plan_id,
+                    &executor,
+                    &policy_name,
+                    &phase_name,
+                    ctx,
+                );
             }
         }
     }
@@ -952,6 +964,44 @@ fn dispatch_plan_failure(failed: PlanFailedEvent, phase_name: &str, ctx: &Proces
     );
 }
 
+/// Record a failure transition in the store for a plan that did not succeed.
+///
+/// The file is unchanged on failure, so `to_size = from_size` and `to_hash =
+/// from_hash`. The `executor` argument should be the executor plugin name, or
+/// an empty string when no executor was involved (e.g. size-increase abort).
+fn record_failure_transition(
+    file: &voom_domain::media::MediaFile,
+    plan_id: uuid::Uuid,
+    executor: &str,
+    policy_name: &str,
+    phase_name: &str,
+    ctx: &ProcessContext<'_>,
+) {
+    let to_hash = file.content_hash.clone().unwrap_or_default();
+    let transition = voom_domain::FileTransition::new(
+        file.id,
+        file.path.clone(),
+        to_hash,
+        file.size,
+        voom_domain::TransitionSource::Voom,
+    )
+    .with_from(file.content_hash.clone(), Some(file.size))
+    .with_detail(executor)
+    .with_plan_id(plan_id)
+    .with_processing(
+        0,
+        0,
+        0,
+        voom_domain::ProcessingOutcome::Failure,
+        policy_name,
+        phase_name,
+    );
+
+    if let Err(e) = ctx.store.record_transition(&transition) {
+        tracing::warn!(error = %e, "failed to record failure transition");
+    }
+}
+
 /// Check if the output file grew larger than the original.
 ///
 /// Returns `true` if the size increased and the phase should be skipped
@@ -999,6 +1049,7 @@ fn check_size_increase(
         &plan.phase_name,
         PhaseOutcomeKind::Failed,
     );
+    record_failure_transition(file, plan.id, "", &plan.policy_name, &plan.phase_name, ctx);
     true
 }
 
