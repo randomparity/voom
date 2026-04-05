@@ -15,7 +15,7 @@ use console::style;
 use indicatif::HumanDuration;
 use tokio_util::sync::CancellationToken;
 use voom_domain::bad_file::BadFileSource;
-use voom_domain::events::{Event, FileDiscoveredEvent, ScanCompleteEvent};
+use voom_domain::events::{Event, FileDiscoveredEvent, IntrospectCompleteEvent, ScanCompleteEvent};
 
 /// Run the scan command.
 ///
@@ -93,6 +93,11 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     }
 
     purge_stale_records(&*store, config.pruning.retention_days, quiet);
+
+    // Protected from cancelled runs by the early return above (line 91).
+    kernel.dispatch(Event::IntrospectComplete(IntrospectCompleteEvent::new(
+        introspected,
+    )));
     kernel.dispatch(Event::ScanComplete(ScanCompleteEvent::new(
         all_events.len() as u64,
         introspected,
@@ -495,15 +500,19 @@ fn format_results(events: &[FileDiscoveredEvent]) -> Vec<(PathBuf, u64, Option<S
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use voom_domain::capabilities::Capability;
-    use voom_domain::events::{EventResult, FileDiscoveredEvent, FileIntrospectedEvent};
+    use voom_domain::events::{
+        EventResult, FileDiscoveredEvent, FileIntrospectedEvent, IntrospectCompleteEvent,
+    };
     use voom_domain::media::MediaFile;
 
     /// A test plugin that counts received events.
     struct RecordingPlugin {
         discovered_count: AtomicUsize,
         introspected_count: AtomicUsize,
+        introspect_complete_count: AtomicUsize,
+        introspect_complete_files: AtomicU64,
     }
 
     impl RecordingPlugin {
@@ -511,6 +520,8 @@ mod tests {
             Self {
                 discovered_count: AtomicUsize::new(0),
                 introspected_count: AtomicUsize::new(0),
+                introspect_complete_count: AtomicUsize::new(0),
+                introspect_complete_files: AtomicU64::new(0),
             }
         }
     }
@@ -528,7 +539,7 @@ mod tests {
         fn handles(&self, event_type: &str) -> bool {
             matches!(
                 event_type,
-                Event::FILE_DISCOVERED | Event::FILE_INTROSPECTED
+                Event::FILE_DISCOVERED | Event::FILE_INTROSPECTED | Event::INTROSPECT_COMPLETE
             )
         }
         fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
@@ -538,6 +549,12 @@ mod tests {
                 }
                 Event::FileIntrospected(_) => {
                     self.introspected_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::IntrospectComplete(e) => {
+                    self.introspect_complete_count
+                        .fetch_add(1, Ordering::SeqCst);
+                    self.introspect_complete_files
+                        .store(e.files_introspected, Ordering::SeqCst);
                 }
                 _ => {}
             }
@@ -589,5 +606,20 @@ mod tests {
         }
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_introspect_complete_kernel_roundtrip() {
+        let mut kernel = voom_kernel::Kernel::new();
+        let recorder = Arc::new(RecordingPlugin::new());
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
+
+        kernel.dispatch(Event::IntrospectComplete(IntrospectCompleteEvent::new(42)));
+
+        assert_eq!(recorder.introspect_complete_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            recorder.introspect_complete_files.load(Ordering::SeqCst),
+            42
+        );
     }
 }
