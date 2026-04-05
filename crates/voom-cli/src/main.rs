@@ -15,7 +15,6 @@ mod paths;
 mod policy_map;
 mod progress;
 mod recovery;
-mod stats;
 mod tools;
 
 use cli::{Cli, Commands};
@@ -83,7 +82,6 @@ async fn main() -> Result<()> {
         Commands::History(args) => commands::history::run(args),
         Commands::Backup(sub) => commands::backup::run(sub, global_yes),
         Commands::Init => commands::init::run(),
-        Commands::Status => commands::status::run(),
         Commands::Completions(args) => commands::completions::run(args),
     }
 }
@@ -204,7 +202,6 @@ mod tests {
             vec!["voom", "doctor"],
             vec!["voom", "inspect", "f.mkv"],
             vec!["voom", "report"],
-            vec!["voom", "status"],
             vec!["voom", "serve"],
             vec!["voom", "jobs", "list"],
             vec!["voom", "jobs", "status", "abc"],

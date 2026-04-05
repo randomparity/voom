@@ -9,7 +9,6 @@ use crate::app;
 use crate::cli::{OutputFormat, ReportArgs};
 use crate::config;
 use crate::output;
-use crate::stats;
 use voom_domain::stats::{LibrarySnapshot, SavingsReport, TimePeriod};
 use voom_domain::storage::PlanPhaseStat;
 use voom_report::{
@@ -994,7 +993,7 @@ fn print_file_list_json(files: &[voom_domain::MediaFile]) {
     let report = serde_json::json!({
         "total_files": files.len(),
         "total_size": files.iter().map(|f| f.size).sum::<u64>(),
-        "containers": stats::container_counts(files),
+        "containers": container_counts(files),
         "codecs": codec_counts(files),
     });
     println!(
@@ -1019,7 +1018,7 @@ fn print_file_list_table(files: &[voom_domain::MediaFile]) {
     println!();
 
     println!("{}", style("Containers:").bold());
-    let containers = stats::container_counts(files);
+    let containers = container_counts(files);
     let mut table = output::new_table();
     table.set_header(vec!["Container", "Count"]);
     for (container, count) in &containers {
@@ -1055,8 +1054,28 @@ fn print_file_list_csv(files: &[voom_domain::MediaFile]) {
     let _ = wtr.flush();
 }
 
+fn count_by<T, I, F>(items: &[T], key_fn: F) -> Vec<(String, usize)>
+where
+    F: Fn(&T) -> I,
+    I: IntoIterator<Item = String>,
+{
+    let mut counts = std::collections::HashMap::new();
+    for item in items {
+        for key in key_fn(item) {
+            *counts.entry(key).or_insert(0usize) += 1;
+        }
+    }
+    let mut sorted: Vec<_> = counts.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted
+}
+
+fn container_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
+    count_by(files, |f| std::iter::once(f.container.as_str().to_string()))
+}
+
 fn codec_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
-    stats::count_by(files, |f| {
+    count_by(files, |f| {
         f.tracks.iter().map(|t| t.codec.clone()).collect::<Vec<_>>()
     })
 }

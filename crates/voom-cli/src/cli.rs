@@ -96,9 +96,6 @@ pub enum Commands {
     /// First-time setup
     Init,
 
-    /// Show library and daemon status
-    Status,
-
     /// Generate shell completions
     Completions(CompletionsArgs),
 }
@@ -393,12 +390,6 @@ pub enum DbCommands {
         /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
-    },
-    /// Show database size, row counts, and fragmentation
-    Stats {
-        /// Output format
-        #[arg(short, long, default_value = "table")]
-        format: OutputFormat,
     },
 }
 
@@ -1263,26 +1254,6 @@ mod tests {
     }
 
     #[test]
-    fn test_db_stats() {
-        let cli = parse(&["voom", "db", "stats"]);
-        assert!(matches!(
-            cli.command,
-            Commands::Db(DbCommands::Stats { .. })
-        ));
-    }
-
-    #[test]
-    fn test_db_stats_json_format() {
-        let cli = parse(&["voom", "db", "stats", "-f", "json"]);
-        match cli.command {
-            Commands::Db(DbCommands::Stats { format }) => {
-                assert!(matches!(format, OutputFormat::Json));
-            }
-            _ => panic!("expected Stats"),
-        }
-    }
-
-    #[test]
     fn test_process_force_rescan() {
         let cli = parse(&[
             "voom",
@@ -1496,12 +1467,6 @@ mod tests {
     fn test_init_subcommand() {
         let cli = parse(&["voom", "init"]);
         assert!(matches!(cli.command, Commands::Init));
-    }
-
-    #[test]
-    fn test_status_subcommand() {
-        let cli = parse(&["voom", "status"]);
-        assert!(matches!(cli.command, Commands::Status));
     }
 
     // ── Invalid input ────────────────────────────────────────
