@@ -119,7 +119,10 @@ pub struct FileTransition {
     pub policy_name: Option<String>,
     /// Phase name within the policy (only for source=Voom transitions).
     pub phase_name: Option<String>,
-    /// Snapshot of file media properties at transition time.
+    /// Snapshot of the file's media properties after this transition completed.
+    /// For `source=Voom` transitions this reflects the post-processing state.
+    /// To determine the pre-processing state, read the snapshot from the
+    /// preceding transition in the file's history chain.
     pub metadata_snapshot: Option<MetadataSnapshot>,
 }
 
