@@ -611,6 +611,44 @@ mod test_report {
             serde_json::from_str(&stdout).expect("report --format json should produce valid JSON");
         assert!(json["files"]["total_count"].as_u64().unwrap() > 0);
     }
+
+    #[test]
+    fn report_snapshot_persists_to_history() {
+        let env = TestEnv::new();
+
+        // Check initial snapshot count (may be zero or non-zero).
+        let before_output = env
+            .voom()
+            .args(["report", "--history", "10", "--format", "json"])
+            .output()
+            .expect("run report --history before snapshot");
+        assert!(before_output.status.success());
+        let before_stdout = String::from_utf8_lossy(&before_output.stdout);
+        let before_json: serde_json::Value = serde_json::from_str(&before_stdout)
+            .expect("report --history --format json should produce valid JSON");
+        let before_count = before_json["history"].as_array().map(Vec::len).unwrap_or(0);
+
+        // Capture a snapshot.
+        env.voom().args(["report", "--snapshot"]).assert().success();
+
+        // Verify the history count increased by 1.
+        let after_output = env
+            .voom()
+            .args(["report", "--history", "10", "--format", "json"])
+            .output()
+            .expect("run report --history after snapshot");
+        assert!(after_output.status.success());
+        let after_stdout = String::from_utf8_lossy(&after_output.stdout);
+        let after_json: serde_json::Value = serde_json::from_str(&after_stdout)
+            .expect("report --history --format json should produce valid JSON");
+        let after_count = after_json["history"].as_array().map(Vec::len).unwrap_or(0);
+
+        assert_eq!(
+            after_count,
+            before_count + 1,
+            "snapshot count should increase by 1 after --snapshot (was {before_count}, got {after_count})"
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
