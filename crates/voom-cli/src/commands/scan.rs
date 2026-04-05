@@ -500,15 +500,19 @@ fn format_results(events: &[FileDiscoveredEvent]) -> Vec<(PathBuf, u64, Option<S
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use voom_domain::capabilities::Capability;
-    use voom_domain::events::{EventResult, FileDiscoveredEvent, FileIntrospectedEvent};
+    use voom_domain::events::{
+        EventResult, FileDiscoveredEvent, FileIntrospectedEvent, IntrospectCompleteEvent,
+    };
     use voom_domain::media::MediaFile;
 
     /// A test plugin that counts received events.
     struct RecordingPlugin {
         discovered_count: AtomicUsize,
         introspected_count: AtomicUsize,
+        introspect_complete_count: AtomicUsize,
+        introspect_complete_files: AtomicU64,
     }
 
     impl RecordingPlugin {
@@ -516,6 +520,8 @@ mod tests {
             Self {
                 discovered_count: AtomicUsize::new(0),
                 introspected_count: AtomicUsize::new(0),
+                introspect_complete_count: AtomicUsize::new(0),
+                introspect_complete_files: AtomicU64::new(0),
             }
         }
     }
@@ -533,7 +539,7 @@ mod tests {
         fn handles(&self, event_type: &str) -> bool {
             matches!(
                 event_type,
-                Event::FILE_DISCOVERED | Event::FILE_INTROSPECTED
+                Event::FILE_DISCOVERED | Event::FILE_INTROSPECTED | Event::INTROSPECT_COMPLETE
             )
         }
         fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
@@ -543,6 +549,12 @@ mod tests {
                 }
                 Event::FileIntrospected(_) => {
                     self.introspected_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::IntrospectComplete(e) => {
+                    self.introspect_complete_count
+                        .fetch_add(1, Ordering::SeqCst);
+                    self.introspect_complete_files
+                        .store(e.files_introspected, Ordering::SeqCst);
                 }
                 _ => {}
             }
@@ -597,54 +609,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_introspect_complete_dispatched() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        struct IntrospectCompleteRecorder {
-            count: AtomicUsize,
-            files: AtomicU64,
-        }
-
-        impl IntrospectCompleteRecorder {
-            fn new() -> Self {
-                Self {
-                    count: AtomicUsize::new(0),
-                    files: AtomicU64::new(0),
-                }
-            }
-        }
-
-        impl voom_kernel::Plugin for IntrospectCompleteRecorder {
-            fn name(&self) -> &str {
-                "introspect-complete-recorder"
-            }
-            fn version(&self) -> &str {
-                "0.1.0"
-            }
-            fn capabilities(&self) -> &[Capability] {
-                &[]
-            }
-            fn handles(&self, event_type: &str) -> bool {
-                event_type == Event::INTROSPECT_COMPLETE
-            }
-            fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
-                if let Event::IntrospectComplete(e) = event {
-                    self.count.fetch_add(1, Ordering::SeqCst);
-                    self.files.store(e.files_introspected, Ordering::SeqCst);
-                }
-                Ok(None)
-            }
-        }
-
+    async fn test_introspect_complete_kernel_roundtrip() {
         let mut kernel = voom_kernel::Kernel::new();
-        let recorder = Arc::new(IntrospectCompleteRecorder::new());
+        let recorder = Arc::new(RecordingPlugin::new());
         kernel.register_plugin(recorder.clone(), 50).unwrap();
 
-        kernel.dispatch(Event::IntrospectComplete(
-            voom_domain::events::IntrospectCompleteEvent::new(42),
-        ));
+        kernel.dispatch(Event::IntrospectComplete(IntrospectCompleteEvent::new(42)));
 
-        assert_eq!(recorder.count.load(Ordering::SeqCst), 1);
-        assert_eq!(recorder.files.load(Ordering::SeqCst), 42);
+        assert_eq!(recorder.introspect_complete_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            recorder.introspect_complete_files.load(Ordering::SeqCst),
+            42
+        );
     }
 }
