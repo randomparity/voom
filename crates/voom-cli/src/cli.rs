@@ -143,7 +143,7 @@ pub struct InspectArgs {
     #[arg(long)]
     pub tracks_only: bool,
 
-    /// Include file transition history
+    /// Include file transition history (table and json formats)
     #[arg(long)]
     pub history: bool,
 }
