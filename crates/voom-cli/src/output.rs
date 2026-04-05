@@ -6,6 +6,7 @@ use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, ContentArrangement, Table};
 use console::style;
 use voom_domain::media::{MediaFile, Track};
+use voom_domain::transition::{FileTransition, TransitionSource};
 use voom_domain::utils::format;
 
 use crate::cli::OutputFormat;
@@ -190,6 +191,116 @@ pub fn format_file_json(file: &MediaFile) {
         "{}",
         serde_json::to_string_pretty(file).expect("MediaFile serialization cannot fail")
     );
+}
+
+/// Render a transitions list as a formatted table string.
+/// Returns an empty string if `transitions` is empty.
+// Used by the inspect command (Task 4); suppress dead_code until wired up.
+#[allow(dead_code)]
+pub fn render_transitions_table(transitions: &[FileTransition]) -> String {
+    use crate::commands::history::format_snapshot_cell;
+
+    if transitions.is_empty() {
+        return String::new();
+    }
+
+    let has_lineage =
+        transitions.len() > 1 && transitions.windows(2).any(|w| w[0].file_id != w[1].file_id);
+
+    let mut table = new_table();
+    if has_lineage {
+        table.set_header(vec![
+            "#",
+            "Date",
+            "Source",
+            "File ID",
+            "Size",
+            "From Hash",
+            "To Hash",
+            "Media",
+        ]);
+    } else {
+        table.set_header(vec![
+            "#",
+            "Date",
+            "Source",
+            "Size",
+            "From Hash",
+            "To Hash",
+            "Media",
+        ]);
+    }
+
+    let col_count = if has_lineage { 8 } else { 7 };
+    let mut prev_file_id: Option<uuid::Uuid> = None;
+
+    for (i, t) in transitions.iter().enumerate() {
+        if has_lineage {
+            if let Some(prev) = prev_file_id {
+                if prev != t.file_id {
+                    let sep = style("── external modification ──").dim().to_string();
+                    let mut sep_row: Vec<Cell> = vec![Cell::new(""), Cell::new(&sep)];
+                    for _ in 2..col_count {
+                        sep_row.push(Cell::new(""));
+                    }
+                    table.add_row(sep_row);
+                }
+            }
+            prev_file_id = Some(t.file_id);
+        }
+
+        let date = format::format_display(&t.created_at);
+        let from = t
+            .from_hash
+            .as_deref()
+            .map(hash_preview)
+            .unwrap_or("\u{2014}");
+        let to = hash_preview(&t.to_hash);
+
+        let source_display = match (&t.source, &t.phase_name, &t.outcome) {
+            (TransitionSource::Voom, Some(phase), Some(outcome)) => {
+                format!("voom:{phase} ({})", outcome.as_str())
+            }
+            _ => t.source.as_str().to_string(),
+        };
+
+        let size_cell = match t.from_size {
+            Some(from_sz) => {
+                let delta = t.to_size as i64 - from_sz as i64;
+                let formatted = format::format_size(t.to_size);
+                if delta == 0 {
+                    formatted
+                } else if delta < 0 {
+                    format!("{formatted} (-{})", format::format_size((-delta) as u64))
+                } else {
+                    format!("{formatted} (+{})", format::format_size(delta as u64))
+                }
+            }
+            None => format::format_size(t.to_size),
+        };
+
+        let mut row = vec![Cell::new(i + 1), Cell::new(date), Cell::new(source_display)];
+
+        if has_lineage {
+            let short_id = &t.file_id.to_string()[..8];
+            row.push(Cell::new(format!("{short_id}...")));
+        }
+
+        row.push(Cell::new(size_cell));
+        row.push(Cell::new(from));
+        row.push(Cell::new(to));
+
+        let media_cell = t
+            .metadata_snapshot
+            .as_ref()
+            .map(format_snapshot_cell)
+            .unwrap_or_else(|| "\u{2014}".to_string());
+        row.push(Cell::new(media_cell));
+
+        table.add_row(row);
+    }
+
+    table.to_string()
 }
 
 /// Format tracks as a table.
@@ -455,5 +566,40 @@ mod tests {
         let s = "🎬🎥🎞️🎦📽️ movie";
         let result = truncate_with_ellipsis(s, 8);
         assert!(result.ends_with("..."), "got: {result}");
+    }
+}
+
+#[cfg(test)]
+mod transition_table_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+    use voom_domain::transition::{FileTransition, TransitionSource};
+
+    fn make_transition(source: TransitionSource, to_size: u64) -> FileTransition {
+        FileTransition::new(
+            Uuid::new_v4(),
+            PathBuf::from("/test/video.mkv"),
+            "abc123".to_string(),
+            to_size,
+            source,
+        )
+    }
+
+    #[test]
+    fn render_transitions_table_nonempty() {
+        let transitions = vec![
+            make_transition(TransitionSource::Discovery, 1_000_000),
+            make_transition(TransitionSource::Voom, 950_000),
+        ];
+        let output = render_transitions_table(&transitions);
+        assert!(!output.is_empty());
+        assert!(output.contains("discovery"));
+    }
+
+    #[test]
+    fn render_transitions_table_empty_returns_empty_string() {
+        let output = render_transitions_table(&[]);
+        assert!(output.is_empty());
     }
 }
