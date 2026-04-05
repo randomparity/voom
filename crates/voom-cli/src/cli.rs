@@ -142,6 +142,10 @@ pub struct InspectArgs {
     /// Show only track information
     #[arg(long)]
     pub tracks_only: bool,
+
+    /// Include file transition history
+    #[arg(long)]
+    pub history: bool,
 }
 
 // === Process ===

@@ -73,6 +73,7 @@ mod tests {
             file: std::path::PathBuf::from("/nonexistent/video.mkv"),
             format: OutputFormat::Table,
             tracks_only: false,
+            history: false,
         };
         let result = run(args);
         assert!(result.is_err());
