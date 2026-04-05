@@ -168,6 +168,30 @@ pub struct SavingsBucket {
     pub file_count: u64,
 }
 
+impl SavingsBucket {
+    /// Create a new bucket with all fields set explicitly.
+    #[must_use]
+    pub fn new(
+        executor: Option<String>,
+        phase: Option<String>,
+        period: Option<String>,
+        transition_count: u64,
+        bytes_saved: i64,
+        duration_ms: u64,
+        file_count: u64,
+    ) -> Self {
+        Self {
+            executor,
+            phase,
+            period,
+            transition_count,
+            bytes_saved,
+            duration_ms,
+            file_count,
+        }
+    }
+}
+
 /// The granularity for time-based savings grouping.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -214,6 +238,22 @@ pub struct SavingsReport {
     pub total_bytes_saved: i64,
     /// Grand total transitions across all buckets.
     pub total_transitions: u64,
+}
+
+impl SavingsReport {
+    /// Create a new report from pre-computed buckets and totals.
+    #[must_use]
+    pub fn new(
+        buckets: Vec<SavingsBucket>,
+        total_bytes_saved: i64,
+        total_transitions: u64,
+    ) -> Self {
+        Self {
+            buckets,
+            total_bytes_saved,
+            total_transitions,
+        }
+    }
 }
 
 /// Aggregate job statistics.

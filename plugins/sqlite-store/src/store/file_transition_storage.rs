@@ -4,7 +4,7 @@ use rusqlite::params;
 use uuid::Uuid;
 
 use voom_domain::errors::Result;
-use voom_domain::stats::{ProcessingOutcome, SavingsReport, TimePeriod};
+use voom_domain::stats::{ProcessingOutcome, SavingsBucket, SavingsReport, TimePeriod};
 use voom_domain::storage::FileTransitionStorage;
 use voom_domain::transition::{FileTransition, TransitionSource};
 
@@ -94,8 +94,63 @@ impl FileTransitionStorage for SqliteStore {
         Ok(rows)
     }
 
-    fn savings_by_provenance(&self, _period: Option<TimePeriod>) -> Result<SavingsReport> {
-        Ok(SavingsReport::default())
+    fn savings_by_provenance(&self, period: Option<TimePeriod>) -> Result<SavingsReport> {
+        let conn = self.conn()?;
+
+        let (period_col, group_by_period) = match period {
+            Some(p) => (format!("strftime('{}', created_at)", p.sql_format()), true),
+            None => ("NULL".to_string(), false),
+        };
+
+        let sql = format!(
+            "SELECT source_detail, phase_name, {period_col} AS period, \
+                    COUNT(*) AS cnt, \
+                    COALESCE(SUM(CASE WHEN from_size IS NOT NULL \
+                        THEN from_size - to_size ELSE 0 END), 0) AS saved, \
+                    COALESCE(SUM(duration_ms), 0) AS dur, \
+                    COUNT(DISTINCT file_id) AS files \
+             FROM file_transitions \
+             WHERE source = 'voom' AND outcome = 'success' \
+             GROUP BY source_detail, phase_name{} \
+             ORDER BY saved DESC",
+            if group_by_period { ", period" } else { "" },
+        );
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(storage_err("failed to prepare savings_by_provenance query"))?;
+
+        let buckets: Vec<SavingsBucket> = stmt
+            .query_map([], |row| {
+                let executor: Option<String> = row.get("source_detail")?;
+                let phase: Option<String> = row.get("phase_name")?;
+                let period_val: Option<String> = row.get("period")?;
+                let cnt: i64 = row.get("cnt")?;
+                let saved: i64 = row.get("saved")?;
+                let dur: i64 = row.get("dur")?;
+                let files: i64 = row.get("files")?;
+                Ok(SavingsBucket::new(
+                    executor.filter(|s| !s.is_empty()),
+                    phase.filter(|s| !s.is_empty()),
+                    period_val.filter(|s| !s.is_empty()),
+                    cnt as u64,
+                    saved,
+                    dur as u64,
+                    files as u64,
+                ))
+            })
+            .map_err(storage_err("failed to query savings by provenance"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err("failed to collect savings by provenance"))?;
+
+        let total_bytes_saved: i64 = buckets.iter().map(|b| b.bytes_saved).sum();
+        let total_transitions: u64 = buckets.iter().map(|b| b.transition_count).sum();
+
+        Ok(SavingsReport::new(
+            buckets,
+            total_bytes_saved,
+            total_transitions,
+        ))
     }
 
     fn transitions_for_path(&self, path: &std::path::Path) -> Result<Vec<FileTransition>> {
@@ -200,4 +255,163 @@ fn parse_uuid_for_row(s: &str, field: &str) -> rusqlite::Result<Uuid> {
             format!("invalid UUID in {field}: {s}: {e}").into(),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use uuid::Uuid;
+
+    use voom_domain::stats::{ProcessingOutcome, TimePeriod};
+    use voom_domain::storage::FileTransitionStorage;
+    use voom_domain::transition::{FileTransition, TransitionSource};
+
+    use crate::store::SqliteStore;
+
+    fn test_store() -> SqliteStore {
+        SqliteStore::in_memory().unwrap()
+    }
+
+    #[test]
+    fn savings_by_provenance_empty_db() {
+        let store = test_store();
+        let report = store.savings_by_provenance(None).unwrap();
+        assert!(report.buckets.is_empty());
+        assert_eq!(report.total_bytes_saved, 0);
+        assert_eq!(report.total_transitions, 0);
+    }
+
+    #[test]
+    fn savings_by_provenance_groups_by_executor_and_phase() {
+        let store = test_store();
+
+        let file_a = Uuid::new_v4();
+        let file_b = Uuid::new_v4();
+
+        // Two successful voom transitions with different executor/phase combos
+        let t1 = FileTransition::new(
+            file_a,
+            PathBuf::from("/media/a.mkv"),
+            "hash_a_new".into(),
+            800_000,
+            TransitionSource::Voom,
+        )
+        .with_from(Some("hash_a_old".into()), Some(1_000_000))
+        .with_detail("mkvtoolnix")
+        .with_processing(
+            500,
+            2,
+            1,
+            ProcessingOutcome::Success,
+            "default",
+            "normalize",
+        );
+
+        let t2 = FileTransition::new(
+            file_b,
+            PathBuf::from("/media/b.mkv"),
+            "hash_b_new".into(),
+            600_000,
+            TransitionSource::Voom,
+        )
+        .with_from(Some("hash_b_old".into()), Some(900_000))
+        .with_detail("ffmpeg")
+        .with_processing(
+            300,
+            1,
+            0,
+            ProcessingOutcome::Success,
+            "default",
+            "transcode",
+        );
+
+        // A failed transition — should be excluded from savings
+        let file_c = Uuid::new_v4();
+        let t3 = FileTransition::new(
+            file_c,
+            PathBuf::from("/media/c.mkv"),
+            "hash_c_new".into(),
+            500_000,
+            TransitionSource::Voom,
+        )
+        .with_from(Some("hash_c_old".into()), Some(700_000))
+        .with_detail("mkvtoolnix")
+        .with_processing(
+            100,
+            0,
+            0,
+            ProcessingOutcome::Failure,
+            "default",
+            "normalize",
+        );
+
+        store.record_transition(&t1).unwrap();
+        store.record_transition(&t2).unwrap();
+        store.record_transition(&t3).unwrap();
+
+        let report = store.savings_by_provenance(None).unwrap();
+
+        // Only 2 buckets: the failed transition is excluded
+        assert_eq!(report.buckets.len(), 2);
+        assert_eq!(report.total_transitions, 2);
+
+        // mkvtoolnix/normalize saved 200_000 bytes
+        let mkv_bucket = report
+            .buckets
+            .iter()
+            .find(|b| b.executor.as_deref() == Some("mkvtoolnix"))
+            .expect("mkvtoolnix bucket missing");
+        assert_eq!(mkv_bucket.bytes_saved, 200_000);
+        assert_eq!(mkv_bucket.transition_count, 1);
+        assert_eq!(mkv_bucket.phase.as_deref(), Some("normalize"));
+
+        // ffmpeg/transcode saved 300_000 bytes
+        let ff_bucket = report
+            .buckets
+            .iter()
+            .find(|b| b.executor.as_deref() == Some("ffmpeg"))
+            .expect("ffmpeg bucket missing");
+        assert_eq!(ff_bucket.bytes_saved, 300_000);
+        assert_eq!(ff_bucket.transition_count, 1);
+        assert_eq!(ff_bucket.phase.as_deref(), Some("transcode"));
+
+        assert_eq!(report.total_bytes_saved, 500_000);
+    }
+
+    #[test]
+    fn savings_by_provenance_with_time_period() {
+        let store = test_store();
+
+        let file_id = Uuid::new_v4();
+        let t = FileTransition::new(
+            file_id,
+            PathBuf::from("/media/d.mkv"),
+            "hash_d_new".into(),
+            700_000,
+            TransitionSource::Voom,
+        )
+        .with_from(Some("hash_d_old".into()), Some(1_000_000))
+        .with_detail("mkvtoolnix")
+        .with_processing(400, 1, 1, ProcessingOutcome::Success, "default", "cleanup");
+
+        store.record_transition(&t).unwrap();
+
+        let report = store
+            .savings_by_provenance(Some(TimePeriod::Month))
+            .unwrap();
+
+        assert_eq!(report.buckets.len(), 1);
+        let bucket = &report.buckets[0];
+
+        // Period should be populated in YYYY-MM format
+        let period = bucket.period.as_deref().expect("period should be set");
+        assert!(
+            period.len() == 7 && period.chars().nth(4) == Some('-'),
+            "expected YYYY-MM format, got: {period}"
+        );
+
+        assert_eq!(bucket.bytes_saved, 300_000);
+        assert_eq!(bucket.transition_count, 1);
+    }
 }
