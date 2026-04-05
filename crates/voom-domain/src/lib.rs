@@ -10,6 +10,7 @@ pub mod job;
 pub mod media;
 pub mod plan;
 pub mod safeguard;
+pub mod snapshot;
 pub mod stats;
 pub mod storage;
 pub mod temp_file;
@@ -35,6 +36,7 @@ pub use plan::{
     TranscodeChannels, TranscodeSettings,
 };
 pub use safeguard::{SafeguardKind, SafeguardViolation};
+pub use snapshot::MetadataSnapshot;
 pub use stats::{
     AudioStats, FileStats, JobAggregateStats, LibrarySnapshot, ProcessingAggregateStats,
     ProcessingOutcome, SnapshotTrigger, SubtitleStats, VideoStats,
