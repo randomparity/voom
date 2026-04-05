@@ -352,6 +352,107 @@ pub mod wasm {
                 })
                 .collect()
         }
+        /// Like [`WasmPluginLoader::load_dir_with_config_skip`] but also wires a
+        /// [`StorageBackedPluginStore`] and [`StorageBackedTransitionStore`] into
+        /// each plugin's [`HostState`] when `storage` is provided.
+        pub fn load_dir_with_config_storage_skip(
+            &self,
+            dir: &Path,
+            plugin_configs: &std::collections::HashMap<String, toml::Table>,
+            skip_plugins: &std::collections::HashSet<String>,
+            storage: Option<Arc<dyn voom_domain::storage::StorageTrait>>,
+        ) -> Vec<Result<PluginWithPriority, WasmLoadError>> {
+            use crate::host::{StorageBackedPluginStore, StorageBackedTransitionStore};
+
+            let entries = match std::fs::read_dir(dir) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    tracing::warn!(dir = %dir.display(), error = %e, "failed to read WASM plugins directory");
+                    return vec![];
+                }
+            };
+
+            entries
+                .filter_map(|entry| {
+                    entry
+                        .map_err(|e| {
+                            tracing::warn!(
+                                error = %e,
+                                "failed to read directory entry in WASM plugins dir"
+                            );
+                        })
+                        .ok()
+                })
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .map(|ext| ext == "wasm")
+                        .unwrap_or(false)
+                })
+                .filter_map(|entry| {
+                    let wasm_path = entry.path();
+                    let manifest = match load_manifest(&wasm_path) {
+                        Ok(m) => m,
+                        Err(e) => return Some(Err(e)),
+                    };
+
+                    let plugin_name = plugin_name_from_manifest(manifest.as_ref(), &wasm_path);
+
+                    if skip_plugins.contains(&plugin_name) {
+                        tracing::info!(plugin = %plugin_name, "WASM plugin disabled, skipping load");
+                        return None;
+                    }
+
+                    let config_table = plugin_configs.get(&plugin_name);
+                    let config_value = config_table.map(|table| {
+                        match serde_json::to_value(table) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!(plugin = %plugin_name, error = %e,
+                                    "failed to convert plugin config to JSON; using empty config");
+                                serde_json::json!({})
+                            }
+                        }
+                    });
+
+                    let mut state = HostState::new(plugin_name.clone());
+
+                    if let Some(v) = config_value {
+                        state = state.with_initial_config(v);
+                    }
+
+                    if let Some(table) = config_table {
+                        if let Some(paths) = table.get("allowed_paths") {
+                            if let Some(arr) = paths.as_array() {
+                                let paths: Vec<std::path::PathBuf> = arr
+                                    .iter()
+                                    .filter_map(|v| v.as_str())
+                                    .map(super::expand_tilde)
+                                    .collect();
+                                state = state.with_paths(paths);
+                            }
+                        }
+                    }
+
+                    if let Some(ref s) = storage {
+                        let plugin_store =
+                            Arc::new(StorageBackedPluginStore::new(s.clone()));
+                        let transition_store =
+                            Arc::new(StorageBackedTransitionStore::new(s.clone()));
+                        state = state
+                            .with_storage(plugin_store)
+                            .with_transition_store(transition_store);
+                    }
+
+                    let priority = manifest.as_ref().map(|m| m.priority).unwrap_or(70);
+                    Some(
+                        self.load_with_manifest(&wasm_path, manifest, Some(state))
+                            .map(|plugin| (plugin, priority)),
+                    )
+                })
+                .collect()
+        }
     }
 
     /// Internal state for a loaded WASM plugin instance.
@@ -677,6 +778,40 @@ pub mod wasm {
             .map_err(|e| WasmLoadError::Linker(e.to_string()))
     }
 
+    fn register_transition_funcs(
+        instance: &mut HostLinkerInstance<'_>,
+    ) -> Result<(), WasmLoadError> {
+        instance
+            .func_wrap(
+                "get-file-transitions",
+                |ctx: wasmtime::StoreContextMut<'_, HostState>,
+                 (file_id,): (String,)|
+                 -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
+                    let uuid = uuid::Uuid::parse_str(&file_id)
+                        .map_err(|e| format!("invalid file ID '{file_id}': {e}"));
+                    let result = match uuid {
+                        Ok(id) => ctx.data().get_file_transitions(&id),
+                        Err(e) => Err(e),
+                    };
+                    Ok((result,))
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
+
+        instance
+            .func_wrap(
+                "get-path-transitions",
+                |ctx: wasmtime::StoreContextMut<'_, HostState>,
+                 (path,): (String,)|
+                 -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
+                    Ok((ctx.data().get_path_transitions(&path),))
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
+
+        Ok(())
+    }
+
     fn register_plugin_data_funcs(
         instance: &mut HostLinkerInstance<'_>,
     ) -> Result<(), WasmLoadError> {
@@ -903,6 +1038,7 @@ pub mod wasm {
         register_run_tool_func(&mut instance)?;
         register_http_funcs(&mut instance)?;
         register_filesystem_funcs(&mut instance)?;
+        register_transition_funcs(&mut instance)?;
 
         Ok(())
     }
