@@ -18,9 +18,9 @@ impl FileTransitionStorage for SqliteStore {
              (id, file_id, path, from_hash, to_hash, from_size, to_size, \
               source, source_detail, plan_id, \
               duration_ms, actions_taken, tracks_modified, outcome, \
-              policy_name, phase_name, created_at) \
+              policy_name, phase_name, metadata_snapshot, created_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \
-                     ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                     ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 t.id.to_string(),
                 t.file_id.to_string(),
@@ -38,6 +38,13 @@ impl FileTransitionStorage for SqliteStore {
                 t.outcome.map(|o| o.as_str()),
                 t.policy_name.as_deref(),
                 t.phase_name.as_deref(),
+                t.metadata_snapshot.as_ref().and_then(|s| {
+                    s.to_json()
+                        .map_err(
+                            |e| tracing::warn!(error = %e, "failed to serialize metadata_snapshot"),
+                        )
+                        .ok()
+                }),
                 format_datetime(&t.created_at),
             ],
         )
@@ -52,7 +59,7 @@ impl FileTransitionStorage for SqliteStore {
                 "SELECT id, file_id, path, from_hash, to_hash, from_size, to_size, \
                  source, source_detail, plan_id, \
                  duration_ms, actions_taken, tracks_modified, outcome, \
-                 policy_name, phase_name, created_at \
+                 policy_name, phase_name, metadata_snapshot, created_at \
                  FROM file_transitions WHERE file_id = ?1 ORDER BY created_at",
             )
             .map_err(storage_err("failed to prepare transitions_for_file query"))?;
@@ -73,7 +80,7 @@ impl FileTransitionStorage for SqliteStore {
                 "SELECT id, file_id, path, from_hash, to_hash, from_size, to_size, \
                  source, source_detail, plan_id, \
                  duration_ms, actions_taken, tracks_modified, outcome, \
-                 policy_name, phase_name, created_at \
+                 policy_name, phase_name, metadata_snapshot, created_at \
                  FROM file_transitions WHERE source = ?1 ORDER BY created_at",
             )
             .map_err(storage_err("failed to prepare transitions_by_source query"))?;
@@ -94,7 +101,7 @@ impl FileTransitionStorage for SqliteStore {
                 "SELECT id, file_id, path, from_hash, to_hash, from_size, to_size, \
                  source, source_detail, plan_id, \
                  duration_ms, actions_taken, tracks_modified, outcome, \
-                 policy_name, phase_name, created_at \
+                 policy_name, phase_name, metadata_snapshot, created_at \
                  FROM file_transitions WHERE path = ?1 ORDER BY created_at ASC",
             )
             .map_err(storage_err("failed to prepare transitions_for_path query"))?;
@@ -145,6 +152,7 @@ fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition
     let actions_taken: Option<i64> = row.get("actions_taken")?;
     let tracks_modified: Option<i64> = row.get("tracks_modified")?;
     let outcome_str: Option<String> = row.get("outcome")?;
+    let snapshot_json: Option<String> = row.get("metadata_snapshot")?;
 
     let mut t = FileTransition::new(
         file_id,
@@ -169,6 +177,13 @@ fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition
     });
     t.policy_name = row.get("policy_name")?;
     t.phase_name = row.get("phase_name")?;
+    t.metadata_snapshot = snapshot_json.and_then(|s| {
+        voom_domain::snapshot::MetadataSnapshot::from_json(&s)
+            .map_err(|e| {
+                tracing::warn!(error = %e, "corrupt metadata_snapshot JSON");
+            })
+            .ok()
+    });
     t.created_at = created_at;
     Ok(t)
 }

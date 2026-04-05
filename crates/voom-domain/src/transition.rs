@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::snapshot::MetadataSnapshot;
 use crate::stats::ProcessingOutcome;
 
 /// Whether a file is currently present and accessible.
@@ -118,6 +119,11 @@ pub struct FileTransition {
     pub policy_name: Option<String>,
     /// Phase name within the policy (only for source=Voom transitions).
     pub phase_name: Option<String>,
+    /// Snapshot of the file's media properties after this transition completed.
+    /// For `source=Voom` transitions this reflects the post-processing state.
+    /// To determine the pre-processing state, read the snapshot from the
+    /// preceding transition in the file's history chain.
+    pub metadata_snapshot: Option<MetadataSnapshot>,
 }
 
 impl FileTransition {
@@ -152,6 +158,7 @@ impl FileTransition {
             outcome: None,
             policy_name: None,
             phase_name: None,
+            metadata_snapshot: None,
         }
     }
 
@@ -194,6 +201,13 @@ impl FileTransition {
         self.outcome = Some(outcome);
         self.policy_name = Some(policy_name.into());
         self.phase_name = Some(phase_name.into());
+        self
+    }
+
+    /// Attach a metadata snapshot to this transition.
+    #[must_use]
+    pub fn with_metadata_snapshot(mut self, snapshot: MetadataSnapshot) -> Self {
+        self.metadata_snapshot = Some(snapshot);
         self
     }
 }
@@ -405,6 +419,32 @@ mod tests {
             let back: FileStatus = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(back, status);
         }
+    }
+
+    #[test]
+    fn test_file_transition_with_metadata_snapshot() {
+        use crate::media::{Container, MediaFile, Track, TrackType};
+        use crate::snapshot::MetadataSnapshot;
+
+        let file = MediaFile::new(PathBuf::from("/movies/test.mkv"))
+            .with_container(Container::Mkv)
+            .with_duration(7200.5)
+            .with_tracks(vec![
+                Track::new(0, TrackType::Video, "hevc".into()),
+                Track::new(1, TrackType::AudioMain, "truehd".into()),
+            ]);
+
+        let snap = MetadataSnapshot::from_media_file(&file);
+        let t = FileTransition::new(
+            Uuid::new_v4(),
+            PathBuf::from("/movies/test.mkv"),
+            "newhash".into(),
+            2000,
+            TransitionSource::Discovery,
+        )
+        .with_metadata_snapshot(snap.clone());
+
+        assert_eq!(t.metadata_snapshot, Some(snap));
     }
 
     #[test]

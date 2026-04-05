@@ -743,9 +743,9 @@ fn insert_transition_in_tx(
          (id, file_id, path, from_hash, to_hash, from_size, to_size, \
           source, source_detail, plan_id, \
           duration_ms, actions_taken, tracks_modified, outcome, \
-          policy_name, phase_name, created_at) \
+          policy_name, phase_name, metadata_snapshot, created_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \
-                 ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                 ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             t.id.to_string(),
             t.file_id.to_string(),
@@ -763,6 +763,13 @@ fn insert_transition_in_tx(
             t.outcome.map(|o| o.as_str()),
             t.policy_name.as_deref(),
             t.phase_name.as_deref(),
+            t.metadata_snapshot.as_ref().and_then(|s| {
+                s.to_json()
+                    .map_err(
+                        |e| tracing::warn!(error = %e, "failed to serialize metadata_snapshot"),
+                    )
+                    .ok()
+            }),
             now,
         ],
     )

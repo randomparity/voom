@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS file_transitions (
     outcome TEXT,
     policy_name TEXT,
     phase_name TEXT,
+    metadata_snapshot TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -242,6 +243,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     migrate_files_columns(conn, &has_column)?;
     migrate_indexes_and_constraints(conn)?;
     migrate_processing_stats_into_transitions(conn, &has_column)?;
+    migrate_metadata_snapshot_column(conn, &has_column)?;
 
     Ok(())
 }
@@ -506,6 +508,17 @@ fn migrate_processing_stats_into_transitions(
     }
     // Drop the legacy table if it exists.
     conn.execute_batch("DROP TABLE IF EXISTS processing_stats")?;
+    Ok(())
+}
+
+/// Add metadata_snapshot column to file_transitions.
+fn migrate_metadata_snapshot_column(
+    conn: &Connection,
+    has_column: &dyn Fn(&str, &str) -> rusqlite::Result<bool>,
+) -> rusqlite::Result<()> {
+    if !has_column("file_transitions", "metadata_snapshot")? {
+        conn.execute_batch("ALTER TABLE file_transitions ADD COLUMN metadata_snapshot TEXT;")?;
+    }
     Ok(())
 }
 
