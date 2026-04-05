@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS file_transitions (
     outcome TEXT,
     policy_name TEXT,
     phase_name TEXT,
+    metadata_snapshot TEXT,
     created_at TEXT NOT NULL
 );
 
