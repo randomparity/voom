@@ -785,6 +785,60 @@ mod tests {
     }
 
     #[test]
+    fn test_transition_metadata_snapshot_roundtrip() {
+        use voom_domain::snapshot::MetadataSnapshot;
+
+        let store = test_store();
+        let file = sample_file();
+        store.upsert_file(&file).unwrap();
+
+        let snap_file = MediaFile::new(PathBuf::from("/movies/test.mkv"))
+            .with_container(Container::Mkv)
+            .with_duration(7200.5)
+            .with_tracks(vec![
+                Track::new(0, TrackType::Video, "hevc".into()),
+                Track::new(1, TrackType::AudioMain, "truehd".into()),
+            ]);
+        let snap = MetadataSnapshot::from_media_file(&snap_file);
+
+        let t = FileTransition::new(
+            file.id,
+            PathBuf::from("/movies/test.mkv"),
+            "newhash".into(),
+            2000,
+            TransitionSource::Discovery,
+        )
+        .with_metadata_snapshot(snap.clone());
+
+        store.record_transition(&t).unwrap();
+
+        let rows = store.transitions_for_file(&file.id).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].metadata_snapshot, Some(snap));
+    }
+
+    #[test]
+    fn test_transition_without_metadata_snapshot() {
+        let store = test_store();
+        let file = sample_file();
+        store.upsert_file(&file).unwrap();
+
+        let t = FileTransition::new(
+            file.id,
+            PathBuf::from("/movies/test2.mkv"),
+            "newhash".into(),
+            2000,
+            TransitionSource::Discovery,
+        );
+
+        store.record_transition(&t).unwrap();
+
+        let rows = store.transitions_for_file(&file.id).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].metadata_snapshot, None);
+    }
+
+    #[test]
     fn test_prune_missing_files_under_cleans_dependents() {
         let store = test_store();
 
