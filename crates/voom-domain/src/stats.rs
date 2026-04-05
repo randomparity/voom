@@ -198,7 +198,8 @@ impl SavingsBucket {
 pub enum TimePeriod {
     /// Group by calendar day (YYYY-MM-DD).
     Day,
-    /// Group by ISO week (YYYY-WNN).
+    /// Group by week-of-year (YYYY-WNN, where WW is 00–53, Monday-first).
+    /// Note: not ISO 8601 week dating (which SQLite does not support natively).
     Week,
     /// Group by calendar month (YYYY-MM).
     #[default]
@@ -206,7 +207,7 @@ pub enum TimePeriod {
 }
 
 impl TimePeriod {
-    /// Returns the SQLite strftime format and label prefix for this period.
+    /// Returns the SQLite strftime format string for this period.
     #[must_use]
     pub fn sql_format(&self) -> &'static str {
         match self {
@@ -230,7 +231,7 @@ impl TimePeriod {
 
 /// Complete savings report containing bucketed breakdowns.
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SavingsReport {
     /// Breakdown by (executor, phase, period).
     pub buckets: Vec<SavingsBucket>,
