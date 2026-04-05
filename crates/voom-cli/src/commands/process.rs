@@ -854,6 +854,11 @@ async fn process_single_file_execute(
             continue;
         }
 
+        // Pre-execution safeguard: check disk space
+        if check_disk_space(&plan, &current_file, ctx) {
+            continue;
+        }
+
         // Count as modified on first real plan
         if !any_executed {
             ctx.counters
@@ -1050,6 +1055,67 @@ fn check_size_increase(
         file.path.clone(),
         plan.phase_name.clone(),
         format!("output grew from {} to {} bytes", file.size, new_size,),
+    )));
+    log_plugin_errors(&r);
+    record_phase_stat(
+        &ctx.counters.phase_stats,
+        &plan.phase_name,
+        PhaseOutcomeKind::Failed,
+    );
+    record_failure_transition(file, plan.id, "", &plan.policy_name, &plan.phase_name, ctx);
+    true
+}
+
+/// Check whether sufficient disk space is available before executing a plan.
+///
+/// Returns `true` if space is insufficient and the phase should be skipped
+/// (a `SafeguardViolation` is recorded and `PlanFailed` dispatched).
+/// Returns `false` to proceed normally.
+fn check_disk_space(
+    plan: &voom_domain::plan::Plan,
+    file: &voom_domain::media::MediaFile,
+    ctx: &ProcessContext<'_>,
+) -> bool {
+    let check_path = file.path.parent().unwrap_or(std::path::Path::new("/"));
+
+    let available = match voom_domain::utils::disk::available_space(check_path) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                path = %file.path.display(),
+                error = %e,
+                "disk space check failed, proceeding anyway"
+            );
+            return false;
+        }
+    };
+
+    let required = voom_domain::utils::disk::estimate_required_space(plan, file.size);
+
+    if available >= required {
+        return false;
+    }
+
+    let message = format!(
+        "insufficient disk space: need {} but only {} available on {}",
+        format_size(required),
+        format_size(available),
+        check_path.display(),
+    );
+
+    tracing::warn!(
+        path = %file.path.display(),
+        phase = %plan.phase_name,
+        required,
+        available,
+        "{message}"
+    );
+
+    let r = ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
+        plan.id,
+        file.path.clone(),
+        plan.phase_name.clone(),
+        &message,
     )));
     log_plugin_errors(&r);
     record_phase_stat(
