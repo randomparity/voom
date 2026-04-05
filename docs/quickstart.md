@@ -74,6 +74,9 @@ Discover and introspect media files:
 # Scan a directory recursively
 voom scan /path/to/media -r
 
+# Scan multiple directories at once
+voom scan /path/to/movies /path/to/tv -r
+
 # Scan with multiple workers and no content hashing (faster)
 voom scan /path/to/media -r --workers 8 --no-hash
 ```
@@ -151,6 +154,12 @@ Apply the policy:
 # Process with backup (default)
 voom process /path/to/media --policy my-normalize.voom
 
+# Process multiple directories
+voom process /path/to/movies /path/to/tv --policy my-normalize.voom
+
+# Show the plan without executing (equivalent to --dry-run)
+voom process /path/to/media --policy my-normalize.voom --plan-only
+
 # Process with multiple workers
 voom process /path/to/media --policy my-normalize.voom --workers 4
 
@@ -177,11 +186,52 @@ voom jobs status <job-id>
 voom jobs cancel <job-id>
 ```
 
-### 8. View Reports
+### 8. Query Files
+
+List and filter files in the database:
+
+```bash
+# List all known files
+voom files
+
+# Filter by codec, language, or other attributes
+voom files --codec hevc
+voom files --lang jpn
+
+# Show details for a specific file by UUID
+voom files --id <uuid>
+```
+
+### 9. View Processing History
+
+```bash
+# Show processing history across all files
+voom history
+
+# Show history for a specific file
+voom inspect /path/to/movie.mkv --history
+```
+
+### 10. Manage Backups
+
+```bash
+# List all backups
+voom backup list
+
+# Restore a file from backup
+voom backup restore <uuid>
+
+# Remove old backups to reclaim disk space
+voom backup cleanup
+```
+
+### 11. View Reports
 
 ```bash
 voom report
-voom report --format json
+voom report --library --plans
+voom report --savings --period week
+voom report --all --format json
 ```
 
 ## Web Dashboard
@@ -331,8 +381,6 @@ voom db purge-bad
 voom db clean-bad --yes
 ```
 
-The `voom status` command shows the bad file count when any exist.
-
 ## Database Maintenance
 
 ```bash
@@ -359,14 +407,6 @@ voom completions zsh > ~/.zfunc/_voom
 
 # Fish
 voom completions fish > ~/.config/fish/completions/voom.fish
-```
-
-## Library Status
-
-Check the current state of your library and daemon:
-
-```bash
-voom status
 ```
 
 ## Next Steps
