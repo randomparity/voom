@@ -3475,6 +3475,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "voom-report"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "voom-domain",
+ "voom-kernel",
+]
+
+[[package]]
 name = "voom-sqlite-store"
 version = "0.1.0"
 dependencies = [
