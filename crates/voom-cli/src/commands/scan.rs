@@ -15,7 +15,7 @@ use console::style;
 use indicatif::HumanDuration;
 use tokio_util::sync::CancellationToken;
 use voom_domain::bad_file::BadFileSource;
-use voom_domain::events::{Event, FileDiscoveredEvent, ScanCompleteEvent};
+use voom_domain::events::{Event, FileDiscoveredEvent, IntrospectCompleteEvent, ScanCompleteEvent};
 
 /// Run the scan command.
 ///
@@ -93,6 +93,10 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     }
 
     purge_stale_records(&*store, config.pruning.retention_days, quiet);
+
+    kernel.dispatch(Event::IntrospectComplete(IntrospectCompleteEvent::new(
+        introspected,
+    )));
     kernel.dispatch(Event::ScanComplete(ScanCompleteEvent::new(
         all_events.len() as u64,
         introspected,
@@ -589,5 +593,57 @@ mod tests {
         }
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_introspect_complete_dispatched() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        struct IntrospectCompleteRecorder {
+            count: AtomicUsize,
+            files: AtomicU64,
+        }
+
+        impl IntrospectCompleteRecorder {
+            fn new() -> Self {
+                Self {
+                    count: AtomicUsize::new(0),
+                    files: AtomicU64::new(0),
+                }
+            }
+        }
+
+        impl voom_kernel::Plugin for IntrospectCompleteRecorder {
+            fn name(&self) -> &str {
+                "introspect-complete-recorder"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[]
+            }
+            fn handles(&self, event_type: &str) -> bool {
+                event_type == Event::INTROSPECT_COMPLETE
+            }
+            fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
+                if let Event::IntrospectComplete(e) = event {
+                    self.count.fetch_add(1, Ordering::SeqCst);
+                    self.files.store(e.files_introspected, Ordering::SeqCst);
+                }
+                Ok(None)
+            }
+        }
+
+        let mut kernel = voom_kernel::Kernel::new();
+        let recorder = Arc::new(IntrospectCompleteRecorder::new());
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
+
+        kernel.dispatch(Event::IntrospectComplete(
+            voom_domain::events::IntrospectCompleteEvent::new(42),
+        ));
+
+        assert_eq!(recorder.count.load(Ordering::SeqCst), 1);
+        assert_eq!(recorder.files.load(Ordering::SeqCst), 42);
     }
 }
