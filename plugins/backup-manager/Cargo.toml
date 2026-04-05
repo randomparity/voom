@@ -19,7 +19,6 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-libc = "0.2"
 
 [lints]
 workspace = true

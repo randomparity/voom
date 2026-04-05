@@ -1,14 +1,17 @@
 //! Disk space validation.
 //!
-//! Checks that sufficient free space is available before creating a backup,
-//! using `libc::statvfs` on Unix and a permissive fallback on other platforms.
+//! Re-exports the shared `available_space` from `voom-domain` and provides
+//! a backup-specific `validate_disk_space_for` wrapper.
 
 use std::fs;
 use std::path::Path;
 
-use voom_domain::errors::{Result, VoomError};
+use voom_domain::errors::Result;
 
 use crate::plugin_err;
+
+// Re-export so existing callers within backup-manager don't break.
+pub use voom_domain::utils::disk::available_space;
 
 /// Check that sufficient disk space is available for backing up `source_path`
 /// to `backup_path`.
@@ -41,45 +44,4 @@ pub fn validate_disk_space_for(
     }
 
     Ok(())
-}
-
-/// Get available disk space for a path.
-/// Walks up to the nearest existing ancestor if the path doesn't exist.
-#[cfg(unix)]
-pub fn available_space(path: &Path) -> Result<u64> {
-    // Find the nearest existing ancestor directory
-    let mut check = path.to_path_buf();
-    while !check.exists() {
-        match check.parent() {
-            Some(p) => check = p.to_path_buf(),
-            None => break,
-        }
-    }
-
-    // Use libc::statvfs directly to avoid depending on df output format
-    use std::ffi::CString;
-    let c_path = CString::new(check.to_string_lossy().as_bytes())
-        .map_err(|e| plugin_err(format!("invalid path for statvfs: {e}")))?;
-
-    // SAFETY: `c_path` is a valid NUL-terminated C string (from CString::new above),
-    // and `stat` is passed as an out-pointer that statvfs will fully initialize on success.
-    unsafe {
-        let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-        if libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) == 0 {
-            let stat = stat.assume_init();
-            // Available space for unprivileged users.
-            // f_bavail is u32 on macOS, u64 on Linux — cast needed for portability.
-            #[allow(clippy::unnecessary_cast)]
-            let avail = (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64);
-            Ok(avail)
-        } else {
-            Err(VoomError::Io(std::io::Error::last_os_error()))
-        }
-    }
-}
-
-#[cfg(not(unix))]
-pub fn available_space(_path: &Path) -> Result<u64> {
-    // On non-Unix platforms, return a large value to avoid blocking.
-    Ok(u64::MAX)
 }
