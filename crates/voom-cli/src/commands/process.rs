@@ -1100,7 +1100,8 @@ fn record_file_transition(
         voom_domain::ProcessingOutcome::Success,
         policy_name,
         phase_name,
-    );
+    )
+    .with_metadata_snapshot(voom_domain::MetadataSnapshot::from_media_file(new_file));
 
     if let Err(e) = ctx.store.record_transition(&transition) {
         tracing::warn!(error = %e, "failed to record transition");
