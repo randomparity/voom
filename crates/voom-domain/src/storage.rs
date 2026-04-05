@@ -9,7 +9,7 @@ use crate::errors::Result;
 use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::{Container, MediaFile};
 use crate::plan::Plan;
-use crate::stats::{LibrarySnapshot, SnapshotTrigger};
+use crate::stats::{LibrarySnapshot, SavingsReport, SnapshotTrigger, TimePeriod};
 use crate::transition::{DiscoveredFile, FileTransition, ReconcileResult, TransitionSource};
 
 /// Filters for querying jobs from storage.
@@ -136,6 +136,10 @@ pub trait FileTransitionStorage: Send + Sync {
     /// Ordered by `created_at`. This includes transitions from superseded file
     /// records that were replaced at this path.
     fn transitions_for_path(&self, path: &Path) -> Result<Vec<FileTransition>>;
+    /// Aggregate space savings from successful voom transitions, grouped by
+    /// executor (`source_detail`), phase (`phase_name`), and optionally by
+    /// time period.
+    fn savings_by_provenance(&self, period: Option<TimePeriod>) -> Result<SavingsReport>;
 }
 
 /// Plugin key-value data storage.

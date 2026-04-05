@@ -10,7 +10,7 @@ use crate::config;
 use crate::output;
 use crate::stats;
 use voom_domain::stats::SnapshotTrigger;
-use voom_domain::storage::{PlanStorage, SnapshotStorage};
+use voom_domain::storage::{FileTransitionStorage, PlanStorage, SnapshotStorage};
 
 pub fn run(args: ReportArgs) -> Result<()> {
     let config = config::load_config()?;
@@ -25,6 +25,10 @@ pub fn run(args: ReportArgs) -> Result<()> {
 
     if args.plans {
         return run_plans_report(&*store, &args.format);
+    }
+
+    if args.savings {
+        return run_savings_report(&*store, &args.format, args.period.as_deref());
     }
 
     let files = store
@@ -581,6 +585,133 @@ fn run_history_report(
     }
 
     Ok(())
+}
+
+fn run_savings_report(
+    store: &dyn FileTransitionStorage,
+    format: &OutputFormat,
+    period_str: Option<&str>,
+) -> Result<()> {
+    let period = match period_str {
+        Some(s) => {
+            let p = voom_domain::stats::TimePeriod::parse(s).context(format!(
+                "invalid period '{s}': expected day, week, or month"
+            ))?;
+            Some(p)
+        }
+        None => None,
+    };
+
+    let report = store
+        .savings_by_provenance(period)
+        .context("failed to query savings report")?;
+
+    if report.buckets.is_empty() {
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).expect("report is serializable")
+                );
+            }
+            return Ok(());
+        }
+        eprintln!(
+            "{}",
+            style("No savings data. Run 'voom process' first.").yellow()
+        );
+        return Ok(());
+    }
+
+    match format {
+        OutputFormat::Json => print_savings_json(&report),
+        OutputFormat::Table => print_savings_table(&report, period.is_some()),
+        OutputFormat::Plain => print_savings_plain(&report, period.is_some()),
+    }
+
+    Ok(())
+}
+
+fn print_savings_json(report: &voom_domain::stats::SavingsReport) {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(report).expect("report is serializable")
+    );
+}
+
+fn print_savings_table(report: &voom_domain::stats::SavingsReport, show_period: bool) {
+    use voom_domain::utils::format::{format_duration, format_size};
+
+    println!(
+        "{}",
+        style("Space Savings by Provenance").bold().underlined()
+    );
+    println!();
+
+    let mut table = output::new_table();
+    let mut headers: Vec<&str> = vec!["Executor", "Phase"];
+    if show_period {
+        headers.push("Period");
+    }
+    headers.extend_from_slice(&["Files", "Transitions", "Saved", "Time"]);
+    table.set_header(headers);
+
+    for b in &report.buckets {
+        let saved_label = if b.bytes_saved >= 0 {
+            format_size(b.bytes_saved as u64)
+        } else {
+            format!("+{}", format_size(b.bytes_saved.unsigned_abs()))
+        };
+
+        let mut row: Vec<Cell> = vec![
+            Cell::new(b.executor.as_deref().unwrap_or("-")),
+            Cell::new(b.phase.as_deref().unwrap_or("-")),
+        ];
+        if show_period {
+            row.push(Cell::new(b.period.as_deref().unwrap_or("-")));
+        }
+        row.extend_from_slice(&[
+            Cell::new(b.file_count),
+            Cell::new(b.transition_count),
+            Cell::new(&saved_label),
+            Cell::new(format_duration(b.duration_ms as f64 / 1000.0)),
+        ]);
+        table.add_row(row);
+    }
+    println!("{table}");
+
+    let total_label = if report.total_bytes_saved >= 0 {
+        format!("{} saved", format_size(report.total_bytes_saved as u64))
+    } else {
+        format!(
+            "{} added",
+            format_size(report.total_bytes_saved.unsigned_abs())
+        )
+    };
+    println!(
+        "\n  Total: {} across {} transitions",
+        style(total_label).bold(),
+        style(report.total_transitions).bold(),
+    );
+}
+
+fn print_savings_plain(report: &voom_domain::stats::SavingsReport, show_period: bool) {
+    for b in &report.buckets {
+        let executor = b.executor.as_deref().unwrap_or("-");
+        let phase = b.phase.as_deref().unwrap_or("-");
+        if show_period {
+            let period = b.period.as_deref().unwrap_or("-");
+            println!(
+                "{executor}\t{phase}\t{period}\t{}\t{}\t{}",
+                b.file_count, b.transition_count, b.bytes_saved,
+            );
+        } else {
+            println!(
+                "{executor}\t{phase}\t{}\t{}\t{}",
+                b.file_count, b.transition_count, b.bytes_saved,
+            );
+        }
+    }
 }
 
 fn codec_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
