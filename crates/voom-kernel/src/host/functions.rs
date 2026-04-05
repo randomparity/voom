@@ -261,6 +261,31 @@ impl HostState {
         }
     }
 
+    /// Query transitions for a file by its UUID.
+    /// Returns MessagePack-serialized `Vec<FileTransition>`.
+    pub fn get_file_transitions(&self, file_id: &uuid::Uuid) -> Result<Vec<u8>, String> {
+        let store = self.transition_store.as_ref().ok_or_else(|| {
+            "file transition history not available \
+                 (no transition store configured)"
+                .to_string()
+        })?;
+        let transitions = store.transitions_for_file(file_id)?;
+        rmp_serde::to_vec(&transitions).map_err(|e| format!("failed to serialize transitions: {e}"))
+    }
+
+    /// Query transitions for a file by its filesystem path.
+    /// Returns MessagePack-serialized `Vec<FileTransition>`.
+    pub fn get_path_transitions(&self, path: &str) -> Result<Vec<u8>, String> {
+        let store = self.transition_store.as_ref().ok_or_else(|| {
+            "file transition history not available \
+                 (no transition store configured)"
+                .to_string()
+        })?;
+        let path = std::path::Path::new(path);
+        let transitions = store.transitions_for_path(path)?;
+        rmp_serde::to_vec(&transitions).map_err(|e| format!("failed to serialize transitions: {e}"))
+    }
+
     /// Check that the URL's domain is in the allowed HTTP domains list.
     /// Empty allowlist = deny all (matches `run_tool` semantics).
     fn check_http_domain(&self, url: &str) -> Result<(), String> {
@@ -349,6 +374,7 @@ fn parse_response(response: ureq::Response) -> Result<HttpResponse, String> {
 mod tests {
     use super::*;
     use crate::host::HostState;
+    use std::sync::Arc;
 
     #[test]
     fn test_write_file_allowed_path() {
@@ -417,5 +443,71 @@ mod tests {
         assert!(looks_like_path("~/home"));
         assert!(!looks_like_path("just-a-flag"));
         assert!(!looks_like_path("--verbose"));
+    }
+
+    #[test]
+    fn test_get_file_transitions_no_store() {
+        let state = HostState::new("test".into());
+        let result = state.get_file_transitions(&uuid::Uuid::new_v4());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not available"));
+    }
+
+    #[test]
+    fn test_get_file_transitions_with_store() {
+        use crate::host::InMemoryTransitionStore;
+        use std::path::PathBuf;
+        use voom_domain::transition::{FileTransition, TransitionSource};
+
+        let store = Arc::new(InMemoryTransitionStore::new());
+        let file_id = uuid::Uuid::new_v4();
+        let t = FileTransition::new(
+            file_id,
+            PathBuf::from("/movies/test.mkv"),
+            "hash123".into(),
+            2000,
+            TransitionSource::Discovery,
+        );
+        store.record_transition(&t).unwrap();
+
+        let state = HostState::new("test".into()).with_transition_store(store);
+
+        let bytes = state.get_file_transitions(&file_id).unwrap();
+        let transitions: Vec<FileTransition> = rmp_serde::from_slice(&bytes).expect("deserialize");
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].to_hash, "hash123");
+    }
+
+    #[test]
+    fn test_get_path_transitions_no_store() {
+        let state = HostState::new("test".into());
+        let result = state.get_path_transitions("/movies/test.mkv");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not available"));
+    }
+
+    #[test]
+    fn test_get_path_transitions_with_store() {
+        use crate::host::InMemoryTransitionStore;
+        use std::path::PathBuf;
+        use voom_domain::transition::{FileTransition, TransitionSource};
+
+        let store = Arc::new(InMemoryTransitionStore::new());
+        let path = PathBuf::from("/movies/test.mkv");
+        let t = FileTransition::new(
+            uuid::Uuid::new_v4(),
+            path.clone(),
+            "hash456".into(),
+            3000,
+            TransitionSource::Voom,
+        );
+        store.record_transition(&t).unwrap();
+
+        let state = HostState::new("test".into()).with_transition_store(store);
+
+        let bytes = state.get_path_transitions(&path.to_string_lossy()).unwrap();
+        let transitions: Vec<FileTransition> = rmp_serde::from_slice(&bytes).expect("deserialize");
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].to_hash, "hash456");
     }
 }
