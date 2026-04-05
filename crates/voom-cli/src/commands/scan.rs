@@ -94,6 +94,7 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
 
     purge_stale_records(&*store, config.pruning.retention_days, quiet);
 
+    // Protected from cancelled runs by the early return above (line 91).
     kernel.dispatch(Event::IntrospectComplete(IntrospectCompleteEvent::new(
         introspected,
     )));
