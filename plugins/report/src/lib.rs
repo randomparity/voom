@@ -71,7 +71,17 @@ impl ReportPlugin {
                 .filter_map(|f| {
                     let violations_val = f.plugin_metadata.get("safeguard_violations")?;
                     let violations: Vec<voom_domain::SafeguardViolation> =
-                        serde_json::from_value(violations_val.clone()).ok()?;
+                        match serde_json::from_value(violations_val.clone()) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!(
+                                    path = %f.path.display(),
+                                    error = %e,
+                                    "malformed safeguard_violations metadata"
+                                );
+                                return None;
+                            }
+                        };
                     if violations.is_empty() {
                         return None;
                     }
@@ -123,12 +133,13 @@ impl ReportPlugin {
                     files = snapshot.files.total_count,
                     "auto-captured library snapshot"
                 );
+                Ok(Some(EventResult::new("report")))
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to auto-capture snapshot");
+                Ok(None)
             }
         }
-        Ok(Some(EventResult::new("report")))
     }
 }
 
@@ -154,6 +165,7 @@ impl Plugin for ReportPlugin {
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
         match event {
             Event::ScanComplete(_) => self.handle_lifecycle_event(SnapshotTrigger::ScanComplete),
+            // TODO(#120): no production code dispatches IntrospectComplete yet
             Event::IntrospectComplete(_) => {
                 self.handle_lifecycle_event(SnapshotTrigger::IntrospectComplete)
             }
