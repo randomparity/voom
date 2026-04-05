@@ -66,6 +66,36 @@ fn collect_lineage_transitions(
     all_transitions
 }
 
+/// Format a metadata snapshot as a compact table cell string.
+fn format_snapshot_cell(snap: &voom_domain::snapshot::MetadataSnapshot) -> String {
+    let mut parts = Vec::new();
+
+    if let Some(ref res) = snap.resolution {
+        parts.push(res.clone());
+    }
+
+    let mut track_counts = Vec::new();
+    for &(count, label) in &[
+        (snap.video_tracks, "v"),
+        (snap.audio_tracks, "a"),
+        (snap.subtitle_tracks, "s"),
+    ] {
+        if count > 0 {
+            track_counts.push(format!("{count}{label}"));
+        }
+    }
+
+    if !track_counts.is_empty() {
+        parts.push(track_counts.join("+"));
+    }
+
+    if parts.is_empty() {
+        "\u{2014}".to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
 pub fn run(args: HistoryArgs) -> Result<()> {
     let config = crate::config::load_config()?;
     let store = app::open_store(&config)?;
@@ -156,7 +186,7 @@ pub fn run(args: HistoryArgs) -> Result<()> {
             );
 
             let mut table = output::new_table();
-            let col_count = if has_lineage { 7 } else { 6 };
+            let col_count = if has_lineage { 8 } else { 7 };
             if has_lineage {
                 table.set_header(vec![
                     "#",
@@ -166,9 +196,18 @@ pub fn run(args: HistoryArgs) -> Result<()> {
                     "Size",
                     "From Hash",
                     "To Hash",
+                    "Media",
                 ]);
             } else {
-                table.set_header(vec!["#", "Date", "Source", "Size", "From Hash", "To Hash"]);
+                table.set_header(vec![
+                    "#",
+                    "Date",
+                    "Source",
+                    "Size",
+                    "From Hash",
+                    "To Hash",
+                    "Media",
+                ]);
             }
 
             let mut prev_file_id: Option<Uuid> = None;
@@ -234,6 +273,13 @@ pub fn run(args: HistoryArgs) -> Result<()> {
                 row.push(comfy_table::Cell::new(from));
                 row.push(comfy_table::Cell::new(to));
 
+                let media_cell = t
+                    .metadata_snapshot
+                    .as_ref()
+                    .map(format_snapshot_cell)
+                    .unwrap_or_else(|| "\u{2014}".to_string());
+                row.push(comfy_table::Cell::new(media_cell));
+
                 table.add_row(row);
             }
 
@@ -252,4 +298,52 @@ pub fn run(args: HistoryArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use voom_domain::snapshot::MetadataSnapshot;
+
+    fn make_snapshot(
+        video: u32,
+        audio: u32,
+        subtitle: u32,
+        resolution: Option<&str>,
+    ) -> MetadataSnapshot {
+        serde_json::from_value(serde_json::json!({
+            "container": "mkv",
+            "video_tracks": video,
+            "audio_tracks": audio,
+            "subtitle_tracks": subtitle,
+            "codecs": [],
+            "resolution": resolution,
+            "duration_secs": 0.0,
+        }))
+        .expect("valid snapshot JSON")
+    }
+
+    #[test]
+    fn format_snapshot_typical() {
+        let snap = make_snapshot(1, 3, 2, Some("3840x2160"));
+        assert_eq!(format_snapshot_cell(&snap), "3840x2160 1v+3a+2s");
+    }
+
+    #[test]
+    fn format_snapshot_no_resolution() {
+        let snap = make_snapshot(0, 2, 0, None);
+        assert_eq!(format_snapshot_cell(&snap), "2a");
+    }
+
+    #[test]
+    fn format_snapshot_empty() {
+        let snap = make_snapshot(0, 0, 0, None);
+        assert_eq!(format_snapshot_cell(&snap), "\u{2014}");
+    }
+
+    #[test]
+    fn format_snapshot_video_only() {
+        let snap = make_snapshot(1, 0, 0, Some("1920x1080"));
+        assert_eq!(format_snapshot_cell(&snap), "1920x1080 1v");
+    }
 }
