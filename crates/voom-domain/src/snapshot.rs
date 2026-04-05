@@ -55,7 +55,11 @@ impl MetadataSnapshot {
             subtitle_tracks: subtitle_tracks.len() as u32,
             codecs,
             resolution,
-            duration_secs: file.duration,
+            duration_secs: if file.duration.is_finite() {
+                file.duration
+            } else {
+                0.0
+            },
         }
     }
 
@@ -185,5 +189,27 @@ mod tests {
         let snap = MetadataSnapshot::from_media_file(&file);
 
         assert_eq!(snap.codecs, vec!["aac"]);
+    }
+
+    #[test]
+    fn snapshot_clamps_nan_duration() {
+        let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
+        file.duration = f64::NAN;
+
+        let snap = MetadataSnapshot::from_media_file(&file);
+        assert_eq!(snap.duration_secs, 0.0);
+        snap.to_json()
+            .expect("NaN was clamped, so JSON should succeed");
+    }
+
+    #[test]
+    fn snapshot_clamps_infinite_duration() {
+        let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
+        file.duration = f64::INFINITY;
+
+        let snap = MetadataSnapshot::from_media_file(&file);
+        assert_eq!(snap.duration_secs, 0.0);
+        snap.to_json()
+            .expect("Infinity was clamped, so JSON should succeed");
     }
 }
