@@ -699,3 +699,11 @@ async fn test_list_transitions_filters_by_file_id() {
     assert_eq!(ts.len(), 1);
     assert_eq!(ts[0]["source"], "discovery");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_transitions_file_not_found() {
+    let server = make_server(InMemoryStore::new());
+    let id = Uuid::new_v4();
+    let resp = server.get(&format!("/api/files/{id}/transitions")).await;
+    resp.assert_status_not_found();
+}

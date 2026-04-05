@@ -11,6 +11,7 @@ use crate::errors::{spawn_store_op, WebError};
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct TransitionsResponse {
     pub transitions: Vec<FileTransition>,
 }
@@ -23,7 +24,16 @@ pub async fn list_transitions(
 ) -> Result<Json<TransitionsResponse>, WebError> {
     let store = state.store.clone();
 
-    let transitions = spawn_store_op(move || store.transitions_for_file(&id)).await?;
+    let (file, transitions) = spawn_store_op(move || {
+        let file = store.file(&id)?;
+        let transitions = store.transitions_for_file(&id)?;
+        Ok((file, transitions))
+    })
+    .await?;
+
+    if file.is_none() {
+        return Err(WebError::NotFound(format!("File {id} not found")));
+    }
 
     Ok(Json(TransitionsResponse { transitions }))
 }

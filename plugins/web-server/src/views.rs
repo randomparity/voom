@@ -106,30 +106,13 @@ pub fn transition_views(transitions: Vec<FileTransition>) -> Vec<TransitionView>
 }
 
 /// Format a size delta as a human-readable signed string.
-///
-/// Uses SI (decimal) divisors (1_000_000 per MiB, 1_000_000_000 per GiB) so deltas display
-/// as round numbers. The GiB tier activates at the IEC GiB boundary (1_073_741_824 bytes)
-/// to avoid values like "953.67 MiB" for a clean 1 GB change.
 fn format_size_delta(from: u64, to: u64) -> String {
-    const KB: u64 = 1_000;
-    const MB: u64 = 1_000 * KB;
-    const GIB_THRESHOLD: u64 = 1_073_741_824; // 1 binary GiB — threshold only
-
-    let diff_bytes = to as i64 - from as i64;
-    let sign = if diff_bytes < 0 { "-" } else { "+" };
-    let abs = diff_bytes.unsigned_abs();
-
-    let formatted = if abs >= GIB_THRESHOLD {
-        format!("{:.2} GiB", abs as f64 / (MB * 1_000) as f64)
-    } else if abs >= MB {
-        format!("{:.2} MiB", abs as f64 / MB as f64)
-    } else if abs >= KB {
-        format!("{:.0} KiB", abs as f64 / KB as f64)
+    let (sign, abs) = if to < from {
+        ("-", from - to)
     } else {
-        format!("{abs} B")
+        ("+", to - from)
     };
-
-    format!("{sign}{formatted}")
+    format!("{sign}{}", format_size(abs))
 }
 
 /// Format milliseconds into a human-readable duration string.
@@ -239,7 +222,7 @@ mod tests {
         let view = TransitionView::from_transition(t);
         assert_eq!(view.to_size_human, "1.86 GiB");
         assert_eq!(view.from_size_human, Some("2.79 GiB".to_string()));
-        assert_eq!(view.size_delta, Some("-1000.00 MiB".to_string()));
+        assert_eq!(view.size_delta, Some("-953.7 MiB".to_string()));
         assert_eq!(view.source_label, "voom");
         assert_eq!(view.duration_human, Some("1.5s".to_string()));
     }
