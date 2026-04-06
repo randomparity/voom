@@ -855,9 +855,9 @@ async fn process_single_file_execute(
         }
 
         // Pre-execution safeguard: check disk space
-        // Note: check_disk_space already dispatches PlanFailed and records
-        // PhaseOutcomeKind::Failed for stats. This insert updates the
-        // dependency-resolution map to block downstream run_if gates.
+        // Note: check_disk_space dispatches PlanCreated then PlanFailed and
+        // records PhaseOutcomeKind::Failed for stats. This insert updates
+        // the dependency-resolution map to block downstream run_if gates.
         if check_disk_space(&plan, &current_file, ctx) {
             phase_outcomes.insert(
                 phase_name.clone(),
@@ -881,9 +881,10 @@ async fn process_single_file_execute(
         match exec_outcome {
             PlanOutcome::Success { executor } => {
                 // Post-execution safeguard: check size increase
-                // Note: check_size_increase already dispatches PlanFailed and
-                // records PhaseOutcomeKind::Failed for stats. This insert
-                // updates the dependency-resolution map.
+                // Note: check_size_increase dispatches PlanFailed (PlanCreated was
+                // already dispatched by execute_single_plan) and records
+                // PhaseOutcomeKind::Failed for stats. This insert updates the
+                // dependency-resolution map.
                 if check_size_increase(&plan, &current_file, ctx) {
                     phase_outcomes.insert(
                         phase_name.clone(),
@@ -1042,7 +1043,8 @@ fn record_failure_transition(
 /// Check if the output file grew larger than the original.
 ///
 /// Returns `true` if the size increased and the phase should be skipped
-/// (the plan is marked as failed). Returns `false` to proceed normally.
+/// (`PlanFailed` is dispatched and the failure is recorded; `PlanCreated`
+/// was already dispatched by the caller). Returns `false` to proceed normally.
 fn check_size_increase(
     plan: &voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
@@ -1097,8 +1099,8 @@ fn check_size_increase(
 /// Check whether sufficient disk space is available before executing a plan.
 ///
 /// Returns `true` if space is insufficient and the phase should be skipped
-/// (a `PlanFailed` event is dispatched and the failure is recorded).
-/// Returns `false` to proceed normally.
+/// (`PlanCreated` then `PlanFailed` events are dispatched and the failure
+/// is recorded). Returns `false` to proceed normally.
 fn check_disk_space(
     plan: &voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
@@ -2251,7 +2253,7 @@ mod tests {
         let file_path = dir.path().join("test.mkv");
         std::fs::write(&file_path, vec![0u8; 2048]).unwrap();
 
-        let mut file = MediaFile::new(file_path.clone());
+        let mut file = MediaFile::new(file_path);
         // Report size smaller than actual so the safeguard triggers.
         file.size = 1024;
 
