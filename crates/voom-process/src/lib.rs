@@ -140,7 +140,13 @@ pub fn run_with_timeout_env(
 /// single-quoted. Simple args pass through unquoted.
 pub fn shell_quote_args(tool: &str, args: &[impl AsRef<str>]) -> String {
     let mut parts = Vec::with_capacity(args.len() + 1);
-    parts.push(tool.to_string());
+    // Quote the tool name if it contains shell metacharacters (e.g. spaces in path)
+    if tool.contains(|c: char| c.is_whitespace() || "\"'\\$`!#&|;(){}[]<>?*~".contains(c)) {
+        let escaped = tool.replace('\'', "'\\''");
+        parts.push(format!("'{escaped}'"));
+    } else {
+        parts.push(tool.to_string());
+    }
     for arg in args {
         let s = arg.as_ref();
         if s.is_empty()

@@ -259,6 +259,13 @@ impl EventResult {
 }
 
 impl EventResult {
+    /// Attach subprocess execution detail to this result.
+    #[must_use]
+    pub fn with_execution_detail(mut self, detail: ExecutionDetail) -> Self {
+        self.execution_detail = Some(detail);
+        self
+    }
+
     /// Build a result for executor plugins when a plan execution succeeds.
     ///
     /// Lifecycle events (`PlanExecuting`, `PlanCompleted`) are dispatched by the
@@ -296,8 +303,10 @@ impl EventResult {
     /// Wrap the outcome of an executor's plan execution into an `EventResult`.
     ///
     /// On success the result carries the action results as JSON data and is
-    /// marked as claimed.  On failure a failed result is returned (callers
-    /// should log the error if needed).
+    /// marked as claimed. When all action results are failures (subprocess
+    /// exited non-zero), a *failed* result is returned with the execution
+    /// detail attached so it can be persisted. On `Err` (spawn/timeout with
+    /// no detail) a failed result without detail is returned.
     #[must_use]
     pub fn from_plan_execution(
         plugin_name: &str,
@@ -307,6 +316,21 @@ impl EventResult {
             Ok(results) => {
                 let actions_applied = results.iter().filter(|r| r.success).count();
                 let detail = results.iter().find_map(|r| r.execution_detail.clone());
+
+                // All actions failed — treat as execution failure so the
+                // detail propagates to PlanFailedEvent and gets persisted.
+                if actions_applied == 0 && !results.is_empty() {
+                    let error_msg = results
+                        .iter()
+                        .find_map(|r| r.error.clone())
+                        .unwrap_or_else(|| "all actions failed".into());
+                    let mut result = Self::plan_failed(plugin_name, error_msg);
+                    if let Some(d) = detail {
+                        result = result.with_execution_detail(d);
+                    }
+                    return result;
+                }
+
                 let mut result = Self::plan_succeeded(
                     plugin_name,
                     Some(serde_json::json!({
@@ -888,6 +912,33 @@ mod tests {
         let event: PlanFailedEvent = serde_json::from_str(json).unwrap();
         assert!(event.error_code.is_none());
         assert!(event.plugin_name.is_none());
+        assert!(event.execution_detail.is_none());
+    }
+
+    #[test]
+    fn test_plan_failed_with_execution_detail_roundtrip() {
+        use crate::plan::ExecutionDetail;
+
+        let mut event = PlanFailedEvent::new(
+            Uuid::nil(),
+            PathBuf::from("/test.mkv"),
+            "normalize",
+            "ffmpeg exited with 1",
+        );
+        event.execution_detail = Some(ExecutionDetail {
+            command: "ffmpeg -i /test.mkv out.mkv".into(),
+            exit_code: Some(1),
+            stderr_tail: "Error opening input".into(),
+            duration_ms: 1234,
+        });
+
+        let json = serde_json::to_string(&event).unwrap();
+        let restored: PlanFailedEvent = serde_json::from_str(&json).unwrap();
+        assert!(restored.execution_detail.is_some());
+        let detail = restored.execution_detail.unwrap();
+        assert_eq!(detail.exit_code, Some(1));
+        assert_eq!(detail.stderr_tail, "Error opening input");
+        assert_eq!(detail.duration_ms, 1234);
     }
 
     #[test]

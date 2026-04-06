@@ -1142,17 +1142,15 @@ fn run_errors(store: &dyn voom_domain::storage::StorageTrait, args: &ReportArgs)
     }
 
     let session_id = if let Some(ref s) = args.session {
-        uuid::Uuid::parse_str(s)
-            .or_else(|_| {
-                // Allow short prefix matching
-                let sessions = store.failure_sessions()?;
-                sessions
-                    .iter()
-                    .find(|sess| sess.session_id.to_string().starts_with(s))
-                    .map(|sess| sess.session_id)
-                    .ok_or_else(|| anyhow::anyhow!("no session matching '{s}'"))
-            })
-            .context("invalid session UUID")?
+        uuid::Uuid::parse_str(s).or_else(|_| {
+            // Allow short prefix matching
+            let sessions = store.failure_sessions()?;
+            sessions
+                .iter()
+                .find(|sess| sess.session_id.to_string().starts_with(s))
+                .map(|sess| sess.session_id)
+                .ok_or_else(|| anyhow::anyhow!("no session matching prefix '{s}'"))
+        })?
     } else {
         store
             .latest_failure_session()
@@ -1195,6 +1193,7 @@ fn run_errors(store: &dyn voom_domain::storage::StorageTrait, args: &ReportArgs)
                 }
 
                 // Try to extract ExecutionDetail from plan_result JSON
+                let mut detail_rendered = false;
                 if let Some(ref result_json) = f.plan_result {
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(result_json) {
                         if let Some(detail) = parsed.get("detail") {
@@ -1203,15 +1202,20 @@ fn run_errors(store: &dyn voom_domain::storage::StorageTrait, args: &ReportArgs)
                             {
                                 if let Some(code) = ed.exit_code {
                                     println!("    Exit:  {code}");
+                                    detail_rendered = true;
                                 }
                                 if !ed.command.is_empty() {
-                                    println!("    Cmd:   {}", ed.command);
+                                    let cmd = console::strip_ansi_codes(&ed.command);
+                                    println!("    Cmd:   {cmd}");
+                                    detail_rendered = true;
                                 }
                                 if !ed.stderr_tail.is_empty() {
+                                    let stderr = console::strip_ansi_codes(&ed.stderr_tail);
                                     println!("    Error:");
-                                    for line in ed.stderr_tail.lines() {
+                                    for line in stderr.lines() {
                                         println!("      {line}");
                                     }
+                                    detail_rendered = true;
                                 }
                             }
                         }
@@ -1219,8 +1223,7 @@ fn run_errors(store: &dyn voom_domain::storage::StorageTrait, args: &ReportArgs)
                 }
 
                 if let Some(ref msg) = f.error_message {
-                    // Only print if we didn't already print detail
-                    if f.plan_result.is_none() {
+                    if !detail_rendered {
                         println!("    Error: {msg}");
                     }
                 }

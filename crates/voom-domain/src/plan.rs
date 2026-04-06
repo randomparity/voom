@@ -33,6 +33,10 @@ pub struct Plan {
     /// set by capability-aware validation when a single executor matches.
     #[serde(default)]
     pub executor_hint: Option<String>,
+    /// Processing session that produced this plan. Set by the CLI before
+    /// dispatching `PlanCreated`, used for session-level queries.
+    #[serde(default)]
+    pub session_id: Option<uuid::Uuid>,
 }
 
 impl Plan {
@@ -80,6 +84,7 @@ impl Plan {
             policy_hash: None,
             evaluated_at: Utc::now(),
             executor_hint: None,
+            session_id: None,
         }
     }
 
@@ -698,7 +703,8 @@ pub struct ExecutionDetail {
     pub command: String,
     /// Process exit code.
     pub exit_code: Option<i32>,
-    /// Last N non-empty lines of stderr.
+    /// Last N non-empty lines of stderr. Populated on failure and on
+    /// mkvmerge warnings (exit code 1). Empty on clean success.
     pub stderr_tail: String,
     /// Wall-clock execution time in milliseconds.
     pub duration_ms: u64,
@@ -775,6 +781,7 @@ mod tests {
             policy_hash: None,
             evaluated_at: Utc::now(),
             executor_hint: None,
+            session_id: None,
         }
     }
 

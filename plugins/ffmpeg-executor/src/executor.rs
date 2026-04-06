@@ -85,18 +85,27 @@ pub fn execute_plan(plan: &Plan, hw_accel: &HwAccelConfig) -> Result<Vec<ActionR
                 "ffmpeg failed"
             );
             let tail = voom_process::stderr_tail(&output.stderr, STDERR_TAIL_LINES);
-            let detail = if tail.is_empty() {
-                "(no output)".to_string()
+            let display_tail = if tail.is_empty() {
+                "(no output)"
             } else {
-                tail.clone()
+                &tail
             };
-            Err(VoomError::ToolExecution {
-                tool: "ffmpeg".into(),
-                message: format!(
-                    "ffmpeg exited with {}:\n{}\ncmd: {}",
-                    output.status, detail, command_str
-                ),
-            })
+            let error_msg = format!(
+                "ffmpeg exited with {}:\n{}\ncmd: {}",
+                output.status, display_tail, command_str
+            );
+            let detail = ExecutionDetail {
+                command: command_str,
+                exit_code: output.status.code(),
+                stderr_tail: tail,
+                duration_ms,
+            };
+            Ok(vec![ActionResult::failure(
+                actions[0].operation,
+                &actions[0].description,
+                &error_msg,
+            )
+            .with_execution_detail(detail)])
         }
         Err(e) => {
             let _ = std::fs::remove_file(&output_path);

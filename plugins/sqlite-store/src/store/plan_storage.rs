@@ -92,8 +92,8 @@ impl PlanStorage for SqliteStore {
             });
 
         conn.execute(
-            "INSERT INTO plans (id, file_id, policy_name, phase_name, status, actions, warnings, skip_reason, policy_hash, evaluated_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO plans (id, file_id, policy_name, phase_name, status, actions, warnings, skip_reason, policy_hash, evaluated_at, created_at, session_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 plan.id.to_string(),
                 effective_file_id,
@@ -106,6 +106,7 @@ impl PlanStorage for SqliteStore {
                 plan.policy_hash,
                 format_datetime(&plan.evaluated_at),
                 format_datetime(&Utc::now()),
+                plan.session_id.map(|id| id.to_string()),
             ],
         )
         .map_err(storage_err("failed to save plan"))?;

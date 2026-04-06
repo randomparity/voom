@@ -341,15 +341,6 @@ fn print_run_results(ctx: &RunResultsContext<'_>) -> Result<()> {
         }
         print_phase_breakdown(&ctx.counters.phase_stats.lock(), ctx.all_phase_names);
 
-        let total_errors = ctx.pool.failed_count()
-            + ctx
-                .counters
-                .phase_stats
-                .lock()
-                .values()
-                .map(|ps| ps.failed)
-                .sum::<u64>();
-        // Deduplicate: pool counts files, phase_stats counts phases. Use phase errors.
         let phase_errors: u64 = ctx
             .counters
             .phase_stats
@@ -365,8 +356,6 @@ fn print_run_results(ctx: &RunResultsContext<'_>) -> Result<()> {
                 style(format!("voom report errors --session {short_session}")).bold(),
             );
         }
-        // Suppress unused binding warning
-        let _ = total_errors;
     }
 
     Ok(())
@@ -856,7 +845,7 @@ async fn process_single_file_execute(
             break;
         }
 
-        let plan = match evaluator.evaluate_single_phase(
+        let mut plan = match evaluator.evaluate_single_phase(
             phase_name,
             compiled,
             &current_file,
@@ -866,6 +855,7 @@ async fn process_single_file_execute(
             Some(p) => p,
             None => continue,
         };
+        plan.session_id = Some(ctx.counters.session_id);
 
         plans_evaluated += 1;
 
@@ -1046,6 +1036,10 @@ fn dispatch_plan_failure(failed: PlanFailedEvent, phase_name: &str, ctx: &Proces
 /// The file is unchanged on failure, so `to_size = from_size` and `to_hash =
 /// from_hash`. The `executor` argument should be the executor plugin name, or
 /// an empty string when no executor was involved (e.g. size-increase abort).
+///
+/// Dual-write: `file_transitions.error_message` is used for session-based
+/// queries (`voom report errors`), while `plans.result` stores the structured
+/// `ExecutionDetail` JSON for plan-based queries with full subprocess output.
 fn record_failure_transition(
     file: &voom_domain::media::MediaFile,
     plan_id: uuid::Uuid,
@@ -1663,6 +1657,7 @@ fn execute_single_plan(
 
     let claimed = results.iter().any(|r| r.claimed);
     let exec_error = results.iter().find_map(|r| r.execution_error.clone());
+    let exec_detail = results.iter().find_map(|r| r.execution_detail.clone());
 
     if claimed && exec_error.is_none() {
         let executor = results
@@ -1678,6 +1673,7 @@ fn execute_single_plan(
             .iter()
             .find(|r| r.claimed)
             .map(|r| r.plugin_name.clone());
+        failed.execution_detail = exec_detail;
         PlanOutcome::Failed(failed)
     } else {
         PlanOutcome::Failed(PlanFailedEvent::new(

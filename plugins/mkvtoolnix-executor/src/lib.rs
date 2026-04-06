@@ -326,7 +326,8 @@ impl MkvtoolnixExecutorPlugin {
                 let detail = voom_domain::plan::ExecutionDetail {
                     command: command_str,
                     exit_code: o.status.code(),
-                    stderr_tail: String::new(),
+                    // exit code 1 = mkvmerge warnings; capture stderr for diagnostics
+                    stderr_tail: voom_process::stderr_tail(&o.stderr, 20),
                     duration_ms,
                 };
                 Ok(vec![ActionResult::success(
@@ -337,19 +338,29 @@ impl MkvtoolnixExecutorPlugin {
             }
             Ok(o) => {
                 let tail = voom_process::stderr_tail(&o.stderr, 20);
-                Err(VoomError::ToolExecution {
-                    tool: "mkvmerge".into(),
-                    message: format!(
-                        "mkvmerge failed (exit {}):\n{}\ncmd: {}",
-                        o.status.code().unwrap_or(-1),
-                        if tail.is_empty() {
-                            "(no output)"
-                        } else {
-                            &tail
-                        },
-                        command_str
-                    ),
-                })
+                let display_tail = if tail.is_empty() {
+                    "(no output)"
+                } else {
+                    &tail
+                };
+                let error_msg = format!(
+                    "mkvmerge failed (exit {}):\n{}\ncmd: {}",
+                    o.status.code().unwrap_or(-1),
+                    display_tail,
+                    command_str
+                );
+                let detail = voom_domain::plan::ExecutionDetail {
+                    command: command_str,
+                    exit_code: o.status.code(),
+                    stderr_tail: tail,
+                    duration_ms,
+                };
+                Ok(vec![ActionResult::failure(
+                    action.operation,
+                    &action.description,
+                    &error_msg,
+                )
+                .with_execution_detail(detail)])
             }
             Err(e) => Err(VoomError::ToolExecution {
                 tool: "mkvmerge".into(),

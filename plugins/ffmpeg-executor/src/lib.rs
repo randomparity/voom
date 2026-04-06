@@ -354,16 +354,29 @@ impl FfmpegExecutorPlugin {
             Ok(o) => {
                 let _ = std::fs::remove_file(&temp_path);
                 let tail = voom_process::stderr_tail(&o.stderr, 20);
-                Err(plugin_err(format!(
+                let display_tail = if tail.is_empty() {
+                    "(no output)"
+                } else {
+                    &tail
+                };
+                let error_msg = format!(
                     "ffmpeg failed (exit {}):\n{}\ncmd: {}",
                     o.status.code().unwrap_or(-1),
-                    if tail.is_empty() {
-                        "(no output)"
-                    } else {
-                        &tail
-                    },
+                    display_tail,
                     command_str
-                )))
+                );
+                let detail = voom_domain::plan::ExecutionDetail {
+                    command: command_str,
+                    exit_code: o.status.code(),
+                    stderr_tail: tail,
+                    duration_ms,
+                };
+                Ok(vec![voom_domain::plan::ActionResult::failure(
+                    action.operation,
+                    &action.description,
+                    &error_msg,
+                )
+                .with_execution_detail(detail)])
             }
             Err(e) => {
                 let _ = std::fs::remove_file(&temp_path);
