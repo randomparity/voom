@@ -5,14 +5,9 @@ use anyhow::{Context, Result};
 use console::style;
 use tokio_util::sync::CancellationToken;
 use voom_web_server::server::{start_server, ServerConfig};
-use voom_web_server::state::SseEvent;
+use voom_web_server::state::{SseEvent, SSE_CHANNEL_CAPACITY};
 
 use crate::cli::ServeArgs;
-
-/// Capacity of the SSE broadcast channel shared between the web server and
-/// the kernel-side bridge plugin. Sized to absorb short bursts of job-progress
-/// events without lagging slow clients.
-const SSE_CHANNEL_CAPACITY: usize = 256;
 
 /// Priority for the web-sse-bridge plugin. In the VOOM event bus, lower
 /// priority numbers dispatch first; 200 is the highest registered value

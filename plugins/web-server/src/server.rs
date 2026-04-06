@@ -69,11 +69,11 @@ pub async fn start_server(
     }
 
     let templates = load_templates(config.template_dir.as_deref())?;
-    let mut state = AppState::new(store, templates, config.auth_token, config.data_dir)
+    let sse_tx = config
+        .sse_tx
+        .unwrap_or_else(|| broadcast::channel(crate::state::SSE_CHANNEL_CAPACITY).0);
+    let state = AppState::new(store, sse_tx, templates, config.auth_token, config.data_dir)
         .with_plugin_info(config.plugin_info);
-    if let Some(sse_tx) = config.sse_tx {
-        state = state.with_sse_sender(sse_tx);
-    }
     let router = build_router(state).layer(DefaultBodyLimit::max(2 * 1024 * 1024)); // 2 MiB
 
     let address = format!("{}:{}", config.host, config.port);

@@ -6,6 +6,10 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use voom_domain::storage::StorageTrait;
 
+/// Capacity of the SSE broadcast channel. Sized to absorb short bursts of
+/// job-progress events without lagging slow clients.
+pub const SSE_CHANNEL_CAPACITY: usize = 256;
+
 /// Events broadcast via SSE to connected clients.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", content = "data")]
@@ -43,13 +47,18 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Create a new `AppState`.
+    ///
+    /// The caller must supply a `broadcast::Sender<SseEvent>`. Use
+    /// [`AppState::new_with_default_sse`] for tests or other callers that
+    /// do not need to share the sender with another component.
     pub fn new(
         store: Arc<dyn StorageTrait>,
+        sse_tx: broadcast::Sender<SseEvent>,
         templates: tera::Tera,
         auth_token: Option<String>,
         data_dir: Option<std::path::PathBuf>,
     ) -> Self {
-        let (sse_tx, _) = broadcast::channel(256);
         Self {
             store,
             sse_tx,
@@ -61,21 +70,24 @@ impl AppState {
         }
     }
 
+    /// Create a new `AppState` with an internally-allocated SSE broadcast
+    /// channel of the default capacity. Convenience constructor for tests
+    /// and callers that do not need to share the sender.
+    #[must_use]
+    pub fn new_with_default_sse(
+        store: Arc<dyn StorageTrait>,
+        templates: tera::Tera,
+        auth_token: Option<String>,
+        data_dir: Option<std::path::PathBuf>,
+    ) -> Self {
+        let (sse_tx, _) = broadcast::channel(SSE_CHANNEL_CAPACITY);
+        Self::new(store, sse_tx, templates, auth_token, data_dir)
+    }
+
     /// Set the plugin info snapshot (typically populated from kernel registry at startup).
     #[must_use]
     pub fn with_plugin_info(mut self, info: Vec<crate::api::plugins::PluginInfoResponse>) -> Self {
         self.plugin_info = Arc::new(info);
-        self
-    }
-
-    /// Replace the SSE broadcast sender with an externally-provided one.
-    ///
-    /// Used by callers (e.g. the `serve` command) that need to share the same
-    /// channel between this `AppState` and a separate kernel-side bridge plugin
-    /// so that bus events forwarded by the bridge reach connected SSE clients.
-    #[must_use]
-    pub fn with_sse_sender(mut self, sse_tx: broadcast::Sender<SseEvent>) -> Self {
-        self.sse_tx = sse_tx;
         self
     }
 
@@ -108,7 +120,7 @@ pub(crate) fn make_test_state(auth_token: Option<String>) -> AppState {
     use voom_domain::test_support::InMemoryStore;
     let store = Arc::new(InMemoryStore::new());
     let templates = tera::Tera::default();
-    AppState::new(store, templates, auth_token, None)
+    AppState::new_with_default_sse(store, templates, auth_token, None)
 }
 
 #[cfg(test)]

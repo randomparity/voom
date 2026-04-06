@@ -26,7 +26,8 @@ fn make_server(store: InMemoryStore) -> TestServer {
 fn make_server_with_auth(store: InMemoryStore, auth_token: Option<String>) -> TestServer {
     let store = Arc::new(store);
     let templates = voom_web_server::server::embedded_templates().unwrap();
-    let state = voom_web_server::state::AppState::new(store, templates, auth_token, None);
+    let state =
+        voom_web_server::state::AppState::new_with_default_sse(store, templates, auth_token, None);
     let router = voom_web_server::router::build_router(state);
     TestServer::new(router).unwrap()
 }
@@ -183,8 +184,9 @@ async fn test_list_plugins_with_data() {
         String::new(),
         vec!["test".into()],
     )];
-    let state = voom_web_server::state::AppState::new(store, templates, None, None)
-        .with_plugin_info(plugin_info);
+    let state =
+        voom_web_server::state::AppState::new_with_default_sse(store, templates, None, None)
+            .with_plugin_info(plugin_info);
     let router = voom_web_server::router::build_router(state);
     let server = TestServer::new(router).unwrap();
 
@@ -464,7 +466,8 @@ async fn test_sse_client_limit_enforced() {
     use std::sync::atomic::Ordering;
     let store = Arc::new(InMemoryStore::new());
     let templates = voom_web_server::server::embedded_templates().unwrap();
-    let state = voom_web_server::state::AppState::new(store, templates, None, None);
+    let state =
+        voom_web_server::state::AppState::new_with_default_sse(store, templates, None, None);
     // Simulate 64 clients already connected
     state.sse_client_count.store(64, Ordering::Relaxed);
     let router = voom_web_server::router::build_router(state);
@@ -478,7 +481,8 @@ async fn test_sse_client_limit_enforced() {
 async fn test_request_id_header_present() {
     let store = Arc::new(InMemoryStore::new());
     let templates = voom_web_server::server::embedded_templates().unwrap();
-    let state = voom_web_server::state::AppState::new(store, templates, None, None);
+    let state =
+        voom_web_server::state::AppState::new_with_default_sse(store, templates, None, None);
     let router = voom_web_server::router::build_router(state);
     let server = TestServer::new(router).unwrap();
 
@@ -499,7 +503,8 @@ async fn test_request_id_header_present() {
 async fn test_request_id_unique_per_request() {
     let store = Arc::new(InMemoryStore::new());
     let templates = voom_web_server::server::embedded_templates().unwrap();
-    let state = voom_web_server::state::AppState::new(store, templates, None, None);
+    let state =
+        voom_web_server::state::AppState::new_with_default_sse(store, templates, None, None);
     let router = voom_web_server::router::build_router(state);
     let server = TestServer::new(router).unwrap();
 
