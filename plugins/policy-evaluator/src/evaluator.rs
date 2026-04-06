@@ -152,12 +152,18 @@ fn check_skip_conditions(
     if let Some(ref run_if) = phase.run_if {
         let should_run = match phase_outcomes.get(&run_if.phase) {
             Some(outcome) => match run_if.trigger {
-                RunIfTrigger::Modified => {
-                    matches!(outcome, EvaluationOutcome::Executed { modified: true })
-                }
-                RunIfTrigger::Completed => {
-                    matches!(outcome, EvaluationOutcome::Executed { .. })
-                }
+                RunIfTrigger::Modified => match outcome {
+                    EvaluationOutcome::Executed { modified } => *modified,
+                    EvaluationOutcome::Skipped
+                    | EvaluationOutcome::SafeguardFailed
+                    | EvaluationOutcome::ExecutionFailed => false,
+                },
+                RunIfTrigger::Completed => match outcome {
+                    EvaluationOutcome::Executed { .. } => true,
+                    EvaluationOutcome::Skipped
+                    | EvaluationOutcome::SafeguardFailed
+                    | EvaluationOutcome::ExecutionFailed => false,
+                },
             },
             None => false,
         };
