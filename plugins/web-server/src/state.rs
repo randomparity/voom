@@ -273,6 +273,57 @@ mod tests {
     }
 
     #[test]
+    fn test_sse_event_plan_completed_serialization() {
+        let event = SseEvent::PlanCompleted {
+            plan_id: "p-2".into(),
+            file: "movie.mkv".into(),
+            phase: "remux".into(),
+            actions_applied: 5,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "PlanCompleted");
+        assert_eq!(json["data"]["plan_id"], "p-2");
+        assert_eq!(json["data"]["file"], "movie.mkv");
+        assert_eq!(json["data"]["phase"], "remux");
+        assert_eq!(json["data"]["actions_applied"], 5);
+    }
+
+    #[test]
+    fn test_sse_event_plan_skipped_serialization() {
+        let event = SseEvent::PlanSkipped {
+            plan_id: "p-3".into(),
+            file: "movie.mkv".into(),
+            phase: "transcode".into(),
+            skip_reason: "no matching tracks".into(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "PlanSkipped");
+        assert_eq!(json["data"]["plan_id"], "p-3");
+        assert_eq!(json["data"]["file"], "movie.mkv");
+        assert_eq!(json["data"]["phase"], "transcode");
+        assert_eq!(json["data"]["skip_reason"], "no matching tracks");
+    }
+
+    #[test]
+    fn test_sse_event_plan_failed_serialization() {
+        let event = SseEvent::PlanFailed {
+            plan_id: "p-4".into(),
+            file: "movie.mkv".into(),
+            phase: "transcode".into(),
+            error: "ffmpeg returned non-zero".into(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "PlanFailed");
+        assert_eq!(json["data"]["plan_id"], "p-4");
+        assert_eq!(json["data"]["file"], "movie.mkv");
+        assert_eq!(json["data"]["phase"], "transcode");
+        assert_eq!(json["data"]["error"], "ffmpeg returned non-zero");
+        // Confirm no leak-prone fields appear in the serialized envelope.
+        assert!(json["data"].get("error_chain").is_none());
+        assert!(json["data"].get("execution_detail").is_none());
+    }
+
+    #[test]
     fn test_sse_event_job_completed_serialization() {
         let event = SseEvent::JobCompleted {
             job_id: "j2".into(),

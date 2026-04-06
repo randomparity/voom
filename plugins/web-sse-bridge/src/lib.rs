@@ -391,24 +391,46 @@ mod tests {
         );
         // These fields exist but must NOT appear in the SSE payload —
         // they may contain stack traces or absolute paths.
-        payload.error_chain = vec!["root cause".into()];
+        payload.error_chain = vec!["secret root cause".into()];
         let event = Event::PlanFailed(payload);
 
         bridge.on_event(&event).unwrap();
-        match rx.try_recv().unwrap() {
+        let sse = rx.try_recv().unwrap();
+
+        // Structural check: the destructure only binds the 4 allowed fields.
+        match &sse {
             SseEvent::PlanFailed {
                 plan_id: pid,
                 file,
                 phase,
                 error,
             } => {
-                assert_eq!(pid, plan_id.to_string());
+                assert_eq!(pid, &plan_id.to_string());
                 assert_eq!(file, "x.mkv");
                 assert_eq!(phase, "transcode");
                 assert_eq!(error, "ffmpeg returned non-zero");
             }
             other => panic!("unexpected variant: {other:?}"),
         }
+
+        // Runtime check: defense-in-depth. If a future refactor adds
+        // error_chain/execution_detail back to SseEvent::PlanFailed and
+        // populates it from the bridge, this assertion catches the
+        // serialized JSON leak even if the destructure above still
+        // compiles and passes.
+        let json = serde_json::to_string(&sse).expect("SSE event must serialize");
+        assert!(
+            !json.contains("error_chain"),
+            "PlanFailed SSE payload must not contain error_chain: {json}"
+        );
+        assert!(
+            !json.contains("execution_detail"),
+            "PlanFailed SSE payload must not contain execution_detail: {json}"
+        );
+        assert!(
+            !json.contains("secret root cause"),
+            "PlanFailed SSE payload must not leak error_chain contents: {json}"
+        );
     }
 
     #[test]
