@@ -1135,6 +1135,10 @@ fn check_disk_space(
         "{message}"
     );
 
+    let r = ctx
+        .kernel
+        .dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
+    log_plugin_errors(&r);
     let r = ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
         plan.id,
         file.path.clone(),
