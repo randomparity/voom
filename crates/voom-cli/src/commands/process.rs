@@ -855,8 +855,9 @@ async fn process_single_file_execute(
         }
 
         // Pre-execution safeguard: check disk space
-        // Note: check_disk_space dispatches PlanCreated then PlanFailed and
-        // records PhaseOutcomeKind::Failed for stats. This insert updates
+        // Note: check_disk_space dispatches only PlanFailed (not
+        // PlanCreated, which would trigger executors) and records
+        // PhaseOutcomeKind::Failed for stats. This insert updates
         // the dependency-resolution map to block downstream run_if gates.
         if check_disk_space(&plan, &current_file, ctx) {
             phase_outcomes.insert(
@@ -1099,8 +1100,9 @@ fn check_size_increase(
 /// Check whether sufficient disk space is available before executing a plan.
 ///
 /// Returns `true` if space is insufficient and the phase should be skipped
-/// (`PlanCreated` then `PlanFailed` events are dispatched and the failure
-/// is recorded). Returns `false` to proceed normally.
+/// (`PlanFailed` is dispatched and the failure is recorded; `PlanCreated`
+/// is intentionally not dispatched to avoid triggering executors).
+/// Returns `false` to proceed normally.
 fn check_disk_space(
     plan: &voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
@@ -1141,10 +1143,11 @@ fn check_disk_space(
         "{message}"
     );
 
-    let r = ctx
-        .kernel
-        .dispatch(Event::PlanCreated(PlanCreatedEvent::new(plan.clone())));
-    log_plugin_errors(&r);
+    // Note: we intentionally do NOT dispatch PlanCreated here.
+    // PlanCreated triggers executor plugins (mkvtoolnix, ffmpeg)
+    // which would execute the plan before we can abort it.
+    // sqlite-store's update_plan_status is a no-op for unknown
+    // plan IDs, so the missing PlanCreated is harmless.
     let r = ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
         plan.id,
         file.path.clone(),
@@ -2192,7 +2195,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_disk_space_dispatches_plan_created_before_plan_failed() {
+    fn test_check_disk_space_dispatches_plan_failed_without_plan_created() {
         // Use a tempdir so we get a valid path for disk-space checks.
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("test.mkv");
@@ -2235,8 +2238,8 @@ mod tests {
         assert!(check_disk_space(&plan, &file, &ctx));
         assert_eq!(
             recorder.plan_created_count.load(Ordering::SeqCst),
-            1,
-            "PlanCreated must fire before PlanFailed"
+            0,
+            "PlanCreated must NOT be dispatched by check_disk_space"
         );
         assert_eq!(
             recorder.plan_failed_count.load(Ordering::SeqCst),
