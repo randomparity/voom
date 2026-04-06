@@ -855,9 +855,10 @@ async fn process_single_file_execute(
         }
 
         // Pre-execution safeguard: check disk space
-        // Note: check_disk_space already dispatches PlanFailed and records
-        // PhaseOutcomeKind::Failed for stats. This insert updates the
-        // dependency-resolution map to block downstream run_if gates.
+        // Note: check_disk_space dispatches only PlanFailed (not
+        // PlanCreated, which would trigger executors) and records
+        // PhaseOutcomeKind::Failed for stats. This insert updates
+        // the dependency-resolution map to block downstream run_if gates.
         if check_disk_space(&plan, &current_file, ctx) {
             phase_outcomes.insert(
                 phase_name.clone(),
@@ -881,9 +882,10 @@ async fn process_single_file_execute(
         match exec_outcome {
             PlanOutcome::Success { executor } => {
                 // Post-execution safeguard: check size increase
-                // Note: check_size_increase already dispatches PlanFailed and
-                // records PhaseOutcomeKind::Failed for stats. This insert
-                // updates the dependency-resolution map.
+                // Note: check_size_increase dispatches PlanFailed (PlanCreated was
+                // already dispatched by execute_single_plan) and records
+                // PhaseOutcomeKind::Failed for stats. This insert updates the
+                // dependency-resolution map.
                 if check_size_increase(&plan, &current_file, ctx) {
                     phase_outcomes.insert(
                         phase_name.clone(),
@@ -1042,7 +1044,8 @@ fn record_failure_transition(
 /// Check if the output file grew larger than the original.
 ///
 /// Returns `true` if the size increased and the phase should be skipped
-/// (the plan is marked as failed). Returns `false` to proceed normally.
+/// (`PlanFailed` is dispatched and the failure is recorded; `PlanCreated`
+/// was already dispatched by the caller). Returns `false` to proceed normally.
 fn check_size_increase(
     plan: &voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
@@ -1074,6 +1077,10 @@ fn check_size_increase(
             );
         }
     }
+    // Note: PlanCreated was already dispatched by execute_single_plan
+    // (the caller). We only dispatch PlanFailed here — the
+    // PlanCreated/PlanFailed pairing is satisfied by the earlier
+    // PlanCreated.
     let r = ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
         plan.id,
         file.path.clone(),
@@ -1093,7 +1100,8 @@ fn check_size_increase(
 /// Check whether sufficient disk space is available before executing a plan.
 ///
 /// Returns `true` if space is insufficient and the phase should be skipped
-/// (a `PlanFailed` event is dispatched and the failure is recorded).
+/// (`PlanFailed` is dispatched and the failure is recorded; `PlanCreated`
+/// is intentionally not dispatched to avoid triggering executors).
 /// Returns `false` to proceed normally.
 fn check_disk_space(
     plan: &voom_domain::plan::Plan,
@@ -1135,6 +1143,11 @@ fn check_disk_space(
         "{message}"
     );
 
+    // Note: we intentionally do NOT dispatch PlanCreated here.
+    // PlanCreated triggers executor plugins (mkvtoolnix, ffmpeg)
+    // which would execute the plan before we can abort it.
+    // sqlite-store's update_plan_status is a no-op for unknown
+    // plan IDs, so the missing PlanCreated is harmless.
     let r = ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
         plan.id,
         file.path.clone(),
@@ -1774,6 +1787,7 @@ mod tests {
         plan_executing_count: AtomicUsize,
         plan_completed_count: AtomicUsize,
         plan_skipped_count: AtomicUsize,
+        plan_failed_count: AtomicUsize,
     }
 
     impl PlanRecordingPlugin {
@@ -1785,6 +1799,7 @@ mod tests {
                 plan_executing_count: AtomicUsize::new(0),
                 plan_completed_count: AtomicUsize::new(0),
                 plan_skipped_count: AtomicUsize::new(0),
+                plan_failed_count: AtomicUsize::new(0),
             }
         }
     }
@@ -1808,6 +1823,7 @@ mod tests {
                     | Event::PLAN_EXECUTING
                     | Event::PLAN_COMPLETED
                     | Event::PLAN_SKIPPED
+                    | Event::PLAN_FAILED
             )
         }
         fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
@@ -1829,6 +1845,9 @@ mod tests {
                 }
                 Event::PlanSkipped(_) => {
                     self.plan_skipped_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::PlanFailed(_) => {
+                    self.plan_failed_count.fetch_add(1, Ordering::SeqCst);
                 }
                 _ => {}
             }
@@ -2173,5 +2192,117 @@ mod tests {
 
         // Should return false (enough space)
         assert!(!check_disk_space(&plan, &file, &ctx));
+    }
+
+    #[test]
+    fn test_check_disk_space_dispatches_plan_failed_without_plan_created() {
+        // Use a tempdir so we get a valid path for disk-space checks.
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.mkv");
+        std::fs::write(&file_path, vec![0u8; 1024]).unwrap();
+
+        let mut file = MediaFile::new(file_path);
+        // Set size to u64::MAX / 2 so estimated required space exceeds any real disk.
+        file.size = u64::MAX / 2;
+
+        let plan = test_plan("normalize", false);
+
+        let recorder = Arc::new(PlanRecordingPlugin::new());
+        let mut kernel = voom_kernel::Kernel::new();
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
+
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_domain::test_support::InMemoryStore::new());
+        let capabilities = voom_domain::CapabilityMap::new();
+        let counters = RunCounters::new();
+        let token = CancellationToken::new();
+        let resolver = PolicyResolver::from_single(
+            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
+                .unwrap(),
+            dir.path(),
+        );
+        let ctx = ProcessContext {
+            resolver: &resolver,
+            kernel: Arc::new(kernel),
+            store,
+            dry_run: false,
+            plan_only: false,
+            flag_size_increase: false,
+            token: &token,
+            ffprobe_path: None,
+            capabilities: &capabilities,
+            counters: &counters,
+        };
+
+        // Should return true (insufficient space).
+        assert!(check_disk_space(&plan, &file, &ctx));
+        assert_eq!(
+            recorder.plan_created_count.load(Ordering::SeqCst),
+            0,
+            "PlanCreated must NOT be dispatched by check_disk_space"
+        );
+        assert_eq!(
+            recorder.plan_failed_count.load(Ordering::SeqCst),
+            1,
+            "PlanFailed must fire"
+        );
+    }
+
+    #[test]
+    fn test_check_size_increase_dispatches_plan_failed_without_plan_created() {
+        // Write a file with 2048 bytes so the size-increase check fires
+        // when the MediaFile reports size = 1024 (smaller than actual).
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.mkv");
+        std::fs::write(&file_path, vec![0u8; 2048]).unwrap();
+
+        let mut file = MediaFile::new(file_path);
+        // Report size smaller than actual so the safeguard triggers.
+        file.size = 1024;
+
+        let plan = test_plan("normalize", false);
+
+        let recorder = Arc::new(PlanRecordingPlugin::new());
+        let mut kernel = voom_kernel::Kernel::new();
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
+
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_domain::test_support::InMemoryStore::new());
+        let capabilities = voom_domain::CapabilityMap::new();
+        let counters = RunCounters::new();
+        let token = CancellationToken::new();
+        let resolver = PolicyResolver::from_single(
+            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
+                .unwrap(),
+            dir.path(),
+        );
+        let ctx = ProcessContext {
+            resolver: &resolver,
+            kernel: Arc::new(kernel),
+            store,
+            dry_run: false,
+            plan_only: false,
+            flag_size_increase: true,
+            token: &token,
+            ffprobe_path: None,
+            capabilities: &capabilities,
+            counters: &counters,
+        };
+
+        // Should return true (size increased).
+        assert!(check_size_increase(&plan, &file, &ctx));
+        // PlanCreated is NOT dispatched here — execute_single_plan (the caller)
+        // is responsible for that dispatch. The PlanCreated/PlanFailed pairing
+        // is satisfied by the earlier PlanCreated from execute_single_plan.
+        assert_eq!(
+            recorder.plan_created_count.load(Ordering::SeqCst),
+            0,
+            "PlanCreated must NOT be dispatched by check_size_increase"
+        );
+        assert_eq!(
+            recorder.plan_failed_count.load(Ordering::SeqCst),
+            1,
+            "PlanFailed must fire"
+        );
     }
 }
