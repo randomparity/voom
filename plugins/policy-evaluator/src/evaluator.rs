@@ -46,6 +46,8 @@ pub struct EvaluationResult {
 pub enum EvaluationOutcome {
     Executed { modified: bool },
     Skipped,
+    SafeguardFailed,
+    ExecutionFailed,
 }
 
 /// Evaluate a compiled policy against a media file, producing plans for all phases.
@@ -150,12 +152,18 @@ fn check_skip_conditions(
     if let Some(ref run_if) = phase.run_if {
         let should_run = match phase_outcomes.get(&run_if.phase) {
             Some(outcome) => match run_if.trigger {
-                RunIfTrigger::Modified => {
-                    matches!(outcome, EvaluationOutcome::Executed { modified: true })
-                }
-                RunIfTrigger::Completed => {
-                    matches!(outcome, EvaluationOutcome::Executed { .. })
-                }
+                RunIfTrigger::Modified => match outcome {
+                    EvaluationOutcome::Executed { modified } => *modified,
+                    EvaluationOutcome::Skipped
+                    | EvaluationOutcome::SafeguardFailed
+                    | EvaluationOutcome::ExecutionFailed => false,
+                },
+                RunIfTrigger::Completed => match outcome {
+                    EvaluationOutcome::Executed { .. } => true,
+                    EvaluationOutcome::Skipped
+                    | EvaluationOutcome::SafeguardFailed
+                    | EvaluationOutcome::ExecutionFailed => false,
+                },
             },
             None => false,
         };
@@ -2520,5 +2528,197 @@ mod tests {
             assert!(indices.contains(&2), "jpn audio should be removed");
             assert!(indices.contains(&5), "commentary sub should be removed");
         }
+    }
+
+    #[test]
+    fn test_safeguard_failed_blocks_run_if_completed() {
+        let policy = voom_dsl::compile_policy(
+            r#"policy "test" {
+                phase containerize {
+                    container mkv
+                }
+                phase post_tc {
+                    depends_on: [containerize]
+                    run_if containerize.completed
+                    container mkv
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
+        let mut outcomes = HashMap::new();
+        outcomes.insert(
+            "containerize".to_string(),
+            EvaluationOutcome::SafeguardFailed,
+        );
+
+        let plan = evaluate_single_phase("post_tc", &policy, &file, &outcomes, None);
+        let plan = plan.expect("phase should be evaluated");
+        assert!(plan.is_skipped());
+        assert!(plan
+            .skip_reason
+            .as_ref()
+            .expect("should have skip reason")
+            .contains("run_if"));
+    }
+
+    #[test]
+    fn test_safeguard_failed_blocks_run_if_modified() {
+        let policy = voom_dsl::compile_policy(
+            r#"policy "test" {
+                phase containerize {
+                    container mkv
+                }
+                phase post_tc {
+                    depends_on: [containerize]
+                    run_if containerize.modified
+                    container mkv
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
+        let mut outcomes = HashMap::new();
+        outcomes.insert(
+            "containerize".to_string(),
+            EvaluationOutcome::SafeguardFailed,
+        );
+
+        let plan = evaluate_single_phase("post_tc", &policy, &file, &outcomes, None);
+        let plan = plan.expect("phase should be evaluated");
+        assert!(plan.is_skipped());
+        assert!(plan
+            .skip_reason
+            .as_ref()
+            .expect("should have skip reason")
+            .contains("run_if"));
+    }
+
+    #[test]
+    fn test_safeguard_failed_satisfies_depends_on() {
+        let policy = voom_dsl::compile_policy(
+            r#"policy "test" {
+                phase containerize {
+                    container mkv
+                }
+                phase cleanup {
+                    depends_on: [containerize]
+                    container mkv
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
+        let mut outcomes = HashMap::new();
+        outcomes.insert(
+            "containerize".to_string(),
+            EvaluationOutcome::SafeguardFailed,
+        );
+
+        let plan = evaluate_single_phase("cleanup", &policy, &file, &outcomes, None);
+        let plan = plan.expect("phase should be evaluated");
+        assert!(
+            !plan.is_skipped(),
+            "depends_on should be satisfied by SafeguardFailed"
+        );
+    }
+
+    #[test]
+    fn test_execution_failed_blocks_run_if_completed() {
+        let policy = voom_dsl::compile_policy(
+            r#"policy "test" {
+                phase containerize {
+                    container mkv
+                }
+                phase post_tc {
+                    depends_on: [containerize]
+                    run_if containerize.completed
+                    container mkv
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
+        let mut outcomes = HashMap::new();
+        outcomes.insert(
+            "containerize".to_string(),
+            EvaluationOutcome::ExecutionFailed,
+        );
+
+        let plan = evaluate_single_phase("post_tc", &policy, &file, &outcomes, None);
+        let plan = plan.expect("phase should be evaluated");
+        assert!(plan.is_skipped());
+        assert!(plan
+            .skip_reason
+            .as_ref()
+            .expect("should have skip reason")
+            .contains("run_if"));
+    }
+
+    #[test]
+    fn test_execution_failed_blocks_run_if_modified() {
+        let policy = voom_dsl::compile_policy(
+            r#"policy "test" {
+                phase containerize {
+                    container mkv
+                }
+                phase post_tc {
+                    depends_on: [containerize]
+                    run_if containerize.modified
+                    container mkv
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
+        let mut outcomes = HashMap::new();
+        outcomes.insert(
+            "containerize".to_string(),
+            EvaluationOutcome::ExecutionFailed,
+        );
+
+        let plan = evaluate_single_phase("post_tc", &policy, &file, &outcomes, None);
+        let plan = plan.expect("phase should be evaluated");
+        assert!(plan.is_skipped());
+        assert!(plan
+            .skip_reason
+            .as_ref()
+            .expect("should have skip reason")
+            .contains("run_if"));
+    }
+
+    #[test]
+    fn test_execution_failed_satisfies_depends_on() {
+        let policy = voom_dsl::compile_policy(
+            r#"policy "test" {
+                phase containerize {
+                    container mkv
+                }
+                phase cleanup {
+                    depends_on: [containerize]
+                    container mkv
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
+        let mut outcomes = HashMap::new();
+        outcomes.insert(
+            "containerize".to_string(),
+            EvaluationOutcome::ExecutionFailed,
+        );
+
+        let plan = evaluate_single_phase("cleanup", &policy, &file, &outcomes, None);
+        let plan = plan.expect("phase should be evaluated");
+        assert!(
+            !plan.is_skipped(),
+            "depends_on should be satisfied by ExecutionFailed"
+        );
     }
 }
