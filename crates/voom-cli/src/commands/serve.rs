@@ -27,8 +27,10 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     // to the web server so connected clients receive the broadcasts.
     let (sse_tx, _) = tokio::sync::broadcast::channel::<SseEvent>(SSE_CHANNEL_CAPACITY);
     let bridge = voom_web_sse_bridge::WebSseBridgePlugin::new(sse_tx.clone());
+    let bridge_ctx =
+        voom_kernel::PluginContext::new(serde_json::json!({}), config.data_dir.clone());
     kernel
-        .register_plugin(Arc::new(bridge), PRIORITY_WEB_SSE_BRIDGE)
+        .init_and_register(Arc::new(bridge), PRIORITY_WEB_SSE_BRIDGE, &bridge_ctx)
         .context("Failed to register web-sse-bridge plugin")?;
 
     // Snapshot plugin info from the kernel registry
