@@ -298,7 +298,7 @@ impl Plugin for BackupManagerPlugin {
             }
             Event::PlanFailed(evt) => {
                 if self.has_backup(&evt.path)? {
-                    tracing::warn!(
+                    tracing::debug!(
                         path = %evt.path.display(),
                         phase = %evt.phase_name,
                         error = %evt.error,

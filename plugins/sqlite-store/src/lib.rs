@@ -222,6 +222,7 @@ fn handle_plan_skipped(
 fn handle_plan_failed(store: &SqliteStore, e: &voom_domain::events::PlanFailedEvent) -> Result<()> {
     tracing::info!(path = %e.path.display(), phase = %e.phase_name, error = %e.error, "plan failed");
     store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Failed)?;
+    store.update_plan_error(&e.plan_id, &e.error, e.execution_detail.as_ref())?;
     if let Err(err) = store.delete_pending_op(&e.plan_id) {
         tracing::warn!(
             error = %err,

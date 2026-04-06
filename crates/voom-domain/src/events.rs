@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::bad_file::BadFileSource;
 use crate::job::JobType;
 use crate::media::MediaFile;
-use crate::plan::{ActionResult, Plan};
+use crate::plan::{ActionResult, ExecutionDetail, Plan};
 
 /// All event types that flow through the event bus.
 #[non_exhaustive]
@@ -239,6 +239,9 @@ pub struct EventResult {
     /// without parsing the `data` JSON.
     #[serde(default)]
     pub execution_error: Option<String>,
+    /// Subprocess output captured by the executor, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_detail: Option<ExecutionDetail>,
 }
 
 impl EventResult {
@@ -250,6 +253,7 @@ impl EventResult {
             data: None,
             claimed: false,
             execution_error: None,
+            execution_detail: None,
         }
     }
 }
@@ -268,6 +272,7 @@ impl EventResult {
             data,
             claimed: true,
             execution_error: None,
+            execution_detail: None,
         }
     }
 
@@ -284,6 +289,7 @@ impl EventResult {
             data: None,
             claimed: true,
             execution_error: Some(error.into()),
+            execution_detail: None,
         }
     }
 
@@ -300,13 +306,16 @@ impl EventResult {
         match outcome {
             Ok(results) => {
                 let actions_applied = results.iter().filter(|r| r.success).count();
-                Self::plan_succeeded(
+                let detail = results.iter().find_map(|r| r.execution_detail.clone());
+                let mut result = Self::plan_succeeded(
                     plugin_name,
                     Some(serde_json::json!({
                         "actions_applied": actions_applied,
                         "results": serde_json::to_value(&results).unwrap_or_default(),
                     })),
-                )
+                );
+                result.execution_detail = detail;
+                result
             }
             Err(e) => Self::plan_failed(plugin_name, e.to_string()),
         }
@@ -536,6 +545,9 @@ pub struct PlanFailedEvent {
     /// Populated when structured error information is available.
     #[serde(default)]
     pub error_chain: Vec<String>,
+    /// Subprocess output captured by the executor, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_detail: Option<ExecutionDetail>,
 }
 
 impl PlanFailedEvent {
@@ -554,6 +566,7 @@ impl PlanFailedEvent {
             error_code: None,
             plugin_name: None,
             error_chain: Vec::new(),
+            execution_detail: None,
         }
     }
 }

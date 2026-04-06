@@ -226,6 +226,27 @@ impl PlanStorage for SqliteStore {
 
         Ok(stats)
     }
+
+    fn update_plan_error(
+        &self,
+        plan_id: &Uuid,
+        error: &str,
+        detail: Option<&voom_domain::plan::ExecutionDetail>,
+    ) -> Result<()> {
+        let conn = self.conn()?;
+        let result_json = serde_json::json!({
+            "error": error,
+            "detail": detail,
+        });
+        let result_str = serde_json::to_string(&result_json)
+            .map_err(other_storage_err("failed to serialize plan error result"))?;
+        conn.execute(
+            "UPDATE plans SET result = ?1 WHERE id = ?2",
+            params![result_str, plan_id.to_string()],
+        )
+        .map_err(storage_err("failed to update plan error result"))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

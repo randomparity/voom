@@ -119,6 +119,13 @@ pub trait PlanStorage: Send + Sync {
     fn update_plan_status(&self, plan_id: &Uuid, status: PlanStatus) -> Result<()>;
     /// Aggregate plan counts grouped by phase name, status, and skip reason.
     fn plan_stats_by_phase(&self) -> Result<Vec<PlanPhaseStat>>;
+    /// Write error info and optional execution detail to the plan's `result` column.
+    fn update_plan_error(
+        &self,
+        plan_id: &Uuid,
+        error: &str,
+        detail: Option<&crate::plan::ExecutionDetail>,
+    ) -> Result<()>;
 }
 
 /// File lifecycle transition recording.
@@ -140,6 +147,32 @@ pub trait FileTransitionStorage: Send + Sync {
     /// executor (`source_detail`), phase (`phase_name`), and optionally by
     /// time period.
     fn savings_by_provenance(&self, period: Option<TimePeriod>) -> Result<SavingsReport>;
+    /// Retrieve failed transitions for a specific session.
+    fn failed_transitions_for_session(&self, session_id: &Uuid) -> Result<Vec<FailedTransition>>;
+    /// Find the most recent session that has failures.
+    fn latest_failure_session(&self) -> Result<Option<Uuid>>;
+    /// List sessions that have failures, most recent first.
+    fn failure_sessions(&self) -> Result<Vec<SessionSummary>>;
+}
+
+/// A failed transition with plan result details for error reporting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailedTransition {
+    pub path: PathBuf,
+    pub phase_name: Option<String>,
+    pub error_message: Option<String>,
+    pub session_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    /// JSON from plans.result containing ExecutionDetail.
+    pub plan_result: Option<String>,
+}
+
+/// Summary of a processing session with failure counts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub session_id: Uuid,
+    pub started_at: DateTime<Utc>,
+    pub failure_count: u64,
 }
 
 /// Plugin key-value data storage.

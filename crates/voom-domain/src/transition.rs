@@ -125,6 +125,10 @@ pub struct FileTransition {
     /// To determine the pre-processing state, read the snapshot from the
     /// preceding transition in the file's history chain.
     pub metadata_snapshot: Option<MetadataSnapshot>,
+    /// Error message when outcome is failure.
+    pub error_message: Option<String>,
+    /// Session UUID linking transitions to a single `voom process` run.
+    pub session_id: Option<Uuid>,
 }
 
 impl FileTransition {
@@ -160,7 +164,23 @@ impl FileTransition {
             policy_name: None,
             phase_name: None,
             metadata_snapshot: None,
+            error_message: None,
+            session_id: None,
         }
+    }
+
+    /// Set the error message for a failed transition.
+    #[must_use]
+    pub fn with_error_message(mut self, message: impl Into<String>) -> Self {
+        self.error_message = Some(message.into());
+        self
+    }
+
+    /// Set the session ID linking this transition to a `voom process` run.
+    #[must_use]
+    pub fn with_session_id(mut self, session_id: Uuid) -> Self {
+        self.session_id = Some(session_id);
+        self
     }
 
     /// Set the prior hash and size (pre-change state).

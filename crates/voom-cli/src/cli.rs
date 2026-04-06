@@ -345,6 +345,18 @@ pub struct ReportArgs {
     /// List files (was previously the default)
     #[arg(long)]
     pub files: bool,
+
+    /// Show errors from a processing session (default: most recent)
+    #[arg(long)]
+    pub errors: bool,
+
+    /// Show errors from a specific session (use with --errors)
+    #[arg(long, requires = "errors")]
+    pub session: Option<String>,
+
+    /// List available sessions with error counts (use with --errors)
+    #[arg(long, requires = "errors")]
+    pub list_sessions: bool,
 }
 
 // === Serve ===

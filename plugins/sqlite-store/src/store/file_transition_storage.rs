@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use rusqlite::params;
+use rusqlite::OptionalExtension;
 use uuid::Uuid;
 
 use voom_domain::errors::Result;
@@ -18,9 +19,10 @@ impl FileTransitionStorage for SqliteStore {
              (id, file_id, path, from_hash, to_hash, from_size, to_size, \
               source, source_detail, plan_id, \
               duration_ms, actions_taken, tracks_modified, outcome, \
-              policy_name, phase_name, metadata_snapshot, created_at) \
+              policy_name, phase_name, metadata_snapshot, \
+              error_message, session_id, created_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \
-                     ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                     ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 t.id.to_string(),
                 t.file_id.to_string(),
@@ -45,6 +47,8 @@ impl FileTransitionStorage for SqliteStore {
                         )
                         .ok()
                 }),
+                t.error_message.as_deref(),
+                t.session_id.map(|id| id.to_string()),
                 format_datetime(&t.created_at),
             ],
         )
@@ -173,6 +177,120 @@ impl FileTransitionStorage for SqliteStore {
             .map_err(storage_err("failed to query transitions for path"))?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(storage_err("failed to collect transitions for path"))?;
+
+        Ok(rows)
+    }
+
+    fn failed_transitions_for_session(
+        &self,
+        session_id: &Uuid,
+    ) -> Result<Vec<voom_domain::storage::FailedTransition>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT ft.path, ft.phase_name, ft.error_message, \
+                 ft.session_id, ft.created_at, p.result \
+                 FROM file_transitions ft \
+                 LEFT JOIN plans p ON ft.plan_id = p.id \
+                 WHERE ft.outcome = 'failure' \
+                   AND ft.session_id = ?1 \
+                 ORDER BY ft.created_at",
+            )
+            .map_err(storage_err("failed to prepare failed_transitions query"))?;
+
+        let rows = stmt
+            .query_map(params![session_id.to_string()], |row| {
+                let path_str: String = row.get("path")?;
+                let phase_name: Option<String> = row.get("phase_name")?;
+                let error_message: Option<String> = row.get("error_message")?;
+                let session_str: Option<String> = row.get("session_id")?;
+                let created_at_str: String = row.get("created_at")?;
+                let plan_result: Option<String> = row.get("result")?;
+
+                let session_id = session_str
+                    .filter(|s| !s.is_empty())
+                    .and_then(|s| Uuid::parse_str(&s).ok());
+                let created_at = created_at_str.parse().map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        format!("corrupt datetime: {e}").into(),
+                    )
+                })?;
+
+                Ok(voom_domain::storage::FailedTransition {
+                    path: PathBuf::from(path_str),
+                    phase_name,
+                    error_message,
+                    session_id,
+                    created_at,
+                    plan_result,
+                })
+            })
+            .map_err(storage_err("failed to query failed transitions"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err("failed to collect failed transitions"))?;
+
+        Ok(rows)
+    }
+
+    fn latest_failure_session(&self) -> Result<Option<Uuid>> {
+        let conn = self.conn()?;
+        let result: Option<String> = conn
+            .query_row(
+                "SELECT session_id FROM file_transitions \
+                 WHERE outcome = 'failure' AND session_id IS NOT NULL \
+                 ORDER BY created_at DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_err("failed to query latest failure session"))?;
+
+        Ok(result.and_then(|s| Uuid::parse_str(&s).ok()))
+    }
+
+    fn failure_sessions(&self) -> Result<Vec<voom_domain::storage::SessionSummary>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT session_id, MIN(created_at) as started, COUNT(*) as cnt \
+                 FROM file_transitions \
+                 WHERE outcome = 'failure' AND session_id IS NOT NULL \
+                 GROUP BY session_id \
+                 ORDER BY MIN(created_at) DESC \
+                 LIMIT 20",
+            )
+            .map_err(storage_err("failed to prepare failure_sessions query"))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                let session_str: String = row.get("session_id")?;
+                let started_str: String = row.get("started")?;
+                let count: i64 = row.get("cnt")?;
+                let session_id = Uuid::parse_str(&session_str).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        format!("invalid UUID: {e}").into(),
+                    )
+                })?;
+                let started_at = started_str.parse().map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        format!("corrupt datetime: {e}").into(),
+                    )
+                })?;
+                Ok(voom_domain::storage::SessionSummary {
+                    session_id,
+                    started_at,
+                    failure_count: count as u64,
+                })
+            })
+            .map_err(storage_err("failed to query failure sessions"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err("failed to collect failure sessions"))?;
 
         Ok(rows)
     }
