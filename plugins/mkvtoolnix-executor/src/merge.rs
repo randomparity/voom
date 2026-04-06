@@ -1,10 +1,12 @@
 use std::fs;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use scopeguard::ScopeGuard;
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::plan::{ActionParams, ActionResult, OperationType, PlannedAction};
+use voom_domain::plan::{
+    ActionParams, ActionResult, ExecutionDetail, OperationType, PlannedAction,
+};
 use voom_domain::temp_file::temp_path_with_ext;
 use voom_process::run_with_timeout;
 
@@ -45,7 +47,10 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
     );
     tracing::debug!(args = ?args, "mkvmerge arguments");
 
+    let command_str = voom_process::shell_quote_args("mkvmerge", &args);
+    let start = Instant::now();
     let output = run_with_timeout("mkvmerge", &args, Duration::from_secs(1800))?;
+    let duration_ms = start.elapsed().as_millis() as u64;
 
     // mkvmerge returns 0 for success, 1 for warnings (still successful), 2 for errors
     if output.status.code().unwrap_or(2) <= 1 {
@@ -73,23 +78,45 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
             let _ = fs::remove_file(path);
         }
 
+        let detail = ExecutionDetail {
+            command: command_str,
+            exit_code: output.status.code(),
+            // exit code 1 = mkvmerge warnings; capture stderr for diagnostics
+            stderr_tail: voom_process::stderr_tail(&output.stderr, 20),
+            duration_ms,
+        };
         Ok(actions
             .iter()
-            .map(|a| ActionResult::success(a.operation, a.description.clone()))
+            .map(|a| {
+                ActionResult::success(a.operation, a.description.clone())
+                    .with_execution_detail(detail.clone())
+            })
             .collect())
     } else {
         // Guard will clean up temp file when it drops
 
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let tail = voom_process::stderr_tail(&output.stderr, 20);
         tracing::error!(
             input = %path.display(),
-            stderr = %stderr,
+            stderr = %tail,
             "mkvmerge failed"
         );
-        Err(VoomError::ToolExecution {
-            tool: "mkvmerge".into(),
-            message: format!("mkvmerge exited with status {}: {}", output.status, stderr),
-        })
+        let error_msg = format!(
+            "mkvmerge exited with status {}:\n{}\ncmd: {}",
+            output.status, tail, command_str
+        );
+        let detail = ExecutionDetail {
+            command: command_str,
+            exit_code: output.status.code(),
+            stderr_tail: tail,
+            duration_ms,
+        };
+        Ok(vec![ActionResult::failure(
+            actions[0].operation,
+            &actions[0].description,
+            &error_msg,
+        )
+        .with_execution_detail(detail)])
     }
 }
 

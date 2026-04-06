@@ -308,9 +308,12 @@ impl MkvtoolnixExecutorPlugin {
         args.push(path.to_string_lossy().into_owned());
         args.push(subtitle_path.to_string_lossy().into_owned());
 
+        let command_str = voom_process::shell_quote_args("mkvmerge", &args);
         const SUBTITLE_MUX_TIMEOUT: Duration = Duration::from_secs(120);
+        let start = std::time::Instant::now();
         let output =
             voom_process::run_with_timeout_env("mkvmerge", &args, SUBTITLE_MUX_TIMEOUT, &[]);
+        let duration_ms = start.elapsed().as_millis() as u64;
 
         match output {
             Ok(o) if o.status.success() || o.status.code() == Some(1) => {
@@ -320,19 +323,45 @@ impl MkvtoolnixExecutorPlugin {
                 })?;
                 // Defuse guard — temp file was successfully renamed
                 scopeguard::ScopeGuard::into_inner(_guard);
+                let detail = voom_domain::plan::ExecutionDetail {
+                    command: command_str,
+                    exit_code: o.status.code(),
+                    // exit code 1 = mkvmerge warnings; capture stderr for diagnostics
+                    stderr_tail: voom_process::stderr_tail(&o.stderr, 20),
+                    duration_ms,
+                };
                 Ok(vec![ActionResult::success(
                     action.operation,
                     &action.description,
-                )])
+                )
+                .with_execution_detail(detail)])
             }
-            Ok(o) => Err(VoomError::ToolExecution {
-                tool: "mkvmerge".into(),
-                message: format!(
-                    "mkvmerge failed (exit {}): {}",
+            Ok(o) => {
+                let tail = voom_process::stderr_tail(&o.stderr, 20);
+                let display_tail = if tail.is_empty() {
+                    "(no output)"
+                } else {
+                    &tail
+                };
+                let error_msg = format!(
+                    "mkvmerge failed (exit {}):\n{}\ncmd: {}",
                     o.status.code().unwrap_or(-1),
-                    String::from_utf8_lossy(&o.stderr)
-                ),
-            }),
+                    display_tail,
+                    command_str
+                );
+                let detail = voom_domain::plan::ExecutionDetail {
+                    command: command_str,
+                    exit_code: o.status.code(),
+                    stderr_tail: tail,
+                    duration_ms,
+                };
+                Ok(vec![ActionResult::failure(
+                    action.operation,
+                    &action.description,
+                    &error_msg,
+                )
+                .with_execution_detail(detail)])
+            }
             Err(e) => Err(VoomError::ToolExecution {
                 tool: "mkvmerge".into(),
                 message: format!("mkvmerge subtitle mux failed: {e}"),

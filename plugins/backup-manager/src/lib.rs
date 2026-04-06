@@ -298,7 +298,11 @@ impl Plugin for BackupManagerPlugin {
             }
             Event::PlanFailed(evt) => {
                 if self.has_backup(&evt.path)? {
-                    tracing::warn!(
+                    // debug!, not warn!: restore-from-backup is expected
+                    // failure-handling behavior and is not surfaced in
+                    // `voom report errors` — the plan failure itself is
+                    // the user-facing signal.
+                    tracing::debug!(
                         path = %evt.path.display(),
                         phase = %evt.phase_name,
                         error = %evt.error,

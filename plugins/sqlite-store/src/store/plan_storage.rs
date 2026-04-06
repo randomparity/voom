@@ -92,8 +92,8 @@ impl PlanStorage for SqliteStore {
             });
 
         conn.execute(
-            "INSERT INTO plans (id, file_id, policy_name, phase_name, status, actions, warnings, skip_reason, policy_hash, evaluated_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO plans (id, file_id, policy_name, phase_name, status, actions, warnings, skip_reason, policy_hash, evaluated_at, created_at, session_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 plan.id.to_string(),
                 effective_file_id,
@@ -106,6 +106,7 @@ impl PlanStorage for SqliteStore {
                 plan.policy_hash,
                 format_datetime(&plan.evaluated_at),
                 format_datetime(&Utc::now()),
+                plan.session_id.map(|id| id.to_string()),
             ],
         )
         .map_err(storage_err("failed to save plan"))?;
@@ -225,6 +226,27 @@ impl PlanStorage for SqliteStore {
             .map_err(storage_err("failed to collect plan stats"))?;
 
         Ok(stats)
+    }
+
+    fn update_plan_error(
+        &self,
+        plan_id: &Uuid,
+        error: &str,
+        detail: Option<&voom_domain::plan::ExecutionDetail>,
+    ) -> Result<()> {
+        let conn = self.conn()?;
+        let result_json = serde_json::json!({
+            "error": error,
+            "detail": detail,
+        });
+        let result_str = serde_json::to_string(&result_json)
+            .map_err(other_storage_err("failed to serialize plan error result"))?;
+        conn.execute(
+            "UPDATE plans SET result = ?1 WHERE id = ?2",
+            params![result_str, plan_id.to_string()],
+        )
+        .map_err(storage_err("failed to update plan error result"))?;
+        Ok(())
     }
 }
 

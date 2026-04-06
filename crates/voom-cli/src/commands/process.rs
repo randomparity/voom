@@ -83,11 +83,17 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
     };
 
     let resolver = build_policy_resolver(&args, &config, &root)?;
+    let counters = RunCounters::new();
 
     if !plan_only && !quiet {
         let path_list: Vec<_> = paths.iter().map(|p| p.display().to_string()).collect();
         let display_paths = path_list.join(", ");
-        print_run_header(&resolver.summary(), &display_paths, dry_run);
+        print_run_header(
+            &resolver.summary(),
+            &display_paths,
+            dry_run,
+            counters.session_id,
+        );
     }
 
     // Auto-prune stale file entries under the target directories
@@ -189,7 +195,6 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
     let all_phase_names = resolver.all_phase_names();
     let resolver = Arc::new(resolver);
     let flag_size_increase = args.flag_size_increase;
-    let counters = RunCounters::new();
 
     let token_for_workers = token.clone();
     let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
@@ -335,6 +340,22 @@ fn print_run_results(ctx: &RunResultsContext<'_>) -> Result<()> {
             });
         }
         print_phase_breakdown(&ctx.counters.phase_stats.lock(), ctx.all_phase_names);
+
+        let phase_errors: u64 = ctx
+            .counters
+            .phase_stats
+            .lock()
+            .values()
+            .map(|ps| ps.failed)
+            .sum();
+        if phase_errors > 0 && !ctx.dry_run {
+            let short_session = &ctx.counters.session_id.to_string()[..8];
+            eprintln!(
+                "\n  {} Run `{}` to see details.",
+                style(format!("{phase_errors} files had errors.")).yellow(),
+                style(format!("voom report errors --session {short_session}")).bold(),
+            );
+        }
     }
 
     Ok(())
@@ -365,9 +386,10 @@ fn build_policy_resolver(
 }
 
 /// Print the header line describing what we are about to do.
-fn print_run_header(policy_name: &str, path_display: &str, dry_run: bool) {
+fn print_run_header(policy_name: &str, path_display: &str, dry_run: bool, session_id: uuid::Uuid) {
+    let short_session = &session_id.to_string()[..8];
     eprintln!(
-        "{} policy {} to {}{}",
+        "{} policy {} to {} (session {}){}",
         if dry_run {
             style("Dry-running").bold()
         } else {
@@ -375,6 +397,7 @@ fn print_run_header(policy_name: &str, path_display: &str, dry_run: bool) {
         },
         style(policy_name).cyan(),
         style(path_display).cyan(),
+        style(short_session).dim(),
         if dry_run {
             " (no changes will be made)"
         } else {
@@ -631,6 +654,7 @@ struct RunCounters {
     backup_bytes: Arc<AtomicU64>,
     phase_stats: PhaseStatsMap,
     plan_collector: Arc<Mutex<Vec<serde_json::Value>>>,
+    session_id: uuid::Uuid,
 }
 
 impl RunCounters {
@@ -640,6 +664,7 @@ impl RunCounters {
             backup_bytes: Arc::new(AtomicU64::new(0)),
             phase_stats: Arc::new(Mutex::new(HashMap::new())),
             plan_collector: Arc::new(Mutex::new(Vec::new())),
+            session_id: uuid::Uuid::new_v4(),
         }
     }
 }
@@ -820,7 +845,7 @@ async fn process_single_file_execute(
             break;
         }
 
-        let plan = match evaluator.evaluate_single_phase(
+        let mut plan = match evaluator.evaluate_single_phase(
             phase_name,
             compiled,
             &current_file,
@@ -830,6 +855,7 @@ async fn process_single_file_execute(
             Some(p) => p,
             None => continue,
         };
+        plan.session_id = Some(ctx.counters.session_id);
 
         plans_evaluated += 1;
 
@@ -919,6 +945,7 @@ async fn process_single_file_execute(
                 let policy_name = plan.policy_name.clone();
                 let phase_name_owned = plan.phase_name.clone();
                 let executor = failed.plugin_name.clone().unwrap_or_default();
+                let error_msg = failed.error.clone();
                 dispatch_plan_failure(failed, &phase_name_owned, ctx);
                 record_failure_transition(
                     &current_file,
@@ -926,6 +953,7 @@ async fn process_single_file_execute(
                     &executor,
                     &policy_name,
                     &phase_name_owned,
+                    Some(&error_msg),
                     ctx,
                 );
                 phase_outcomes.insert(
@@ -1008,16 +1036,21 @@ fn dispatch_plan_failure(failed: PlanFailedEvent, phase_name: &str, ctx: &Proces
 /// The file is unchanged on failure, so `to_size = from_size` and `to_hash =
 /// from_hash`. The `executor` argument should be the executor plugin name, or
 /// an empty string when no executor was involved (e.g. size-increase abort).
+///
+/// Dual-write: `file_transitions.error_message` is used for session-based
+/// queries (`voom report errors`), while `plans.result` stores the structured
+/// `ExecutionDetail` JSON for plan-based queries with full subprocess output.
 fn record_failure_transition(
     file: &voom_domain::media::MediaFile,
     plan_id: uuid::Uuid,
     executor: &str,
     policy_name: &str,
     phase_name: &str,
+    error_message: Option<&str>,
     ctx: &ProcessContext<'_>,
 ) {
     let to_hash = file.content_hash.clone().unwrap_or_default();
-    let transition = voom_domain::FileTransition::new(
+    let mut transition = voom_domain::FileTransition::new(
         file.id,
         file.path.clone(),
         to_hash,
@@ -1034,7 +1067,12 @@ fn record_failure_transition(
         voom_domain::ProcessingOutcome::Failure,
         policy_name,
         phase_name,
-    );
+    )
+    .with_session_id(ctx.counters.session_id);
+
+    if let Some(msg) = error_message {
+        transition = transition.with_error_message(msg);
+    }
 
     if let Err(e) = ctx.store.record_transition(&transition) {
         tracing::warn!(error = %e, "failed to record failure transition");
@@ -1093,7 +1131,16 @@ fn check_size_increase(
         &plan.phase_name,
         PhaseOutcomeKind::Failed,
     );
-    record_failure_transition(file, plan.id, "", &plan.policy_name, &plan.phase_name, ctx);
+    let err_msg = format!("output grew from {} to {} bytes", file.size, new_size);
+    record_failure_transition(
+        file,
+        plan.id,
+        "",
+        &plan.policy_name,
+        &plan.phase_name,
+        Some(&err_msg),
+        ctx,
+    );
     true
 }
 
@@ -1160,7 +1207,15 @@ fn check_disk_space(
         &plan.phase_name,
         PhaseOutcomeKind::Failed,
     );
-    record_failure_transition(file, plan.id, "", &plan.policy_name, &plan.phase_name, ctx);
+    record_failure_transition(
+        file,
+        plan.id,
+        "",
+        &plan.policy_name,
+        &plan.phase_name,
+        Some(&message),
+        ctx,
+    );
     true
 }
 
@@ -1307,7 +1362,8 @@ fn record_file_transition(
         policy_name,
         phase_name,
     )
-    .with_metadata_snapshot(voom_domain::MetadataSnapshot::from_media_file(new_file));
+    .with_metadata_snapshot(voom_domain::MetadataSnapshot::from_media_file(new_file))
+    .with_session_id(ctx.counters.session_id);
 
     if let Err(e) = ctx.store.record_transition(&transition) {
         tracing::warn!(error = %e, "failed to record transition");
@@ -1601,6 +1657,7 @@ fn execute_single_plan(
 
     let claimed = results.iter().any(|r| r.claimed);
     let exec_error = results.iter().find_map(|r| r.execution_error.clone());
+    let exec_detail = results.iter().find_map(|r| r.execution_detail.clone());
 
     if claimed && exec_error.is_none() {
         let executor = results
@@ -1616,6 +1673,7 @@ fn execute_single_plan(
             .iter()
             .find(|r| r.claimed)
             .map(|r| r.plugin_name.clone());
+        failed.execution_detail = exec_detail;
         PlanOutcome::Failed(failed)
     } else {
         PlanOutcome::Failed(PlanFailedEvent::new(

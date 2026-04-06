@@ -1,9 +1,9 @@
 //! FFmpeg plan execution: build commands, run subprocess, manage temp files.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::plan::{ActionResult, Plan, PlannedAction};
+use voom_domain::plan::{ActionResult, ExecutionDetail, Plan, PlannedAction};
 use voom_process::run_with_timeout_env;
 
 use voom_domain::temp_file::temp_path_with_ext;
@@ -13,6 +13,9 @@ use crate::hwaccel::HwAccelConfig;
 
 /// Default timeout for `FFmpeg` operations (4 hours — transcode can be slow).
 const FFMPEG_TIMEOUT: Duration = Duration::from_secs(4 * 60 * 60);
+
+/// Maximum number of stderr lines to capture in `ExecutionDetail`.
+const STDERR_TAIL_LINES: usize = 20;
 
 /// Execute a plan by spawning an `FFmpeg` subprocess.
 ///
@@ -45,8 +48,11 @@ pub fn execute_plan(plan: &Plan, hw_accel: &HwAccelConfig) -> Result<Vec<ActionR
     );
     tracing::debug!(args = ?ffmpeg_args, "ffmpeg command");
 
+    let command_str = voom_process::shell_quote_args("ffmpeg", &ffmpeg_args);
     let env_vars: Vec<(&str, &str)> = hw_accel.device_env().into_iter().collect();
+    let start = Instant::now();
     let output = run_with_timeout_env("ffmpeg", &ffmpeg_args, FFMPEG_TIMEOUT, &env_vars);
+    let duration_ms = start.elapsed().as_millis() as u64;
 
     match output {
         Ok(output) if output.status.success() => {
@@ -58,27 +64,48 @@ pub fn execute_plan(plan: &Plan, hw_accel: &HwAccelConfig) -> Result<Vec<ActionR
                 "ffmpeg execution complete"
             );
 
+            let detail = ExecutionDetail {
+                command: command_str,
+                exit_code: Some(0),
+                stderr_tail: String::new(),
+                duration_ms,
+            };
             Ok(actions
                 .iter()
-                .map(|a| ActionResult::success(a.operation, a.description.clone()))
+                .map(|a| {
+                    ActionResult::success(a.operation, a.description.clone())
+                        .with_execution_detail(detail.clone())
+                })
                 .collect())
         }
         Ok(output) => {
             let _ = std::fs::remove_file(&output_path);
-            let stderr = String::from_utf8_lossy(&output.stderr);
             tracing::debug!(
-                stderr = %stderr,
                 args = ?ffmpeg_args,
                 "ffmpeg failed"
             );
-            Err(VoomError::ToolExecution {
-                tool: "ffmpeg".into(),
-                message: format!(
-                    "ffmpeg exited with {}: {}",
-                    output.status,
-                    stderr.lines().last().unwrap_or("(no output)")
-                ),
-            })
+            let tail = voom_process::stderr_tail(&output.stderr, STDERR_TAIL_LINES);
+            let display_tail = if tail.is_empty() {
+                "(no output)"
+            } else {
+                &tail
+            };
+            let error_msg = format!(
+                "ffmpeg exited with {}:\n{}\ncmd: {}",
+                output.status, display_tail, command_str
+            );
+            let detail = ExecutionDetail {
+                command: command_str,
+                exit_code: output.status.code(),
+                stderr_tail: tail,
+                duration_ms,
+            };
+            Ok(vec![ActionResult::failure(
+                actions[0].operation,
+                &actions[0].description,
+                &error_msg,
+            )
+            .with_execution_detail(detail)])
         }
         Err(e) => {
             let _ = std::fs::remove_file(&output_path);

@@ -19,6 +19,10 @@ pub fn run(args: ReportArgs) -> Result<()> {
     let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
+    if args.errors {
+        return run_errors(&*store, &args);
+    }
+
     if args.snapshot {
         let snapshot =
             ReportPlugin::capture_snapshot(&*store, voom_domain::stats::SnapshotTrigger::Manual)?;
@@ -101,6 +105,7 @@ fn is_summary_request(args: &ReportArgs) -> bool {
         && !args.savings
         && !args.issues
         && !args.database
+        && !args.errors
         && args.history.is_none()
 }
 
@@ -1101,6 +1106,135 @@ fn codec_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
     })
 }
 
+// ── Error reporting ────────────────────────────────────────
+
+fn run_errors(store: &dyn voom_domain::storage::StorageTrait, args: &ReportArgs) -> Result<()> {
+    use voom_domain::plan::ExecutionDetail;
+
+    if args.list_sessions {
+        let sessions = store.failure_sessions()?;
+        if sessions.is_empty() {
+            eprintln!("{}", style("No sessions with errors found.").dim());
+            return Ok(());
+        }
+        match args.format {
+            OutputFormat::Json => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&sessions).context("serialize sessions")?
+                );
+            }
+            _ => {
+                println!("{}", style("Sessions with errors:").bold().underlined());
+                println!();
+                for s in &sessions {
+                    let short = &s.session_id.to_string()[..8];
+                    println!(
+                        "  {} {} ({} failures)",
+                        style(short).cyan(),
+                        style(s.started_at.format("%Y-%m-%d %H:%M:%S")).dim(),
+                        style(s.failure_count).yellow(),
+                    );
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    let session_id = if let Some(ref s) = args.session {
+        uuid::Uuid::parse_str(s).or_else(|_| {
+            // Allow short prefix matching
+            let sessions = store.failure_sessions()?;
+            sessions
+                .iter()
+                .find(|sess| sess.session_id.to_string().starts_with(s))
+                .map(|sess| sess.session_id)
+                .ok_or_else(|| anyhow::anyhow!("no session matching prefix '{s}'"))
+        })?
+    } else {
+        store
+            .latest_failure_session()
+            .context("failed to query latest session")?
+            .ok_or_else(|| anyhow::anyhow!("no sessions with errors found"))?
+    };
+
+    let failures = store
+        .failed_transitions_for_session(&session_id)
+        .context("failed to query session errors")?;
+
+    if failures.is_empty() {
+        eprintln!("{}", style("No errors in the most recent session.").green());
+        return Ok(());
+    }
+
+    match args.format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&failures).context("serialize failures")?
+            );
+        }
+        _ => {
+            let short_session = &session_id.to_string()[..8];
+            println!(
+                "Errors from session {} ({} failures)\n",
+                style(short_session).cyan(),
+                failures.len(),
+            );
+            for f in &failures {
+                let filename = f
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| f.path.display().to_string());
+                println!("  {}", style(&filename).bold());
+                if let Some(ref phase) = f.phase_name {
+                    println!("    Phase: {phase}");
+                }
+
+                // Try to extract ExecutionDetail from plan_result JSON
+                let mut detail_rendered = false;
+                if let Some(ref result_json) = f.plan_result {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(result_json) {
+                        if let Some(detail) = parsed.get("detail") {
+                            if let Ok(ed) =
+                                serde_json::from_value::<ExecutionDetail>(detail.clone())
+                            {
+                                if let Some(code) = ed.exit_code {
+                                    println!("    Exit:  {code}");
+                                    detail_rendered = true;
+                                }
+                                if !ed.command.is_empty() {
+                                    let cmd = console::strip_ansi_codes(&ed.command);
+                                    println!("    Cmd:   {cmd}");
+                                    detail_rendered = true;
+                                }
+                                if !ed.stderr_tail.is_empty() {
+                                    let stderr = console::strip_ansi_codes(&ed.stderr_tail);
+                                    println!("    Error:");
+                                    for line in stderr.lines() {
+                                        println!("      {line}");
+                                    }
+                                    detail_rendered = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(ref msg) = f.error_message {
+                    if !detail_rendered {
+                        println!("    Error: {msg}");
+                    }
+                }
+                println!();
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1165,6 +1299,9 @@ mod tests {
             all: false,
             snapshot: false,
             files: false,
+            errors: false,
+            session: None,
+            list_sessions: false,
         };
         let req = build_request(&args).unwrap();
         assert!(req.includes(ReportSection::Library));
@@ -1185,6 +1322,9 @@ mod tests {
             all: true,
             snapshot: false,
             files: false,
+            errors: false,
+            session: None,
+            list_sessions: false,
         };
         let req = build_request(&args).unwrap();
         assert!(req.includes(ReportSection::Library));
@@ -1206,6 +1346,9 @@ mod tests {
             all: false,
             snapshot: false,
             files: false,
+            errors: false,
+            session: None,
+            list_sessions: false,
         };
         let req = build_request(&args).unwrap();
         assert!(req.includes(ReportSection::Plans));
@@ -1228,6 +1371,9 @@ mod tests {
             all: false,
             snapshot: false,
             files: false,
+            errors: false,
+            session: None,
+            list_sessions: false,
         };
         assert!(is_summary_request(&default_args));
 

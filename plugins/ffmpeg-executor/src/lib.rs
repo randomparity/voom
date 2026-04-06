@@ -327,8 +327,11 @@ impl FfmpegExecutorPlugin {
         args.push("-y".to_string());
         args.push(temp_path.to_string_lossy().into_owned());
 
+        let command_str = voom_process::shell_quote_args("ffmpeg", &args);
         const SUBTITLE_MUX_TIMEOUT: Duration = Duration::from_secs(120);
+        let start = std::time::Instant::now();
         let output = voom_process::run_with_timeout_env("ffmpeg", &args, SUBTITLE_MUX_TIMEOUT, &[]);
+        let duration_ms = start.elapsed().as_millis() as u64;
 
         match output {
             Ok(o) if o.status.success() => {
@@ -336,18 +339,44 @@ impl FfmpegExecutorPlugin {
                     let _ = std::fs::remove_file(&temp_path);
                     plugin_err(format!("failed to rename temp file: {e}"))
                 })?;
+                let detail = voom_domain::plan::ExecutionDetail {
+                    command: command_str,
+                    exit_code: Some(0),
+                    stderr_tail: String::new(),
+                    duration_ms,
+                };
                 Ok(vec![voom_domain::plan::ActionResult::success(
                     action.operation,
                     &action.description,
-                )])
+                )
+                .with_execution_detail(detail)])
             }
             Ok(o) => {
                 let _ = std::fs::remove_file(&temp_path);
-                Err(plugin_err(format!(
-                    "ffmpeg failed (exit {}): {}",
+                let tail = voom_process::stderr_tail(&o.stderr, 20);
+                let display_tail = if tail.is_empty() {
+                    "(no output)"
+                } else {
+                    &tail
+                };
+                let error_msg = format!(
+                    "ffmpeg failed (exit {}):\n{}\ncmd: {}",
                     o.status.code().unwrap_or(-1),
-                    String::from_utf8_lossy(&o.stderr)
-                )))
+                    display_tail,
+                    command_str
+                );
+                let detail = voom_domain::plan::ExecutionDetail {
+                    command: command_str,
+                    exit_code: o.status.code(),
+                    stderr_tail: tail,
+                    duration_ms,
+                };
+                Ok(vec![voom_domain::plan::ActionResult::failure(
+                    action.operation,
+                    &action.description,
+                    &error_msg,
+                )
+                .with_execution_detail(detail)])
             }
             Err(e) => {
                 let _ = std::fs::remove_file(&temp_path);

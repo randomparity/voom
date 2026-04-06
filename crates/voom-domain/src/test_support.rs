@@ -413,6 +413,15 @@ impl PlanStorage for InMemoryStore {
     fn plan_stats_by_phase(&self) -> Result<Vec<crate::storage::PlanPhaseStat>> {
         Ok(Vec::new())
     }
+
+    fn update_plan_error(
+        &self,
+        _plan_id: &Uuid,
+        _error: &str,
+        _detail: Option<&crate::plan::ExecutionDetail>,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl FileTransitionStorage for InMemoryStore {
@@ -444,6 +453,21 @@ impl FileTransitionStorage for InMemoryStore {
         _period: Option<crate::stats::TimePeriod>,
     ) -> Result<crate::stats::SavingsReport> {
         Ok(crate::stats::SavingsReport::default())
+    }
+
+    fn failed_transitions_for_session(
+        &self,
+        _session_id: &Uuid,
+    ) -> Result<Vec<crate::storage::FailedTransition>> {
+        Ok(Vec::new())
+    }
+
+    fn latest_failure_session(&self) -> Result<Option<Uuid>> {
+        Ok(None)
+    }
+
+    fn failure_sessions(&self) -> Result<Vec<crate::storage::SessionSummary>> {
+        Ok(Vec::new())
     }
 }
 

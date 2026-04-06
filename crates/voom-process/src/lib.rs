@@ -134,6 +134,41 @@ pub fn run_with_timeout_env(
     }
 }
 
+/// Format a tool invocation as a shell-reproducible command string.
+///
+/// Args containing spaces, quotes, or shell metacharacters are
+/// single-quoted. Simple args pass through unquoted.
+pub fn shell_quote_args(tool: &str, args: &[impl AsRef<str>]) -> String {
+    let mut parts = Vec::with_capacity(args.len() + 1);
+    // Quote the tool name if it contains shell metacharacters (e.g. spaces in path)
+    if tool.contains(|c: char| c.is_whitespace() || "\"'\\$`!#&|;(){}[]<>?*~".contains(c)) {
+        let escaped = tool.replace('\'', "'\\''");
+        parts.push(format!("'{escaped}'"));
+    } else {
+        parts.push(tool.to_string());
+    }
+    for arg in args {
+        let s = arg.as_ref();
+        if s.is_empty()
+            || s.contains(|c: char| c.is_whitespace() || "\"'\\$`!#&|;(){}[]<>?*~".contains(c))
+        {
+            let escaped = s.replace('\'', "'\\''");
+            parts.push(format!("'{escaped}'"));
+        } else {
+            parts.push(s.to_string());
+        }
+    }
+    parts.join(" ")
+}
+
+/// Extract the last N non-empty lines from a byte buffer (stderr output).
+pub fn stderr_tail(bytes: &[u8], max_lines: usize) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
+    let start = lines.len().saturating_sub(max_lines);
+    lines[start..].join("\n")
+}
+
 /// Read all bytes from an optional tokio `ChildStdout`/`ChildStderr`.
 async fn read_child_pipe<R>(pipe: Option<R>) -> Vec<u8>
 where

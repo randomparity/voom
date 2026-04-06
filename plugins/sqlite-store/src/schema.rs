@@ -75,7 +75,8 @@ CREATE TABLE IF NOT EXISTS plans (
     evaluated_at TEXT,
     created_at TEXT NOT NULL,
     executed_at TEXT,
-    result TEXT
+    result TEXT,
+    session_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS file_transitions (
@@ -96,6 +97,8 @@ CREATE TABLE IF NOT EXISTS file_transitions (
     policy_name TEXT,
     phase_name TEXT,
     metadata_snapshot TEXT,
+    error_message TEXT,
+    session_id TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -244,6 +247,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     migrate_indexes_and_constraints(conn)?;
     migrate_processing_stats_into_transitions(conn, &has_column)?;
     migrate_metadata_snapshot_column(conn, &has_column)?;
+    migrate_execution_capture_columns(conn, &has_column)?;
 
     Ok(())
 }
@@ -519,6 +523,47 @@ fn migrate_metadata_snapshot_column(
     if !has_column("file_transitions", "metadata_snapshot")? {
         conn.execute_batch("ALTER TABLE file_transitions ADD COLUMN metadata_snapshot TEXT;")?;
     }
+    Ok(())
+}
+
+/// Add error_message and session_id columns to file_transitions, and
+/// session_id to plans, for execution output capture.
+fn migrate_execution_capture_columns(
+    conn: &Connection,
+    has_column: &dyn Fn(&str, &str) -> rusqlite::Result<bool>,
+) -> rusqlite::Result<()> {
+    let table_exists = |name: &str| -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master \
+             WHERE type='table' AND name=?1",
+            [name],
+            |row| row.get(0),
+        )
+    };
+
+    if table_exists("file_transitions")? {
+        if !has_column("file_transitions", "error_message")? {
+            conn.execute_batch("ALTER TABLE file_transitions ADD COLUMN error_message TEXT;")?;
+        }
+        if !has_column("file_transitions", "session_id")? {
+            conn.execute_batch("ALTER TABLE file_transitions ADD COLUMN session_id TEXT;")?;
+        }
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_transitions_session \
+             ON file_transitions(session_id);",
+        )?;
+    }
+
+    if table_exists("plans")? {
+        if !has_column("plans", "session_id")? {
+            conn.execute_batch("ALTER TABLE plans ADD COLUMN session_id TEXT;")?;
+        }
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_plans_session \
+             ON plans(session_id);",
+        )?;
+    }
+
     Ok(())
 }
 

@@ -33,6 +33,10 @@ pub struct Plan {
     /// set by capability-aware validation when a single executor matches.
     #[serde(default)]
     pub executor_hint: Option<String>,
+    /// Processing session that produced this plan. Set by the CLI before
+    /// dispatching `PlanCreated`, used for session-level queries.
+    #[serde(default)]
+    pub session_id: Option<uuid::Uuid>,
 }
 
 impl Plan {
@@ -80,6 +84,7 @@ impl Plan {
             policy_hash: None,
             evaluated_at: Utc::now(),
             executor_hint: None,
+            session_id: None,
         }
     }
 
@@ -691,6 +696,20 @@ pub enum PhaseOutcome {
     Failed,
 }
 
+/// Captured subprocess output from an executor invocation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionDetail {
+    /// Shell-quoted command line.
+    pub command: String,
+    /// Process exit code.
+    pub exit_code: Option<i32>,
+    /// Last N non-empty lines of stderr. Populated on failure and on
+    /// mkvmerge warnings (exit code 1). Empty on clean success.
+    pub stderr_tail: String,
+    /// Wall-clock execution time in milliseconds.
+    pub duration_ms: u64,
+}
+
 /// The result of executing a single action within a phase.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -699,6 +718,8 @@ pub struct ActionResult {
     pub success: bool,
     pub description: String,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_detail: Option<ExecutionDetail>,
 }
 
 impl ActionResult {
@@ -709,6 +730,7 @@ impl ActionResult {
             success: true,
             description: description.into(),
             error: None,
+            execution_detail: None,
         }
     }
 
@@ -723,7 +745,15 @@ impl ActionResult {
             success: false,
             description: description.into(),
             error: Some(error.into()),
+            execution_detail: None,
         }
+    }
+
+    /// Attach execution detail to this result.
+    #[must_use]
+    pub fn with_execution_detail(mut self, detail: ExecutionDetail) -> Self {
+        self.execution_detail = Some(detail);
+        self
     }
 }
 
@@ -751,6 +781,7 @@ mod tests {
             policy_hash: None,
             evaluated_at: Utc::now(),
             executor_hint: None,
+            session_id: None,
         }
     }
 
