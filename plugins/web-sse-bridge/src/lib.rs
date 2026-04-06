@@ -16,8 +16,10 @@
 //!    `WebSseBridgePlugin::basename` and every path-carrying arm of
 //!    `WebSseBridgePlugin::to_sse_event`.
 //! 2. **Subprocess output and error chains** from `PlanFailedEvent` are
-//!    intentionally NOT forwarded. They may contain absolute paths,
-//!    environment values, or partial command lines that need a separate
+//!    intentionally NOT forwarded. This rule applies specifically to
+//!    `PlanFailedEvent`, which carries `error_chain` and
+//!    `execution_detail` fields that may contain absolute paths,
+//!    environment values, or partial command lines and need a separate
 //!    disclosure review before exposure. Only the top-level `error`
 //!    string is forwarded.
 //!
@@ -473,6 +475,7 @@ mod tests {
     fn integrates_with_kernel_dispatch() {
         use std::path::PathBuf;
         use std::sync::Arc;
+        use voom_domain::events::PlanFailedEvent;
         use voom_kernel::{Kernel, PluginContext};
 
         let (tx, mut rx) = broadcast::channel(8);
@@ -484,20 +487,48 @@ mod tests {
             .init_and_register(Arc::new(bridge), 200, &ctx)
             .expect("register bridge");
 
+        // Dispatch a JobStarted through the real kernel and confirm the
+        // bridge forwards it to the SSE channel.
         let job_id = Uuid::new_v4();
         kernel.dispatch(Event::JobStarted(JobStartedEvent::new(
             job_id,
             "kernel test",
         )));
 
-        let sse = rx.try_recv().expect("event should be broadcast");
-        match sse {
+        match rx.try_recv().expect("JobStarted should be broadcast") {
             SseEvent::JobStarted {
                 job_id: id,
                 description,
             } => {
                 assert_eq!(id, job_id.to_string());
                 assert_eq!(description, "kernel test");
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+
+        // Dispatch a PlanFailed through the real kernel. This proves the
+        // kernel actually routes plan lifecycle events to a bridge whose
+        // handles() returns true for PLAN_FAILED — a concern orthogonal
+        // to the pure unit tests of to_sse_event.
+        let plan_id = Uuid::new_v4();
+        kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
+            plan_id,
+            PathBuf::from("/media/movies/broken.mkv"),
+            "transcode",
+            "ffmpeg exited with code 1",
+        )));
+
+        match rx.try_recv().expect("PlanFailed should be broadcast") {
+            SseEvent::PlanFailed {
+                plan_id: pid,
+                file,
+                phase,
+                error,
+            } => {
+                assert_eq!(pid, plan_id.to_string());
+                assert_eq!(file, "broken.mkv");
+                assert_eq!(phase, "transcode");
+                assert_eq!(error, "ffmpeg exited with code 1");
             }
             other => panic!("unexpected variant: {other:?}"),
         }
