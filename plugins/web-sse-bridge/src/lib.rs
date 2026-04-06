@@ -3,8 +3,35 @@
 //! The web server is library-only and cannot subscribe to the kernel bus
 //! directly. This plugin holds a clone of the web server's
 //! [`broadcast::Sender<SseEvent>`] and forwards relevant kernel events
-//! (job lifecycle, file introspection) to it so that browser SSE clients
-//! receive live updates.
+//! (job lifecycle, file introspection, plan lifecycle) to it so that
+//! browser SSE clients receive live updates.
+//!
+//! # Disclosure surface
+//!
+//! All forwarded events go to any authenticated SSE client. Two rules
+//! govern what we put on the wire:
+//!
+//! 1. **Filesystem paths are reduced to basenames** before forwarding,
+//!    to avoid leaking the internal media library layout. See
+//!    `WebSseBridgePlugin::basename` and every path-carrying arm of
+//!    `WebSseBridgePlugin::to_sse_event`.
+//! 2. **Subprocess output and error chains** from `PlanFailedEvent` are
+//!    intentionally NOT forwarded. They may contain absolute paths,
+//!    environment values, or partial command lines that need a separate
+//!    disclosure review before exposure. Only the top-level `error`
+//!    string is forwarded.
+//!
+//! Operator-supplied strings (job descriptions, progress messages, error
+//! messages, phase names, skip reasons) ARE forwarded. The web frontend
+//! templates in `plugins/web-server/templates/` bind every dynamic
+//! string with Alpine's `x-text` directive, which sets `textContent`
+//! (not `innerHTML`), so these strings cannot be used as an XSS vector
+//! against the current UI. The `base.html` SSE handler parses event
+//! data via `JSON.parse` and dispatches it as a `CustomEvent` — no
+//! string concatenation into HTML. Any future template that consumes
+//! these fields MUST continue to use `x-text` or an equivalent safe
+//! binding; reviewers should audit `innerHTML`/`x-html` usage when
+//! adding new consumers.
 
 use tokio::sync::broadcast;
 use tracing::{debug, trace};
