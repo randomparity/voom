@@ -1074,6 +1074,10 @@ fn check_size_increase(
             );
         }
     }
+    // Note: PlanCreated was already dispatched by execute_single_plan
+    // (the caller). We only dispatch PlanFailed here — the
+    // PlanCreated/PlanFailed pairing is satisfied by the earlier
+    // PlanCreated.
     let r = ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
         plan.id,
         file.path.clone(),
@@ -2231,6 +2235,64 @@ mod tests {
             recorder.plan_created_count.load(Ordering::SeqCst),
             1,
             "PlanCreated must fire before PlanFailed"
+        );
+        assert_eq!(
+            recorder.plan_failed_count.load(Ordering::SeqCst),
+            1,
+            "PlanFailed must fire"
+        );
+    }
+
+    #[test]
+    fn test_check_size_increase_dispatches_plan_failed_without_plan_created() {
+        // Write a file with 2048 bytes so the size-increase check fires
+        // when the MediaFile reports size = 1024 (smaller than actual).
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.mkv");
+        std::fs::write(&file_path, vec![0u8; 2048]).unwrap();
+
+        let mut file = MediaFile::new(file_path.clone());
+        // Report size smaller than actual so the safeguard triggers.
+        file.size = 1024;
+
+        let plan = test_plan("normalize", false);
+
+        let recorder = Arc::new(PlanRecordingPlugin::new());
+        let mut kernel = voom_kernel::Kernel::new();
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
+
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_domain::test_support::InMemoryStore::new());
+        let capabilities = voom_domain::CapabilityMap::new();
+        let counters = RunCounters::new();
+        let token = CancellationToken::new();
+        let resolver = PolicyResolver::from_single(
+            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
+                .unwrap(),
+            dir.path(),
+        );
+        let ctx = ProcessContext {
+            resolver: &resolver,
+            kernel: Arc::new(kernel),
+            store,
+            dry_run: false,
+            plan_only: false,
+            flag_size_increase: true,
+            token: &token,
+            ffprobe_path: None,
+            capabilities: &capabilities,
+            counters: &counters,
+        };
+
+        // Should return true (size increased).
+        assert!(check_size_increase(&plan, &file, &ctx));
+        // PlanCreated is NOT dispatched here — execute_single_plan (the caller)
+        // is responsible for that dispatch. The PlanCreated/PlanFailed pairing
+        // is satisfied by the earlier PlanCreated from execute_single_plan.
+        assert_eq!(
+            recorder.plan_created_count.load(Ordering::SeqCst),
+            0,
+            "PlanCreated must NOT be dispatched by check_size_increase"
         );
         assert_eq!(
             recorder.plan_failed_count.load(Ordering::SeqCst),
