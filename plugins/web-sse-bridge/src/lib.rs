@@ -7,6 +7,7 @@
 //! receive live updates.
 
 use tokio::sync::broadcast;
+use tracing::{debug, trace};
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
@@ -88,9 +89,15 @@ impl Plugin for WebSseBridgePlugin {
             return Ok(None);
         };
 
+        let event_kind = event.event_type();
+        trace!(event_kind, "forwarding kernel event to SSE channel");
+
         // `send` returns Err only when there are zero receivers, which is the
-        // normal case while no SSE clients are connected. Drop the result.
-        let _ = self.sse_tx.send(sse_event);
+        // normal case while no SSE clients are connected. Log at debug level
+        // so operators can correlate "no events delivered" with "no clients".
+        if self.sse_tx.send(sse_event).is_err() {
+            debug!(event_kind, "SSE send dropped: no active subscribers");
+        }
         Ok(None)
     }
 }
