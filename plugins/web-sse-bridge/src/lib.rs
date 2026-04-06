@@ -46,7 +46,12 @@ impl WebSseBridgePlugin {
                 message: e.message.clone(),
             }),
             Event::FileIntrospected(e) => Some(SseEvent::FileIntrospected {
-                path: e.file.path.display().to_string(),
+                path: e
+                    .file
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
             }),
             _ => None,
         }
@@ -188,9 +193,9 @@ mod tests {
     }
 
     #[test]
-    fn forwards_file_introspected() {
+    fn forwards_file_introspected_basename_only() {
         let (bridge, mut rx) = bridge_with_rx();
-        let media = MediaFile::new(PathBuf::from("/media/movie.mkv"));
+        let media = MediaFile::new(PathBuf::from("/media/movies/MyMovie.mkv"));
         let event = Event::FileIntrospected(FileIntrospectedEvent::new(media));
 
         bridge.on_event(&event).unwrap();
@@ -198,8 +203,27 @@ mod tests {
         let sse = rx.try_recv().unwrap();
         match sse {
             SseEvent::FileIntrospected { path } => {
-                assert_eq!(path, "/media/movie.mkv");
+                assert_eq!(
+                    path, "MyMovie.mkv",
+                    "absolute filesystem path must not be exposed to SSE clients"
+                );
             }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_introspected_with_no_basename_yields_empty_string() {
+        // PathBuf::from("/") has no `file_name()` — make sure we don't panic
+        // and don't accidentally fall back to the full path.
+        let (bridge, mut rx) = bridge_with_rx();
+        let media = MediaFile::new(PathBuf::from("/"));
+        bridge
+            .on_event(&Event::FileIntrospected(FileIntrospectedEvent::new(media)))
+            .unwrap();
+        let sse = rx.try_recv().unwrap();
+        match sse {
+            SseEvent::FileIntrospected { path } => assert_eq!(path, ""),
             other => panic!("unexpected variant: {other:?}"),
         }
     }
