@@ -72,6 +72,17 @@ impl AppState {
         self
     }
 
+    /// Replace the SSE broadcast sender with an externally-provided one.
+    ///
+    /// Used by callers (e.g. the `serve` command) that need to share the same
+    /// channel between this `AppState` and a separate kernel-side bridge plugin
+    /// so that bus events forwarded by the bridge reach connected SSE clients.
+    #[must_use]
+    pub fn with_sse_sender(mut self, sse_tx: broadcast::Sender<SseEvent>) -> Self {
+        self.sse_tx = sse_tx;
+        self
+    }
+
     /// Returns true if an auth token is configured.
     #[must_use]
     pub fn has_auth(&self) -> bool {

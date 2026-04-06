@@ -1,0 +1,26 @@
+[package]
+name = "voom-web-sse-bridge"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Bridge plugin that forwards kernel job/file events to the web server's SSE broadcast channel"
+
+[dependencies]
+voom-domain = { workspace = true }
+voom-kernel = { workspace = true }
+voom-web-server = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json = { workspace = true }
+uuid = { workspace = true }

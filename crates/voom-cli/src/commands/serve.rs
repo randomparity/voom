@@ -1,17 +1,40 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use console::style;
 use tokio_util::sync::CancellationToken;
 use voom_web_server::server::{start_server, ServerConfig};
+use voom_web_server::state::SseEvent;
 
 use crate::cli::ServeArgs;
 
+/// Capacity of the SSE broadcast channel shared between the web server and
+/// the kernel-side bridge plugin. Sized to absorb short bursts of job-progress
+/// events without lagging slow clients.
+const SSE_CHANNEL_CAPACITY: usize = 256;
+
+/// Priority for the web-sse-bridge plugin. Placed after job-manager (20)
+/// and after sqlite-store (100) so it observes job lifecycle events that
+/// have already been logged and persisted.
+const PRIORITY_WEB_SSE_BRIDGE: i32 = 200;
+
 pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     let config = crate::config::load_config()?;
-    let crate::app::BootstrapResult { kernel, store, .. } =
-        crate::app::bootstrap_kernel_with_store(&config)?;
+    let crate::app::BootstrapResult {
+        mut kernel, store, ..
+    } = crate::app::bootstrap_kernel_with_store(&config)?;
+
+    // Create the SSE broadcast channel and register a kernel-side bridge plugin
+    // that forwards relevant bus events into it. The same sender is then handed
+    // to the web server so connected clients receive the broadcasts.
+    let (sse_tx, _) = tokio::sync::broadcast::channel::<SseEvent>(SSE_CHANNEL_CAPACITY);
+    let bridge = voom_web_sse_bridge::WebSseBridgePlugin::new(sse_tx.clone());
+    let bridge_ctx =
+        voom_kernel::PluginContext::new(serde_json::json!({}), config.data_dir.clone());
+    kernel
+        .init_and_register(Arc::new(bridge), PRIORITY_WEB_SSE_BRIDGE, &bridge_ctx)
+        .context("Failed to register web-sse-bridge plugin")?;
 
     // Snapshot plugin info from the kernel registry
     let plugin_info: Vec<voom_web_server::api::plugins::PluginInfoResponse> = kernel
@@ -106,6 +129,7 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     server_config.auth_token = config.auth_token;
     server_config.plugin_info = plugin_info;
     server_config.data_dir = Some(config.data_dir.clone());
+    server_config.sse_tx = Some(sse_tx);
 
     let shutdown = async move { token.cancelled().await };
     start_server(server_config, store, shutdown).await?;

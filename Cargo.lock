@@ -3303,6 +3303,7 @@ dependencies = [
  "voom-sqlite-store",
  "voom-tool-detector",
  "voom-web-server",
+ "voom-web-sse-bridge",
 ]
 
 [[package]]
@@ -3565,6 +3566,19 @@ dependencies = [
  "voom-domain",
  "voom-dsl",
  "voom-report",
+]
+
+[[package]]
+name = "voom-web-sse-bridge"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+ "voom-domain",
+ "voom-kernel",
+ "voom-web-server",
 ]
 
 [[package]]
