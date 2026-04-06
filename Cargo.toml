@@ -17,6 +17,7 @@ members = [
     "plugins/ffmpeg-executor",
     "plugins/job-manager",
     "plugins/web-server",
+    "plugins/web-sse-bridge",
     "plugins/health-checker",
     "plugins/bus-tracer",
     "plugins/report",
@@ -65,6 +66,7 @@ voom-ffmpeg-executor = { path = "plugins/ffmpeg-executor" }
 voom-backup-manager = { path = "plugins/backup-manager" }
 voom-job-manager = { path = "plugins/job-manager" }
 voom-web-server = { path = "plugins/web-server" }
+voom-web-sse-bridge = { path = "plugins/web-sse-bridge" }
 voom-health-checker = { path = "plugins/health-checker" }
 voom-bus-tracer = { path = "plugins/bus-tracer" }
 voom-report = { path = "plugins/report" }

@@ -1,17 +1,37 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use console::style;
 use tokio_util::sync::CancellationToken;
 use voom_web_server::server::{start_server, ServerConfig};
+use voom_web_server::state::{SseEvent, SSE_CHANNEL_CAPACITY};
 
 use crate::cli::ServeArgs;
 
+/// Priority for the web-sse-bridge plugin. In the VOOM event bus, lower
+/// priority numbers dispatch first; 200 is the highest registered value
+/// in the system, so the bridge runs last and observes events only after
+/// job-manager (20) and sqlite-store (100) have already logged and
+/// persisted them.
+const PRIORITY_WEB_SSE_BRIDGE: i32 = 200;
+
 pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     let config = crate::config::load_config()?;
-    let crate::app::BootstrapResult { kernel, store, .. } =
-        crate::app::bootstrap_kernel_with_store(&config)?;
+    let crate::app::BootstrapResult {
+        mut kernel, store, ..
+    } = crate::app::bootstrap_kernel_with_store(&config)?;
+
+    // Create the SSE broadcast channel and register a kernel-side bridge plugin
+    // that forwards relevant bus events into it. The same sender is then handed
+    // to the web server so connected clients receive the broadcasts.
+    let (sse_tx, _) = tokio::sync::broadcast::channel::<SseEvent>(SSE_CHANNEL_CAPACITY);
+    let bridge = voom_web_sse_bridge::WebSseBridgePlugin::new(sse_tx.clone());
+    let bridge_ctx =
+        voom_kernel::PluginContext::new(serde_json::json!({}), config.data_dir.clone());
+    kernel
+        .init_and_register(Arc::new(bridge), PRIORITY_WEB_SSE_BRIDGE, &bridge_ctx)
+        .context("Failed to register web-sse-bridge plugin")?;
 
     // Snapshot plugin info from the kernel registry
     let plugin_info: Vec<voom_web_server::api::plugins::PluginInfoResponse> = kernel
@@ -102,7 +122,7 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     );
     println!("  {} http://{}:{}", style("→").bold(), args.host, args.port);
 
-    let mut server_config = ServerConfig::new(args.host, args.port);
+    let mut server_config = ServerConfig::new(args.host, args.port, sse_tx);
     server_config.auth_token = config.auth_token;
     server_config.plugin_info = plugin_info;
     server_config.data_dir = Some(config.data_dir.clone());
@@ -121,11 +141,14 @@ mod tests {
 
     #[test]
     fn test_server_config_from_default_args() {
+        use tokio::sync::broadcast;
+        use voom_web_server::state::SseEvent;
         let args = ServeArgs {
             port: 8080,
             host: "127.0.0.1".to_string(),
         };
-        let server_config = ServerConfig::new(args.host.clone(), args.port);
+        let (sse_tx, _) = broadcast::channel::<SseEvent>(1);
+        let server_config = ServerConfig::new(args.host.clone(), args.port, sse_tx);
         assert_eq!(server_config.port, 8080);
         assert_eq!(server_config.host, "127.0.0.1");
         assert!(server_config.auth_token.is_none());
@@ -133,11 +156,14 @@ mod tests {
 
     #[test]
     fn test_server_config_with_auth_token() {
+        use tokio::sync::broadcast;
+        use voom_web_server::state::SseEvent;
         let config = crate::config::AppConfig {
             auth_token: Some("secret".to_string()),
             ..Default::default()
         };
-        let mut server_config = ServerConfig::new("0.0.0.0".to_string(), 3000);
+        let (sse_tx, _) = broadcast::channel::<SseEvent>(1);
+        let mut server_config = ServerConfig::new("0.0.0.0".to_string(), 3000, sse_tx);
         server_config.auth_token = config.auth_token.clone();
         assert_eq!(server_config.auth_token.as_deref(), Some("secret"));
         assert_eq!(server_config.port, 3000);

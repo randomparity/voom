@@ -6,6 +6,10 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use voom_domain::storage::StorageTrait;
 
+/// Capacity of the SSE broadcast channel. Sized to absorb short bursts of
+/// job-progress events without lagging slow clients.
+pub const SSE_CHANNEL_CAPACITY: usize = 256;
+
 /// Events broadcast via SSE to connected clients.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", content = "data")]
@@ -24,12 +28,37 @@ pub enum SseEvent {
         success: bool,
         message: Option<String>,
     },
-    ScanProgress {
-        files_found: u64,
-        files_processed: u64,
-    },
     FileIntrospected {
         path: String,
+    },
+    PlanExecuting {
+        plan_id: String,
+        /// Basename of the media file the plan is being applied to.
+        file: String,
+        phase: String,
+        action_count: usize,
+    },
+    PlanCompleted {
+        plan_id: String,
+        file: String,
+        phase: String,
+        actions_applied: usize,
+    },
+    PlanSkipped {
+        plan_id: String,
+        file: String,
+        phase: String,
+        skip_reason: String,
+    },
+    PlanFailed {
+        plan_id: String,
+        file: String,
+        phase: String,
+        /// Single error message. Detailed error chains and subprocess
+        /// output are intentionally NOT forwarded over SSE — they need a
+        /// separate disclosure review before exposing subprocess output to web
+        /// clients.
+        error: String,
     },
 }
 
@@ -47,13 +76,18 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Create a new `AppState`.
+    ///
+    /// The caller must supply a `broadcast::Sender<SseEvent>`. Use
+    /// [`AppState::new_with_default_sse`] for tests or other callers that
+    /// do not need to share the sender with another component.
     pub fn new(
         store: Arc<dyn StorageTrait>,
+        sse_tx: broadcast::Sender<SseEvent>,
         templates: tera::Tera,
         auth_token: Option<String>,
         data_dir: Option<std::path::PathBuf>,
     ) -> Self {
-        let (sse_tx, _) = broadcast::channel(256);
         Self {
             store,
             sse_tx,
@@ -63,6 +97,20 @@ impl AppState {
             plugin_info: Arc::new(Vec::new()),
             data_dir,
         }
+    }
+
+    /// Create a new `AppState` with an internally-allocated SSE broadcast
+    /// channel of the default capacity. Convenience constructor for tests
+    /// and callers that do not need to share the sender.
+    #[must_use]
+    pub fn new_with_default_sse(
+        store: Arc<dyn StorageTrait>,
+        templates: tera::Tera,
+        auth_token: Option<String>,
+        data_dir: Option<std::path::PathBuf>,
+    ) -> Self {
+        let (sse_tx, _) = broadcast::channel(SSE_CHANNEL_CAPACITY);
+        Self::new(store, sse_tx, templates, auth_token, data_dir)
     }
 
     /// Set the plugin info snapshot (typically populated from kernel registry at startup).
@@ -101,7 +149,7 @@ pub(crate) fn make_test_state(auth_token: Option<String>) -> AppState {
     use voom_domain::test_support::InMemoryStore;
     let store = Arc::new(InMemoryStore::new());
     let templates = tera::Tera::default();
-    AppState::new(store, templates, auth_token, None)
+    AppState::new_with_default_sse(store, templates, auth_token, None)
 }
 
 #[cfg(test)]
@@ -209,15 +257,70 @@ mod tests {
     }
 
     #[test]
-    fn test_sse_event_scan_progress_serialization() {
-        let event = SseEvent::ScanProgress {
-            files_found: 42,
-            files_processed: 10,
+    fn test_sse_event_plan_executing_serialization() {
+        let event = SseEvent::PlanExecuting {
+            plan_id: "p-1".into(),
+            file: "movie.mkv".into(),
+            phase: "transcode".into(),
+            action_count: 3,
         };
         let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["type"], "ScanProgress");
-        assert_eq!(json["data"]["files_found"], 42);
-        assert_eq!(json["data"]["files_processed"], 10);
+        assert_eq!(json["type"], "PlanExecuting");
+        assert_eq!(json["data"]["plan_id"], "p-1");
+        assert_eq!(json["data"]["file"], "movie.mkv");
+        assert_eq!(json["data"]["phase"], "transcode");
+        assert_eq!(json["data"]["action_count"], 3);
+    }
+
+    #[test]
+    fn test_sse_event_plan_completed_serialization() {
+        let event = SseEvent::PlanCompleted {
+            plan_id: "p-2".into(),
+            file: "movie.mkv".into(),
+            phase: "remux".into(),
+            actions_applied: 5,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "PlanCompleted");
+        assert_eq!(json["data"]["plan_id"], "p-2");
+        assert_eq!(json["data"]["file"], "movie.mkv");
+        assert_eq!(json["data"]["phase"], "remux");
+        assert_eq!(json["data"]["actions_applied"], 5);
+    }
+
+    #[test]
+    fn test_sse_event_plan_skipped_serialization() {
+        let event = SseEvent::PlanSkipped {
+            plan_id: "p-3".into(),
+            file: "movie.mkv".into(),
+            phase: "transcode".into(),
+            skip_reason: "no matching tracks".into(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "PlanSkipped");
+        assert_eq!(json["data"]["plan_id"], "p-3");
+        assert_eq!(json["data"]["file"], "movie.mkv");
+        assert_eq!(json["data"]["phase"], "transcode");
+        assert_eq!(json["data"]["skip_reason"], "no matching tracks");
+    }
+
+    #[test]
+    fn test_sse_event_plan_failed_serialization() {
+        let event = SseEvent::PlanFailed {
+            plan_id: "p-4".into(),
+            file: "movie.mkv".into(),
+            phase: "transcode".into(),
+            error: "ffmpeg returned non-zero".into(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "PlanFailed");
+        assert_eq!(json["data"]["plan_id"], "p-4");
+        assert_eq!(json["data"]["file"], "movie.mkv");
+        assert_eq!(json["data"]["phase"], "transcode");
+        assert_eq!(json["data"]["error"], "ffmpeg returned non-zero");
+        // Confirm no leak-prone fields appear in the serialized envelope.
+        assert!(json["data"].get("error_chain").is_none());
+        assert!(json["data"].get("execution_detail").is_none());
     }
 
     #[test]
