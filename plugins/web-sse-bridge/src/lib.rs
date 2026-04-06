@@ -27,6 +27,14 @@ impl WebSseBridgePlugin {
         Self { sse_tx }
     }
 
+    /// Extract the basename of a path as a `String`. Returns an empty
+    /// string if the path has no file-name component (e.g. `/`).
+    fn basename(path: &std::path::Path) -> String {
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
     /// Map a kernel event to its SSE counterpart, if one exists.
     ///
     /// Returns `None` for event types the bridge does not forward.
@@ -47,12 +55,31 @@ impl WebSseBridgePlugin {
                 message: e.message.clone(),
             }),
             Event::FileIntrospected(e) => Some(SseEvent::FileIntrospected {
-                path: e
-                    .file
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
+                path: Self::basename(&e.file.path),
+            }),
+            Event::PlanExecuting(e) => Some(SseEvent::PlanExecuting {
+                plan_id: e.plan_id.to_string(),
+                file: Self::basename(&e.path),
+                phase: e.phase_name.clone(),
+                action_count: e.action_count,
+            }),
+            Event::PlanCompleted(e) => Some(SseEvent::PlanCompleted {
+                plan_id: e.plan_id.to_string(),
+                file: Self::basename(&e.path),
+                phase: e.phase_name.clone(),
+                actions_applied: e.actions_applied,
+            }),
+            Event::PlanSkipped(e) => Some(SseEvent::PlanSkipped {
+                plan_id: e.plan_id.to_string(),
+                file: Self::basename(&e.path),
+                phase: e.phase_name.clone(),
+                skip_reason: e.skip_reason.clone(),
+            }),
+            Event::PlanFailed(e) => Some(SseEvent::PlanFailed {
+                plan_id: e.plan_id.to_string(),
+                file: Self::basename(&e.path),
+                phase: e.phase_name.clone(),
+                error: e.error.clone(),
             }),
             _ => None,
         }
@@ -81,6 +108,10 @@ impl Plugin for WebSseBridgePlugin {
                 | Event::JOB_PROGRESS
                 | Event::JOB_COMPLETED
                 | Event::FILE_INTROSPECTED
+                | Event::PLAN_EXECUTING
+                | Event::PLAN_COMPLETED
+                | Event::PLAN_SKIPPED
+                | Event::PLAN_FAILED
         )
     }
 
@@ -259,6 +290,136 @@ mod tests {
 
     /// End-to-end: register the bridge with a real Kernel and dispatch a job
     /// event through the bus. The SSE receiver should observe the broadcast.
+    #[test]
+    fn forwards_plan_executing_with_basename_only() {
+        use voom_domain::events::PlanExecutingEvent;
+        let (bridge, mut rx) = bridge_with_rx();
+        let plan_id = Uuid::new_v4();
+        let event = Event::PlanExecuting(PlanExecutingEvent::new(
+            plan_id,
+            PathBuf::from("/media/movies/MyMovie.mkv"),
+            "transcode",
+            3,
+        ));
+
+        bridge.on_event(&event).unwrap();
+
+        let sse = rx.try_recv().expect("event should be broadcast");
+        match sse {
+            SseEvent::PlanExecuting {
+                plan_id: pid,
+                file,
+                phase,
+                action_count,
+            } => {
+                assert_eq!(pid, plan_id.to_string());
+                assert_eq!(file, "MyMovie.mkv");
+                assert_eq!(phase, "transcode");
+                assert_eq!(action_count, 3);
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn forwards_plan_completed() {
+        use voom_domain::events::PlanCompletedEvent;
+        let (bridge, mut rx) = bridge_with_rx();
+        let plan_id = Uuid::new_v4();
+        let event = Event::PlanCompleted(PlanCompletedEvent::new(
+            plan_id,
+            PathBuf::from("/m/x.mkv"),
+            "remux",
+            5,
+            false,
+        ));
+        bridge.on_event(&event).unwrap();
+        match rx.try_recv().unwrap() {
+            SseEvent::PlanCompleted {
+                plan_id: pid,
+                file,
+                phase,
+                actions_applied,
+            } => {
+                assert_eq!(pid, plan_id.to_string());
+                assert_eq!(file, "x.mkv");
+                assert_eq!(phase, "remux");
+                assert_eq!(actions_applied, 5);
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn forwards_plan_skipped() {
+        use voom_domain::events::PlanSkippedEvent;
+        let (bridge, mut rx) = bridge_with_rx();
+        let plan_id = Uuid::new_v4();
+        let event = Event::PlanSkipped(PlanSkippedEvent::new(
+            plan_id,
+            PathBuf::from("/m/x.mkv"),
+            "transcode",
+            "no matching tracks",
+        ));
+        bridge.on_event(&event).unwrap();
+        match rx.try_recv().unwrap() {
+            SseEvent::PlanSkipped {
+                plan_id: pid,
+                file,
+                phase,
+                skip_reason,
+            } => {
+                assert_eq!(pid, plan_id.to_string());
+                assert_eq!(file, "x.mkv");
+                assert_eq!(phase, "transcode");
+                assert_eq!(skip_reason, "no matching tracks");
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn forwards_plan_failed_without_leaking_chain_or_detail() {
+        use voom_domain::events::PlanFailedEvent;
+        let (bridge, mut rx) = bridge_with_rx();
+        let plan_id = Uuid::new_v4();
+        let mut payload = PlanFailedEvent::new(
+            plan_id,
+            PathBuf::from("/m/x.mkv"),
+            "transcode",
+            "ffmpeg returned non-zero",
+        );
+        // These fields exist but must NOT appear in the SSE payload —
+        // they may contain stack traces or absolute paths.
+        payload.error_chain = vec!["root cause".into()];
+        let event = Event::PlanFailed(payload);
+
+        bridge.on_event(&event).unwrap();
+        match rx.try_recv().unwrap() {
+            SseEvent::PlanFailed {
+                plan_id: pid,
+                file,
+                phase,
+                error,
+            } => {
+                assert_eq!(pid, plan_id.to_string());
+                assert_eq!(file, "x.mkv");
+                assert_eq!(phase, "transcode");
+                assert_eq!(error, "ffmpeg returned non-zero");
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handles_returns_true_for_all_plan_lifecycle_events() {
+        let (bridge, _rx) = bridge_with_rx();
+        assert!(bridge.handles(Event::PLAN_EXECUTING));
+        assert!(bridge.handles(Event::PLAN_COMPLETED));
+        assert!(bridge.handles(Event::PLAN_SKIPPED));
+        assert!(bridge.handles(Event::PLAN_FAILED));
+    }
+
     #[test]
     fn integrates_with_kernel_dispatch() {
         use std::path::PathBuf;

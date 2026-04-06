@@ -31,6 +31,35 @@ pub enum SseEvent {
     FileIntrospected {
         path: String,
     },
+    PlanExecuting {
+        plan_id: String,
+        /// Basename of the media file the plan is being applied to.
+        file: String,
+        phase: String,
+        action_count: usize,
+    },
+    PlanCompleted {
+        plan_id: String,
+        file: String,
+        phase: String,
+        actions_applied: usize,
+    },
+    PlanSkipped {
+        plan_id: String,
+        file: String,
+        phase: String,
+        skip_reason: String,
+    },
+    PlanFailed {
+        plan_id: String,
+        file: String,
+        phase: String,
+        /// Single error message. Detailed error chains and subprocess
+        /// output are intentionally NOT forwarded over SSE — they need a
+        /// separate disclosure review before exposing subprocess output to web
+        /// clients.
+        error: String,
+    },
 }
 
 /// Application state shared across all handlers.
@@ -225,6 +254,22 @@ mod tests {
         assert_eq!(json["type"], "JobStarted");
         assert_eq!(json["data"]["job_id"], "j1");
         assert_eq!(json["data"]["description"], "test job");
+    }
+
+    #[test]
+    fn test_sse_event_plan_executing_serialization() {
+        let event = SseEvent::PlanExecuting {
+            plan_id: "p-1".into(),
+            file: "movie.mkv".into(),
+            phase: "transcode".into(),
+            action_count: 3,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "PlanExecuting");
+        assert_eq!(json["data"]["plan_id"], "p-1");
+        assert_eq!(json["data"]["file"], "movie.mkv");
+        assert_eq!(json["data"]["phase"], "transcode");
+        assert_eq!(json["data"]["action_count"], 3);
     }
 
     #[test]
