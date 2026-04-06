@@ -24,10 +24,6 @@ pub enum SseEvent {
         success: bool,
         message: Option<String>,
     },
-    ScanProgress {
-        files_found: u64,
-        files_processed: u64,
-    },
     FileIntrospected {
         path: String,
     },
@@ -217,18 +213,6 @@ mod tests {
         assert_eq!(json["type"], "JobStarted");
         assert_eq!(json["data"]["job_id"], "j1");
         assert_eq!(json["data"]["description"], "test job");
-    }
-
-    #[test]
-    fn test_sse_event_scan_progress_serialization() {
-        let event = SseEvent::ScanProgress {
-            files_found: 42,
-            files_processed: 10,
-        };
-        let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["type"], "ScanProgress");
-        assert_eq!(json["data"]["files_found"], 42);
-        assert_eq!(json["data"]["files_processed"], 10);
     }
 
     #[test]
