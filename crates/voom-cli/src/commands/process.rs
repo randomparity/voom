@@ -812,6 +812,7 @@ async fn process_single_file_execute(
     let mut phase_outcomes: HashMap<String, voom_policy_evaluator::EvaluationOutcome> =
         HashMap::new();
     let mut any_executed = false;
+    let mut modified_counted = false;
     let mut plans_evaluated: usize = 0;
 
     for phase_name in &compiled.phase_order {
@@ -832,43 +833,37 @@ async fn process_single_file_execute(
 
         plans_evaluated += 1;
 
-        // Track the evaluation outcome for dependency resolution
-        let outcome = if plan.is_skipped() {
-            voom_policy_evaluator::EvaluationOutcome::Skipped
-        } else {
-            voom_policy_evaluator::EvaluationOutcome::Executed {
-                modified: !plan.is_empty(),
-            }
-        };
-        phase_outcomes.insert(phase_name.clone(), outcome);
-
         dispatch_safeguard_violations(&plan, &current_file, ctx);
 
         // Handle skipped plans
         if let Some(reason) = &plan.skip_reason {
+            phase_outcomes.insert(
+                phase_name.clone(),
+                voom_policy_evaluator::EvaluationOutcome::Skipped,
+            );
             dispatch_skipped_plan(&plan, &current_file, reason, ctx);
             continue;
         }
 
         // Empty plans need no execution
         if plan.is_empty() {
+            phase_outcomes.insert(
+                phase_name.clone(),
+                voom_policy_evaluator::EvaluationOutcome::Executed { modified: false },
+            );
             continue;
         }
 
         // Pre-execution safeguard: check disk space
+        // Note: check_disk_space already dispatches PlanFailed and records
+        // PhaseOutcomeKind::Failed for stats. This insert updates the
+        // dependency-resolution map to block downstream run_if gates.
         if check_disk_space(&plan, &current_file, ctx) {
             phase_outcomes.insert(
                 phase_name.clone(),
                 voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
             );
             continue;
-        }
-
-        // Count as modified on first real plan
-        if !any_executed {
-            ctx.counters
-                .modified_count
-                .fetch_add(1, AtomicOrdering::Relaxed);
         }
 
         // Execute this plan
@@ -885,7 +880,10 @@ async fn process_single_file_execute(
 
         match exec_outcome {
             PlanOutcome::Success { executor } => {
-                any_executed = true;
+                // Post-execution safeguard: check size increase
+                // Note: check_size_increase already dispatches PlanFailed and
+                // records PhaseOutcomeKind::Failed for stats. This insert
+                // updates the dependency-resolution map.
                 if check_size_increase(&plan, &current_file, ctx) {
                     phase_outcomes.insert(
                         phase_name.clone(),
@@ -893,6 +891,17 @@ async fn process_single_file_execute(
                     );
                     continue;
                 }
+                any_executed = true;
+                if !modified_counted {
+                    ctx.counters
+                        .modified_count
+                        .fetch_add(1, AtomicOrdering::Relaxed);
+                    modified_counted = true;
+                }
+                phase_outcomes.insert(
+                    phase_name.clone(),
+                    voom_policy_evaluator::EvaluationOutcome::Executed { modified: true },
+                );
                 current_file = handle_plan_success(
                     plan,
                     &current_file,
@@ -906,17 +915,23 @@ async fn process_single_file_execute(
             PlanOutcome::Failed(failed) => {
                 let plan_id = plan.id;
                 let policy_name = plan.policy_name.clone();
-                let phase_name = plan.phase_name.clone();
+                let phase_name_owned = plan.phase_name.clone();
                 let executor = failed.plugin_name.clone().unwrap_or_default();
-                dispatch_plan_failure(failed, &phase_name, ctx);
+                dispatch_plan_failure(failed, &phase_name_owned, ctx);
                 record_failure_transition(
                     &current_file,
                     plan_id,
                     &executor,
                     &policy_name,
-                    &phase_name,
+                    &phase_name_owned,
                     ctx,
                 );
+                phase_outcomes.insert(
+                    phase_name_owned.clone(),
+                    voom_policy_evaluator::EvaluationOutcome::ExecutionFailed,
+                );
+                // Downstream phases still evaluate; run_if gates block
+                // them via ExecutionFailed in phase_outcomes.
             }
         }
     }
