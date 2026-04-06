@@ -205,10 +205,25 @@ mod tests {
 
     #[test]
     fn test_server_config_stores_sse_sender() {
-        let (tx, _rx) = broadcast::channel::<SseEvent>(8);
+        let (tx, mut rx) = broadcast::channel::<SseEvent>(8);
         let config = ServerConfig::new("127.0.0.1".into(), 8080, tx);
-        // Verify the sender is wired by confirming a receiver can be created from it
-        let _rx2 = config.sse_tx.subscribe();
+        config
+            .sse_tx
+            .send(SseEvent::JobStarted {
+                job_id: "test".into(),
+                description: "test".into(),
+            })
+            .expect("send should succeed with a live receiver");
+        match rx.try_recv() {
+            Ok(SseEvent::JobStarted {
+                job_id,
+                description,
+            }) => {
+                assert_eq!(job_id, "test");
+                assert_eq!(description, "test");
+            }
+            other => panic!("expected JobStarted, got {other:?}"),
+        }
     }
 
     #[test]
