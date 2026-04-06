@@ -1774,6 +1774,7 @@ mod tests {
         plan_executing_count: AtomicUsize,
         plan_completed_count: AtomicUsize,
         plan_skipped_count: AtomicUsize,
+        plan_failed_count: AtomicUsize,
     }
 
     impl PlanRecordingPlugin {
@@ -1785,6 +1786,7 @@ mod tests {
                 plan_executing_count: AtomicUsize::new(0),
                 plan_completed_count: AtomicUsize::new(0),
                 plan_skipped_count: AtomicUsize::new(0),
+                plan_failed_count: AtomicUsize::new(0),
             }
         }
     }
@@ -1808,6 +1810,7 @@ mod tests {
                     | Event::PLAN_EXECUTING
                     | Event::PLAN_COMPLETED
                     | Event::PLAN_SKIPPED
+                    | Event::PLAN_FAILED
             )
         }
         fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
@@ -1829,6 +1832,9 @@ mod tests {
                 }
                 Event::PlanSkipped(_) => {
                     self.plan_skipped_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Event::PlanFailed(_) => {
+                    self.plan_failed_count.fetch_add(1, Ordering::SeqCst);
                 }
                 _ => {}
             }
@@ -2173,5 +2179,59 @@ mod tests {
 
         // Should return false (enough space)
         assert!(!check_disk_space(&plan, &file, &ctx));
+    }
+
+    #[test]
+    fn test_check_disk_space_dispatches_plan_created_before_plan_failed() {
+        // Use a tempdir so we get a valid path for disk-space checks.
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.mkv");
+        std::fs::write(&file_path, vec![0u8; 1024]).unwrap();
+
+        let mut file = MediaFile::new(file_path);
+        // Set size to u64::MAX / 2 so estimated required space exceeds any real disk.
+        file.size = u64::MAX / 2;
+
+        let plan = test_plan("normalize", false);
+
+        let recorder = Arc::new(PlanRecordingPlugin::new());
+        let mut kernel = voom_kernel::Kernel::new();
+        kernel.register_plugin(recorder.clone(), 50).unwrap();
+
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_domain::test_support::InMemoryStore::new());
+        let capabilities = voom_domain::CapabilityMap::new();
+        let counters = RunCounters::new();
+        let token = CancellationToken::new();
+        let resolver = PolicyResolver::from_single(
+            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
+                .unwrap(),
+            dir.path(),
+        );
+        let ctx = ProcessContext {
+            resolver: &resolver,
+            kernel: Arc::new(kernel),
+            store,
+            dry_run: false,
+            plan_only: false,
+            flag_size_increase: false,
+            token: &token,
+            ffprobe_path: None,
+            capabilities: &capabilities,
+            counters: &counters,
+        };
+
+        // Should return true (insufficient space).
+        assert!(check_disk_space(&plan, &file, &ctx));
+        assert_eq!(
+            recorder.plan_created_count.load(Ordering::SeqCst),
+            1,
+            "PlanCreated must fire before PlanFailed"
+        );
+        assert_eq!(
+            recorder.plan_failed_count.load(Ordering::SeqCst),
+            1,
+            "PlanFailed must fire"
+        );
     }
 }
