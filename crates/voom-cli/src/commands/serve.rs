@@ -14,9 +14,11 @@ use crate::cli::ServeArgs;
 /// events without lagging slow clients.
 const SSE_CHANNEL_CAPACITY: usize = 256;
 
-/// Priority for the web-sse-bridge plugin. Placed after job-manager (20)
-/// and after sqlite-store (100) so it observes job lifecycle events that
-/// have already been logged and persisted.
+/// Priority for the web-sse-bridge plugin. In the VOOM event bus, lower
+/// priority numbers dispatch first; 200 is the highest registered value
+/// in the system, so the bridge runs last and observes events only after
+/// job-manager (20) and sqlite-store (100) have already logged and
+/// persisted them.
 const PRIORITY_WEB_SSE_BRIDGE: i32 = 200;
 
 pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
