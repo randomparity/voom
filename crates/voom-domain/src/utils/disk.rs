@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use crate::errors::{Result, VoomError};
-use crate::plan::{OperationType, Plan};
+use crate::plan::{ActionParams, OperationType, Plan};
 
 /// Get available disk space for a path (bytes).
 ///
@@ -53,6 +53,12 @@ pub const MINIMUM_RESERVE_BYTES: u64 = 50 * 1024 * 1024;
 ///   original, so we estimate 2x the input file size.
 /// - Remux operations (track manipulation) also write a new file, but the
 ///   output is typically smaller; we estimate 1x as a conservative baseline.
+/// - `MuxSubtitle` operations append an external subtitle file into the
+///   container, producing output larger than the input. The size of each
+///   referenced subtitle file is added on top of the multiplier-based base.
+///   If a subtitle file cannot be stat'd (missing or unreadable), it
+///   contributes zero, a warning is logged via `tracing`, the executor will
+///   surface the real error, and the reserve absorbs small misses.
 /// - A fixed reserve ([`MINIMUM_RESERVE_BYTES`]) is always added.
 #[must_use]
 pub fn estimate_required_space(plan: &Plan, file_size: u64) -> u64 {
@@ -66,9 +72,31 @@ pub fn estimate_required_space(plan: &Plan, file_size: u64) -> u64 {
         )
     });
 
+    let subtitle_bytes: u64 = plan
+        .actions
+        .iter()
+        .filter_map(|a| match &a.parameters {
+            ActionParams::MuxSubtitle { subtitle_path, .. } => {
+                match std::fs::metadata(subtitle_path) {
+                    Ok(m) => Some(m.len()),
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %subtitle_path.display(),
+                            error = %e,
+                            "cannot stat subtitle file; contributing 0 to disk space estimate"
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
+        })
+        .fold(0u64, u64::saturating_add);
+
     let multiplier: u64 = if needs_extra { 2 } else { 1 };
     file_size
         .saturating_mul(multiplier)
+        .saturating_add(subtitle_bytes)
         .saturating_add(MINIMUM_RESERVE_BYTES)
 }
 
@@ -140,6 +168,101 @@ mod tests {
         let required = estimate_required_space(&plan, file.size);
         // TranscodeAudio bumps to 2x
         assert_eq!(required, 2_000_000_000 + MINIMUM_RESERVE_BYTES);
+    }
+
+    fn write_temp_subtitle(bytes: usize) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut f = tempfile::Builder::new()
+            .suffix(".srt")
+            .tempfile()
+            .expect("create temp subtitle");
+        f.write_all(&vec![b'a'; bytes])
+            .expect("write subtitle bytes");
+        f.flush().expect("flush subtitle");
+        f
+    }
+
+    fn mux_subtitle_action(path: PathBuf) -> PlannedAction {
+        PlannedAction::file_op(
+            OperationType::MuxSubtitle,
+            ActionParams::MuxSubtitle {
+                subtitle_path: path,
+                language: "eng".into(),
+                forced: false,
+                title: None,
+            },
+            "mux subtitle",
+        )
+    }
+
+    #[test]
+    fn test_estimate_mux_subtitle_adds_subtitle_size() {
+        let file = test_file(1_000_000_000);
+        let sub = write_temp_subtitle(123_456);
+        let mut plan = Plan::new(file.clone(), "test-policy", "test-phase");
+        plan.actions
+            .push(mux_subtitle_action(sub.path().to_path_buf()));
+
+        let required = estimate_required_space(&plan, file.size);
+        assert_eq!(
+            required,
+            1_000_000_000 + 123_456 + MINIMUM_RESERVE_BYTES,
+            "MuxSubtitle should add the subtitle file size on top of the 1x base"
+        );
+    }
+
+    #[test]
+    fn test_estimate_mux_subtitle_missing_file_falls_back() {
+        let file = test_file(1_000_000_000);
+        let mut plan = Plan::new(file.clone(), "test-policy", "test-phase");
+        plan.actions.push(mux_subtitle_action(PathBuf::from(
+            "/nonexistent/path/does/not/exist.srt",
+        )));
+
+        let required = estimate_required_space(&plan, file.size);
+        // Missing subtitle contributes zero — base 1x estimate + reserve.
+        assert_eq!(required, 1_000_000_000 + MINIMUM_RESERVE_BYTES);
+    }
+
+    #[test]
+    fn test_estimate_mux_subtitle_multiple_sums() {
+        let file = test_file(500_000_000);
+        let sub1 = write_temp_subtitle(40_000);
+        let sub2 = write_temp_subtitle(60_000);
+        let mut plan = Plan::new(file.clone(), "test-policy", "test-phase");
+        plan.actions
+            .push(mux_subtitle_action(sub1.path().to_path_buf()));
+        plan.actions
+            .push(mux_subtitle_action(sub2.path().to_path_buf()));
+
+        let required = estimate_required_space(&plan, file.size);
+        assert_eq!(
+            required,
+            500_000_000 + 40_000 + 60_000 + MINIMUM_RESERVE_BYTES
+        );
+    }
+
+    #[test]
+    fn test_estimate_mux_subtitle_with_transcode() {
+        let file = test_file(1_000_000_000);
+        let sub = write_temp_subtitle(100_000);
+        let mut plan = Plan::new(file.clone(), "test-policy", "test-phase");
+        plan.actions.push(PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Empty,
+            "transcode",
+        ));
+        plan.actions
+            .push(mux_subtitle_action(sub.path().to_path_buf()));
+
+        let required = estimate_required_space(&plan, file.size);
+        // 2x base from transcode + subtitle bytes + reserve.
+        assert_eq!(
+            required,
+            2_000_000_000 + 100_000 + MINIMUM_RESERVE_BYTES,
+            "subtitle size should add on top of the 2x transcode multiplier"
+        );
     }
 
     #[test]
