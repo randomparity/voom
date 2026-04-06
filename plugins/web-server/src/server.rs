@@ -21,16 +21,15 @@ pub struct ServerConfig {
     pub auth_token: Option<String>,
     pub plugin_info: Vec<crate::api::plugins::PluginInfoResponse>,
     pub data_dir: Option<std::path::PathBuf>,
-    /// Externally-provided SSE broadcast sender. When `Some`, this sender is
-    /// installed on the `AppState` instead of the default one created by
-    /// `AppState::new`. This lets callers share the channel with a kernel-side
-    /// bridge plugin that forwards bus events to SSE clients.
-    pub sse_tx: Option<broadcast::Sender<SseEvent>>,
+    /// SSE broadcast sender supplied by the caller. All channel creation is
+    /// the caller's responsibility; the server uses this sender directly so
+    /// that it shares the same channel as any kernel-side bridge plugin.
+    pub sse_tx: broadcast::Sender<SseEvent>,
 }
 
 impl ServerConfig {
     #[must_use]
-    pub fn new(host: String, port: u16) -> Self {
+    pub fn new(host: String, port: u16, sse_tx: broadcast::Sender<SseEvent>) -> Self {
         Self {
             host,
             port,
@@ -38,7 +37,7 @@ impl ServerConfig {
             auth_token: None,
             plugin_info: Vec::new(),
             data_dir: None,
-            sse_tx: None,
+            sse_tx,
         }
     }
 }
@@ -69,11 +68,14 @@ pub async fn start_server(
     }
 
     let templates = load_templates(config.template_dir.as_deref())?;
-    let sse_tx = config
-        .sse_tx
-        .unwrap_or_else(|| broadcast::channel(crate::state::SSE_CHANNEL_CAPACITY).0);
-    let state = AppState::new(store, sse_tx, templates, config.auth_token, config.data_dir)
-        .with_plugin_info(config.plugin_info);
+    let state = AppState::new(
+        store,
+        config.sse_tx,
+        templates,
+        config.auth_token,
+        config.data_dir,
+    )
+    .with_plugin_info(config.plugin_info);
     let router = build_router(state).layer(DefaultBodyLimit::max(2 * 1024 * 1024)); // 2 MiB
 
     let address = format!("{}:{}", config.host, config.port);
@@ -166,6 +168,7 @@ mod tests {
 
     #[test]
     fn test_server_config_fields() {
+        let (sse_tx, _rx) = broadcast::channel::<SseEvent>(1);
         let config = ServerConfig {
             host: "127.0.0.1".into(),
             port: 8080,
@@ -173,17 +176,17 @@ mod tests {
             auth_token: Some("secret".into()),
             plugin_info: vec![],
             data_dir: None,
-            sse_tx: None,
+            sse_tx,
         };
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 8080);
         assert!(config.template_dir.is_none());
         assert_eq!(config.auth_token, Some("secret".to_string()));
-        assert!(config.sse_tx.is_none());
     }
 
     #[test]
     fn test_server_config_clone() {
+        let (sse_tx, _rx) = broadcast::channel::<SseEvent>(1);
         let config = ServerConfig {
             host: "0.0.0.0".into(),
             port: 3000,
@@ -191,7 +194,7 @@ mod tests {
             auth_token: None,
             plugin_info: vec![],
             data_dir: None,
-            sse_tx: None,
+            sse_tx,
         };
         let cloned = config.clone();
         assert_eq!(cloned.host, "0.0.0.0");
@@ -201,11 +204,11 @@ mod tests {
     }
 
     #[test]
-    fn test_server_config_with_external_sse_sender() {
+    fn test_server_config_stores_sse_sender() {
         let (tx, _rx) = broadcast::channel::<SseEvent>(8);
-        let mut config = ServerConfig::new("127.0.0.1".into(), 8080);
-        config.sse_tx = Some(tx);
-        assert!(config.sse_tx.is_some());
+        let config = ServerConfig::new("127.0.0.1".into(), 8080, tx);
+        // Verify the sender is wired by confirming a receiver can be created from it
+        let _rx2 = config.sse_tx.subscribe();
     }
 
     #[test]

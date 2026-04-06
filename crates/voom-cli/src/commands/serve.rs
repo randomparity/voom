@@ -122,11 +122,10 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     );
     println!("  {} http://{}:{}", style("→").bold(), args.host, args.port);
 
-    let mut server_config = ServerConfig::new(args.host, args.port);
+    let mut server_config = ServerConfig::new(args.host, args.port, sse_tx);
     server_config.auth_token = config.auth_token;
     server_config.plugin_info = plugin_info;
     server_config.data_dir = Some(config.data_dir.clone());
-    server_config.sse_tx = Some(sse_tx);
 
     let shutdown = async move { token.cancelled().await };
     start_server(server_config, store, shutdown).await?;
@@ -142,11 +141,14 @@ mod tests {
 
     #[test]
     fn test_server_config_from_default_args() {
+        use tokio::sync::broadcast;
+        use voom_web_server::state::SseEvent;
         let args = ServeArgs {
             port: 8080,
             host: "127.0.0.1".to_string(),
         };
-        let server_config = ServerConfig::new(args.host.clone(), args.port);
+        let (sse_tx, _) = broadcast::channel::<SseEvent>(1);
+        let server_config = ServerConfig::new(args.host.clone(), args.port, sse_tx);
         assert_eq!(server_config.port, 8080);
         assert_eq!(server_config.host, "127.0.0.1");
         assert!(server_config.auth_token.is_none());
@@ -154,11 +156,14 @@ mod tests {
 
     #[test]
     fn test_server_config_with_auth_token() {
+        use tokio::sync::broadcast;
+        use voom_web_server::state::SseEvent;
         let config = crate::config::AppConfig {
             auth_token: Some("secret".to_string()),
             ..Default::default()
         };
-        let mut server_config = ServerConfig::new("0.0.0.0".to_string(), 3000);
+        let (sse_tx, _) = broadcast::channel::<SseEvent>(1);
+        let mut server_config = ServerConfig::new("0.0.0.0".to_string(), 3000, sse_tx);
         server_config.auth_token = config.auth_token.clone();
         assert_eq!(server_config.auth_token.as_deref(), Some("secret"));
         assert_eq!(server_config.port, 3000);
