@@ -2192,14 +2192,46 @@ mod tests {
         use voom_domain::capability_map::CapabilityMap;
         use voom_domain::events::{CodecCapabilities, ExecutorCapabilitiesEvent};
 
+        fn ffmpeg_codecs() -> CodecCapabilities {
+            CodecCapabilities::new(
+                vec!["h264".into(), "hevc".into(), "aac".into()],
+                vec!["h264".into(), "hevc".into(), "aac".into()],
+            )
+        }
+
+        /// Realistic ffmpeg muxer set covering every reachable `Container`
+        /// variant via `Container::ffmpeg_format_name()`. Update this list
+        /// whenever a new `Container` variant is added so the fixture
+        /// stays in sync with the domain enum.
         fn ffmpeg_capabilities() -> CapabilityMap {
             let mut map = CapabilityMap::new();
             map.register(ExecutorCapabilitiesEvent::new(
                 "ffmpeg-executor",
-                CodecCapabilities::new(
-                    vec!["h264".into(), "hevc".into(), "aac".into()],
-                    vec!["h264".into(), "hevc".into(), "aac".into()],
-                ),
+                ffmpeg_codecs(),
+                vec![
+                    "matroska".into(),
+                    "mp4".into(),
+                    "webm".into(),
+                    "avi".into(),
+                    "mov".into(),
+                    "mpegts".into(),
+                    "asf".into(),
+                    "flv".into(),
+                ],
+                vec![],
+            ));
+            map
+        }
+
+        /// Deliberately narrow fixture used only by tests that need to
+        /// exercise the "format not supported" warning path. Keep this
+        /// list limited; real ffmpeg supports many more muxers — see
+        /// `ffmpeg_capabilities()` for the realistic set.
+        fn limited_ffmpeg_capabilities() -> CapabilityMap {
+            let mut map = CapabilityMap::new();
+            map.register(ExecutorCapabilitiesEvent::new(
+                "ffmpeg-executor",
+                ffmpeg_codecs(),
                 vec!["matroska".into(), "mp4".into()],
                 vec![],
             ));
@@ -2252,7 +2284,10 @@ mod tests {
             // Tracks are all WebM-compatible so the ContainerIncompatible
             // safeguard leaves the ConvertContainer in place; the
             // capability-hints layer is what should surface the warning
-            // here, since ffmpeg_capabilities() doesn't list webm.
+            // here. Use the deliberately narrow `limited_ffmpeg_capabilities`
+            // fixture, which intentionally omits webm so we can exercise
+            // the "format not supported" warning path. Real ffmpeg
+            // absolutely supports webm — see `ffmpeg_capabilities()`.
             let mut file = test_file();
             file.tracks = vec![
                 Track::new(0, TrackType::Video, "vp9".into()),
@@ -2260,7 +2295,7 @@ mod tests {
             ];
             let policy = test_policy(r#"policy "test" { phase init { container webm } }"#);
             let mut result = evaluate(&policy, &file);
-            let caps = ffmpeg_capabilities();
+            let caps = limited_ffmpeg_capabilities();
             apply_capability_hints(&mut result.plans, &caps);
 
             assert!(
