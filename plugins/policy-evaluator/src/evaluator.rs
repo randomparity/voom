@@ -14,6 +14,7 @@ use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
 use voom_dsl::compiled::*;
 
 use crate::condition::{evaluate_condition, resolve_value_or_field, EvalContext};
+use crate::container_compat::codec_supported;
 use crate::filter::{track_matches_with_context, tracks_for_target};
 
 fn transcode_settings_from(s: &CompiledTranscodeSettings) -> TranscodeSettings {
@@ -237,10 +238,17 @@ fn evaluate_phase(
     plan
 }
 
-/// Post-evaluation safeguard: verify that critical track types (video, audio)
-/// are not entirely removed across all operations in the plan. This catches
-/// multi-operation scenarios where individual keep/remove operations each
-/// leave some tracks, but the combination removes all.
+/// Post-evaluation safeguards pass. Runs after all operations in a phase
+/// have been emitted, and may retract actions from the plan when they would
+/// produce an unsafe or impossible result.
+///
+/// Currently applies:
+/// - `NoVideoTrack` / `NoAudioTrack`: catches multi-operation scenarios
+///   where individual keep/remove operations each leave some tracks but
+///   the combination would remove every video or audio track.
+/// - `ContainerIncompatible`: if a planned container conversion targets a
+///   format that cannot hold the (post-transcode) codecs of the surviving
+///   tracks, the `ConvertContainer` action is retracted.
 fn apply_safeguards(plan: &mut Plan, file: &MediaFile) {
     if plan.is_skipped() {
         return;
@@ -253,30 +261,115 @@ fn apply_safeguards(plan: &mut Plan, file: &MediaFile) {
         .filter_map(|a| a.track_index)
         .collect();
 
-    if removed_indices.is_empty() {
+    let filename = file_name(file);
+
+    if !removed_indices.is_empty() {
+        apply_safeguard_for_track_type(
+            plan,
+            file,
+            &removed_indices,
+            &filename,
+            TrackType::is_video,
+            SafeguardKind::NoVideoTrack,
+            "video",
+        );
+        apply_safeguard_for_track_type(
+            plan,
+            file,
+            &removed_indices,
+            &filename,
+            TrackType::is_audio,
+            SafeguardKind::NoAudioTrack,
+            "audio",
+        );
+    }
+
+    apply_container_safeguard(plan, file, &filename);
+}
+
+/// Post-evaluation safeguard: verify that a planned container conversion
+/// can actually hold the codecs of the surviving tracks (taking any planned
+/// transcodes into account). If not, retract the `ConvertContainer` action
+/// and record a violation so the file stays in its original container.
+fn apply_container_safeguard(plan: &mut Plan, file: &MediaFile, filename: &str) {
+    // Find the target container from a ConvertContainer action, if any.
+    let Some(target) = plan.actions.iter().find_map(|a| {
+        if a.operation != OperationType::ConvertContainer {
+            return None;
+        }
+        if let ActionParams::Container { container } = &a.parameters {
+            Some(*container)
+        } else {
+            None
+        }
+    }) else {
+        return;
+    };
+
+    // Surviving tracks: those not subject to a RemoveTrack action.
+    let removed: HashSet<u32> = plan
+        .actions
+        .iter()
+        .filter(|a| a.operation == OperationType::RemoveTrack)
+        .filter_map(|a| a.track_index)
+        .collect();
+
+    // Per-track transcode target codec (post-transcode effective codec).
+    let mut transcode_codec: HashMap<u32, String> = HashMap::new();
+    for action in &plan.actions {
+        if matches!(
+            action.operation,
+            OperationType::TranscodeVideo | OperationType::TranscodeAudio
+        ) {
+            if let (Some(idx), ActionParams::Transcode { codec, .. }) =
+                (action.track_index, &action.parameters)
+            {
+                transcode_codec.insert(idx, codec.clone());
+            }
+        }
+    }
+
+    let mut offenders: Vec<(u32, String)> = Vec::new();
+    for track in &file.tracks {
+        if removed.contains(&track.index) {
+            continue;
+        }
+        let effective_codec = transcode_codec
+            .get(&track.index)
+            .cloned()
+            .unwrap_or_else(|| track.codec.clone());
+        if let Some(false) = codec_supported(target, &effective_codec) {
+            offenders.push((track.index, effective_codec));
+        }
+    }
+
+    if offenders.is_empty() {
         return;
     }
 
-    let filename = file_name(file);
+    // Retract the planned container conversion.
+    plan.actions
+        .retain(|a| a.operation != OperationType::ConvertContainer);
 
-    apply_safeguard_for_track_type(
-        plan,
-        file,
-        &removed_indices,
-        &filename,
-        TrackType::is_video,
-        SafeguardKind::NoVideoTrack,
-        "video",
+    let details = offenders
+        .iter()
+        .take(4)
+        .map(|(idx, codec)| format!("track {idx} ({codec})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let suffix = if offenders.len() > 4 {
+        format!(" and {} more", offenders.len() - 4)
+    } else {
+        String::new()
+    };
+    let msg = format!(
+        "Safeguard: container conversion from {} to {} would leave \
+         incompatible codecs in {filename}: {details}{suffix}; keeping \
+         original container",
+        file.container.as_str(),
+        target.as_str(),
     );
-    apply_safeguard_for_track_type(
-        plan,
-        file,
-        &removed_indices,
-        &filename,
-        TrackType::is_audio,
-        SafeguardKind::NoAudioTrack,
-        "audio",
-    );
+    record_safeguard(plan, SafeguardKind::ContainerIncompatible, msg);
 }
 
 fn apply_safeguard_for_track_type(
@@ -1741,8 +1834,14 @@ mod tests {
 
     #[test]
     fn test_convert_container_parameter_key_is_container() {
+        // Use MP4-compatible codecs so the ContainerIncompatible safeguard
+        // doesn't retract the action — this test is about parameter shape.
         let mut file = test_file();
         file.container = Container::Mkv;
+        file.tracks = vec![
+            Track::new(0, TrackType::Video, "h264".into()),
+            Track::new(1, TrackType::AudioMain, "aac".into()),
+        ];
         let policy = test_policy(r#"policy "test" { phase init { container mp4 } }"#);
         let result = evaluate(&policy, &file);
         assert_eq!(result.plans.len(), 1);
@@ -1909,6 +2008,183 @@ mod tests {
                 || v.kind == voom_domain::SafeguardKind::AllTracksRemoved));
     }
 
+    // --- ContainerIncompatible safeguard tests ---
+
+    /// Build a file whose container/tracks we control for container-safeguard tests.
+    fn container_test_file(container: Container, tracks: Vec<Track>) -> MediaFile {
+        let ext = container.as_str();
+        let mut file = MediaFile::new(PathBuf::from(format!("/media/Sample.{ext}")));
+        file.container = container;
+        file.tracks = tracks;
+        file
+    }
+
+    #[test]
+    fn test_container_safeguard_blocks_webm_with_ac3() {
+        // MKV with vp9 video + AC3 audio → policy wants WebM. AC3 is not a
+        // WebM codec, so the conversion must be retracted.
+        let file = container_test_file(
+            Container::Mkv,
+            vec![
+                Track::new(0, TrackType::Video, "vp9".into()),
+                Track::new(1, TrackType::AudioMain, "ac3".into()),
+            ],
+        );
+        let policy = test_policy(r#"policy "p" { phase init { container webm } }"#);
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+
+        assert!(
+            !plan
+                .actions
+                .iter()
+                .any(|a| a.operation == OperationType::ConvertContainer),
+            "ConvertContainer should be retracted"
+        );
+        assert!(plan
+            .safeguard_violations
+            .iter()
+            .any(|v| v.kind == SafeguardKind::ContainerIncompatible));
+    }
+
+    #[test]
+    fn test_container_safeguard_allows_mp4_with_compatible_codecs() {
+        let file = container_test_file(
+            Container::Mkv,
+            vec![
+                Track::new(0, TrackType::Video, "h264".into()),
+                Track::new(1, TrackType::AudioMain, "aac".into()),
+            ],
+        );
+        let policy = test_policy(r#"policy "p" { phase init { container mp4 } }"#);
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+
+        assert!(
+            plan.actions
+                .iter()
+                .any(|a| a.operation == OperationType::ConvertContainer),
+            "ConvertContainer should remain"
+        );
+        assert!(plan
+            .safeguard_violations
+            .iter()
+            .all(|v| v.kind != SafeguardKind::ContainerIncompatible));
+    }
+
+    #[test]
+    fn test_container_safeguard_noop_when_no_conversion() {
+        // Target container equals source → no ConvertContainer action → no check.
+        let file = container_test_file(
+            Container::Mkv,
+            vec![Track::new(0, TrackType::Video, "opus".into())],
+        );
+        let policy = test_policy(r#"policy "p" { phase init { container mkv } }"#);
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+        assert!(plan
+            .safeguard_violations
+            .iter()
+            .all(|v| v.kind != SafeguardKind::ContainerIncompatible));
+    }
+
+    #[test]
+    fn test_container_safeguard_ignores_removed_tracks() {
+        // Offending track is removed by the policy, so it doesn't count as
+        // surviving and the conversion is fine.
+        let file = container_test_file(
+            Container::Mkv,
+            vec![
+                Track::new(0, TrackType::Video, "h264".into()),
+                Track::new(1, TrackType::AudioMain, "aac".into()),
+                {
+                    let mut t = Track::new(2, TrackType::AudioAlternate, "dts".into());
+                    t.language = "jpn".into();
+                    t
+                },
+            ],
+        );
+        let policy = test_policy(
+            r#"policy "p" {
+                phase init {
+                    container mp4
+                    remove audio where codec == dts
+                }
+            }"#,
+        );
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+
+        assert!(
+            plan.actions
+                .iter()
+                .any(|a| a.operation == OperationType::ConvertContainer),
+            "ConvertContainer should remain — dts track is removed"
+        );
+        assert!(plan
+            .safeguard_violations
+            .iter()
+            .all(|v| v.kind != SafeguardKind::ContainerIncompatible));
+    }
+
+    #[test]
+    fn test_container_safeguard_uses_post_transcode_codec() {
+        // File has a DTS audio track (not MP4-compatible), but policy
+        // transcodes it to AAC before container conversion. No violation.
+        let file = container_test_file(
+            Container::Mkv,
+            vec![Track::new(0, TrackType::Video, "h264".into()), {
+                let mut t = Track::new(1, TrackType::AudioMain, "dts".into());
+                t.language = "eng".into();
+                t
+            }],
+        );
+        let policy = test_policy(
+            r#"policy "p" {
+                phase init {
+                    container mp4
+                    transcode audio to aac {}
+                }
+            }"#,
+        );
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+
+        assert!(
+            plan.actions
+                .iter()
+                .any(|a| a.operation == OperationType::ConvertContainer),
+            "ConvertContainer should remain — dts is transcoded to aac"
+        );
+        assert!(plan
+            .safeguard_violations
+            .iter()
+            .all(|v| v.kind != SafeguardKind::ContainerIncompatible));
+    }
+
+    #[test]
+    fn test_container_safeguard_skips_unmodeled_target() {
+        // `mov` is not modeled — safeguard must not produce false positives.
+        let file = container_test_file(
+            Container::Mkv,
+            vec![Track::new(0, TrackType::Video, "hevc".into())],
+        );
+        let policy = test_policy(r#"policy "p" { phase init { container mov } }"#);
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+
+        assert!(
+            plan.actions
+                .iter()
+                .any(|a| a.operation == OperationType::ConvertContainer),
+            "ConvertContainer should remain — mov is unmodeled"
+        );
+        assert!(plan
+            .safeguard_violations
+            .iter()
+            .all(|v| v.kind != SafeguardKind::ContainerIncompatible));
+    }
+
     // --- Capability validation tests ---
 
     mod capability_validation {
@@ -1973,7 +2249,15 @@ mod tests {
 
         #[test]
         fn test_warns_on_unsupported_container_format() {
-            let file = test_file();
+            // Tracks are all WebM-compatible so the ContainerIncompatible
+            // safeguard leaves the ConvertContainer in place; the
+            // capability-hints layer is what should surface the warning
+            // here, since ffmpeg_capabilities() doesn't list webm.
+            let mut file = test_file();
+            file.tracks = vec![
+                Track::new(0, TrackType::Video, "vp9".into()),
+                Track::new(1, TrackType::AudioMain, "opus".into()),
+            ];
             let policy = test_policy(r#"policy "test" { phase init { container webm } }"#);
             let mut result = evaluate(&policy, &file);
             let caps = ffmpeg_capabilities();
