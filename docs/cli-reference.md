@@ -99,6 +99,7 @@ voom process <PATH>... [--policy <FILE> | --policy-map <TOML>] [OPTIONS]
 | `--no-backup` | `false` | Skip creating backups before modifications |
 | `--force-rescan` | `false` | Re-attempt introspection on previously failed files |
 | `--flag-size-increase` | `false` | Tag files whose output is larger than the original |
+| `--flag-duration-shrink` | `false` | Flag files whose output duration is >5% shorter than the original (post-execution) |
 | `--plan-only` | `false` | Output raw plans as JSON to stdout without executing (implies --dry-run) |
 | `--priority-by-date` | `false` | Assign job priority based on file modification date |
 
