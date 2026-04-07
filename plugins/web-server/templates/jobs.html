@@ -58,7 +58,7 @@
     </form>
 </div>
 
-<div class="card" hx-get="/jobs" hx-trigger="every 5s" hx-include="#filter-status" hx-select="#jobs-table" hx-target="#jobs-table" hx-swap="outerHTML">
+<div class="card" hx-get="/jobs" hx-trigger="every 5s, voom:job-update from:body" hx-include="#filter-status" hx-select="#jobs-table" hx-target="#jobs-table" hx-swap="outerHTML">
     <div id="jobs-table">
         {% if jobs | default(value=[]) | length > 0 %}
         <table>

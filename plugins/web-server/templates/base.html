@@ -409,6 +409,11 @@
             document.dispatchEvent(new CustomEvent('voom:file-update', { detail: data }));
         });
 
+        evtSource.addEventListener('plan-update', function(e) {
+            const data = JSON.parse(e.data);
+            document.dispatchEvent(new CustomEvent('voom:plan-update', { detail: data }));
+        });
+
         evtSource.onerror = function() {
             console.warn('SSE connection lost, will retry...');
         };
