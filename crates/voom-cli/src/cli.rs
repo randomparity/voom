@@ -189,6 +189,10 @@ pub struct ProcessArgs {
     #[arg(long)]
     pub flag_size_increase: bool,
 
+    /// Flag files whose output duration is >5% shorter than the original (post-execution)
+    #[arg(long)]
+    pub flag_duration_shrink: bool,
+
     /// Output raw plans as JSON to stdout without executing (implies --dry-run)
     #[arg(long)]
     pub plan_only: bool,

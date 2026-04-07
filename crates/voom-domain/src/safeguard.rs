@@ -22,6 +22,9 @@ pub enum SafeguardKind {
     OutputLarger,
     /// Insufficient free disk space to safely execute the plan.
     DiskSpaceLow,
+    /// Output file's duration was significantly shorter than the input,
+    /// indicating possible data loss from a truncated transcode.
+    DurationShrunk,
 }
 
 impl SafeguardKind {
@@ -33,6 +36,7 @@ impl SafeguardKind {
             Self::NoAudioTrack => "no_audio_track",
             Self::OutputLarger => "output_larger",
             Self::DiskSpaceLow => "disk_space_low",
+            Self::DurationShrunk => "duration_shrunk",
         }
     }
 }
@@ -112,6 +116,23 @@ mod tests {
         let v = SafeguardViolation::new(
             SafeguardKind::DiskSpaceLow,
             "need 2.1 GB, only 500 MB available",
+            "normalize",
+        );
+        let json = serde_json::to_string(&v).expect("serialize");
+        let deserialized: SafeguardViolation = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized, v);
+    }
+
+    #[test]
+    fn test_safeguard_kind_duration_shrunk_display() {
+        assert_eq!(SafeguardKind::DurationShrunk.to_string(), "duration_shrunk");
+    }
+
+    #[test]
+    fn test_duration_shrunk_serde_roundtrip() {
+        let v = SafeguardViolation::new(
+            SafeguardKind::DurationShrunk,
+            "duration shrank from 7200.00s to 6500.00s (9.7%)",
             "normalize",
         );
         let json = serde_json::to_string(&v).expect("serialize");

@@ -195,6 +195,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
     let all_phase_names = resolver.all_phase_names();
     let resolver = Arc::new(resolver);
     let flag_size_increase = args.flag_size_increase;
+    let flag_duration_shrink = args.flag_duration_shrink;
 
     let token_for_workers = token.clone();
     let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
@@ -220,6 +221,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
                         dry_run,
                         plan_only,
                         flag_size_increase,
+                        flag_duration_shrink,
                         token: &token,
                         ffprobe_path: ffprobe_path.as_deref(),
                         capabilities: &capabilities,
@@ -677,6 +679,7 @@ struct ProcessContext<'a> {
     dry_run: bool,
     plan_only: bool,
     flag_size_increase: bool,
+    flag_duration_shrink: bool,
     token: &'a CancellationToken,
     ffprobe_path: Option<&'a str>,
     capabilities: &'a voom_domain::CapabilityMap,
@@ -919,6 +922,17 @@ async fn process_single_file_execute(
                     );
                     continue;
                 }
+                // Post-execution safeguard: check duration shrinkage.
+                // Mirrors check_size_increase: dispatches PlanFailed
+                // (PlanCreated was already dispatched by execute_single_plan)
+                // and records PhaseOutcomeKind::Failed for stats.
+                if check_duration_shrink(&plan, &current_file, ctx).await {
+                    phase_outcomes.insert(
+                        phase_name.clone(),
+                        voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
+                    );
+                    continue;
+                }
                 any_executed = true;
                 if !modified_counted {
                     ctx.counters
@@ -1132,6 +1146,193 @@ fn check_size_increase(
         PhaseOutcomeKind::Failed,
     );
     let err_msg = format!("output grew from {} to {} bytes", file.size, new_size);
+    record_failure_transition(
+        file,
+        plan.id,
+        "",
+        &plan.policy_name,
+        &plan.phase_name,
+        Some(&err_msg),
+        ctx,
+    );
+    true
+}
+
+/// Threshold (percent) below which a duration drop triggers the safeguard.
+const DURATION_SHRINK_THRESHOLD_PCT: f64 = 5.0;
+
+/// Compute how much shorter `new` is than `orig`, as a percentage of `orig`.
+///
+/// Returns `0.0` if `orig <= 0.0` or if `new >= orig` (no shrinkage).
+#[must_use]
+fn duration_shrunk_pct(orig: f64, new: f64) -> f64 {
+    if orig <= 0.0 || new >= orig {
+        return 0.0;
+    }
+    (orig - new) / orig * 100.0
+}
+
+/// Outcome of the blocking duration-shrink probe.
+///
+/// Returned by [`check_duration_shrink_blocking`] so the async caller can
+/// dispatch events and record stats off the blocking pool.
+#[derive(Debug)]
+enum DurationShrinkOutcome {
+    /// Output duration is significantly shorter than the input.
+    Shrunk {
+        check_path: std::path::PathBuf,
+        new_duration: f64,
+        pct: f64,
+    },
+    /// ffprobe could not introspect the output file — treated as a violation
+    /// because the safeguard's purpose is to catch corrupt outputs.
+    FfprobeFailed {
+        check_path: std::path::PathBuf,
+        error: String,
+    },
+}
+
+/// Pure blocking probe: re-introspect the output file with ffprobe and decide
+/// whether the duration safeguard should fire.
+///
+/// Takes only owned/borrowed primitives so it is safe to run inside
+/// `tokio::task::spawn_blocking`. Returns `None` to proceed normally.
+fn check_duration_shrink_blocking(
+    plan: &voom_domain::plan::Plan,
+    file: &voom_domain::media::MediaFile,
+    ffprobe_path: Option<&str>,
+) -> Option<DurationShrinkOutcome> {
+    let check_path = resolve_post_execution_path(file, std::slice::from_ref(plan));
+    let meta = std::fs::metadata(&check_path).ok()?;
+    let new_size = meta.len();
+
+    // Re-introspect the output file with a one-shot ffprobe call to get its duration.
+    let mut introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
+    if let Some(fp) = ffprobe_path {
+        introspector = introspector.with_ffprobe_path(fp);
+    }
+    let new_duration = match introspector.introspect(&check_path, new_size, None) {
+        Ok(event) => event.file.duration,
+        Err(e) => {
+            tracing::warn!(
+                path = %check_path.display(),
+                error = %e,
+                "duration-shrink check: ffprobe failed on output, treating as violation"
+            );
+            return Some(DurationShrinkOutcome::FfprobeFailed {
+                check_path,
+                error: e.to_string(),
+            });
+        }
+    };
+
+    let pct = duration_shrunk_pct(file.duration, new_duration);
+    if pct < DURATION_SHRINK_THRESHOLD_PCT {
+        return None;
+    }
+
+    Some(DurationShrinkOutcome::Shrunk {
+        check_path,
+        new_duration,
+        pct,
+    })
+}
+
+/// Check if the output file's duration shrank significantly versus the input.
+///
+/// Returns `true` if the duration dropped by at least `DURATION_SHRINK_THRESHOLD_PCT`
+/// (or ffprobe failed to introspect the output, which is itself treated as a
+/// violation) and the phase should be marked failed (`PlanFailed` is dispatched
+/// and the failure is recorded; `PlanCreated` was already dispatched by the
+/// caller). Returns `false` to proceed normally.
+///
+/// The blocking ffprobe invocation runs on the tokio blocking pool via
+/// [`tokio::task::spawn_blocking`] so it does not stall an async worker.
+async fn check_duration_shrink(
+    plan: &voom_domain::plan::Plan,
+    file: &voom_domain::media::MediaFile,
+    ctx: &ProcessContext<'_>,
+) -> bool {
+    if !ctx.flag_duration_shrink {
+        return false;
+    }
+    if file.duration <= 0.0 {
+        return false;
+    }
+    if ctx.token.is_cancelled() {
+        return false;
+    }
+
+    // Move owned data into the blocking task. The probe must not touch &ctx.
+    let plan_for_probe = plan.clone();
+    let file_for_probe = file.clone();
+    let ffprobe_path = ctx.ffprobe_path.map(str::to_owned);
+    let outcome = match tokio::task::spawn_blocking(move || {
+        check_duration_shrink_blocking(&plan_for_probe, &file_for_probe, ffprobe_path.as_deref())
+    })
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!(error = %e, "duration-shrink probe join error, skipping check");
+            return false;
+        }
+    };
+
+    let Some(outcome) = outcome else {
+        return false;
+    };
+
+    let (check_path, err_msg) = match outcome {
+        DurationShrinkOutcome::Shrunk {
+            check_path,
+            new_duration,
+            pct,
+        } => {
+            tracing::warn!(
+                path = %check_path.display(),
+                before = file.duration,
+                after = new_duration,
+                pct,
+                "output duration shrank, restoring"
+            );
+            let msg = format!(
+                "output duration shrank from {:.2}s to {:.2}s ({:.1}%)",
+                file.duration, new_duration, pct
+            );
+            (check_path, msg)
+        }
+        DurationShrinkOutcome::FfprobeFailed { check_path, error } => {
+            let msg = format!(
+                "duration-shrink check: ffprobe failed to introspect output {}: {error}",
+                check_path.display()
+            );
+            (check_path, msg)
+        }
+    };
+
+    if check_path != file.path {
+        if let Err(e) = std::fs::remove_file(&check_path) {
+            tracing::warn!(
+                path = %check_path.display(),
+                error = %e,
+                "failed to remove converted output"
+            );
+        }
+    }
+
+    let r = ctx.kernel.dispatch(Event::PlanFailed(PlanFailedEvent::new(
+        plan.id,
+        file.path.clone(),
+        plan.phase_name.clone(),
+        &err_msg,
+    )));
+    log_plugin_errors(&r);
+    record_phase_stat(
+        &ctx.counters.phase_stats,
+        &plan.phase_name,
+        PhaseOutcomeKind::Failed,
+    );
     record_failure_transition(
         file,
         plan.id,
@@ -2242,6 +2443,7 @@ mod tests {
             dry_run: false,
             plan_only: false,
             flag_size_increase: false,
+            flag_duration_shrink: false,
             token: &token,
             ffprobe_path: None,
             capabilities: &capabilities,
@@ -2286,6 +2488,7 @@ mod tests {
             dry_run: false,
             plan_only: false,
             flag_size_increase: false,
+            flag_duration_shrink: false,
             token: &token,
             ffprobe_path: None,
             capabilities: &capabilities,
@@ -2341,6 +2544,7 @@ mod tests {
             dry_run: false,
             plan_only: false,
             flag_size_increase: true,
+            flag_duration_shrink: false,
             token: &token,
             ffprobe_path: None,
             capabilities: &capabilities,
@@ -2362,5 +2566,168 @@ mod tests {
             1,
             "PlanFailed must fire"
         );
+    }
+
+    #[test]
+    fn test_duration_shrunk_pct_no_shrink() {
+        assert_eq!(duration_shrunk_pct(100.0, 100.0), 0.0);
+        assert_eq!(duration_shrunk_pct(100.0, 110.0), 0.0);
+    }
+
+    #[test]
+    fn test_duration_shrunk_pct_invalid_orig() {
+        assert_eq!(duration_shrunk_pct(0.0, 50.0), 0.0);
+        assert_eq!(duration_shrunk_pct(-1.0, 50.0), 0.0);
+    }
+
+    #[test]
+    fn test_duration_shrunk_pct_below_threshold() {
+        // 4% drop — under the 5% threshold
+        let pct = duration_shrunk_pct(100.0, 96.0);
+        assert!((pct - 4.0).abs() < 1e-9);
+        assert!(pct < DURATION_SHRINK_THRESHOLD_PCT);
+    }
+
+    #[test]
+    fn test_duration_shrunk_pct_above_threshold() {
+        // 10% drop — exceeds the 5% threshold
+        let pct = duration_shrunk_pct(100.0, 90.0);
+        assert!((pct - 10.0).abs() < 1e-9);
+        assert!(pct >= DURATION_SHRINK_THRESHOLD_PCT);
+    }
+
+    #[tokio::test]
+    async fn test_check_duration_shrink_flag_disabled_returns_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.mkv");
+        std::fs::write(&file_path, vec![0u8; 1024]).unwrap();
+
+        let mut file = MediaFile::new(file_path);
+        file.size = 1024;
+        file.duration = 100.0;
+
+        let plan = test_plan("normalize", false);
+
+        let kernel = voom_kernel::Kernel::new();
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_domain::test_support::InMemoryStore::new());
+        let capabilities = voom_domain::CapabilityMap::new();
+        let counters = RunCounters::new();
+        let token = CancellationToken::new();
+        let resolver = PolicyResolver::from_single(
+            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
+                .unwrap(),
+            dir.path(),
+        );
+        let ctx = ProcessContext {
+            resolver: &resolver,
+            kernel: Arc::new(kernel),
+            store,
+            dry_run: false,
+            plan_only: false,
+            flag_size_increase: false,
+            flag_duration_shrink: false,
+            token: &token,
+            ffprobe_path: None,
+            capabilities: &capabilities,
+            counters: &counters,
+        };
+
+        // Flag disabled — must early-return false without invoking ffprobe.
+        assert!(!check_duration_shrink(&plan, &file, &ctx).await);
+    }
+
+    #[tokio::test]
+    async fn test_check_duration_shrink_zero_input_duration_returns_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.mkv");
+        std::fs::write(&file_path, vec![0u8; 1024]).unwrap();
+
+        let mut file = MediaFile::new(file_path);
+        file.size = 1024;
+        file.duration = 0.0;
+
+        let plan = test_plan("normalize", false);
+
+        let kernel = voom_kernel::Kernel::new();
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_domain::test_support::InMemoryStore::new());
+        let capabilities = voom_domain::CapabilityMap::new();
+        let counters = RunCounters::new();
+        let token = CancellationToken::new();
+        let resolver = PolicyResolver::from_single(
+            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
+                .unwrap(),
+            dir.path(),
+        );
+        let ctx = ProcessContext {
+            resolver: &resolver,
+            kernel: Arc::new(kernel),
+            store,
+            dry_run: false,
+            plan_only: false,
+            flag_size_increase: false,
+            flag_duration_shrink: true,
+            token: &token,
+            ffprobe_path: None,
+            capabilities: &capabilities,
+            counters: &counters,
+        };
+
+        // Input duration is 0.0 — can't compute a percentage; must early-return false.
+        assert!(!check_duration_shrink(&plan, &file, &ctx).await);
+    }
+
+    #[tokio::test]
+    async fn test_check_duration_shrink_cancelled_returns_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.mkv");
+        std::fs::write(&file_path, vec![0u8; 1024]).unwrap();
+
+        let mut file = MediaFile::new(file_path);
+        file.size = 1024;
+        file.duration = 100.0;
+
+        let plan = test_plan("normalize", false);
+
+        let kernel = voom_kernel::Kernel::new();
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_domain::test_support::InMemoryStore::new());
+        let capabilities = voom_domain::CapabilityMap::new();
+        let counters = RunCounters::new();
+        let token = CancellationToken::new();
+        token.cancel();
+        let resolver = PolicyResolver::from_single(
+            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
+                .unwrap(),
+            dir.path(),
+        );
+        let ctx = ProcessContext {
+            resolver: &resolver,
+            kernel: Arc::new(kernel),
+            store,
+            dry_run: false,
+            plan_only: false,
+            flag_size_increase: false,
+            flag_duration_shrink: true,
+            token: &token,
+            ffprobe_path: None,
+            capabilities: &capabilities,
+            counters: &counters,
+        };
+
+        // Token cancelled — must early-return false without launching ffprobe.
+        assert!(!check_duration_shrink(&plan, &file, &ctx).await);
+    }
+
+    #[test]
+    fn test_check_duration_shrink_blocking_no_metadata_returns_none() {
+        // Point at a path that doesn't exist; the metadata read fails and the
+        // probe must return None (no safeguard, no ffprobe invocation).
+        let mut file = MediaFile::new(std::path::PathBuf::from("/nonexistent/voom-test.mkv"));
+        file.duration = 100.0;
+        let plan = test_plan("normalize", false);
+        let outcome = check_duration_shrink_blocking(&plan, &file, None);
+        assert!(outcome.is_none());
     }
 }
