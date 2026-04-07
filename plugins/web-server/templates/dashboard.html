@@ -8,7 +8,7 @@
     <p>Overview of your media library and processing status</p>
 </div>
 
-<div class="card-grid" hx-get="/" hx-trigger="every 10s" hx-select=".card-grid" hx-target=".card-grid" hx-swap="outerHTML">
+<div class="card-grid" hx-get="/" hx-trigger="every 10s, voom:file-update from:body throttle:2s, voom:job-update from:body throttle:2s" hx-select=".card-grid" hx-target=".card-grid" hx-swap="outerHTML">
     <a href="/library" class="stat-card accent" style="text-decoration: none; color: inherit;">
         <div class="stat-value">{{ total_files | default(value=0) }}</div>
         <div class="stat-label">Total Files</div>
