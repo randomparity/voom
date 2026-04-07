@@ -5,6 +5,7 @@
 //! no external dependencies.
 
 pub mod condition;
+pub mod container_compat;
 pub mod evaluator;
 pub mod filter;
 

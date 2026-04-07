@@ -25,6 +25,9 @@ pub enum SafeguardKind {
     /// Output file's duration was significantly shorter than the input,
     /// indicating possible data loss from a truncated transcode.
     DurationShrunk,
+    /// A planned container conversion would produce an output whose
+    /// surviving tracks use codecs the target container cannot hold.
+    ContainerIncompatible,
 }
 
 impl SafeguardKind {
@@ -37,6 +40,7 @@ impl SafeguardKind {
             Self::OutputLarger => "output_larger",
             Self::DiskSpaceLow => "disk_space_low",
             Self::DurationShrunk => "duration_shrunk",
+            Self::ContainerIncompatible => "container_incompatible",
         }
     }
 }
@@ -126,6 +130,26 @@ mod tests {
     #[test]
     fn test_safeguard_kind_duration_shrunk_display() {
         assert_eq!(SafeguardKind::DurationShrunk.to_string(), "duration_shrunk");
+    }
+
+    #[test]
+    fn test_safeguard_kind_container_incompatible_display() {
+        assert_eq!(
+            SafeguardKind::ContainerIncompatible.to_string(),
+            "container_incompatible"
+        );
+    }
+
+    #[test]
+    fn test_container_incompatible_serde_roundtrip() {
+        let v = SafeguardViolation::new(
+            SafeguardKind::ContainerIncompatible,
+            "webm cannot hold codec 'ac3' on track 1",
+            "normalize",
+        );
+        let json = serde_json::to_string(&v).expect("serialize");
+        let deserialized: SafeguardViolation = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized, v);
     }
 
     #[test]
