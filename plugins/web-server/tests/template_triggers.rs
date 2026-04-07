@@ -33,6 +33,16 @@ fn dashboard_listens_for_job_update_events() {
 }
 
 #[test]
+fn dashboard_listens_for_plan_update_events() {
+    assert!(
+        DASHBOARD_HTML.contains("voom:plan-update from:body"),
+        "dashboard.html must register an htmx trigger on `voom:plan-update from:body` \
+         so job counters refresh when Plan* lifecycle events arrive via the \
+         web-sse-bridge (issue #138)"
+    );
+}
+
+#[test]
 fn jobs_page_listens_for_job_update_events() {
     assert!(
         JOBS_HTML.contains("voom:job-update from:body"),
