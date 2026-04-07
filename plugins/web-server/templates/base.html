@@ -399,19 +399,25 @@
     <script nonce="{{ csp_nonce }}">
         const evtSource = new EventSource('/events');
 
+        // htmx's `from:body` trigger modifier listens on <body> and relies on
+        // events bubbling up to it from a descendant. CustomEvent defaults to
+        // bubbles:false, and dispatching on `document` puts the event above
+        // <body> in the DOM hierarchy, so we must dispatch on document.body
+        // with bubbles:true for hx-trigger="... from:body" to fire (#134).
+        function dispatchVoomEvent(name, data) {
+            document.body.dispatchEvent(new CustomEvent(name, { detail: data, bubbles: true }));
+        }
+
         evtSource.addEventListener('job-update', function(e) {
-            const data = JSON.parse(e.data);
-            document.dispatchEvent(new CustomEvent('voom:job-update', { detail: data }));
+            dispatchVoomEvent('voom:job-update', JSON.parse(e.data));
         });
 
         evtSource.addEventListener('file-update', function(e) {
-            const data = JSON.parse(e.data);
-            document.dispatchEvent(new CustomEvent('voom:file-update', { detail: data }));
+            dispatchVoomEvent('voom:file-update', JSON.parse(e.data));
         });
 
         evtSource.addEventListener('plan-update', function(e) {
-            const data = JSON.parse(e.data);
-            document.dispatchEvent(new CustomEvent('voom:plan-update', { detail: data }));
+            dispatchVoomEvent('voom:plan-update', JSON.parse(e.data));
         });
 
         evtSource.onerror = function() {
