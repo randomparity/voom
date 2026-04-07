@@ -13,7 +13,26 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 
-use crate::state::AppState;
+use crate::state::{AppState, SseEvent};
+
+/// Map an `SseEvent` variant to the SSE event name clients listen for.
+///
+/// The frontend in `base.html` registers listeners by these names, so changing
+/// a name here must be matched by a corresponding update in the template. The
+/// match is intentionally exhaustive to force a compile error when new
+/// variants are added.
+fn sse_event_name(event: &SseEvent) -> &'static str {
+    match event {
+        SseEvent::JobStarted { .. }
+        | SseEvent::JobProgress { .. }
+        | SseEvent::JobCompleted { .. } => "job-update",
+        SseEvent::FileIntrospected { .. } => "file-update",
+        SseEvent::PlanExecuting { .. }
+        | SseEvent::PlanCompleted { .. }
+        | SseEvent::PlanSkipped { .. }
+        | SseEvent::PlanFailed { .. } => "plan-update",
+    }
+}
 
 /// Maximum number of concurrent SSE clients.
 const MAX_SSE_CLIENTS: u32 = 64;
@@ -51,13 +70,16 @@ pub async fn events_handler(
     let stream = BroadcastStream::new(rx).filter_map(move |result| {
         let _guard = &guard; // keep guard alive for the lifetime of the stream
         match result {
-            Ok(event) => match serde_json::to_string(&event) {
-                Ok(json) => Some(Ok(SseAxumEvent::default().data(json))),
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to serialize SSE event");
-                    None
+            Ok(event) => {
+                let name = sse_event_name(&event);
+                match serde_json::to_string(&event) {
+                    Ok(json) => Some(Ok(SseAxumEvent::default().event(name).data(json))),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to serialize SSE event");
+                        None
+                    }
                 }
-            },
+            }
             Err(BroadcastStreamRecvError::Lagged(count)) => {
                 let json = serde_json::json!({"type": "lagged", "missed": count}).to_string();
                 Some(Ok(SseAxumEvent::default().event("lagged").data(json)))
