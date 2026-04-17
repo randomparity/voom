@@ -325,6 +325,7 @@ impl Default for Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parking_lot::Mutex;
     use std::sync::atomic::AtomicBool;
 
     struct LifecyclePlugin {
@@ -445,7 +446,7 @@ mod tests {
 
     /// Plugin that records whether it received a ToolDetected event.
     struct EventCapture {
-        received: Arc<std::sync::Mutex<Vec<String>>>,
+        received: Arc<Mutex<Vec<String>>>,
     }
 
     impl Plugin for EventCapture {
@@ -463,10 +464,7 @@ mod tests {
         }
         fn on_event(&self, event: &Event) -> Result<Option<voom_domain::events::EventResult>> {
             if let Event::ToolDetected(e) = event {
-                self.received
-                    .lock()
-                    .expect("lock poisoned")
-                    .push(e.tool_name.clone());
+                self.received.lock().push(e.tool_name.clone());
             }
             Ok(None)
         }
@@ -474,7 +472,7 @@ mod tests {
 
     #[test]
     fn test_init_events_dispatched_after_registration() {
-        let received = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let received = Arc::new(Mutex::new(Vec::<String>::new()));
 
         let mut kernel = Kernel::new();
         let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
@@ -489,7 +487,7 @@ mod tests {
         let emitter = Arc::new(InitEventEmitter);
         kernel.init_and_register(emitter, 20, &ctx).unwrap();
 
-        let captured = received.lock().expect("lock poisoned");
+        let captured = received.lock();
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0], "test-tool");
     }
