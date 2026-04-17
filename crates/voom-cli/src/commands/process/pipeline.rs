@@ -77,7 +77,14 @@ pub(super) async fn process_single_file(
     let lookup_path = file.path.clone();
     let stored = tokio::task::spawn_blocking(move || store.file_by_path(&lookup_path))
         .await
-        .map_err(|e| format!("plugin_metadata merge join error: {e}"))?
+        .map_err(|e| format!("file_by_path join error for {}: {e}", file.path.display()))?
+        .inspect_err(|e| {
+            tracing::warn!(
+                path = %file.path.display(),
+                error = %e,
+                "failed to load stored file for plugin_metadata merge"
+            );
+        })
         .ok()
         .flatten();
     if let Some(stored) = stored {
