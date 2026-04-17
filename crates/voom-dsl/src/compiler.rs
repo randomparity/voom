@@ -137,8 +137,8 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
             let container = voom_domain::media::Container::from_extension(name);
             if container == voom_domain::media::Container::Other {
                 return Err(DslError::compile(format!(
-                    "unknown container '{name}'; \
-                     expected one of: mkv, mp4, avi, webm, flv, wmv, mov, ts"
+                    "unknown container '{name}'; expected one of: {}",
+                    voom_domain::media::Container::known_extensions().join(", ")
                 )));
             }
             Ok(CompiledOperation::SetContainer(container))

@@ -452,7 +452,10 @@ fn validate_operation(
                 errors.push(DslError::validation(
                     line,
                     col,
-                    format!("unknown container format \"{name}\""),
+                    format!(
+                        "unknown container '{name}'; expected one of: {}",
+                        voom_domain::Container::known_extensions().join(", ")
+                    ),
                 ));
             }
         }
@@ -1438,7 +1441,9 @@ mod tests {
         }"#;
         let ast = parse_policy(input).unwrap();
         let err = validate(&ast).unwrap_err();
-        assert!(format!("{}", err.errors[0]).contains("unknown container format \"zzz\""));
+        let msg = format!("{}", err.errors[0]);
+        assert!(msg.contains("unknown container 'zzz'"), "got: {msg}");
+        assert!(msg.contains("mkv"), "should list known extensions: {msg}");
     }
 
     #[test]

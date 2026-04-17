@@ -372,6 +372,30 @@ impl Container {
         }
     }
 
+    /// Return every extension that `from_extension` recognises as a known container.
+    ///
+    /// Order is the canonical display order used in error messages. Duplicates
+    /// from the same `Container` variant are preserved (e.g., `mkv`, `mka`, `mks`
+    /// all map to `Mkv`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use voom_domain::media::Container;
+    ///
+    /// let exts = Container::known_extensions();
+    /// assert!(exts.contains(&"mkv"));
+    /// assert!(exts.contains(&"m2ts"));
+    /// assert!(!exts.contains(&"xyz"));
+    /// ```
+    #[must_use]
+    pub const fn known_extensions() -> &'static [&'static str] {
+        &[
+            "mkv", "mka", "mks", "mp4", "m4v", "m4a", "avi", "webm", "flv", "wmv", "wma", "mov",
+            "ts", "m2ts", "mts",
+        ]
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -466,6 +490,17 @@ mod tests {
         assert_eq!(Container::from_extension("mp4"), Container::Mp4);
         assert_eq!(Container::from_extension("m2ts"), Container::Ts);
         assert_eq!(Container::from_extension("xyz"), Container::Other);
+    }
+
+    #[test]
+    fn known_extensions_matches_from_extension() {
+        for ext in Container::known_extensions() {
+            assert_ne!(
+                Container::from_extension(ext),
+                Container::Other,
+                "{ext} is advertised as known but from_extension returns Other"
+            );
+        }
     }
 
     #[test]
