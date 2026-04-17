@@ -26,7 +26,8 @@ use super::safeguards::{
     collect_safeguard_violations, dispatch_safeguard_violations,
 };
 use super::transitions::{
-    record_failure_transition, record_file_transition, FileTransitionContext,
+    record_failure_transition, record_file_transition, FailureTransitionContext,
+    FileTransitionContext,
 };
 use super::{record_phase_stat, PhaseOutcomeKind, ProcessContext};
 
@@ -315,23 +316,18 @@ async fn process_single_file_execute(
                 .await;
             }
             PlanOutcome::Failed(failed) => {
-                let plan_id = plan.id;
-                let policy_name = plan.policy_name.clone();
-                let phase_name_owned = plan.phase_name.clone();
                 let executor = failed.plugin_name.clone().unwrap_or_default();
                 let error_msg = failed.error.clone();
-                dispatch_plan_failure(failed, &phase_name_owned, ctx);
-                record_failure_transition(
-                    &current_file,
-                    plan_id,
-                    &executor,
-                    &policy_name,
-                    &phase_name_owned,
-                    Some(&error_msg),
+                dispatch_plan_failure(failed, &plan.phase_name, ctx);
+                record_failure_transition(&FailureTransitionContext {
+                    file: &current_file,
+                    plan: &plan,
+                    executor: &executor,
+                    error_message: Some(&error_msg),
                     ctx,
-                );
+                });
                 phase_outcomes.insert(
-                    phase_name_owned.clone(),
+                    plan.phase_name.clone(),
                     voom_policy_evaluator::EvaluationOutcome::ExecutionFailed,
                 );
                 // Downstream phases still evaluate; run_if gates block
@@ -354,7 +350,7 @@ fn dispatch_skipped_plan(
     reason: &str,
     ctx: &ProcessContext<'_>,
 ) {
-    let dispatcher = PlanDispatcher::from_arc(&ctx.kernel);
+    let dispatcher = PlanDispatcher::new(&ctx.kernel);
     dispatcher.created(plan);
     dispatcher.skipped(plan, file, reason);
     record_phase_stat(
@@ -366,7 +362,7 @@ fn dispatch_skipped_plan(
 
 /// Dispatch a `PlanFailed` event and record the phase stat.
 fn dispatch_plan_failure(failed: PlanFailedEvent, phase_name: &str, ctx: &ProcessContext<'_>) {
-    PlanDispatcher::from_arc(&ctx.kernel).failed(failed);
+    PlanDispatcher::new(&ctx.kernel).failed(failed);
     record_phase_stat(
         &ctx.counters.phase_stats,
         phase_name,
@@ -394,7 +390,7 @@ async fn handle_plan_success(
             "keeping backup per policy"
         );
     }
-    PlanDispatcher::from_arc(&ctx.kernel).completed(&plan, file, keep_backups);
+    PlanDispatcher::new(&ctx.kernel).completed(&plan, file, keep_backups);
     record_phase_stat(
         &ctx.counters.phase_stats,
         &plan.phase_name,

@@ -16,7 +16,7 @@ use voom_domain::utils::format::format_size;
 
 use super::dispatch::{dispatch_and_log, PlanDispatcher};
 use super::pipeline::resolve_post_execution_path;
-use super::transitions::record_failure_transition;
+use super::transitions::{record_failure_transition, FailureTransitionContext};
 use super::{record_phase_stat, PhaseOutcomeKind, ProcessContext};
 
 /// Dispatch `PlanFailed`, record phase stats, and write a failure transition.
@@ -29,7 +29,7 @@ fn record_safeguard_failure(
     message: &str,
     ctx: &ProcessContext<'_>,
 ) {
-    PlanDispatcher::from_arc(&ctx.kernel).failed(PlanFailedEvent::new(
+    PlanDispatcher::new(&ctx.kernel).failed(PlanFailedEvent::new(
         plan.id,
         file.path.clone(),
         plan.phase_name.clone(),
@@ -40,15 +40,13 @@ fn record_safeguard_failure(
         &plan.phase_name,
         PhaseOutcomeKind::Failed,
     );
-    record_failure_transition(
+    record_failure_transition(&FailureTransitionContext {
         file,
-        plan.id,
-        "",
-        &plan.policy_name,
-        &plan.phase_name,
-        Some(message),
+        plan,
+        executor: "",
+        error_message: Some(message),
         ctx,
-    );
+    });
 }
 
 /// Check if the output file grew larger than the original.

@@ -27,8 +27,6 @@
 //! Every dispatch goes through this module so that the `log_plugin_errors`
 //! pairing is handled in one place.
 
-use std::sync::Arc;
-
 use voom_domain::events::{
     Event, EventResult, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
     PlanSkippedEvent,
@@ -71,12 +69,6 @@ pub(super) struct PlanDispatcher<'a> {
 impl<'a> PlanDispatcher<'a> {
     pub(super) fn new(kernel: &'a Kernel) -> Self {
         Self { kernel }
-    }
-
-    pub(super) fn from_arc(kernel: &'a Arc<Kernel>) -> Self {
-        Self {
-            kernel: kernel.as_ref(),
-        }
     }
 
     /// Step 1 + 2: dispatch `PlanExecuting` then `PlanCreated` and return the

@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 
 use tokio_util::sync::CancellationToken;
 
-use dispatch::log_plugin_errors;
+use dispatch::dispatch_and_log;
 use pipeline::process_single_file;
 
 use crate::app;
@@ -51,9 +51,6 @@ use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// This split gives the CLI full control over ordering, concurrency, and
 /// progress reporting while still letting kernel-registered plugins react to
 /// the events they care about.
-// The entry-point wires together discovery, filtering, worker-pool setup, and
-// final reporting — breaking it up further would scatter context across many
-// helpers without improving readability.
 pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Result<()> {
     if args.plan_only && args.approve {
         anyhow::bail!(
@@ -313,8 +310,6 @@ fn build_reporter(
 }
 
 /// Arguments for `print_run_results`.
-// Multiple bools each represent a distinct mode flag from the CLI/config; a
-// single enum would either lose expressive power or require nested states.
 #[allow(clippy::struct_excessive_bools)]
 struct RunResultsContext<'a> {
     counters: &'a RunCounters,
@@ -510,8 +505,7 @@ fn discover_files(
     all_events.retain(|e| seen.insert(e.path.clone()));
 
     for event in &all_events {
-        let results = kernel.dispatch(Event::FileDiscovered(event.clone()));
-        log_plugin_errors(&results);
+        dispatch_and_log(kernel, Event::FileDiscovered(event.clone()));
     }
 
     for (path, size, error) in discovery_errors.lock().drain(..) {
@@ -662,8 +656,6 @@ impl RunCounters {
 }
 
 /// Shared context for processing a single file.
-// Four bools each represent a distinct CLI flag / mode; collapsing them into
-// an enum would hide the per-flag semantics without simplifying call sites.
 #[allow(clippy::struct_excessive_bools)]
 pub(super) struct ProcessContext<'a> {
     pub(super) resolver: &'a PolicyResolver,
@@ -840,8 +832,6 @@ mod tests {
     use super::safeguards::{check_disk_space, check_duration_shrink, check_size_increase};
 
     /// A test plugin that counts received plan lifecycle events.
-    // The `_count` suffix is descriptive here; each field counts a distinct
-    // event type and renaming would reduce clarity in assertions.
     #[allow(clippy::struct_field_names)]
     struct PlanRecordingPlugin {
         discovered_count: AtomicUsize,
@@ -969,17 +959,19 @@ mod tests {
 
         // Simulate the skipped-plan dispatch sequence from
         // process_single_file_execute: PlanCreated then PlanSkipped.
-        let r = kernel.dispatch(Event::PlanCreated(PlanCreatedEvent::new(
-            skipped_plan.clone(),
-        )));
-        log_plugin_errors(&r);
-        let r = kernel.dispatch(Event::PlanSkipped(PlanSkippedEvent::new(
-            skipped_plan.id,
-            file.path.clone(),
-            skipped_plan.phase_name.clone(),
-            skipped_plan.skip_reason.clone().unwrap(),
-        )));
-        log_plugin_errors(&r);
+        dispatch_and_log(
+            &kernel,
+            Event::PlanCreated(PlanCreatedEvent::new(skipped_plan.clone())),
+        );
+        dispatch_and_log(
+            &kernel,
+            Event::PlanSkipped(PlanSkippedEvent::new(
+                skipped_plan.id,
+                file.path.clone(),
+                skipped_plan.phase_name.clone(),
+                skipped_plan.skip_reason.clone().unwrap(),
+            )),
+        );
 
         // Skipped plans should NOT trigger execution events
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);

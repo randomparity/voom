@@ -60,24 +60,28 @@ pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
     }
 }
 
+/// Grouped arguments for `record_failure_transition`.
+///
+/// The `executor` should be the executor plugin name, or an empty string when
+/// no executor was involved (e.g. safeguard abort).
+pub(super) struct FailureTransitionContext<'a> {
+    pub file: &'a voom_domain::media::MediaFile,
+    pub plan: &'a voom_domain::plan::Plan,
+    pub executor: &'a str,
+    pub error_message: Option<&'a str>,
+    pub ctx: &'a ProcessContext<'a>,
+}
+
 /// Record a failure transition in the store for a plan that did not succeed.
 ///
 /// The file is unchanged on failure, so `to_size = from_size` and `to_hash =
-/// from_hash`. The `executor` argument should be the executor plugin name, or
-/// an empty string when no executor was involved (e.g. size-increase abort).
+/// from_hash`.
 ///
 /// Dual-write: `file_transitions.error_message` is used for session-based
 /// queries (`voom report errors`), while `plans.result` stores the structured
 /// `ExecutionDetail` JSON for plan-based queries with full subprocess output.
-pub(super) fn record_failure_transition(
-    file: &voom_domain::media::MediaFile,
-    plan_id: uuid::Uuid,
-    executor: &str,
-    policy_name: &str,
-    phase_name: &str,
-    error_message: Option<&str>,
-    ctx: &ProcessContext<'_>,
-) {
+pub(super) fn record_failure_transition(fctx: &FailureTransitionContext<'_>) {
+    let file = fctx.file;
     let to_hash = file.content_hash.clone().unwrap_or_default();
     let mut transition = voom_domain::FileTransition::new(
         file.id,
@@ -87,23 +91,23 @@ pub(super) fn record_failure_transition(
         voom_domain::TransitionSource::Voom,
     )
     .with_from(file.content_hash.clone(), Some(file.size))
-    .with_detail(executor)
-    .with_plan_id(plan_id)
+    .with_detail(fctx.executor)
+    .with_plan_id(fctx.plan.id)
     .with_processing(
         0,
         0,
         0,
         voom_domain::ProcessingOutcome::Failure,
-        policy_name,
-        phase_name,
+        &fctx.plan.policy_name,
+        &fctx.plan.phase_name,
     )
-    .with_session_id(ctx.counters.session_id);
+    .with_session_id(fctx.ctx.counters.session_id);
 
-    if let Some(msg) = error_message {
+    if let Some(msg) = fctx.error_message {
         transition = transition.with_error_message(msg);
     }
 
-    if let Err(e) = ctx.store.record_transition(&transition) {
+    if let Err(e) = fctx.ctx.store.record_transition(&transition) {
         tracing::warn!(error = %e, "failed to record failure transition");
     }
 }

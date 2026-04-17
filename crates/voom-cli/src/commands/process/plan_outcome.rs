@@ -51,11 +51,12 @@ impl PlanOutcome {
             }
         }
 
-        if claimed_name.is_some() && exec_error.is_none() {
-            let executor = claimed_name
-                .map(ToString::to_string)
-                .unwrap_or_else(|| "unknown".to_string());
-            return Self::Success { executor };
+        if let Some(name) = claimed_name {
+            if exec_error.is_none() {
+                return Self::Success {
+                    executor: name.to_string(),
+                };
+            }
         }
 
         if let Some(error) = exec_error {
