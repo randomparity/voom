@@ -23,7 +23,14 @@ pub fn validate_disk_space_for(
     source_path: &Path,
     min_free_space: u64,
 ) -> Result<()> {
-    let file_size = fs::metadata(source_path).map(|m| m.len()).unwrap_or(0);
+    let file_size = fs::metadata(source_path)
+        .map_err(|e| {
+            plugin_err(format!(
+                "failed to read metadata for {}: {e}",
+                source_path.display()
+            ))
+        })?
+        .len();
 
     let check_path = backup_path
         .parent()

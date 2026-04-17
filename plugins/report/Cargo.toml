@@ -13,7 +13,6 @@ description = "Library report plugin — single source of truth for statistics a
 [dependencies]
 voom-domain = { workspace = true }
 voom-kernel = { workspace = true }
-anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

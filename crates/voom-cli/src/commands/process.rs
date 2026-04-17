@@ -770,7 +770,7 @@ fn process_single_file_dry_run(
 
     collect_safeguard_violations(file, &result, ctx);
 
-    let needs_exec = voom_phase_orchestrator::PhaseOrchestrator::needs_execution(&result);
+    let needs_exec = voom_phase_orchestrator::needs_execution(&result);
     if needs_exec {
         ctx.counters
             .modified_count
@@ -853,7 +853,6 @@ async fn process_single_file_execute(
         return Ok(Some(skip_json));
     }
 
-    let evaluator = voom_policy_evaluator::PolicyEvaluator::new();
     let mut current_file = file.clone();
     let mut phase_outcomes: HashMap<String, voom_policy_evaluator::EvaluationOutcome> =
         HashMap::new();
@@ -866,7 +865,7 @@ async fn process_single_file_execute(
             break;
         }
 
-        let Some(mut plan) = evaluator.evaluate_single_phase(
+        let Some(mut plan) = voom_policy_evaluator::evaluate_single_phase_with_hints(
             phase_name,
             compiled,
             &current_file,
@@ -1793,11 +1792,9 @@ fn orchestrate_plans(
     file: &voom_domain::media::MediaFile,
     capabilities: &voom_domain::CapabilityMap,
 ) -> voom_phase_orchestrator::OrchestrationResult {
-    let plans = voom_policy_evaluator::PolicyEvaluator::new()
-        .evaluate_with_capabilities(compiled, file, capabilities)
-        .plans;
-    let orchestrator = voom_phase_orchestrator::PhaseOrchestrator::new();
-    orchestrator.orchestrate(plans)
+    let plans =
+        voom_policy_evaluator::evaluate_with_capabilities(compiled, file, capabilities).plans;
+    voom_phase_orchestrator::orchestrate(plans)
 }
 
 /// Determine the file path after plan execution.

@@ -43,7 +43,7 @@ subtle = "2"
 governor = { workspace = true }
 
 # File locking (used by delete_file handler to acquire the process lock)
-fs2 = "0.4"
+fs2 = { workspace = true }
 anyhow.workspace = true
 
 # Errors & logging

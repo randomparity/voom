@@ -2432,9 +2432,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.10"
+version = "0.103.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df33b2b81ac578cabaf06b89b0631153a3f416b0a886e8a7a1707fb51abbd1ef"
+checksum = "8279bb85272c9f10811ae6a6c547ff594d6a7f3c6c6b02ee9726d1d0dcfcdd06"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -3237,7 +3237,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.18",
  "tracing",
  "uuid",
  "voom-domain",
@@ -3360,7 +3359,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.18",
  "tracing",
  "uuid",
  "voom-domain",
@@ -3403,7 +3401,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
@@ -3443,10 +3440,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "scopeguard",
- "serde",
- "serde_json",
  "tempfile",
- "thiserror 2.0.18",
  "tracing",
  "uuid",
  "voom-domain",
@@ -3505,7 +3499,6 @@ dependencies = [
 name = "voom-report"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "serde",
  "serde_json",
  "tempfile",
@@ -3591,7 +3584,6 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
  "uuid",
  "voom-domain",
 ]

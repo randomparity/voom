@@ -15,9 +15,7 @@ voom-domain = { workspace = true }
 voom-kernel = { workspace = true }
 voom-process = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 tracing = { workspace = true }
-thiserror = { workspace = true }
 uuid = { workspace = true }
 
 [lints]
@@ -26,3 +24,4 @@ workspace = true
 [dev-dependencies]
 tempfile = { workspace = true }
 chrono = { workspace = true }
+serde_json = { workspace = true }

@@ -117,7 +117,14 @@ fn clean_stale_pending_ops(
             path = %op.file_path.display(),
             "stale pending operation with no backup — removing"
         );
-        let _ = store.delete_pending_op(&op.id);
+        if let Err(e) = store.delete_pending_op(&op.id) {
+            tracing::warn!(
+                plan_id = %op.id,
+                path = %op.file_path.display(),
+                error = %e,
+                "failed to delete stale pending operation"
+            );
+        }
     }
 }
 
@@ -148,7 +155,14 @@ fn resolve_single_orphan(
                 .iter()
                 .filter(|op| *op.file_path.to_string_lossy() == path_str)
             {
-                let _ = store.delete_pending_op(&op.id);
+                if let Err(e) = store.delete_pending_op(&op.id) {
+                    tracing::warn!(
+                        plan_id = %op.id,
+                        path = %op.file_path.display(),
+                        error = %e,
+                        "failed to delete resolved pending operation"
+                    );
+                }
             }
             Ok(true)
         }
