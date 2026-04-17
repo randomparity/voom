@@ -68,7 +68,7 @@ voom/
 │   ├── voom-kernel/          # Event bus, plugin registry, native + WASM loader
 │   ├── voom-domain/          # Shared types: MediaFile, Track, Plan, Event, Capability
 │   ├── voom-dsl/             # PEG grammar (pest), parser, AST, compiler, validator, formatter
-│   ├── voom-cli/             # clap-derive CLI binary with 14 subcommands
+│   ├── voom-cli/             # clap-derive CLI binary with 20 subcommands
 │   ├── voom-process/         # Shared subprocess utilities with timeout-aware execution
 │   ├── voom-wit/             # WIT interface definitions + type conversion utilities
 │   └── voom-plugin-sdk/      # SDK crate for WASM plugin authors
@@ -77,14 +77,17 @@ voom/
 │   ├── ffprobe-introspector/ # ffprobe JSON parsing, codec/HDR/VFR detection (kernel-registered)
 │   ├── tool-detector/        # PATH lookup, version parsing for external tools
 │   ├── sqlite-store/         # SQLite persistence (r2d2 pool, WAL mode)
-│   ├── policy-evaluator/     # Track filtering, condition evaluation, Plan generation
-│   ├── phase-orchestrator/   # Phase sequencing with skip_when/depends_on/run_if
+│   ├── policy-evaluator/     # Track filtering, condition evaluation, Plan generation (library)
+│   ├── phase-orchestrator/   # Phase sequencing with skip_when/depends_on/run_if (library)
 │   ├── mkvtoolnix-executor/  # mkvpropedit + mkvmerge command builders
 │   ├── ffmpeg-executor/      # FFmpeg command builder, HW accel, progress parsing
 │   ├── backup-manager/       # File backup/restore with disk space validation
 │   ├── job-manager/          # Priority queue, concurrent worker pool (tokio + Semaphore)
 │   ├── bus-tracer/           # Event bus tracer — configurable event logging for development
-│   └── web-server/           # axum REST API + htmx/Alpine.js web UI + SSE
+│   ├── health-checker/       # Environment diagnostics and health checks
+│   ├── report/               # Library analytics and report queries
+│   ├── web-server/           # axum REST API + htmx/Alpine.js web UI + SSE (started by `serve`)
+│   └── web-sse-bridge/       # Bridges event bus → SSE stream (registered when `serve` runs)
 └── wasm-plugins/             # WASM plugins (excluded from workspace, target wasm32)
     ├── example-metadata/     # Example plugin demonstrating the SDK
     ├── radarr-metadata/      # Movie metadata enrichment via Radarr API

@@ -32,11 +32,12 @@ Plugins communicate exclusively through an **event bus** (synchronous priority-o
 - **voom-kernel** — Event bus, plugin registry, native + WASM loader
 - **voom-domain** — Shared types: `MediaFile`, `Track`, `Plan`, `Event`, `Capability` (serde-serializable, exposed to WASM via WIT)
 - **voom-dsl** — PEG grammar (pest), parser, AST, compiler (AST → CompiledPolicy), validator, formatter
-- **voom-cli** — clap-derive CLI binary with subcommands (scan, inspect, process, policy, plugin, serve, doctor, jobs, report, db, config)
+- **voom-cli** — clap-derive CLI binary (20 subcommands: scan, inspect, process, policy, plugin, jobs, report, files, plans, events, health, doctor, serve, db, config, tools, history, backup, init, completions)
 - **voom-process** — Shared subprocess utilities with timeout-aware execution for executor plugins
 - **voom-wit** — WIT interface definitions (plugin.wit, host.wit, types.wit)
 - **voom-plugin-sdk** — SDK crate for third-party plugin authors
-- **plugins/** — Native plugins: 12 kernel-registered (discovery, tool-detector, sqlite-store, mkvtoolnix-executor, ffmpeg-executor, backup-manager, job-manager, ffprobe-introspector, bus-tracer, health-checker, capability-collector, report) + 3 library-only (policy-evaluator: called directly by CLI, phase-orchestrator: called directly by CLI, web-server: started by `serve` command)
+- **plugins/** — 11 kernel-registered (bus-tracer, health-checker, tool-detector, discovery, ffprobe-introspector, mkvtoolnix-executor, ffmpeg-executor, backup-manager, sqlite-store, job-manager, report) + 4 library/command-started (policy-evaluator: called directly by CLI, phase-orchestrator: called directly by CLI, web-server: started by `serve`, web-sse-bridge: registered when `serve` runs).
+- **capability-collector** — currently lives inside `crates/voom-cli/src/capability_collector.rs` as a kernel-registered plugin. Known arch debt: it belongs under `plugins/capability-collector/` so every native plugin lives under `plugins/` uniformly.
 
 ### Key data flow
 1. DSL policy file (`.voom`) → pest parser → AST → CompiledPolicy

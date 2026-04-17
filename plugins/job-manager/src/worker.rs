@@ -258,8 +258,26 @@ struct WorkerContext<F> {
     on_error: JobErrorStrategy,
 }
 
+/// Increment the failed counter and send a `JobResult` describing the failure.
+///
+/// Consolidates the 5 near-identical failure-exit paths in `run_one_job` so
+/// the caller can simply `send_failure(...).await; return;` at each.
+async fn send_failure<F>(ctx: &WorkerContext<F>, job_id: Uuid, error: String) {
+    ctx.failed.fetch_add(1, Ordering::SeqCst);
+    if let Err(e) = ctx
+        .result_tx
+        .send(JobResult {
+            job_id,
+            success: false,
+            error: Some(error),
+        })
+        .await
+    {
+        tracing::warn!(job_id = %job_id, error = %e, "failed to send failure JobResult");
+    }
+}
+
 /// Execute a single job: claim it, run the processor, and record the result.
-#[allow(clippy::too_many_lines)] // Single coherent workflow; splitting would obscure the state transitions.
 async fn run_one_job<F, Fut>(job_id: Uuid, ctx: WorkerContext<F>)
 where
     F: Fn(voom_domain::job::Job) -> Fut + Send + Sync + 'static,
@@ -268,15 +286,7 @@ where
         + 'static,
 {
     if ctx.token.is_cancelled() {
-        ctx.failed.fetch_add(1, Ordering::SeqCst);
-        let _ = ctx
-            .result_tx
-            .send(JobResult {
-                job_id,
-                success: false,
-                error: Some("cancelled".into()),
-            })
-            .await;
+        send_failure(&ctx, job_id, "cancelled".into()).await;
         return;
     }
 
@@ -296,41 +306,17 @@ where
                 worker = %ctx.worker_id,
                 "job already claimed by another worker"
             );
-            ctx.failed.fetch_add(1, Ordering::SeqCst);
-            let _ = ctx
-                .result_tx
-                .send(JobResult {
-                    job_id,
-                    success: false,
-                    error: Some("raced — already claimed".into()),
-                })
-                .await;
+            send_failure(&ctx, job_id, "raced — already claimed".into()).await;
             return;
         }
         Ok(Err(e)) => {
             tracing::error!(error = %e, "Failed to claim job");
-            ctx.failed.fetch_add(1, Ordering::SeqCst);
-            let _ = ctx
-                .result_tx
-                .send(JobResult {
-                    job_id,
-                    success: false,
-                    error: Some(format!("failed to claim: {e}")),
-                })
-                .await;
+            send_failure(&ctx, job_id, format!("failed to claim: {e}")).await;
             return;
         }
         Err(e) => {
             tracing::error!(error = %e, "Task join error");
-            ctx.failed.fetch_add(1, Ordering::SeqCst);
-            let _ = ctx
-                .result_tx
-                .send(JobResult {
-                    job_id,
-                    success: false,
-                    error: Some(format!("task join error: {e}")),
-                })
-                .await;
+            send_failure(&ctx, job_id, format!("task join error: {e}")).await;
             return;
         }
     };
@@ -342,15 +328,7 @@ where
         if let Err(e) = tokio::task::spawn_blocking(move || q.cancel(&jid)).await {
             tracing::error!(error = %e, "failed to mark job as cancelled");
         }
-        ctx.failed.fetch_add(1, Ordering::SeqCst);
-        let _ = ctx
-            .result_tx
-            .send(JobResult {
-                job_id,
-                success: false,
-                error: Some("cancelled".into()),
-            })
-            .await;
+        send_failure(&ctx, job_id, "cancelled".into()).await;
         return;
     }
 
@@ -384,23 +362,15 @@ where
             if let Err(e) = tokio::task::spawn_blocking(move || q.fail(&job_id, err)).await {
                 tracing::error!(job_id = %job_id, error = %e, "failed to mark job as failed");
             }
-            ctx.failed.fetch_add(1, Ordering::SeqCst);
             ctx.reporter.on_job_complete(job_id, false, Some(&error));
 
-            if let Err(e) = ctx
-                .result_tx
-                .send(JobResult {
-                    job_id,
-                    success: false,
-                    error: Some(error),
-                })
-                .await
-            {
-                tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
-            }
+            // send_failure increments `failed` and dispatches the JobResult.
+            let strategy = ctx.on_error;
+            let token = ctx.token.clone();
+            send_failure(&ctx, job_id, error).await;
 
-            if ctx.on_error == JobErrorStrategy::Fail {
-                ctx.token.cancel();
+            if strategy == JobErrorStrategy::Fail {
+                token.cancel();
             }
         }
     }
