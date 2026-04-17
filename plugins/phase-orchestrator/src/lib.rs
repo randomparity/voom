@@ -5,8 +5,6 @@
 //! and provides dry-run formatting. Does not call executors — the CLI's
 //! `process` command handles actual execution and re-introspection.
 
-use std::fmt::Write;
-
 use voom_domain::plan::{PhaseOutcome, PhaseResult, Plan};
 use voom_dsl::compiled::{CompiledPolicy, ErrorStrategy};
 
@@ -77,10 +75,10 @@ pub fn format_dry_run(result: &OrchestrationResult) -> String {
     let mut output = String::new();
 
     for (plan, phase_result) in result.plans.iter().zip(&result.phase_results) {
-        let _ = writeln!(output, "\n=== Phase: {} ===", plan.phase_name);
+        output.push_str(&format!("\n=== Phase: {} ===\n", plan.phase_name));
 
         if let Some(ref reason) = phase_result.skip_reason {
-            let _ = writeln!(output, "  SKIPPED: {reason}");
+            output.push_str(&format!("  SKIPPED: {reason}\n"));
             continue;
         }
 
@@ -88,12 +86,12 @@ pub fn format_dry_run(result: &OrchestrationResult) -> String {
             output.push_str("  No actions needed.\n");
         } else {
             for (i, action) in plan.actions.iter().enumerate() {
-                let _ = writeln!(output, "  {}. {}", i + 1, action.description);
+                output.push_str(&format!("  {}. {}\n", i + 1, action.description));
             }
         }
 
         for warning in &plan.warnings {
-            let _ = writeln!(output, "  WARNING: {warning}");
+            output.push_str(&format!("  WARNING: {warning}\n"));
         }
     }
 
