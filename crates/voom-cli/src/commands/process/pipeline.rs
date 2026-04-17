@@ -210,7 +210,7 @@ async fn process_single_file_execute(
             break;
         }
 
-        let Some(mut plan) = voom_policy_evaluator::evaluate_single_phase_with_hints(
+        let Some(plan) = voom_policy_evaluator::evaluate_single_phase_with_hints(
             phase_name,
             compiled,
             &current_file,
@@ -219,7 +219,7 @@ async fn process_single_file_execute(
         ) else {
             continue;
         };
-        plan.session_id = Some(ctx.counters.session_id);
+        let plan = plan.with_session_id(ctx.counters.session_id);
 
         plans_evaluated += 1;
 
