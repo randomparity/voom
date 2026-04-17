@@ -184,7 +184,7 @@ fn collect_executor_capabilities(
         .unwrap_or_else(|| serde_json::json!({}));
 
     let ctx = PluginContext::new(plugin_json, config.data_dir.clone());
-    let collector = Arc::new(crate::capability_collector::CapabilityCollectorPlugin::new());
+    let collector = Arc::new(voom_capability_collector::CapabilityCollectorPlugin::new());
 
     let mut kernel = Kernel::new();
     kernel.register_plugin(collector.clone(), 1).ok()?;

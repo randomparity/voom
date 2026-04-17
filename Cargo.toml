@@ -20,6 +20,7 @@ members = [
     "plugins/web-sse-bridge",
     "plugins/health-checker",
     "plugins/bus-tracer",
+    "plugins/capability-collector",
     "plugins/report",
     "crates/voom-process",
     "crates/voom-cli",
@@ -69,6 +70,7 @@ voom-web-server = { path = "plugins/web-server" }
 voom-web-sse-bridge = { path = "plugins/web-sse-bridge" }
 voom-health-checker = { path = "plugins/health-checker" }
 voom-bus-tracer = { path = "plugins/bus-tracer" }
+voom-capability-collector = { path = "plugins/capability-collector" }
 voom-report = { path = "plugins/report" }
 
 # Async

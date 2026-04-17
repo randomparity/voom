@@ -1,3 +1,7 @@
+//! Capability collector plugin: aggregates `ExecutorCapabilities` events
+//! emitted by executor plugins during init so the policy evaluator can see
+//! which codecs/encoders/formats are actually available.
+
 use parking_lot::Mutex;
 
 use voom_domain::capabilities::Capability;
@@ -23,6 +27,12 @@ impl CapabilityCollectorPlugin {
     #[must_use]
     pub fn snapshot(&self) -> CapabilityMap {
         self.map.lock().clone()
+    }
+}
+
+impl Default for CapabilityCollectorPlugin {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

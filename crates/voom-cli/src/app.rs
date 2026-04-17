@@ -6,7 +6,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use voom_kernel::{Kernel, Plugin};
 
-use crate::capability_collector::CapabilityCollectorPlugin;
+use voom_capability_collector::CapabilityCollectorPlugin;
+
 use crate::config::AppConfig;
 
 /// Return type for [`bootstrap_kernel_with_store`].

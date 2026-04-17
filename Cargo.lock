@@ -3258,6 +3258,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "voom-capability-collector"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "voom-domain",
+ "voom-kernel",
+]
+
+[[package]]
 name = "voom-cli"
 version = "0.1.0"
 dependencies = [
@@ -3287,6 +3296,7 @@ dependencies = [
  "uuid",
  "voom-backup-manager",
  "voom-bus-tracer",
+ "voom-capability-collector",
  "voom-discovery",
  "voom-domain",
  "voom-dsl",

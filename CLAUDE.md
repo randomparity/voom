@@ -36,8 +36,7 @@ Plugins communicate exclusively through an **event bus** (synchronous priority-o
 - **voom-process** — Shared subprocess utilities with timeout-aware execution for executor plugins
 - **voom-wit** — WIT interface definitions (plugin.wit, host.wit, types.wit)
 - **voom-plugin-sdk** — SDK crate for third-party plugin authors
-- **plugins/** — 11 kernel-registered (bus-tracer, health-checker, tool-detector, discovery, ffprobe-introspector, mkvtoolnix-executor, ffmpeg-executor, backup-manager, sqlite-store, job-manager, report) + 4 library/command-started (policy-evaluator: called directly by CLI, phase-orchestrator: called directly by CLI, web-server: started by `serve`, web-sse-bridge: registered when `serve` runs).
-- **capability-collector** — currently lives inside `crates/voom-cli/src/capability_collector.rs` as a kernel-registered plugin. Known arch debt: it belongs under `plugins/capability-collector/` so every native plugin lives under `plugins/` uniformly.
+- **plugins/** — 12 kernel-registered (bus-tracer, capability-collector, health-checker, tool-detector, discovery, ffprobe-introspector, mkvtoolnix-executor, ffmpeg-executor, backup-manager, sqlite-store, job-manager, report) + 4 library/command-started (policy-evaluator: called directly by CLI, phase-orchestrator: called directly by CLI, web-server: started by `serve`, web-sse-bridge: registered when `serve` runs).
 
 ### Key data flow
 1. DSL policy file (`.voom`) → pest parser → AST → CompiledPolicy

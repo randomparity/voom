@@ -4,7 +4,6 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 mod app;
-mod capability_collector;
 mod cli;
 mod commands;
 mod config;
