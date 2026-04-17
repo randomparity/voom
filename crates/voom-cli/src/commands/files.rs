@@ -27,21 +27,21 @@ pub fn run(cmd: FilesCommands, global_yes: bool) -> Result<()> {
             filters.path_prefix = path_prefix;
             filters.limit = Some(limit);
             filters.offset = Some(offset);
-            list(filters, format)
+            list(&filters, format)
         }
         FilesCommands::Show { id, format } => show(&id, format),
         FilesCommands::Delete { id, yes } => delete(&id, yes || global_yes),
     }
 }
 
-fn list(filters: FileFilters, format: OutputFormat) -> Result<()> {
+fn list(filters: &FileFilters, format: OutputFormat) -> Result<()> {
     let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
     let total = store
-        .count_files(&filters)
+        .count_files(filters)
         .context("failed to count files")?;
-    let files = store.list_files(&filters).context("failed to list files")?;
+    let files = store.list_files(filters).context("failed to list files")?;
 
     if total == 0 {
         if format.is_machine() {
@@ -98,7 +98,7 @@ fn list(filters: FileFilters, format: OutputFormat) -> Result<()> {
             let limit = filters.limit.unwrap_or(100);
             let offset = filters.offset.unwrap_or(0);
             let showing = files.len();
-            let total_usize = total as usize;
+            let total_usize = usize::try_from(total).unwrap_or(usize::MAX);
 
             if total_usize > showing {
                 println!(

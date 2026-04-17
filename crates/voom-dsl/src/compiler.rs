@@ -27,6 +27,8 @@ use crate::errors::DslError;
 /// Safely convert an f64 to u32, returning None for negative, fractional, or out-of-range values.
 fn safe_u32(n: f64) -> Option<u32> {
     if n >= 0.0 && n <= f64::from(u32::MAX) && n.fract() == 0.0 {
+        // Bounded above by the explicit range check; safe to cast.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         Some(n as u32)
     } else {
         None
@@ -230,8 +232,7 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
         Some(Value::List(items)) => items
             .iter()
             .filter_map(|item| match item {
-                Value::String(s) | Value::Ident(s) => Some(s.clone()),
-                Value::Number(_, s) => Some(s.clone()),
+                Value::String(s) | Value::Ident(s) | Value::Number(_, s) => Some(s.clone()),
                 _ => None,
             })
             .collect(),
@@ -244,8 +245,7 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
     };
 
     let bitrate = match get("bitrate") {
-        Some(Value::String(s) | Value::Ident(s)) => Some(s.clone()),
-        Some(Value::Number(_, s)) => Some(s.clone()),
+        Some(Value::String(s) | Value::Ident(s) | Value::Number(_, s)) => Some(s.clone()),
         _ => None,
     };
 
@@ -902,7 +902,9 @@ mod tests {
                 assert_eq!(tag, "title");
                 match value {
                     CompiledValueOrField::Value(v) => assert_eq!(v, "My Movie"),
-                    other => panic!("expected Value, got {other:?}"),
+                    CompiledValueOrField::Field(_) => {
+                        panic!("expected Value, got Field")
+                    }
                 }
             }
             other => panic!("expected SetTag, got {other:?}"),

@@ -5,6 +5,8 @@
 //! and provides dry-run formatting. Does not call executors — the CLI's
 //! `process` command handles actual execution and re-introspection.
 
+use std::fmt::Write;
+
 use voom_domain::plan::{PhaseOutcome, PhaseResult, Plan};
 use voom_dsl::compiled::{CompiledPolicy, ErrorStrategy};
 
@@ -67,7 +69,7 @@ impl PhaseOrchestrator {
 
             let mut phase_result = PhaseResult::new(plan.phase_name.clone(), outcome);
             phase_result.file_modified = !plan.actions.is_empty();
-            phase_result.skip_reason = plan.skip_reason.clone();
+            phase_result.skip_reason.clone_from(&plan.skip_reason);
             phase_results.push(phase_result);
         }
 
@@ -84,10 +86,10 @@ impl PhaseOrchestrator {
         let mut output = String::new();
 
         for (plan, phase_result) in result.plans.iter().zip(&result.phase_results) {
-            output.push_str(&format!("\n=== Phase: {} ===\n", plan.phase_name));
+            let _ = writeln!(output, "\n=== Phase: {} ===", plan.phase_name);
 
             if let Some(ref reason) = phase_result.skip_reason {
-                output.push_str(&format!("  SKIPPED: {reason}\n"));
+                let _ = writeln!(output, "  SKIPPED: {reason}");
                 continue;
             }
 
@@ -95,12 +97,12 @@ impl PhaseOrchestrator {
                 output.push_str("  No actions needed.\n");
             } else {
                 for (i, action) in plan.actions.iter().enumerate() {
-                    output.push_str(&format!("  {}. {}\n", i + 1, action.description));
+                    let _ = writeln!(output, "  {}. {}", i + 1, action.description);
                 }
             }
 
             for warning in &plan.warnings {
-                output.push_str(&format!("  WARNING: {warning}\n"));
+                let _ = writeln!(output, "  WARNING: {warning}");
             }
         }
 

@@ -192,20 +192,17 @@ fn scan_vbak_files(root: &Path) -> Result<Vec<VbakEntry>> {
 }
 
 fn scan_dir_recursive(dir: &Path, entries: &mut Vec<VbakEntry>) -> Result<()> {
-    let read_dir = match std::fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(_) => return Ok(()),
+    let Ok(read_dir) = std::fs::read_dir(dir) else {
+        return Ok(());
     };
 
     for entry in read_dir {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
+        let Ok(entry) = entry else {
+            continue;
         };
 
-        let ft = match entry.file_type() {
-            Ok(ft) => ft,
-            Err(_) => continue,
+        let Ok(ft) = entry.file_type() else {
+            continue;
         };
         if ft.is_symlink() || !ft.is_dir() {
             continue;
@@ -214,7 +211,7 @@ fn scan_dir_recursive(dir: &Path, entries: &mut Vec<VbakEntry>) -> Result<()> {
         let name = entry.file_name();
         let path = entry.path();
         if name == ".voom-backup" {
-            collect_vbak_in_dir(&path, entries)?;
+            collect_vbak_in_dir(&path, entries);
         } else {
             let name_str = name.to_string_lossy();
             if !name_str.starts_with('.') {
@@ -226,16 +223,14 @@ fn scan_dir_recursive(dir: &Path, entries: &mut Vec<VbakEntry>) -> Result<()> {
     Ok(())
 }
 
-fn collect_vbak_in_dir(dir: &Path, entries: &mut Vec<VbakEntry>) -> Result<()> {
-    let read_dir = match std::fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(_) => return Ok(()),
+fn collect_vbak_in_dir(dir: &Path, entries: &mut Vec<VbakEntry>) {
+    let Ok(read_dir) = std::fs::read_dir(dir) else {
+        return;
     };
 
     for entry in read_dir {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
+        let Ok(entry) = entry else {
+            continue;
         };
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("vbak") {
@@ -253,8 +248,6 @@ fn collect_vbak_in_dir(dir: &Path, entries: &mut Vec<VbakEntry>) -> Result<()> {
             });
         }
     }
-
-    Ok(())
 }
 
 /// Derive the original filename from a backup path by stripping the

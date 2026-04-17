@@ -438,6 +438,7 @@ fn broad_track_category(target: &str) -> &str {
     }
 }
 
+#[allow(clippy::too_many_lines)] // Dispatch over all operation variants; splitting would fragment validation logic.
 fn validate_operation(
     op: &OperationNode,
     line: usize,
@@ -736,7 +737,7 @@ fn validate_filter(
                 ));
             }
         }
-        FilterNode::LangField(_, path) => {
+        FilterNode::LangField(_, path) | FilterNode::CodecField(_, path) => {
             validate_field_path(path, line, col, errors, warnings);
         }
         FilterNode::CodecIn(codecs_list) => {
@@ -746,9 +747,6 @@ fn validate_filter(
         }
         FilterNode::CodecCompare(_, codec) => {
             validate_codec(codec, line, col, errors);
-        }
-        FilterNode::CodecField(_, path) => {
-            validate_field_path(path, line, col, errors, warnings);
         }
         FilterNode::And(items) | FilterNode::Or(items) => {
             for item in items {
@@ -1280,7 +1278,7 @@ fn validate_action(
                 ValueOrField::Field(path) => {
                     validate_field_path(path, line, col, errors, warnings);
                 }
-                _ => {}
+                ValueOrField::Value(_) => {}
             }
         }
         ActionNode::SetTag(_, val) => {

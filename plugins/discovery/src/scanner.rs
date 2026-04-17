@@ -155,7 +155,7 @@ pub fn hash_file(path: &Path) -> Result<String> {
 /// Hash a small file by reading it in full.
 fn hash_file_full(file: &mut fs::File) -> Result<String> {
     let mut hasher = Xxh3::new();
-    let mut buf = [0u8; 256 * 1024];
+    let mut buf = vec![0u8; 256 * 1024];
 
     loop {
         let n = file.read(&mut buf)?;

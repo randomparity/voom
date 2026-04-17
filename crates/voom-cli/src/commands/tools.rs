@@ -8,10 +8,13 @@ use crate::output::sanitize_for_display;
 pub fn run(cmd: ToolsCommands) -> Result<()> {
     match cmd {
         ToolsCommands::List { format } => list(format),
-        ToolsCommands::Info { name, format } => info(name, format),
+        ToolsCommands::Info { name, format } => info(&name, format),
     }
 }
 
+// Return type mirrors the other subcommand handlers so `main`'s match arms
+// all return `Result<()>`; this listing itself never propagates errors.
+#[allow(clippy::unnecessary_wraps)]
 fn list(format: OutputFormat) -> Result<()> {
     let mut detector = voom_tool_detector::ToolDetectorPlugin::new();
     detector.detect_all();
@@ -71,11 +74,11 @@ fn list(format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn info(name: String, format: OutputFormat) -> Result<()> {
+fn info(name: &str, format: OutputFormat) -> Result<()> {
     let mut detector = voom_tool_detector::ToolDetectorPlugin::new();
     detector.detect_all();
 
-    let tool = if let Some(t) = detector.tool(&name) {
+    let tool = if let Some(t) = detector.tool(name) {
         t.clone()
     } else {
         let available: Vec<_> = detector
@@ -93,7 +96,7 @@ fn info(name: String, format: OutputFormat) -> Result<()> {
     };
 
     // Try to load executor capabilities for executor tools
-    let executor_name = match name.as_str() {
+    let executor_name = match name {
         "ffmpeg" | "ffprobe" => Some("ffmpeg-executor"),
         "mkvmerge" | "mkvpropedit" | "mkvextract" => Some("mkvtoolnix-executor"),
         _ => None,
@@ -210,7 +213,7 @@ mod tests {
 
     #[test]
     fn test_info_nonexistent_tool_fails() {
-        let result = info("nonexistent-tool-xyz".to_string(), OutputFormat::Table);
+        let result = info("nonexistent-tool-xyz", OutputFormat::Table);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }

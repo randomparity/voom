@@ -56,6 +56,10 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
 /// pool creation, plugin init) and must NOT be called from an async
 /// context. Callers should invoke it before entering the tokio
 /// runtime or from within `spawn_blocking`.
+// Bootstrap walks every plugin slot once and registers it; splitting the
+// per-plugin blocks into helpers would require threading `kernel`, `config`,
+// and the collected data through many extra parameters.
+#[allow(clippy::too_many_lines)]
 pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult> {
     let mut kernel = Kernel::new();
     let data_dir = &config.data_dir;
@@ -64,18 +68,17 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
 
     // Resolve per-plugin config as JSON, with a fallback to empty object.
     let plugin_json = |name: &str| -> serde_json::Value {
-        config
-            .plugin
-            .get(name)
-            .map(|t| match serde_json::to_value(t) {
+        config.plugin.get(name).map_or_else(
+            || serde_json::json!({}),
+            |t| match serde_json::to_value(t) {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(plugin = name, error = %e,
                         "failed to convert plugin config to JSON; using empty config");
                     serde_json::json!({})
                 }
-            })
-            .unwrap_or_else(|| serde_json::json!({}))
+            },
+        )
     };
 
     // Helper macro to conditionally register a plugin (skips if disabled).

@@ -259,6 +259,7 @@ struct WorkerContext<F> {
 }
 
 /// Execute a single job: claim it, run the processor, and record the result.
+#[allow(clippy::too_many_lines)] // Single coherent workflow; splitting would obscure the state transitions.
 async fn run_one_job<F, Fut>(job_id: Uuid, ctx: WorkerContext<F>)
 where
     F: Fn(voom_domain::job::Job) -> Fut + Send + Sync + 'static,

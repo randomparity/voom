@@ -56,7 +56,8 @@ fn show(file_arg: &str, format: OutputFormat) -> Result<()> {
     }
 
     match format {
-        OutputFormat::Json => {
+        // Plans are complex structures; plain/csv fall through to JSON too.
+        OutputFormat::Json | OutputFormat::Plain | OutputFormat::Csv => {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&plans)
@@ -96,14 +97,6 @@ fn show(file_arg: &str, format: OutputFormat) -> Result<()> {
             }
 
             println!("{table}");
-        }
-        // Plans are complex structures; fall through to JSON for plain/csv output
-        OutputFormat::Plain | OutputFormat::Csv => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&plans)
-                    .expect("PlanSummary serialization cannot fail")
-            );
         }
     }
 

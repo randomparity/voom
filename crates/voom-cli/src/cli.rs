@@ -147,6 +147,9 @@ pub struct InspectArgs {
 
 // === Process ===
 
+// Each bool corresponds to a distinct CLI flag (`--dry-run`, `--approve`,
+// `--plan-only`, etc.); grouping them into enums would break clap's derive.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(clap::Args)]
 pub struct ProcessArgs {
     /// Directories or files to process
@@ -304,6 +307,9 @@ pub enum JobsCommands {
 
 // === Report ===
 
+// Each bool corresponds to a distinct `--section` CLI flag; an enum would
+// sacrifice the ability to request multiple sections in one invocation.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(clap::Args)]
 pub struct ReportArgs {
     /// Output format (auto-detected: table for TTY, json for pipe)
@@ -620,7 +626,8 @@ pub enum OutputFormat {
 
 impl OutputFormat {
     /// Returns true for formats intended for machine consumption (piping, scripting).
-    pub fn is_machine(&self) -> bool {
+    #[must_use]
+    pub fn is_machine(self) -> bool {
         matches!(self, Self::Json | Self::Plain | Self::Csv)
     }
 }

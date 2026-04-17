@@ -122,10 +122,7 @@ impl ReportPlugin {
         Ok(snapshot)
     }
 
-    fn handle_lifecycle_event(
-        &self,
-        trigger: SnapshotTrigger,
-    ) -> voom_domain::errors::Result<Option<EventResult>> {
+    fn handle_lifecycle_event(&self, trigger: SnapshotTrigger) -> Option<EventResult> {
         match Self::capture_snapshot(self.store.as_ref(), trigger) {
             Ok(snapshot) => {
                 tracing::info!(
@@ -133,11 +130,11 @@ impl ReportPlugin {
                     files = snapshot.files.total_count,
                     "auto-captured library snapshot"
                 );
-                Ok(Some(EventResult::new("report")))
+                Some(EventResult::new("report"))
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to auto-capture snapshot");
-                Ok(None)
+                None
             }
         }
     }
@@ -164,9 +161,11 @@ impl Plugin for ReportPlugin {
 
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
         match event {
-            Event::ScanComplete(_) => self.handle_lifecycle_event(SnapshotTrigger::ScanComplete),
+            Event::ScanComplete(_) => {
+                Ok(self.handle_lifecycle_event(SnapshotTrigger::ScanComplete))
+            }
             Event::IntrospectComplete(_) => {
-                self.handle_lifecycle_event(SnapshotTrigger::IntrospectComplete)
+                Ok(self.handle_lifecycle_event(SnapshotTrigger::IntrospectComplete))
             }
             _ => Ok(None),
         }

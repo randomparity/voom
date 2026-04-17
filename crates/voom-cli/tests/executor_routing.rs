@@ -202,7 +202,7 @@ fn test_mkv_transcode_routes_to_ffmpeg() {
             0,
             ActionParams::Transcode {
                 codec: "h264".into(),
-                settings: Default::default(),
+                settings: TranscodeSettings::default(),
             },
             "Transcode MKV to H.264",
         )],

@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn test_default_creates_same_as_new() {
-        let _plugin = PolicyEvaluator;
+        let _ = PolicyEvaluator;
     }
 
     #[test]

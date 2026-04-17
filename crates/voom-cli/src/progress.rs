@@ -40,13 +40,18 @@ pub fn format_eta(elapsed: Duration, current: usize, total: usize) -> String {
     if current == 0 {
         return String::new();
     }
+    // File counts and seconds stay well under 2^52, so the f64 cast is safe
+    // for the rate/ETA arithmetic that follows.
+    #[allow(clippy::cast_precision_loss)]
     let rate = current as f64 / elapsed.as_secs_f64();
+    #[allow(clippy::cast_precision_loss)]
     let remaining = (total - current) as f64 / rate;
     if remaining.is_finite() && remaining > 0.0 {
-        format!(
-            ", ETA {}",
-            HumanDuration(Duration::from_secs(remaining as u64))
-        )
+        // `remaining` is positive and finite here, and ETAs beyond u64 seconds
+        // are not meaningful — saturate to avoid wrap.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let secs = remaining as u64;
+        format!(", ETA {}", HumanDuration(Duration::from_secs(secs)))
     } else {
         String::new()
     }
@@ -260,7 +265,7 @@ impl ProgressReporter for BatchProgress {
         }
     }
 
-    fn on_job_complete(&self, _id: uuid::Uuid, _success: bool, error: Option<&str>) {
+    fn on_job_complete(&self, id: uuid::Uuid, _success: bool, error: Option<&str>) {
         if let Some(err) = error {
             self.overall.suspend(|| {
                 eprintln!("{} {err}", style("ERROR:").bold().red());
@@ -268,7 +273,7 @@ impl ProgressReporter for BatchProgress {
         }
         let eta = {
             let mut state = self.state.lock();
-            state.on_job_complete(_id)
+            state.on_job_complete(id)
         };
         self.overall.inc(1);
         if let Some((path, eta)) = eta {
@@ -301,7 +306,12 @@ enum EtaConfidence {
 #[derive(Debug)]
 struct EtaEstimate {
     eta: Option<Duration>,
+    // `confidence` and `remaining_work` are populated for introspection in
+    // tests and future UI surfaces; they are not read by the current ETA
+    // formatter, which renders only `eta`.
+    #[allow(dead_code)]
     confidence: EtaConfidence,
+    #[allow(dead_code)]
     remaining_work: f64,
 }
 
@@ -389,11 +399,7 @@ impl BatchEtaState {
     fn eta_string(&mut self) -> String {
         let estimate = self.estimate();
         match estimate.eta {
-            Some(eta) if eta > Duration::ZERO => {
-                let _confidence = estimate.confidence;
-                let _remaining_work = estimate.remaining_work;
-                format!(", ETA {}", HumanDuration(eta))
-            }
+            Some(eta) if eta > Duration::ZERO => format!(", ETA {}", HumanDuration(eta)),
             _ => String::new(),
         }
     }
@@ -517,6 +523,10 @@ impl BatchEtaState {
         (expected_total - elapsed).max(0.0)
     }
 
+    // `&self` is kept so callers use method syntax consistently with the
+    // other progress-tracking helpers in this impl; splitting it out as an
+    // associated function would churn every call site.
+    #[allow(clippy::unused_self)]
     fn progress_for_job(
         &self,
         job: &RunningJobState,
@@ -569,7 +579,9 @@ impl BatchEtaState {
 }
 
 fn job_weight(size: u64) -> f64 {
-    (size as f64).max(MIN_JOB_WEIGHT)
+    #[allow(clippy::cast_precision_loss)] // file sizes beyond 2^52 bytes would exceed disk capacity
+    let size = size as f64;
+    size.max(MIN_JOB_WEIGHT)
 }
 
 fn duration_from_secs(secs: f64) -> Option<Duration> {

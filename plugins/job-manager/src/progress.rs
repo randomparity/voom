@@ -233,6 +233,8 @@ mod tests {
 
     #[test]
     fn test_storage_reporter() {
+        use voom_domain::storage::JobStorage;
+
         let store = Arc::new(voom_domain::test_support::InMemoryStore::new());
         let reporter = StorageReporter::new(store.clone());
 
@@ -242,9 +244,11 @@ mod tests {
 
         reporter.on_job_progress(job_id, 0.75, Some("Processing"));
 
-        use voom_domain::storage::JobStorage;
         let loaded = store.job(&job_id).unwrap().unwrap();
-        assert_eq!(loaded.progress, 0.75);
+        #[allow(clippy::float_cmp)] // exact-representable literal round-trip
+        {
+            assert_eq!(loaded.progress, 0.75);
+        }
         assert_eq!(loaded.progress_message.as_deref(), Some("Processing"));
     }
 

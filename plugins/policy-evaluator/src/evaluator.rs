@@ -74,9 +74,8 @@ pub fn evaluate_with_context(
     let mut phase_outcomes: HashMap<String, EvaluationOutcome> = HashMap::new();
 
     for phase_name in &policy.phase_order {
-        let phase = match policy.phases.iter().find(|p| &p.name == phase_name) {
-            Some(p) => p,
-            None => continue,
+        let Some(phase) = policy.phases.iter().find(|p| &p.name == phase_name) else {
+            continue;
         };
 
         let plan = evaluate_phase(phase, policy, file, &phase_outcomes, &eval_ctx);
@@ -123,6 +122,8 @@ pub fn evaluate_with_context(
 /// assert_eq!(plan.unwrap().phase_name, "init");
 /// ```
 #[must_use]
+// Callers always use the default hasher; generalizing here would leak into many signatures.
+#[allow(clippy::implicit_hasher)]
 pub fn evaluate_single_phase(
     phase_name: &str,
     policy: &CompiledPolicy,
@@ -438,10 +439,10 @@ fn emit_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), 
             emit_set_container(container, ctx);
         }
         CompiledOperation::Keep { target, filter } => {
-            emit_keep(target, filter.as_ref(), ctx);
+            emit_keep(*target, filter.as_ref(), ctx);
         }
         CompiledOperation::Remove { target, filter } => {
-            emit_remove(target, filter.as_ref(), ctx);
+            emit_remove(*target, filter.as_ref(), ctx);
         }
         CompiledOperation::ReorderTracks(order) => {
             emit_reorder(order, ctx);
@@ -450,14 +451,14 @@ fn emit_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), 
             emit_set_defaults(defaults, ctx);
         }
         CompiledOperation::ClearActions { target, settings } => {
-            emit_clear_actions(target, settings, ctx);
+            emit_clear_actions(*target, settings, ctx);
         }
         CompiledOperation::Transcode {
             target,
             codec,
             settings,
         } => {
-            emit_transcode(target, codec, settings, ctx);
+            emit_transcode(*target, codec, settings, ctx);
         }
         CompiledOperation::Synthesize(synth) => {
             emit_synthesize(synth, ctx);
@@ -475,7 +476,7 @@ fn emit_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), 
             emit_conditional(cond, ctx)?;
         }
         CompiledOperation::Rules { mode, rules } => {
-            emit_rules(mode, rules, ctx)?;
+            emit_rules(*mode, rules, ctx)?;
         }
     }
     Ok(())
@@ -495,7 +496,7 @@ fn emit_set_container(container: &str, ctx: &mut PhaseContext) {
     }
 }
 
-fn emit_remove_track(track: &Track, target: &TrackTarget, reason: &str, ctx: &mut PhaseContext) {
+fn emit_remove_track(track: &Track, target: TrackTarget, reason: &str, ctx: &mut PhaseContext) {
     ctx.plan.actions.push(PlannedAction::track_op(
         OperationType::RemoveTrack,
         track.index,
@@ -513,7 +514,7 @@ fn emit_remove_track(track: &Track, target: &TrackTarget, reason: &str, ctx: &mu
     ));
 }
 
-fn emit_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
+fn emit_keep(target: TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
     let tracks = tracks_for_target(ctx.file, target);
     if tracks.is_empty() {
         return;
@@ -545,7 +546,7 @@ fn emit_keep(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut Ph
     }
 }
 
-fn emit_remove(target: &TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
+fn emit_remove(target: TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
     let tracks = tracks_for_target(ctx.file, target);
     if tracks.is_empty() {
         return;
@@ -588,7 +589,7 @@ fn emit_reorder(order: &[String], ctx: &mut PhaseContext) {
     ));
 }
 
-fn emit_set_default(target: &TrackTarget, track: &Track, detail: &str, ctx: &mut PhaseContext) {
+fn emit_set_default(target: TrackTarget, track: &Track, detail: &str, ctx: &mut PhaseContext) {
     ctx.plan.actions.push(PlannedAction::track_op(
         OperationType::SetDefault,
         track.index,
@@ -601,7 +602,7 @@ fn emit_set_default(target: &TrackTarget, track: &Track, detail: &str, ctx: &mut
     ));
 }
 
-fn emit_clear_default(target: &TrackTarget, track: &Track, detail: &str, ctx: &mut PhaseContext) {
+fn emit_clear_default(target: TrackTarget, track: &Track, detail: &str, ctx: &mut PhaseContext) {
     ctx.plan.actions.push(PlannedAction::track_op(
         OperationType::ClearDefault,
         track.index,
@@ -614,7 +615,7 @@ fn emit_clear_default(target: &TrackTarget, track: &Track, detail: &str, ctx: &m
     ));
 }
 
-fn emit_clear_forced(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext) {
+fn emit_clear_forced(target: TrackTarget, track: &Track, ctx: &mut PhaseContext) {
     ctx.plan.actions.push(PlannedAction::track_op(
         OperationType::ClearForced,
         track.index,
@@ -629,7 +630,7 @@ fn emit_clear_forced(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext
 
 /// Emit a "clear title" action. Uses `SetTitle` with an empty string as the
 /// canonical representation — executors treat an empty title as "remove title".
-fn emit_clear_title(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext) {
+fn emit_clear_title(target: TrackTarget, track: &Track, ctx: &mut PhaseContext) {
     ctx.plan.actions.push(PlannedAction::track_op(
         OperationType::SetTitle,
         track.index,
@@ -644,7 +645,7 @@ fn emit_clear_title(target: &TrackTarget, track: &Track, ctx: &mut PhaseContext)
     ));
 }
 
-fn emit_defaults_none(target: &TrackTarget, tracks: &[&Track], ctx: &mut PhaseContext) {
+fn emit_defaults_none(target: TrackTarget, tracks: &[&Track], ctx: &mut PhaseContext) {
     for track in tracks {
         if track.is_default {
             emit_clear_default(target, track, "", ctx);
@@ -652,7 +653,7 @@ fn emit_defaults_none(target: &TrackTarget, tracks: &[&Track], ctx: &mut PhaseCo
     }
 }
 
-fn emit_defaults_first(target: &TrackTarget, tracks: &[&Track], ctx: &mut PhaseContext) {
+fn emit_defaults_first(target: TrackTarget, tracks: &[&Track], ctx: &mut PhaseContext) {
     if let Some((first_track, rest)) = tracks.split_first() {
         if !first_track.is_default {
             emit_set_default(target, first_track, "", ctx);
@@ -666,7 +667,7 @@ fn emit_defaults_first(target: &TrackTarget, tracks: &[&Track], ctx: &mut PhaseC
 }
 
 fn emit_defaults_first_per_language(
-    target: &TrackTarget,
+    target: TrackTarget,
     tracks: &[&Track],
     ctx: &mut PhaseContext,
 ) {
@@ -691,7 +692,7 @@ fn emit_defaults_first_per_language(
     }
 }
 
-fn emit_defaults_all(target: &TrackTarget, tracks: &[&Track], ctx: &mut PhaseContext) {
+fn emit_defaults_all(target: TrackTarget, tracks: &[&Track], ctx: &mut PhaseContext) {
     for track in tracks {
         if !track.is_default {
             emit_set_default(target, track, "", ctx);
@@ -701,20 +702,20 @@ fn emit_defaults_all(target: &TrackTarget, tracks: &[&Track], ctx: &mut PhaseCon
 
 fn emit_set_defaults(defaults: &[CompiledDefault], ctx: &mut PhaseContext) {
     for default in defaults {
-        let tracks = tracks_for_target(ctx.file, &default.target);
+        let tracks = tracks_for_target(ctx.file, default.target);
         match default.strategy {
-            DefaultStrategy::None => emit_defaults_none(&default.target, &tracks, ctx),
-            DefaultStrategy::First => emit_defaults_first(&default.target, &tracks, ctx),
+            DefaultStrategy::None => emit_defaults_none(default.target, &tracks, ctx),
+            DefaultStrategy::First => emit_defaults_first(default.target, &tracks, ctx),
             DefaultStrategy::FirstPerLanguage => {
-                emit_defaults_first_per_language(&default.target, &tracks, ctx);
+                emit_defaults_first_per_language(default.target, &tracks, ctx);
             }
-            DefaultStrategy::All => emit_defaults_all(&default.target, &tracks, ctx),
+            DefaultStrategy::All => emit_defaults_all(default.target, &tracks, ctx),
         }
     }
 }
 
 fn emit_clear_actions(
-    target: &TrackTarget,
+    target: TrackTarget,
     settings: &ClearActionsSettings,
     ctx: &mut PhaseContext,
 ) {
@@ -737,7 +738,7 @@ fn emit_clear_actions(
 }
 
 fn emit_transcode(
-    target: &TrackTarget,
+    target: TrackTarget,
     codec: &str,
     settings: &CompiledTranscodeSettings,
     ctx: &mut PhaseContext,
@@ -934,7 +935,7 @@ fn emit_conditional(cond: &CompiledConditional, ctx: &mut PhaseContext) -> Resul
 }
 
 fn emit_rules(
-    mode: &RulesMode,
+    mode: RulesMode,
     rules: &[CompiledRule],
     ctx: &mut PhaseContext,
 ) -> Result<(), VoomError> {
@@ -944,7 +945,7 @@ fn emit_rules(
             for action in &rule.conditional.then_actions {
                 emit_action(action, ctx)?;
             }
-            if *mode == RulesMode::First {
+            if mode == RulesMode::First {
                 break;
             }
         } else {
@@ -959,10 +960,10 @@ fn emit_rules(
 fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), VoomError> {
     match action {
         CompiledAction::Keep { target, filter } => {
-            emit_keep(target, filter.as_ref(), ctx);
+            emit_keep(*target, filter.as_ref(), ctx);
         }
         CompiledAction::Remove { target, filter } => {
-            emit_remove(target, filter.as_ref(), ctx);
+            emit_remove(*target, filter.as_ref(), ctx);
         }
         CompiledAction::Skip(phase) => {
             ctx.plan.skip_reason = Some(match phase {
@@ -979,10 +980,10 @@ fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), Vo
             return Err(VoomError::Validation(expanded));
         }
         CompiledAction::SetDefault { target, filter } => {
-            emit_flag_action(ctx, target, filter, FlagKind::Default);
+            emit_flag_action(ctx, *target, filter.as_ref(), FlagKind::Default);
         }
         CompiledAction::SetForced { target, filter } => {
-            emit_flag_action(ctx, target, filter, FlagKind::Forced);
+            emit_flag_action(ctx, *target, filter.as_ref(), FlagKind::Forced);
         }
         CompiledAction::SetLanguage {
             target,
@@ -992,9 +993,9 @@ fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), Vo
             let lang = resolve_value_or_field(value, ctx.file, ctx.eval_ctx).ok_or_else(|| {
                 VoomError::Validation("Cannot resolve language value".to_string())
             })?;
-            let tracks = tracks_for_target(ctx.file, target);
+            let tracks = tracks_for_target(ctx.file, *target);
             for track in &tracks {
-                if filter_matches_ctx(track, filter, ctx.file, ctx.eval_ctx)
+                if filter_matches_ctx(track, filter.as_ref(), ctx.file, ctx.eval_ctx)
                     && track.language != lang
                 {
                     ctx.plan.actions.push(PlannedAction::track_op(
@@ -1005,7 +1006,7 @@ fn emit_action(action: &CompiledAction, ctx: &mut PhaseContext) -> Result<(), Vo
                         },
                         format!(
                             "Set language on {} track {} to '{lang}'",
-                            target_str(target),
+                            target_str(*target),
                             track.index
                         ),
                     ));
@@ -1028,7 +1029,7 @@ fn expand_template(template: &str, file: &MediaFile) -> String {
 
 fn filter_matches_ctx(
     track: &Track,
-    filter: &Option<CompiledFilter>,
+    filter: Option<&CompiledFilter>,
     file: &MediaFile,
     eval_ctx: &EvalContext<'_>,
 ) -> bool {
@@ -1038,6 +1039,7 @@ fn filter_matches_ctx(
     }
 }
 
+#[derive(Clone, Copy)]
 enum FlagKind {
     Default,
     Forced,
@@ -1045,8 +1047,8 @@ enum FlagKind {
 
 fn emit_flag_action(
     ctx: &mut PhaseContext,
-    target: &TrackTarget,
-    filter: &Option<CompiledFilter>,
+    target: TrackTarget,
+    filter: Option<&CompiledFilter>,
     kind: FlagKind,
 ) {
     let (op, label, is_set_fn): (OperationType, &str, fn(&Track) -> bool) = match kind {
@@ -1077,7 +1079,7 @@ fn file_name(file: &MediaFile) -> String {
         .unwrap_or_default()
 }
 
-fn target_str(target: &TrackTarget) -> &'static str {
+fn target_str(target: TrackTarget) -> &'static str {
     match target {
         TrackTarget::Video => "video",
         TrackTarget::Audio => "audio",

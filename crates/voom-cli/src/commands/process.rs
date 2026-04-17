@@ -44,6 +44,10 @@ use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 /// This split gives the CLI full control over ordering, concurrency, and
 /// progress reporting while still letting kernel-registered plugins react to
 /// the events they care about.
+// The entry-point wires together discovery, filtering, worker-pool setup, and
+// final reporting — breaking it up further would scatter context across many
+// helpers without improving readability.
+#[allow(clippy::too_many_lines)]
 pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Result<()> {
     if args.plan_only && args.approve {
         anyhow::bail!(
@@ -187,7 +191,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         return Ok(());
     }
 
-    let (pool, effective_workers) = create_worker_pool(job_queue, &args, token.clone())?;
+    let (pool, effective_workers) = create_worker_pool(job_queue, &args, token.clone());
 
     let reporter = build_reporter(&events, effective_workers, plan_only, quiet, kernel.clone());
 
@@ -303,6 +307,9 @@ fn build_reporter(
 }
 
 /// Arguments for `print_run_results`.
+// Multiple bools each represent a distinct mode flag from the CLI/config; a
+// single enum would either lose expressive power or require nested states.
+#[allow(clippy::struct_excessive_bools)]
 struct RunResultsContext<'a> {
     counters: &'a RunCounters,
     plan_only: bool,
@@ -460,14 +467,16 @@ fn discover_files(
         options.on_progress = Some(Box::new(move |p| match p {
             voom_discovery::ScanProgress::Discovered { count: _, path } => {
                 let cumulative = cum_disc.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                progress_clone.on_discovered(cumulative as usize, &path);
+                let cumulative = usize::try_from(cumulative).unwrap_or(usize::MAX);
+                progress_clone.on_discovered(cumulative, &path);
             }
             voom_discovery::ScanProgress::Processing {
                 current,
                 total,
                 path,
             } => {
-                let base = proc_base.load(std::sync::atomic::Ordering::Relaxed) as usize;
+                let base = proc_base.load(std::sync::atomic::Ordering::Relaxed);
+                let base = usize::try_from(base).unwrap_or(usize::MAX);
                 let action = if hash_files { "Hashing" } else { "Scanning" };
                 progress_clone.on_processing(base + current, base + total, &path, action);
             }
@@ -540,19 +549,16 @@ use crate::introspect::DiscoveredFilePayload;
 /// - Modified within 1 year: 100
 /// - Older or metadata unavailable: 200
 fn compute_file_date_priority(path: &std::path::Path) -> i32 {
-    let metadata = match std::fs::metadata(path) {
-        Ok(m) => m,
-        Err(_) => return 200,
-    };
-    let modified = match metadata.modified() {
-        Ok(t) => t,
-        Err(_) => return 200,
-    };
-    let elapsed = match std::time::SystemTime::now().duration_since(modified) {
-        Ok(d) => d,
-        Err(_) => return 200,
-    };
     const SECS_PER_DAY: u64 = 86_400;
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return 200;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return 200;
+    };
+    let Ok(elapsed) = std::time::SystemTime::now().duration_since(modified) else {
+        return 200;
+    };
     let days = elapsed.as_secs() / SECS_PER_DAY;
     if days < 7 {
         10
@@ -596,7 +602,7 @@ fn create_worker_pool(
     queue: Arc<voom_job_manager::queue::JobQueue>,
     args: &ProcessArgs,
     token: CancellationToken,
-) -> Result<(WorkerPool, usize)> {
+) -> (WorkerPool, usize) {
     let mut config = WorkerPoolConfig::default();
     config.max_workers = args.workers;
     config.worker_prefix = "voom".to_string();
@@ -604,7 +610,7 @@ fn create_worker_pool(
 
     let pool = WorkerPool::new(queue, config, token);
 
-    Ok((pool, effective_workers))
+    (pool, effective_workers)
 }
 
 /// Extract and deserialize the job payload from a process job.
@@ -672,6 +678,9 @@ impl RunCounters {
 }
 
 /// Shared context for processing a single file.
+// Four bools each represent a distinct CLI flag / mode; collapsing them into
+// an enum would hide the per-flag semantics without simplifying call sites.
+#[allow(clippy::struct_excessive_bools)]
 struct ProcessContext<'a> {
     resolver: &'a PolicyResolver,
     kernel: Arc<voom_kernel::Kernel>,
@@ -746,6 +755,11 @@ async fn process_single_file(
 }
 
 /// Dry-run / plan-only: evaluate all phases up front against the original file.
+///
+/// Signature mirrors `process_single_file_execute` so that `process_single_file`
+/// can dispatch either without casting — the `Result` wrapper is required even
+/// though the dry-run path never produces an error.
+#[allow(clippy::unnecessary_wraps)]
 fn process_single_file_dry_run(
     file: &voom_domain::media::MediaFile,
     compiled: &voom_dsl::CompiledPolicy,
@@ -822,6 +836,10 @@ fn process_single_file_dry_run(
 ///
 /// After each phase executes successfully, the file is re-introspected so
 /// that subsequent phases see the updated path, container, and tracks.
+// The per-phase loop body is a tight sequence of plan-evaluation, safeguard
+// checks, execution, and outcome recording; splitting it would require
+// threading the accumulators through yet more helpers.
+#[allow(clippy::too_many_lines)]
 async fn process_single_file_execute(
     file: &voom_domain::media::MediaFile,
     compiled: &voom_dsl::CompiledPolicy,
@@ -848,15 +866,14 @@ async fn process_single_file_execute(
             break;
         }
 
-        let mut plan = match evaluator.evaluate_single_phase(
+        let Some(mut plan) = evaluator.evaluate_single_phase(
             phase_name,
             compiled,
             &current_file,
             &phase_outcomes,
             ctx.capabilities,
-        ) {
-            Some(p) => p,
-            None => continue,
+        ) else {
+            continue;
         };
         plan.session_id = Some(ctx.counters.session_id);
 
@@ -906,7 +923,7 @@ async fn process_single_file_execute(
         })
         .await
         .map_err(|e| format!("plan execution join error: {e}"))?;
-        let elapsed_ms = start.elapsed().as_millis() as u64;
+        let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         match exec_outcome {
             PlanOutcome::Success { executor } => {
@@ -1501,12 +1518,14 @@ async fn handle_plan_success(
     );
 
     let plan_id = plan.id;
-    let actions_taken = plan.actions.len() as u32;
-    let tracks_modified = plan
-        .actions
-        .iter()
-        .filter(|a| a.track_index.is_some())
-        .count() as u32;
+    let actions_taken = u32::try_from(plan.actions.len()).unwrap_or(u32::MAX);
+    let tracks_modified = u32::try_from(
+        plan.actions
+            .iter()
+            .filter(|a| a.track_index.is_some())
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
     let policy_name = plan.policy_name.clone();
     let phase_name = plan.phase_name.clone();
 
@@ -1715,42 +1734,37 @@ const AUDIO_LANGUAGE_DETECTOR_PLUGIN: &str = "audio-language-detector";
 /// policy evaluation so that policies can filter on detected languages
 /// (e.g. `remove audio where lang == zxx` for silent tracks).
 fn apply_detected_languages(file: &mut voom_domain::media::MediaFile) {
-    let metadata = match file.plugin_metadata.get(AUDIO_LANGUAGE_DETECTOR_PLUGIN) {
-        Some(m) => m,
-        None => return,
+    let Some(metadata) = file.plugin_metadata.get(AUDIO_LANGUAGE_DETECTOR_PLUGIN) else {
+        return;
     };
 
-    let detections = match metadata.get("detections").and_then(|d| d.as_array()) {
-        Some(d) => d,
-        None => return,
+    let Some(detections) = metadata.get("detections").and_then(|d| d.as_array()) else {
+        return;
     };
 
     for det in detections {
-        let track_index = match det.get("track_index").and_then(serde_json::Value::as_u64) {
-            Some(i) => i as u32,
-            None => continue,
+        let Some(track_index_u64) = det.get("track_index").and_then(serde_json::Value::as_u64)
+        else {
+            continue;
         };
-        let detected = match det.get("detected_language").and_then(|v| v.as_str()) {
-            Some(l) => l,
-            None => continue,
+        let track_index = u32::try_from(track_index_u64).unwrap_or(u32::MAX);
+        let Some(detected) = det.get("detected_language").and_then(|v| v.as_str()) else {
+            continue;
         };
 
         let Some(track) = file.tracks.iter_mut().find(|t| t.index == track_index) else {
             continue;
         };
 
-        let normalized =
-            if let Some(code) = voom_domain::utils::language::normalize_language(detected) {
-                code
-            } else {
-                tracing::warn!(
-                    path = %file.path.display(),
-                    track = track_index,
-                    detected = %detected,
-                    "unrecognized language code from detector, skipping"
-                );
-                continue;
-            };
+        let Some(normalized) = voom_domain::utils::language::normalize_language(detected) else {
+            tracing::warn!(
+                path = %file.path.display(),
+                track = track_index,
+                detected = %detected,
+                "unrecognized language code from detector, skipping"
+            );
+            continue;
+        };
 
         if track.language == normalized {
             continue;
@@ -2038,6 +2052,9 @@ mod tests {
     use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 
     /// A test plugin that counts received plan lifecycle events.
+    // The `_count` suffix is descriptive here; each field counts a distinct
+    // event type and renaming would reduce clarity in assertions.
+    #[allow(clippy::struct_field_names)]
     struct PlanRecordingPlugin {
         discovered_count: AtomicUsize,
         introspected_count: AtomicUsize,
@@ -2568,12 +2585,14 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // exact zero is the documented sentinel
     fn test_duration_shrunk_pct_no_shrink() {
         assert_eq!(duration_shrunk_pct(100.0, 100.0), 0.0);
         assert_eq!(duration_shrunk_pct(100.0, 110.0), 0.0);
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // exact zero is the documented sentinel
     fn test_duration_shrunk_pct_invalid_orig() {
         assert_eq!(duration_shrunk_pct(0.0, 50.0), 0.0);
         assert_eq!(duration_shrunk_pct(-1.0, 50.0), 0.0);

@@ -95,11 +95,14 @@ pub(crate) fn format_snapshot_cell(snap: &voom_domain::snapshot::MetadataSnapsho
     }
 }
 
-pub fn run(args: HistoryArgs) -> Result<()> {
+pub fn run(args: &HistoryArgs) -> Result<()> {
     let config = crate::config::load_config()?;
     let store = app::open_store(&config)?;
 
-    let path = args.file.canonicalize().unwrap_or(args.file.clone());
+    let path = args
+        .file
+        .canonicalize()
+        .unwrap_or_else(|_| args.file.clone());
 
     // Look up by file identity first to capture lineage across renames.
     // Fall back to path-based lookup for files not in the database

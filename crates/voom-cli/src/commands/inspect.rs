@@ -15,7 +15,7 @@ use crate::output;
 /// inspect does not need the full plugin lifecycle (event bus, storage
 /// persistence, etc.) and should work even when the kernel is not bootstrapped.
 /// The ad-hoc instance respects `ffprobe_path` from config.
-pub fn run(args: InspectArgs) -> Result<()> {
+pub fn run(args: &InspectArgs) -> Result<()> {
     let path = args
         .file
         .canonicalize()
@@ -127,7 +127,7 @@ mod tests {
             tracks_only: false,
             history: false,
         };
-        let result = run(args);
+        let result = run(&args);
         assert!(result.is_err());
     }
 

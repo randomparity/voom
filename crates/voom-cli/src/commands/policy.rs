@@ -7,10 +7,10 @@ use crate::cli::PolicyCommands;
 pub fn run(cmd: PolicyCommands) -> Result<()> {
     match cmd {
         PolicyCommands::List => list(),
-        PolicyCommands::Validate { file } => validate(file),
-        PolicyCommands::Show { file } => show(file),
-        PolicyCommands::Format { file } => format(file),
-        PolicyCommands::Diff { a, b } => diff(a, b),
+        PolicyCommands::Validate { file } => validate(&file),
+        PolicyCommands::Show { file } => show(&file),
+        PolicyCommands::Format { file } => format(&file),
+        PolicyCommands::Diff { a, b } => diff(&a, &b),
     }
 }
 
@@ -57,13 +57,13 @@ fn list() -> Result<()> {
     Ok(())
 }
 
-fn validate(file: std::path::PathBuf) -> Result<()> {
+fn validate(file: &std::path::Path) -> Result<()> {
     // If the file has a .toml extension, treat it as a policy map.
     if file.extension().is_some_and(|e| e == "toml") {
-        return validate_policy_map(&file);
+        return validate_policy_map(file);
     }
 
-    let file = crate::config::resolve_policy_path(&file);
+    let file = crate::config::resolve_policy_path(file);
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
@@ -115,8 +115,8 @@ fn validate_policy_map(file: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn show(file: std::path::PathBuf) -> Result<()> {
-    let file = crate::config::resolve_policy_path(&file);
+fn show(file: &std::path::Path) -> Result<()> {
+    let file = crate::config::resolve_policy_path(file);
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
@@ -176,8 +176,8 @@ fn show(file: std::path::PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn format(file: std::path::PathBuf) -> Result<()> {
-    let file = crate::config::resolve_policy_path(&file);
+fn format(file: &std::path::Path) -> Result<()> {
+    let file = crate::config::resolve_policy_path(file);
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
@@ -196,9 +196,9 @@ fn format(file: std::path::PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn diff(a: std::path::PathBuf, b: std::path::PathBuf) -> Result<()> {
-    let a_path = crate::config::resolve_policy_path(&a);
-    let b_path = crate::config::resolve_policy_path(&b);
+fn diff(a: &std::path::Path, b: &std::path::Path) -> Result<()> {
+    let a_path = crate::config::resolve_policy_path(a);
+    let b_path = crate::config::resolve_policy_path(b);
 
     let a_source = std::fs::read_to_string(&a_path)
         .with_context(|| format!("Failed to read: {}", a_path.display()))?;
@@ -460,7 +460,7 @@ policy "test-policy" {
         std::fs::write(&file, MINIMAL_POLICY).unwrap();
 
         // validate reads the file and calls voom_dsl::compile_policy
-        let result = validate(file);
+        let result = validate(&file);
         assert!(result.is_ok());
     }
 
@@ -477,7 +477,7 @@ policy "test-policy" {
 
     #[test]
     fn validate_nonexistent_file_returns_error() {
-        let result = validate(std::path::PathBuf::from("/nonexistent/test.voom"));
+        let result = validate(std::path::Path::new("/nonexistent/test.voom"));
         assert!(result.is_err());
     }
 
@@ -487,7 +487,7 @@ policy "test-policy" {
         let file = dir.path().join("test.voom");
         std::fs::write(&file, MINIMAL_POLICY).unwrap();
 
-        let result = format(file.clone());
+        let result = format(&file);
         assert!(result.is_ok());
 
         // Verify the file was rewritten
@@ -498,7 +498,7 @@ policy "test-policy" {
 
     #[test]
     fn format_nonexistent_file_returns_error() {
-        let result = format(std::path::PathBuf::from("/nonexistent/test.voom"));
+        let result = format(std::path::Path::new("/nonexistent/test.voom"));
         assert!(result.is_err());
     }
 
@@ -508,13 +508,13 @@ policy "test-policy" {
         let file = dir.path().join("test.voom");
         std::fs::write(&file, MINIMAL_POLICY).unwrap();
 
-        let result = show(file);
+        let result = show(&file);
         assert!(result.is_ok());
     }
 
     #[test]
     fn show_nonexistent_file_returns_error() {
-        let result = show(std::path::PathBuf::from("/nonexistent/test.voom"));
+        let result = show(std::path::Path::new("/nonexistent/test.voom"));
         assert!(result.is_err());
     }
 
@@ -524,7 +524,7 @@ policy "test-policy" {
         let file = dir.path().join("bad.voom");
         std::fs::write(&file, "garbage content here").unwrap();
 
-        let result = show(file);
+        let result = show(&file);
         assert!(result.is_err());
     }
 
@@ -670,7 +670,7 @@ policy "test-policy" {
         std::fs::write(&a_file, MINIMAL_POLICY).unwrap();
         std::fs::write(&b_file, MINIMAL_POLICY).unwrap();
 
-        let result = diff(a_file, b_file);
+        let result = diff(&a_file, &b_file);
         assert!(result.is_ok());
     }
 
@@ -680,7 +680,7 @@ policy "test-policy" {
         let a_file = dir.path().join("a.voom");
         std::fs::write(&a_file, MINIMAL_POLICY).unwrap();
 
-        let result = diff(a_file, std::path::PathBuf::from("/nonexistent/b.voom"));
+        let result = diff(&a_file, std::path::Path::new("/nonexistent/b.voom"));
         assert!(result.is_err());
     }
 }

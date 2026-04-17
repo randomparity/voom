@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use comfy_table::Cell;
 use console::style;
+use voom_domain::storage::BadFileFilters;
 
 use crate::app;
 use crate::cli::{DbCommands, OutputFormat};
@@ -114,7 +115,6 @@ fn list_bad(path: Option<String>, format: OutputFormat) -> Result<()> {
     let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::BadFileFilters;
     let mut filters = BadFileFilters::default();
     filters.path_prefix = path;
     let bad_files = store
@@ -183,7 +183,6 @@ fn purge_bad() -> Result<()> {
     let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::BadFileFilters;
     let bad_files = store
         .list_bad_files(&BadFileFilters::default())
         .context("failed to list bad files")?;
@@ -213,7 +212,6 @@ async fn clean_bad(yes: bool) -> Result<()> {
     let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
-    use voom_domain::storage::BadFileFilters;
     let bad_files = store
         .list_bad_files(&BadFileFilters::default())
         .context("failed to list bad files")?;

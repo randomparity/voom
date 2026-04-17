@@ -35,6 +35,9 @@ pub fn run(cmd: HealthCommands) -> Result<()> {
 /// bootstrap (e.g. missing database directory). The standalone instance does
 /// not receive per-plugin configuration from config.toml, but tool-detector
 /// currently has no configurable settings.
+// Return type mirrors the other subcommand handlers so `main`'s match arms
+// all return `Result<()>`; the health check itself never propagates errors.
+#[allow(clippy::unnecessary_wraps)]
 pub fn check() -> Result<()> {
     println!("{}", style("VOOM System Health Check").bold().underlined());
     println!();
@@ -297,9 +300,8 @@ fn print_hw_accel_status(app_config: &config::AppConfig, ffmpeg_path: &std::path
         .and_then(|t| t.get("hw_accel"))
         .and_then(|v| v.as_str());
 
-    let backend = match print_hw_backend(hw_accel_override, &hw_accels) {
-        Some(b) => b,
-        None => return,
+    let Some(backend) = print_hw_backend(hw_accel_override, &hw_accels) else {
+        return;
     };
 
     let devices = enumerate_gpus(backend);

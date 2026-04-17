@@ -126,6 +126,7 @@ impl JobQueue {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // tests compare exact-representable literals
 mod tests {
     use super::*;
     use voom_domain::test_support::InMemoryStore;

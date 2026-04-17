@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use anyhow::{bail, Context, Result};
 use console::style;
 
@@ -11,10 +9,10 @@ use crate::output;
 pub fn run(cmd: PluginCommands) -> Result<()> {
     match cmd {
         PluginCommands::List => list(),
-        PluginCommands::Info { name } => info(name),
-        PluginCommands::Enable { name } => enable(name),
-        PluginCommands::Disable { name } => disable(name),
-        PluginCommands::Install { path } => install(path),
+        PluginCommands::Info { name } => info(&name),
+        PluginCommands::Enable { name } => enable(&name),
+        PluginCommands::Disable { name } => disable(&name),
+        PluginCommands::Install { path } => install(&path),
     }
 }
 
@@ -76,14 +74,14 @@ fn list() -> Result<()> {
     Ok(())
 }
 
-fn info(name: String) -> Result<()> {
+fn info(name: &str) -> Result<()> {
     let config = config::load_config()?;
 
     // Check if it's a known but disabled plugin
-    if config.plugins.disabled_plugins.contains(&name)
-        && config::KNOWN_PLUGIN_NAMES.contains(&name.as_str())
+    if config.plugins.disabled_plugins.iter().any(|d| d == name)
+        && config::KNOWN_PLUGIN_NAMES.contains(&name)
     {
-        println!("{} {}", style("Plugin:").bold(), style(&name).cyan());
+        println!("{} {}", style("Plugin:").bold(), style(name).cyan());
         println!("{} {}", style("Status:").bold(), style("disabled").yellow());
         println!(
             "\nUse {} to re-enable this plugin.",
@@ -95,7 +93,7 @@ fn info(name: String) -> Result<()> {
     let result = app::bootstrap_kernel_with_store(&config)?;
     let capabilities = result.collector.snapshot();
 
-    if let Some(plugin) = result.kernel.registry.get(&name) {
+    if let Some(plugin) = result.kernel.registry.get(name) {
         println!(
             "{} {}",
             style("Plugin:").bold(),
@@ -121,7 +119,7 @@ fn info(name: String) -> Result<()> {
         }
 
         // Show executor details if available
-        output::format_executor_capabilities(&name, &capabilities);
+        output::format_executor_capabilities(name, &capabilities);
     } else {
         let available = result.kernel.registry.plugin_names().join(", ");
         anyhow::bail!("Plugin \"{name}\" not found. Available: {available}");
@@ -130,29 +128,29 @@ fn info(name: String) -> Result<()> {
     Ok(())
 }
 
-fn enable(name: String) -> Result<()> {
+fn enable(name: &str) -> Result<()> {
     set_plugin_enabled(name, true)
 }
 
-fn disable(name: String) -> Result<()> {
+fn disable(name: &str) -> Result<()> {
     set_plugin_enabled(name, false)
 }
 
 /// Shared implementation for enable/disable: validates the plugin name, checks
 /// current state, mutates the disabled list, and saves the config.
-fn set_plugin_enabled(name: String, enabled: bool) -> Result<()> {
-    if !config::KNOWN_PLUGIN_NAMES.contains(&name.as_str()) {
+fn set_plugin_enabled(name: &str, enabled: bool) -> Result<()> {
+    if !config::KNOWN_PLUGIN_NAMES.contains(&name) {
         let known = config::KNOWN_PLUGIN_NAMES.join(", ");
         bail!("Unknown plugin \"{name}\". Known plugins: {known}");
     }
 
     let mut config = config::load_config()?;
-    let is_disabled = config.plugins.disabled_plugins.contains(&name);
+    let is_disabled = config.plugins.disabled_plugins.iter().any(|d| d == name);
 
     if enabled && !is_disabled {
         println!(
             "Plugin \"{}\" is already {}.",
-            style(&name).cyan(),
+            style(name).cyan(),
             style("enabled").green()
         );
         return Ok(());
@@ -161,16 +159,16 @@ fn set_plugin_enabled(name: String, enabled: bool) -> Result<()> {
     if !enabled && is_disabled {
         println!(
             "Plugin \"{}\" is already {}.",
-            style(&name).cyan(),
+            style(name).cyan(),
             style("disabled").yellow()
         );
         return Ok(());
     }
 
     if enabled {
-        config.plugins.disabled_plugins.retain(|d| d != &name);
+        config.plugins.disabled_plugins.retain(|d| d != name);
     } else {
-        config.plugins.disabled_plugins.push(name.clone());
+        config.plugins.disabled_plugins.push(name.to_string());
     }
     config::save_config(&config)?;
 
@@ -178,21 +176,21 @@ fn set_plugin_enabled(name: String, enabled: bool) -> Result<()> {
         println!(
             "{} Plugin \"{}\" has been {}.",
             style("OK").bold().green(),
-            style(&name).cyan(),
+            style(name).cyan(),
             style("enabled").green()
         );
     } else {
         println!(
             "{} Plugin \"{}\" has been {}.",
             style("OK").bold().green(),
-            style(&name).cyan(),
+            style(name).cyan(),
             style("disabled").yellow()
         );
     }
     Ok(())
 }
 
-fn install(path: PathBuf) -> Result<()> {
+fn install(path: &std::path::Path) -> Result<()> {
     // 1. Check the path exists and has .wasm extension
     if !path.exists() {
         bail!("File not found: {}", path.display());
@@ -255,7 +253,7 @@ fn install(path: PathBuf) -> Result<()> {
     let target_wasm = target_dir.join(wasm_filename);
     let target_manifest = target_dir.join(manifest_filename);
 
-    std::fs::copy(&path, &target_wasm).with_context(|| {
+    std::fs::copy(path, &target_wasm).with_context(|| {
         format!(
             "Failed to copy {} to {}",
             path.display(),
@@ -289,7 +287,7 @@ mod tests {
 
     #[test]
     fn test_install_nonexistent_file_fails() {
-        let result = install(PathBuf::from("/nonexistent/plugin.wasm"));
+        let result = install(std::path::Path::new("/nonexistent/plugin.wasm"));
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("not found"),
@@ -303,7 +301,7 @@ mod tests {
         let file = dir.path().join("plugin.txt");
         std::fs::write(&file, "not a wasm file").unwrap();
 
-        let result = install(file);
+        let result = install(&file);
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains(".wasm"),
@@ -317,7 +315,7 @@ mod tests {
         let file = dir.path().join("plugin.wasm");
         std::fs::write(&file, b"\0asm").unwrap();
 
-        let result = install(file);
+        let result = install(&file);
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("Manifest"),

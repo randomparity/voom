@@ -15,32 +15,32 @@ use voom_report::{
     DatabaseStats, IssueReport, ReportPlugin, ReportRequest, ReportResult, ReportSection,
 };
 
-pub fn run(args: ReportArgs) -> Result<()> {
+pub fn run(args: &ReportArgs) -> Result<()> {
     let config = config::load_config()?;
     let store = app::open_store(&config)?;
 
     if args.errors {
-        return run_errors(&*store, &args);
+        return run_errors(&*store, args);
     }
 
     if args.snapshot {
         let snapshot =
             ReportPlugin::capture_snapshot(&*store, voom_domain::stats::SnapshotTrigger::Manual)?;
-        format_snapshot(&snapshot, &args.format);
+        format_snapshot(&snapshot, args.format);
         return Ok(());
     }
 
     if args.files {
-        return run_file_list(&*store, &args.format);
+        return run_file_list(&*store, args.format);
     }
 
-    let request = build_request(&args)?;
+    let request = build_request(args)?;
     let result = ReportPlugin::query(&*store, &request)?;
 
-    if is_summary_request(&args) {
-        format_summary(&result, &args.format)?;
+    if is_summary_request(args) {
+        format_summary(&result, args.format)?;
     } else {
-        format_result(&result, &args)?;
+        format_result(&result, args)?;
     }
     Ok(())
 }
@@ -109,7 +109,7 @@ fn is_summary_request(args: &ReportArgs) -> bool {
         && args.history.is_none()
 }
 
-fn format_snapshot(snapshot: &LibrarySnapshot, format: &OutputFormat) {
+fn format_snapshot(snapshot: &LibrarySnapshot, format: OutputFormat) {
     match format {
         OutputFormat::Json => {
             println!(
@@ -134,7 +134,7 @@ fn format_snapshot(snapshot: &LibrarySnapshot, format: &OutputFormat) {
     }
 }
 
-fn format_summary(result: &ReportResult, format: &OutputFormat) -> Result<()> {
+fn format_summary(result: &ReportResult, format: OutputFormat) -> Result<()> {
     let Some(ref snapshot) = result.library else {
         if !format.is_machine() {
             eprintln!(
@@ -255,51 +255,51 @@ fn format_result_table(result: &ReportResult) {
 fn print_stats_table(snapshot: &LibrarySnapshot) {
     use voom_domain::utils::format::{format_duration, format_size};
 
-    let f = &snapshot.files;
+    let files = &snapshot.files;
     println!("{}", style("Library Overview").bold().underlined());
     println!(
         "  {} files, {}, {}",
-        style(f.total_count).bold(),
-        style(format_size(f.total_size_bytes)).cyan(),
-        style(format_duration(f.total_duration_secs)).dim(),
+        style(files.total_count).bold(),
+        style(format_size(files.total_size_bytes)).cyan(),
+        style(format_duration(files.total_duration_secs)).dim(),
     );
     println!(
         "  Avg size: {}  Max: {}  Min: {}",
-        style(format_size(f.avg_size_bytes)).dim(),
-        style(format_size(f.max_size_bytes)).dim(),
-        style(format_size(f.min_size_bytes)).dim(),
+        style(format_size(files.avg_size_bytes)).dim(),
+        style(format_size(files.max_size_bytes)).dim(),
+        style(format_size(files.min_size_bytes)).dim(),
     );
     println!();
 
-    print_pair_table("Containers", "Container", "Count", &f.container_counts);
+    print_pair_table("Containers", "Container", "Count", &files.container_counts);
 
-    let v = &snapshot.video;
-    print_pair_table("Video Codecs", "Codec", "Count", &v.codec_counts);
+    let video = &snapshot.video;
+    print_pair_table("Video Codecs", "Codec", "Count", &video.codec_counts);
     print_pair_table(
         "Video Resolutions",
         "Resolution",
         "Count",
-        &v.resolution_counts,
+        &video.resolution_counts,
     );
     println!(
         "  HDR: {}  VFR: {}",
-        style(v.hdr_count).bold(),
-        style(v.vfr_count).bold(),
+        style(video.hdr_count).bold(),
+        style(video.vfr_count).bold(),
     );
     println!();
 
-    let a = &snapshot.audio;
-    print_pair_table("Audio Types", "Type", "Count", &a.type_counts);
-    let top_langs: Vec<_> = a.language_counts.iter().take(20).cloned().collect();
+    let audio = &snapshot.audio;
+    print_pair_table("Audio Types", "Type", "Count", &audio.type_counts);
+    let top_langs: Vec<_> = audio.language_counts.iter().take(20).cloned().collect();
     print_pair_table("Audio Languages (top 20)", "Language", "Count", &top_langs);
-    print_pair_table("Audio Codecs", "Codec", "Count", &a.codec_counts);
+    print_pair_table("Audio Codecs", "Codec", "Count", &audio.codec_counts);
 
-    let s = &snapshot.subtitles;
+    let subs = &snapshot.subtitles;
     print_pair_table(
         "Subtitles by Language",
         "Language",
         "Count",
-        &s.language_counts,
+        &subs.language_counts,
     );
 
     let p = &snapshot.processing;
@@ -315,7 +315,9 @@ fn print_stats_table(snapshot: &LibrarySnapshot) {
     let size_label = if p.total_size_saved_bytes >= 0 {
         format!(
             "{} saved",
-            voom_domain::utils::format::format_size(p.total_size_saved_bytes as u64)
+            voom_domain::utils::format::format_size(
+                u64::try_from(p.total_size_saved_bytes).unwrap_or(0)
+            )
         )
     } else {
         format!(
@@ -323,19 +325,18 @@ fn print_stats_table(snapshot: &LibrarySnapshot) {
             voom_domain::utils::format::format_size(p.total_size_saved_bytes.unsigned_abs())
         )
     };
+    #[allow(clippy::cast_precision_loss)] // millisecond totals for reporting are well under 2^52
+    let seconds = p.total_processing_time_ms as f64 / 1000.0;
     println!(
         "  Total time: {}  Size change: {}",
-        style(voom_domain::utils::format::format_duration(
-            p.total_processing_time_ms as f64 / 1000.0
-        ))
-        .dim(),
+        style(voom_domain::utils::format::format_duration(seconds)).dim(),
         style(size_label).dim(),
     );
     println!();
 
-    let j = &snapshot.jobs;
-    if !j.by_status.is_empty() {
-        print_pair_table("Jobs", "Status", "Count", &j.by_status);
+    let jobs = &snapshot.jobs;
+    if !jobs.by_status.is_empty() {
+        print_pair_table("Jobs", "Status", "Count", &jobs.by_status);
     }
 }
 
@@ -447,7 +448,7 @@ fn print_savings_section_table(report: &SavingsReport) {
 
     for b in &report.buckets {
         let saved_label = if b.bytes_saved >= 0 {
-            format_size(b.bytes_saved as u64)
+            format_size(u64::try_from(b.bytes_saved).unwrap_or(0))
         } else {
             format!("+{}", format_size(b.bytes_saved.unsigned_abs()))
         };
@@ -459,18 +460,23 @@ fn print_savings_section_table(report: &SavingsReport) {
         if show_period {
             row.push(Cell::new(b.period.as_deref().unwrap_or("-")));
         }
+        #[allow(clippy::cast_precision_loss)] // bucket durations stay well under 2^52 ms
+        let seconds = b.duration_ms as f64 / 1000.0;
         row.extend_from_slice(&[
             Cell::new(b.file_count),
             Cell::new(b.transition_count),
             Cell::new(&saved_label),
-            Cell::new(format_duration(b.duration_ms as f64 / 1000.0)),
+            Cell::new(format_duration(seconds)),
         ]);
         table.add_row(row);
     }
     println!("{table}");
 
     let total_label = if report.total_bytes_saved >= 0 {
-        format!("{} saved", format_size(report.total_bytes_saved as u64))
+        format!(
+            "{} saved",
+            format_size(u64::try_from(report.total_bytes_saved).unwrap_or(0))
+        )
     } else {
         format!(
             "{} added",
@@ -632,21 +638,21 @@ fn print_stats_plain(snapshot: &LibrarySnapshot) {
     }
 }
 
-fn print_plans_section_plain(stats: &[PlanPhaseStat]) {
-    if stats.is_empty() {
+fn print_plans_section_plain(plan_stats: &[PlanPhaseStat]) {
+    if plan_stats.is_empty() {
         return;
     }
-    let (phases, by_phase) = aggregate_plan_stats(stats);
+    let (phases, by_phase) = aggregate_plan_stats(plan_stats);
     for name in &phases {
         let ps = by_phase.get(name).expect("phase exists");
-        let status = if ps.failed > 0 {
+        let label = if ps.failed > 0 {
             "failed"
         } else if ps.completed > 0 {
             "completed"
         } else {
             "skipped"
         };
-        println!("{name}\t{status}");
+        println!("{name}\t{label}");
     }
 }
 
@@ -980,7 +986,7 @@ fn write_database_csv(db: &DatabaseStats) -> Result<()> {
 
 fn run_file_list(
     store: &dyn voom_domain::storage::StorageTrait,
-    format: &OutputFormat,
+    format: OutputFormat,
 ) -> Result<()> {
     let files = store
         .list_files(&voom_domain::FileFilters::default())
@@ -1108,6 +1114,10 @@ fn codec_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
 
 // ── Error reporting ────────────────────────────────────────
 
+// This handler threads through multiple error-report modes (list sessions,
+// filter by session / plan / format) and relies on shared local state;
+// splitting it further would require threading every filter separately.
+#[allow(clippy::too_many_lines)]
 fn run_errors(store: &dyn voom_domain::storage::StorageTrait, args: &ReportArgs) -> Result<()> {
     use voom_domain::plan::ExecutionDetail;
 

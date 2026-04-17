@@ -17,15 +17,15 @@ pub async fn run(args: EventsArgs, token: CancellationToken) -> Result<()> {
     let records = store.list_event_log(&filters)?;
 
     if args.follow {
-        run_follow(store, args, records, token).await
+        run_follow(store, &args, records, token).await
     } else {
-        run_default(args.format, records)
+        run_default(args.format, &records)
     }
 }
 
 fn run_default(
     format: OutputFormat,
-    records: Vec<voom_domain::storage::EventLogRecord>,
+    records: &[voom_domain::storage::EventLogRecord],
 ) -> Result<()> {
     match format {
         OutputFormat::Table => {
@@ -35,7 +35,7 @@ fn run_default(
             }
             println!("{:<20} {:<28} SUMMARY", "TIMESTAMP", "TYPE");
             println!("{}", "-".repeat(78));
-            for r in &records {
+            for r in records {
                 println!(
                     "{:<20} {:<28} {}",
                     r.created_at.format("%Y-%m-%d %H:%M:%S"),
@@ -49,7 +49,7 @@ fn run_default(
             println!("{}", serde_json::to_string_pretty(&json)?);
         }
         OutputFormat::Plain | OutputFormat::Csv => {
-            for r in &records {
+            for r in records {
                 println!(
                     "{}\t{}\t{}",
                     r.event_type,
@@ -64,7 +64,7 @@ fn run_default(
 
 async fn run_follow(
     store: std::sync::Arc<dyn voom_domain::storage::StorageTrait>,
-    args: EventsArgs,
+    args: &EventsArgs,
     initial: Vec<voom_domain::storage::EventLogRecord>,
     token: CancellationToken,
 ) -> Result<()> {
@@ -72,7 +72,7 @@ async fn run_follow(
 
     // Print initial batch
     for r in &initial {
-        print_follow_row(&args.format, r);
+        print_follow_row(args.format, r);
         last_rowid = last_rowid.max(r.rowid);
     }
 
@@ -94,7 +94,7 @@ async fn run_follow(
             tokio::task::spawn_blocking(move || store.list_event_log(&filters)).await??;
 
         for r in &new_records {
-            print_follow_row(&args.format, r);
+            print_follow_row(args.format, r);
             last_rowid = last_rowid.max(r.rowid);
         }
     }
@@ -114,7 +114,7 @@ fn record_to_json(r: &voom_domain::storage::EventLogRecord) -> serde_json::Value
     })
 }
 
-fn print_follow_row(format: &OutputFormat, r: &voom_domain::storage::EventLogRecord) {
+fn print_follow_row(format: OutputFormat, r: &voom_domain::storage::EventLogRecord) {
     match format {
         OutputFormat::Table => {
             println!(

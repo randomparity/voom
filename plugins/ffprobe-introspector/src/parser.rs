@@ -74,10 +74,14 @@ fn parse_streams(streams: &[serde_json::Value]) -> Vec<Track> {
     streams
         .iter()
         .enumerate()
-        .filter_map(|(idx, stream)| parse_stream(idx as u32, stream))
+        .filter_map(|(idx, stream)| {
+            let index = u32::try_from(idx).unwrap_or(u32::MAX);
+            parse_stream(index, stream)
+        })
         .collect()
 }
 
+#[allow(clippy::too_many_lines)] // Single match over codec_type; splitting would scatter field logic.
 fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
     let codec_type = stream.get("codec_type")?.as_str()?;
     let codec_name = stream
@@ -137,11 +141,11 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
             let width = stream
                 .get("width")
                 .and_then(serde_json::Value::as_u64)
-                .map(|w| w as u32);
+                .map(|w| u32::try_from(w).unwrap_or(u32::MAX));
             let height = stream
                 .get("height")
                 .and_then(serde_json::Value::as_u64)
-                .map(|h| h as u32);
+                .map(|h| u32::try_from(h).unwrap_or(u32::MAX));
             let frame_rate = parse_frame_rate(stream);
             let is_vfr = detect_vfr(stream);
             let (is_hdr, hdr_format) = detect_hdr(stream);
@@ -164,7 +168,7 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
             let channels = stream
                 .get("channels")
                 .and_then(serde_json::Value::as_u64)
-                .map(|c| c as u32);
+                .map(|c| u32::try_from(c).unwrap_or(u32::MAX));
             let channel_layout = stream
                 .get("channel_layout")
                 .and_then(|c| c.as_str())
@@ -334,6 +338,7 @@ fn classify_subtitle_track(
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // tests compare exact-representable literals and default 0.0
 mod tests {
     use super::*;
 

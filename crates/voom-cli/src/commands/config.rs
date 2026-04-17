@@ -173,7 +173,7 @@ fn resolve_toml_key(table: &toml::Table, key: &str) -> Result<toml::Value> {
     for (i, seg) in segments[..segments.len() - 1].iter().enumerate() {
         if let Some(v) = current.get(*seg) {
             if let Some(t) = v.as_table() {
-                current = t
+                current = t;
             } else {
                 let path = segments[..=i].join(".");
                 bail!(
