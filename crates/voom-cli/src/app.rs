@@ -264,11 +264,18 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     load_wasm_plugins(&mut kernel, config, disabled, store.clone())?;
 
     // Report plugin — registered for event subscription (ScanComplete, IntrospectComplete).
-    // Store is injected at construction; init() is a no-op so we skip init_and_register.
+    // Store is injected at construction. We use the manual path (register_plugin)
+    // rather than init_and_register because the caller does not need an Arc handle
+    // for downstream use; but init() is still called explicitly so a future
+    // non-no-op init body would run.
     if !disabled.iter().any(|d| d == "report") {
-        let report_plugin = Arc::new(voom_report::ReportPlugin::new(Arc::clone(&store)));
+        let mut report_plugin = voom_report::ReportPlugin::new(Arc::clone(&store));
+        let ctx = voom_kernel::PluginContext::new(plugin_json("report"), data_dir.clone());
+        report_plugin
+            .init(&ctx)
+            .context("Failed to initialize report plugin")?;
         kernel.register_plugin(
-            report_plugin as Arc<dyn voom_kernel::Plugin>,
+            Arc::new(report_plugin) as Arc<dyn voom_kernel::Plugin>,
             PRIORITY_REPORT,
         )?;
     }
