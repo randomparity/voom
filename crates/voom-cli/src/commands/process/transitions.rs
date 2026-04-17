@@ -50,12 +50,20 @@ pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
     .with_session_id(tctx.ctx.counters.session_id);
 
     if let Err(e) = tctx.ctx.store.record_transition(&transition) {
-        tracing::warn!(error = %e, "failed to record transition");
+        tracing::warn!(
+            path = %tctx.old_file.path.display(),
+            error = %e,
+            "failed to record transition"
+        );
     }
 
     if let Some(ref hash) = tctx.new_file.content_hash {
         if let Err(e) = tctx.ctx.store.update_expected_hash(&tctx.old_file.id, hash) {
-            tracing::warn!(error = %e, "failed to update expected_hash");
+            tracing::warn!(
+                path = %tctx.old_file.path.display(),
+                error = %e,
+                "failed to update expected_hash"
+            );
         }
     }
 }
@@ -108,6 +116,10 @@ pub(super) fn record_failure_transition(fctx: &FailureTransitionContext<'_>) {
     }
 
     if let Err(e) = fctx.ctx.store.record_transition(&transition) {
-        tracing::warn!(error = %e, "failed to record failure transition");
+        tracing::warn!(
+            path = %fctx.file.path.display(),
+            error = %e,
+            "failed to record failure transition"
+        );
     }
 }
