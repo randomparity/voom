@@ -100,6 +100,11 @@ impl JobOutcome {
     }
 
     #[must_use]
+    pub fn is_already_claimed(&self) -> bool {
+        matches!(self, Self::AlreadyClaimed)
+    }
+
+    #[must_use]
     pub fn error(&self) -> Option<&str> {
         match self {
             Self::Failure(e) => Some(e.as_str()),
@@ -145,6 +150,12 @@ impl JobResult {
     #[must_use]
     pub fn is_success(&self) -> bool {
         self.outcome.is_success()
+    }
+
+    /// True only for `AlreadyClaimed`.
+    #[must_use]
+    pub fn is_already_claimed(&self) -> bool {
+        self.outcome.is_already_claimed()
     }
 
     /// Backward-compatible accessor. Returns the error string for `Failure`,
