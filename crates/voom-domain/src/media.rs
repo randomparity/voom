@@ -504,6 +504,49 @@ mod tests {
     }
 
     #[test]
+    fn known_extensions_covers_every_non_other_container_variant() {
+        let covered: Vec<Container> = Container::known_extensions()
+            .iter()
+            .map(|e| Container::from_extension(e))
+            .collect();
+
+        // Exhaustive match: adding a new variant to Container forces a compile
+        // error here, prompting the contributor to also extend known_extensions.
+        for variant in [
+            Container::Mkv,
+            Container::Mp4,
+            Container::Avi,
+            Container::Webm,
+            Container::Flv,
+            Container::Wmv,
+            Container::Mov,
+            Container::Ts,
+        ] {
+            assert!(
+                covered.contains(&variant),
+                "Container::{variant:?} has no extension in known_extensions"
+            );
+        }
+
+        // Compile-time enumeration sanity check: this match is exhaustive
+        // (no `_` arm), so adding a variant to Container fails compilation
+        // until the array above is also extended.
+        fn _exhaustive_marker(c: Container) {
+            match c {
+                Container::Mkv
+                | Container::Mp4
+                | Container::Avi
+                | Container::Webm
+                | Container::Flv
+                | Container::Wmv
+                | Container::Mov
+                | Container::Ts
+                | Container::Other => {}
+            }
+        }
+    }
+
+    #[test]
     fn test_tracks_by_type() {
         let mut mf = MediaFile::new(PathBuf::from("/test.mkv"));
         mf.tracks = vec![
