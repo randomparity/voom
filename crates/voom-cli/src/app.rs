@@ -27,9 +27,11 @@ const PRIORITY_HEALTH_CHECKER: i32 = 95;
 const PRIORITY_TOOL_DETECTOR: i32 = 90;
 const PRIORITY_DISCOVERY: i32 = 80;
 const PRIORITY_FFPROBE_INTROSPECTOR: i32 = 60;
+// Capability collector — priority above executors so ExecutorCapabilities
+// events emitted by executors are delivered to the collector first.
+const PRIORITY_CAPABILITY_COLLECTOR: i32 = 45;
 const PRIORITY_FFMPEG_EXECUTOR: i32 = 40;
 const PRIORITY_MKVTOOLNIX_EXECUTOR: i32 = 39;
-const PRIORITY_CAPABILITY_COLLECTOR: i32 = 35;
 const PRIORITY_BACKUP_MANAGER: i32 = 30;
 const PRIORITY_JOB_MANAGER: i32 = 20;
 // Report plugin — after storage (100), just observes lifecycle events.
@@ -198,9 +200,11 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     );
 
     // Capability collector — captures ExecutorCapabilities events for the evaluator.
-    // Registered before executors so it sees their init-time announcements.
-    // Uses manual init + register_plugin (like sqlite-store) because the caller
-    // needs an Arc<CapabilityCollectorPlugin> handle for snapshot() after bootstrap.
+    // Registered before executors (registration order) AND priority 45 > executor
+    // priorities (40, 39) so runtime ExecutorCapabilities dispatch also reaches
+    // the collector first. Uses manual init + register_plugin (like sqlite-store)
+    // because the caller needs an Arc<CapabilityCollectorPlugin> handle for
+    // snapshot() after bootstrap.
     let collector = {
         let mut plugin = CapabilityCollectorPlugin::new();
         let ctx =
