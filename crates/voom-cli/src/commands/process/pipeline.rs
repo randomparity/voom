@@ -72,7 +72,15 @@ pub(super) async fn process_single_file(
 
     // Prior runs may have written plugin_metadata that the current
     // introspection didn't reproduce; merge so the evaluator sees both.
-    if let Ok(Some(stored)) = ctx.store.file_by_path(&file.path) {
+    // Runs on spawn_blocking because StorageTrait is synchronous rusqlite.
+    let store = ctx.store.clone();
+    let lookup_path = file.path.clone();
+    let stored = tokio::task::spawn_blocking(move || store.file_by_path(&lookup_path))
+        .await
+        .map_err(|e| format!("plugin_metadata merge join error: {e}"))?
+        .ok()
+        .flatten();
+    if let Some(stored) = stored {
         for (k, v) in stored.plugin_metadata {
             file.plugin_metadata.entry(k).or_insert(v);
         }
