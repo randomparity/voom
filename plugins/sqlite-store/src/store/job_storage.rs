@@ -271,3 +271,225 @@ impl JobStorage for SqliteStore {
 }
 
 use super::OptionalExt;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use voom_domain::job::{Job, JobStatus, JobType, JobUpdate};
+    use voom_domain::storage::{JobFilters, JobStorage};
+
+    fn test_store() -> SqliteStore {
+        SqliteStore::in_memory().expect("in-memory store")
+    }
+
+    #[test]
+    fn create_and_fetch_job() {
+        let store = test_store();
+        let job = Job::new(JobType::Transcode);
+        let id = store.create_job(&job).unwrap();
+        assert_eq!(id, job.id);
+
+        let fetched = store.job(&job.id).unwrap().unwrap();
+        assert_eq!(fetched.id, job.id);
+        assert_eq!(fetched.job_type, JobType::Transcode);
+        assert_eq!(fetched.status, JobStatus::Pending);
+    }
+
+    #[test]
+    fn job_unknown_returns_none() {
+        let store = test_store();
+        let missing = store.job(&Uuid::new_v4()).unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn update_job_multi_field() {
+        let store = test_store();
+        let job = Job::new(JobType::Process);
+        store.create_job(&job).unwrap();
+
+        let mut update = JobUpdate::default();
+        update.status = Some(JobStatus::Running);
+        update.progress = Some(0.42);
+        update.progress_message = Some(Some("halfway".to_string()));
+        update.worker_id = Some(Some("worker-1".to_string()));
+        store.update_job(&job.id, &update).unwrap();
+
+        let fetched = store.job(&job.id).unwrap().unwrap();
+        assert_eq!(fetched.status, JobStatus::Running);
+        assert!((fetched.progress - 0.42).abs() < f64::EPSILON);
+        assert_eq!(fetched.progress_message.as_deref(), Some("halfway"));
+        assert_eq!(fetched.worker_id.as_deref(), Some("worker-1"));
+    }
+
+    #[test]
+    fn update_job_empty_is_noop() {
+        let store = test_store();
+        let job = Job::new(JobType::Scan);
+        store.create_job(&job).unwrap();
+
+        let update = JobUpdate::default();
+        store.update_job(&job.id, &update).unwrap();
+
+        let fetched = store.job(&job.id).unwrap().unwrap();
+        assert_eq!(fetched.status, JobStatus::Pending);
+        assert!(fetched.worker_id.is_none());
+    }
+
+    #[test]
+    fn update_job_clear_optional_with_some_none() {
+        let store = test_store();
+        let mut job = Job::new(JobType::Transcode);
+        job.worker_id = Some("worker-seed".to_string());
+        job.error = Some("seed-error".to_string());
+        store.create_job(&job).unwrap();
+
+        let mut update = JobUpdate::default();
+        update.worker_id = Some(None);
+        update.error = Some(None);
+        store.update_job(&job.id, &update).unwrap();
+
+        let fetched = store.job(&job.id).unwrap().unwrap();
+        assert!(fetched.worker_id.is_none());
+        assert!(fetched.error.is_none());
+    }
+
+    #[test]
+    fn claim_next_job_respects_priority() {
+        let store = test_store();
+        // Lower priority value = higher priority. Seed low-priority job first
+        // so we can confirm ordering is not insertion-based.
+        let mut low = Job::new(JobType::Scan);
+        low.priority = 100;
+        let mut high = Job::new(JobType::Transcode);
+        high.priority = 10;
+        store.create_job(&low).unwrap();
+        store.create_job(&high).unwrap();
+
+        let claimed = store.claim_next_job("worker-a").unwrap().unwrap();
+        assert_eq!(claimed.id, high.id);
+        assert_eq!(claimed.status, JobStatus::Running);
+        assert_eq!(claimed.worker_id.as_deref(), Some("worker-a"));
+    }
+
+    #[test]
+    fn claim_next_job_empty_queue_returns_none() {
+        let store = test_store();
+        let result = store.claim_next_job("worker-x").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn claim_job_by_id_non_pending_returns_none() {
+        let store = test_store();
+        let job = Job::new(JobType::Process);
+        store.create_job(&job).unwrap();
+        store.claim_next_job("worker-a").unwrap();
+
+        // Job is now running — second attempt to claim by id should return None.
+        let result = store.claim_job_by_id(&job.id, "worker-b").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn claim_job_by_id_unknown_returns_none() {
+        let store = test_store();
+        let result = store.claim_job_by_id(&Uuid::new_v4(), "worker-x").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn list_jobs_with_status_filter() {
+        let store = test_store();
+        let j1 = Job::new(JobType::Process);
+        let j2 = Job::new(JobType::Scan);
+        store.create_job(&j1).unwrap();
+        store.create_job(&j2).unwrap();
+        store.claim_next_job("worker-a").unwrap();
+
+        let mut filters = JobFilters::default();
+        filters.status = Some(JobStatus::Pending);
+        let pending = store.list_jobs(&filters).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].status, JobStatus::Pending);
+
+        let mut running_filters = JobFilters::default();
+        running_filters.status = Some(JobStatus::Running);
+        let running = store.list_jobs(&running_filters).unwrap();
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].status, JobStatus::Running);
+    }
+
+    #[test]
+    fn list_jobs_limit_and_offset() {
+        let store = test_store();
+        for _ in 0..5 {
+            let job = Job::new(JobType::Scan);
+            store.create_job(&job).unwrap();
+        }
+        let mut filters = JobFilters::default();
+        filters.limit = Some(2);
+        filters.offset = Some(1);
+        let results = store.list_jobs(&filters).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn count_jobs_by_status_groups_correctly() {
+        let store = test_store();
+        let job_a = Job::new(JobType::Process);
+        let job_b = Job::new(JobType::Process);
+        store.create_job(&job_a).unwrap();
+        store.create_job(&job_b).unwrap();
+        store.claim_next_job("worker-a").unwrap();
+
+        let counts = store.count_jobs_by_status().unwrap();
+        let map: std::collections::HashMap<JobStatus, u64> = counts.into_iter().collect();
+        assert_eq!(map.get(&JobStatus::Pending).copied(), Some(1));
+        assert_eq!(map.get(&JobStatus::Running).copied(), Some(1));
+    }
+
+    #[test]
+    fn delete_jobs_with_specific_status() {
+        let store = test_store();
+        let job = Job::new(JobType::Process);
+        store.create_job(&job).unwrap();
+        let mut update = JobUpdate::default();
+        update.status = Some(JobStatus::Completed);
+        store.update_job(&job.id, &update).unwrap();
+
+        let deleted = store.delete_jobs(Some(JobStatus::Completed)).unwrap();
+        assert_eq!(deleted, 1);
+        assert!(store.job(&job.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_jobs_all_terminal_keeps_pending_running() {
+        let store = test_store();
+        let pending = Job::new(JobType::Process);
+        let running = Job::new(JobType::Transcode);
+        let completed = Job::new(JobType::Scan);
+        let failed = Job::new(JobType::Introspect);
+        store.create_job(&pending).unwrap();
+        store.create_job(&running).unwrap();
+        store.create_job(&completed).unwrap();
+        store.create_job(&failed).unwrap();
+
+        let set_status = |id, status| {
+            let mut u = JobUpdate::default();
+            u.status = Some(status);
+            store.update_job(id, &u).unwrap();
+        };
+        set_status(&running.id, JobStatus::Running);
+        set_status(&completed.id, JobStatus::Completed);
+        set_status(&failed.id, JobStatus::Failed);
+
+        let deleted = store.delete_jobs(None).unwrap();
+        assert_eq!(deleted, 2, "should delete only completed + failed");
+
+        assert!(store.job(&pending.id).unwrap().is_some());
+        assert!(store.job(&running.id).unwrap().is_some());
+        assert!(store.job(&completed.id).unwrap().is_none());
+        assert!(store.job(&failed.id).unwrap().is_none());
+    }
+}

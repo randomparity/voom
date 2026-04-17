@@ -167,4 +167,100 @@ mod tests {
             assert!(table_names.contains(expected), "missing table: {expected}");
         }
     }
+
+    #[test]
+    fn table_row_counts_reflect_inserts() {
+        use voom_domain::storage::PluginDataStorage;
+
+        let store = test_store();
+
+        let before = store.table_row_counts().unwrap();
+        let before_plugin_data = before
+            .iter()
+            .find(|(t, _)| t == "plugin_data")
+            .map(|(_, c)| *c)
+            .unwrap();
+
+        store.set_plugin_data("plugin", "key", b"value").unwrap();
+        let after = store.table_row_counts().unwrap();
+        let after_plugin_data = after
+            .iter()
+            .find(|(t, _)| t == "plugin_data")
+            .map(|(_, c)| *c)
+            .unwrap();
+
+        assert_eq!(after_plugin_data, before_plugin_data + 1);
+    }
+
+    #[test]
+    fn vacuum_on_empty_db() {
+        let store = test_store();
+        store.vacuum().unwrap();
+    }
+
+    #[test]
+    fn vacuum_on_populated_db() {
+        use voom_domain::storage::PluginDataStorage;
+
+        let store = test_store();
+        for i in 0..5 {
+            store
+                .set_plugin_data("p", &format!("key-{i}"), b"some-bytes")
+                .unwrap();
+        }
+        store.vacuum().unwrap();
+    }
+
+    #[test]
+    fn page_stats_returns_positive_values() {
+        let store = test_store();
+        let stats = store.page_stats().unwrap();
+        assert!(stats.page_size > 0, "page_size must be positive");
+        assert!(stats.page_count > 0, "page_count must be positive");
+    }
+
+    #[test]
+    fn prune_missing_files_under_soft_deletes_absent_files() {
+        use voom_domain::media::MediaFile;
+        use voom_domain::storage::FileStorage;
+        use voom_domain::transition::FileStatus;
+
+        let store = test_store();
+        // Insert a file with a path that cannot exist on the host filesystem.
+        let mut file = MediaFile::new(std::path::PathBuf::from(
+            "/definitely-not-a-real-root/ghost.mkv",
+        ));
+        file.content_hash = Some("h".into());
+        store.upsert_file(&file).unwrap();
+
+        let marked = store
+            .prune_missing_files_under(Path::new("/definitely-not-a-real-root"))
+            .unwrap();
+        assert_eq!(marked, 1);
+        let after = store.file(&file.id).unwrap().unwrap();
+        assert_eq!(after.status, FileStatus::Missing);
+    }
+
+    #[test]
+    fn prune_missing_files_under_hard_deletes_bad_files() {
+        use voom_domain::bad_file::{BadFile, BadFileSource};
+        use voom_domain::storage::BadFileStorage;
+
+        let store = test_store();
+        let bf = BadFile::new(
+            std::path::PathBuf::from("/nope/never/there.mkv"),
+            128,
+            None,
+            "io error".into(),
+            BadFileSource::Io,
+        );
+        store.upsert_bad_file(&bf).unwrap();
+
+        let _ = store.prune_missing_files_under(Path::new("/nope")).unwrap();
+        // bad_files under the root that don't exist on disk should be hard-deleted.
+        let remaining = store
+            .bad_file_by_path(Path::new("/nope/never/there.mkv"))
+            .unwrap();
+        assert!(remaining.is_none());
+    }
 }

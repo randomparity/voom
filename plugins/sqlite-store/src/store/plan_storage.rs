@@ -360,4 +360,129 @@ mod tests {
         ));
         assert!(matches!(s.actions[4].parameters, ActionParams::Empty));
     }
+
+    #[test]
+    fn plans_for_unknown_file_returns_empty() {
+        let store = test_store();
+        let plans = store.plans_for_file(&Uuid::new_v4()).unwrap();
+        assert!(plans.is_empty());
+    }
+
+    #[test]
+    fn plans_for_file_default_status_pending() {
+        let store = test_store();
+        let file = sample_file();
+        store.upsert_file(&file).unwrap();
+
+        let plan = Plan::new(file.clone(), "policy", "phase");
+        store.save_plan(&plan).unwrap();
+
+        let plans = store.plans_for_file(&file.id).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].status, PlanStatus::Pending);
+        assert!(plans[0].executed_at.is_none());
+    }
+
+    #[test]
+    fn update_plan_status_completed_sets_executed_at() {
+        let store = test_store();
+        let file = sample_file();
+        store.upsert_file(&file).unwrap();
+
+        let plan = Plan::new(file.clone(), "p", "ph");
+        store.save_plan(&plan).unwrap();
+        store
+            .update_plan_status(&plan.id, PlanStatus::Completed)
+            .unwrap();
+
+        let plans = store.plans_for_file(&file.id).unwrap();
+        assert_eq!(plans[0].status, PlanStatus::Completed);
+        assert!(
+            plans[0].executed_at.is_some(),
+            "executed_at should be set on completion"
+        );
+    }
+
+    #[test]
+    fn update_plan_error_without_detail() {
+        let store = test_store();
+        let file = sample_file();
+        store.upsert_file(&file).unwrap();
+
+        let plan = Plan::new(file.clone(), "p", "ph");
+        store.save_plan(&plan).unwrap();
+        store
+            .update_plan_error(&plan.id, "disk full", None)
+            .unwrap();
+
+        let plans = store.plans_for_file(&file.id).unwrap();
+        let raw = plans[0].result.as_ref().expect("result stored");
+        let parsed: serde_json::Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed["error"], "disk full");
+        assert!(parsed["detail"].is_null());
+    }
+
+    #[test]
+    fn update_plan_error_with_detail() {
+        use voom_domain::plan::ExecutionDetail;
+
+        let store = test_store();
+        let file = sample_file();
+        store.upsert_file(&file).unwrap();
+
+        let plan = Plan::new(file.clone(), "p", "ph");
+        store.save_plan(&plan).unwrap();
+
+        let detail = ExecutionDetail {
+            command: "ffmpeg -i in.mkv out.mkv".into(),
+            exit_code: Some(1),
+            stderr_tail: "codec not supported".into(),
+            duration_ms: 1_234,
+        };
+        store
+            .update_plan_error(&plan.id, "transcode failed", Some(&detail))
+            .unwrap();
+
+        let plans = store.plans_for_file(&file.id).unwrap();
+        let raw = plans[0].result.as_ref().expect("result stored");
+        let parsed: serde_json::Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed["error"], "transcode failed");
+        assert_eq!(parsed["detail"]["exit_code"], 1);
+        assert_eq!(parsed["detail"]["duration_ms"], 1_234);
+    }
+
+    #[test]
+    fn plan_stats_by_phase_aggregation() {
+        let store = test_store();
+        let file = sample_file();
+        store.upsert_file(&file).unwrap();
+
+        // Create two plans in the same phase, one completed and one failed.
+        let plan_a = Plan::new(file.clone(), "pol", "normalize");
+        let plan_b = Plan::new(file.clone(), "pol", "normalize");
+        let plan_c = Plan::new(file.clone(), "pol", "verify");
+        store.save_plan(&plan_a).unwrap();
+        store.save_plan(&plan_b).unwrap();
+        store.save_plan(&plan_c).unwrap();
+
+        store
+            .update_plan_status(&plan_a.id, PlanStatus::Completed)
+            .unwrap();
+        store
+            .update_plan_status(&plan_b.id, PlanStatus::Failed)
+            .unwrap();
+
+        let stats = store.plan_stats_by_phase().unwrap();
+
+        // Expect entries for each (phase_name, status) combination.
+        let find = |phase: &str, status: PlanStatus| {
+            stats
+                .iter()
+                .find(|s| s.phase_name == phase && s.status == status)
+                .map(|s| s.count)
+        };
+        assert_eq!(find("normalize", PlanStatus::Completed), Some(1));
+        assert_eq!(find("normalize", PlanStatus::Failed), Some(1));
+        assert_eq!(find("verify", PlanStatus::Pending), Some(1));
+    }
 }

@@ -132,3 +132,197 @@ impl BadFileStorage for SqliteStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use voom_domain::bad_file::{BadFile, BadFileSource};
+
+    fn test_store() -> SqliteStore {
+        SqliteStore::in_memory().expect("in-memory store")
+    }
+
+    fn make_bad(path: &str, source: BadFileSource) -> BadFile {
+        BadFile::new(
+            PathBuf::from(path),
+            1024,
+            Some("content-hash".into()),
+            format!("failure for {path}"),
+            source,
+        )
+    }
+
+    #[test]
+    fn upsert_preserves_id_and_increments_attempts() {
+        let store = test_store();
+        let first = make_bad("/media/bad.mkv", BadFileSource::Introspection);
+        let first_id = first.id;
+        store.upsert_bad_file(&first).unwrap();
+
+        // Second upsert with a different in-memory BadFile — stored id should
+        // not change, attempt_count should bump.
+        let second = make_bad("/media/bad.mkv", BadFileSource::Introspection);
+        assert_ne!(first_id, second.id);
+        store.upsert_bad_file(&second).unwrap();
+
+        let stored = store
+            .bad_file_by_path(Path::new("/media/bad.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.id, first_id, "id must be preserved across upserts");
+        assert_eq!(stored.attempt_count, 2);
+    }
+
+    #[test]
+    fn upsert_null_content_hash_roundtrips() {
+        let store = test_store();
+        let mut bf = make_bad("/media/unhashed.mkv", BadFileSource::Io);
+        bf.content_hash = None;
+        store.upsert_bad_file(&bf).unwrap();
+
+        let stored = store
+            .bad_file_by_path(Path::new("/media/unhashed.mkv"))
+            .unwrap()
+            .unwrap();
+        assert!(stored.content_hash.is_none());
+    }
+
+    #[test]
+    fn list_with_path_prefix_filter() {
+        let store = test_store();
+        store
+            .upsert_bad_file(&make_bad("/media/a.mkv", BadFileSource::Introspection))
+            .unwrap();
+        store
+            .upsert_bad_file(&make_bad("/other/b.mkv", BadFileSource::Introspection))
+            .unwrap();
+
+        let mut filters = BadFileFilters::default();
+        filters.path_prefix = Some("/media".into());
+        let results = store.list_bad_files(&filters).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, PathBuf::from("/media/a.mkv"));
+    }
+
+    #[test]
+    fn list_with_error_source_filter() {
+        let store = test_store();
+        store
+            .upsert_bad_file(&make_bad("/media/a.mkv", BadFileSource::Introspection))
+            .unwrap();
+        store
+            .upsert_bad_file(&make_bad("/media/b.mkv", BadFileSource::Io))
+            .unwrap();
+
+        let mut filters = BadFileFilters::default();
+        filters.error_source = Some(BadFileSource::Io);
+        let results = store.list_bad_files(&filters).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].error_source, BadFileSource::Io);
+    }
+
+    #[test]
+    fn list_combined_filters() {
+        let store = test_store();
+        store
+            .upsert_bad_file(&make_bad("/media/a.mkv", BadFileSource::Introspection))
+            .unwrap();
+        store
+            .upsert_bad_file(&make_bad("/media/b.mkv", BadFileSource::Io))
+            .unwrap();
+        store
+            .upsert_bad_file(&make_bad("/other/c.mkv", BadFileSource::Io))
+            .unwrap();
+
+        let mut filters = BadFileFilters::default();
+        filters.path_prefix = Some("/media".into());
+        filters.error_source = Some(BadFileSource::Io);
+        let results = store.list_bad_files(&filters).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, PathBuf::from("/media/b.mkv"));
+    }
+
+    #[test]
+    fn list_limit_and_offset() {
+        let store = test_store();
+        for i in 0..5 {
+            store
+                .upsert_bad_file(&make_bad(
+                    &format!("/media/f{i}.mkv"),
+                    BadFileSource::Introspection,
+                ))
+                .unwrap();
+        }
+        let mut filters = BadFileFilters::default();
+        filters.limit = Some(2);
+        filters.offset = Some(1);
+        let results = store.list_bad_files(&filters).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn count_matches_filters() {
+        let store = test_store();
+        store
+            .upsert_bad_file(&make_bad("/media/a.mkv", BadFileSource::Introspection))
+            .unwrap();
+        store
+            .upsert_bad_file(&make_bad("/media/b.mkv", BadFileSource::Io))
+            .unwrap();
+        store
+            .upsert_bad_file(&make_bad("/other/c.mkv", BadFileSource::Io))
+            .unwrap();
+
+        let all = store.count_bad_files(&BadFileFilters::default()).unwrap();
+        assert_eq!(all, 3);
+
+        let mut filters = BadFileFilters::default();
+        filters.path_prefix = Some("/media".into());
+        let scoped = store.count_bad_files(&filters).unwrap();
+        assert_eq!(scoped, 2);
+    }
+
+    #[test]
+    fn delete_by_id_removes_record() {
+        let store = test_store();
+        let bf = make_bad("/media/bad.mkv", BadFileSource::Parse);
+        store.upsert_bad_file(&bf).unwrap();
+        // Look up stored id — upsert preserves/generates DB id, but on first
+        // insert, stored.id == bf.id.
+        let stored = store
+            .bad_file_by_path(Path::new("/media/bad.mkv"))
+            .unwrap()
+            .unwrap();
+        store.delete_bad_file(&stored.id).unwrap();
+        assert!(store
+            .bad_file_by_path(Path::new("/media/bad.mkv"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn delete_by_path_removes_record() {
+        let store = test_store();
+        store
+            .upsert_bad_file(&make_bad("/media/bad.mkv", BadFileSource::Parse))
+            .unwrap();
+        store
+            .delete_bad_file_by_path(Path::new("/media/bad.mkv"))
+            .unwrap();
+        assert!(store
+            .bad_file_by_path(Path::new("/media/bad.mkv"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn delete_missing_is_noop() {
+        let store = test_store();
+        // Delete a non-existent id and path — must not error, nothing to delete.
+        store.delete_bad_file(&Uuid::new_v4()).unwrap();
+        store
+            .delete_bad_file_by_path(Path::new("/nowhere/gone.mkv"))
+            .unwrap();
+    }
+}
