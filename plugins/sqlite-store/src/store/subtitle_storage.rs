@@ -20,7 +20,7 @@ pub struct SubtitleRecord {
 }
 
 impl SqliteStore {
-    /// Insert a subtitle record. Duplicates (same file_path + subtitle_path)
+    /// Insert a subtitle record. Duplicates (same `file_path` + `subtitle_path`)
     /// are replaced with the latest data.
     pub fn upsert_subtitle(
         &self,
@@ -34,7 +34,7 @@ impl SqliteStore {
         conn.execute(
             "INSERT OR REPLACE INTO subtitles (file_path, subtitle_path, language, forced, title)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![file_path, subtitle_path, language, forced as i32, title],
+            params![file_path, subtitle_path, language, i32::from(forced), title],
         )
         .map_err(storage_err("failed to upsert subtitle"))?;
         Ok(())

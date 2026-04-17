@@ -108,7 +108,7 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
                             }
                         }).await;
                     }
-                    _ = health_token.cancelled() => break,
+                    () = health_token.cancelled() => break,
                 }
             }
         });

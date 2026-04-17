@@ -47,11 +47,11 @@ impl Default for SqliteStorePlugin {
 }
 
 impl Plugin for SqliteStorePlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "sqlite-store"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 

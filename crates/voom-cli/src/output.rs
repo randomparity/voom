@@ -248,11 +248,7 @@ pub fn render_transitions_table(transitions: &[FileTransition]) -> String {
         }
 
         let date = format::format_display(&t.created_at);
-        let from = t
-            .from_hash
-            .as_deref()
-            .map(hash_preview)
-            .unwrap_or("\u{2014}");
+        let from = t.from_hash.as_deref().map_or("\u{2014}", hash_preview);
         let to = hash_preview(&t.to_hash);
 
         let source_display = match (&t.source, &t.phase_name, &t.outcome) {
@@ -291,8 +287,7 @@ pub fn render_transitions_table(transitions: &[FileTransition]) -> String {
         let media_cell = t
             .metadata_snapshot
             .as_ref()
-            .map(format_snapshot_cell)
-            .unwrap_or_else(|| "\u{2014}".to_string());
+            .map_or_else(|| "\u{2014}".to_string(), format_snapshot_cell);
         row.push(Cell::new(media_cell));
 
         table.add_row(row);

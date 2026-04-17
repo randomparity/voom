@@ -186,11 +186,12 @@ fn try_cleanup_parent_dir(path: &Path) {
 /// In global-dir mode, a `unique_id` is incorporated into the filename
 /// to avoid collisions. In sibling mode, a timestamp-based name is used
 /// in a `.voom-backup` directory next to the original.
+#[must_use]
 pub fn backup_path_for(config: &BackupConfig, path: &Path, unique_id: Uuid) -> PathBuf {
-    let file_name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().replace(['/', '\\', '\0'], "_"))
-        .unwrap_or_else(|| "unknown".into());
+    let file_name = path.file_name().map_or_else(
+        || "unknown".into(),
+        |n| n.to_string_lossy().replace(['/', '\\', '\0'], "_"),
+    );
 
     if config.use_global_dir {
         if let Some(ref dir) = config.backup_dir {

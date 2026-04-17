@@ -34,7 +34,7 @@ impl BadFileStorage for SqliteStore {
                 bad_file.content_hash,
                 bad_file.error,
                 bad_file.error_source.to_string(),
-                bad_file.attempt_count as i64,
+                i64::from(bad_file.attempt_count),
                 bad_file.first_seen_at.to_rfc3339(),
                 bad_file.last_seen_at.to_rfc3339(),
             ],

@@ -16,8 +16,7 @@ pub fn parse_ffprobe_output(
     let container = path
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(Container::from_extension)
-        .unwrap_or(Container::Other);
+        .map_or(Container::Other, Container::from_extension);
 
     let format = json.get("format").unwrap_or(&serde_json::Value::Null);
     let duration = parse_duration(format);
@@ -87,9 +86,10 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
         .unwrap_or("unknown");
 
     // Normalize the codec name if possible, otherwise use raw name
-    let codec = normalize_codec(codec_name)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| codec_name.to_lowercase());
+    let codec = normalize_codec(codec_name).map_or_else(
+        || codec_name.to_lowercase(),
+        std::string::ToString::to_string,
+    );
 
     let language = stream
         .get("tags")
@@ -112,7 +112,7 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
     let disp_flag = |key| {
         disposition
             .get(key)
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .is_some_and(|v| v == 1)
     };
     let is_default = disp_flag("default");
@@ -136,11 +136,11 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
 
             let width = stream
                 .get("width")
-                .and_then(|w| w.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .map(|w| w as u32);
             let height = stream
                 .get("height")
-                .and_then(|h| h.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .map(|h| h as u32);
             let frame_rate = parse_frame_rate(stream);
             let is_vfr = detect_vfr(stream);
@@ -148,7 +148,7 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
             let pixel_format = stream
                 .get("pix_fmt")
                 .and_then(|p| p.as_str())
-                .map(|s| s.to_string());
+                .map(std::string::ToString::to_string);
 
             common.track_type = TrackType::Video;
             common.width = width;
@@ -163,12 +163,12 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
         "audio" => {
             let channels = stream
                 .get("channels")
-                .and_then(|c| c.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .map(|c| c as u32);
             let channel_layout = stream
                 .get("channel_layout")
                 .and_then(|c| c.as_str())
-                .map(|s| s.to_string());
+                .map(std::string::ToString::to_string);
             let sample_rate = stream
                 .get("sample_rate")
                 .and_then(|s| s.as_str())
@@ -380,7 +380,7 @@ mod tests {
             "sample_rate": "48000",
             "bits_per_raw_sample": "24",
             "disposition": {
-                "default": if is_default { 1 } else { 0 },
+                "default": i32::from(is_default),
                 "forced": 0,
                 "comment": 0
             },
@@ -395,7 +395,7 @@ mod tests {
             "codec_name": "subrip",
             "disposition": {
                 "default": 0,
-                "forced": if forced { 1 } else { 0 },
+                "forced": i32::from(forced),
                 "comment": 0
             },
             "tags": {"language": lang, "title": ""}
@@ -541,10 +541,13 @@ mod tests {
         let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
 
         assert_eq!(
-            file.tags.get("title").map(|s| s.as_str()),
+            file.tags.get("title").map(std::string::String::as_str),
             Some("Test Movie")
         );
-        assert_eq!(file.tags.get("encoder").map(|s| s.as_str()), Some("libmkv"));
+        assert_eq!(
+            file.tags.get("encoder").map(std::string::String::as_str),
+            Some("libmkv")
+        );
     }
 
     #[test]

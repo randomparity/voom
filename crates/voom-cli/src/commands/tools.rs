@@ -75,22 +75,21 @@ fn info(name: String, format: OutputFormat) -> Result<()> {
     let mut detector = voom_tool_detector::ToolDetectorPlugin::new();
     detector.detect_all();
 
-    let tool = match detector.tool(&name) {
-        Some(t) => t.clone(),
-        None => {
-            let available: Vec<_> = detector
-                .detected_tools()
-                .values()
-                .map(|t| t.name.as_str())
-                .collect();
-            if available.is_empty() {
-                anyhow::bail!("Tool \"{name}\" not found. No tools detected.");
-            }
-            anyhow::bail!(
-                "Tool \"{name}\" not found. Available: {}",
-                available.join(", ")
-            );
+    let tool = if let Some(t) = detector.tool(&name) {
+        t.clone()
+    } else {
+        let available: Vec<_> = detector
+            .detected_tools()
+            .values()
+            .map(|t| t.name.as_str())
+            .collect();
+        if available.is_empty() {
+            anyhow::bail!("Tool \"{name}\" not found. No tools detected.");
         }
+        anyhow::bail!(
+            "Tool \"{name}\" not found. Available: {}",
+            available.join(", ")
+        );
     };
 
     // Try to load executor capabilities for executor tools
@@ -167,7 +166,7 @@ fn info(name: String, format: OutputFormat) -> Result<()> {
 }
 
 /// Bootstrap a minimal kernel with just the named executor plugin and a
-/// capability collector, avoiding the overhead of a full kernel + SQLite.
+/// capability collector, avoiding the overhead of a full kernel + `SQLite`.
 fn collect_executor_capabilities(
     exec_name: &str,
 ) -> Option<voom_domain::capability_map::CapabilityMap> {

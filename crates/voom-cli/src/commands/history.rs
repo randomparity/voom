@@ -11,7 +11,7 @@ use crate::output;
 /// Maximum predecessors to walk (prevents infinite loops from corrupt data).
 const MAX_PREDECESSORS: usize = 50;
 
-/// Walk the superseded_by chain backward from `start_id`, collecting all
+/// Walk the `superseded_by` chain backward from `start_id`, collecting all
 /// file IDs in lineage order (oldest first, current last).
 pub(crate) fn collect_lineage(store: &dyn FileStorage, start_id: Uuid) -> Vec<Uuid> {
     let mut chain = vec![start_id];

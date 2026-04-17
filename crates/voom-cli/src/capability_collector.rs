@@ -27,15 +27,15 @@ impl CapabilityCollectorPlugin {
 }
 
 impl voom_kernel::Plugin for CapabilityCollectorPlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "capability-collector"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Collects executor capability announcements for policy evaluation"
     }
 

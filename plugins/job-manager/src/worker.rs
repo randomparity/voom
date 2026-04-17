@@ -70,7 +70,7 @@ impl WorkerPoolConfig {
 
 fn num_cpus() -> usize {
     std::thread::available_parallelism()
-        .map(|n| n.get())
+        .map(std::num::NonZeroUsize::get)
         .unwrap_or(4)
 }
 
@@ -189,7 +189,7 @@ impl WorkerPool {
         for job_id in job_ids {
             let permit = tokio::select! {
                 p = semaphore.clone().acquire_owned() => p.expect("semaphore not closed"),
-                _ = self.token.cancelled() => break,
+                () = self.token.cancelled() => break,
             };
             let queue = self.queue.clone();
             let token = self.token.clone();

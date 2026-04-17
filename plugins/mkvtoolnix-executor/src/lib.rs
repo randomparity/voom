@@ -43,7 +43,7 @@ fn is_supported_op(op: OperationType) -> bool {
 ///
 /// Propedit actions are always run first since they operate in-place and are much faster.
 /// Merge actions run second and produce a new file that replaces the original.
-/// Known input containers that MKVToolNix can remux.
+/// Known input containers that `MKVToolNix` can remux.
 const MKVTOOLNIX_FORMATS: &[&str] = &[
     "ass", "avi", "flac", "flv", "matroska", "mov", "mp4", "mpeg", "ogm", "srt", "ssa", "wav",
     "webm",
@@ -171,7 +171,7 @@ impl MkvtoolnixExecutorPlugin {
         } else {
             // Non-MKV source: merge first (convert to MKV), then propedit
             // on the resulting .mkv file (merge removes the original).
-            let mut converted_path = path.to_path_buf();
+            let mut converted_path = path.clone();
             tracing::info!(
                 path = %path.display(),
                 count = merge_actions.len(),
@@ -299,7 +299,7 @@ impl MkvtoolnixExecutorPlugin {
             "--language".to_string(),
             format!("0:{language}"),
             "--forced-display-flag".to_string(),
-            format!("0:{}", if *forced { 1 } else { 0 }),
+            format!("0:{}", i32::from(*forced)),
         ];
         if let Some(title) = title {
             args.push("--track-name".to_string());
@@ -405,11 +405,11 @@ impl Default for MkvtoolnixExecutorPlugin {
 }
 
 impl Plugin for MkvtoolnixExecutorPlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "mkvtoolnix-executor"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 

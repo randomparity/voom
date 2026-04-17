@@ -52,6 +52,7 @@ impl PolicyEvaluator {
     /// assert_eq!(result.plans.len(), 1);
     /// assert_eq!(result.plans[0].phase_name, "init");
     /// ```
+    #[must_use]
     pub fn evaluate(
         &self,
         policy: &CompiledPolicy,
@@ -66,6 +67,7 @@ impl PolicyEvaluator {
     /// This is a convenience wrapper that calls [`evaluator::evaluate_with_context`]
     /// followed by [`evaluator::apply_capability_hints`]. The original `evaluate()`
     /// method remains unchanged for callers that don't need capability context.
+    #[must_use]
     pub fn evaluate_with_capabilities(
         &self,
         policy: &CompiledPolicy,
@@ -81,6 +83,7 @@ impl PolicyEvaluator {
     ///
     /// Used by the per-phase evaluate-execute-reintrospect loop so each
     /// phase sees the file as it exists after prior phases have executed.
+    #[must_use]
     pub fn evaluate_single_phase(
         &self,
         phase_name: &str,

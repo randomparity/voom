@@ -171,21 +171,19 @@ fn resolve_toml_key(table: &toml::Table, key: &str) -> Result<toml::Value> {
 
     let mut current = table;
     for (i, seg) in segments[..segments.len() - 1].iter().enumerate() {
-        match current.get(*seg) {
-            Some(v) => match v.as_table() {
-                Some(t) => current = t,
-                None => {
-                    let path = segments[..=i].join(".");
-                    bail!(
-                        "'{path}' is not a table; \
-                         cannot traverse further"
-                    );
-                }
-            },
-            None => {
+        if let Some(v) = current.get(*seg) {
+            if let Some(t) = v.as_table() {
+                current = t
+            } else {
                 let path = segments[..=i].join(".");
-                bail!("key not set: {path}");
+                bail!(
+                    "'{path}' is not a table; \
+                 cannot traverse further"
+                );
             }
+        } else {
+            let path = segments[..=i].join(".");
+            bail!("key not set: {path}");
         }
     }
 

@@ -694,11 +694,10 @@ api_key = "abc123"
         assert!(!config.plugin.contains_key("ffprobe-introspector"));
 
         // Unconfigured plugin gets empty json
-        let unconfigured = config
-            .plugin
-            .get("ffprobe-introspector")
-            .map(|t| serde_json::to_value(t).unwrap_or_default())
-            .unwrap_or_else(|| serde_json::json!({}));
+        let unconfigured = config.plugin.get("ffprobe-introspector").map_or_else(
+            || serde_json::json!({}),
+            |t| serde_json::to_value(t).unwrap_or_default(),
+        );
         assert_eq!(unconfigured, serde_json::json!({}));
     }
 }

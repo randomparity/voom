@@ -76,11 +76,11 @@ impl Default for FfprobeIntrospectorPlugin {
 }
 
 impl Plugin for FfprobeIntrospectorPlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ffprobe-introspector"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 

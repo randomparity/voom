@@ -133,6 +133,7 @@ pub fn validate_source(source: &str) -> ValidationResult {
 ///
 /// Returns a [`FormatResult`] with the formatted source if parsing succeeds,
 /// or error details if the source cannot be parsed.
+#[must_use]
 pub fn format_source(source: &str) -> FormatResult {
     match parse_policy(source) {
         Ok(ast) => FormatResult {

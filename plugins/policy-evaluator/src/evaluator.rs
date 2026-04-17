@@ -11,7 +11,12 @@ use voom_domain::errors::VoomError;
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings};
 use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
-use voom_dsl::compiled::*;
+use voom_dsl::compiled::{
+    ClearActionsSettings, CompiledAction, CompiledConditional, CompiledDefault, CompiledFilter,
+    CompiledOperation, CompiledPhase, CompiledPolicy, CompiledRule, CompiledSynthesize,
+    CompiledTranscodeSettings, CompiledValueOrField, DefaultStrategy, ErrorStrategy, RulesMode,
+    RunIfTrigger, SynthLanguage, SynthPosition, TrackTarget, TranscodeChannels,
+};
 
 use crate::condition::{evaluate_condition, resolve_value_or_field, EvalContext};
 use crate::container_compat::codec_supported;
@@ -760,8 +765,7 @@ fn emit_transcode(
             let hw_available = ctx
                 .eval_ctx
                 .capabilities
-                .map(|caps| caps.has_hwaccel(hw))
-                .unwrap_or(false);
+                .is_some_and(|caps| caps.has_hwaccel(hw));
             if !hw_available && settings.hw_fallback == Some(false) {
                 ctx.plan.skip_reason = Some(format!(
                     "hw backend '{hw}' unavailable and hw_fallback is false"

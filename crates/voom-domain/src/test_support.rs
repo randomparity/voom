@@ -564,7 +564,7 @@ impl crate::storage::EventLogStorage for InMemoryStore {
                 }
                 true
             })
-            .take(filters.limit.map(|l| l as usize).unwrap_or(usize::MAX))
+            .take(filters.limit.map_or(usize::MAX, |l| l as usize))
             .cloned()
             .collect();
         Ok(results)

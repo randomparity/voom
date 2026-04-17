@@ -16,34 +16,34 @@ pub fn run() -> Result<()> {
     let config_dir = config_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("config path has no parent directory"))?;
-    if !config_dir.exists() {
+    if config_dir.exists() {
+        println!(
+            "  {} {} already exists",
+            style("OK").green(),
+            style(config_dir.display()).dim()
+        );
+    } else {
         std::fs::create_dir_all(config_dir)?;
         println!(
             "  {} Created {}",
             style("OK").green(),
             style(config_dir.display()).cyan()
         );
-    } else {
-        println!(
-            "  {} {} already exists",
-            style("OK").green(),
-            style(config_dir.display()).dim()
-        );
     }
 
     // 2. Create data directory
-    if !cfg.data_dir.exists() {
+    if cfg.data_dir.exists() {
+        println!(
+            "  {} {} already exists",
+            style("OK").green(),
+            style(cfg.data_dir.display()).dim()
+        );
+    } else {
         std::fs::create_dir_all(&cfg.data_dir)?;
         println!(
             "  {} Created {}",
             style("OK").green(),
             style(cfg.data_dir.display()).cyan()
-        );
-    } else {
-        println!(
-            "  {} {} already exists",
-            style("OK").green(),
-            style(cfg.data_dir.display()).dim()
         );
     }
 
@@ -69,7 +69,13 @@ pub fn run() -> Result<()> {
     }
 
     // 4. Create default config if missing
-    if !config_path.exists() {
+    if config_path.exists() {
+        println!(
+            "  {} {} already exists",
+            style("OK").green(),
+            style(config_path.display()).dim()
+        );
+    } else {
         let contents = config::default_config_contents();
 
         #[cfg(unix)]
@@ -90,12 +96,6 @@ pub fn run() -> Result<()> {
             "  {} Created {}",
             style("OK").green(),
             style(config_path.display()).cyan()
-        );
-    } else {
-        println!(
-            "  {} {} already exists",
-            style("OK").green(),
-            style(config_path.display()).dim()
         );
     }
 

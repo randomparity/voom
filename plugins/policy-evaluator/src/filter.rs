@@ -46,7 +46,7 @@ fn track_matches_impl(
         }
         CompiledFilter::Channels(op, value) => {
             if let Some(ch) = track.channels {
-                compare_f64(ch as f64, op, *value)
+                compare_f64(f64::from(ch), op, *value)
             } else {
                 false
             }

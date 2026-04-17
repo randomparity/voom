@@ -135,10 +135,9 @@ fn resolve_single_orphan(
         "always_discard" => discard(orphan, store),
         other => {
             anyhow::bail!(
-                "unsupported recovery mode '{}' — \
+                "unsupported recovery mode '{other}' — \
                  use 'always_recover' or 'always_discard' in config.toml \
-                 [recovery] section",
-                other
+                 [recovery] section"
             );
         }
     };

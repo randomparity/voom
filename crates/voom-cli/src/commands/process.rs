@@ -111,7 +111,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         config.plugin.get("backup-manager").and_then(|t| {
             let use_global = t
                 .get("use_global_dir")
-                .and_then(|v| v.as_bool())
+                .and_then(toml::Value::as_bool)
                 .unwrap_or(false);
             if use_global {
                 t.get("backup_dir")
@@ -1007,7 +1007,7 @@ fn dispatch_safeguard_violations(
     log_plugin_errors(&r);
 }
 
-/// Dispatch events for a skipped plan: PlanCreated then PlanSkipped.
+/// Dispatch events for a skipped plan: `PlanCreated` then `PlanSkipped`.
 fn dispatch_skipped_plan(
     plan: &voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
@@ -1034,7 +1034,7 @@ fn dispatch_skipped_plan(
     );
 }
 
-/// Dispatch a PlanFailed event and record the phase stat.
+/// Dispatch a `PlanFailed` event and record the phase stat.
 fn dispatch_plan_failure(failed: PlanFailedEvent, phase_name: &str, ctx: &ProcessContext<'_>) {
     let r = ctx.kernel.dispatch(Event::PlanFailed(failed));
     log_plugin_errors(&r);
@@ -1726,7 +1726,7 @@ fn apply_detected_languages(file: &mut voom_domain::media::MediaFile) {
     };
 
     for det in detections {
-        let track_index = match det.get("track_index").and_then(|v| v.as_u64()) {
+        let track_index = match det.get("track_index").and_then(serde_json::Value::as_u64) {
             Some(i) => i as u32,
             None => continue,
         };
@@ -1739,9 +1739,10 @@ fn apply_detected_languages(file: &mut voom_domain::media::MediaFile) {
             continue;
         };
 
-        let normalized = match voom_domain::utils::language::normalize_language(detected) {
-            Some(code) => code,
-            None => {
+        let normalized =
+            if let Some(code) = voom_domain::utils::language::normalize_language(detected) {
+                code
+            } else {
                 tracing::warn!(
                     path = %file.path.display(),
                     track = track_index,
@@ -1749,8 +1750,7 @@ fn apply_detected_languages(file: &mut voom_domain::media::MediaFile) {
                     "unrecognized language code from detector, skipping"
                 );
                 continue;
-            }
-        };
+            };
 
         if track.language == normalized {
             continue;
@@ -1804,7 +1804,7 @@ fn resolve_post_execution_path(
     file.path.clone()
 }
 
-/// Search plans (last to first) for the most recent ConvertContainer action.
+/// Search plans (last to first) for the most recent `ConvertContainer` action.
 fn find_last_container_action(
     plans: &[voom_domain::plan::Plan],
 ) -> Option<voom_domain::media::Container> {
@@ -1864,8 +1864,7 @@ fn execute_single_plan(
         let executor = results
             .iter()
             .find(|r| r.claimed)
-            .map(|r| r.plugin_name.clone())
-            .unwrap_or_else(|| "unknown".to_string());
+            .map_or_else(|| "unknown".to_string(), |r| r.plugin_name.clone());
         PlanOutcome::Success { executor }
     } else if let Some(error) = exec_error {
         let mut failed =
@@ -1990,7 +1989,7 @@ fn print_phase_breakdown(stats: &HashMap<String, PhaseStats>, phase_order: &[Str
 /// Reporter that dispatches job lifecycle events through the kernel event bus.
 ///
 /// `kernel.dispatch()` is synchronous. While most handlers are fast in-memory
-/// operations, `sqlite-store` performs a blocking SQLite write on every dispatch.
+/// operations, `sqlite-store` performs a blocking `SQLite` write on every dispatch.
 /// The overhead is acceptable for job lifecycle events (low frequency), but this
 /// should be revisited if dispatch latency becomes a concern.
 struct EventBusReporter {
@@ -2064,10 +2063,10 @@ mod tests {
     }
 
     impl voom_kernel::Plugin for PlanRecordingPlugin {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "plan-recorder"
         }
-        fn version(&self) -> &str {
+        fn version(&self) -> &'static str {
             "0.1.0"
         }
         fn capabilities(&self) -> &[Capability] {
@@ -2223,10 +2222,10 @@ mod tests {
     }
 
     impl voom_kernel::Plugin for JobEventRecorder {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "job-recorder"
         }
-        fn version(&self) -> &str {
+        fn version(&self) -> &'static str {
             "0.1.0"
         }
         fn capabilities(&self) -> &[Capability] {

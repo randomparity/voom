@@ -1,4 +1,4 @@
-//! FFmpeg plan execution: build commands, run subprocess, manage temp files.
+//! `FFmpeg` plan execution: build commands, run subprocess, manage temp files.
 
 use std::time::{Duration, Instant};
 
@@ -130,7 +130,20 @@ fn rename_output(
         .and_then(|e| e.to_str())
         .unwrap_or("");
 
-    if ext != original_ext {
+    if ext == original_ext {
+        // Same extension: rename temp over original
+        std::fs::rename(output_path, &plan.file.path).map_err(|e| {
+            let _ = std::fs::remove_file(output_path);
+            VoomError::ToolExecution {
+                tool: "ffmpeg".into(),
+                message: format!(
+                    "failed to rename temp file to {}: {e}",
+                    plan.file.path.display()
+                ),
+            }
+        })?;
+        Ok(plan.file.path.clone())
+    } else {
         // Container conversion: rename to new extension
         let new_path = plan.file.path.with_extension(ext);
         std::fs::rename(output_path, &new_path).map_err(|e| {
@@ -145,18 +158,5 @@ fn rename_output(
             let _ = std::fs::remove_file(&plan.file.path);
         }
         Ok(new_path)
-    } else {
-        // Same extension: rename temp over original
-        std::fs::rename(output_path, &plan.file.path).map_err(|e| {
-            let _ = std::fs::remove_file(output_path);
-            VoomError::ToolExecution {
-                tool: "ffmpeg".into(),
-                message: format!(
-                    "failed to rename temp file to {}: {e}",
-                    plan.file.path.display()
-                ),
-            }
-        })?;
-        Ok(plan.file.path.clone())
     }
 }

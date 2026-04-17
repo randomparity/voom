@@ -12,7 +12,11 @@ use pest::iterators::Pair;
 use pest::Parser;
 use pest_derive::Parser;
 
-use crate::ast::*;
+use crate::ast::{
+    ActionNode, CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode,
+    PolicyAst, RuleNode, RunIfNode, Span, SpannedOperation, SynthSetting, TrackQueryNode,
+    TrackRefNode, Value, ValueOrField, WhenNode,
+};
 use crate::errors::{DslError, Result};
 
 #[derive(Parser)]
@@ -192,7 +196,7 @@ fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
 
 /// Push a spanned operation with a pre-captured span.
 fn emit_op(ops: &mut Vec<SpannedOperation>, span: Span, node: OperationNode) {
-    ops.push(SpannedOperation { span, node });
+    ops.push(SpannedOperation { node, span });
 }
 
 fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
@@ -342,7 +346,7 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
     })
 }
 
-/// Extract the target and optional filter from a keep_op or remove_op pair.
+/// Extract the target and optional filter from a `keep_op` or `remove_op` pair.
 fn build_keep_remove_parts(pair: Pair<'_, Rule>) -> Result<(String, Option<FilterNode>)> {
     let mut inner = pair.into_inner();
     let target = inner.next().unwrap().as_str().to_string();

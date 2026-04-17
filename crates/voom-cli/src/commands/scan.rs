@@ -527,10 +527,10 @@ mod tests {
     }
 
     impl voom_kernel::Plugin for RecordingPlugin {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "test-recorder"
         }
-        fn version(&self) -> &str {
+        fn version(&self) -> &'static str {
             "0.1.0"
         }
         fn capabilities(&self) -> &[Capability] {

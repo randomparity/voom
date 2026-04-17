@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 /// All SQL statements to create the VOOM schema.
-const SCHEMA_SQL: &str = r#"
+const SCHEMA_SQL: &str = r"
 CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY,
     path TEXT UNIQUE,
@@ -202,7 +202,7 @@ CREATE TABLE IF NOT EXISTS pending_operations (
     phase_name TEXT NOT NULL,
     started_at TEXT NOT NULL
 );
-"#;
+";
 
 /// Initialize the database schema.
 pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -488,8 +488,8 @@ fn migrate_indexes_and_constraints(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Add processing-stats columns to file_transitions and drop legacy
-/// processing_stats table.
+/// Add processing-stats columns to `file_transitions` and drop legacy
+/// `processing_stats` table.
 fn migrate_processing_stats_into_transitions(
     conn: &Connection,
     has_column: &dyn Fn(&str, &str) -> rusqlite::Result<bool>,
@@ -515,7 +515,7 @@ fn migrate_processing_stats_into_transitions(
     Ok(())
 }
 
-/// Add metadata_snapshot column to file_transitions.
+/// Add `metadata_snapshot` column to `file_transitions`.
 fn migrate_metadata_snapshot_column(
     conn: &Connection,
     has_column: &dyn Fn(&str, &str) -> rusqlite::Result<bool>,
@@ -526,8 +526,8 @@ fn migrate_metadata_snapshot_column(
     Ok(())
 }
 
-/// Add error_message and session_id columns to file_transitions, and
-/// session_id to plans, for execution output capture.
+/// Add `error_message` and `session_id` columns to `file_transitions`, and
+/// `session_id` to plans, for execution output capture.
 fn migrate_execution_capture_columns(
     conn: &Connection,
     has_column: &dyn Fn(&str, &str) -> rusqlite::Result<bool>,

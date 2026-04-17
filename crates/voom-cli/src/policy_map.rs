@@ -248,8 +248,7 @@ impl PolicyResolver {
             DefaultAction::Skip => Ok(PolicyMatch::Skip),
             DefaultAction::None => {
                 anyhow::bail!(
-                    "no policy mapping matches {:?} and no default is configured",
-                    relative
+                    "no policy mapping matches {relative:?} and no default is configured"
                 );
             }
         }
@@ -324,7 +323,7 @@ policy "policy-b" {
 }
 "#;
 
-    /// Helper: create temp policy files and return (dir, path_a, path_b).
+    /// Helper: create temp policy files and return (dir, `path_a`, `path_b`).
     fn setup_policies() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         let pa = dir.path().join("a.voom");

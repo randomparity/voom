@@ -99,11 +99,11 @@ impl Default for HealthCheckerPlugin {
 }
 
 impl Plugin for HealthCheckerPlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "health-checker"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 

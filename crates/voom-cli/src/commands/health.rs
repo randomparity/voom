@@ -194,27 +194,24 @@ fn print_hw_backend(
 
     let (config, source) = resolve_hw_config(hw_accel_override, hw_accels);
 
-    match config.backend {
-        Some(backend) => {
+    if let Some(backend) = config.backend {
+        println!(
+            "  Backend ... {} {}",
+            style(backend_label(backend)).green(),
+            style(format!("({source})")).dim()
+        );
+        Some(backend)
+    } else {
+        if source == "disabled" {
             println!(
                 "  Backend ... {} {}",
-                style(backend_label(backend)).green(),
-                style(format!("({source})")).dim()
+                style("disabled").yellow(),
+                style("(config override)").dim()
             );
-            Some(backend)
+        } else {
+            println!("  Backend ... {}", style("none detected").yellow());
         }
-        None => {
-            if source == "disabled" {
-                println!(
-                    "  Backend ... {} {}",
-                    style("disabled").yellow(),
-                    style("(config override)").dim()
-                );
-            } else {
-                println!("  Backend ... {}", style("none detected").yellow());
-            }
-            None
-        }
+        None
     }
 }
 

@@ -355,9 +355,7 @@ impl From<ActionParamsCompat> for ActionParams {
             } => {
                 // If the nested `settings` object has values, use it.
                 // Otherwise, lift the legacy flat fields.
-                let merged = if settings != TranscodeSettings::default() {
-                    settings
-                } else {
+                let merged = if settings == TranscodeSettings::default() {
                     TranscodeSettings {
                         crf,
                         preset,
@@ -371,6 +369,8 @@ impl From<ActionParamsCompat> for ActionParams {
                         tune,
                         ..Default::default()
                     }
+                } else {
+                    settings
                 };
                 Self::Transcode {
                     codec,

@@ -19,7 +19,10 @@ use std::collections::{HashMap, HashSet};
 
 use voom_domain::utils::{codecs, codecs::CodecType, language};
 
-use crate::ast::*;
+use crate::ast::{
+    ActionNode, ConditionNode, FilterNode, OperationNode, PhaseNode, PolicyAst, SynthSetting,
+    Value, ValueOrField, WhenNode,
+};
 use crate::errors::{DslError, DslWarning, ValidationErrors};
 
 /// Validate a parsed AST for semantic correctness.
@@ -186,7 +189,11 @@ fn validate_cycle_detection(ast: &PolicyAst, errors: &mut Vec<DslError>) {
     // Build adjacency list
     let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
     for phase in &ast.phases {
-        let deps: Vec<&str> = phase.depends_on.iter().map(|s| s.as_str()).collect();
+        let deps: Vec<&str> = phase
+            .depends_on
+            .iter()
+            .map(std::string::String::as_str)
+            .collect();
         adj.insert(phase.name.as_str(), deps);
     }
 
@@ -2055,8 +2062,7 @@ mod tests {
         assert!(result.is_ok());
         assert!(
             warnings.is_empty(),
-            "known plugin name should produce no warnings, got: {:?}",
-            warnings
+            "known plugin name should produce no warnings, got: {warnings:?}"
         );
     }
 

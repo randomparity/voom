@@ -50,6 +50,7 @@ impl PhaseOrchestrator {
     ///
     /// The caller is responsible for running policy evaluation first (via
     /// `voom_policy_evaluator::evaluator::evaluate`) and passing the resulting plans.
+    #[must_use]
     pub fn orchestrate(&self, plans: Vec<Plan>) -> OrchestrationResult {
         let mut phase_results = Vec::new();
         let mut file_modified = false;
@@ -122,10 +123,7 @@ impl PhaseOrchestrator {
             .phases
             .iter()
             .find(|p| p.name == phase_name)
-            .map(|p| p.on_error)
-            // The compiler always sets an explicit on_error per phase, so this
-            // is only reachable if called with a phase name not in the policy.
-            .unwrap_or(ErrorStrategy::Abort)
+            .map_or(ErrorStrategy::Abort, |p| p.on_error)
     }
 }
 

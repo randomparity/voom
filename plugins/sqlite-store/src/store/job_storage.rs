@@ -103,8 +103,10 @@ impl JobStorage for SqliteStore {
             param_values.len()
         );
 
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|v| v.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect();
 
         conn.execute(&sql, param_refs.as_slice())
             .map_err(storage_err("failed to update job"))?;

@@ -406,8 +406,10 @@ pub mod wasm {
     }
 
     // SAFETY: WasmPlugin uses Mutex for interior mutability, ensuring
-    // exclusive access to the non-Sync wasmtime::Store.
+    // exclusive access to the non-Send wasmtime::Store from any thread.
     unsafe impl Send for WasmPlugin {}
+    // SAFETY: All access to the non-Sync wasmtime::Store goes through the
+    // internal Mutex, so concurrent &WasmPlugin references cannot race.
     unsafe impl Sync for WasmPlugin {}
 
     impl Plugin for WasmPlugin {

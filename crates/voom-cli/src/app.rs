@@ -52,7 +52,7 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
 ///
 /// # Blocking
 ///
-/// This function performs synchronous I/O (filesystem checks, SQLite
+/// This function performs synchronous I/O (filesystem checks, `SQLite`
 /// pool creation, plugin init) and must NOT be called from an async
 /// context. Callers should invoke it before entering the tokio
 /// runtime or from within `spawn_blocking`.
@@ -102,7 +102,12 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     // handle and return it to callers, keeping all CLI commands and the event
     // bus on the same connection pool.
     let store: Arc<dyn voom_domain::storage::StorageTrait> =
-        if !disabled.iter().any(|d| d == "sqlite-store") {
+        if disabled.iter().any(|d| d == "sqlite-store") {
+            // sqlite-store disabled: open a standalone pool so callers always
+            // get a usable handle.  No plugin is registered, so events will
+            // not be persisted, but read-only CLI commands still work.
+            open_store_in(data_dir).context("Failed to open storage")?
+        } else {
             let mut plugin = voom_sqlite_store::SqliteStorePlugin::new();
             let ctx =
                 voom_kernel::PluginContext::new(plugin_json("sqlite-store"), data_dir.clone());
@@ -125,11 +130,6 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
             }
 
             handle
-        } else {
-            // sqlite-store disabled: open a standalone pool so callers always
-            // get a usable handle.  No plugin is registered, so events will
-            // not be persisted, but read-only CLI commands still work.
-            open_store_in(data_dir).context("Failed to open storage")?
         };
 
     // Create a shared job queue for plugins that need to enqueue work.
@@ -352,7 +352,11 @@ mod tests {
     fn test_known_plugin_names_matches_bootstrap_registration() {
         // Bootstrap with all plugins enabled, then verify every registered
         // plugin name appears in KNOWN_PLUGIN_NAMES and vice versa.
-        let config = AppConfig::default();
+        let dir = tempfile::tempdir().unwrap();
+        let config = AppConfig {
+            data_dir: dir.path().to_path_buf(),
+            ..AppConfig::default()
+        };
         let result =
             bootstrap_kernel_with_store(&config).expect("bootstrap should succeed with defaults");
         let registered = result.kernel.registry.plugin_names();

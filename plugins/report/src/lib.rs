@@ -144,11 +144,11 @@ impl ReportPlugin {
 }
 
 impl Plugin for ReportPlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "report"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 

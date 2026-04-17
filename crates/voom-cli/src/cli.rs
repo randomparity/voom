@@ -419,12 +419,12 @@ pub enum ConfigCommands {
     Edit,
     /// Get a configuration value by dot-notation key
     Get {
-        /// Dot-notation key (e.g. auth_token, plugins.wasm_dir, plugin.ffmpeg-executor.hw_accel)
+        /// Dot-notation key (e.g. `auth_token`, `plugins.wasm_dir`, plugin.ffmpeg-executor.hw_accel)
         key: String,
     },
     /// Set a configuration value by dot-notation key
     Set {
-        /// Dot-notation key (e.g. auth_token, plugin.ffmpeg-executor.hw_accel)
+        /// Dot-notation key (e.g. `auth_token`, plugin.ffmpeg-executor.hw_accel)
         key: String,
         /// Value to set (auto-detects type: bool, int, float, or string)
         value: String,

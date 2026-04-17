@@ -36,7 +36,7 @@ pub enum Event {
     /// Emitted by the tool-detector plugin. Consumed by the sqlite-store plugin
     /// to persist tool info, exposed via the web server's GET /api/tools endpoint.
     ToolDetected(ToolDetectedEvent),
-    /// Emitted by executor plugins during init(). Reports probed codec,
+    /// Emitted by executor plugins during `init()`. Reports probed codec,
     /// format, and hardware acceleration support for the underlying tool.
     ExecutorCapabilities(ExecutorCapabilitiesEvent),
     PluginError(PluginErrorEvent),

@@ -5,7 +5,10 @@
 
 use std::fmt::Write;
 
-use crate::ast::*;
+use crate::ast::{
+    ActionNode, CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode,
+    PolicyAst, RuleNode, SynthSetting, TrackQueryNode, Value, ValueOrField, WhenNode,
+};
 
 /// Format a [`PolicyAst`] into a pretty-printed source string.
 ///

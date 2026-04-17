@@ -648,7 +648,7 @@ mod tests {
             FileDiscoveredEvent::new(PathBuf::from("/tmp/large.mkv"), 100, None),
         ];
         let mut state = BatchEtaState::new(&files, 1);
-        state.batch_started_at = Instant::now() - Duration::from_secs(12);
+        state.batch_started_at = Instant::now().checked_sub(Duration::from_secs(12)).unwrap();
 
         let first = crate::introspect::DiscoveredFilePayload {
             path: "/tmp/small-1.mkv".into(),
@@ -663,13 +663,13 @@ mod tests {
         state.on_job_start(uuid::Uuid::new_v4(), &first);
         let first_id = *state.running_jobs.keys().next().unwrap();
         let start = state.running_jobs.get_mut(&first_id).unwrap();
-        start.started_at = Instant::now() - Duration::from_secs(1);
+        start.started_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
         state.on_job_complete(first_id);
 
         state.on_job_start(uuid::Uuid::new_v4(), &second);
         let second_id = *state.running_jobs.keys().next().unwrap();
         let start = state.running_jobs.get_mut(&second_id).unwrap();
-        start.started_at = Instant::now() - Duration::from_secs(1);
+        start.started_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
         state.on_job_complete(second_id);
 
         let estimate = state.estimate();
@@ -685,7 +685,7 @@ mod tests {
             FileDiscoveredEvent::new(PathBuf::from("/tmp/d.mkv"), 10, None),
         ];
         let mut state = BatchEtaState::new(&files, 2);
-        state.batch_started_at = Instant::now() - Duration::from_secs(20);
+        state.batch_started_at = Instant::now().checked_sub(Duration::from_secs(20)).unwrap();
 
         let payload_a = crate::introspect::DiscoveredFilePayload {
             path: "/tmp/a.mkv".into(),
@@ -706,7 +706,7 @@ mod tests {
             .map(|(id, _)| *id)
             .unwrap();
         state.running_jobs.get_mut(&first_id).unwrap().started_at =
-            Instant::now() - Duration::from_secs(10);
+            Instant::now().checked_sub(Duration::from_secs(10)).unwrap();
         state.on_job_complete(first_id);
 
         state.on_job_start(uuid::Uuid::new_v4(), &payload_b);
@@ -717,7 +717,7 @@ mod tests {
             .map(|(id, _)| *id)
             .unwrap();
         state.running_jobs.get_mut(&second_id).unwrap().started_at =
-            Instant::now() - Duration::from_secs(10);
+            Instant::now().checked_sub(Duration::from_secs(10)).unwrap();
         state.on_job_complete(second_id);
 
         let payload_c = crate::introspect::DiscoveredFilePayload {
@@ -733,7 +733,7 @@ mod tests {
         state.on_job_start(uuid::Uuid::new_v4(), &payload_c);
         state.on_job_start(uuid::Uuid::new_v4(), &payload_d);
         for running in state.running_jobs.values_mut() {
-            running.started_at = Instant::now() - Duration::from_secs(5);
+            running.started_at = Instant::now().checked_sub(Duration::from_secs(5)).unwrap();
         }
 
         let estimate = state.estimate();

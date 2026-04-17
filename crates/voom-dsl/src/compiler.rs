@@ -18,12 +18,15 @@ use crate::compiled::{
 };
 use voom_domain::utils::codecs;
 
-use crate::ast::*;
+use crate::ast::{
+    ActionNode, CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode,
+    PolicyAst, SynthSetting, Value, ValueOrField, WhenNode,
+};
 use crate::errors::DslError;
 
 /// Safely convert an f64 to u32, returning None for negative, fractional, or out-of-range values.
 fn safe_u32(n: f64) -> Option<u32> {
-    if n >= 0.0 && n <= u32::MAX as f64 && n.fract() == 0.0 {
+    if n >= 0.0 && n <= f64::from(u32::MAX) && n.fract() == 0.0 {
         Some(n as u32)
     } else {
         None
@@ -212,8 +215,7 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
 
 fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) -> CompiledOperation {
     let canonical = codecs::normalize_codec(codec)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| codec.to_string());
+        .map_or_else(|| codec.to_string(), std::string::ToString::to_string);
 
     let get =
         |key: &str| -> Option<&Value> { settings.iter().find(|(k, _)| k == key).map(|(_, v)| v) };
@@ -299,8 +301,7 @@ fn compile_synthesize(
             SynthSetting::Codec(c) => {
                 codec = Some(
                     codecs::normalize_codec(c)
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| c.clone()),
+                        .map_or_else(|| c.clone(), std::string::ToString::to_string),
                 );
             }
             SynthSetting::Channels(v) => {
@@ -421,8 +422,7 @@ fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, Ds
         )),
         FilterNode::CodecCompare(op, codec) => {
             let normalized = codecs::normalize_codec(codec)
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| codec.clone());
+                .map_or_else(|| codec.clone(), std::string::ToString::to_string);
             Ok(CompiledFilter::CodecCompare(
                 compile_compare_op(op),
                 normalized,
@@ -437,8 +437,7 @@ fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, Ds
                 .iter()
                 .map(|c| {
                     codecs::normalize_codec(c)
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| c.clone())
+                        .map_or_else(|| c.clone(), std::string::ToString::to_string)
                 })
                 .collect();
             Ok(CompiledFilter::CodecIn(normalized))
@@ -568,7 +567,7 @@ fn topological_sort(ast: &PolicyAst) -> std::result::Result<Vec<String>, DslErro
         .filter(|(_, &d)| d == 0)
         .map(|(&n, _)| n)
         .collect();
-    queue.sort(); // deterministic ordering
+    queue.sort_unstable(); // deterministic ordering
 
     let mut result = Vec::new();
     while let Some(node) = queue.pop() {
@@ -588,7 +587,7 @@ fn topological_sort(ast: &PolicyAst) -> std::result::Result<Vec<String>, DslErro
 
     if result.len() != ast.phases.len() {
         let phase_names: HashSet<&str> = ast.phases.iter().map(|p| p.name.as_str()).collect();
-        let result_set: HashSet<&str> = result.iter().map(|s| s.as_str()).collect();
+        let result_set: HashSet<&str> = result.iter().map(std::string::String::as_str).collect();
         let mut stuck: Vec<&str> = phase_names.difference(&result_set).copied().collect();
         stuck.sort_unstable();
         let has_unknown_dep = stuck.iter().any(|&name| {

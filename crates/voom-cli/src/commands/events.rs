@@ -83,7 +83,7 @@ async fn run_follow(
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
     loop {
         tokio::select! {
-            _ = token.cancelled() => break,
+            () = token.cancelled() => break,
             _ = interval.tick() => {}
         }
 

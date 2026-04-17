@@ -95,39 +95,36 @@ fn info(name: String) -> Result<()> {
     let result = app::bootstrap_kernel_with_store(&config)?;
     let capabilities = result.collector.snapshot();
 
-    match result.kernel.registry.get(&name) {
-        Some(plugin) => {
-            println!(
-                "{} {}",
-                style("Plugin:").bold(),
-                style(plugin.name()).cyan()
-            );
-            println!("{} {}", style("Version:").bold(), plugin.version());
-            if !plugin.description().is_empty() {
-                println!("{} {}", style("Description:").bold(), plugin.description());
-            }
-            if !plugin.author().is_empty() {
-                println!("{} {}", style("Author:").bold(), plugin.author());
-            }
-            if !plugin.license().is_empty() {
-                println!("{} {}", style("License:").bold(), plugin.license());
-            }
-            if !plugin.homepage().is_empty() {
-                println!("{} {}", style("Homepage:").bold(), plugin.homepage());
-            }
-            println!("{} {}", style("Status:").bold(), style("enabled").green());
-            println!("{}", style("Capabilities:").bold());
-            for cap in plugin.capabilities() {
-                println!("  - {}", cap.kind());
-            }
+    if let Some(plugin) = result.kernel.registry.get(&name) {
+        println!(
+            "{} {}",
+            style("Plugin:").bold(),
+            style(plugin.name()).cyan()
+        );
+        println!("{} {}", style("Version:").bold(), plugin.version());
+        if !plugin.description().is_empty() {
+            println!("{} {}", style("Description:").bold(), plugin.description());
+        }
+        if !plugin.author().is_empty() {
+            println!("{} {}", style("Author:").bold(), plugin.author());
+        }
+        if !plugin.license().is_empty() {
+            println!("{} {}", style("License:").bold(), plugin.license());
+        }
+        if !plugin.homepage().is_empty() {
+            println!("{} {}", style("Homepage:").bold(), plugin.homepage());
+        }
+        println!("{} {}", style("Status:").bold(), style("enabled").green());
+        println!("{}", style("Capabilities:").bold());
+        for cap in plugin.capabilities() {
+            println!("  - {}", cap.kind());
+        }
 
-            // Show executor details if available
-            output::format_executor_capabilities(&name, &capabilities);
-        }
-        None => {
-            let available = result.kernel.registry.plugin_names().join(", ");
-            anyhow::bail!("Plugin \"{name}\" not found. Available: {available}");
-        }
+        // Show executor details if available
+        output::format_executor_capabilities(&name, &capabilities);
+    } else {
+        let available = result.kernel.registry.plugin_names().join(", ");
+        anyhow::bail!("Plugin \"{name}\" not found. Available: {available}");
     }
 
     Ok(())

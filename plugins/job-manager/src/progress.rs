@@ -33,6 +33,7 @@ pub struct CompositeReporter {
 }
 
 impl CompositeReporter {
+    #[must_use]
     pub fn new(reporters: Vec<Arc<dyn ProgressReporter>>) -> Self {
         Self { reporters }
     }
@@ -123,7 +124,7 @@ impl ProgressReporter for TracingReporter {
 ///
 /// Used in daemon mode where the web UI polls for progress updates.
 ///
-/// `store.update_job()` calls through to SQLite which is synchronous I/O.
+/// `store.update_job()` calls through to `SQLite` which is synchronous I/O.
 /// When used from async worker pool tasks, the `ProgressReporter` trait's
 /// sync interface means these calls block the current thread briefly.
 /// This is acceptable because the worker pool runs on `spawn_blocking`
@@ -146,7 +147,7 @@ impl ProgressReporter for StorageReporter {
     fn on_job_progress(&self, job_id: Uuid, progress: f64, message: Option<&str>) {
         let mut update = voom_domain::job::JobUpdate::default();
         update.progress = Some(progress);
-        update.progress_message = Some(message.map(|s| s.to_string()));
+        update.progress_message = Some(message.map(std::string::ToString::to_string));
         if let Err(e) = self.store.update_job(&job_id, &update) {
             tracing::warn!(%job_id, error = %e, "Failed to update job progress in storage");
         }

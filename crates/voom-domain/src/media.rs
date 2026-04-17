@@ -387,7 +387,7 @@ impl Container {
         }
     }
 
-    /// Map to the FFmpeg muxer format name used in capability announcements.
+    /// Map to the `FFmpeg` muxer format name used in capability announcements.
     ///
     /// Returns `None` for `Other` (unknown containers).
     #[must_use]

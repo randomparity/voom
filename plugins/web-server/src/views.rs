@@ -26,11 +26,10 @@ pub struct FileView {
 impl FileView {
     #[must_use]
     pub fn from_media_file(file: MediaFile) -> Self {
-        let filename = file
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "unknown".to_string());
+        let filename = file.path.file_name().map_or_else(
+            || "unknown".to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
         let size_human = format_size(file.size);
         let track_count = file.tracks.len();
         let duration_human = format_duration(file.duration);

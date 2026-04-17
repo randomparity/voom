@@ -1067,7 +1067,7 @@ fn print_file_list_csv(files: &[voom_domain::MediaFile]) -> Result<()> {
     let mut wtr = csv::Writer::from_writer(stdout.lock());
     wtr.write_record(["path", "size", "duration", "container", "codec"])?;
     for f in files {
-        let primary_codec = f.tracks.first().map(|t| t.codec.as_str()).unwrap_or("");
+        let primary_codec = f.tracks.first().map_or("", |t| t.codec.as_str());
         wtr.write_record([
             &f.path.display().to_string(),
             &f.size.to_string(),
@@ -1117,25 +1117,22 @@ fn run_errors(store: &dyn voom_domain::storage::StorageTrait, args: &ReportArgs)
             eprintln!("{}", style("No sessions with errors found.").dim());
             return Ok(());
         }
-        match args.format {
-            OutputFormat::Json => {
+        if let OutputFormat::Json = args.format {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&sessions).context("serialize sessions")?
+            );
+        } else {
+            println!("{}", style("Sessions with errors:").bold().underlined());
+            println!();
+            for s in &sessions {
+                let short = &s.session_id.to_string()[..8];
                 println!(
-                    "{}",
-                    serde_json::to_string_pretty(&sessions).context("serialize sessions")?
+                    "  {} {} ({} failures)",
+                    style(short).cyan(),
+                    style(s.started_at.format("%Y-%m-%d %H:%M:%S")).dim(),
+                    style(s.failure_count).yellow(),
                 );
-            }
-            _ => {
-                println!("{}", style("Sessions with errors:").bold().underlined());
-                println!();
-                for s in &sessions {
-                    let short = &s.session_id.to_string()[..8];
-                    println!(
-                        "  {} {} ({} failures)",
-                        style(short).cyan(),
-                        style(s.started_at.format("%Y-%m-%d %H:%M:%S")).dim(),
-                        style(s.failure_count).yellow(),
-                    );
-                }
             }
         }
         return Ok(());
@@ -1167,68 +1164,62 @@ fn run_errors(store: &dyn voom_domain::storage::StorageTrait, args: &ReportArgs)
         return Ok(());
     }
 
-    match args.format {
-        OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&failures).context("serialize failures")?
+    if let OutputFormat::Json = args.format {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&failures).context("serialize failures")?
+        );
+    } else {
+        let short_session = &session_id.to_string()[..8];
+        println!(
+            "Errors from session {} ({} failures)\n",
+            style(short_session).cyan(),
+            failures.len(),
+        );
+        for f in &failures {
+            let filename = f.path.file_name().map_or_else(
+                || f.path.display().to_string(),
+                |n| n.to_string_lossy().to_string(),
             );
-        }
-        _ => {
-            let short_session = &session_id.to_string()[..8];
-            println!(
-                "Errors from session {} ({} failures)\n",
-                style(short_session).cyan(),
-                failures.len(),
-            );
-            for f in &failures {
-                let filename = f
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| f.path.display().to_string());
-                println!("  {}", style(&filename).bold());
-                if let Some(ref phase) = f.phase_name {
-                    println!("    Phase: {phase}");
-                }
+            println!("  {}", style(&filename).bold());
+            if let Some(ref phase) = f.phase_name {
+                println!("    Phase: {phase}");
+            }
 
-                // Try to extract ExecutionDetail from plan_result JSON
-                let mut detail_rendered = false;
-                if let Some(ref result_json) = f.plan_result {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(result_json) {
-                        if let Some(detail) = parsed.get("detail") {
-                            if let Ok(ed) =
-                                serde_json::from_value::<ExecutionDetail>(detail.clone())
-                            {
-                                if let Some(code) = ed.exit_code {
-                                    println!("    Exit:  {code}");
-                                    detail_rendered = true;
+            // Try to extract ExecutionDetail from plan_result JSON
+            let mut detail_rendered = false;
+            if let Some(ref result_json) = f.plan_result {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(result_json) {
+                    if let Some(detail) = parsed.get("detail") {
+                        if let Ok(ed) = serde_json::from_value::<ExecutionDetail>(detail.clone()) {
+                            if let Some(code) = ed.exit_code {
+                                println!("    Exit:  {code}");
+                                detail_rendered = true;
+                            }
+                            if !ed.command.is_empty() {
+                                let cmd = console::strip_ansi_codes(&ed.command);
+                                println!("    Cmd:   {cmd}");
+                                detail_rendered = true;
+                            }
+                            if !ed.stderr_tail.is_empty() {
+                                let stderr = console::strip_ansi_codes(&ed.stderr_tail);
+                                println!("    Error:");
+                                for line in stderr.lines() {
+                                    println!("      {line}");
                                 }
-                                if !ed.command.is_empty() {
-                                    let cmd = console::strip_ansi_codes(&ed.command);
-                                    println!("    Cmd:   {cmd}");
-                                    detail_rendered = true;
-                                }
-                                if !ed.stderr_tail.is_empty() {
-                                    let stderr = console::strip_ansi_codes(&ed.stderr_tail);
-                                    println!("    Error:");
-                                    for line in stderr.lines() {
-                                        println!("      {line}");
-                                    }
-                                    detail_rendered = true;
-                                }
+                                detail_rendered = true;
                             }
                         }
                     }
                 }
-
-                if let Some(ref msg) = f.error_message {
-                    if !detail_rendered {
-                        println!("    Error: {msg}");
-                    }
-                }
-                println!();
             }
+
+            if let Some(ref msg) = f.error_message {
+                if !detail_rendered {
+                    println!("    Error: {msg}");
+                }
+            }
+            println!();
         }
     }
 

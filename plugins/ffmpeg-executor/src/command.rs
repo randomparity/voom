@@ -220,7 +220,7 @@ fn apply_audio_codec_args(
 ///   - NVENC: `-cq <val>` (VBR constant-quality mode)
 ///   - QSV:  `-global_quality <val>`
 ///   - VAAPI: `-rc_mode CQP -qp <val>`
-///   - VideoToolbox: `-q:v <val>`
+///   - `VideoToolbox`: `-q:v <val>`
 fn apply_quality(encoder: &str, mut cmd: FfmpegCommand, crf: u32) -> FfmpegCommand {
     if encoder.ends_with("_nvenc") {
         cmd = cmd.arg("-cq").arg(&crf.to_string());
@@ -254,7 +254,7 @@ fn apply_preset(encoder: &str, mut cmd: FfmpegCommand, preset: &str) -> FfmpegCo
 
 /// Emit `-tune` for software encoders only.
 ///
-/// Hardware encoders (NVENC, QSV, VAAPI, VideoToolbox) do not support
+/// Hardware encoders (NVENC, QSV, VAAPI, `VideoToolbox`) do not support
 /// the `-tune` flag, so it is silently skipped for those backends.
 fn apply_tune(encoder: &str, mut cmd: FfmpegCommand, tune: &str) -> FfmpegCommand {
     if !encoder.ends_with("_nvenc")

@@ -23,6 +23,7 @@ use crate::ScanOptions;
 ///
 /// Falls back to the raw path if canonicalization fails (e.g., file deleted
 /// between walk and normalization).
+#[must_use]
 pub fn normalize_path(path: &Path) -> PathBuf {
     let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let normalized: String = canonical.to_string_lossy().nfc().collect();
@@ -95,8 +96,7 @@ const MEDIA_EXTENSIONS: &[&str] = &[
 fn is_media_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| MEDIA_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
-        .unwrap_or(false)
+        .is_some_and(|ext| MEDIA_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
 }
 
 /// Size threshold above which we switch to partial hashing.

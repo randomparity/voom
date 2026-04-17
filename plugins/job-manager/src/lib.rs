@@ -58,11 +58,11 @@ impl Default for JobManagerPlugin {
 }
 
 impl Plugin for JobManagerPlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "job-manager"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 
