@@ -50,9 +50,9 @@ impl MetadataSnapshot {
 
         Self {
             container: file.container.as_str().to_string(),
-            video_tracks: video_tracks.len() as u32,
-            audio_tracks: audio_tracks.len() as u32,
-            subtitle_tracks: subtitle_tracks.len() as u32,
+            video_tracks: u32::try_from(video_tracks.len()).unwrap_or(u32::MAX),
+            audio_tracks: u32::try_from(audio_tracks.len()).unwrap_or(u32::MAX),
+            subtitle_tracks: u32::try_from(subtitle_tracks.len()).unwrap_or(u32::MAX),
             codecs,
             resolution,
             duration_secs: if file.duration.is_finite() {
@@ -85,6 +85,7 @@ impl MetadataSnapshot {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use std::path::PathBuf;
 
