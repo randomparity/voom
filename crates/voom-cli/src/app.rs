@@ -38,8 +38,9 @@ const PRIORITY_CAPABILITY_COLLECTOR: i32 = 35;
 // file is backed up before any executor mutates it.
 const PRIORITY_BACKUP_MANAGER: i32 = 30;
 const PRIORITY_JOB_MANAGER: i32 = 20;
-// Report plugin — priority 110 dispatches AFTER storage (100), so it
-// observes lifecycle events with all upstream side effects already applied.
+// Report plugin — priority 110 > storage (100), so it dispatches after
+// storage and observes lifecycle events with all upstream side effects
+// already applied.
 const PRIORITY_REPORT: i32 = 110;
 
 /// Bootstrap a kernel with all native plugins registered.
