@@ -151,7 +151,17 @@ fn process_single_file_dry_run(
             .plans
             .iter()
             .filter(|p| !p.is_empty() && !p.is_skipped())
-            .map(|p| serde_json::to_value(p).expect("Plan implements Serialize"))
+            .filter_map(|p| {
+                serde_json::to_value(p)
+                    .map_err(|e| {
+                        tracing::warn!(
+                            phase = %p.phase_name,
+                            error = %e,
+                            "failed to serialize plan for plan-only output"
+                        );
+                    })
+                    .ok()
+            })
             .collect();
         if !plans_json.is_empty() {
             ctx.counters.plan_collector.lock().extend(plans_json);
