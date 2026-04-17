@@ -211,6 +211,12 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     // first. Uses manual init + register_plugin (like sqlite-store) because
     // the caller needs an Arc<CapabilityCollectorPlugin> handle for snapshot()
     // after bootstrap.
+    //
+    // When disabled, we still construct the collector (so `collector.snapshot()`
+    // remains callable on BootstrapResult) but do NOT register it on the bus.
+    // The snapshot will be empty, which is a documented degraded mode:
+    // executor selection falls back to plain priority order with no capability
+    // hints.
     let (collector, collector_init_events) = {
         let mut plugin = CapabilityCollectorPlugin::new();
         let ctx =
@@ -220,9 +226,15 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
             .context("Failed to initialize capability collector")?;
         (Arc::new(plugin), events)
     };
-    kernel.register_plugin(collector.clone(), PRIORITY_CAPABILITY_COLLECTOR)?;
-    for event in collector_init_events {
-        kernel.dispatch(event);
+    if disabled.iter().any(|d| d == "capability-collector") {
+        tracing::warn!(
+            "capability-collector disabled — executor selection will have no capability hints"
+        );
+    } else {
+        kernel.register_plugin(collector.clone(), PRIORITY_CAPABILITY_COLLECTOR)?;
+        for event in collector_init_events {
+            kernel.dispatch(event);
+        }
     }
 
     // Executor — mkvtoolnix (MKV metadata, track removal/reorder, convert-to-MKV)
@@ -427,5 +439,33 @@ mod tests {
             .store
             .list_files(&voom_domain::FileFilters::default())
             .is_ok());
+    }
+
+    #[test]
+    fn disabling_capability_collector_yields_empty_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = AppConfig {
+            data_dir: dir.path().to_path_buf(),
+            ..AppConfig::default()
+        };
+        config
+            .plugins
+            .disabled_plugins
+            .push("capability-collector".to_string());
+
+        let result =
+            bootstrap_kernel_with_store(&config).expect("bootstrap should succeed when disabled");
+        let snapshot = result.collector.snapshot();
+        assert!(
+            snapshot.is_empty(),
+            "disabled collector should produce an empty snapshot"
+        );
+
+        // The collector must NOT be registered on the bus when disabled.
+        let registered = result.kernel.registry.plugin_names();
+        assert!(
+            !registered.iter().any(|n| n == "capability-collector"),
+            "capability-collector should not be registered when disabled (registered: {registered:?})"
+        );
     }
 }
