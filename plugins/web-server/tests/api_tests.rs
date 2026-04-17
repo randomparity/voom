@@ -418,6 +418,17 @@ async fn test_unknown_route_returns_json_404() {
     assert_eq!(body["error"], "Not found");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn test_unknown_route_requires_auth_when_configured() {
+    let server = make_server_with_auth(InMemoryStore::new(), Some("secret-token".into()));
+    // Unknown paths must hit auth before the fallback so unauthenticated
+    // probes get 401 instead of leaking the 404 distinction.
+    let resp = server.get("/api/nonexistent").await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+    let resp = server.get("/totally/unknown/path").await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+}
+
 // === File Filter Validation Tests ===
 
 #[tokio::test(flavor = "multi_thread")]

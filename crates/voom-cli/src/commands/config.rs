@@ -13,19 +13,28 @@ pub fn run(cmd: ConfigCommands) -> Result<()> {
     }
 }
 
+/// Returns true when the given key (top-level or dotted) names a known secret
+/// field whose value should be redacted from any user-facing output.
+fn is_secret_key(key: &str) -> bool {
+    let leaf = key.rsplit('.').next().unwrap_or(key);
+    matches!(leaf, "auth_token")
+}
+
 fn show() -> Result<()> {
     let path = config::config_path();
 
     if path.exists() {
         let contents = std::fs::read_to_string(&path)?;
-        // Redact auth_token value to avoid leaking secrets
+        // Redact known secret values to avoid leaking them
         let redacted = contents
             .lines()
             .map(|line| {
                 let trimmed = line.trim();
-                if trimmed.starts_with("auth_token") {
-                    if let Some((key, _)) = line.split_once('=') {
-                        return format!("{key}= \"[REDACTED]\"");
+                if let Some((key, _)) = trimmed.split_once('=') {
+                    if is_secret_key(key.trim()) {
+                        if let Some((prefix, _)) = line.split_once('=') {
+                            return format!("{prefix}= \"[REDACTED]\"");
+                        }
                     }
                 }
                 line.to_string()
@@ -97,7 +106,11 @@ fn get(key: &str) -> Result<()> {
     let path = config::config_path();
     let raw = load_raw_toml(&path)?;
     let value = resolve_toml_key(&raw, key)?;
-    println!("{}", format_value(&value));
+    if is_secret_key(key) && value.is_str() {
+        println!("[REDACTED]");
+    } else {
+        println!("{}", format_value(&value));
+    }
     Ok(())
 }
 
@@ -298,6 +311,24 @@ mod tests {
         let path = config::config_path();
         let dir = config::voom_config_dir();
         assert_eq!(path.parent().unwrap(), dir);
+    }
+
+    // ── is_secret_key ───────────────────────────────────────
+
+    #[test]
+    fn test_is_secret_key_top_level() {
+        assert!(is_secret_key("auth_token"));
+    }
+
+    #[test]
+    fn test_is_secret_key_nested() {
+        assert!(is_secret_key("web.auth_token"));
+    }
+
+    #[test]
+    fn test_is_secret_key_non_secret() {
+        assert!(!is_secret_key("hw_accel"));
+        assert!(!is_secret_key("plugin.ffmpeg.hw_accel"));
     }
 
     // ── resolve_toml_key ────────────────────────────────────

@@ -133,7 +133,16 @@ fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslErr
 
 fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperation, DslError> {
     match op {
-        OperationNode::Container(name) => Ok(CompiledOperation::SetContainer(name.clone())),
+        OperationNode::Container(name) => {
+            let container = voom_domain::media::Container::from_extension(name);
+            if container == voom_domain::media::Container::Other {
+                return Err(DslError::compile(format!(
+                    "unknown container '{name}'; \
+                     expected one of: mkv, mp4, avi, webm, flv, wmv, mov, ts"
+                )));
+            }
+            Ok(CompiledOperation::SetContainer(container))
+        }
         OperationNode::Keep { target, filter } => Ok(CompiledOperation::Keep {
             target: parse_track_target(target),
             filter: filter.as_ref().map(compile_filter).transpose()?,
@@ -640,7 +649,9 @@ mod tests {
         assert_eq!(policy.phases[0].name, "init");
         assert_eq!(policy.phase_order, vec!["init"]);
         match &policy.phases[0].operations[0] {
-            CompiledOperation::SetContainer(name) => assert_eq!(name, "mkv"),
+            CompiledOperation::SetContainer(container) => {
+                assert_eq!(*container, voom_domain::media::Container::Mkv);
+            }
             _ => panic!("expected SetContainer"),
         }
     }

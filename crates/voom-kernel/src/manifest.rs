@@ -58,6 +58,10 @@ fn default_priority() -> i32 {
 
 impl PluginManifest {
     /// Validate that all required fields are present and well-formed.
+    ///
+    /// Returns `Err(Vec<String>)` containing **all** validation errors (not just
+    /// the first); callers can surface every issue to the user at once instead of
+    /// requiring fix-and-rerun cycles.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
 

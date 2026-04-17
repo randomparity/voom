@@ -254,16 +254,13 @@ mod tests {
         assert!(empty.is_empty());
     }
 
-    fn open_sqlite_store() -> Arc<dyn voom_domain::storage::StorageTrait> {
-        Arc::new(
-            voom_sqlite_store::store::SqliteStore::in_memory()
-                .expect("open in-memory SQLite store"),
-        )
+    fn open_in_memory_store() -> Arc<dyn voom_domain::storage::StorageTrait> {
+        Arc::new(voom_domain::test_support::InMemoryStore::default())
     }
 
     #[test]
     fn test_storage_backed_plugin_store_roundtrip() {
-        let store = open_sqlite_store();
+        let store = open_in_memory_store();
         let adapter = StorageBackedPluginStore::new(store);
 
         // Initially empty
@@ -286,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_storage_backed_plugin_store_namespace_isolation() {
-        let store = open_sqlite_store();
+        let store = open_in_memory_store();
         let adapter = StorageBackedPluginStore::new(store);
 
         adapter.set("plugin-a", "key", b"aaa").unwrap();
@@ -307,7 +304,7 @@ mod tests {
         use std::path::PathBuf;
         use voom_domain::transition::{FileTransition, TransitionSource};
 
-        let store = open_sqlite_store();
+        let store = open_in_memory_store();
         let file_id = uuid::Uuid::new_v4();
         let path = PathBuf::from("/movies/test.mkv");
         let t = FileTransition::new(

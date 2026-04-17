@@ -287,14 +287,22 @@ where
     let job = match tokio::task::spawn_blocking(move || queue_claim.claim_by_id(&jid, &wid)).await {
         Ok(Ok(Some(job))) => job,
         Ok(Ok(None)) => {
-            // Job was claimed by another worker — count as completed
-            ctx.completed.fetch_add(1, Ordering::SeqCst);
+            // Lost the claim race — another worker (or a previous run) already
+            // owns this job. Report as a failure so the caller's totals don't
+            // double-count it as successful work this run did, and surface a
+            // clear reason for diagnostics.
+            tracing::warn!(
+                %job_id,
+                worker = %ctx.worker_id,
+                "job already claimed by another worker"
+            );
+            ctx.failed.fetch_add(1, Ordering::SeqCst);
             let _ = ctx
                 .result_tx
                 .send(JobResult {
                     job_id,
-                    success: true,
-                    error: None,
+                    success: false,
+                    error: Some("raced — already claimed".into()),
                 })
                 .await;
             return;

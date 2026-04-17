@@ -50,12 +50,16 @@ pub fn orchestrate(plans: Vec<Plan>) -> OrchestrationResult {
         } else if plan.actions.is_empty() {
             PhaseOutcome::Completed
         } else {
-            file_modified = true;
             PhaseOutcome::Pending // Would be Completed after execution
         };
 
+        let phase_modified = outcome == PhaseOutcome::Pending;
+        if phase_modified {
+            file_modified = true;
+        }
+
         let mut phase_result = PhaseResult::new(plan.phase_name.clone(), outcome);
-        phase_result.file_modified = !plan.actions.is_empty();
+        phase_result.file_modified = phase_modified;
         phase_result.skip_reason.clone_from(&plan.skip_reason);
         phase_results.push(phase_result);
     }

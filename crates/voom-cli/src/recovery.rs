@@ -137,16 +137,9 @@ fn resolve_single_orphan(
     store: &dyn voom_domain::storage::StorageTrait,
     pending: &[voom_domain::storage::PendingOperation],
 ) -> Result<bool> {
-    let result = match config.mode.as_str() {
-        "always_recover" => recover(orphan, store),
-        "always_discard" => discard(orphan, store),
-        other => {
-            anyhow::bail!(
-                "unsupported recovery mode '{other}' — \
-                 use 'always_recover' or 'always_discard' in config.toml \
-                 [recovery] section"
-            );
-        }
+    let result = match config.mode {
+        crate::config::RecoveryMode::AlwaysRecover => recover(orphan, store),
+        crate::config::RecoveryMode::AlwaysDiscard => discard(orphan, store),
     };
     match result {
         Ok(()) => {
@@ -685,7 +678,7 @@ mod tests {
         insert_pending_op(&store, &original);
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
@@ -702,7 +695,7 @@ mod tests {
         // No pending op inserted
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
@@ -726,7 +719,7 @@ mod tests {
         insert_pending_op(&store, &original);
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
@@ -748,7 +741,7 @@ mod tests {
         insert_pending_op(&store, &original);
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
@@ -768,7 +761,7 @@ mod tests {
         insert_pending_op(&store, &original);
 
         let config = RecoveryConfig {
-            mode: "always_discard".into(),
+            mode: crate::config::RecoveryMode::AlwaysDiscard,
         };
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
@@ -790,7 +783,7 @@ mod tests {
         // No pending op — a completed execution would have deleted it
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
@@ -803,23 +796,15 @@ mod tests {
     }
 
     #[test]
-    fn test_check_and_recover_unsupported_mode_returns_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let (_vbak, original) = make_backup(dir.path(), "movie.mkv");
-
-        let store = voom_domain::test_support::InMemoryStore::default();
-        insert_pending_op(&store, &original);
-
-        let config = RecoveryConfig {
-            mode: "prompt".into(),
-        };
-        let result = check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None);
-
-        assert!(result.is_err(), "unsupported mode should return an error");
-        let msg = result.unwrap_err().to_string();
+    fn test_unsupported_recovery_mode_fails_to_deserialize() {
+        // Unknown modes are now rejected at config parse time (RecoveryMode enum)
+        // instead of erroring at recovery time, so users get fast, structured
+        // failures from the config loader.
+        let toml_src = r#"mode = "prompt""#;
+        let result: std::result::Result<RecoveryConfig, _> = toml::from_str(toml_src);
         assert!(
-            msg.contains("unsupported recovery mode"),
-            "error should mention unsupported mode, got: {msg}"
+            result.is_err(),
+            "unknown recovery mode should fail TOML deserialization"
         );
     }
 
@@ -832,7 +817,7 @@ mod tests {
         insert_pending_op(&store, &original);
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
 
@@ -861,7 +846,7 @@ mod tests {
         insert_pending_op(&store, &original);
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered = check_and_recover_under(
             &config,
@@ -914,7 +899,7 @@ mod tests {
         insert_pending_op(&store, &original_b);
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered =
             check_and_recover_under(&config, &[dir_a.path().to_path_buf()], &store, None).unwrap();
@@ -949,7 +934,7 @@ mod tests {
         insert_pending_op(&store, &original_b);
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered = check_and_recover_under(
             &config,

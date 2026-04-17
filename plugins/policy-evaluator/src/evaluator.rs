@@ -436,7 +436,7 @@ struct PhaseContext<'a> {
 fn emit_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), VoomError> {
     match op {
         CompiledOperation::SetContainer(container) => {
-            emit_set_container(container, ctx);
+            emit_set_container(*container, ctx);
         }
         CompiledOperation::Keep { target, filter } => {
             emit_keep(*target, filter.as_ref(), ctx);
@@ -482,15 +482,15 @@ fn emit_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), 
     Ok(())
 }
 
-fn emit_set_container(container: &str, ctx: &mut PhaseContext) {
-    let target = Container::from_extension(container);
+fn emit_set_container(target: Container, ctx: &mut PhaseContext) {
     if ctx.file.container != target {
         ctx.plan.actions.push(PlannedAction::file_op(
             OperationType::ConvertContainer,
             ActionParams::Container { container: target },
             format!(
-                "Convert container from {} to {container}",
-                ctx.file.container.as_str()
+                "Convert container from {} to {}",
+                ctx.file.container.as_str(),
+                target.as_str()
             ),
         ));
     }

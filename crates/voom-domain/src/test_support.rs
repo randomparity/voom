@@ -96,8 +96,8 @@ fn matches_filter(file: &MediaFile, filters: &FileFilters) -> bool {
 }
 
 /// In-memory storage for testing. Implements the full `StorageTrait` via
-/// sub-traits with working file and job methods. Plan/stats/plugin-data
-/// methods are stubs.
+/// sub-traits with working file, job, transition, and plugin-data methods.
+/// Plan/stats methods are stubs.
 pub struct InMemoryStore {
     files: Mutex<HashMap<Uuid, MediaFile>>,
     jobs: Mutex<HashMap<Uuid, Job>>,
@@ -105,6 +105,7 @@ pub struct InMemoryStore {
     event_log: Mutex<Vec<crate::storage::EventLogRecord>>,
     pub pending_ops: Mutex<Vec<PendingOperation>>,
     pub transitions: Mutex<Vec<FileTransition>>,
+    plugin_data: Mutex<HashMap<(String, String), Vec<u8>>>,
 }
 
 impl InMemoryStore {
@@ -116,6 +117,7 @@ impl InMemoryStore {
             event_log: Mutex::new(Vec::new()),
             pending_ops: Mutex::new(Vec::new()),
             transitions: Mutex::new(Vec::new()),
+            plugin_data: Mutex::new(HashMap::new()),
         }
     }
 
@@ -410,7 +412,8 @@ impl PlanStorage for InMemoryStore {
 }
 
 impl FileTransitionStorage for InMemoryStore {
-    fn record_transition(&self, _: &FileTransition) -> Result<()> {
+    fn record_transition(&self, transition: &FileTransition) -> Result<()> {
+        self.transitions.lock().push(transition.clone());
         Ok(())
     }
 
@@ -429,8 +432,12 @@ impl FileTransitionStorage for InMemoryStore {
         Ok(Vec::new())
     }
 
-    fn transitions_for_path(&self, _: &Path) -> Result<Vec<FileTransition>> {
-        Ok(Vec::new())
+    fn transitions_for_path(&self, path: &Path) -> Result<Vec<FileTransition>> {
+        let ts = self.transitions.lock();
+        let mut result: Vec<FileTransition> =
+            ts.iter().filter(|t| t.path == path).cloned().collect();
+        result.sort_by_key(|t| t.created_at);
+        Ok(result)
     }
 
     fn savings_by_provenance(
@@ -457,15 +464,25 @@ impl FileTransitionStorage for InMemoryStore {
 }
 
 impl PluginDataStorage for InMemoryStore {
-    fn plugin_data(&self, _plugin: &str, _key: &str) -> Result<Option<Vec<u8>>> {
-        Ok(None)
+    fn plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .plugin_data
+            .lock()
+            .get(&(plugin.to_string(), key.to_string()))
+            .cloned())
     }
 
-    fn set_plugin_data(&self, _plugin: &str, _key: &str, _value: &[u8]) -> Result<()> {
+    fn set_plugin_data(&self, plugin: &str, key: &str, value: &[u8]) -> Result<()> {
+        self.plugin_data
+            .lock()
+            .insert((plugin.to_string(), key.to_string()), value.to_vec());
         Ok(())
     }
 
-    fn delete_plugin_data(&self, _plugin: &str, _key: &str) -> Result<()> {
+    fn delete_plugin_data(&self, plugin: &str, key: &str) -> Result<()> {
+        self.plugin_data
+            .lock()
+            .remove(&(plugin.to_string(), key.to_string()));
         Ok(())
     }
 }

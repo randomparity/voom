@@ -7,6 +7,7 @@ use std::fmt;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+pub use voom_domain::media::Container;
 pub use voom_domain::plan::TranscodeChannels;
 
 /// A pre-compiled regex that supports `Clone`, `Debug`, `Serialize`, and `Deserialize`.
@@ -174,7 +175,7 @@ pub enum RunIfTrigger {
 /// A compiled operation within a phase.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CompiledOperation {
-    SetContainer(String),
+    SetContainer(Container),
     Keep {
         target: TrackTarget,
         filter: Option<CompiledFilter>,

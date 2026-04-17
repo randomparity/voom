@@ -886,7 +886,7 @@ fn suggest_from<'a>(input: &str, known: &[&'a str]) -> Option<&'a str> {
     let mut best: Option<(&str, usize)> = None;
     for &candidate in known {
         let dist = edit_distance(input, candidate);
-        if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
+        if dist <= 3 && best.as_ref().is_none_or(|b| dist < b.1) {
             best = Some((candidate, dist));
         }
     }

@@ -9,6 +9,7 @@
 pub mod ffprobe;
 pub mod parser;
 
+use std::process::Command;
 use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
@@ -21,6 +22,7 @@ use voom_kernel::{Plugin, PluginContext};
 pub struct FfprobeIntrospectorPlugin {
     ffprobe_path: String,
     timeout: Duration,
+    available: bool,
     capabilities: Vec<Capability>,
 }
 
@@ -30,18 +32,32 @@ impl FfprobeIntrospectorPlugin {
         Self {
             ffprobe_path: "ffprobe".into(),
             timeout: Duration::from_secs(60),
-            capabilities: vec![Capability::Introspect {
-                formats: vec![
-                    "mkv".into(),
-                    "mp4".into(),
-                    "avi".into(),
-                    "wmv".into(),
-                    "flv".into(),
-                    "mov".into(),
-                    "ts".into(),
-                ],
-            }],
+            available: false,
+            capabilities: Self::default_capabilities(),
         }
+    }
+
+    fn default_capabilities() -> Vec<Capability> {
+        vec![Capability::Introspect {
+            formats: vec![
+                "mkv".into(),
+                "mp4".into(),
+                "avi".into(),
+                "wmv".into(),
+                "flv".into(),
+                "mov".into(),
+                "ts".into(),
+            ],
+        }]
+    }
+
+    /// Probe whether the configured `ffprobe` binary is callable.
+    fn detect_available(ffprobe_path: &str) -> bool {
+        Command::new(ffprobe_path)
+            .arg("-version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     /// Set a custom path to the ffprobe binary.
@@ -87,7 +103,11 @@ impl Plugin for FfprobeIntrospectorPlugin {
     voom_kernel::plugin_cargo_metadata!();
 
     fn capabilities(&self) -> &[Capability] {
-        &self.capabilities
+        if self.available {
+            &self.capabilities
+        } else {
+            &[]
+        }
     }
 
     fn handles(&self, event_type: &str) -> bool {
@@ -136,8 +156,17 @@ impl Plugin for FfprobeIntrospectorPlugin {
             }
         }
 
+        self.available = Self::detect_available(&self.ffprobe_path);
+        if !self.available {
+            tracing::warn!(
+                ffprobe_path = %self.ffprobe_path,
+                "ffprobe not found; introspector will report no capabilities"
+            );
+        }
+
         tracing::info!(
             ffprobe_path = %self.ffprobe_path,
+            available = self.available,
             "ffprobe introspector initialized"
         );
         Ok(vec![])
@@ -221,5 +250,27 @@ mod tests {
         let ctx = PluginContext::new(config, PathBuf::from("/tmp"));
         plugin.init(&ctx).unwrap();
         assert_eq!(plugin.ffprobe_path(), "/custom/ffprobe");
+    }
+
+    #[test]
+    fn test_capabilities_empty_before_init() {
+        let plugin = FfprobeIntrospectorPlugin::new();
+        assert!(
+            plugin.capabilities().is_empty(),
+            "capabilities should be empty until init confirms ffprobe is present"
+        );
+    }
+
+    #[test]
+    fn test_capabilities_empty_when_ffprobe_missing() {
+        let mut plugin = FfprobeIntrospectorPlugin::new();
+        let config =
+            serde_json::json!({"ffprobe_path": "/nonexistent/path/to/ffprobe-totally-missing"});
+        let ctx = PluginContext::new(config, PathBuf::from("/tmp"));
+        plugin.init(&ctx).unwrap();
+        assert!(
+            plugin.capabilities().is_empty(),
+            "capabilities should be empty when ffprobe is not callable"
+        );
     }
 }
