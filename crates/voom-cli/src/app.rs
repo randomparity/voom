@@ -211,16 +211,19 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     // first. Uses manual init + register_plugin (like sqlite-store) because
     // the caller needs an Arc<CapabilityCollectorPlugin> handle for snapshot()
     // after bootstrap.
-    let collector = {
+    let (collector, collector_init_events) = {
         let mut plugin = CapabilityCollectorPlugin::new();
         let ctx =
             voom_kernel::PluginContext::new(plugin_json("capability-collector"), data_dir.clone());
-        plugin
+        let events = plugin
             .init(&ctx)
             .context("Failed to initialize capability collector")?;
-        Arc::new(plugin)
+        (Arc::new(plugin), events)
     };
     kernel.register_plugin(collector.clone(), PRIORITY_CAPABILITY_COLLECTOR)?;
+    for event in collector_init_events {
+        kernel.dispatch(event);
+    }
 
     // Executor — mkvtoolnix (MKV metadata, track removal/reorder, convert-to-MKV)
     register_if_enabled!(
@@ -271,13 +274,16 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     if !disabled.iter().any(|d| d == "report") {
         let mut report_plugin = voom_report::ReportPlugin::new(Arc::clone(&store));
         let ctx = voom_kernel::PluginContext::new(plugin_json("report"), data_dir.clone());
-        report_plugin
+        let init_events = report_plugin
             .init(&ctx)
             .context("Failed to initialize report plugin")?;
         kernel.register_plugin(
             Arc::new(report_plugin) as Arc<dyn voom_kernel::Plugin>,
             PRIORITY_REPORT,
         )?;
+        for event in init_events {
+            kernel.dispatch(event);
+        }
     }
 
     Ok(BootstrapResult {
