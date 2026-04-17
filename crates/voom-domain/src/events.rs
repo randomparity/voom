@@ -91,6 +91,7 @@ impl Event {
     /// assert!(summary.contains("1500000"));
     /// ```
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn summary(&self) -> String {
         match self {
             Event::FileDiscovered(e) => {
