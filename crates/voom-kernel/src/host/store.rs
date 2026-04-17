@@ -337,4 +337,132 @@ mod tests {
             .unwrap();
         assert!(empty.is_empty());
     }
+
+    // --- InMemoryPluginStore direct coverage ---
+
+    #[test]
+    fn test_in_memory_plugin_store_get_unknown_returns_none() {
+        let store = InMemoryPluginStore::new();
+        assert!(store.get("plugin", "missing").unwrap().is_none());
+        // Non-existent plugin namespace also returns None without error.
+        assert!(store.get("ghost-plugin", "anything").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_in_memory_plugin_store_set_get_roundtrip() {
+        let store = InMemoryPluginStore::new();
+        store.set("plugin", "key", b"value-bytes").unwrap();
+        let got = store.get("plugin", "key").unwrap();
+        assert_eq!(got.as_deref(), Some(b"value-bytes".as_ref()));
+    }
+
+    #[test]
+    fn test_in_memory_plugin_store_set_overwrites() {
+        let store = InMemoryPluginStore::new();
+        store.set("plugin", "key", b"first").unwrap();
+        store.set("plugin", "key", b"second").unwrap();
+        let got = store.get("plugin", "key").unwrap();
+        assert_eq!(got.as_deref(), Some(b"second".as_ref()));
+    }
+
+    #[test]
+    fn test_in_memory_plugin_store_delete_removes_key() {
+        let store = InMemoryPluginStore::new();
+        store.set("plugin", "key", b"value").unwrap();
+        store.delete("plugin", "key").unwrap();
+        assert!(store.get("plugin", "key").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_in_memory_plugin_store_delete_unknown_is_noop() {
+        let store = InMemoryPluginStore::new();
+        // Delete from a plugin namespace that was never written.
+        store.delete("never-seen", "key").unwrap();
+        // Delete an unknown key within an existing namespace.
+        store.set("plugin", "existing", b"value").unwrap();
+        store.delete("plugin", "missing-key").unwrap();
+        // Existing key is undisturbed.
+        assert_eq!(
+            store.get("plugin", "existing").unwrap().as_deref(),
+            Some(b"value".as_ref())
+        );
+    }
+
+    #[test]
+    fn test_in_memory_plugin_store_namespace_isolation() {
+        let store = InMemoryPluginStore::new();
+        store.set("plugin-a", "shared-key", b"from-a").unwrap();
+        store.set("plugin-b", "shared-key", b"from-b").unwrap();
+
+        assert_eq!(
+            store.get("plugin-a", "shared-key").unwrap().as_deref(),
+            Some(b"from-a".as_ref())
+        );
+        assert_eq!(
+            store.get("plugin-b", "shared-key").unwrap().as_deref(),
+            Some(b"from-b".as_ref())
+        );
+
+        // Deleting from plugin-a must not touch plugin-b's data.
+        store.delete("plugin-a", "shared-key").unwrap();
+        assert!(store.get("plugin-a", "shared-key").unwrap().is_none());
+        assert_eq!(
+            store.get("plugin-b", "shared-key").unwrap().as_deref(),
+            Some(b"from-b".as_ref())
+        );
+    }
+
+    #[test]
+    fn test_in_memory_plugin_store_concurrent_writes() {
+        let store = Arc::new(InMemoryPluginStore::new());
+        let mut handles = Vec::new();
+        for thread_id in 0..8_u32 {
+            let store = Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..50_u32 {
+                    let key = format!("key-{thread_id}-{i}");
+                    let value = format!("value-{thread_id}-{i}").into_bytes();
+                    store.set("plugin", &key, &value).unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+
+        // All 8 * 50 = 400 keys must be present with the correct values.
+        for thread_id in 0..8_u32 {
+            for i in 0..50_u32 {
+                let key = format!("key-{thread_id}-{i}");
+                let expected = format!("value-{thread_id}-{i}").into_bytes();
+                assert_eq!(
+                    store.get("plugin", &key).unwrap().as_deref(),
+                    Some(expected.as_slice()),
+                    "missing or wrong value for {key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_in_memory_plugin_store_default_matches_new() {
+        let a = InMemoryPluginStore::default();
+        let b = InMemoryPluginStore::new();
+        // Both should report no data for the same lookup.
+        assert_eq!(
+            a.get("plugin", "key").unwrap(),
+            b.get("plugin", "key").unwrap()
+        );
+        // And both accept writes in the same way.
+        a.set("plugin", "key", b"from-default").unwrap();
+        b.set("plugin", "key", b"from-new").unwrap();
+        assert_eq!(
+            a.get("plugin", "key").unwrap().as_deref(),
+            Some(b"from-default".as_ref())
+        );
+        assert_eq!(
+            b.get("plugin", "key").unwrap().as_deref(),
+            Some(b"from-new".as_ref())
+        );
+    }
 }
