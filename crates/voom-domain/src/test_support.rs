@@ -9,8 +9,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
+use parking_lot::Mutex;
 use uuid::Uuid;
 
 use crate::bad_file::BadFile;
@@ -120,29 +120,20 @@ impl InMemoryStore {
     }
 
     /// Builder: seed the store with a file.
-    ///
-    /// # Panics
-    /// Panics if the internal mutex is poisoned.
     pub fn with_file(self, file: MediaFile) -> Self {
-        self.files.lock().unwrap().insert(file.id, file);
+        self.files.lock().insert(file.id, file);
         self
     }
 
     /// Builder: seed the store with a job.
-    ///
-    /// # Panics
-    /// Panics if the internal mutex is poisoned.
     pub fn with_job(self, job: Job) -> Self {
-        self.jobs.lock().unwrap().insert(job.id, job);
+        self.jobs.lock().insert(job.id, job);
         self
     }
 
     /// Builder: seed the store with a transition.
-    ///
-    /// # Panics
-    /// Panics if the internal mutex is poisoned.
     pub fn with_transition(self, transition: FileTransition) -> Self {
-        self.transitions.lock().unwrap().push(transition);
+        self.transitions.lock().push(transition);
         self
     }
 }
@@ -155,26 +146,20 @@ impl Default for InMemoryStore {
 
 impl FileStorage for InMemoryStore {
     fn upsert_file(&self, file: &MediaFile) -> Result<()> {
-        self.files.lock().unwrap().insert(file.id, file.clone());
+        self.files.lock().insert(file.id, file.clone());
         Ok(())
     }
 
     fn file(&self, id: &Uuid) -> Result<Option<MediaFile>> {
-        Ok(self.files.lock().unwrap().get(id).cloned())
+        Ok(self.files.lock().get(id).cloned())
     }
 
     fn file_by_path(&self, path: &Path) -> Result<Option<MediaFile>> {
-        Ok(self
-            .files
-            .lock()
-            .unwrap()
-            .values()
-            .find(|f| f.path == path)
-            .cloned())
+        Ok(self.files.lock().values().find(|f| f.path == path).cloned())
     }
 
     fn list_files(&self, filters: &FileFilters) -> Result<Vec<MediaFile>> {
-        let files = self.files.lock().unwrap();
+        let files = self.files.lock();
         let mut result: Vec<MediaFile> = files
             .values()
             .filter(|f| matches_filter(f, filters))
@@ -191,7 +176,7 @@ impl FileStorage for InMemoryStore {
     }
 
     fn count_files(&self, filters: &FileFilters) -> Result<u64> {
-        let files = self.files.lock().unwrap();
+        let files = self.files.lock();
         let count = files
             .values()
             .filter(|f| matches_filter(f, filters))
@@ -200,7 +185,7 @@ impl FileStorage for InMemoryStore {
     }
 
     fn mark_missing(&self, id: &Uuid) -> Result<()> {
-        let mut files = self.files.lock().unwrap();
+        let mut files = self.files.lock();
         if let Some(file) = files.get_mut(id) {
             file.status = FileStatus::Missing;
         }
@@ -208,7 +193,7 @@ impl FileStorage for InMemoryStore {
     }
 
     fn reactivate_file(&self, id: &Uuid, new_path: &Path) -> Result<()> {
-        let mut files = self.files.lock().unwrap();
+        let mut files = self.files.lock();
         if let Some(file) = files.get_mut(id) {
             file.status = FileStatus::Active;
             file.path = new_path.to_path_buf();
@@ -217,7 +202,7 @@ impl FileStorage for InMemoryStore {
     }
 
     fn purge_missing(&self, _older_than: chrono::DateTime<chrono::Utc>) -> Result<u64> {
-        let mut files = self.files.lock().unwrap();
+        let mut files = self.files.lock();
         let before = files.len();
         files.retain(|_, f| f.status != FileStatus::Missing);
         Ok((before - files.len()) as u64)
@@ -232,7 +217,7 @@ impl FileStorage for InMemoryStore {
     }
 
     fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()> {
-        let mut files = self.files.lock().unwrap();
+        let mut files = self.files.lock();
         if let Some(file) = files.get_mut(id) {
             file.expected_hash = Some(hash.to_string());
         }
@@ -253,7 +238,7 @@ impl FileStorage for InMemoryStore {
         scanned_dirs: &[PathBuf],
     ) -> Result<u32> {
         let discovered_set: std::collections::HashSet<&PathBuf> = discovered_paths.iter().collect();
-        let mut files = self.files.lock().unwrap();
+        let mut files = self.files.lock();
         let mut marked = 0u32;
         for file in files.values_mut() {
             if file.status != FileStatus::Active {
@@ -271,16 +256,16 @@ impl FileStorage for InMemoryStore {
 
 impl JobStorage for InMemoryStore {
     fn create_job(&self, job: &Job) -> Result<Uuid> {
-        self.jobs.lock().unwrap().insert(job.id, job.clone());
+        self.jobs.lock().insert(job.id, job.clone());
         Ok(job.id)
     }
 
     fn job(&self, id: &Uuid) -> Result<Option<Job>> {
-        Ok(self.jobs.lock().unwrap().get(id).cloned())
+        Ok(self.jobs.lock().get(id).cloned())
     }
 
     fn update_job(&self, id: &Uuid, update: &JobUpdate) -> Result<()> {
-        let mut jobs = self.jobs.lock().unwrap();
+        let mut jobs = self.jobs.lock();
         let job = jobs.get_mut(id).ok_or_else(|| VoomError::Storage {
             kind: StorageErrorKind::NotFound,
             message: format!("job {id} not found"),
@@ -315,7 +300,7 @@ impl JobStorage for InMemoryStore {
     }
 
     fn claim_next_job(&self, worker_id: &str) -> Result<Option<Job>> {
-        let mut jobs = self.jobs.lock().unwrap();
+        let mut jobs = self.jobs.lock();
 
         let job_id = jobs
             .values()
@@ -335,7 +320,7 @@ impl JobStorage for InMemoryStore {
     }
 
     fn claim_job_by_id(&self, job_id: &Uuid, worker_id: &str) -> Result<Option<Job>> {
-        let mut jobs = self.jobs.lock().unwrap();
+        let mut jobs = self.jobs.lock();
         if let Some(job) = jobs.get_mut(job_id) {
             if job.status == JobStatus::Pending {
                 job.status = JobStatus::Running;
@@ -348,7 +333,7 @@ impl JobStorage for InMemoryStore {
     }
 
     fn list_jobs(&self, filters: &JobFilters) -> Result<Vec<Job>> {
-        let jobs = self.jobs.lock().unwrap();
+        let jobs = self.jobs.lock();
         let mut result: Vec<Job> = jobs
             .values()
             .filter(|j| filters.status.is_none_or(|s| j.status == s))
@@ -369,7 +354,7 @@ impl JobStorage for InMemoryStore {
     }
 
     fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>> {
-        let jobs = self.jobs.lock().unwrap();
+        let jobs = self.jobs.lock();
         let mut counts: HashMap<JobStatus, u64> = HashMap::new();
         for job in jobs.values() {
             *counts.entry(job.status).or_insert(0) += 1;
@@ -378,7 +363,7 @@ impl JobStorage for InMemoryStore {
     }
 
     fn delete_jobs(&self, status: Option<JobStatus>) -> Result<u64> {
-        let mut jobs = self.jobs.lock().unwrap();
+        let mut jobs = self.jobs.lock();
         let before = jobs.len();
         match status {
             Some(s) => jobs.retain(|_, j| j.status != s),
@@ -430,7 +415,7 @@ impl FileTransitionStorage for InMemoryStore {
     }
 
     fn transitions_for_file(&self, file_id: &Uuid) -> Result<Vec<FileTransition>> {
-        let ts = self.transitions.lock().unwrap();
+        let ts = self.transitions.lock();
         let mut result: Vec<FileTransition> = ts
             .iter()
             .filter(|t| t.file_id == *file_id)
@@ -531,7 +516,7 @@ impl HealthCheckStorage for InMemoryStore {
 
 impl crate::storage::EventLogStorage for InMemoryStore {
     fn insert_event_log(&self, record: &crate::storage::EventLogRecord) -> Result<i64> {
-        let mut log = self.event_log.lock().unwrap();
+        let mut log = self.event_log.lock();
         let rowid = (log.len() as i64) + 1;
         let mut stored = record.clone();
         stored.rowid = rowid;
@@ -543,7 +528,7 @@ impl crate::storage::EventLogStorage for InMemoryStore {
         &self,
         filters: &crate::storage::EventLogFilters,
     ) -> Result<Vec<crate::storage::EventLogRecord>> {
-        let log = self.event_log.lock().unwrap();
+        let log = self.event_log.lock();
         let results = log
             .iter()
             .filter(|r| {
@@ -571,7 +556,7 @@ impl crate::storage::EventLogStorage for InMemoryStore {
     }
 
     fn prune_event_log(&self, keep_last: u64) -> Result<u64> {
-        let mut log = self.event_log.lock().unwrap();
+        let mut log = self.event_log.lock();
         let len = log.len();
         let keep = keep_last as usize;
         if len > keep {
@@ -600,23 +585,23 @@ impl SnapshotStorage for InMemoryStore {
     }
 
     fn save_snapshot(&self, snapshot: &LibrarySnapshot) -> Result<()> {
-        self.snapshots.lock().unwrap().push(snapshot.clone());
+        self.snapshots.lock().push(snapshot.clone());
         Ok(())
     }
 
     fn latest_snapshot(&self) -> Result<Option<LibrarySnapshot>> {
-        Ok(self.snapshots.lock().unwrap().last().cloned())
+        Ok(self.snapshots.lock().last().cloned())
     }
 
     fn list_snapshots(&self, limit: u32) -> Result<Vec<LibrarySnapshot>> {
-        let snaps = self.snapshots.lock().unwrap();
+        let snaps = self.snapshots.lock();
         let mut result: Vec<_> = snaps.iter().rev().take(limit as usize).cloned().collect();
         result.reverse();
         Ok(result)
     }
 
     fn prune_snapshots(&self, keep_last: u32) -> Result<u64> {
-        let mut snaps = self.snapshots.lock().unwrap();
+        let mut snaps = self.snapshots.lock();
         let len = snaps.len();
         let keep = keep_last as usize;
         if len > keep {
@@ -657,22 +642,19 @@ impl MaintenanceStorage for InMemoryStore {
 
 impl PendingOpsStorage for InMemoryStore {
     fn insert_pending_op(&self, op: &PendingOperation) -> Result<()> {
-        let mut ops = self.pending_ops.lock().unwrap();
+        let mut ops = self.pending_ops.lock();
         ops.retain(|o| o.id != op.id);
         ops.push(op.clone());
         Ok(())
     }
 
     fn delete_pending_op(&self, plan_id: &Uuid) -> Result<()> {
-        self.pending_ops
-            .lock()
-            .unwrap()
-            .retain(|o| o.id != *plan_id);
+        self.pending_ops.lock().retain(|o| o.id != *plan_id);
         Ok(())
     }
 
     fn list_pending_ops(&self) -> Result<Vec<PendingOperation>> {
-        let mut ops = self.pending_ops.lock().unwrap().clone();
+        let mut ops = self.pending_ops.lock().clone();
         ops.sort_by_key(|o| o.started_at);
         Ok(ops)
     }
