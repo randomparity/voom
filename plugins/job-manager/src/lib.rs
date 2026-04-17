@@ -11,6 +11,8 @@ pub mod progress;
 pub mod queue;
 pub mod worker;
 
+pub use worker::{JobErrorStrategy, JobOutcome, JobResult, WorkerPool, WorkerPoolConfig};
+
 use std::sync::Arc;
 
 use voom_domain::capabilities::Capability;
