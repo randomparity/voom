@@ -29,10 +29,17 @@ const PRIORITY_DISCOVERY: i32 = 80;
 const PRIORITY_FFPROBE_INTROSPECTOR: i32 = 60;
 const PRIORITY_FFMPEG_EXECUTOR: i32 = 40;
 const PRIORITY_MKVTOOLNIX_EXECUTOR: i32 = 39;
+// Capability collector dispatches before executors (35 < 39/40) so that
+// ExecutorCapabilities events emitted by executors at init are processed by
+// the collector before any subsequent event reaches the executors.
+// (Lower priority = earlier dispatch — see voom_kernel::EventBus::subscribe_plugin.)
 const PRIORITY_CAPABILITY_COLLECTOR: i32 = 35;
+// Backup manager dispatches before executors (30 < 39/40) so the source
+// file is backed up before any executor mutates it.
 const PRIORITY_BACKUP_MANAGER: i32 = 30;
 const PRIORITY_JOB_MANAGER: i32 = 20;
-// Report plugin — after storage (100), just observes lifecycle events.
+// Report plugin — priority 110 dispatches AFTER storage (100), so it
+// observes lifecycle events with all upstream side effects already applied.
 const PRIORITY_REPORT: i32 = 110;
 
 /// Bootstrap a kernel with all native plugins registered.
@@ -198,9 +205,11 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     );
 
     // Capability collector — captures ExecutorCapabilities events for the evaluator.
-    // Registered before executors so it sees their init-time announcements.
-    // Uses manual init + register_plugin (like sqlite-store) because the caller
-    // needs an Arc<CapabilityCollectorPlugin> handle for snapshot() after bootstrap.
+    // Priority 35 dispatches before executor priorities (39, 40), so init-time
+    // ExecutorCapabilities events emitted by executors land in the collector
+    // first. Uses manual init + register_plugin (like sqlite-store) because
+    // the caller needs an Arc<CapabilityCollectorPlugin> handle for snapshot()
+    // after bootstrap.
     let collector = {
         let mut plugin = CapabilityCollectorPlugin::new();
         let ctx =
