@@ -4,7 +4,9 @@
 //! can only carry string errors across the WASM ABI boundary.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 /// Key-value store interface for WASM plugin data at the host boundary.
 ///
@@ -39,12 +41,12 @@ impl Default for InMemoryPluginStore {
 
 impl WasmPluginStore for InMemoryPluginStore {
     fn get(&self, plugin_name: &str, key: &str) -> Result<Option<Vec<u8>>, String> {
-        let data = self.data.lock().unwrap_or_else(|e| e.into_inner());
+        let data = self.data.lock();
         Ok(data.get(plugin_name).and_then(|m| m.get(key)).cloned())
     }
 
     fn set(&self, plugin_name: &str, key: &str, value: &[u8]) -> Result<(), String> {
-        let mut data = self.data.lock().unwrap_or_else(|e| e.into_inner());
+        let mut data = self.data.lock();
         data.entry(plugin_name.to_string())
             .or_default()
             .insert(key.to_string(), value.to_vec());
@@ -52,7 +54,7 @@ impl WasmPluginStore for InMemoryPluginStore {
     }
 
     fn delete(&self, plugin_name: &str, key: &str) -> Result<(), String> {
-        let mut data = self.data.lock().unwrap_or_else(|e| e.into_inner());
+        let mut data = self.data.lock();
         if let Some(m) = data.get_mut(plugin_name) {
             m.remove(key);
         }
@@ -95,10 +97,7 @@ impl InMemoryTransitionStore {
         &self,
         transition: &voom_domain::transition::FileTransition,
     ) -> Result<(), String> {
-        self.transitions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(transition.clone());
+        self.transitions.lock().push(transition.clone());
         Ok(())
     }
 }
@@ -114,7 +113,7 @@ impl WasmTransitionStore for InMemoryTransitionStore {
         &self,
         file_id: &uuid::Uuid,
     ) -> Result<Vec<voom_domain::transition::FileTransition>, String> {
-        let data = self.transitions.lock().unwrap_or_else(|e| e.into_inner());
+        let data = self.transitions.lock();
         Ok(data
             .iter()
             .filter(|t| t.file_id == *file_id)
@@ -126,7 +125,7 @@ impl WasmTransitionStore for InMemoryTransitionStore {
         &self,
         path: &std::path::Path,
     ) -> Result<Vec<voom_domain::transition::FileTransition>, String> {
-        let data = self.transitions.lock().unwrap_or_else(|e| e.into_inner());
+        let data = self.transitions.lock();
         Ok(data.iter().filter(|t| t.path == path).cloned().collect())
     }
 }
