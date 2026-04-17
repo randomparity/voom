@@ -153,7 +153,7 @@ fn process_single_file_dry_run(
             .filter(|p| !p.is_empty() && !p.is_skipped())
             .filter_map(|p| {
                 serde_json::to_value(p)
-                    .map_err(|e| {
+                    .inspect_err(|e| {
                         tracing::warn!(
                             phase = %p.phase_name,
                             error = %e,
