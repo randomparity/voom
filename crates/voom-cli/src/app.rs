@@ -208,34 +208,29 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     // Capability collector — captures ExecutorCapabilities events for the evaluator.
     // Priority 35 dispatches before executor priorities (39, 40), so init-time
     // ExecutorCapabilities events emitted by executors land in the collector
-    // first. Uses manual init + register_plugin (like sqlite-store) because
-    // the caller needs an Arc<CapabilityCollectorPlugin> handle for snapshot()
-    // after bootstrap.
+    // first.
     //
     // When disabled, we still construct the collector (so `collector.snapshot()`
     // remains callable on BootstrapResult) but do NOT register it on the bus.
     // The snapshot will be empty, which is a documented degraded mode:
     // executor selection falls back to plain priority order with no capability
     // hints.
-    let (collector, collector_init_events) = {
-        let mut plugin = CapabilityCollectorPlugin::new();
-        let ctx =
-            voom_kernel::PluginContext::new(plugin_json("capability-collector"), data_dir.clone());
-        let events = plugin
-            .init(&ctx)
-            .context("Failed to initialize capability collector")?;
-        (Arc::new(plugin), events)
-    };
-    if disabled.iter().any(|d| d == "capability-collector") {
+    let collector = if disabled.iter().any(|d| d == "capability-collector") {
         tracing::warn!(
             "capability-collector disabled — executor selection will have no capability hints"
         );
+        Arc::new(CapabilityCollectorPlugin::new())
     } else {
-        kernel.register_plugin(collector.clone(), PRIORITY_CAPABILITY_COLLECTOR)?;
-        for event in collector_init_events {
-            kernel.dispatch(event);
-        }
-    }
+        let ctx =
+            voom_kernel::PluginContext::new(plugin_json("capability-collector"), data_dir.clone());
+        kernel
+            .init_and_register_shared(
+                CapabilityCollectorPlugin::new(),
+                PRIORITY_CAPABILITY_COLLECTOR,
+                &ctx,
+            )
+            .context("Failed to initialize and register capability collector")?
+    };
 
     // Executor — mkvtoolnix (MKV metadata, track removal/reorder, convert-to-MKV)
     register_if_enabled!(

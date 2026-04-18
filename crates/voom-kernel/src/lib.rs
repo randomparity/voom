@@ -274,6 +274,54 @@ impl Kernel {
         Ok(())
     }
 
+    /// Initialize a typed plugin, register it, and return an `Arc<P>` handle.
+    ///
+    /// Use this instead of [`init_and_register`](Self::init_and_register) when the caller needs a
+    /// typed `Arc<P>` for later use (e.g. the capability collector, whose
+    /// `snapshot()` method is called after bootstrap). Takes `P` by value so
+    /// the kernel constructs the `Arc` itself — guaranteeing the refcount-1
+    /// invariant that `Arc::get_mut` requires during `init()`.
+    pub fn init_and_register_shared<P: Plugin + 'static>(
+        &mut self,
+        plugin: P,
+        priority: i32,
+        ctx: &PluginContext,
+    ) -> Result<Arc<P>> {
+        let mut arc: Arc<P> = Arc::new(plugin);
+        let name = arc.name().to_string();
+        if self.registry.contains(&name) {
+            return Err(voom_domain::errors::VoomError::Plugin {
+                plugin: name,
+                message: "a plugin with this name is already registered".into(),
+            });
+        }
+        let plugin_mut =
+            Arc::get_mut(&mut arc).ok_or_else(|| voom_domain::errors::VoomError::Plugin {
+                plugin: name.clone(),
+                message:
+                    "init_and_register_shared requires exclusive Arc ownership (refcount must be 1)"
+                        .into(),
+            })?;
+        let init_events =
+            plugin_mut
+                .init(ctx)
+                .map_err(|e| voom_domain::errors::VoomError::Plugin {
+                    plugin: name.clone(),
+                    message: format!("init failed: {e}"),
+                })?;
+
+        let dyn_arc: Arc<dyn Plugin> = arc.clone();
+        self.registry.register(dyn_arc.clone())?;
+        self.bus.subscribe_plugin(dyn_arc, priority);
+        tracing::info!(plugin = %name, "plugin initialized and registered");
+
+        for event in init_events {
+            self.dispatch(event);
+        }
+
+        Ok(arc)
+    }
+
     /// Dispatch an event through the bus to all matching subscribers.
     pub fn dispatch(&self, event: Event) -> Vec<EventResult> {
         let event_type = event.event_type().to_string();
@@ -377,6 +425,60 @@ mod tests {
         assert!(init_called.load(Ordering::SeqCst));
         assert_eq!(kernel.registry.len(), 1);
         assert_eq!(kernel.subscriber_count(), 1);
+    }
+
+    #[test]
+    fn test_init_and_register_shared_returns_typed_handle_and_calls_init() {
+        let init_called = Arc::new(AtomicBool::new(false));
+        let shutdown_called = Arc::new(AtomicBool::new(false));
+
+        let plugin = LifecyclePlugin {
+            init_called: init_called.clone(),
+            shutdown_called: shutdown_called.clone(),
+        };
+
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+
+        let mut kernel = Kernel::new();
+        let handle: Arc<LifecyclePlugin> =
+            kernel.init_and_register_shared(plugin, 50, &ctx).unwrap();
+
+        assert!(init_called.load(Ordering::SeqCst));
+        assert_eq!(kernel.registry.len(), 1);
+        assert_eq!(kernel.subscriber_count(), 1);
+        // The typed handle shares state with the kernel-owned Arc.
+        assert!(handle.init_called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_init_and_register_shared_rejects_duplicate_name() {
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+        let mut kernel = Kernel::new();
+        kernel
+            .init_and_register_shared(
+                LifecyclePlugin {
+                    init_called: Arc::new(AtomicBool::new(false)),
+                    shutdown_called: Arc::new(AtomicBool::new(false)),
+                },
+                50,
+                &ctx,
+            )
+            .unwrap();
+        let err = match kernel.init_and_register_shared(
+            LifecyclePlugin {
+                init_called: Arc::new(AtomicBool::new(false)),
+                shutdown_called: Arc::new(AtomicBool::new(false)),
+            },
+            60,
+            &ctx,
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("expected duplicate registration to fail"),
+        };
+        assert!(
+            format!("{err}").contains("already registered"),
+            "expected already-registered error, got: {err}"
+        );
     }
 
     #[test]
