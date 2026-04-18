@@ -295,8 +295,9 @@ fn apply_safeguards(plan: &mut Plan, file: &MediaFile) {
 
 /// Post-evaluation safeguard: verify that a planned container conversion
 /// can actually hold the codecs of the surviving tracks (taking any planned
-/// transcodes into account). If not, retract the `ConvertContainer` action
-/// and record a violation so the file stays in its original container.
+/// transcodes and synthesized tracks into account). If not, retract the
+/// `ConvertContainer` action and record a violation so the file stays in its
+/// original container.
 fn apply_container_safeguard(plan: &mut Plan, file: &MediaFile, filename: &str) {
     // Find the target container from a ConvertContainer action, if any.
     let Some(target) = plan.actions.iter().find_map(|a| {
@@ -335,7 +336,7 @@ fn apply_container_safeguard(plan: &mut Plan, file: &MediaFile, filename: &str) 
         }
     }
 
-    let mut offenders: Vec<(u32, String)> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
     for track in &file.tracks {
         if removed.contains(&track.index) {
             continue;
@@ -345,7 +346,28 @@ fn apply_container_safeguard(plan: &mut Plan, file: &MediaFile, filename: &str) 
             .cloned()
             .unwrap_or_else(|| track.codec.clone());
         if let Some(false) = codec_supported(target, &effective_codec) {
-            offenders.push((track.index, effective_codec));
+            offenders.push(format!("track {} ({effective_codec})", track.index));
+        }
+    }
+
+    // Synthesized tracks are new tracks added by the policy and do not exist
+    // in `file.tracks`, so check them separately against the target container.
+    // Entries with no codec (`None`) are skipped — this happens when the
+    // synthesize operation inherits the codec from a downstream action.
+    for action in &plan.actions {
+        if action.operation != OperationType::SynthesizeAudio {
+            continue;
+        }
+        let ActionParams::Synthesize {
+            codec: Some(codec),
+            name,
+            ..
+        } = &action.parameters
+        else {
+            continue;
+        };
+        if let Some(false) = codec_supported(target, codec) {
+            offenders.push(format!("synthesized {name} ({codec})"));
         }
     }
 
@@ -360,7 +382,7 @@ fn apply_container_safeguard(plan: &mut Plan, file: &MediaFile, filename: &str) 
     let details = offenders
         .iter()
         .take(4)
-        .map(|(idx, codec)| format!("track {idx} ({codec})"))
+        .cloned()
         .collect::<Vec<_>>()
         .join(", ");
     let suffix = if offenders.len() > 4 {
@@ -2161,6 +2183,88 @@ mod tests {
                 .iter()
                 .any(|a| a.operation == OperationType::ConvertContainer),
             "ConvertContainer should remain — dts is transcoded to aac"
+        );
+        assert!(plan
+            .safeguard_violations
+            .iter()
+            .all(|v| v.kind != SafeguardKind::ContainerIncompatible));
+    }
+
+    #[test]
+    fn test_container_safeguard_blocks_webm_with_synthesized_aac() {
+        // MKV with vp9 + opus → policy converts to WebM AND synthesizes an
+        // AAC track. AAC is not WebM-compatible, so the conversion must be
+        // retracted and a violation recorded.
+        let file = container_test_file(
+            Container::Mkv,
+            vec![
+                Track::new(0, TrackType::Video, "vp9".into()),
+                Track::new(1, TrackType::AudioMain, "opus".into()),
+            ],
+        );
+        let policy = test_policy(
+            r#"policy "p" {
+                phase init {
+                    container webm
+                    synthesize "Stereo AAC" {
+                        codec: aac
+                        channels: stereo
+                    }
+                }
+            }"#,
+        );
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+
+        assert!(
+            !plan
+                .actions
+                .iter()
+                .any(|a| a.operation == OperationType::ConvertContainer),
+            "ConvertContainer should be retracted — synthesized AAC is not WebM-compatible"
+        );
+        let violation = plan
+            .safeguard_violations
+            .iter()
+            .find(|v| v.kind == SafeguardKind::ContainerIncompatible)
+            .expect("expected ContainerIncompatible violation");
+        assert!(
+            violation.message.contains("synthesized"),
+            "violation message should call out the synthesized track: {}",
+            violation.message
+        );
+    }
+
+    #[test]
+    fn test_container_safeguard_allows_webm_with_synthesized_opus() {
+        // MKV with vp9 + opus → policy converts to WebM AND synthesizes an
+        // Opus track. Opus is WebM-compatible, so no violation.
+        let file = container_test_file(
+            Container::Mkv,
+            vec![
+                Track::new(0, TrackType::Video, "vp9".into()),
+                Track::new(1, TrackType::AudioMain, "opus".into()),
+            ],
+        );
+        let policy = test_policy(
+            r#"policy "p" {
+                phase init {
+                    container webm
+                    synthesize "Stereo Opus" {
+                        codec: opus
+                        channels: stereo
+                    }
+                }
+            }"#,
+        );
+        let result = evaluate(&policy, &file);
+        let plan = &result.plans[0];
+
+        assert!(
+            plan.actions
+                .iter()
+                .any(|a| a.operation == OperationType::ConvertContainer),
+            "ConvertContainer should remain — synthesized Opus is WebM-compatible"
         );
         assert!(plan
             .safeguard_violations
