@@ -206,8 +206,12 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     );
 
     // When disabled, we still construct the collector so `snapshot()` is callable,
-    // but do not register it on the bus. The snapshot stays empty and executor
-    // selection falls back to priority order with no capability hints.
+    // but do not register it on the bus and do not call `init()`. The snapshot
+    // stays empty and executor selection falls back to priority order.
+    //
+    // Safe only because `CapabilityCollectorPlugin::init()` is a no-op. If it
+    // ever acquires resources needed by `snapshot()`, this branch must call
+    // `init()` directly.
     let collector = if disabled.iter().any(|d| d == "capability-collector") {
         tracing::warn!(
             "capability-collector disabled — executor selection will have no capability hints"

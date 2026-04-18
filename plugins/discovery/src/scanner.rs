@@ -355,10 +355,10 @@ fn reuse_cached_hash(
     let metadata = match fs::metadata(path) {
         Ok(m) => m,
         Err(e) => {
-            tracing::debug!(
+            tracing::warn!(
                 path = %path.display(),
                 error = %e,
-                "fingerprint reuse aborted: fs::metadata failed"
+                "fingerprint reuse aborted: fs::metadata failed; check file permissions"
             );
             return None;
         }

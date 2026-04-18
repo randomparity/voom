@@ -182,8 +182,11 @@ impl FileStorage for SqliteStore {
         let Some((size, content_hash, introspected_at)) = row else {
             return Ok(None);
         };
-        let Some(content_hash) = content_hash else {
-            return Ok(None);
+        // `upsert_file` writes an empty string when the caller has no hash,
+        // so treat empty as equivalent to NULL.
+        let content_hash = match content_hash {
+            Some(h) if !h.is_empty() => h,
+            _ => return Ok(None),
         };
         let last_seen = parse_datetime(&introspected_at)?;
         let size =

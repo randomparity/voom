@@ -286,7 +286,7 @@ impl Kernel {
         let plugin_mut = Arc::get_mut(&mut arc).ok_or_else(|| {
             voom_domain::errors::VoomError::plugin(
                 name.clone(),
-                "init requires exclusive Arc ownership (refcount must be 1)",
+                "internal error: Arc refcount > 1 before init (kernel-constructed Arc should be unique)",
             )
         })?;
         let init_events = plugin_mut.init(ctx).map_err(|e| {
@@ -473,6 +473,30 @@ mod tests {
             format!("{err}").contains("already registered"),
             "expected already-registered error, got: {err}"
         );
+    }
+
+    #[test]
+    fn test_drop_calls_shutdown_shared_with_retained_handle() {
+        let shutdown_called = Arc::new(AtomicBool::new(false));
+        let plugin = LifecyclePlugin {
+            init_called: Arc::new(AtomicBool::new(false)),
+            shutdown_called: shutdown_called.clone(),
+        };
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+
+        // Callers of init_and_register_shared typically retain the typed Arc
+        // past kernel drop (e.g. BootstrapResult.collector). Verify shutdown
+        // still fires exactly once during kernel drop, with no use-after-free.
+        let handle: Arc<LifecyclePlugin>;
+        {
+            let mut kernel = Kernel::new();
+            handle = kernel.init_and_register_shared(plugin, 50, &ctx).unwrap();
+            assert!(!shutdown_called.load(Ordering::SeqCst));
+            // kernel dropped here, while `handle` is still live
+        }
+        assert!(shutdown_called.load(Ordering::SeqCst));
+        // `handle` is still valid here — accessing it must not panic.
+        assert_eq!(handle.name(), "lifecycle-test");
     }
 
     #[test]
