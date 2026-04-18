@@ -313,6 +313,8 @@ mod tests {
     #[test]
     fn test_scan_rehashes_when_size_differs() {
         use chrono::Utc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
         use voom_domain::media::StoredFingerprint;
 
         let dir = tempfile::tempdir().unwrap();
@@ -325,18 +327,33 @@ mod tests {
             last_seen: Utc::now() + chrono::Duration::hours(1),
         };
 
+        let reused = Arc::new(AtomicUsize::new(0));
+        let reused_clone = reused.clone();
+
         let mut opts = ScanOptions::new(dir.path());
         opts.fingerprint_lookup = Some(Box::new(move |_| Some(stored.clone())));
+        opts.on_progress = Some(Box::new(move |p| {
+            if let ScanProgress::HashReused { .. } = p {
+                reused_clone.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
 
         let events = DiscoveryPlugin::new().scan(&opts).unwrap();
         assert_eq!(events.len(), 1);
         assert!(events[0].content_hash.is_some());
         assert_ne!(events[0].content_hash.as_deref(), Some("stale-hash"));
+        assert_eq!(
+            reused.load(Ordering::Relaxed),
+            0,
+            "HashReused must not fire when size differs"
+        );
     }
 
     #[test]
     fn test_scan_rehashes_when_mtime_is_newer_than_last_seen() {
         use chrono::Utc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
         use voom_domain::media::StoredFingerprint;
 
         let dir = tempfile::tempdir().unwrap();
@@ -347,17 +364,28 @@ mod tests {
         let stored = StoredFingerprint {
             size: file_size,
             content_hash: "stale-hash".to_string(),
-            // Mark the fingerprint as last seen far in the past so the
-            // on-disk mtime is considered newer.
             last_seen: Utc::now() - chrono::Duration::days(365),
         };
 
+        let reused = Arc::new(AtomicUsize::new(0));
+        let reused_clone = reused.clone();
+
         let mut opts = ScanOptions::new(dir.path());
         opts.fingerprint_lookup = Some(Box::new(move |_| Some(stored.clone())));
+        opts.on_progress = Some(Box::new(move |p| {
+            if let ScanProgress::HashReused { .. } = p {
+                reused_clone.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
 
         let events = DiscoveryPlugin::new().scan(&opts).unwrap();
         assert_eq!(events.len(), 1);
         assert_ne!(events[0].content_hash.as_deref(), Some("stale-hash"));
+        assert_eq!(
+            reused.load(Ordering::Relaxed),
+            0,
+            "HashReused must not fire when mtime is newer than last_seen"
+        );
     }
 
     #[test]

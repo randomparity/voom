@@ -350,10 +350,8 @@ fn apply_container_safeguard(plan: &mut Plan, file: &MediaFile, filename: &str) 
         }
     }
 
-    // Synthesized tracks are new tracks added by the policy and do not exist
-    // in `file.tracks`, so check them separately against the target container.
-    // Entries with no codec (`None`) are skipped — this happens when the
-    // synthesize operation inherits the codec from a downstream action.
+    // `codec: None` means the synthesize operation inherits codec from a
+    // downstream action — skip because there is no codec to check.
     for action in &plan.actions {
         if action.operation != OperationType::SynthesizeAudio {
             continue;

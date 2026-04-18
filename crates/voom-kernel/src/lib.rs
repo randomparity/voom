@@ -245,33 +245,21 @@ impl Kernel {
     ) -> Result<()> {
         let name = plugin.name().to_string();
         if self.registry.contains(&name) {
-            return Err(voom_domain::errors::VoomError::Plugin {
-                plugin: name,
-                message: "a plugin with this name is already registered".into(),
-            });
+            return Err(voom_domain::errors::VoomError::plugin(
+                name,
+                "a plugin with this name is already registered",
+            ));
         }
-        let plugin_mut =
-            Arc::get_mut(&mut plugin).ok_or_else(|| voom_domain::errors::VoomError::Plugin {
-                plugin: name.clone(),
-                message: "init_and_register requires exclusive Arc ownership (refcount must be 1)"
-                    .into(),
-            })?;
-        let init_events =
-            plugin_mut
-                .init(ctx)
-                .map_err(|e| voom_domain::errors::VoomError::Plugin {
-                    plugin: name.clone(),
-                    message: format!("init failed: {e}"),
-                })?;
-        self.registry.register(plugin.clone())?;
-        self.bus.subscribe_plugin(plugin, priority);
-        tracing::info!(plugin = %name, "plugin initialized and registered");
-
-        for event in init_events {
-            self.dispatch(event);
-        }
-
-        Ok(())
+        let plugin_mut = Arc::get_mut(&mut plugin).ok_or_else(|| {
+            voom_domain::errors::VoomError::plugin(
+                name.clone(),
+                "init requires exclusive Arc ownership (refcount must be 1)",
+            )
+        })?;
+        let init_events = plugin_mut.init(ctx).map_err(|e| {
+            voom_domain::errors::VoomError::plugin(name.clone(), format!("init failed: {e}"))
+        })?;
+        self.finish_registration(plugin, priority, &name, init_events)
     }
 
     /// Initialize a typed plugin, register it, and return an `Arc<P>` handle.
@@ -290,36 +278,42 @@ impl Kernel {
         let mut arc: Arc<P> = Arc::new(plugin);
         let name = arc.name().to_string();
         if self.registry.contains(&name) {
-            return Err(voom_domain::errors::VoomError::Plugin {
-                plugin: name,
-                message: "a plugin with this name is already registered".into(),
-            });
+            return Err(voom_domain::errors::VoomError::plugin(
+                name,
+                "a plugin with this name is already registered",
+            ));
         }
-        let plugin_mut =
-            Arc::get_mut(&mut arc).ok_or_else(|| voom_domain::errors::VoomError::Plugin {
-                plugin: name.clone(),
-                message:
-                    "init_and_register_shared requires exclusive Arc ownership (refcount must be 1)"
-                        .into(),
-            })?;
-        let init_events =
-            plugin_mut
-                .init(ctx)
-                .map_err(|e| voom_domain::errors::VoomError::Plugin {
-                    plugin: name.clone(),
-                    message: format!("init failed: {e}"),
-                })?;
+        let plugin_mut = Arc::get_mut(&mut arc).ok_or_else(|| {
+            voom_domain::errors::VoomError::plugin(
+                name.clone(),
+                "init requires exclusive Arc ownership (refcount must be 1)",
+            )
+        })?;
+        let init_events = plugin_mut.init(ctx).map_err(|e| {
+            voom_domain::errors::VoomError::plugin(name.clone(), format!("init failed: {e}"))
+        })?;
+        self.finish_registration(arc.clone(), priority, &name, init_events)?;
+        Ok(arc)
+    }
 
-        let dyn_arc: Arc<dyn Plugin> = arc.clone();
-        self.registry.register(dyn_arc.clone())?;
-        self.bus.subscribe_plugin(dyn_arc, priority);
+    /// Shared tail of both init-and-register paths: insert into the registry,
+    /// subscribe on the bus, and dispatch init events. Kept separate from the
+    /// init step so each caller can preserve the `Arc::get_mut` refcount-1
+    /// invariant on its own `Arc`.
+    fn finish_registration(
+        &mut self,
+        plugin: Arc<dyn Plugin>,
+        priority: i32,
+        name: &str,
+        init_events: Vec<Event>,
+    ) -> Result<()> {
+        self.registry.register(plugin.clone())?;
+        self.bus.subscribe_plugin(plugin, priority);
         tracing::info!(plugin = %name, "plugin initialized and registered");
-
         for event in init_events {
             self.dispatch(event);
         }
-
-        Ok(arc)
+        Ok(())
     }
 
     /// Dispatch an event through the bus to all matching subscribers.

@@ -352,8 +352,28 @@ fn reuse_cached_hash(
     if stored.size != walk_size {
         return None;
     }
-    let metadata = fs::metadata(path).ok()?;
-    let mtime = metadata.modified().ok()?;
+    let metadata = match fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::debug!(
+                path = %path.display(),
+                error = %e,
+                "fingerprint reuse aborted: fs::metadata failed"
+            );
+            return None;
+        }
+    };
+    let mtime = match metadata.modified() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::debug!(
+                path = %path.display(),
+                error = %e,
+                "fingerprint reuse aborted: mtime unavailable on this filesystem"
+            );
+            return None;
+        }
+    };
     let mtime_utc: chrono::DateTime<chrono::Utc> = mtime.into();
     if mtime_utc > stored.last_seen {
         return None;

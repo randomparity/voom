@@ -115,24 +115,12 @@ pub use voom_domain::DiscoveredFilePayload;
 
 /// Build a fingerprint lookup closure backed by the given storage.
 ///
-/// Returns a closure that, given a file path, looks up the previously-stored
-/// [`MediaFile`](voom_domain::media::MediaFile) (if any) and produces a
-/// [`StoredFingerprint`](voom_domain::media::StoredFingerprint). Discovery
-/// uses this to skip re-hashing files whose size and mtime indicate no change.
-///
-/// Files that were never stored, files with `None` `content_hash`, and lookup
-/// errors all return `None` so discovery falls back to hashing.
+/// The closure delegates to `StorageTrait::file_fingerprint_by_path`, which
+/// the sqlite-store backend serves from a narrow query. Lookup failures
+/// return `None` so discovery falls back to hashing.
 #[must_use]
 pub fn fingerprint_lookup(
     store: std::sync::Arc<dyn voom_domain::storage::StorageTrait>,
 ) -> voom_discovery::FingerprintLookup {
-    Box::new(move |path| {
-        let stored = store.file_by_path(path).ok().flatten()?;
-        let content_hash = stored.content_hash?;
-        Some(voom_domain::media::StoredFingerprint {
-            size: stored.size,
-            content_hash,
-            last_seen: stored.introspected_at,
-        })
-    })
+    Box::new(move |path| store.file_fingerprint_by_path(path).ok().flatten())
 }

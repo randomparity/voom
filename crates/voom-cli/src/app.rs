@@ -205,16 +205,9 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
         "ffprobe introspector"
     );
 
-    // Capability collector — captures ExecutorCapabilities events for the evaluator.
-    // Priority 35 dispatches before executor priorities (39, 40), so init-time
-    // ExecutorCapabilities events emitted by executors land in the collector
-    // first.
-    //
-    // When disabled, we still construct the collector (so `collector.snapshot()`
-    // remains callable on BootstrapResult) but do NOT register it on the bus.
-    // The snapshot will be empty, which is a documented degraded mode:
-    // executor selection falls back to plain priority order with no capability
-    // hints.
+    // When disabled, we still construct the collector so `snapshot()` is callable,
+    // but do not register it on the bus. The snapshot stays empty and executor
+    // selection falls back to priority order with no capability hints.
     let collector = if disabled.iter().any(|d| d == "capability-collector") {
         tracing::warn!(
             "capability-collector disabled — executor selection will have no capability hints"
