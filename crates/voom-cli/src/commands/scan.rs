@@ -39,7 +39,7 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     }
 
     let (mut all_events, orphans, disc_errors) =
-        run_discovery(&args, &paths, hash_files, quiet, &kernel)?;
+        run_discovery(&args, &paths, hash_files, quiet, &kernel, store.clone())?;
 
     // Deduplicate events by path in case multiple scan roots overlap
     let mut seen = HashSet::new();
@@ -117,6 +117,7 @@ fn run_discovery(
     hash_files: bool,
     quiet: bool,
     kernel: &Arc<voom_kernel::Kernel>,
+    store: Arc<dyn voom_domain::storage::StorageTrait>,
 ) -> Result<(Vec<FileDiscoveredEvent>, u64, u64)> {
     let discovery = voom_discovery::DiscoveryPlugin::new();
     let progress = if quiet {
@@ -145,6 +146,7 @@ fn run_discovery(
         options.recursive = args.recursive;
         options.hash_files = hash_files;
         options.workers = args.workers;
+        options.fingerprint_lookup = Some(crate::introspect::fingerprint_lookup(store.clone()));
         options.on_progress = Some(Box::new(move |progress| match progress {
             voom_discovery::ScanProgress::Discovered { count: _, path } => {
                 let cumulative = cum_disc.fetch_add(1, Ordering::Relaxed) + 1;
@@ -164,6 +166,7 @@ fn run_discovery(
             voom_discovery::ScanProgress::OrphanedTempFiles { count } => {
                 orphan_clone.fetch_add(count as u64, Ordering::Relaxed);
             }
+            voom_discovery::ScanProgress::HashReused { .. } => {}
         }));
         options.on_error = Some(Box::new(move |path, size, error| {
             tracing::warn!(path = %path.display(), error = %error, "discovery error");

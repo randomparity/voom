@@ -18,6 +18,7 @@ walkdir = { workspace = true }
 rayon = { workspace = true }
 xxhash-rust = { workspace = true }
 tracing = { workspace = true }
+chrono = { workspace = true }
 unicode-normalization = "0.1"
 
 [lints]

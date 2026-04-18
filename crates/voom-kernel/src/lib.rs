@@ -245,32 +245,74 @@ impl Kernel {
     ) -> Result<()> {
         let name = plugin.name().to_string();
         if self.registry.contains(&name) {
-            return Err(voom_domain::errors::VoomError::Plugin {
-                plugin: name,
-                message: "a plugin with this name is already registered".into(),
-            });
+            return Err(voom_domain::errors::VoomError::plugin(
+                name,
+                "a plugin with this name is already registered",
+            ));
         }
-        let plugin_mut =
-            Arc::get_mut(&mut plugin).ok_or_else(|| voom_domain::errors::VoomError::Plugin {
-                plugin: name.clone(),
-                message: "init_and_register requires exclusive Arc ownership (refcount must be 1)"
-                    .into(),
-            })?;
-        let init_events =
-            plugin_mut
-                .init(ctx)
-                .map_err(|e| voom_domain::errors::VoomError::Plugin {
-                    plugin: name.clone(),
-                    message: format!("init failed: {e}"),
-                })?;
+        let plugin_mut = Arc::get_mut(&mut plugin).ok_or_else(|| {
+            voom_domain::errors::VoomError::plugin(
+                name.clone(),
+                "init requires exclusive Arc ownership (refcount must be 1)",
+            )
+        })?;
+        let init_events = plugin_mut.init(ctx).map_err(|e| {
+            voom_domain::errors::VoomError::plugin(name.clone(), format!("init failed: {e}"))
+        })?;
+        self.finish_registration(plugin, priority, &name, init_events)
+    }
+
+    /// Initialize a typed plugin, register it, and return an `Arc<P>` handle.
+    ///
+    /// Use this instead of [`init_and_register`](Self::init_and_register) when the caller needs a
+    /// typed `Arc<P>` for later use (e.g. the capability collector, whose
+    /// `snapshot()` method is called after bootstrap). Takes `P` by value so
+    /// the kernel constructs the `Arc` itself — guaranteeing the refcount-1
+    /// invariant that `Arc::get_mut` requires during `init()`.
+    pub fn init_and_register_shared<P: Plugin + 'static>(
+        &mut self,
+        plugin: P,
+        priority: i32,
+        ctx: &PluginContext,
+    ) -> Result<Arc<P>> {
+        let mut arc: Arc<P> = Arc::new(plugin);
+        let name = arc.name().to_string();
+        if self.registry.contains(&name) {
+            return Err(voom_domain::errors::VoomError::plugin(
+                name,
+                "a plugin with this name is already registered",
+            ));
+        }
+        let plugin_mut = Arc::get_mut(&mut arc).ok_or_else(|| {
+            voom_domain::errors::VoomError::plugin(
+                name.clone(),
+                "internal error: Arc refcount > 1 before init (kernel-constructed Arc should be unique)",
+            )
+        })?;
+        let init_events = plugin_mut.init(ctx).map_err(|e| {
+            voom_domain::errors::VoomError::plugin(name.clone(), format!("init failed: {e}"))
+        })?;
+        self.finish_registration(arc.clone(), priority, &name, init_events)?;
+        Ok(arc)
+    }
+
+    /// Shared tail of both init-and-register paths: insert into the registry,
+    /// subscribe on the bus, and dispatch init events. Kept separate from the
+    /// init step so each caller can preserve the `Arc::get_mut` refcount-1
+    /// invariant on its own `Arc`.
+    fn finish_registration(
+        &mut self,
+        plugin: Arc<dyn Plugin>,
+        priority: i32,
+        name: &str,
+        init_events: Vec<Event>,
+    ) -> Result<()> {
         self.registry.register(plugin.clone())?;
         self.bus.subscribe_plugin(plugin, priority);
         tracing::info!(plugin = %name, "plugin initialized and registered");
-
         for event in init_events {
             self.dispatch(event);
         }
-
         Ok(())
     }
 
@@ -377,6 +419,84 @@ mod tests {
         assert!(init_called.load(Ordering::SeqCst));
         assert_eq!(kernel.registry.len(), 1);
         assert_eq!(kernel.subscriber_count(), 1);
+    }
+
+    #[test]
+    fn test_init_and_register_shared_returns_typed_handle_and_calls_init() {
+        let init_called = Arc::new(AtomicBool::new(false));
+        let shutdown_called = Arc::new(AtomicBool::new(false));
+
+        let plugin = LifecyclePlugin {
+            init_called: init_called.clone(),
+            shutdown_called: shutdown_called.clone(),
+        };
+
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+
+        let mut kernel = Kernel::new();
+        let handle: Arc<LifecyclePlugin> =
+            kernel.init_and_register_shared(plugin, 50, &ctx).unwrap();
+
+        assert!(init_called.load(Ordering::SeqCst));
+        assert_eq!(kernel.registry.len(), 1);
+        assert_eq!(kernel.subscriber_count(), 1);
+        // The typed handle shares state with the kernel-owned Arc.
+        assert!(handle.init_called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_init_and_register_shared_rejects_duplicate_name() {
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+        let mut kernel = Kernel::new();
+        kernel
+            .init_and_register_shared(
+                LifecyclePlugin {
+                    init_called: Arc::new(AtomicBool::new(false)),
+                    shutdown_called: Arc::new(AtomicBool::new(false)),
+                },
+                50,
+                &ctx,
+            )
+            .unwrap();
+        let err = match kernel.init_and_register_shared(
+            LifecyclePlugin {
+                init_called: Arc::new(AtomicBool::new(false)),
+                shutdown_called: Arc::new(AtomicBool::new(false)),
+            },
+            60,
+            &ctx,
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("expected duplicate registration to fail"),
+        };
+        assert!(
+            format!("{err}").contains("already registered"),
+            "expected already-registered error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_drop_calls_shutdown_shared_with_retained_handle() {
+        let shutdown_called = Arc::new(AtomicBool::new(false));
+        let plugin = LifecyclePlugin {
+            init_called: Arc::new(AtomicBool::new(false)),
+            shutdown_called: shutdown_called.clone(),
+        };
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+
+        // Callers of init_and_register_shared typically retain the typed Arc
+        // past kernel drop (e.g. BootstrapResult.collector). Verify shutdown
+        // still fires exactly once during kernel drop, with no use-after-free.
+        let handle: Arc<LifecyclePlugin>;
+        {
+            let mut kernel = Kernel::new();
+            handle = kernel.init_and_register_shared(plugin, 50, &ctx).unwrap();
+            assert!(!shutdown_called.load(Ordering::SeqCst));
+            // kernel dropped here, while `handle` is still live
+        }
+        assert!(shutdown_called.load(Ordering::SeqCst));
+        // `handle` is still valid here — accessing it must not panic.
+        assert_eq!(handle.name(), "lifecycle-test");
     }
 
     #[test]

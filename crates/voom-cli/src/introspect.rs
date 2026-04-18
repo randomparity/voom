@@ -112,3 +112,27 @@ pub async fn introspect_file(
 }
 
 pub use voom_domain::DiscoveredFilePayload;
+
+/// Build a fingerprint lookup closure backed by the given storage.
+///
+/// The closure delegates to `StorageTrait::file_fingerprint_by_path`, which
+/// the sqlite-store backend serves from a narrow query. Storage errors are
+/// logged at warn level and the closure returns `None` so discovery falls
+/// back to hashing — a sustained storage failure would otherwise cause a
+/// library-wide silent re-hash with no operator visibility.
+#[must_use]
+pub fn fingerprint_lookup(
+    store: std::sync::Arc<dyn voom_domain::storage::StorageTrait>,
+) -> voom_discovery::FingerprintLookup {
+    Box::new(move |path| match store.file_fingerprint_by_path(path) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "fingerprint lookup failed; falling back to rehash"
+            );
+            None
+        }
+    })
+}

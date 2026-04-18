@@ -7,6 +7,25 @@ use uuid::Uuid;
 
 use crate::transition::FileStatus;
 
+/// Cached fingerprint used to decide whether a previously-hashed file needs
+/// to be re-hashed during discovery.
+///
+/// The caller (typically the CLI) supplies one of these (looked up from the
+/// storage layer) for each file being scanned. Discovery compares the file's
+/// on-disk `size` and `mtime` against these cached values — if the file has
+/// not grown or shrunk and its `mtime` is no later than `last_seen`, the
+/// stored `content_hash` is reused instead of re-reading the file.
+#[derive(Debug, Clone)]
+pub struct StoredFingerprint {
+    /// File size in bytes at the time the hash was computed.
+    pub size: u64,
+    /// Previously computed content hash.
+    pub content_hash: String,
+    /// Timestamp after which a newer `mtime` on disk means the content may
+    /// have changed. Typically `MediaFile::introspected_at`.
+    pub last_seen: DateTime<Utc>,
+}
+
 /// A media file with full introspection metadata.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]

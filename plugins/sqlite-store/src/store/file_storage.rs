@@ -6,13 +6,13 @@ use rusqlite::params;
 use uuid::Uuid;
 
 use voom_domain::errors::Result;
-use voom_domain::media::MediaFile;
+use voom_domain::media::{MediaFile, StoredFingerprint};
 use voom_domain::storage::{FileFilters, FileStorage};
 use voom_domain::transition::{DiscoveredFile, FileTransition, ReconcileResult, TransitionSource};
 
 use super::{
-    escape_like, format_datetime, other_storage_err, row_to_file, storage_err, FileRow,
-    OptionalExt, SqlQuery, SqliteStore,
+    escape_like, format_datetime, other_storage_err, parse_datetime, row_to_file, storage_err,
+    FileRow, OptionalExt, SqlQuery, SqliteStore,
 };
 
 impl FileStorage for SqliteStore {
@@ -166,6 +166,36 @@ impl FileStorage for SqliteStore {
             }
             None => Ok(None),
         }
+    }
+
+    fn file_fingerprint_by_path(&self, path: &Path) -> Result<Option<StoredFingerprint>> {
+        let conn = self.conn()?;
+        let path_str = path.to_string_lossy().to_string();
+        let row: Option<(i64, Option<String>, String)> = conn
+            .query_row(
+                "SELECT size, content_hash, introspected_at FROM files WHERE path = ?1",
+                params![path_str],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(storage_err("failed to get file fingerprint by path"))?;
+        let Some((size, content_hash, introspected_at)) = row else {
+            return Ok(None);
+        };
+        // `upsert_file` writes an empty string when the caller has no hash,
+        // so treat empty as equivalent to NULL.
+        let content_hash = match content_hash {
+            Some(h) if !h.is_empty() => h,
+            _ => return Ok(None),
+        };
+        let last_seen = parse_datetime(&introspected_at)?;
+        let size =
+            u64::try_from(size).map_err(other_storage_err("file size does not fit in u64"))?;
+        Ok(Some(StoredFingerprint {
+            size,
+            content_hash,
+            last_seen,
+        }))
     }
 
     fn list_files(&self, filters: &FileFilters) -> Result<Vec<MediaFile>> {

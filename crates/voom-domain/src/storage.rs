@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::bad_file::{BadFile, BadFileSource};
 use crate::errors::Result;
 use crate::job::{Job, JobStatus, JobUpdate};
-use crate::media::{Container, MediaFile};
+use crate::media::{Container, MediaFile, StoredFingerprint};
 use crate::plan::Plan;
 use crate::stats::{LibrarySnapshot, SavingsReport, SnapshotTrigger, TimePeriod};
 use crate::transition::{DiscoveredFile, FileTransition, ReconcileResult, TransitionSource};
@@ -55,6 +55,19 @@ pub trait FileStorage: Send + Sync {
     fn upsert_file(&self, file: &MediaFile) -> Result<()>;
     fn file(&self, id: &Uuid) -> Result<Option<MediaFile>>;
     fn file_by_path(&self, path: &Path) -> Result<Option<MediaFile>>;
+    /// Fast fingerprint lookup for discovery's hash short-circuit. Default
+    /// impl forwards to [`file_by_path`](Self::file_by_path) — backends that
+    /// can serve this from a narrower query (e.g. skipping a `tracks` join)
+    /// should override it.
+    fn file_fingerprint_by_path(&self, path: &Path) -> Result<Option<StoredFingerprint>> {
+        Ok(self.file_by_path(path)?.and_then(|f| {
+            f.content_hash.map(|h| StoredFingerprint {
+                size: f.size,
+                content_hash: h,
+                last_seen: f.introspected_at,
+            })
+        }))
+    }
     fn list_files(&self, filters: &FileFilters) -> Result<Vec<MediaFile>>;
     /// Count total files matching the given filters (ignoring limit/offset).
     fn count_files(&self, filters: &FileFilters) -> Result<u64>;
