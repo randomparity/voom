@@ -153,7 +153,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         return Ok(());
     }
 
-    let mut events = discover_files(&paths, &args, &kernel, quiet)?;
+    let mut events = discover_files(&paths, &args, &kernel, quiet, store.clone())?;
     if events.is_empty() {
         if plan_only {
             println!("[]");
@@ -431,6 +431,7 @@ fn discover_files(
     args: &ProcessArgs,
     kernel: &voom_kernel::Kernel,
     quiet: bool,
+    store: Arc<dyn voom_domain::storage::StorageTrait>,
 ) -> Result<Vec<voom_domain::events::FileDiscoveredEvent>> {
     let discovery = voom_discovery::DiscoveryPlugin::new();
     let hash_files = !args.no_backup;
@@ -459,6 +460,7 @@ fn discover_files(
         let mut options = voom_discovery::ScanOptions::new(path.clone());
         options.hash_files = hash_files;
         options.workers = args.workers;
+        options.fingerprint_lookup = Some(crate::introspect::fingerprint_lookup(store.clone()));
 
         let progress_clone = progress.clone();
         let cum_disc = cumulative_discovered.clone();
@@ -482,6 +484,7 @@ fn discover_files(
                 progress_clone.on_processing(base + current, base + total, &path, action);
             }
             voom_discovery::ScanProgress::OrphanedTempFiles { .. } => {}
+            voom_discovery::ScanProgress::HashReused { .. } => {}
         }));
 
         let errors_clone = discovery_errors.clone();
@@ -727,10 +730,12 @@ fn print_summary(ctx: &SummaryContext<'_>) {
     if ctx.backup_bytes > 0 && ctx.modified > 0 && !ctx.dry_run {
         let path_args: Vec<_> = ctx.paths.iter().map(|p| p.display().to_string()).collect();
         eprintln!(
-            "{} {} backups retained ({}) \u{2014} delete with: find {} -name '*.vbak' -delete",
+            "{} {} backups retained ({}) \u{2014} list with: voom backup list {} \
+             \u{2014} delete with: voom backup cleanup {}",
             style("Info:").bold(),
             style(ctx.modified).cyan(),
             style(format_size(ctx.backup_bytes)).cyan(),
+            path_args.join(" "),
             path_args.join(" "),
         );
     }

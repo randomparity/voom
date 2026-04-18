@@ -248,7 +248,13 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
     // concurrent open file descriptors during hashing.
     let process_file = |(path, walk_size): &(PathBuf, u64)| {
         let _guard = fd_sem.guard();
-        let result = build_event(path, *walk_size, options.hash_files);
+        let result = build_event(
+            path,
+            *walk_size,
+            options.hash_files,
+            options.fingerprint_lookup.as_deref(),
+            options.on_progress.as_deref(),
+        );
         let current = processed.fetch_add(1, Ordering::Relaxed) + 1;
         if let Some(ref cb) = options.on_progress {
             cb(crate::ScanProgress::Processing {
@@ -291,13 +297,36 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
     Ok(discovered)
 }
 
+type FingerprintLookupRef<'a> =
+    &'a (dyn Fn(&Path) -> Option<voom_domain::media::StoredFingerprint> + Send + Sync);
+type ProgressCallbackRef<'a> = &'a (dyn Fn(crate::ScanProgress) + Send + Sync);
+
 /// Build a `FileDiscoveredEvent` for a single file.
 ///
 /// `walk_size` is the file size captured during the directory walk. It avoids
 /// a redundant `stat` call — `hash_file` will detect a missing file on its own.
-fn build_event(path: &Path, walk_size: u64, compute_hash: bool) -> Result<FileDiscoveredEvent> {
+///
+/// When `fingerprint_lookup` returns a cached fingerprint and the on-disk
+/// `size`/`mtime` indicate the file has not changed, the cached `content_hash`
+/// is reused instead of re-reading the file.
+fn build_event(
+    path: &Path,
+    walk_size: u64,
+    compute_hash: bool,
+    fingerprint_lookup: Option<FingerprintLookupRef<'_>>,
+    on_progress: Option<ProgressCallbackRef<'_>>,
+) -> Result<FileDiscoveredEvent> {
     let content_hash = if compute_hash {
-        Some(hash_file(path)?)
+        if let Some(cached) = reuse_cached_hash(path, walk_size, fingerprint_lookup) {
+            if let Some(cb) = on_progress {
+                cb(crate::ScanProgress::HashReused {
+                    path: path.to_path_buf(),
+                });
+            }
+            Some(cached)
+        } else {
+            Some(hash_file(path)?)
+        }
     } else {
         None
     };
@@ -309,6 +338,27 @@ fn build_event(path: &Path, walk_size: u64, compute_hash: bool) -> Result<FileDi
         walk_size,
         content_hash,
     ))
+}
+
+/// Return the cached content hash if the file on disk matches the stored
+/// fingerprint's `size` and its `mtime` is no newer than `last_seen`.
+fn reuse_cached_hash(
+    path: &Path,
+    walk_size: u64,
+    fingerprint_lookup: Option<FingerprintLookupRef<'_>>,
+) -> Option<String> {
+    let lookup = fingerprint_lookup?;
+    let stored = lookup(path)?;
+    if stored.size != walk_size {
+        return None;
+    }
+    let metadata = fs::metadata(path).ok()?;
+    let mtime = metadata.modified().ok()?;
+    let mtime_utc: chrono::DateTime<chrono::Utc> = mtime.into();
+    if mtime_utc > stored.last_seen {
+        return None;
+    }
+    Some(stored.content_hash)
 }
 
 #[cfg(test)]
@@ -406,7 +456,7 @@ mod tests {
         let path = dir.path().join("test.mkv");
         std::fs::write(&path, b"fake video data").unwrap();
 
-        let event = build_event(&path, 15, true).unwrap();
+        let event = build_event(&path, 15, true, None, None).unwrap();
         assert_eq!(event.path, path);
         assert_eq!(event.size, 15);
         assert!(event.content_hash.is_some());
@@ -432,6 +482,7 @@ mod tests {
             workers: 0,
             on_progress: None,
             on_error: None,
+            fingerprint_lookup: None,
         };
         let events = scan_directory(&options).unwrap();
         // Should only find the file under "real/", not under "link/"
@@ -447,7 +498,7 @@ mod tests {
         let path = dir.path().join("test.mkv");
         std::fs::write(&path, b"fake video data").unwrap();
 
-        let event = build_event(&path, 15, false).unwrap();
+        let event = build_event(&path, 15, false, None, None).unwrap();
         assert!(event.content_hash.is_none());
     }
 
