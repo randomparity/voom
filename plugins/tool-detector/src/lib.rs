@@ -111,11 +111,11 @@ impl Default for ToolDetectorPlugin {
 }
 
 impl Plugin for ToolDetectorPlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "tool-detector"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 
@@ -175,8 +175,7 @@ fn parse_version(tool_name: &str, output: &str) -> String {
             first_line
                 .split_whitespace()
                 .nth(1)
-                .map(|v| v.trim_start_matches('v'))
-                .unwrap_or("unknown")
+                .map_or("unknown", |v| v.trim_start_matches('v'))
                 .to_string()
         }
         "mediainfo" => {
@@ -201,8 +200,7 @@ fn parse_version(tool_name: &str, output: &str) -> String {
             first_line
                 .split(':')
                 .next_back()
-                .map(str::trim)
-                .unwrap_or("unknown")
+                .map_or("unknown", str::trim)
                 .to_string()
         }
         "vainfo" => {
@@ -210,8 +208,7 @@ fn parse_version(tool_name: &str, output: &str) -> String {
             first_line
                 .split(':')
                 .next_back()
-                .map(str::trim)
-                .unwrap_or("unknown")
+                .map_or("unknown", str::trim)
                 .to_string()
         }
         _ => first_line.to_string(),
@@ -223,10 +220,10 @@ fn find_tool_path(name: &str) -> Option<PathBuf> {
     Command::new("which").arg(name).output().ok().and_then(|o| {
         if o.status.success() {
             let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if !path.is_empty() {
-                Some(PathBuf::from(path))
-            } else {
+            if path.is_empty() {
                 None
+            } else {
+                Some(PathBuf::from(path))
             }
         } else {
             None

@@ -126,6 +126,7 @@ impl JobQueue {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // tests compare exact-representable literals
 mod tests {
     use super::*;
     use voom_domain::test_support::InMemoryStore;
@@ -272,13 +273,11 @@ mod tests {
         let pending_count = counts
             .iter()
             .find(|(s, _)| *s == JobStatus::Pending)
-            .map(|(_, c)| *c)
-            .unwrap_or(0);
+            .map_or(0, |(_, c)| *c);
         let running_count = counts
             .iter()
             .find(|(s, _)| *s == JobStatus::Running)
-            .map(|(_, c)| *c)
-            .unwrap_or(0);
+            .map_or(0, |(_, c)| *c);
         assert_eq!(pending_count, 2);
         assert_eq!(running_count, 1);
     }

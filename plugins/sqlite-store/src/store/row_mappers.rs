@@ -259,3 +259,105 @@ pub(crate) fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
     bf.last_seen_at = parse_required_datetime(last_seen_str, "bad_files.last_seen_at")?;
     Ok(bf)
 }
+
+#[cfg(test)]
+mod tests {
+    // The `row_to_*` functions take a live `rusqlite::Row<'_>` that cannot be
+    // easily hand-crafted in a unit test — those paths are exercised end-to-end
+    // by the per-entity storage tests. Below we cover the pure helpers
+    // `parse_required_datetime`, `parse_optional_datetime`, `parse_optional_json`,
+    // `row_uuid`, and `str_to_track_type`.
+    use super::*;
+    use voom_domain::media::TrackType;
+
+    #[test]
+    fn parse_required_datetime_accepts_rfc3339() {
+        let s = "2024-01-02T03:04:05Z".to_string();
+        let parsed = parse_required_datetime(s, "test.field").unwrap();
+        assert_eq!(parsed.to_rfc3339(), "2024-01-02T03:04:05+00:00");
+    }
+
+    #[test]
+    fn parse_required_datetime_rejects_garbage() {
+        let s = "definitely-not-a-date".to_string();
+        let err = parse_required_datetime(s, "test.field").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("test.field"),
+            "error should mention field: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_optional_datetime_passes_through_none() {
+        let parsed = parse_optional_datetime(None, "test.field").unwrap();
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn parse_optional_datetime_accepts_valid() {
+        let parsed =
+            parse_optional_datetime(Some("2024-06-15T12:00:00Z".into()), "test.field").unwrap();
+        assert!(parsed.is_some());
+    }
+
+    #[test]
+    fn parse_optional_datetime_rejects_garbage() {
+        let err = parse_optional_datetime(Some("not-a-date".into()), "test.field").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("test.field"));
+    }
+
+    #[test]
+    fn parse_optional_json_roundtrips_valid_value() {
+        let parsed = parse_optional_json(Some(r#"{"key":42}"#.to_string()), "test.field").unwrap();
+        assert_eq!(parsed.unwrap()["key"], 42);
+    }
+
+    #[test]
+    fn parse_optional_json_passes_through_none() {
+        let parsed = parse_optional_json(None, "test.field").unwrap();
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn parse_optional_json_rejects_malformed() {
+        let err = parse_optional_json(Some("not json{".into()), "test.field").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("test.field"));
+    }
+
+    #[test]
+    fn row_uuid_parses_valid_string() {
+        let s = "550e8400-e29b-41d4-a716-446655440000";
+        let parsed = row_uuid(s, "my_table").unwrap();
+        assert_eq!(parsed.to_string(), s);
+    }
+
+    #[test]
+    fn row_uuid_rejects_invalid_string() {
+        let err = row_uuid("not-a-uuid", "my_table").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("my_table"),
+            "error should mention table: {msg}"
+        );
+    }
+
+    #[test]
+    fn str_to_track_type_known_values() {
+        assert_eq!(str_to_track_type("video"), Some(TrackType::Video));
+        assert_eq!(str_to_track_type("audio_main"), Some(TrackType::AudioMain));
+        assert_eq!(
+            str_to_track_type("subtitle_main"),
+            Some(TrackType::SubtitleMain)
+        );
+        assert_eq!(str_to_track_type("attachment"), Some(TrackType::Attachment));
+    }
+
+    #[test]
+    fn str_to_track_type_unknown_returns_none() {
+        assert_eq!(str_to_track_type("not-a-type"), None);
+        assert_eq!(str_to_track_type(""), None);
+    }
+}

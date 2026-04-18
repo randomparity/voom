@@ -45,7 +45,7 @@ pub struct ScanOptions {
     /// Optional progress callback.
     pub on_progress: Option<Box<dyn Fn(ScanProgress) + Send + Sync>>,
     /// Optional error callback for files that fail during discovery
-    /// (e.g., disappeared between walk and hash). Called with (path, size, error_message).
+    /// (e.g., disappeared between walk and hash). Called with (path, size, `error_message`).
     /// Size is captured during the directory walk and may be stale if the file changed.
     pub on_error: Option<ErrorCallback>,
 }
@@ -108,11 +108,11 @@ impl Default for DiscoveryPlugin {
 }
 
 impl Plugin for DiscoveryPlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "discovery"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 

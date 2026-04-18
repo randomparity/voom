@@ -12,7 +12,11 @@ use pest::iterators::Pair;
 use pest::Parser;
 use pest_derive::Parser;
 
-use crate::ast::*;
+use crate::ast::{
+    ActionNode, CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode,
+    PolicyAst, RuleNode, RunIfNode, Span, SpannedOperation, SynthSetting, TrackQueryNode,
+    TrackRefNode, Value, ValueOrField, WhenNode,
+};
 use crate::errors::{DslError, Result};
 
 #[derive(Parser)]
@@ -66,8 +70,8 @@ pub fn parse_policy(input: &str) -> Result<PolicyAst> {
 
     let pairs = VoomParser::parse(Rule::policy, input).map_err(|e| {
         let (line, col) = match e.line_col {
-            pest::error::LineColLocation::Pos((l, c)) => (l, c),
-            pest::error::LineColLocation::Span((l, c), _) => (l, c),
+            pest::error::LineColLocation::Pos((l, c))
+            | pest::error::LineColLocation::Span((l, c), _) => (l, c),
         };
         DslError::parse(line, col, format!("{e}"))
     })?;
@@ -192,9 +196,10 @@ fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
 
 /// Push a spanned operation with a pre-captured span.
 fn emit_op(ops: &mut Vec<SpannedOperation>, span: Span, node: OperationNode) {
-    ops.push(SpannedOperation { span, node });
+    ops.push(SpannedOperation { node, span });
 }
 
+#[allow(clippy::too_many_lines)] // Single dispatch match over all phase-item rules; splitting hurts clarity.
 fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
     let span = span_from_pair(&pair);
     let mut inner = pair.into_inner();
@@ -342,7 +347,7 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
     })
 }
 
-/// Extract the target and optional filter from a keep_op or remove_op pair.
+/// Extract the target and optional filter from a `keep_op` or `remove_op` pair.
 fn build_keep_remove_parts(pair: Pair<'_, Rule>) -> Result<(String, Option<FilterNode>)> {
     let mut inner = pair.into_inner();
     let target = inner.next().unwrap().as_str().to_string();
@@ -630,8 +635,8 @@ fn build_condition_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionN
         }
         "count" => {
             let query = inner.next().unwrap();
-            let op = build_compare_op(inner.next().unwrap());
-            let num = parse_number_f64(inner.next().unwrap());
+            let op = build_compare_op(&inner.next().unwrap());
+            let num = parse_number_f64(&inner.next().unwrap());
             return Ok(ConditionNode::Count(build_track_query(query)?, op, num));
         }
         _ => {} // fall through to parenthesized/field_access parsing below
@@ -655,7 +660,7 @@ fn build_condition_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<ConditionN
         let fields = build_field_access(&first);
         if let Some(second) = inner.next() {
             if second.as_rule() == Rule::compare_op {
-                let op = build_compare_op(second);
+                let op = build_compare_op(&second);
                 let val = build_value(inner.next().unwrap());
                 return Ok(ConditionNode::FieldCompare(fields, op, val));
             }
@@ -762,7 +767,7 @@ fn build_list_or_compare_filter(
     if next.as_rule() == Rule::list {
         return Ok(ListOrCompare::InList(build_list(next)));
     }
-    let op = build_compare_op(next);
+    let op = build_compare_op(&next);
     let val = inner.next().unwrap();
     // Check if the RHS is a field_access (e.g., plugin.radarr.original_language)
     if val.as_rule() == Rule::field_access {
@@ -828,8 +833,8 @@ fn build_filter_atom(pair: Pair<'_, Rule>, depth: usize) -> Result<FilterNode> {
             };
         }
         "channels" => {
-            let op = build_compare_op(inner.next().unwrap());
-            let num = parse_number_f64(inner.next().unwrap());
+            let op = build_compare_op(&inner.next().unwrap());
+            let num = parse_number_f64(&inner.next().unwrap());
             return Ok(FilterNode::Channels(op, num));
         }
         "commentary" => return Ok(FilterNode::Commentary),
@@ -969,7 +974,7 @@ fn build_field_access(pair: &Pair<'_, Rule>) -> Vec<String> {
         .collect()
 }
 
-fn build_compare_op(pair: Pair<'_, Rule>) -> CompareOp {
+fn build_compare_op(pair: &Pair<'_, Rule>) -> CompareOp {
     match pair.as_str() {
         "==" => CompareOp::Eq,
         "!=" => CompareOp::Ne,
@@ -991,7 +996,7 @@ fn build_value(pair: Pair<'_, Rule>) -> Value {
         Rule::string => Value::String(parse_string_value(&pair)),
         Rule::number => {
             let raw = pair.as_str().to_string();
-            let num = parse_number_f64(pair);
+            let num = parse_number_f64(&pair);
             Value::Number(num, raw)
         }
         Rule::boolean => Value::Bool(pair.as_str() == "true"),
@@ -1028,12 +1033,11 @@ fn parse_string_value(pair: &Pair<'_, Rule>) -> String {
             if c == '\\' {
                 match chars.next() {
                     Some('"') => result.push('"'),
-                    Some('\\') => result.push('\\'),
+                    Some('\\') | None => result.push('\\'),
                     Some(other) => {
                         result.push('\\');
                         result.push(other);
                     }
-                    None => result.push('\\'),
                 }
             } else {
                 result.push(c);
@@ -1046,7 +1050,7 @@ fn parse_string_value(pair: &Pair<'_, Rule>) -> String {
 }
 
 /// Parse a number token, stripping any trailing unit suffix (e.g., "192k" → 192.0).
-fn parse_number_f64(pair: Pair<'_, Rule>) -> f64 {
+fn parse_number_f64(pair: &Pair<'_, Rule>) -> f64 {
     let s = pair.as_str();
     let numeric: String = s
         .chars()
@@ -1394,7 +1398,7 @@ mod tests {
                 assert_eq!(tag, "source");
                 match value {
                     ValueOrField::Field(path) => assert_eq!(path, &["plugin", "metadata"]),
-                    other => panic!("expected field access, got {other:?}"),
+                    ValueOrField::Value(v) => panic!("expected field access, got {v:?}"),
                 }
             }
             other => panic!("expected SetTag, got {other:?}"),

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+rust-version.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
@@ -15,9 +16,7 @@ voom-domain = { workspace = true }
 voom-kernel = { workspace = true }
 voom-process = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 tracing = { workspace = true }
-thiserror = { workspace = true }
 uuid = { workspace = true }
 
 [lints]
@@ -26,3 +25,4 @@ workspace = true
 [dev-dependencies]
 tempfile = { workspace = true }
 chrono = { workspace = true }
+serde_json = { workspace = true }

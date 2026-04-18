@@ -39,7 +39,7 @@ pub fn check_and_recover_under(
     global_backup_dir: Option<&Path>,
 ) -> Result<u64> {
     let pending = store.list_pending_ops().unwrap_or_default();
-    let mut all_backups = find_orphans_under(scan_dirs)?;
+    let mut all_backups = find_orphans_under(scan_dirs);
 
     // Also scan the global backup directory if configured.
     // Ambiguous matches (multiple pending ops with the same filename)
@@ -117,7 +117,14 @@ fn clean_stale_pending_ops(
             path = %op.file_path.display(),
             "stale pending operation with no backup — removing"
         );
-        let _ = store.delete_pending_op(&op.id);
+        if let Err(e) = store.delete_pending_op(&op.id) {
+            tracing::warn!(
+                plan_id = %op.id,
+                path = %op.file_path.display(),
+                error = %e,
+                "failed to delete stale pending operation"
+            );
+        }
     }
 }
 
@@ -130,17 +137,9 @@ fn resolve_single_orphan(
     store: &dyn voom_domain::storage::StorageTrait,
     pending: &[voom_domain::storage::PendingOperation],
 ) -> Result<bool> {
-    let result = match config.mode.as_str() {
-        "always_recover" => recover(orphan, store),
-        "always_discard" => discard(orphan, store),
-        other => {
-            anyhow::bail!(
-                "unsupported recovery mode '{}' — \
-                 use 'always_recover' or 'always_discard' in config.toml \
-                 [recovery] section",
-                other
-            );
-        }
+    let result = match config.mode {
+        crate::config::RecoveryMode::AlwaysRecover => recover(orphan, store),
+        crate::config::RecoveryMode::AlwaysDiscard => discard(orphan, store),
     };
     match result {
         Ok(()) => {
@@ -149,7 +148,14 @@ fn resolve_single_orphan(
                 .iter()
                 .filter(|op| *op.file_path.to_string_lossy() == path_str)
             {
-                let _ = store.delete_pending_op(&op.id);
+                if let Err(e) = store.delete_pending_op(&op.id) {
+                    tracing::warn!(
+                        plan_id = %op.id,
+                        path = %op.file_path.display(),
+                        error = %e,
+                        "failed to delete resolved pending operation"
+                    );
+                }
             }
             Ok(true)
         }
@@ -168,14 +174,14 @@ fn resolve_single_orphan(
 ///
 /// Returns all backup files found; callers cross-reference with `pending_operations`
 /// to determine which are genuine orphans from crashed executions.
-fn find_orphans_under(dirs: &[PathBuf]) -> Result<Vec<OrphanedBackup>> {
+fn find_orphans_under(dirs: &[PathBuf]) -> Vec<OrphanedBackup> {
     let mut backups = Vec::new();
 
     for dir in dirs {
         collect_orphans_in(dir, &mut backups);
     }
 
-    Ok(backups)
+    backups
 }
 
 /// Recursively collect orphaned `.vbak` files under `dir` using `std::fs::read_dir`.
@@ -190,9 +196,8 @@ fn collect_orphans_in(dir: &Path, orphans: &mut Vec<OrphanedBackup>) {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
+        let Ok(meta) = entry.metadata() else {
+            continue;
         };
 
         if meta.is_dir() {
@@ -255,6 +260,11 @@ fn collect_global_backups(
     backups: &mut Vec<OrphanedBackup>,
     ambiguous_paths: &mut std::collections::HashSet<PathBuf>,
 ) {
+    // UUID format: 8-4-4-4-12 hex digits = 36 chars.
+    // Global backup format: <uuid>_<original_filename>
+    // So the underscore separator is at index 36.
+    const UUID_LEN: usize = 36;
+
     let entries = match std::fs::read_dir(global_dir) {
         Ok(e) => e,
         Err(e) => {
@@ -282,11 +292,6 @@ fn collect_global_backups(
                 .push(op.file_path.as_path());
         }
     }
-
-    // UUID format: 8-4-4-4-12 hex digits = 36 chars.
-    // Global backup format: <uuid>_<original_filename>
-    // So the underscore separator is at index 36.
-    const UUID_LEN: usize = 36;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -515,6 +520,7 @@ fn record_recovery_transition(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use voom_domain::storage::PendingOpsStorage as _;
 
     // ── infer_original_path ──────────────────────────────────────────────────
 
@@ -575,7 +581,7 @@ mod tests {
         let vbak = backup_dir.join("test.mkv.20240315120000.vbak");
         std::fs::write(&vbak, b"backup content").unwrap();
 
-        let orphans = find_orphans_under(std::slice::from_ref(&real_dir)).unwrap();
+        let orphans = find_orphans_under(std::slice::from_ref(&real_dir));
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].backup_path, vbak);
         assert_eq!(orphans[0].original_path, real_dir.join("test.mkv"));
@@ -589,7 +595,7 @@ mod tests {
         let vbak = dir.path().join("stray.mkv.20240315120000.vbak");
         std::fs::write(&vbak, b"stray").unwrap();
 
-        let orphans = find_orphans_under(&[dir.path().to_path_buf()]).unwrap();
+        let orphans = find_orphans_under(&[dir.path().to_path_buf()]);
         assert!(orphans.is_empty(), "stray .vbak should be ignored");
     }
 
@@ -604,7 +610,7 @@ mod tests {
         let vbak = backup_dir.join("ep01.mkv.20240315120000.vbak");
         std::fs::write(&vbak, b"data").unwrap();
 
-        let orphans = find_orphans_under(&[real_dir]).unwrap();
+        let orphans = find_orphans_under(&[real_dir]);
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].original_path, sub.join("ep01.mkv"));
     }
@@ -612,7 +618,7 @@ mod tests {
     #[test]
     fn test_find_orphans_empty_dir_returns_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let orphans = find_orphans_under(&[dir.path().to_path_buf()]).unwrap();
+        let orphans = find_orphans_under(&[dir.path().to_path_buf()]);
         assert!(orphans.is_empty());
     }
 
@@ -629,8 +635,7 @@ mod tests {
         std::fs::write(backup_dir1.join("a.mkv.20240315120000.vbak"), b"a").unwrap();
         std::fs::write(backup_dir2.join("b.mkv.20240315120001.vbak"), b"b").unwrap();
 
-        let orphans =
-            find_orphans_under(&[dir1.path().to_path_buf(), dir2.path().to_path_buf()]).unwrap();
+        let orphans = find_orphans_under(&[dir1.path().to_path_buf(), dir2.path().to_path_buf()]);
         assert_eq!(orphans.len(), 2);
     }
 
@@ -673,7 +678,7 @@ mod tests {
         insert_pending_op(&store, &original);
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
@@ -690,7 +695,7 @@ mod tests {
         // No pending op inserted
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
@@ -704,8 +709,6 @@ mod tests {
 
     #[test]
     fn test_no_orphan_when_no_backup() {
-        use voom_domain::storage::PendingOpsStorage as _;
-
         let dir = tempfile::tempdir().unwrap();
         let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
         // No backup file created, just a pending op.
@@ -716,7 +719,7 @@ mod tests {
         insert_pending_op(&store, &original);
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
@@ -738,7 +741,7 @@ mod tests {
         insert_pending_op(&store, &original);
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
@@ -758,7 +761,7 @@ mod tests {
         insert_pending_op(&store, &original);
 
         let config = RecoveryConfig {
-            mode: "always_discard".into(),
+            mode: crate::config::RecoveryMode::AlwaysDiscard,
         };
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
@@ -780,7 +783,7 @@ mod tests {
         // No pending op — a completed execution would have deleted it
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered =
             check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
@@ -793,30 +796,20 @@ mod tests {
     }
 
     #[test]
-    fn test_check_and_recover_unsupported_mode_returns_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let (_vbak, original) = make_backup(dir.path(), "movie.mkv");
-
-        let store = voom_domain::test_support::InMemoryStore::default();
-        insert_pending_op(&store, &original);
-
-        let config = RecoveryConfig {
-            mode: "prompt".into(),
-        };
-        let result = check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None);
-
-        assert!(result.is_err(), "unsupported mode should return an error");
-        let msg = result.unwrap_err().to_string();
+    fn test_unsupported_recovery_mode_fails_to_deserialize() {
+        // Unknown modes are now rejected at config parse time (RecoveryMode enum)
+        // instead of erroring at recovery time, so users get fast, structured
+        // failures from the config loader.
+        let toml_src = r#"mode = "prompt""#;
+        let result: std::result::Result<RecoveryConfig, _> = toml::from_str(toml_src);
         assert!(
-            msg.contains("unsupported recovery mode"),
-            "error should mention unsupported mode, got: {msg}"
+            result.is_err(),
+            "unknown recovery mode should fail TOML deserialization"
         );
     }
 
     #[test]
     fn test_check_and_recover_cleans_pending_ops_after_resolve() {
-        use voom_domain::storage::PendingOpsStorage as _;
-
         let dir = tempfile::tempdir().unwrap();
         let (_vbak, original) = make_backup(dir.path(), "movie.mkv");
 
@@ -824,7 +817,7 @@ mod tests {
         insert_pending_op(&store, &original);
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         check_and_recover_under(&config, &[dir.path().to_path_buf()], &store, None).unwrap();
 
@@ -853,7 +846,7 @@ mod tests {
         insert_pending_op(&store, &original);
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered = check_and_recover_under(
             &config,
@@ -896,8 +889,6 @@ mod tests {
 
     #[test]
     fn test_stale_pending_op_outside_scan_dir_is_preserved() {
-        use voom_domain::storage::PendingOpsStorage as _;
-
         let dir_a = tempfile::tempdir().unwrap();
         let dir_b = tempfile::tempdir().unwrap();
         let canonical_b = std::fs::canonicalize(dir_b.path()).unwrap();
@@ -908,7 +899,7 @@ mod tests {
         insert_pending_op(&store, &original_b);
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered =
             check_and_recover_under(&config, &[dir_a.path().to_path_buf()], &store, None).unwrap();
@@ -943,7 +934,7 @@ mod tests {
         insert_pending_op(&store, &original_b);
 
         let config = RecoveryConfig {
-            mode: "always_recover".into(),
+            mode: crate::config::RecoveryMode::AlwaysRecover,
         };
         let recovered = check_and_recover_under(
             &config,
@@ -961,7 +952,6 @@ mod tests {
 
         // Pending ops must NOT be deleted — they still have real
         // backups on disk, just can't be unambiguously matched.
-        use voom_domain::storage::PendingOpsStorage as _;
         let remaining = store.list_pending_ops().unwrap();
         assert_eq!(
             remaining.len(),

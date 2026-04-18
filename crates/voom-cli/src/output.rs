@@ -248,11 +248,7 @@ pub fn render_transitions_table(transitions: &[FileTransition]) -> String {
         }
 
         let date = format::format_display(&t.created_at);
-        let from = t
-            .from_hash
-            .as_deref()
-            .map(hash_preview)
-            .unwrap_or("\u{2014}");
+        let from = t.from_hash.as_deref().map_or("\u{2014}", hash_preview);
         let to = hash_preview(&t.to_hash);
 
         let source_display = match (&t.source, &t.phase_name, &t.outcome) {
@@ -264,14 +260,17 @@ pub fn render_transitions_table(transitions: &[FileTransition]) -> String {
 
         let size_cell = match t.from_size {
             Some(from_sz) => {
-                let delta = t.to_size as i64 - from_sz as i64;
                 let formatted = format::format_size(t.to_size);
-                if delta == 0 {
-                    formatted
-                } else if delta < 0 {
-                    format!("{formatted} (-{})", format::format_size((-delta) as u64))
-                } else {
-                    format!("{formatted} (+{})", format::format_size(delta as u64))
+                match t.to_size.cmp(&from_sz) {
+                    std::cmp::Ordering::Equal => formatted,
+                    std::cmp::Ordering::Less => format!(
+                        "{formatted} (-{})",
+                        format::format_size(from_sz - t.to_size)
+                    ),
+                    std::cmp::Ordering::Greater => format!(
+                        "{formatted} (+{})",
+                        format::format_size(t.to_size - from_sz)
+                    ),
                 }
             }
             None => format::format_size(t.to_size),
@@ -291,8 +290,7 @@ pub fn render_transitions_table(transitions: &[FileTransition]) -> String {
         let media_cell = t
             .metadata_snapshot
             .as_ref()
-            .map(format_snapshot_cell)
-            .unwrap_or_else(|| "\u{2014}".to_string());
+            .map_or_else(|| "\u{2014}".to_string(), format_snapshot_cell);
         row.push(Cell::new(media_cell));
 
         table.add_row(row);

@@ -607,4 +607,276 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("no paths configured"));
     }
+
+    // --- URL host extraction: security-relevant edge cases ---
+
+    #[test]
+    fn test_extract_url_host_strips_userinfo() {
+        // user:pass@host must not be treated as the domain.
+        assert_eq!(
+            extract_url_host("http://user:pass@example.com/path").unwrap(),
+            "example.com"
+        );
+        assert_eq!(
+            extract_url_host("https://alice@api.example.com/v1").unwrap(),
+            "api.example.com"
+        );
+        // Userinfo with port must still resolve to bare host.
+        assert_eq!(
+            extract_url_host("http://user:pass@example.com:8080/x").unwrap(),
+            "example.com"
+        );
+    }
+
+    #[test]
+    fn test_extract_url_host_bracketed_ipv6() {
+        // IPv6 literal in brackets — brackets must be preserved so the
+        // port separator inside ::1 isn't mistaken for a port delimiter.
+        assert_eq!(extract_url_host("http://[::1]/path").unwrap(), "[::1]");
+        assert_eq!(
+            extract_url_host("http://[2001:db8::1]:8080/x").unwrap(),
+            "[2001:db8::1]"
+        );
+    }
+
+    #[test]
+    fn test_extract_url_host_ignores_query_and_fragment() {
+        assert_eq!(
+            extract_url_host("http://example.com/p?foo=bar").unwrap(),
+            "example.com"
+        );
+        assert_eq!(
+            extract_url_host("http://example.com/p#frag").unwrap(),
+            "example.com"
+        );
+        // Query appearing directly after authority (no path) also handled.
+        assert_eq!(
+            extract_url_host("http://example.com?x=1").unwrap(),
+            "example.com"
+        );
+        assert_eq!(
+            extract_url_host("http://example.com#frag").unwrap(),
+            "example.com"
+        );
+    }
+
+    #[test]
+    fn test_extract_url_host_no_path() {
+        // Whole authority returned when there's no path/query/fragment.
+        assert_eq!(
+            extract_url_host("http://example.com").unwrap(),
+            "example.com"
+        );
+        assert_eq!(
+            extract_url_host("https://example.com:443").unwrap(),
+            "example.com"
+        );
+    }
+
+    #[test]
+    fn test_extract_url_host_empty_host_rejected() {
+        // No authority at all.
+        let err = extract_url_host("http:///path").unwrap_err();
+        assert!(
+            err.contains("no host"),
+            "expected empty-host rejection: {err}"
+        );
+        // Only userinfo, no host.
+        let err = extract_url_host("http://user@/path").unwrap_err();
+        assert!(
+            err.contains("no host"),
+            "expected empty-host rejection: {err}"
+        );
+    }
+
+    // --- write_file: structural path rejections ---
+
+    #[test]
+    fn test_write_file_no_filename_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
+        let state = HostState::new("test".into()).with_paths(vec![canonical_dir.clone()]);
+        // A path ending in `..` resolves to a parent that exists and canonicalizes
+        // successfully, but `file_name()` returns None — this is the structural
+        // check inside write_file that we want to exercise.
+        let path_str = format!("{}/..", canonical_dir.to_string_lossy());
+        let result = state.write_file(&path_str, b"data");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("no filename"),
+            "expected filename error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_write_file_unresolvable_parent_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
+        let state = HostState::new("test".into()).with_paths(vec![canonical_dir]);
+        // Parent directory does not exist → canonicalize fails.
+        let result = state.write_file("/definitely/does/not/exist/file.txt", b"data");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("cannot resolve parent"),
+            "expected parent-resolution error, got: {err}"
+        );
+    }
+
+    // --- Plugin data size limit: boundary + storage enforcement ---
+
+    #[test]
+    fn test_set_plugin_data_exact_boundary_accepted() {
+        let mut state = HostState::new("test".into());
+        let at_limit = vec![0_u8; MAX_PLUGIN_DATA_VALUE_SIZE];
+        assert!(state.set_plugin_data("k", &at_limit).is_ok());
+    }
+
+    #[test]
+    fn test_set_plugin_data_one_over_boundary_rejected() {
+        let mut state = HostState::new("test".into());
+        let over_limit = vec![0_u8; MAX_PLUGIN_DATA_VALUE_SIZE + 1];
+        let err = state.set_plugin_data("k", &over_limit).unwrap_err();
+        assert!(
+            err.contains("exceeds maximum size"),
+            "expected size-limit rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_set_plugin_data_size_limit_checked_before_storage() {
+        // If the size limit were enforced inside the in-memory fallback only,
+        // a plugin could bypass it by attaching external storage. Verify that
+        // the cap applies regardless of the storage attachment.
+        use crate::host::{InMemoryPluginStore, WasmPluginStore};
+        let store: Arc<dyn WasmPluginStore> = Arc::new(InMemoryPluginStore::new());
+        let mut state = HostState::new("test".into()).with_storage(Arc::clone(&store));
+        let over_limit = vec![0_u8; MAX_PLUGIN_DATA_VALUE_SIZE + 1];
+        let err = state.set_plugin_data("k", &over_limit).unwrap_err();
+        assert!(
+            err.contains("exceeds maximum size"),
+            "size limit must be enforced before reaching storage, got: {err}"
+        );
+        // Storage must remain empty — the oversized value must not have leaked through.
+        assert!(store.get("test", "k").unwrap().is_none());
+    }
+
+    // --- HTTP domain gating: allowlist semantics ---
+
+    #[test]
+    fn test_check_http_domain_allowed_host_passes() {
+        // No network call — check_http_domain is a pure allowlist check.
+        let state = HostState::new("test".into()).with_http_domains(vec!["api.example.com".into()]);
+        assert!(state
+            .check_http_domain("https://api.example.com/v1/resource")
+            .is_ok());
+    }
+
+    #[test]
+    fn test_check_http_domain_host_not_on_allowlist() {
+        let state = HostState::new("test".into()).with_http_domains(vec!["api.example.com".into()]);
+        let err = state
+            .check_http_domain("https://other.example.com/x")
+            .unwrap_err();
+        assert!(err.contains("not in the allowed list"), "got: {err}");
+    }
+
+    #[test]
+    fn test_check_http_domain_suffix_injection_rejected() {
+        // `example.com.evil.net` must not match an allowlist entry of
+        // `example.com`. The matcher compares full host strings.
+        let state = HostState::new("test".into()).with_http_domains(vec!["example.com".into()]);
+        let err = state
+            .check_http_domain("http://example.com.evil.net/path")
+            .unwrap_err();
+        assert!(
+            err.contains("not in the allowed list"),
+            "suffix injection must be rejected, got: {err}"
+        );
+        // And the "prefix" direction too: `evilexample.com` must not match.
+        let err = state
+            .check_http_domain("http://evilexample.com/")
+            .unwrap_err();
+        assert!(
+            err.contains("not in the allowed list"),
+            "prefix injection must be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_check_http_domain_invalid_url_rejected() {
+        let state = HostState::new("test".into()).with_http_domains(vec!["example.com".into()]);
+        // Missing scheme → extract_url_host returns Err, propagated.
+        let err = state.check_http_domain("not-a-url").unwrap_err();
+        assert!(
+            err.contains("missing scheme") || err.contains("invalid URL"),
+            "expected URL-parse error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_check_http_domain_empty_allowlist_denies() {
+        let state = HostState::new("test".into());
+        let err = state.check_http_domain("http://example.com").unwrap_err();
+        assert!(
+            err.contains("no allowed domains"),
+            "empty allowlist must deny, got: {err}"
+        );
+    }
+
+    // --- Plugin data storage routing ---
+
+    #[test]
+    fn test_set_plugin_data_writes_to_storage_when_attached() {
+        use crate::host::{InMemoryPluginStore, WasmPluginStore};
+        let store: Arc<dyn WasmPluginStore> = Arc::new(InMemoryPluginStore::new());
+        let mut state = HostState::new("routing-plugin".into()).with_storage(Arc::clone(&store));
+
+        state.set_plugin_data("key", b"value").unwrap();
+
+        // Value must land in storage under the plugin's name...
+        assert_eq!(
+            store.get("routing-plugin", "key").unwrap().as_deref(),
+            Some(b"value".as_ref())
+        );
+        // ...and must NOT be in the in-memory fallback map.
+        assert!(!state.plugin_data.contains_key("key"));
+    }
+
+    #[test]
+    fn test_get_plugin_data_falls_back_to_in_memory() {
+        // When storage has no entry for the key, get_plugin_data must fall
+        // through to the in-memory map (used for seeded config).
+        use crate::host::{InMemoryPluginStore, WasmPluginStore};
+        let store: Arc<dyn WasmPluginStore> = Arc::new(InMemoryPluginStore::new());
+        let mut state = HostState::new("fallback-plugin".into()).with_storage(store);
+
+        // Directly seed the in-memory map (bypassing set_plugin_data so the
+        // value doesn't go to storage).
+        state
+            .plugin_data
+            .insert("seeded".into(), b"in-mem".to_vec());
+
+        let got = state.get_plugin_data("seeded");
+        assert_eq!(got.as_deref(), Some(b"in-mem".as_ref()));
+    }
+
+    #[test]
+    fn test_get_plugin_data_storage_hit_overrides_in_memory() {
+        // When a key is present in both, storage wins.
+        use crate::host::{InMemoryPluginStore, WasmPluginStore};
+        let store: Arc<dyn WasmPluginStore> = Arc::new(InMemoryPluginStore::new());
+        store
+            .set("override-plugin", "key", b"from-storage")
+            .unwrap();
+
+        let mut state = HostState::new("override-plugin".into()).with_storage(store);
+        state
+            .plugin_data
+            .insert("key".into(), b"from-memory".to_vec());
+
+        let got = state.get_plugin_data("key");
+        assert_eq!(got.as_deref(), Some(b"from-storage".as_ref()));
+    }
 }

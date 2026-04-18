@@ -1,4 +1,4 @@
-//! FFmpeg capability probing: parse output from `ffmpeg -codecs`, `-formats`, `-hwaccels`.
+//! `FFmpeg` capability probing: parse output from `ffmpeg -codecs`, `-formats`, `-hwaccels`.
 
 use crate::hwaccel::HwAccelBackend;
 use voom_domain::events::CodecCapabilities;
@@ -7,6 +7,7 @@ use voom_domain::events::CodecCapabilities;
 ///
 /// Each codec line (after the `-------` separator) has flags in columns 0-5:
 /// `D` = decoding, `E` = encoding. The codec name follows after whitespace.
+#[must_use]
 pub fn parse_codecs(output: &str) -> CodecCapabilities {
     let mut decoders = Vec::new();
     let mut encoders = Vec::new();
@@ -47,6 +48,7 @@ pub fn parse_codecs(output: &str) -> CodecCapabilities {
 ///
 /// Each format line (after the `-------` separator) has flags in columns 0-2:
 /// `D` = demux, `E` = mux. We collect any format that can be muxed or demuxed.
+#[must_use]
 pub fn parse_formats(output: &str) -> Vec<String> {
     let mut formats = Vec::new();
     let mut past_separator = false;
@@ -98,6 +100,7 @@ const HW_SUFFIXES: &[&str] = &[
 ///
 /// The format mirrors `-codecs`: a flag block, then a name, after a
 /// `------` separator.
+#[must_use]
 pub fn parse_hw_implementations(output: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut past_separator = false;
@@ -130,6 +133,7 @@ pub fn parse_hw_implementations(output: &str) -> Vec<String> {
 /// Parse `ffmpeg -hwaccels` output into a list of hardware acceleration names.
 ///
 /// Lines after "Hardware acceleration methods:" are individual backend names.
+#[must_use]
 pub fn parse_hwaccels(output: &str) -> Vec<String> {
     let mut accels = Vec::new();
     let mut past_header = false;
@@ -207,6 +211,7 @@ pub struct GpuDevice {
 /// Enumerate GPUs for the given HW acceleration backend.
 ///
 /// Returns an empty vec if the required tool is missing or enumeration fails.
+#[must_use]
 pub fn enumerate_gpus(backend: HwAccelBackend) -> Vec<GpuDevice> {
     match backend {
         HwAccelBackend::Nvenc => enumerate_nvidia_gpus(),
@@ -363,6 +368,7 @@ pub(crate) fn has_intel_gpu() -> bool {
 /// 0, NVIDIA RTX A6000, 49140
 /// 1, Quadro RTX 4000, 8192
 /// ```
+#[must_use]
 pub fn parse_nvidia_smi(output: &str) -> Vec<GpuDevice> {
     let mut devices = Vec::new();
     for line in output.lines() {
@@ -387,6 +393,7 @@ pub fn parse_nvidia_smi(output: &str) -> Vec<GpuDevice> {
 ///
 /// Looks for a line like `Driver version: Intel iHD driver - 24.1.0`
 /// or `vainfo: Driver version: Mesa Gallium driver 23.3.1 ...`
+#[must_use]
 pub fn parse_vainfo_device_name(output: &str) -> Option<String> {
     for line in output.lines() {
         if line.contains("Driver version") {

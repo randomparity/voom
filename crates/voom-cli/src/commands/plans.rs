@@ -56,7 +56,8 @@ fn show(file_arg: &str, format: OutputFormat) -> Result<()> {
     }
 
     match format {
-        OutputFormat::Json => {
+        // Plans are complex structures; plain/csv fall through to JSON too.
+        OutputFormat::Json | OutputFormat::Plain | OutputFormat::Csv => {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&plans)
@@ -80,12 +81,10 @@ fn show(file_arg: &str, format: OutputFormat) -> Result<()> {
                 let skip = plan.skip_reason.as_deref().unwrap_or("-");
                 let evaluated = plan
                     .evaluated_at
-                    .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
-                    .unwrap_or_else(|| "-".into());
+                    .map_or_else(|| "-".into(), |t| t.format("%Y-%m-%d %H:%M").to_string());
                 let executed = plan
                     .executed_at
-                    .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
-                    .unwrap_or_else(|| "-".into());
+                    .map_or_else(|| "-".into(), |t| t.format("%Y-%m-%d %H:%M").to_string());
 
                 table.add_row(vec![
                     Cell::new(&plan.phase_name),
@@ -98,14 +97,6 @@ fn show(file_arg: &str, format: OutputFormat) -> Result<()> {
             }
 
             println!("{table}");
-        }
-        // Plans are complex structures; fall through to JSON for plain/csv output
-        OutputFormat::Plain | OutputFormat::Csv => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&plans)
-                    .expect("PlanSummary serialization cannot fail")
-            );
         }
     }
 
@@ -142,7 +133,7 @@ mod tests {
             PlanStatus::Skipped,
         ] {
             let cell = styled_status_cell(status);
-            let content = cell.content().to_string();
+            let content = cell.content().clone();
             assert_eq!(content, status.as_str());
         }
     }

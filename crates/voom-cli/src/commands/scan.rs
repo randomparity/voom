@@ -68,7 +68,7 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
         kernel.dispatch(Event::FileDiscovered(event.clone()));
     }
 
-    let needs_introspection = filter_for_introspection(&all_events, &reconcile_paths);
+    let needs_introspection = filter_for_introspection(&all_events, reconcile_paths.as_ref());
     let (introspected, errors) = run_introspection(
         &needs_introspection,
         &kernel,
@@ -148,14 +148,16 @@ fn run_discovery(
         options.on_progress = Some(Box::new(move |progress| match progress {
             voom_discovery::ScanProgress::Discovered { count: _, path } => {
                 let cumulative = cum_disc.fetch_add(1, Ordering::Relaxed) + 1;
-                progress_clone.on_discovered(cumulative as usize, &path);
+                let cumulative = usize::try_from(cumulative).unwrap_or(usize::MAX);
+                progress_clone.on_discovered(cumulative, &path);
             }
             voom_discovery::ScanProgress::Processing {
                 current,
                 total,
                 path,
             } => {
-                let base = proc_base.load(Ordering::Relaxed) as usize;
+                let base = proc_base.load(Ordering::Relaxed);
+                let base = usize::try_from(base).unwrap_or(usize::MAX);
                 let action = if hash_files { "Hashing" } else { "Processing" };
                 progress_clone.on_processing(base + current, base + total, &path, action);
             }
@@ -353,7 +355,7 @@ fn reconcile_files(
 /// Filter events to only those needing introspection based on reconciliation.
 fn filter_for_introspection<'a>(
     events: &'a [FileDiscoveredEvent],
-    reconcile_paths: &'a Option<HashSet<PathBuf>>,
+    reconcile_paths: Option<&HashSet<PathBuf>>,
 ) -> Vec<&'a FileDiscoveredEvent> {
     if let Some(set) = reconcile_paths {
         events.iter().filter(|e| set.contains(&e.path)).collect()
@@ -527,10 +529,10 @@ mod tests {
     }
 
     impl voom_kernel::Plugin for RecordingPlugin {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "test-recorder"
         }
-        fn version(&self) -> &str {
+        fn version(&self) -> &'static str {
             "0.1.0"
         }
         fn capabilities(&self) -> &[Capability] {

@@ -3627,16 +3627,33 @@ mod test_config_enhanced {
     fn config_set_and_get() {
         let env = TestEnv::new();
         env.voom()
-            .args(["config", "set", "auth_token", "test-token-123"])
+            .args(["config", "set", "default_policy", "/tmp/example.voom"])
             .assert()
             .success()
             .stdout(predicate::str::contains("Set"));
 
         env.voom()
+            .args(["config", "get", "default_policy"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("/tmp/example.voom"));
+    }
+
+    #[test]
+    fn config_get_auth_token_is_redacted() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["config", "set", "auth_token", "test-token-123"])
+            .assert()
+            .success();
+
+        // Secret keys must never be echoed back in plaintext.
+        env.voom()
             .args(["config", "get", "auth_token"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("test-token-123"));
+            .stdout(predicate::str::contains("[REDACTED]"))
+            .stdout(predicate::str::contains("test-token-123").not());
     }
 
     #[test]

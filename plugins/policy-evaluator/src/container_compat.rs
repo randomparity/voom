@@ -27,6 +27,9 @@ pub fn codec_supported(container: Container, codec: &str) -> Option<bool> {
         // No codec info — can't judge. Skip.
         return None;
     }
+    // Explicit arm for known unmodeled containers plus a wildcard for
+    // future non_exhaustive variants; the duplication is deliberate.
+    #[allow(clippy::match_same_arms)]
     match container {
         // MKV is effectively a universal container: it can carry virtually
         // any codec we encounter in practice. Treat every non-empty codec

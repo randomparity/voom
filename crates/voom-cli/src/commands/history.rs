@@ -11,7 +11,7 @@ use crate::output;
 /// Maximum predecessors to walk (prevents infinite loops from corrupt data).
 const MAX_PREDECESSORS: usize = 50;
 
-/// Walk the superseded_by chain backward from `start_id`, collecting all
+/// Walk the `superseded_by` chain backward from `start_id`, collecting all
 /// file IDs in lineage order (oldest first, current last).
 pub(crate) fn collect_lineage(store: &dyn FileStorage, start_id: Uuid) -> Vec<Uuid> {
     let mut chain = vec![start_id];
@@ -95,11 +95,14 @@ pub(crate) fn format_snapshot_cell(snap: &voom_domain::snapshot::MetadataSnapsho
     }
 }
 
-pub fn run(args: HistoryArgs) -> Result<()> {
+pub fn run(args: &HistoryArgs) -> Result<()> {
     let config = crate::config::load_config()?;
     let store = app::open_store(&config)?;
 
-    let path = args.file.canonicalize().unwrap_or(args.file.clone());
+    let path = args
+        .file
+        .canonicalize()
+        .unwrap_or_else(|_| args.file.clone());
 
     // Look up by file identity first to capture lineage across renames.
     // Fall back to path-based lookup for files not in the database

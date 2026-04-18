@@ -271,7 +271,8 @@ impl SqliteStore {
                  FROM tracks WHERE file_id IN ({}) ORDER BY file_id, stream_index",
                 placeholders.join(",")
             );
-            let param_values: Vec<String> = chunk.iter().map(|id| id.to_string()).collect();
+            let param_values: Vec<String> =
+                chunk.iter().map(std::string::ToString::to_string).collect();
             let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
                 .iter()
                 .map(|v| v as &dyn rusqlite::types::ToSql)
@@ -666,13 +667,11 @@ mod tests {
         let pending = counts
             .iter()
             .find(|(s, _)| *s == JobStatus::Pending)
-            .map(|(_, c)| *c)
-            .unwrap_or(0);
+            .map_or(0, |(_, c)| *c);
         let running = counts
             .iter()
             .find(|(s, _)| *s == JobStatus::Running)
-            .map(|(_, c)| *c)
-            .unwrap_or(0);
+            .map_or(0, |(_, c)| *c);
         assert_eq!(pending, 2);
         assert_eq!(running, 1);
     }

@@ -36,17 +36,17 @@ fn track_matches_impl(
 ) -> bool {
     match filter {
         CompiledFilter::LangIn(langs) => langs.iter().any(|l| l == &track.language),
-        CompiledFilter::LangCompare(op, lang) => compare_string(&track.language, op, lang),
+        CompiledFilter::LangCompare(op, lang) => compare_string(&track.language, *op, lang),
         CompiledFilter::LangField(op, path) => resolve_field_str(ctx, path)
-            .is_some_and(|val| compare_string(&track.language, op, &val)),
+            .is_some_and(|val| compare_string(&track.language, *op, &val)),
         CompiledFilter::CodecIn(codecs) => codecs.iter().any(|c| c == &track.codec),
-        CompiledFilter::CodecCompare(op, codec) => compare_string(&track.codec, op, codec),
+        CompiledFilter::CodecCompare(op, codec) => compare_string(&track.codec, *op, codec),
         CompiledFilter::CodecField(op, path) => {
-            resolve_field_str(ctx, path).is_some_and(|val| compare_string(&track.codec, op, &val))
+            resolve_field_str(ctx, path).is_some_and(|val| compare_string(&track.codec, *op, &val))
         }
         CompiledFilter::Channels(op, value) => {
             if let Some(ch) = track.channels {
-                compare_f64(ch as f64, op, *value)
+                compare_f64(f64::from(ch), *op, *value)
             } else {
                 false
             }
@@ -90,12 +90,16 @@ fn is_font_attachment(track: &Track) -> bool {
     }
     let codec_lower = track.codec.to_lowercase();
     let title_lower = track.title.to_lowercase();
-    codec_lower.contains("font")
-        || codec_lower.contains("ttf")
-        || codec_lower.contains("otf")
-        || title_lower.ends_with(".ttf")
-        || title_lower.ends_with(".otf")
-        || title_lower.ends_with(".woff")
+    // title is already lowercased; suffix comparisons need not be case-insensitive again.
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
+    {
+        codec_lower.contains("font")
+            || codec_lower.contains("ttf")
+            || codec_lower.contains("otf")
+            || title_lower.ends_with(".ttf")
+            || title_lower.ends_with(".otf")
+            || title_lower.ends_with(".woff")
+    }
 }
 
 /// Check if a track is a commentary track based on title patterns.
@@ -112,7 +116,7 @@ pub fn is_commentary_by_pattern(track: &Track, patterns: &[String]) -> bool {
 }
 
 /// Compare two strings using the given operator (supports Eq and Ne).
-fn compare_string(left: &str, op: &CompiledCompareOp, right: &str) -> bool {
+fn compare_string(left: &str, op: CompiledCompareOp, right: &str) -> bool {
     match op {
         CompiledCompareOp::Eq => left == right,
         CompiledCompareOp::Ne => left != right,
@@ -122,7 +126,7 @@ fn compare_string(left: &str, op: &CompiledCompareOp, right: &str) -> bool {
 
 /// Compare two f64 values using the given operator.
 #[must_use]
-pub fn compare_f64(left: f64, op: &CompiledCompareOp, right: f64) -> bool {
+pub fn compare_f64(left: f64, op: CompiledCompareOp, right: f64) -> bool {
     match op {
         CompiledCompareOp::Eq => (left - right).abs() < f64::EPSILON,
         CompiledCompareOp::Ne => (left - right).abs() >= f64::EPSILON,
@@ -142,7 +146,7 @@ pub fn compare_f64(left: f64, op: &CompiledCompareOp, right: f64) -> bool {
 
 /// Get tracks from a file matching the given target type.
 #[must_use]
-pub(crate) fn tracks_for_target<'a>(file: &'a MediaFile, target: &TrackTarget) -> Vec<&'a Track> {
+pub(crate) fn tracks_for_target(file: &MediaFile, target: TrackTarget) -> Vec<&Track> {
     match target {
         TrackTarget::Video => file.video_tracks(),
         TrackTarget::Audio => file.audio_tracks(),

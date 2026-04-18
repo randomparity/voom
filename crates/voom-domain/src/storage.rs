@@ -163,7 +163,7 @@ pub struct FailedTransition {
     pub error_message: Option<String>,
     pub session_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
-    /// JSON from plans.result containing ExecutionDetail.
+    /// JSON from plans.result containing `ExecutionDetail`.
     pub plan_result: Option<String>,
 }
 
@@ -339,13 +339,13 @@ pub trait SnapshotStorage: Send + Sync {
     fn save_snapshot(&self, snapshot: &LibrarySnapshot) -> Result<()>;
     /// Retrieve the most recent snapshot.
     fn latest_snapshot(&self) -> Result<Option<LibrarySnapshot>>;
-    /// List snapshots ordered by captured_at descending.
+    /// List snapshots ordered by `captured_at` descending.
     fn list_snapshots(&self, limit: u32) -> Result<Vec<LibrarySnapshot>>;
     /// Delete all but the newest `keep_last` snapshots. Returns rows deleted.
     fn prune_snapshots(&self, keep_last: u32) -> Result<u64>;
 }
 
-/// SQLite page-level statistics.
+/// `SQLite` page-level statistics.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PageStats {
     pub page_size: u64,
@@ -465,7 +465,7 @@ impl std::fmt::Display for PlanStatus {
     }
 }
 
-/// Aggregated plan statistics for a single (phase_name, status, skip_reason) group.
+/// Aggregated plan statistics for a single (`phase_name`, status, `skip_reason`) group.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct PlanPhaseStat {

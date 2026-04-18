@@ -19,7 +19,10 @@ use std::collections::{HashMap, HashSet};
 
 use voom_domain::utils::{codecs, codecs::CodecType, language};
 
-use crate::ast::*;
+use crate::ast::{
+    ActionNode, ConditionNode, FilterNode, OperationNode, PhaseNode, PolicyAst, SynthSetting,
+    Value, ValueOrField, WhenNode,
+};
 use crate::errors::{DslError, DslWarning, ValidationErrors};
 
 /// Validate a parsed AST for semantic correctness.
@@ -186,7 +189,11 @@ fn validate_cycle_detection(ast: &PolicyAst, errors: &mut Vec<DslError>) {
     // Build adjacency list
     let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
     for phase in &ast.phases {
-        let deps: Vec<&str> = phase.depends_on.iter().map(|s| s.as_str()).collect();
+        let deps: Vec<&str> = phase
+            .depends_on
+            .iter()
+            .map(std::string::String::as_str)
+            .collect();
         adj.insert(phase.name.as_str(), deps);
     }
 
@@ -431,6 +438,7 @@ fn broad_track_category(target: &str) -> &str {
     }
 }
 
+#[allow(clippy::too_many_lines)] // Dispatch over all operation variants; splitting would fragment validation logic.
 fn validate_operation(
     op: &OperationNode,
     line: usize,
@@ -444,7 +452,10 @@ fn validate_operation(
                 errors.push(DslError::validation(
                     line,
                     col,
-                    format!("unknown container format \"{name}\""),
+                    format!(
+                        "unknown container '{name}'; expected one of: {}",
+                        voom_domain::Container::known_extensions().join(", ")
+                    ),
                 ));
             }
         }
@@ -729,7 +740,7 @@ fn validate_filter(
                 ));
             }
         }
-        FilterNode::LangField(_, path) => {
+        FilterNode::LangField(_, path) | FilterNode::CodecField(_, path) => {
             validate_field_path(path, line, col, errors, warnings);
         }
         FilterNode::CodecIn(codecs_list) => {
@@ -739,9 +750,6 @@ fn validate_filter(
         }
         FilterNode::CodecCompare(_, codec) => {
             validate_codec(codec, line, col, errors);
-        }
-        FilterNode::CodecField(_, path) => {
-            validate_field_path(path, line, col, errors, warnings);
         }
         FilterNode::And(items) | FilterNode::Or(items) => {
             for item in items {
@@ -881,7 +889,7 @@ fn suggest_from<'a>(input: &str, known: &[&'a str]) -> Option<&'a str> {
     let mut best: Option<(&str, usize)> = None;
     for &candidate in known {
         let dist = edit_distance(input, candidate);
-        if dist <= 3 && best.as_ref().map_or(true, |b| dist < b.1) {
+        if dist <= 3 && best.as_ref().is_none_or(|b| dist < b.1) {
             best = Some((candidate, dist));
         }
     }
@@ -1273,7 +1281,7 @@ fn validate_action(
                 ValueOrField::Field(path) => {
                     validate_field_path(path, line, col, errors, warnings);
                 }
-                _ => {}
+                ValueOrField::Value(_) => {}
             }
         }
         ActionNode::SetTag(_, val) => {
@@ -1433,7 +1441,9 @@ mod tests {
         }"#;
         let ast = parse_policy(input).unwrap();
         let err = validate(&ast).unwrap_err();
-        assert!(format!("{}", err.errors[0]).contains("unknown container format \"zzz\""));
+        let msg = format!("{}", err.errors[0]);
+        assert!(msg.contains("unknown container 'zzz'"), "got: {msg}");
+        assert!(msg.contains("mkv"), "should list known extensions: {msg}");
     }
 
     #[test]
@@ -2055,8 +2065,7 @@ mod tests {
         assert!(result.is_ok());
         assert!(
             warnings.is_empty(),
-            "known plugin name should produce no warnings, got: {:?}",
-            warnings
+            "known plugin name should produce no warnings, got: {warnings:?}"
         );
     }
 

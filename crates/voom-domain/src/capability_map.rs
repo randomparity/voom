@@ -219,7 +219,7 @@ mod tests {
             vec!["cuda".into(), "qsv".into()],
         ));
         let mut accels = map.hw_accels();
-        accels.sort();
+        accels.sort_unstable();
         assert_eq!(accels, vec!["nvenc", "qsv", "vaapi"]);
     }
 
@@ -283,7 +283,7 @@ mod tests {
         ));
 
         let mut encoders = map.encoders_for("aac");
-        encoders.sort();
+        encoders.sort_unstable();
         assert_eq!(encoders, vec!["executor-a", "executor-b"]);
     }
 }

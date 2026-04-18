@@ -5,6 +5,12 @@ fn voom() -> Command {
     let mut cmd = Command::cargo_bin("voom").unwrap();
     // Always pass --force so parallel integration tests don't fight over the process lock.
     cmd.arg("--force");
+    // Isolate from the developer's real ~/.config/voom so tests don't see stale DBs.
+    // XDG_CONFIG_HOME takes precedence over HOME in voom_config_dir().
+    let scratch = tempfile::tempdir()
+        .expect("create tempdir for test config")
+        .keep();
+    cmd.env("XDG_CONFIG_HOME", &scratch);
     cmd
 }
 

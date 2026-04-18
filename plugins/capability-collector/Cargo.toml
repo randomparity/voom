@@ -1,0 +1,20 @@
+[package]
+name = "voom-capability-collector"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Capability collector plugin for VOOM — aggregates executor capability announcements for policy evaluation"
+
+[dependencies]
+voom-domain = { workspace = true }
+voom-kernel = { workspace = true }
+parking_lot = { workspace = true }
+
+[lints]
+workspace = true

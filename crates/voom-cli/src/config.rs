@@ -8,23 +8,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::policy_map::MappingEntry;
 
+/// How to resolve orphaned backups discovered at startup.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryMode {
+    /// Restore the original file from the backup (default).
+    #[default]
+    AlwaysRecover,
+    /// Discard the backup and keep the partially-modified file.
+    AlwaysDiscard,
+}
+
 /// Crash recovery configuration.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RecoveryConfig {
-    #[serde(default = "default_recovery_mode")]
-    pub mode: String,
-}
-
-impl Default for RecoveryConfig {
-    fn default() -> Self {
-        Self {
-            mode: default_recovery_mode(),
-        }
-    }
-}
-
-fn default_recovery_mode() -> String {
-    "always_recover".into()
+    #[serde(default)]
+    pub mode: RecoveryMode,
 }
 
 /// Missing file pruning configuration.
@@ -287,7 +286,7 @@ pub fn default_config_contents() -> String {
 # api_key = "your-radarr-api-key"
 
 # Crash recovery: what to do with orphaned backups from interrupted executions.
-# mode = "always_recover" | "always_discard" | "prompt"
+# mode = "always_recover" | "always_discard"
 [recovery]
 mode = "always_recover"
 
@@ -343,8 +342,9 @@ mod tests {
     fn test_default_recovery_mode_is_always_recover() {
         let config = AppConfig::default();
         assert_eq!(
-            config.recovery.mode, "always_recover",
-            "default recovery mode should be always_recover, not prompt"
+            config.recovery.mode,
+            RecoveryMode::AlwaysRecover,
+            "default recovery mode should be AlwaysRecover, not AlwaysDiscard"
         );
     }
 
@@ -694,11 +694,10 @@ api_key = "abc123"
         assert!(!config.plugin.contains_key("ffprobe-introspector"));
 
         // Unconfigured plugin gets empty json
-        let unconfigured = config
-            .plugin
-            .get("ffprobe-introspector")
-            .map(|t| serde_json::to_value(t).unwrap_or_default())
-            .unwrap_or_else(|| serde_json::json!({}));
+        let unconfigured = config.plugin.get("ffprobe-introspector").map_or_else(
+            || serde_json::json!({}),
+            |t| serde_json::to_value(t).unwrap_or_default(),
+        );
         assert_eq!(unconfigured, serde_json::json!({}));
     }
 }

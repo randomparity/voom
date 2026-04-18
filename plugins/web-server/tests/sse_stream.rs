@@ -51,12 +51,11 @@ async fn read_until(stream: &mut TcpStream, mut body: Vec<u8>, needle: &str) -> 
             return body;
         }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            panic!(
-                "timed out waiting for {needle:?} in SSE body. Accumulated body:\n{}",
-                String::from_utf8_lossy(&body)
-            );
-        }
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for {needle:?} in SSE body. Accumulated body:\n{}",
+            String::from_utf8_lossy(&body)
+        );
         let n = match timeout(remaining, stream.read(&mut chunk)).await {
             Ok(Ok(n)) => n,
             Ok(Err(e)) => panic!("socket read error: {e}"),
@@ -65,12 +64,11 @@ async fn read_until(stream: &mut TcpStream, mut body: Vec<u8>, needle: &str) -> 
                 String::from_utf8_lossy(&body)
             ),
         };
-        if n == 0 {
-            panic!(
-                "server closed connection before emitting {needle:?}. Accumulated body:\n{}",
-                String::from_utf8_lossy(&body)
-            );
-        }
+        assert!(
+            n != 0,
+            "server closed connection before emitting {needle:?}. Accumulated body:\n{}",
+            String::from_utf8_lossy(&body)
+        );
         body.extend_from_slice(&chunk[..n]);
     }
 }
@@ -125,9 +123,10 @@ async fn spawn_server_and_connect() -> (TcpStream, broadcast::Sender<SseEvent>) 
     // is faster and more deterministic than sleeping a fixed duration.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while sse_tx.receiver_count() == 0 {
-        if tokio::time::Instant::now() >= deadline {
-            panic!("SSE handler never subscribed to broadcast channel");
-        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "SSE handler never subscribed to broadcast channel"
+        );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
 

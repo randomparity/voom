@@ -119,6 +119,32 @@ impl Plan {
         self.actions.push(action);
         self
     }
+
+    /// Attach a processing session ID to this plan.
+    ///
+    /// The session ID links plans created in the same CLI invocation so
+    /// session-level queries (e.g., `voom report errors --session`) can
+    /// group them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    /// use uuid::Uuid;
+    /// use voom_domain::media::MediaFile;
+    /// use voom_domain::plan::Plan;
+    ///
+    /// let file = MediaFile::new(PathBuf::from("/movies/test.mkv"));
+    /// let session = Uuid::new_v4();
+    /// let plan = Plan::new(file, "my-policy", "normalize").with_session_id(session);
+    ///
+    /// assert_eq!(plan.session_id, Some(session));
+    /// ```
+    #[must_use]
+    pub fn with_session_id(mut self, session_id: Uuid) -> Self {
+        self.session_id = Some(session_id);
+        self
+    }
 }
 
 /// A single action within a plan.
@@ -355,9 +381,7 @@ impl From<ActionParamsCompat> for ActionParams {
             } => {
                 // If the nested `settings` object has values, use it.
                 // Otherwise, lift the legacy flat fields.
-                let merged = if settings != TranscodeSettings::default() {
-                    settings
-                } else {
+                let merged = if settings == TranscodeSettings::default() {
                     TranscodeSettings {
                         crf,
                         preset,
@@ -371,6 +395,8 @@ impl From<ActionParamsCompat> for ActionParams {
                         tune,
                         ..Default::default()
                     }
+                } else {
+                    settings
                 };
                 Self::Transcode {
                     codec,

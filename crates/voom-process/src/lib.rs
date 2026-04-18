@@ -162,6 +162,7 @@ pub fn shell_quote_args(tool: &str, args: &[impl AsRef<str>]) -> String {
 }
 
 /// Extract the last N non-empty lines from a byte buffer (stderr output).
+#[must_use]
 pub fn stderr_tail(bytes: &[u8], max_lines: usize) -> String {
     let text = String::from_utf8_lossy(bytes);
     let lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();

@@ -116,11 +116,11 @@ impl WebSseBridgePlugin {
 }
 
 impl Plugin for WebSseBridgePlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "web-sse-bridge"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 

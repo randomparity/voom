@@ -26,8 +26,7 @@ pub fn event_from_wasm(event_type: &str, payload: &[u8]) -> Result<Event> {
     let actual_type = event.event_type();
     if actual_type != event_type {
         return Err(VoomError::Wasm(format!(
-            "event type mismatch: declared='{}' actual='{}'",
-            event_type, actual_type
+            "event type mismatch: declared='{event_type}' actual='{actual_type}'"
         )));
     }
 
@@ -171,7 +170,7 @@ pub fn capability_to_wit(cap: &Capability) -> String {
         } => {
             let ops = operations
                 .iter()
-                .map(|op| op.as_str())
+                .map(voom_domain::OperationType::as_str)
                 .collect::<Vec<_>>()
                 .join("+");
             let fmts = formats.join(",");

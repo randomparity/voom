@@ -150,10 +150,10 @@ pub struct ProcessingAggregateStats {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SavingsBucket {
     /// Executor name (from `source_detail`, e.g. "mkvtoolnix:normalize").
-    /// `None` for transitions missing source_detail.
+    /// `None` for transitions missing `source_detail`.
     pub executor: Option<String>,
     /// Phase name (from `phase_name`).
-    /// `None` for transitions missing phase_name.
+    /// `None` for transitions missing `phase_name`.
     pub phase: Option<String>,
     /// Time period label (e.g. "2026-04", "2026-W14", "2026-04-05").
     /// `None` when not grouped by time.
@@ -164,7 +164,7 @@ pub struct SavingsBucket {
     pub bytes_saved: i64,
     /// Total processing duration in milliseconds.
     pub duration_ms: u64,
-    /// Total files processed (distinct file_id count).
+    /// Total files processed (distinct `file_id` count).
     pub file_count: u64,
 }
 
@@ -199,7 +199,7 @@ pub enum TimePeriod {
     /// Group by calendar day (YYYY-MM-DD).
     Day,
     /// Group by week-of-year (YYYY-WNN, where WW is 00–53, Monday-first).
-    /// Note: not ISO 8601 week dating (which SQLite does not support natively).
+    /// Note: not ISO 8601 week dating (which `SQLite` does not support natively).
     Week,
     /// Group by calendar month (YYYY-MM).
     #[default]
@@ -207,7 +207,7 @@ pub enum TimePeriod {
 }
 
 impl TimePeriod {
-    /// Returns the SQLite strftime format string for this period.
+    /// Returns the `SQLite` strftime format string for this period.
     #[must_use]
     pub fn sql_format(&self) -> &'static str {
         match self {

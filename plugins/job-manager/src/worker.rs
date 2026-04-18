@@ -70,8 +70,47 @@ impl WorkerPoolConfig {
 
 fn num_cpus() -> usize {
     std::thread::available_parallelism()
-        .map(|n| n.get())
+        .map(std::num::NonZeroUsize::get)
         .unwrap_or(4)
+}
+
+/// Outcome of a single job execution.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobOutcome {
+    /// The job was processed to completion.
+    Success,
+    /// The job's processor returned an error.
+    Failure(String),
+    /// Another worker claimed the job before this one could. Neither success
+    /// nor failure — the caller should not count it toward either total, and
+    /// `JobErrorStrategy::Fail` should NOT trigger on this outcome.
+    AlreadyClaimed,
+}
+
+impl JobOutcome {
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        matches!(self, Self::Success)
+    }
+
+    #[must_use]
+    pub fn is_failure(&self) -> bool {
+        matches!(self, Self::Failure(_))
+    }
+
+    #[must_use]
+    pub fn is_already_claimed(&self) -> bool {
+        matches!(self, Self::AlreadyClaimed)
+    }
+
+    #[must_use]
+    pub fn error(&self) -> Option<&str> {
+        match self {
+            Self::Failure(e) => Some(e.as_str()),
+            _ => None,
+        }
+    }
 }
 
 /// Result of processing a single job.
@@ -79,8 +118,52 @@ fn num_cpus() -> usize {
 #[derive(Debug)]
 pub struct JobResult {
     pub job_id: Uuid,
-    pub success: bool,
-    pub error: Option<String>,
+    pub outcome: JobOutcome,
+}
+
+impl JobResult {
+    #[must_use]
+    pub fn success(job_id: Uuid) -> Self {
+        Self {
+            job_id,
+            outcome: JobOutcome::Success,
+        }
+    }
+
+    #[must_use]
+    pub fn failure(job_id: Uuid, error: String) -> Self {
+        Self {
+            job_id,
+            outcome: JobOutcome::Failure(error),
+        }
+    }
+
+    #[must_use]
+    pub fn already_claimed(job_id: Uuid) -> Self {
+        Self {
+            job_id,
+            outcome: JobOutcome::AlreadyClaimed,
+        }
+    }
+
+    /// Backward-compatible accessor. True only for `Success`.
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        self.outcome.is_success()
+    }
+
+    /// True only for `AlreadyClaimed`.
+    #[must_use]
+    pub fn is_already_claimed(&self) -> bool {
+        self.outcome.is_already_claimed()
+    }
+
+    /// Backward-compatible accessor. Returns the error string for `Failure`,
+    /// `None` otherwise.
+    #[must_use]
+    pub fn error(&self) -> Option<&str> {
+        self.outcome.error()
+    }
 }
 
 /// A batch of work items to process concurrently.
@@ -94,6 +177,7 @@ pub struct WorkerPool {
     token: CancellationToken,
     completed_count: Arc<AtomicU64>,
     failed_count: Arc<AtomicU64>,
+    already_claimed_count: Arc<AtomicU64>,
 }
 
 impl WorkerPool {
@@ -105,6 +189,7 @@ impl WorkerPool {
             token,
             completed_count: Arc::new(AtomicU64::new(0)),
             failed_count: Arc::new(AtomicU64::new(0)),
+            already_claimed_count: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -125,6 +210,11 @@ impl WorkerPool {
     #[must_use]
     pub fn failed_count(&self) -> u64 {
         self.failed_count.load(Ordering::SeqCst)
+    }
+
+    #[must_use]
+    pub fn already_claimed_count(&self) -> u64 {
+        self.already_claimed_count.load(Ordering::SeqCst)
     }
 
     /// Process a batch of work items concurrently.
@@ -189,12 +279,13 @@ impl WorkerPool {
         for job_id in job_ids {
             let permit = tokio::select! {
                 p = semaphore.clone().acquire_owned() => p.expect("semaphore not closed"),
-                _ = self.token.cancelled() => break,
+                () = self.token.cancelled() => break,
             };
             let queue = self.queue.clone();
             let token = self.token.clone();
             let completed = self.completed_count.clone();
             let failed = self.failed_count.clone();
+            let already_claimed = self.already_claimed_count.clone();
             let processor = processor.clone();
             let result_tx = result_tx.clone();
             let reporter = reporter.clone();
@@ -211,6 +302,7 @@ impl WorkerPool {
                     token,
                     completed,
                     failed,
+                    already_claimed,
                     processor,
                     reporter,
                     result_tx,
@@ -251,11 +343,35 @@ struct WorkerContext<F> {
     token: CancellationToken,
     completed: Arc<AtomicU64>,
     failed: Arc<AtomicU64>,
+    already_claimed: Arc<AtomicU64>,
     processor: Arc<F>,
     reporter: Arc<dyn ProgressReporter>,
     result_tx: mpsc::Sender<JobResult>,
     worker_id: String,
     on_error: JobErrorStrategy,
+}
+
+/// Increment the failed counter and send a `JobResult` describing the failure.
+///
+/// Consolidates the 5 near-identical failure-exit paths in `run_one_job` so
+/// the caller can simply `send_failure(...).await; return;` at each.
+async fn send_failure<F>(ctx: &WorkerContext<F>, job_id: Uuid, error: String) {
+    ctx.failed.fetch_add(1, Ordering::SeqCst);
+    if let Err(e) = ctx.result_tx.send(JobResult::failure(job_id, error)).await {
+        tracing::warn!(job_id = %job_id, error = %e, "failed to send failure JobResult");
+    }
+}
+
+/// Increment the already-claimed counter and emit a `JobResult::AlreadyClaimed`.
+///
+/// Used when `claim_by_id` returns `None` because another worker (or a
+/// previous run) already owns the job. NOT a failure: the job still exists
+/// and will be processed by whichever worker holds the claim.
+async fn send_claim_race<F>(ctx: &WorkerContext<F>, job_id: Uuid) {
+    ctx.already_claimed.fetch_add(1, Ordering::SeqCst);
+    if let Err(e) = ctx.result_tx.send(JobResult::already_claimed(job_id)).await {
+        tracing::warn!(job_id = %job_id, error = %e, "failed to send already-claimed JobResult");
+    }
 }
 
 /// Execute a single job: claim it, run the processor, and record the result.
@@ -267,15 +383,7 @@ where
         + 'static,
 {
     if ctx.token.is_cancelled() {
-        ctx.failed.fetch_add(1, Ordering::SeqCst);
-        let _ = ctx
-            .result_tx
-            .send(JobResult {
-                job_id,
-                success: false,
-                error: Some("cancelled".into()),
-            })
-            .await;
+        send_failure(&ctx, job_id, "cancelled".into()).await;
         return;
     }
 
@@ -286,42 +394,26 @@ where
     let job = match tokio::task::spawn_blocking(move || queue_claim.claim_by_id(&jid, &wid)).await {
         Ok(Ok(Some(job))) => job,
         Ok(Ok(None)) => {
-            // Job was claimed by another worker — count as completed
-            ctx.completed.fetch_add(1, Ordering::SeqCst);
-            let _ = ctx
-                .result_tx
-                .send(JobResult {
-                    job_id,
-                    success: true,
-                    error: None,
-                })
-                .await;
+            // Lost the claim race — another worker (or a previous run) already
+            // owns this job. NOT a failure: the job still exists and the other
+            // worker will process it. Report distinctly so JobErrorStrategy::Fail
+            // does not cancel the batch for normal racing.
+            tracing::debug!(
+                %job_id,
+                worker = %ctx.worker_id,
+                "job already claimed by another worker"
+            );
+            send_claim_race(&ctx, job_id).await;
             return;
         }
         Ok(Err(e)) => {
             tracing::error!(error = %e, "Failed to claim job");
-            ctx.failed.fetch_add(1, Ordering::SeqCst);
-            let _ = ctx
-                .result_tx
-                .send(JobResult {
-                    job_id,
-                    success: false,
-                    error: Some(format!("failed to claim: {e}")),
-                })
-                .await;
+            send_failure(&ctx, job_id, format!("failed to claim: {e}")).await;
             return;
         }
         Err(e) => {
             tracing::error!(error = %e, "Task join error");
-            ctx.failed.fetch_add(1, Ordering::SeqCst);
-            let _ = ctx
-                .result_tx
-                .send(JobResult {
-                    job_id,
-                    success: false,
-                    error: Some(format!("task join error: {e}")),
-                })
-                .await;
+            send_failure(&ctx, job_id, format!("task join error: {e}")).await;
             return;
         }
     };
@@ -333,15 +425,7 @@ where
         if let Err(e) = tokio::task::spawn_blocking(move || q.cancel(&jid)).await {
             tracing::error!(error = %e, "failed to mark job as cancelled");
         }
-        ctx.failed.fetch_add(1, Ordering::SeqCst);
-        let _ = ctx
-            .result_tx
-            .send(JobResult {
-                job_id,
-                success: false,
-                error: Some("cancelled".into()),
-            })
-            .await;
+        send_failure(&ctx, job_id, "cancelled".into()).await;
         return;
     }
 
@@ -357,15 +441,7 @@ where
             ctx.completed.fetch_add(1, Ordering::SeqCst);
             ctx.reporter.on_job_complete(job_id, true, None);
 
-            if let Err(e) = ctx
-                .result_tx
-                .send(JobResult {
-                    job_id,
-                    success: true,
-                    error: None,
-                })
-                .await
-            {
+            if let Err(e) = ctx.result_tx.send(JobResult::success(job_id)).await {
                 tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
             }
         }
@@ -375,23 +451,15 @@ where
             if let Err(e) = tokio::task::spawn_blocking(move || q.fail(&job_id, err)).await {
                 tracing::error!(job_id = %job_id, error = %e, "failed to mark job as failed");
             }
-            ctx.failed.fetch_add(1, Ordering::SeqCst);
             ctx.reporter.on_job_complete(job_id, false, Some(&error));
 
-            if let Err(e) = ctx
-                .result_tx
-                .send(JobResult {
-                    job_id,
-                    success: false,
-                    error: Some(error),
-                })
-                .await
-            {
-                tracing::warn!(job_id = %job_id, error = %e, "failed to send job result");
-            }
+            // send_failure increments `failed` and dispatches the JobResult.
+            let strategy = ctx.on_error;
+            let token = ctx.token.clone();
+            send_failure(&ctx, job_id, error).await;
 
-            if ctx.on_error == JobErrorStrategy::Fail {
-                ctx.token.cancel();
+            if strategy == JobErrorStrategy::Fail {
+                token.cancel();
             }
         }
     }
@@ -621,9 +689,9 @@ mod tests {
         assert_eq!(pool.completed_count(), 4);
         assert_eq!(pool.failed_count(), 1);
         // Results contain both successes and failures
-        let failures: Vec<_> = results.iter().filter(|r| !r.success).collect();
+        let failures: Vec<_> = results.iter().filter(|r| r.outcome.is_failure()).collect();
         assert_eq!(failures.len(), 1);
-        assert_eq!(failures[0].error.as_deref(), Some("first item fails"));
+        assert_eq!(failures[0].error(), Some("first item fails"));
     }
 
     #[tokio::test]
@@ -677,8 +745,8 @@ mod tests {
         assert_eq!(pool.failed_count(), 3);
         // All 6 results are present
         assert_eq!(results.len(), 6);
-        let successes: Vec<_> = results.iter().filter(|r| r.success).collect();
-        let failures: Vec<_> = results.iter().filter(|r| !r.success).collect();
+        let successes: Vec<_> = results.iter().filter(|r| r.is_success()).collect();
+        let failures: Vec<_> = results.iter().filter(|r| r.outcome.is_failure()).collect();
         assert_eq!(successes.len(), 3);
         assert_eq!(failures.len(), 3);
     }
@@ -750,5 +818,136 @@ mod tests {
             "Expected concurrent execution with max_workers=4, but max concurrency was {}",
             max_concurrent.load(Ordering::SeqCst)
         );
+    }
+
+    /// Storage wrapper that always returns `Ok(None)` from `claim_job_by_id`,
+    /// simulating a job already claimed by a different worker. All other
+    /// operations delegate to an inner `InMemoryStore`.
+    struct AlwaysClaimedStore {
+        inner: Arc<InMemoryStore>,
+    }
+
+    impl AlwaysClaimedStore {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(InMemoryStore::new()),
+            }
+        }
+    }
+
+    impl voom_domain::storage::JobStorage for AlwaysClaimedStore {
+        fn create_job(&self, job: &voom_domain::job::Job) -> voom_domain::errors::Result<Uuid> {
+            self.inner.create_job(job)
+        }
+
+        fn job(&self, id: &Uuid) -> voom_domain::errors::Result<Option<voom_domain::job::Job>> {
+            self.inner.job(id)
+        }
+
+        fn update_job(
+            &self,
+            id: &Uuid,
+            update: &voom_domain::job::JobUpdate,
+        ) -> voom_domain::errors::Result<()> {
+            self.inner.update_job(id, update)
+        }
+
+        fn claim_next_job(
+            &self,
+            worker_id: &str,
+        ) -> voom_domain::errors::Result<Option<voom_domain::job::Job>> {
+            self.inner.claim_next_job(worker_id)
+        }
+
+        fn claim_job_by_id(
+            &self,
+            _job_id: &Uuid,
+            _worker_id: &str,
+        ) -> voom_domain::errors::Result<Option<voom_domain::job::Job>> {
+            // Simulate the race: every claim attempt loses to another worker.
+            Ok(None)
+        }
+
+        fn list_jobs(
+            &self,
+            filters: &voom_domain::storage::JobFilters,
+        ) -> voom_domain::errors::Result<Vec<voom_domain::job::Job>> {
+            self.inner.list_jobs(filters)
+        }
+
+        fn count_jobs_by_status(
+            &self,
+        ) -> voom_domain::errors::Result<Vec<(voom_domain::job::JobStatus, u64)>> {
+            self.inner.count_jobs_by_status()
+        }
+
+        fn delete_jobs(
+            &self,
+            status: Option<voom_domain::job::JobStatus>,
+        ) -> voom_domain::errors::Result<u64> {
+            self.inner.delete_jobs(status)
+        }
+    }
+
+    #[tokio::test]
+    async fn claim_race_does_not_trigger_fail_strategy() {
+        let store: Arc<dyn voom_domain::storage::JobStorage> = Arc::new(AlwaysClaimedStore::new());
+        let queue = Arc::new(JobQueue::new(store));
+        let token = CancellationToken::new();
+        let pool = WorkerPool::new(
+            queue.clone(),
+            WorkerPoolConfig {
+                max_workers: 1,
+                ..Default::default()
+            },
+            token.clone(),
+        );
+
+        let items: Vec<WorkItem> = vec![WorkItem {
+            job_type: voom_domain::job::JobType::Custom("racey".into()),
+            priority: 100,
+            payload: None,
+        }];
+
+        let processor_called = Arc::new(AtomicU32::new(0));
+        let processor_called_clone = processor_called.clone();
+
+        let results = pool
+            .process_batch(
+                items,
+                move |_job| {
+                    let c = processor_called_clone.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        Ok(None)
+                    }
+                },
+                JobErrorStrategy::Fail,
+                Arc::new(NoopReporter),
+            )
+            .await;
+
+        assert_eq!(
+            processor_called.load(Ordering::SeqCst),
+            0,
+            "processor must not run when claim is lost"
+        );
+        assert!(
+            !token.is_cancelled(),
+            "Fail strategy should NOT fire on claim race"
+        );
+        assert_eq!(
+            pool.completed_count(),
+            0,
+            "no job should count as completed"
+        );
+        assert_eq!(pool.failed_count(), 0, "no job should count as failed");
+        assert_eq!(
+            pool.already_claimed_count(),
+            1,
+            "claim race should be counted separately"
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].outcome, JobOutcome::AlreadyClaimed);
     }
 }

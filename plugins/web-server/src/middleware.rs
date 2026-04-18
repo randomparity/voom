@@ -226,8 +226,7 @@ const CPU_INTENSIVE_PATHS: &[&str] = &["/api/policy/validate", "/api/policy/form
 fn extract_ip<B>(req: &Request<B>) -> IpAddr {
     req.extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0.ip())
-        .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .map_or(IpAddr::V4(Ipv4Addr::LOCALHOST), |ci| ci.0.ip())
 }
 
 fn rate_limit_response(retry_after_secs: u64) -> Response<axum::body::Body> {

@@ -178,15 +178,21 @@ cargo run -- serve
 | `inspect` | Show detailed file information |
 | `process` | Apply a policy to files |
 | `policy` | Validate, format, diff, and list policies |
+| `files` | List and search library files |
+| `plans` | View and manage saved plans |
 | `report` | Library analytics and issue reporting |
 | `jobs` | Manage the processing queue |
 | `backup` | List, restore, and clean up backups |
 | `health` | Environment diagnostics and history |
+| `doctor` | Hidden alias for `health check` (kept for compatibility) |
 | `serve` | Start the web dashboard |
 | `events` | View and tail the event log |
 | `db` | Database maintenance (prune, vacuum, reset) |
 | `config` | View and edit configuration |
+| `tools` | Detect and report external tool availability |
+| `history` | Show per-file processing history |
 | `plugin` | Manage native and WASM plugins |
+| `init` | Scaffold a starter policy and config |
 | `completions` | Generate shell completions (bash/zsh/fish) |
 
 ## Architecture

@@ -13,7 +13,7 @@ impl Plugin for DiscoveryLogger {
         &self.name
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         "0.1.0"
     }
 
@@ -45,11 +45,11 @@ impl Plugin for DiscoveryLogger {
 struct MockIntrospector;
 
 impl Plugin for MockIntrospector {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "mock-introspector"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         "0.1.0"
     }
 
@@ -152,10 +152,10 @@ fn test_event_cascading() {
 struct MockMkvExecutor;
 
 impl Plugin for MockMkvExecutor {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "mock-mkv-executor"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         "0.1.0"
     }
     fn capabilities(&self) -> &[Capability] {
@@ -194,10 +194,10 @@ impl Plugin for MockMkvExecutor {
 struct MockFfmpegExecutor;
 
 impl Plugin for MockFfmpegExecutor {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "mock-ffmpeg-executor"
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         "0.1.0"
     }
     fn capabilities(&self) -> &[Capability] {

@@ -4,7 +4,6 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 mod app;
-mod capability_collector;
 mod cli;
 mod commands;
 mod config;
@@ -50,7 +49,7 @@ async fn main() -> Result<()> {
 
     // Compute effective quiet: explicit --quiet OR machine-readable format
     let quiet = cli.quiet
-        || matches!(&cli.command, Commands::Scan(args) if args.format.is_some_and(|f| f.is_machine()));
+        || matches!(&cli.command, Commands::Scan(args) if args.format.is_some_and(cli::OutputFormat::is_machine));
 
     let global_yes = cli.yes;
 
@@ -64,12 +63,12 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Scan(args) => commands::scan::run(args, quiet, token).await,
-        Commands::Inspect(args) => commands::inspect::run(args),
+        Commands::Inspect(args) => commands::inspect::run(&args),
         Commands::Process(args) => commands::process::run(args, quiet, token).await,
         Commands::Policy(sub) => commands::policy::run(sub),
         Commands::Plugin(sub) => commands::plugin::run(sub),
         Commands::Jobs(sub) => commands::jobs::run(sub, global_yes),
-        Commands::Report(args) => commands::report::run(args),
+        Commands::Report(args) => commands::report::run(&args),
         Commands::Files(sub) => commands::files::run(sub, global_yes),
         Commands::Plans(sub) => commands::plans::run(sub),
         Commands::Events(args) => commands::events::run(args, token).await,
@@ -79,10 +78,10 @@ async fn main() -> Result<()> {
         Commands::Db(sub) => commands::db::run(sub, global_yes).await,
         Commands::Config(sub) => commands::config::run(sub),
         Commands::Tools(sub) => commands::tools::run(sub),
-        Commands::History(args) => commands::history::run(args),
+        Commands::History(args) => commands::history::run(&args),
         Commands::Backup(sub) => commands::backup::run(sub, global_yes),
         Commands::Init => commands::init::run(),
-        Commands::Completions(args) => commands::completions::run(args),
+        Commands::Completions(args) => commands::completions::run(&args),
     }
 }
 
@@ -155,7 +154,9 @@ fn cleanup_wasm_temp_files_in(dir: &std::path::Path) {
 /// Check if a filename matches WASM plugin temp file patterns.
 fn is_wasm_temp_file(name: &str) -> bool {
     (name.starts_with("voom-langdet-") || name.starts_with("voom-whisper-"))
-        && name.ends_with(".wav")
+        && std::path::Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("wav"))
 }
 
 /// Map verbosity count to tracing filter string.

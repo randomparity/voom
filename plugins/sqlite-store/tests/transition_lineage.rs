@@ -1,4 +1,4 @@
-//! Verify that transitions_for_file returns transitions across multiple paths.
+//! Verify that `transitions_for_file` returns transitions across multiple paths.
 
 use std::path::PathBuf;
 

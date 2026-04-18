@@ -104,8 +104,8 @@ impl FileStorage for SqliteStore {
                     track.codec,
                     track.language,
                     track.title,
-                    track.is_default as i64,
-                    track.is_forced as i64,
+                    i64::from(track.is_default),
+                    i64::from(track.is_forced),
                     track.channels.map(i64::from),
                     track.channel_layout,
                     track.sample_rate.map(i64::from),
@@ -113,8 +113,8 @@ impl FileStorage for SqliteStore {
                     track.width.map(i64::from),
                     track.height.map(i64::from),
                     track.frame_rate,
-                    track.is_vfr as i64,
-                    track.is_hdr as i64,
+                    i64::from(track.is_vfr),
+                    i64::from(track.is_hdr),
                     track.hdr_format,
                     track.pixel_format,
                 ])
@@ -1076,5 +1076,197 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored_tv.status, FileStatus::Active);
+    }
+
+    // --- Direct unit tests below ---
+
+    #[test]
+    fn file_unknown_id_returns_none() {
+        let store = test_store();
+        let missing = store.file(&Uuid::new_v4()).unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn file_by_path_unknown_returns_none() {
+        let store = test_store();
+        let missing = store
+            .file_by_path(Path::new("/nowhere/nothing.mkv"))
+            .unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn list_files_empty_db() {
+        let store = test_store();
+        let files = store.list_files(&FileFilters::default()).unwrap();
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn count_files_matches_list_files() {
+        let store = test_store();
+        for i in 0..4 {
+            let mut f = MediaFile::new(PathBuf::from(format!("/media/f{i}.mkv")));
+            f.content_hash = Some(format!("hash{i}"));
+            store.upsert_file(&f).unwrap();
+        }
+        let filters = FileFilters::default();
+        let count = store.count_files(&filters).unwrap();
+        let list = store.list_files(&filters).unwrap();
+        assert_eq!(count, list.len() as u64);
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn list_files_path_prefix_filter() {
+        let store = test_store();
+        let a = active_file("/movies/a.mkv");
+        let b = active_file("/tv/b.mkv");
+        store.upsert_file(&a).unwrap();
+        store.upsert_file(&b).unwrap();
+
+        let mut filters = FileFilters::default();
+        filters.path_prefix = Some("/movies".into());
+        let list = store.list_files(&filters).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].path, PathBuf::from("/movies/a.mkv"));
+    }
+
+    #[test]
+    fn list_files_language_filter() {
+        use voom_domain::media::{Track, TrackType};
+
+        let store = test_store();
+        let mut eng = MediaFile::new(PathBuf::from("/media/eng.mkv"));
+        eng.content_hash = Some("h1".into());
+        let mut t = Track::new(1, TrackType::AudioMain, "aac".into());
+        t.language = "eng".into();
+        eng.tracks = vec![t];
+        store.upsert_file(&eng).unwrap();
+
+        let mut deu = MediaFile::new(PathBuf::from("/media/deu.mkv"));
+        deu.content_hash = Some("h2".into());
+        let mut t2 = Track::new(1, TrackType::AudioMain, "aac".into());
+        t2.language = "deu".into();
+        deu.tracks = vec![t2];
+        store.upsert_file(&deu).unwrap();
+
+        let mut filters = FileFilters::default();
+        filters.has_language = Some("eng".into());
+        let results = store.list_files(&filters).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, PathBuf::from("/media/eng.mkv"));
+    }
+
+    #[test]
+    fn list_files_include_missing_flag() {
+        let store = test_store();
+        let active = active_file("/media/active.mkv");
+        let soon_missing = active_file("/media/missing.mkv");
+        store.upsert_file(&active).unwrap();
+        store.upsert_file(&soon_missing).unwrap();
+        store.mark_missing(&soon_missing.id).unwrap();
+
+        let default_filters = FileFilters::default();
+        let visible = store.list_files(&default_filters).unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].path, PathBuf::from("/media/active.mkv"));
+
+        let mut with_missing = FileFilters::default();
+        with_missing.include_missing = true;
+        let all = store.list_files(&with_missing).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn mark_missing_is_idempotent() {
+        let store = test_store();
+        let file = active_file("/media/file.mkv");
+        store.upsert_file(&file).unwrap();
+        store.mark_missing(&file.id).unwrap();
+        // Second call should not fail or un-mark the file.
+        store.mark_missing(&file.id).unwrap();
+
+        let stored = store.file(&file.id).unwrap().unwrap();
+        assert_eq!(stored.status, FileStatus::Missing);
+    }
+
+    #[test]
+    fn reactivate_file_restores_active_status() {
+        let store = test_store();
+        let file = active_file("/media/old-path.mkv");
+        store.upsert_file(&file).unwrap();
+        store.mark_missing(&file.id).unwrap();
+
+        let new_path = Path::new("/media/new-path.mkv");
+        store.reactivate_file(&file.id, new_path).unwrap();
+
+        let stored = store.file(&file.id).unwrap().unwrap();
+        assert_eq!(stored.status, FileStatus::Active);
+        assert_eq!(stored.path, new_path);
+    }
+
+    #[test]
+    fn purge_missing_respects_cutoff() {
+        use chrono::{Duration, Utc};
+
+        let store = test_store();
+        let file = active_file("/media/vanished.mkv");
+        store.upsert_file(&file).unwrap();
+        store.mark_missing(&file.id).unwrap();
+
+        // Cutoff in the past — file missing_since is "now", so it should NOT be purged.
+        let past = Utc::now() - Duration::hours(1);
+        let purged = store.purge_missing(past).unwrap();
+        assert_eq!(purged, 0, "cutoff in past must not purge current records");
+        assert!(store.file(&file.id).unwrap().is_some());
+
+        // Cutoff in the future — record's missing_since < future, so it IS purged.
+        let future = Utc::now() + Duration::hours(1);
+        let purged = store.purge_missing(future).unwrap();
+        assert_eq!(purged, 1);
+        assert!(store.file(&file.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn update_expected_hash_unknown_id_is_noop() {
+        let store = test_store();
+        // No file with this id exists — should quietly update 0 rows, no error.
+        store
+            .update_expected_hash(&Uuid::new_v4(), "arbitrary-hash")
+            .unwrap();
+    }
+
+    #[test]
+    fn update_expected_hash_writes_value() {
+        let store = test_store();
+        let file = active_file("/media/file.mkv");
+        store.upsert_file(&file).unwrap();
+        store.update_expected_hash(&file.id, "new-hash").unwrap();
+
+        let stored = store.file(&file.id).unwrap().unwrap();
+        assert_eq!(stored.expected_hash.as_deref(), Some("new-hash"));
+    }
+
+    #[test]
+    fn reconcile_discovered_files_basic_new_file() {
+        let store = test_store();
+        let discovered = vec![voom_domain::transition::DiscoveredFile::new(
+            PathBuf::from("/media/new.mkv"),
+            2048,
+            "brand-new-hash".to_string(),
+        )];
+        let scanned = vec![PathBuf::from("/media")];
+        let result = store
+            .reconcile_discovered_files(&discovered, &scanned)
+            .unwrap();
+
+        assert_eq!(result.new_files, 1);
+        assert_eq!(result.unchanged, 0);
+        assert_eq!(result.moved, 0);
+        assert_eq!(result.missing, 0);
+        assert_eq!(result.external_changes, 0);
+        assert_eq!(result.needs_introspection.len(), 1);
     }
 }

@@ -6,7 +6,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use voom_kernel::{Kernel, Plugin};
 
-use crate::capability_collector::CapabilityCollectorPlugin;
+use voom_capability_collector::CapabilityCollectorPlugin;
+
 use crate::config::AppConfig;
 
 /// Return type for [`bootstrap_kernel_with_store`].
@@ -28,10 +29,18 @@ const PRIORITY_DISCOVERY: i32 = 80;
 const PRIORITY_FFPROBE_INTROSPECTOR: i32 = 60;
 const PRIORITY_FFMPEG_EXECUTOR: i32 = 40;
 const PRIORITY_MKVTOOLNIX_EXECUTOR: i32 = 39;
+// Capability collector dispatches before executors (35 < 39/40) so that
+// ExecutorCapabilities events emitted by executors at init are processed by
+// the collector before any subsequent event reaches the executors.
+// (Lower priority = earlier dispatch — see voom_kernel::EventBus::subscribe_plugin.)
 const PRIORITY_CAPABILITY_COLLECTOR: i32 = 35;
+// Backup manager dispatches before executors (30 < 39/40) so the source
+// file is backed up before any executor mutates it.
 const PRIORITY_BACKUP_MANAGER: i32 = 30;
 const PRIORITY_JOB_MANAGER: i32 = 20;
-// Report plugin — after storage (100), just observes lifecycle events.
+// Report plugin — priority 110 > storage (100), so it dispatches after
+// storage and observes lifecycle events with all upstream side effects
+// already applied.
 const PRIORITY_REPORT: i32 = 110;
 
 /// Bootstrap a kernel with all native plugins registered.
@@ -52,10 +61,14 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
 ///
 /// # Blocking
 ///
-/// This function performs synchronous I/O (filesystem checks, SQLite
+/// This function performs synchronous I/O (filesystem checks, `SQLite`
 /// pool creation, plugin init) and must NOT be called from an async
 /// context. Callers should invoke it before entering the tokio
 /// runtime or from within `spawn_blocking`.
+// Bootstrap walks every plugin slot once and registers it; splitting the
+// per-plugin blocks into helpers would require threading `kernel`, `config`,
+// and the collected data through many extra parameters.
+#[allow(clippy::too_many_lines)]
 pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult> {
     let mut kernel = Kernel::new();
     let data_dir = &config.data_dir;
@@ -64,18 +77,17 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
 
     // Resolve per-plugin config as JSON, with a fallback to empty object.
     let plugin_json = |name: &str| -> serde_json::Value {
-        config
-            .plugin
-            .get(name)
-            .map(|t| match serde_json::to_value(t) {
+        config.plugin.get(name).map_or_else(
+            || serde_json::json!({}),
+            |t| match serde_json::to_value(t) {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(plugin = name, error = %e,
                         "failed to convert plugin config to JSON; using empty config");
                     serde_json::json!({})
                 }
-            })
-            .unwrap_or_else(|| serde_json::json!({}))
+            },
+        )
     };
 
     // Helper macro to conditionally register a plugin (skips if disabled).
@@ -102,7 +114,12 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     // handle and return it to callers, keeping all CLI commands and the event
     // bus on the same connection pool.
     let store: Arc<dyn voom_domain::storage::StorageTrait> =
-        if !disabled.iter().any(|d| d == "sqlite-store") {
+        if disabled.iter().any(|d| d == "sqlite-store") {
+            // sqlite-store disabled: open a standalone pool so callers always
+            // get a usable handle.  No plugin is registered, so events will
+            // not be persisted, but read-only CLI commands still work.
+            open_store_in(data_dir).context("Failed to open storage")?
+        } else {
             let mut plugin = voom_sqlite_store::SqliteStorePlugin::new();
             let ctx =
                 voom_kernel::PluginContext::new(plugin_json("sqlite-store"), data_dir.clone());
@@ -125,11 +142,6 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
             }
 
             handle
-        } else {
-            // sqlite-store disabled: open a standalone pool so callers always
-            // get a usable handle.  No plugin is registered, so events will
-            // not be persisted, but read-only CLI commands still work.
-            open_store_in(data_dir).context("Failed to open storage")?
         };
 
     // Create a shared job queue for plugins that need to enqueue work.
@@ -194,19 +206,36 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     );
 
     // Capability collector — captures ExecutorCapabilities events for the evaluator.
-    // Registered before executors so it sees their init-time announcements.
-    // Uses manual init + register_plugin (like sqlite-store) because the caller
-    // needs an Arc<CapabilityCollectorPlugin> handle for snapshot() after bootstrap.
-    let collector = {
+    // Priority 35 dispatches before executor priorities (39, 40), so init-time
+    // ExecutorCapabilities events emitted by executors land in the collector
+    // first. Uses manual init + register_plugin (like sqlite-store) because
+    // the caller needs an Arc<CapabilityCollectorPlugin> handle for snapshot()
+    // after bootstrap.
+    //
+    // When disabled, we still construct the collector (so `collector.snapshot()`
+    // remains callable on BootstrapResult) but do NOT register it on the bus.
+    // The snapshot will be empty, which is a documented degraded mode:
+    // executor selection falls back to plain priority order with no capability
+    // hints.
+    let (collector, collector_init_events) = {
         let mut plugin = CapabilityCollectorPlugin::new();
         let ctx =
             voom_kernel::PluginContext::new(plugin_json("capability-collector"), data_dir.clone());
-        plugin
+        let events = plugin
             .init(&ctx)
             .context("Failed to initialize capability collector")?;
-        Arc::new(plugin)
+        (Arc::new(plugin), events)
     };
-    kernel.register_plugin(collector.clone(), PRIORITY_CAPABILITY_COLLECTOR)?;
+    if disabled.iter().any(|d| d == "capability-collector") {
+        tracing::warn!(
+            "capability-collector disabled — executor selection will have no capability hints"
+        );
+    } else {
+        kernel.register_plugin(collector.clone(), PRIORITY_CAPABILITY_COLLECTOR)?;
+        for event in collector_init_events {
+            kernel.dispatch(event);
+        }
+    }
 
     // Executor — mkvtoolnix (MKV metadata, track removal/reorder, convert-to-MKV)
     register_if_enabled!(
@@ -250,13 +279,23 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     load_wasm_plugins(&mut kernel, config, disabled, store.clone())?;
 
     // Report plugin — registered for event subscription (ScanComplete, IntrospectComplete).
-    // Store is injected at construction; init() is a no-op so we skip init_and_register.
+    // Store is injected at construction. We use the manual path (register_plugin)
+    // rather than init_and_register because the caller does not need an Arc handle
+    // for downstream use; but init() is still called explicitly so a future
+    // non-no-op init body would run.
     if !disabled.iter().any(|d| d == "report") {
-        let report_plugin = Arc::new(voom_report::ReportPlugin::new(Arc::clone(&store)));
+        let mut report_plugin = voom_report::ReportPlugin::new(Arc::clone(&store));
+        let ctx = voom_kernel::PluginContext::new(plugin_json("report"), data_dir.clone());
+        let init_events = report_plugin
+            .init(&ctx)
+            .context("Failed to initialize report plugin")?;
         kernel.register_plugin(
-            report_plugin as Arc<dyn voom_kernel::Plugin>,
+            Arc::new(report_plugin) as Arc<dyn voom_kernel::Plugin>,
             PRIORITY_REPORT,
         )?;
+        for event in init_events {
+            kernel.dispatch(event);
+        }
     }
 
     Ok(BootstrapResult {
@@ -352,7 +391,11 @@ mod tests {
     fn test_known_plugin_names_matches_bootstrap_registration() {
         // Bootstrap with all plugins enabled, then verify every registered
         // plugin name appears in KNOWN_PLUGIN_NAMES and vice versa.
-        let config = AppConfig::default();
+        let dir = tempfile::tempdir().unwrap();
+        let config = AppConfig {
+            data_dir: dir.path().to_path_buf(),
+            ..AppConfig::default()
+        };
         let result =
             bootstrap_kernel_with_store(&config).expect("bootstrap should succeed with defaults");
         let registered = result.kernel.registry.plugin_names();
@@ -396,5 +439,33 @@ mod tests {
             .store
             .list_files(&voom_domain::FileFilters::default())
             .is_ok());
+    }
+
+    #[test]
+    fn disabling_capability_collector_yields_empty_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = AppConfig {
+            data_dir: dir.path().to_path_buf(),
+            ..AppConfig::default()
+        };
+        config
+            .plugins
+            .disabled_plugins
+            .push("capability-collector".to_string());
+
+        let result =
+            bootstrap_kernel_with_store(&config).expect("bootstrap should succeed when disabled");
+        let snapshot = result.collector.snapshot();
+        assert!(
+            snapshot.is_empty(),
+            "disabled collector should produce an empty snapshot"
+        );
+
+        // The collector must NOT be registered on the bus when disabled.
+        let registered = result.kernel.registry.plugin_names();
+        assert!(
+            !registered.iter().any(|n| n == "capability-collector"),
+            "capability-collector should not be registered when disabled (registered: {registered:?})"
+        );
     }
 }

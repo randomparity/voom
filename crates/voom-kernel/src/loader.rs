@@ -23,9 +23,9 @@ pub mod wasm {
     use crate::host::HostState;
     use crate::manifest::PluginManifest;
     use crate::Plugin;
+    use parking_lot::Mutex;
     use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Mutex;
     use voom_domain::capabilities::Capability;
     use voom_domain::errors::VoomError;
     use voom_domain::events::{Event, EventResult};
@@ -406,8 +406,10 @@ pub mod wasm {
     }
 
     // SAFETY: WasmPlugin uses Mutex for interior mutability, ensuring
-    // exclusive access to the non-Sync wasmtime::Store.
+    // exclusive access to the non-Send wasmtime::Store from any thread.
     unsafe impl Send for WasmPlugin {}
+    // SAFETY: All access to the non-Sync wasmtime::Store goes through the
+    // internal Mutex, so concurrent &WasmPlugin references cannot race.
     unsafe impl Sync for WasmPlugin {}
 
     impl Plugin for WasmPlugin {
@@ -455,7 +457,7 @@ pub mod wasm {
                 )));
             }
 
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let mut inner = self.inner.lock();
 
             match call_on_event(&mut inner, &event_type, &payload) {
                 Ok(Some(wasm_result)) => {

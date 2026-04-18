@@ -1,5 +1,7 @@
 //! Disk space utilities.
 
+#[cfg(unix)]
+use std::ffi::CString;
 use std::path::Path;
 
 use crate::errors::{Result, VoomError};
@@ -18,7 +20,6 @@ pub fn available_space(path: &Path) -> Result<u64> {
         }
     }
 
-    use std::ffi::CString;
     let c_path = CString::new(check.to_string_lossy().as_bytes())
         .map_err(|e| VoomError::Validation(format!("invalid path for statvfs: {e}")))?;
 

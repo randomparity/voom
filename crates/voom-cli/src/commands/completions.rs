@@ -4,7 +4,10 @@ use clap_complete::generate;
 
 use crate::cli::{Cli, CompletionsArgs};
 
-pub fn run(args: CompletionsArgs) -> Result<()> {
+// Return type mirrors the other subcommand handlers so `main`'s match arms
+// all have a uniform `Result<()>` return; completions itself never fails.
+#[allow(clippy::unnecessary_wraps)]
+pub fn run(args: &CompletionsArgs) -> Result<()> {
     let mut cmd = Cli::command();
     generate(args.shell, &mut cmd, "voom", &mut std::io::stdout());
     Ok(())

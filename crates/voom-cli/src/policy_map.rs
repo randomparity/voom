@@ -123,7 +123,7 @@ impl PolicyResolver {
 
         let base_dir = path.parent().map(Path::to_path_buf);
         Self::build(
-            map_file.default,
+            map_file.default.as_deref(),
             &map_file.mapping,
             root,
             base_dir.as_deref(),
@@ -133,7 +133,7 @@ impl PolicyResolver {
     /// Build from `config.toml` fields.
     pub fn from_config(config: &crate::config::AppConfig, root: &Path) -> Result<Self> {
         Self::build(
-            config.default_policy.clone(),
+            config.default_policy.as_deref(),
             &config.policy_mapping,
             root,
             None,
@@ -146,7 +146,7 @@ impl PolicyResolver {
     /// against that directory (the map file's parent) before falling back
     /// to `config::resolve_policy_path`.
     fn build(
-        default: Option<String>,
+        default: Option<&str>,
         entries: &[MappingEntry],
         root: &Path,
         base_dir: Option<&Path>,
@@ -159,10 +159,10 @@ impl PolicyResolver {
         let mut policy_paths: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
 
-        if let Some(ref d) = default {
+        if let Some(d) = default {
             if d != "skip" {
-                seen.insert(d.clone());
-                policy_paths.push(d.clone());
+                seen.insert(d.to_string());
+                policy_paths.push(d.to_string());
             }
         }
         for entry in entries {
@@ -191,8 +191,8 @@ impl PolicyResolver {
 
         // Build default action.
         let default_action = match default {
-            Some(ref d) if d == "skip" => DefaultAction::Skip,
-            Some(ref d) => DefaultAction::Policy(path_to_index[d]),
+            Some("skip") => DefaultAction::Skip,
+            Some(d) => DefaultAction::Policy(path_to_index[d]),
             None => DefaultAction::None,
         };
 
@@ -248,8 +248,8 @@ impl PolicyResolver {
             DefaultAction::Skip => Ok(PolicyMatch::Skip),
             DefaultAction::None => {
                 anyhow::bail!(
-                    "no policy mapping matches {:?} and no default is configured",
-                    relative
+                    "no policy mapping matches {} and no default is configured",
+                    relative.display()
                 );
             }
         }
@@ -324,7 +324,7 @@ policy "policy-b" {
 }
 "#;
 
-    /// Helper: create temp policy files and return (dir, path_a, path_b).
+    /// Helper: create temp policy files and return (dir, `path_a`, `path_b`).
     fn setup_policies() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         let pa = dir.path().join("a.voom");

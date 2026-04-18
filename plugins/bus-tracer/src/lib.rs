@@ -100,11 +100,11 @@ fn dirs_home() -> Option<PathBuf> {
 }
 
 impl Plugin for BusTracerPlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "bus-tracer"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 

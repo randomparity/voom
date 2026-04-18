@@ -18,12 +18,17 @@ use crate::compiled::{
 };
 use voom_domain::utils::codecs;
 
-use crate::ast::*;
+use crate::ast::{
+    ActionNode, CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode,
+    PolicyAst, SynthSetting, Value, ValueOrField, WhenNode,
+};
 use crate::errors::DslError;
 
 /// Safely convert an f64 to u32, returning None for negative, fractional, or out-of-range values.
 fn safe_u32(n: f64) -> Option<u32> {
-    if n >= 0.0 && n <= u32::MAX as f64 && n.fract() == 0.0 {
+    if n >= 0.0 && n <= f64::from(u32::MAX) && n.fract() == 0.0 {
+        // Bounded above by the explicit range check; safe to cast.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         Some(n as u32)
     } else {
         None
@@ -128,7 +133,16 @@ fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslErr
 
 fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperation, DslError> {
     match op {
-        OperationNode::Container(name) => Ok(CompiledOperation::SetContainer(name.clone())),
+        OperationNode::Container(name) => {
+            let container = voom_domain::media::Container::from_extension(name);
+            if container == voom_domain::media::Container::Other {
+                return Err(DslError::compile(format!(
+                    "unknown container '{name}'; expected one of: {}",
+                    voom_domain::media::Container::known_extensions().join(", ")
+                )));
+            }
+            Ok(CompiledOperation::SetContainer(container))
+        }
         OperationNode::Keep { target, filter } => Ok(CompiledOperation::Keep {
             target: parse_track_target(target),
             filter: filter.as_ref().map(compile_filter).transpose()?,
@@ -212,8 +226,7 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
 
 fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) -> CompiledOperation {
     let canonical = codecs::normalize_codec(codec)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| codec.to_string());
+        .map_or_else(|| codec.to_string(), std::string::ToString::to_string);
 
     let get =
         |key: &str| -> Option<&Value> { settings.iter().find(|(k, _)| k == key).map(|(_, v)| v) };
@@ -228,8 +241,7 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
         Some(Value::List(items)) => items
             .iter()
             .filter_map(|item| match item {
-                Value::String(s) | Value::Ident(s) => Some(s.clone()),
-                Value::Number(_, s) => Some(s.clone()),
+                Value::String(s) | Value::Ident(s) | Value::Number(_, s) => Some(s.clone()),
                 _ => None,
             })
             .collect(),
@@ -242,8 +254,7 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
     };
 
     let bitrate = match get("bitrate") {
-        Some(Value::String(s) | Value::Ident(s)) => Some(s.clone()),
-        Some(Value::Number(_, s)) => Some(s.clone()),
+        Some(Value::String(s) | Value::Ident(s) | Value::Number(_, s)) => Some(s.clone()),
         _ => None,
     };
 
@@ -299,8 +310,7 @@ fn compile_synthesize(
             SynthSetting::Codec(c) => {
                 codec = Some(
                     codecs::normalize_codec(c)
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| c.clone()),
+                        .map_or_else(|| c.clone(), std::string::ToString::to_string),
                 );
             }
             SynthSetting::Channels(v) => {
@@ -421,8 +431,7 @@ fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, Ds
         )),
         FilterNode::CodecCompare(op, codec) => {
             let normalized = codecs::normalize_codec(codec)
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| codec.clone());
+                .map_or_else(|| codec.clone(), std::string::ToString::to_string);
             Ok(CompiledFilter::CodecCompare(
                 compile_compare_op(op),
                 normalized,
@@ -437,8 +446,7 @@ fn compile_filter(filter: &FilterNode) -> std::result::Result<CompiledFilter, Ds
                 .iter()
                 .map(|c| {
                     codecs::normalize_codec(c)
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| c.clone())
+                        .map_or_else(|| c.clone(), std::string::ToString::to_string)
                 })
                 .collect();
             Ok(CompiledFilter::CodecIn(normalized))
@@ -568,7 +576,7 @@ fn topological_sort(ast: &PolicyAst) -> std::result::Result<Vec<String>, DslErro
         .filter(|(_, &d)| d == 0)
         .map(|(&n, _)| n)
         .collect();
-    queue.sort(); // deterministic ordering
+    queue.sort_unstable(); // deterministic ordering
 
     let mut result = Vec::new();
     while let Some(node) = queue.pop() {
@@ -588,7 +596,7 @@ fn topological_sort(ast: &PolicyAst) -> std::result::Result<Vec<String>, DslErro
 
     if result.len() != ast.phases.len() {
         let phase_names: HashSet<&str> = ast.phases.iter().map(|p| p.name.as_str()).collect();
-        let result_set: HashSet<&str> = result.iter().map(|s| s.as_str()).collect();
+        let result_set: HashSet<&str> = result.iter().map(std::string::String::as_str).collect();
         let mut stuck: Vec<&str> = phase_names.difference(&result_set).copied().collect();
         stuck.sort_unstable();
         let has_unknown_dep = stuck.iter().any(|&name| {
@@ -641,7 +649,9 @@ mod tests {
         assert_eq!(policy.phases[0].name, "init");
         assert_eq!(policy.phase_order, vec!["init"]);
         match &policy.phases[0].operations[0] {
-            CompiledOperation::SetContainer(name) => assert_eq!(name, "mkv"),
+            CompiledOperation::SetContainer(container) => {
+                assert_eq!(*container, voom_domain::media::Container::Mkv);
+            }
             _ => panic!("expected SetContainer"),
         }
     }
@@ -903,7 +913,9 @@ mod tests {
                 assert_eq!(tag, "title");
                 match value {
                     CompiledValueOrField::Value(v) => assert_eq!(v, "My Movie"),
-                    other => panic!("expected Value, got {other:?}"),
+                    CompiledValueOrField::Field(_) => {
+                        panic!("expected Value, got Field")
+                    }
                 }
             }
             other => panic!("expected SetTag, got {other:?}"),

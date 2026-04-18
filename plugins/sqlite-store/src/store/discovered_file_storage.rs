@@ -118,7 +118,7 @@ impl SqliteStore {
             sql = "SELECT id, path, size, content_hash, status, discovered_at, updated_at \
                    FROM discovered_files ORDER BY discovered_at";
             param_refs = vec![];
-        };
+        }
 
         let mut stmt = conn
             .prepare(sql)

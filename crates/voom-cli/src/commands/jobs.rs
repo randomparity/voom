@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use comfy_table::{Cell, Color};
 use console::style;
+use voom_domain::job::JobStatus;
+use voom_domain::storage::JobFilters;
 
 use crate::cli::JobsCommands;
 use crate::output;
@@ -11,22 +13,19 @@ pub fn run(cmd: JobsCommands, global_yes: bool) -> Result<()> {
             status,
             limit,
             offset,
-        } => list(status, limit, offset),
-        JobsCommands::Status { id } => status(id),
-        JobsCommands::Cancel { id } => cancel(id),
-        JobsCommands::Retry { id } => retry(id),
-        JobsCommands::Clear { status, yes } => clear(status, yes || global_yes),
+        } => list(status.as_deref(), limit, offset),
+        JobsCommands::Status { id } => status(&id),
+        JobsCommands::Cancel { id } => cancel(&id),
+        JobsCommands::Retry { id } => retry(&id),
+        JobsCommands::Clear { status, yes } => clear(status.as_deref(), yes || global_yes),
     }
 }
 
-fn list(status_filter: Option<String>, limit: u32, offset: u32) -> Result<()> {
+fn list(status_filter: Option<&str>, limit: u32, offset: u32) -> Result<()> {
     let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
-    use voom_domain::job::JobStatus;
-    use voom_domain::storage::JobFilters;
-
-    let filter_status = match status_filter.as_deref() {
+    let filter_status = match status_filter {
         Some(s) => {
             let parsed = JobStatus::parse(s);
             if parsed.is_none() {
@@ -39,17 +38,13 @@ fn list(status_filter: Option<String>, limit: u32, offset: u32) -> Result<()> {
         None => None,
     };
 
-    let jobs = store
-        .list_jobs(&{
-            let mut f = JobFilters::default();
-            f.status = filter_status;
-            f.limit = Some(limit);
-            if offset > 0 {
-                f.offset = Some(offset);
-            }
-            f
-        })
-        .context("failed to list jobs")?;
+    let mut filters = JobFilters::default();
+    filters.status = filter_status;
+    filters.limit = Some(limit);
+    if offset > 0 {
+        filters.offset = Some(offset);
+    }
+    let jobs = store.list_jobs(&filters).context("failed to list jobs")?;
 
     if jobs.is_empty() {
         println!("{} No jobs found.", style("INFO").dim());
@@ -120,11 +115,11 @@ fn list(status_filter: Option<String>, limit: u32, offset: u32) -> Result<()> {
     Ok(())
 }
 
-fn status(id: String) -> Result<()> {
+fn status(id: &str) -> Result<()> {
     let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
-    let uuid = uuid::Uuid::parse_str(&id).with_context(|| format!("Invalid job ID: {id}"))?;
+    let uuid = uuid::Uuid::parse_str(id).with_context(|| format!("Invalid job ID: {id}"))?;
 
     match store.job(&uuid)? {
         Some(job) => {
@@ -159,11 +154,11 @@ fn status(id: String) -> Result<()> {
     Ok(())
 }
 
-fn cancel(id: String) -> Result<()> {
+fn cancel(id: &str) -> Result<()> {
     let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
-    let uuid = uuid::Uuid::parse_str(&id).with_context(|| format!("Invalid job ID: {id}"))?;
+    let uuid = uuid::Uuid::parse_str(id).with_context(|| format!("Invalid job ID: {id}"))?;
 
     // Check that the job exists and is not already in a terminal state
     let job = store
@@ -190,11 +185,11 @@ fn cancel(id: String) -> Result<()> {
     Ok(())
 }
 
-fn retry(id: String) -> Result<()> {
+fn retry(id: &str) -> Result<()> {
     let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
-    let uuid = uuid::Uuid::parse_str(&id).with_context(|| format!("Invalid job ID: {id}"))?;
+    let uuid = uuid::Uuid::parse_str(id).with_context(|| format!("Invalid job ID: {id}"))?;
 
     let job = store
         .job(&uuid)?
@@ -225,10 +220,8 @@ fn retry(id: String) -> Result<()> {
     Ok(())
 }
 
-fn clear(status_filter: Option<String>, yes: bool) -> Result<()> {
-    use voom_domain::job::JobStatus;
-
-    let filter_status = match status_filter.as_deref() {
+fn clear(status_filter: Option<&str>, yes: bool) -> Result<()> {
+    let filter_status = match status_filter {
         Some(s) => {
             let parsed = JobStatus::parse(s).ok_or_else(|| {
                 anyhow::anyhow!(

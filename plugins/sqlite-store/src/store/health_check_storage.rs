@@ -14,7 +14,7 @@ impl HealthCheckStorage for SqliteStore {
             params![
                 record.id.to_string(),
                 record.check_name,
-                record.passed as i32,
+                i32::from(record.passed),
                 record.details,
                 format_datetime(&record.checked_at),
             ],
@@ -36,7 +36,7 @@ impl HealthCheckStorage for SqliteStore {
             sql.push_str(&format!(" AND check_name = ?{}", param_values.len()));
         }
         if let Some(passed) = filters.passed {
-            param_values.push((passed as i32).to_string());
+            param_values.push(i32::from(passed).to_string());
             sql.push_str(&format!(" AND passed = ?{}", param_values.len()));
         }
         if let Some(ref since) = filters.since {

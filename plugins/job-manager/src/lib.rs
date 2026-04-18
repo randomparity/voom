@@ -11,6 +11,8 @@ pub mod progress;
 pub mod queue;
 pub mod worker;
 
+pub use worker::{JobErrorStrategy, JobOutcome, JobResult, WorkerPool, WorkerPoolConfig};
+
 use std::sync::Arc;
 
 use voom_domain::capabilities::Capability;
@@ -58,11 +60,11 @@ impl Default for JobManagerPlugin {
 }
 
 impl Plugin for JobManagerPlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "job-manager"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 

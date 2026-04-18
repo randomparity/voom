@@ -23,7 +23,7 @@ pub fn evaluate_condition(
 ) -> bool {
     match cond {
         CompiledCondition::Exists { target, filter } => {
-            let tracks = tracks_for_target(file, target);
+            let tracks = tracks_for_target(file, *target);
             match filter {
                 Some(f) => tracks
                     .iter()
@@ -37,7 +37,7 @@ pub fn evaluate_condition(
             op,
             value,
         } => {
-            let tracks = tracks_for_target(file, target);
+            let tracks = tracks_for_target(file, *target);
             let count = match filter {
                 Some(f) => tracks
                     .iter()
@@ -45,10 +45,13 @@ pub fn evaluate_condition(
                     .count(),
                 None => tracks.len(),
             };
-            compare_f64(count as f64, op, *value)
+            // Track counts in practice fit well within f64 mantissa precision.
+            #[allow(clippy::cast_precision_loss)]
+            let count_f = count as f64;
+            compare_f64(count_f, *op, *value)
         }
         CompiledCondition::FieldCompare { path, op, value } => {
-            evaluate_field_compare(file, path, op, value, ctx)
+            evaluate_field_compare(file, path, *op, value, ctx)
         }
         CompiledCondition::FieldExists { path } => resolve_field(file, path, ctx).is_some(),
         CompiledCondition::AudioIsMultiLanguage => audio_lang_count(file) > 1,
@@ -193,17 +196,16 @@ fn resolve_file_field(file: &MediaFile, path: &[String]) -> Option<serde_json::V
 fn evaluate_field_compare(
     file: &MediaFile,
     path: &[String],
-    op: &CompiledCompareOp,
+    op: CompiledCompareOp,
     value: &serde_json::Value,
     ctx: &EvalContext<'_>,
 ) -> bool {
-    let resolved = match resolve_field(file, path, ctx) {
-        Some(v) => v,
-        None => return false,
+    let Some(resolved) = resolve_field(file, path, ctx) else {
+        return false;
     };
 
     // Handle "In" operator: check if field value is in a list
-    if *op == CompiledCompareOp::In {
+    if op == CompiledCompareOp::In {
         if let serde_json::Value::Array(list) = value {
             return list.iter().any(|v| json_values_equal(&resolved, v));
         }
@@ -216,7 +218,7 @@ fn evaluate_field_compare(
 /// Compare two JSON values.
 fn compare_json(
     left: &serde_json::Value,
-    op: &CompiledCompareOp,
+    op: CompiledCompareOp,
     right: &serde_json::Value,
 ) -> bool {
     match (left, right) {
@@ -318,9 +320,9 @@ mod tests {
 
     #[test]
     fn test_exists_with_filter() {
+        use voom_dsl::compiled::CompiledFilter;
         let file = test_file();
         let ctx = no_ctx();
-        use voom_dsl::compiled::CompiledFilter;
         assert!(evaluate_condition(
             &CompiledCondition::Exists {
                 target: TrackTarget::Audio,

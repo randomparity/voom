@@ -59,22 +59,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/static/htmx-2.0.4.min.js", get(static_htmx))
         .route("/static/alpine-3.14.8.min.js", get(static_alpine));
 
-    // Auth middleware protects all routes (API, SSE, and HTML pages) when
-    // an auth_token is configured. Without a token, all routes are public.
+    // Auth middleware protects all routes (API, SSE, HTML pages, and the
+    // 404 fallback) when an auth_token is configured. Without a token, all
+    // routes are public. The fallback lives inside this router so unknown
+    // paths go through the auth layer and return 401 (not 404) when
+    // unauthenticated.
     let authenticated_routes = Router::new()
         .nest("/api", api_routes)
         .route("/events", get(sse::events_handler))
         .merge(page_routes)
         .merge(static_routes)
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth_middleware,
-        ))
-        .layer(ConcurrencyLimitLayer::new(100))
-        .layer(RateLimitLayer::new());
-
-    Router::new()
-        .merge(authenticated_routes)
         .fallback(|| async {
             (
                 StatusCode::NOT_FOUND,
@@ -84,6 +78,15 @@ pub fn build_router(state: AppState) -> Router {
                 }),
             )
         })
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
+        .layer(ConcurrencyLimitLayer::new(100))
+        .layer(RateLimitLayer::new());
+
+    Router::new()
+        .merge(authenticated_routes)
         .layer(RequestIdLayer)
         .layer(SecurityHeadersLayer)
         .with_state(state)

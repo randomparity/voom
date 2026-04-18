@@ -32,107 +32,89 @@ impl OrchestrationResult {
     }
 }
 
-/// The phase orchestrator plugin.
+/// Produce phase outcomes from pre-evaluated plans, computing skip/completion
+/// state and dry-run summary.
 ///
-/// Manages the execution order and dependencies between phases. In a full
-/// pipeline, it coordinates: evaluate → execute → re-introspect → next phase.
-/// Library-only plugin — called directly by the CLI, not registered with the kernel.
-pub struct PhaseOrchestrator;
+/// The caller is responsible for running policy evaluation first (via
+/// `voom_policy_evaluator::evaluator::evaluate`) and passing the resulting plans.
+#[must_use]
+pub fn orchestrate(plans: Vec<Plan>) -> OrchestrationResult {
+    let mut phase_results = Vec::new();
+    let mut file_modified = false;
 
-impl PhaseOrchestrator {
-    #[must_use]
-    pub fn new() -> Self {
-        Self
-    }
+    for plan in &plans {
+        let outcome = if plan.is_skipped() {
+            PhaseOutcome::Skipped
+        } else if plan.actions.is_empty() {
+            PhaseOutcome::Completed
+        } else {
+            PhaseOutcome::Pending // Would be Completed after execution
+        };
 
-    /// Produce phase outcomes from pre-evaluated plans, computing skip/completion
-    /// state and dry-run summary.
-    ///
-    /// The caller is responsible for running policy evaluation first (via
-    /// `voom_policy_evaluator::evaluator::evaluate`) and passing the resulting plans.
-    pub fn orchestrate(&self, plans: Vec<Plan>) -> OrchestrationResult {
-        let mut phase_results = Vec::new();
-        let mut file_modified = false;
-
-        for plan in &plans {
-            let outcome = if plan.is_skipped() {
-                PhaseOutcome::Skipped
-            } else if plan.actions.is_empty() {
-                PhaseOutcome::Completed
-            } else {
-                file_modified = true;
-                PhaseOutcome::Pending // Would be Completed after execution
-            };
-
-            let mut phase_result = PhaseResult::new(plan.phase_name.clone(), outcome);
-            phase_result.file_modified = !plan.actions.is_empty();
-            phase_result.skip_reason = plan.skip_reason.clone();
-            phase_results.push(phase_result);
+        let phase_modified = outcome == PhaseOutcome::Pending;
+        if phase_modified {
+            file_modified = true;
         }
 
-        OrchestrationResult {
-            plans,
-            phase_results,
-            file_modified,
-        }
+        let mut phase_result = PhaseResult::new(plan.phase_name.clone(), outcome);
+        phase_result.file_modified = phase_modified;
+        phase_result.skip_reason.clone_from(&plan.skip_reason);
+        phase_results.push(phase_result);
     }
 
-    /// Build a human-readable dry-run summary.
-    #[must_use]
-    pub fn format_dry_run(result: &OrchestrationResult) -> String {
-        let mut output = String::new();
-
-        for (plan, phase_result) in result.plans.iter().zip(&result.phase_results) {
-            output.push_str(&format!("\n=== Phase: {} ===\n", plan.phase_name));
-
-            if let Some(ref reason) = phase_result.skip_reason {
-                output.push_str(&format!("  SKIPPED: {reason}\n"));
-                continue;
-            }
-
-            if plan.actions.is_empty() {
-                output.push_str("  No actions needed.\n");
-            } else {
-                for (i, action) in plan.actions.iter().enumerate() {
-                    output.push_str(&format!("  {}. {}\n", i + 1, action.description));
-                }
-            }
-
-            for warning in &plan.warnings {
-                output.push_str(&format!("  WARNING: {warning}\n"));
-            }
-        }
-
-        output
-    }
-
-    /// Determine if the entire policy requires file modifications.
-    #[must_use]
-    pub fn needs_execution(result: &OrchestrationResult) -> bool {
-        result
-            .plans
-            .iter()
-            .any(|p| !p.is_skipped() && !p.is_empty())
-    }
-
-    /// Get the error strategy for a given phase.
-    #[must_use]
-    pub fn phase_error_strategy(policy: &CompiledPolicy, phase_name: &str) -> ErrorStrategy {
-        policy
-            .phases
-            .iter()
-            .find(|p| p.name == phase_name)
-            .map(|p| p.on_error)
-            // The compiler always sets an explicit on_error per phase, so this
-            // is only reachable if called with a phase name not in the policy.
-            .unwrap_or(ErrorStrategy::Abort)
+    OrchestrationResult {
+        plans,
+        phase_results,
+        file_modified,
     }
 }
 
-impl Default for PhaseOrchestrator {
-    fn default() -> Self {
-        Self::new()
+/// Build a human-readable dry-run summary.
+#[must_use]
+pub fn format_dry_run(result: &OrchestrationResult) -> String {
+    let mut output = String::new();
+
+    for (plan, phase_result) in result.plans.iter().zip(&result.phase_results) {
+        output.push_str(&format!("\n=== Phase: {} ===\n", plan.phase_name));
+
+        if let Some(ref reason) = phase_result.skip_reason {
+            output.push_str(&format!("  SKIPPED: {reason}\n"));
+            continue;
+        }
+
+        if plan.actions.is_empty() {
+            output.push_str("  No actions needed.\n");
+        } else {
+            for (i, action) in plan.actions.iter().enumerate() {
+                output.push_str(&format!("  {}. {}\n", i + 1, action.description));
+            }
+        }
+
+        for warning in &plan.warnings {
+            output.push_str(&format!("  WARNING: {warning}\n"));
+        }
     }
+
+    output
+}
+
+/// Determine if the entire policy requires file modifications.
+#[must_use]
+pub fn needs_execution(result: &OrchestrationResult) -> bool {
+    result
+        .plans
+        .iter()
+        .any(|p| !p.is_skipped() && !p.is_empty())
+}
+
+/// Get the error strategy for a given phase.
+#[must_use]
+pub fn phase_error_strategy(policy: &CompiledPolicy, phase_name: &str) -> ErrorStrategy {
+    policy
+        .phases
+        .iter()
+        .find(|p| p.name == phase_name)
+        .map_or(ErrorStrategy::Abort, |p| p.on_error)
 }
 
 #[cfg(test)]
@@ -179,18 +161,16 @@ mod tests {
 
     #[test]
     fn test_orchestrate_simple_policy() {
-        let orch = PhaseOrchestrator::new();
         let policy =
             voom_dsl::compile_policy(r#"policy "test" { phase init { container mkv } }"#).unwrap();
         let file = test_file();
-        let result = orch.orchestrate(eval(&policy, &file));
+        let result = orchestrate(eval(&policy, &file));
         assert_eq!(result.plans.len(), 1);
         assert!(!result.file_modified); // Already MKV
     }
 
     #[test]
     fn test_orchestrate_multi_phase() {
-        let orch = PhaseOrchestrator::new();
         let policy = voom_dsl::compile_policy(
             r#"policy "test" {
                 phase containerize { container mkv }
@@ -202,7 +182,7 @@ mod tests {
         )
         .unwrap();
         let file = test_file();
-        let result = orch.orchestrate(eval(&policy, &file));
+        let result = orchestrate(eval(&policy, &file));
         assert_eq!(result.plans.len(), 2);
         // normalize phase should remove jpn audio
         assert!(result.file_modified);
@@ -210,7 +190,6 @@ mod tests {
 
     #[test]
     fn test_orchestrate_skipped_phases() {
-        let orch = PhaseOrchestrator::new();
         let policy = voom_dsl::compile_policy(
             r#"policy "test" {
                 phase tc {
@@ -221,14 +200,13 @@ mod tests {
         )
         .unwrap();
         let file = test_file(); // video is hevc
-        let result = orch.orchestrate(eval(&policy, &file));
+        let result = orchestrate(eval(&policy, &file));
         assert!(result.plans[0].is_skipped());
         assert!(!result.file_modified);
     }
 
     #[test]
     fn test_format_dry_run() {
-        let orch = PhaseOrchestrator::new();
         let policy = voom_dsl::compile_policy(
             r#"policy "test" {
                 config { on_error: continue }
@@ -241,8 +219,8 @@ mod tests {
         )
         .unwrap();
         let file = test_file();
-        let result = orch.orchestrate(eval(&policy, &file));
-        let output = PhaseOrchestrator::format_dry_run(&result);
+        let result = orchestrate(eval(&policy, &file));
+        let output = format_dry_run(&result);
         assert!(output.contains("Phase: containerize"));
         assert!(output.contains("Phase: normalize"));
         assert!(output.contains("Remove audio track"));
@@ -250,22 +228,20 @@ mod tests {
 
     #[test]
     fn test_needs_execution() {
-        let orch = PhaseOrchestrator::new();
-
         // No changes needed
         let policy =
             voom_dsl::compile_policy(r#"policy "test" { phase init { container mkv } }"#).unwrap();
         let file = test_file();
-        let result = orch.orchestrate(eval(&policy, &file));
-        assert!(!PhaseOrchestrator::needs_execution(&result));
+        let result = orchestrate(eval(&policy, &file));
+        assert!(!needs_execution(&result));
 
         // Changes needed
         let policy = voom_dsl::compile_policy(
             r#"policy "test" { phase norm { keep audio where lang in [eng] } }"#,
         )
         .unwrap();
-        let result = orch.orchestrate(eval(&policy, &file));
-        assert!(PhaseOrchestrator::needs_execution(&result));
+        let result = orchestrate(eval(&policy, &file));
+        assert!(needs_execution(&result));
     }
 
     #[test]
@@ -281,20 +257,13 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert_eq!(
-            PhaseOrchestrator::phase_error_strategy(&policy, "a"),
-            ErrorStrategy::Skip
-        );
+        assert_eq!(phase_error_strategy(&policy, "a"), ErrorStrategy::Skip);
         // Phase b has no explicit on_error, so compiler defaults to Abort
-        assert_eq!(
-            PhaseOrchestrator::phase_error_strategy(&policy, "b"),
-            ErrorStrategy::Abort
-        );
+        assert_eq!(phase_error_strategy(&policy, "b"), ErrorStrategy::Abort);
     }
 
     #[test]
     fn test_orchestrate_run_if() {
-        let orch = PhaseOrchestrator::new();
         let file = test_file(); // already MKV
 
         let policy = voom_dsl::compile_policy(
@@ -309,7 +278,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = orch.orchestrate(eval(&policy, &file));
+        let result = orchestrate(eval(&policy, &file));
         assert_eq!(result.plans.len(), 2);
         // containerize does nothing (already MKV), so validate is skipped
         assert!(result.plans[1].is_skipped());
@@ -317,15 +286,14 @@ mod tests {
 
     #[test]
     fn test_orchestrate_production_policy() {
-        let orch = PhaseOrchestrator::new();
         let source =
             include_str!("../../../crates/voom-dsl/tests/fixtures/production-normalize.voom");
         let policy = voom_dsl::compile_policy(source).unwrap();
         let file = test_file();
-        let result = orch.orchestrate(eval(&policy, &file));
+        let result = orchestrate(eval(&policy, &file));
         assert_eq!(result.plans.len(), 6);
 
-        let output = PhaseOrchestrator::format_dry_run(&result);
+        let output = format_dry_run(&result);
         assert!(!output.is_empty());
     }
 }

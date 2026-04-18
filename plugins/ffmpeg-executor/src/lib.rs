@@ -120,7 +120,7 @@ impl FfmpegExecutorPlugin {
     /// Returns `false` for:
     /// - Empty or skipped plans
     /// - MKV files with only metadata operations (deferred to mkvtoolnix)
-    /// - Plans requiring codecs/formats the probed FFmpeg doesn't support
+    /// - Plans requiring codecs/formats the probed `FFmpeg` doesn't support
     #[must_use]
     pub fn can_handle(&self, plan: &Plan) -> bool {
         if !self.available || plan.is_empty() || plan.is_skipped() {
@@ -478,11 +478,11 @@ impl Default for FfmpegExecutorPlugin {
 }
 
 impl Plugin for FfmpegExecutorPlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ffmpeg-executor"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 
@@ -509,15 +509,14 @@ impl Plugin for FfmpegExecutorPlugin {
     }
 
     fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
-        let codecs_output = match Command::new("ffmpeg")
+        let codecs_output = if let Ok(o) = Command::new("ffmpeg")
             .args(["-codecs", "-hide_banner"])
             .output()
         {
-            Ok(o) => o,
-            Err(_) => {
-                tracing::warn!("ffmpeg not found; ffmpeg executor disabled");
-                return Ok(vec![]);
-            }
+            o
+        } else {
+            tracing::warn!("ffmpeg not found; ffmpeg executor disabled");
+            return Ok(vec![]);
         };
         self.available = true;
 

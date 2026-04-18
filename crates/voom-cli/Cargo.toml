@@ -33,6 +33,7 @@ voom-web-server.workspace = true
 voom-web-sse-bridge.workspace = true
 voom-health-checker.workspace = true
 voom-bus-tracer.workspace = true
+voom-capability-collector.workspace = true
 voom-report.workspace = true
 
 # CLI
@@ -67,7 +68,7 @@ parking_lot.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 dirs = "5"
-fs2 = "0.4"
+fs2 = { workspace = true }
 toml = { workspace = true }
 
 [features]
@@ -80,10 +81,8 @@ workspace = true
 
 [dev-dependencies]
 assert_cmd = "2"
-chrono.workspace = true
 predicates = "3"
 rand = "0.10"
 rusqlite.workspace = true
 tempfile.workspace = true
-uuid.workspace = true
 voom-domain = { workspace = true, features = ["testing"] }

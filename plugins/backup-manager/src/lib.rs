@@ -202,11 +202,11 @@ impl Plugin for BackupManagerPlugin {
     // `ctx.parse_config::<BackupConfig>()` can be used in `init()` to ergonomically
     // deserialize them (add Deserialize derive to BackupConfig first).
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "backup-manager"
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 

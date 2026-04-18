@@ -140,6 +140,7 @@ fn determine_final_path(original: &Path, actions: &[&PlannedAction]) -> std::pat
 /// Build mkvmerge arguments for structural operations.
 ///
 /// Returns the full argument list (not including the binary name).
+#[must_use]
 pub fn build_merge_args(
     input_path: &Path,
     output_path: &Path,
@@ -154,7 +155,7 @@ pub fn build_merge_args(
     let mut audio_removes: Vec<u32> = Vec::new();
     let mut subtitle_removes: Vec<u32> = Vec::new();
 
-    for action in actions.iter() {
+    for action in actions {
         if action.operation == OperationType::RemoveTrack {
             if let Some(idx) = action.track_index {
                 let track_type = match &action.parameters {
@@ -177,25 +178,34 @@ pub fn build_merge_args(
     }
 
     if !video_removes.is_empty() {
-        let ids: Vec<String> = video_removes.iter().map(|i| i.to_string()).collect();
+        let ids: Vec<String> = video_removes
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         args.push("--video-tracks".into());
         args.push(format!("!{}", ids.join(",")));
     }
 
     if !audio_removes.is_empty() {
-        let ids: Vec<String> = audio_removes.iter().map(|i| i.to_string()).collect();
+        let ids: Vec<String> = audio_removes
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         args.push("--audio-tracks".into());
         args.push(format!("!{}", ids.join(",")));
     }
 
     if !subtitle_removes.is_empty() {
-        let ids: Vec<String> = subtitle_removes.iter().map(|i| i.to_string()).collect();
+        let ids: Vec<String> = subtitle_removes
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         args.push("--subtitle-tracks".into());
         args.push(format!("!{}", ids.join(",")));
     }
 
     // Handle track reordering
-    for action in actions.iter() {
+    for action in actions {
         if action.operation == OperationType::ReorderTracks {
             if let ActionParams::ReorderTracks { order } = &action.parameters {
                 let track_order: Vec<String> = order

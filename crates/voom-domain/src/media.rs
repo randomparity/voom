@@ -372,6 +372,30 @@ impl Container {
         }
     }
 
+    /// Return every extension that `from_extension` recognises as a known container.
+    ///
+    /// Order is the canonical display order used in error messages. Duplicates
+    /// from the same `Container` variant are preserved (e.g., `mkv`, `mka`, `mks`
+    /// all map to `Mkv`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use voom_domain::media::Container;
+    ///
+    /// let exts = Container::known_extensions();
+    /// assert!(exts.contains(&"mkv"));
+    /// assert!(exts.contains(&"m2ts"));
+    /// assert!(!exts.contains(&"xyz"));
+    /// ```
+    #[must_use]
+    pub const fn known_extensions() -> &'static [&'static str] {
+        &[
+            "mkv", "mka", "mks", "mp4", "m4v", "m4a", "avi", "webm", "flv", "wmv", "wma", "mov",
+            "ts", "m2ts", "mts",
+        ]
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -387,7 +411,7 @@ impl Container {
         }
     }
 
-    /// Map to the FFmpeg muxer format name used in capability announcements.
+    /// Map to the `FFmpeg` muxer format name used in capability announcements.
     ///
     /// Returns `None` for `Other` (unknown containers).
     #[must_use]
@@ -407,6 +431,7 @@ impl Container {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 
@@ -465,6 +490,60 @@ mod tests {
         assert_eq!(Container::from_extension("mp4"), Container::Mp4);
         assert_eq!(Container::from_extension("m2ts"), Container::Ts);
         assert_eq!(Container::from_extension("xyz"), Container::Other);
+    }
+
+    #[test]
+    fn known_extensions_matches_from_extension() {
+        for ext in Container::known_extensions() {
+            assert_ne!(
+                Container::from_extension(ext),
+                Container::Other,
+                "{ext} is advertised as known but from_extension returns Other"
+            );
+        }
+    }
+
+    #[test]
+    fn known_extensions_covers_every_non_other_container_variant() {
+        let covered: Vec<Container> = Container::known_extensions()
+            .iter()
+            .map(|e| Container::from_extension(e))
+            .collect();
+
+        // Exhaustive match: adding a new variant to Container forces a compile
+        // error here, prompting the contributor to also extend known_extensions.
+        for variant in [
+            Container::Mkv,
+            Container::Mp4,
+            Container::Avi,
+            Container::Webm,
+            Container::Flv,
+            Container::Wmv,
+            Container::Mov,
+            Container::Ts,
+        ] {
+            assert!(
+                covered.contains(&variant),
+                "Container::{variant:?} has no extension in known_extensions"
+            );
+        }
+
+        // Compile-time enumeration sanity check: this match is exhaustive
+        // (no `_` arm), so adding a variant to Container fails compilation
+        // until the array above is also extended.
+        fn _exhaustive_marker(c: Container) {
+            match c {
+                Container::Mkv
+                | Container::Mp4
+                | Container::Avi
+                | Container::Webm
+                | Container::Flv
+                | Container::Wmv
+                | Container::Mov
+                | Container::Ts
+                | Container::Other => {}
+            }
+        }
     }
 
     #[test]
