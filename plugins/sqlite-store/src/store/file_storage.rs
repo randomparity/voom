@@ -324,6 +324,22 @@ impl FileStorage for SqliteStore {
         Ok(())
     }
 
+    fn rename_file_path(&self, id: &Uuid, new_path: &Path) -> Result<()> {
+        let conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+        let path_str = new_path.to_string_lossy().to_string();
+        let filename = new_path
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_default();
+        conn.execute(
+            "UPDATE files SET path = ?1, filename = ?2, updated_at = ?3 WHERE id = ?4",
+            params![path_str, filename, now, id.to_string()],
+        )
+        .map_err(storage_err("failed to rename file path"))?;
+        Ok(())
+    }
+
     fn purge_missing(&self, older_than: DateTime<Utc>) -> Result<u64> {
         let conn = self.conn()?;
         let cutoff = format_datetime(&older_than);
@@ -1081,6 +1097,94 @@ mod tests {
 
         let no_pred = store.predecessor_id_of(&old_file.id).unwrap();
         assert!(no_pred.is_none());
+    }
+
+    #[test]
+    fn rename_file_path_preserves_id_and_data() {
+        let store = test_store();
+        let file = active_file("/media/movie.mp4");
+        store.upsert_file(&file).unwrap();
+
+        let stored_before = store
+            .file_by_path(Path::new("/media/movie.mp4"))
+            .unwrap()
+            .unwrap();
+        let original_id = stored_before.id;
+
+        store
+            .rename_file_path(&original_id, Path::new("/media/movie.mkv"))
+            .unwrap();
+
+        // Old path no longer maps to a row
+        assert!(store
+            .file_by_path(Path::new("/media/movie.mp4"))
+            .unwrap()
+            .is_none());
+
+        // New path maps to the same row (same id, same hash, status untouched)
+        let stored_after = store
+            .file_by_path(Path::new("/media/movie.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored_after.id, original_id);
+        assert_eq!(stored_after.content_hash.as_deref(), Some("abc123"));
+        assert_eq!(stored_after.status, FileStatus::Active);
+
+        // Filename was derived from the new path
+        let conn = store.conn().unwrap();
+        let filename: String = conn
+            .query_row(
+                "SELECT filename FROM files WHERE id = ?1",
+                rusqlite::params![original_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(filename, "movie.mkv");
+    }
+
+    #[test]
+    fn rename_then_upsert_updates_existing_row_in_place() {
+        // Simulates the ConvertContainer flow: existing mp4 row is renamed
+        // to the .mkv path, then re-introspection upserts a freshly-introspected
+        // MediaFile with a NEW UUID at that path. The path-based ON CONFLICT
+        // must merge into the existing row rather than insert a duplicate.
+        let store = test_store();
+        let original = active_file("/media/movie.mp4");
+        store.upsert_file(&original).unwrap();
+        let original_id = store
+            .file_by_path(Path::new("/media/movie.mp4"))
+            .unwrap()
+            .unwrap()
+            .id;
+
+        store
+            .rename_file_path(&original_id, Path::new("/media/movie.mkv"))
+            .unwrap();
+
+        // Simulated re-introspection: brand-new MediaFile (new UUID) at the new path.
+        let mut reintrospected = MediaFile::new(PathBuf::from("/media/movie.mkv"));
+        reintrospected.content_hash = Some("def456".to_string());
+        reintrospected.container = voom_domain::media::Container::Mkv;
+        assert_ne!(reintrospected.id, original_id, "test setup: new uuid");
+
+        store.upsert_file(&reintrospected).unwrap();
+
+        // Exactly one row, surviving id is the original, content reflects the upsert.
+        let count = store
+            .count_files(&voom_domain::storage::FileFilters::default())
+            .unwrap();
+        assert_eq!(count, 1, "rename + upsert must not duplicate the row");
+
+        let surviving = store
+            .file_by_path(Path::new("/media/movie.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            surviving.id, original_id,
+            "lineage must be preserved via path-based upsert merge"
+        );
+        assert_eq!(surviving.content_hash.as_deref(), Some("def456"));
+        assert_eq!(surviving.container, voom_domain::media::Container::Mkv);
     }
 
     #[test]

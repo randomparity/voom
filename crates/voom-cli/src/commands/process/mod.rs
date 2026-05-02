@@ -1310,6 +1310,86 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn handle_plan_success_preserves_lineage_on_container_conversion() {
+        use voom_domain::media::{Container, MediaFile};
+        use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mp4_path = dir.path().join("movie.mp4");
+        let mkv_path = dir.path().join("movie.mkv");
+        // The executor renames source-to-target; pre-write the target so
+        // `resolve_post_execution_path` accepts the new extension.
+        std::fs::write(&mkv_path, vec![0u8; 1024]).unwrap();
+
+        let mut file = MediaFile::new(mp4_path);
+        file.container = Container::Mp4;
+        file.size = 1024;
+        file.content_hash = Some("oldhash".to_string());
+        let original_id = file.id;
+
+        let mut plan = Plan::new(file.clone(), "containerize", "convert");
+        plan.actions = vec![PlannedAction::file_op(
+            OperationType::ConvertContainer,
+            ActionParams::Container {
+                container: Container::Mkv,
+            },
+            "Convert to mkv",
+        )];
+
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_sqlite_store::store::SqliteStore::in_memory().unwrap());
+        store.upsert_file(&file).unwrap();
+        assert_eq!(store.count_files(&Default::default()).unwrap(), 1);
+
+        let kernel = Arc::new(voom_kernel::Kernel::new());
+        let capabilities = voom_domain::CapabilityMap::new();
+        let counters = RunCounters::new();
+        let token = CancellationToken::new();
+        let resolver = PolicyResolver::from_single(
+            voom_dsl::compile_policy(r#"policy "test" { phase convert { container mkv } }"#)
+                .unwrap(),
+            dir.path(),
+        );
+        let ctx = ProcessContext {
+            resolver: &resolver,
+            kernel,
+            store: store.clone(),
+            dry_run: false,
+            plan_only: false,
+            flag_size_increase: false,
+            flag_duration_shrink: false,
+            token: &token,
+            ffprobe_path: None,
+            capabilities: &capabilities,
+            counters: &counters,
+        };
+
+        let _ =
+            pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx).await;
+
+        assert_eq!(
+            store.count_files(&Default::default()).unwrap(),
+            1,
+            "ConvertContainer must not introduce a duplicate files row"
+        );
+        let surviving = store
+            .file_by_path(&mkv_path)
+            .unwrap()
+            .expect("row must follow the file to its post-conversion path");
+        assert_eq!(
+            surviving.id, original_id,
+            "lineage UUID must be preserved across container conversion"
+        );
+        assert!(
+            store
+                .file_by_path(&dir.path().join("movie.mp4"))
+                .unwrap()
+                .is_none(),
+            "the original .mp4 path must no longer resolve to a row",
+        );
+    }
+
     #[test]
     fn test_check_size_increase_dispatches_plan_failed_without_plan_created() {
         // Write a file with 2048 bytes so the size-increase check fires

@@ -203,6 +203,14 @@ impl FileStorage for InMemoryStore {
         Ok(())
     }
 
+    fn rename_file_path(&self, id: &Uuid, new_path: &Path) -> Result<()> {
+        let mut files = self.files.lock();
+        if let Some(file) = files.get_mut(id) {
+            file.path = new_path.to_path_buf();
+        }
+        Ok(())
+    }
+
     fn purge_missing(&self, _older_than: chrono::DateTime<chrono::Utc>) -> Result<u64> {
         let mut files = self.files.lock();
         let before = files.len();
