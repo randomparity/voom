@@ -616,8 +616,6 @@ mod tests {
     #[test]
     #[tracing_test::traced_test]
     fn test_publish_span_uses_dispatch_naming_for_handler_logs() {
-        /// Plugin that emits an info-level log inside its handler so we can
-        /// verify what span the log line is attributed to.
         struct LoggingPlugin;
 
         impl Plugin for LoggingPlugin {
@@ -649,22 +647,14 @@ mod tests {
         ));
         let _ = bus.publish(event);
 
-        // The handler-side log must be wrapped in the renamed span and field.
         assert!(
             logs_contain("dispatch{"),
             "expected span name 'dispatch' in captured logs"
         );
         assert!(
-            logs_contain("dispatching_event"),
-            "expected field 'dispatching_event' in captured logs"
-        );
-        assert!(
-            logs_contain("dispatching_event=\"file.discovered\"")
-                || logs_contain("dispatching_event=file.discovered"),
+            logs_contain("dispatching_event=file.discovered"),
             "expected dispatching_event field to carry the event type"
         );
-
-        // The old span name and field must not appear.
         assert!(
             !logs_contain("publish{event_type"),
             "old span signature 'publish{{event_type=...}}' must not appear"
