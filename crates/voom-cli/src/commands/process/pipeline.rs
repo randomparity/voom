@@ -60,38 +60,35 @@ pub(super) async fn process_single_file(
 
     let path = std::path::PathBuf::from(&payload.path);
 
-    let mut file = crate::introspect::introspect_file(
-        path,
-        payload.size,
-        payload.content_hash,
-        &ctx.kernel,
-        ctx.ffprobe_path,
-    )
-    .await
-    .map_err(|e| format!("introspect {}: {e}", payload.path))?;
+    let stored = crate::introspect::load_stored_file(ctx.store.clone(), path.clone()).await;
+    let cache_hit = !ctx.force_rescan
+        && stored.as_ref().is_some_and(|s| {
+            crate::introspect::matches_discovery(s, payload.size, payload.content_hash.as_deref())
+        });
 
-    // Prior runs may have written plugin_metadata that the current
-    // introspection didn't reproduce; merge so the evaluator sees both.
-    // Runs on spawn_blocking because StorageTrait is synchronous rusqlite.
-    let store = ctx.store.clone();
-    let lookup_path = file.path.clone();
-    let stored = tokio::task::spawn_blocking(move || store.file_by_path(&lookup_path))
+    let mut file = if cache_hit {
+        tracing::debug!(path = %path.display(), "introspection cache hit; skipping ffprobe");
+        stored.expect("cache_hit implies Some")
+    } else {
+        let mut fresh = crate::introspect::introspect_file(
+            path,
+            payload.size,
+            payload.content_hash,
+            &ctx.kernel,
+            ctx.ffprobe_path,
+        )
         .await
-        .map_err(|e| format!("file_by_path join error for {}: {e}", file.path.display()))?
-        .inspect_err(|e| {
-            tracing::warn!(
-                path = %file.path.display(),
-                error = %e,
-                "failed to load stored file for plugin_metadata merge"
-            );
-        })
-        .ok()
-        .flatten();
-    if let Some(stored) = stored {
-        for (k, v) in stored.plugin_metadata {
-            file.plugin_metadata.entry(k).or_insert(v);
+        .map_err(|e| format!("introspect {}: {e}", payload.path))?;
+
+        // Prior runs may have written plugin_metadata that the current
+        // introspection didn't reproduce; merge so the evaluator sees both.
+        if let Some(stored) = stored {
+            for (k, v) in stored.plugin_metadata {
+                fresh.plugin_metadata.entry(k).or_insert(v);
+            }
         }
-    }
+        fresh
+    };
 
     apply_detected_languages(&mut file);
 

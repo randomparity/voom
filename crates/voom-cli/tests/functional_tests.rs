@@ -3836,6 +3836,110 @@ mod test_process_plan_only {
             .assert()
             .failure();
     }
+
+    /// Snapshot each file's stored `introspected_at` timestamp keyed by path.
+    /// The CLI updates this field every time `introspect_file` runs, so it's a
+    /// reliable signal for whether the introspection cache was hit.
+    fn introspected_at_by_path(env: &TestEnv) -> std::collections::HashMap<String, String> {
+        let output = env
+            .voom()
+            .args(["files", "list", "--format", "json", "--limit", "1000"])
+            .output()
+            .expect("run files list --format json");
+        assert!(
+            output.status.success(),
+            "files list failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let json: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("files list should produce JSON");
+        let files = json["files"].as_array().expect("files array");
+        files
+            .iter()
+            .map(|f| {
+                let path = f["path"].as_str().expect("file path").to_string();
+                let ts = f["introspected_at"]
+                    .as_str()
+                    .expect("introspected_at field")
+                    .to_string();
+                (path, ts)
+            })
+            .collect()
+    }
+
+    /// A second `process --plan-only` pass against the same DB must not
+    /// re-introspect unchanged files (no ffprobe call → stored
+    /// `introspected_at` is unchanged). `--force-rescan` overrides.
+    #[test]
+    fn process_skips_reintrospection_when_unchanged() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac", "hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+        let after_scan = introspected_at_by_path(&env);
+        assert_eq!(
+            after_scan.len(),
+            2,
+            "scan should populate `files` rows for each fixture"
+        );
+
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--plan-only",
+            ])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+        let after_plan_only = introspected_at_by_path(&env);
+        for (path, scan_ts) in &after_scan {
+            let plan_ts = after_plan_only
+                .get(path)
+                .unwrap_or_else(|| panic!("file {path} disappeared after process"));
+            assert_eq!(
+                scan_ts, plan_ts,
+                "process --plan-only must not re-introspect unchanged files; \
+                 path={path} before={scan_ts} after={plan_ts}"
+            );
+        }
+
+        // `introspected_at` is stored as an ISO-8601 string with second
+        // resolution, so sleep ≥1 s before --force-rescan to guarantee the
+        // re-write produces a strictly later timestamp.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--plan-only",
+                "--force-rescan",
+            ])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+        let after_force = introspected_at_by_path(&env);
+        for (path, scan_ts) in &after_scan {
+            let force_ts = after_force
+                .get(path)
+                .unwrap_or_else(|| panic!("file {path} disappeared after --force-rescan"));
+            assert_ne!(
+                scan_ts, force_ts,
+                "--force-rescan must re-introspect; path={path} \
+                 before={scan_ts} after={force_ts}"
+            );
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

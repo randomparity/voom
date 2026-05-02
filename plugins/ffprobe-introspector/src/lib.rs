@@ -1,10 +1,9 @@
 //! `FFprobe` introspection plugin: media file analysis via ffprobe JSON output.
 //!
-//! This plugin serves dual roles:
-//! - **Kernel-registered plugin** — subscribes to `FileDiscovered` events and
-//!   enqueues `JobType::Introspect` jobs via the job queue.
-//! - **Direct-call library** — the `introspect()` method is called directly by
-//!   the CLI for deterministic progress reporting.
+//! Used as a direct-call library: the CLI invokes [`FfprobeIntrospectorPlugin::introspect`]
+//! for each file with deterministic worker-pool concurrency. The plugin
+//! registers no event subscriptions — no plugin consumes `JobType::Introspect`
+//! jobs, so emitting them was wasted work.
 
 pub mod ffprobe;
 pub mod parser;
@@ -13,9 +12,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
-use voom_domain::errors::{Result, VoomError};
-use voom_domain::events::{Event, EventResult, FileIntrospectedEvent, JobEnqueueRequestedEvent};
-use voom_domain::job::{DiscoveredFilePayload, JobType};
+use voom_domain::errors::Result;
+use voom_domain::events::{Event, FileIntrospectedEvent};
 use voom_kernel::{Plugin, PluginContext};
 
 /// `FFprobe` introspector: extracts media metadata using ffprobe.
@@ -110,40 +108,6 @@ impl Plugin for FfprobeIntrospectorPlugin {
         }
     }
 
-    fn handles(&self, event_type: &str) -> bool {
-        event_type == Event::FILE_DISCOVERED
-    }
-
-    fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
-        if let Event::FileDiscovered(e) = event {
-            let payload = serde_json::to_value(DiscoveredFilePayload {
-                path: e.path.to_string_lossy().into_owned(),
-                size: e.size,
-                content_hash: e.content_hash.clone(),
-            })
-            .map_err(|err| {
-                VoomError::plugin(
-                    "ffprobe-introspector",
-                    format!("failed to serialize DiscoveredFilePayload: {err}"),
-                )
-            })?;
-            let enqueue_event = Event::JobEnqueueRequested(JobEnqueueRequestedEvent::new(
-                JobType::Introspect,
-                50,
-                Some(payload),
-                "ffprobe-introspector",
-            ));
-            let mut result = EventResult::new("ffprobe-introspector");
-            result.produced_events = vec![enqueue_event];
-            tracing::info!(
-                path = %e.path.display(),
-                "produced JobEnqueueRequested for introspection"
-            );
-            return Ok(Some(result));
-        }
-        Ok(None)
-    }
-
     fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
         match ctx.parse_config::<serde_json::Value>() {
             Ok(config) => {
@@ -198,37 +162,22 @@ mod tests {
     }
 
     #[test]
-    fn test_handles_file_discovered() {
+    fn test_handles_no_events() {
         let plugin = FfprobeIntrospectorPlugin::new();
-        assert!(plugin.handles(Event::FILE_DISCOVERED));
+        assert!(!plugin.handles(Event::FILE_DISCOVERED));
         assert!(!plugin.handles(Event::FILE_INTROSPECTED));
         assert!(!plugin.handles(Event::PLAN_CREATED));
     }
 
     #[test]
-    fn test_on_event_produces_enqueue_event() {
+    fn test_on_event_is_a_noop_for_file_discovered() {
         let plugin = FfprobeIntrospectorPlugin::new();
         let event = Event::FileDiscovered(voom_domain::events::FileDiscoveredEvent::new(
             PathBuf::from("/media/test.mkv"),
             1024,
             Some("abc123".into()),
         ));
-        let result = plugin
-            .on_event(&event)
-            .unwrap()
-            .expect("should produce result");
-        assert_eq!(result.produced_events.len(), 1);
-
-        let produced = &result.produced_events[0];
-        assert_eq!(produced.event_type(), Event::JOB_ENQUEUE_REQUESTED);
-        if let Event::JobEnqueueRequested(e) = produced {
-            assert_eq!(e.job_type, JobType::Introspect);
-            assert_eq!(e.priority, 50);
-            assert_eq!(e.requester, "ffprobe-introspector");
-            assert!(e.payload.is_some());
-        } else {
-            panic!("expected JobEnqueueRequested event");
-        }
+        assert!(plugin.on_event(&event).unwrap().is_none());
     }
 
     #[test]
