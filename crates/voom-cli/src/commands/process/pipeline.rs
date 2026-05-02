@@ -397,7 +397,7 @@ fn dispatch_plan_failure(failed: PlanFailedEvent, phase_name: &str, ctx: &Proces
 
 /// Handle a successfully executed plan: dispatch completion, re-introspect,
 /// and record the file transition.
-async fn handle_plan_success(
+pub(super) async fn handle_plan_success(
     plan: voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
     executor: &str,
@@ -434,7 +434,22 @@ async fn handle_plan_success(
     let policy_name = plan.policy_name.clone();
     let phase_name = plan.phase_name.clone();
 
-    let new_file = reintrospect_file(file, &[plan], ctx).await;
+    // Update the existing row's path before re-introspection so the
+    // `FileIntrospected` upsert merges into it instead of inserting a new
+    // row at the post-execution path (preserves UUID and lineage).
+    let post_exec_path = resolve_post_execution_path(file, std::slice::from_ref(&plan));
+    if post_exec_path != file.path {
+        if let Err(e) = ctx.store.rename_file_path(&file.id, &post_exec_path) {
+            tracing::warn!(
+                error = %e,
+                old_path = %file.path.display(),
+                new_path = %post_exec_path.display(),
+                "failed to update files.path after path-changing execution"
+            );
+        }
+    }
+
+    let new_file = reintrospect_file(file, post_exec_path, ctx).await;
 
     record_file_transition(&FileTransitionContext {
         old_file: file,
@@ -497,10 +512,9 @@ async fn check_file_hash(file: &voom_domain::media::MediaFile) -> Option<serde_j
 /// `MediaFile` with the current on-disk path, tracks, and metadata.
 async fn reintrospect_file(
     file: &voom_domain::media::MediaFile,
-    plans: &[voom_domain::plan::Plan],
+    current_path: std::path::PathBuf,
     ctx: &ProcessContext<'_>,
 ) -> voom_domain::media::MediaFile {
-    let current_path = resolve_post_execution_path(file, plans);
     if !current_path.exists() {
         tracing::warn!(
             path = %current_path.display(),

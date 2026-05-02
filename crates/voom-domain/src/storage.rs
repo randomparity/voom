@@ -75,6 +75,14 @@ pub trait FileStorage: Send + Sync {
     fn mark_missing(&self, id: &Uuid) -> Result<()>;
     /// Restore a missing file to active status, updating its path.
     fn reactivate_file(&self, id: &Uuid, new_path: &Path) -> Result<()>;
+    /// Update the path (and derived filename) of an existing file row,
+    /// identified by `id`. After this call, [`Self::file_by_path`] using
+    /// `new_path` must return the same row.
+    ///
+    /// Leaves `status`, `content_hash`, and `expected_hash` untouched;
+    /// callers that also need to refresh content metadata should follow
+    /// up with [`Self::upsert_file`].
+    fn rename_file_path(&self, id: &Uuid, new_path: &Path) -> Result<()>;
     /// Permanently delete all files with Missing status older than `older_than`.
     /// Returns the number of rows purged.
     fn purge_missing(&self, older_than: DateTime<Utc>) -> Result<u64>;
