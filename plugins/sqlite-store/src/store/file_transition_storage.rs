@@ -16,17 +16,20 @@ impl FileTransitionStorage for SqliteStore {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO file_transitions \
-             (id, file_id, path, from_hash, to_hash, from_size, to_size, \
+             (id, file_id, path, from_path, from_hash, to_hash, from_size, to_size, \
               source, source_detail, plan_id, \
               duration_ms, actions_taken, tracks_modified, outcome, \
               policy_name, phase_name, metadata_snapshot, \
               error_message, session_id, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \
-                     ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
+                     ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
             params![
                 t.id.to_string(),
                 t.file_id.to_string(),
                 t.path.to_string_lossy().to_string(),
+                t.from_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string()),
                 t.from_hash.as_deref().filter(|s| !s.is_empty()),
                 t.to_hash,
                 t.from_size.map(|v| v as i64),
@@ -60,7 +63,7 @@ impl FileTransitionStorage for SqliteStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, file_id, path, from_hash, to_hash, from_size, to_size, \
+                "SELECT id, file_id, path, from_path, from_hash, to_hash, from_size, to_size, \
                  source, source_detail, plan_id, \
                  duration_ms, actions_taken, tracks_modified, outcome, \
                  policy_name, phase_name, metadata_snapshot, created_at \
@@ -81,7 +84,7 @@ impl FileTransitionStorage for SqliteStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, file_id, path, from_hash, to_hash, from_size, to_size, \
+                "SELECT id, file_id, path, from_path, from_hash, to_hash, from_size, to_size, \
                  source, source_detail, plan_id, \
                  duration_ms, actions_taken, tracks_modified, outcome, \
                  policy_name, phase_name, metadata_snapshot, created_at \
@@ -161,11 +164,13 @@ impl FileTransitionStorage for SqliteStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, file_id, path, from_hash, to_hash, from_size, to_size, \
+                "SELECT id, file_id, path, from_path, from_hash, to_hash, from_size, to_size, \
                  source, source_detail, plan_id, \
                  duration_ms, actions_taken, tracks_modified, outcome, \
                  policy_name, phase_name, metadata_snapshot, created_at \
-                 FROM file_transitions WHERE path = ?1 ORDER BY created_at ASC",
+                 FROM file_transitions \
+                 WHERE path = ?1 OR from_path = ?1 \
+                 ORDER BY created_at ASC",
             )
             .map_err(storage_err("failed to prepare transitions_for_path query"))?;
 
@@ -300,6 +305,7 @@ fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition
     let id_str: String = row.get("id")?;
     let file_id_str: String = row.get("file_id")?;
     let path_str: String = row.get("path")?;
+    let from_path_str: Option<String> = row.get("from_path")?;
     let from_hash: Option<String> = row.get("from_hash")?;
     let to_hash: String = row.get("to_hash")?;
     let from_size: Option<i64> = row.get("from_size")?;
@@ -339,6 +345,7 @@ fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition
         source,
     );
     t.id = id;
+    t.from_path = from_path_str.filter(|s| !s.is_empty()).map(PathBuf::from);
     t.from_hash = from_hash.filter(|s| !s.is_empty());
     t.from_size = from_size.map(|v| v as u64);
     t.source_detail = source_detail.filter(|s| !s.is_empty());
@@ -531,5 +538,38 @@ mod tests {
 
         assert_eq!(bucket.bytes_saved, 300_000);
         assert_eq!(bucket.transition_count, 1);
+    }
+
+    #[test]
+    fn transitions_for_path_matches_either_path_column() {
+        let store = test_store();
+        let file_id = Uuid::new_v4();
+
+        let t = FileTransition::new(
+            file_id,
+            PathBuf::from("/media/movie.mkv"),
+            "new_hash".into(),
+            900_000,
+            TransitionSource::Voom,
+        )
+        .with_from(Some("old_hash".into()), Some(1_000_000))
+        .with_from_path(PathBuf::from("/media/movie.mp4"));
+        store.record_transition(&t).unwrap();
+
+        let by_new = store
+            .transitions_for_path(std::path::Path::new("/media/movie.mkv"))
+            .unwrap();
+        assert_eq!(by_new.len(), 1);
+        assert_eq!(by_new[0].id, t.id);
+
+        let by_old = store
+            .transitions_for_path(std::path::Path::new("/media/movie.mp4"))
+            .unwrap();
+        assert_eq!(by_old.len(), 1);
+        assert_eq!(by_old[0].id, t.id);
+        assert_eq!(
+            by_old[0].from_path.as_deref(),
+            Some(std::path::Path::new("/media/movie.mp4"))
+        );
     }
 }

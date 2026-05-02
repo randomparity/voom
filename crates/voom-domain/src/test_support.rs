@@ -442,8 +442,11 @@ impl FileTransitionStorage for InMemoryStore {
 
     fn transitions_for_path(&self, path: &Path) -> Result<Vec<FileTransition>> {
         let ts = self.transitions.lock();
-        let mut result: Vec<FileTransition> =
-            ts.iter().filter(|t| t.path == path).cloned().collect();
+        let mut result: Vec<FileTransition> = ts
+            .iter()
+            .filter(|t| t.path == path || t.from_path.as_deref() == Some(path))
+            .cloned()
+            .collect();
         result.sort_by_key(|t| t.created_at);
         Ok(result)
     }

@@ -26,7 +26,7 @@ pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
     if tctx.new_file.content_hash == tctx.old_file.content_hash {
         return;
     }
-    let transition = voom_domain::FileTransition::new(
+    let mut transition = voom_domain::FileTransition::new(
         tctx.old_file.id,
         tctx.new_file.path.clone(),
         tctx.new_file.content_hash.clone().unwrap_or_default(),
@@ -48,6 +48,10 @@ pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
         tctx.new_file,
     ))
     .with_session_id(tctx.ctx.counters.session_id);
+
+    if tctx.old_file.path != tctx.new_file.path {
+        transition = transition.with_from_path(tctx.old_file.path.clone());
+    }
 
     if let Err(e) = tctx.ctx.store.record_transition(&transition) {
         tracing::warn!(

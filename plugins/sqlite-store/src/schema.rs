@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS file_transitions (
     id TEXT PRIMARY KEY,
     file_id TEXT NOT NULL,
     path TEXT NOT NULL,
+    from_path TEXT,
     from_hash TEXT,
     to_hash TEXT NOT NULL,
     from_size INTEGER,
@@ -104,6 +105,8 @@ CREATE TABLE IF NOT EXISTS file_transitions (
 
 CREATE INDEX IF NOT EXISTS idx_transitions_file ON file_transitions(file_id);
 CREATE INDEX IF NOT EXISTS idx_transitions_source ON file_transitions(source);
+CREATE INDEX IF NOT EXISTS idx_transitions_path ON file_transitions(path);
+CREATE INDEX IF NOT EXISTS idx_transitions_from_path ON file_transitions(from_path);
 
 CREATE TABLE IF NOT EXISTS plugin_data (
     plugin_name TEXT NOT NULL,
@@ -248,6 +251,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     migrate_processing_stats_into_transitions(conn, &has_column)?;
     migrate_metadata_snapshot_column(conn, &has_column)?;
     migrate_execution_capture_columns(conn, &has_column)?;
+    migrate_from_path_column(conn, &has_column)?;
 
     Ok(())
 }
@@ -564,6 +568,24 @@ fn migrate_execution_capture_columns(
         )?;
     }
 
+    Ok(())
+}
+
+/// Add `from_path` column to `file_transitions` and create the path-lookup
+/// indexes that the OR-match in `transitions_for_path` relies on.
+fn migrate_from_path_column(
+    conn: &Connection,
+    has_column: &dyn Fn(&str, &str) -> rusqlite::Result<bool>,
+) -> rusqlite::Result<()> {
+    if !has_column("file_transitions", "from_path")? {
+        conn.execute_batch("ALTER TABLE file_transitions ADD COLUMN from_path TEXT;")?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_transitions_path \
+         ON file_transitions(path); \
+         CREATE INDEX IF NOT EXISTS idx_transitions_from_path \
+         ON file_transitions(from_path);",
+    )?;
     Ok(())
 }
 
