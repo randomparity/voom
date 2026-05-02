@@ -962,17 +962,21 @@ mod test_plugin {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// test_report (--issues)
+// test_report (empty-state messaging — issue #150)
 // ═══════════════════════════════════════════════════════════════════════════
 
-mod test_report_issues {
+mod test_report_empty_states {
     use super::*;
 
     #[test]
     fn report_issues_on_empty_db() {
         let env = TestEnv::new();
-        // With no files, the issues section produces no output
-        env.voom().args(["report", "--issues"]).assert().success();
+        env.voom()
+            .args(["report", "--issues"])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("Safeguard Violations"))
+            .stderr(predicate::str::contains("No safeguard violations found"));
     }
 
     #[test]
@@ -987,12 +991,99 @@ mod test_report_issues {
             .assert()
             .success();
 
-        // With no violations, the issues section produces no table output
         env.voom()
             .args(["report", "--issues"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("Safeguard Violations").not());
+            .stderr(predicate::str::contains("No safeguard violations found"));
+    }
+
+    #[test]
+    fn report_plans_on_empty_db() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["report", "--plans"])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("Plan Processing Summary"))
+            .stderr(predicate::str::contains("No plans recorded yet"));
+    }
+
+    #[test]
+    fn report_savings_on_empty_db() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["report", "--savings"])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("Space Savings by Provenance"))
+            .stderr(predicate::str::contains("No completed plans"));
+    }
+
+    #[test]
+    fn report_history_on_empty_db() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["report", "--history", "10"])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("Snapshot History"))
+            .stderr(predicate::str::contains("No snapshots captured yet"));
+    }
+
+    #[test]
+    fn report_plans_json_empty() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["report", "--plans", "-f", "json"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("\"plans\""))
+            .stdout(predicate::str::contains("[]"));
+    }
+
+    #[test]
+    fn report_issues_json_empty() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["report", "--issues", "-f", "json"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("\"issues\""))
+            .stdout(predicate::str::contains("[]"));
+    }
+
+    #[test]
+    fn report_plans_plain_empty_is_silent() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["report", "--plans", "-f", "plain"])
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::is_empty());
+    }
+
+    #[test]
+    fn report_plans_csv_empty_emits_header() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["report", "--plans", "-f", "csv"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("# plans"))
+            .stdout(predicate::str::contains("phase,completed,skipped,failed"));
+    }
+
+    #[test]
+    fn report_issues_csv_empty_emits_header() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["report", "--issues", "-f", "csv"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("# issues"))
+            .stdout(predicate::str::contains("path,violation,phase,message"));
     }
 }
 
