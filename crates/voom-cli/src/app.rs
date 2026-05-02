@@ -196,8 +196,8 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
         "discovery"
     );
 
-    // FFprobe introspector — subscribes to FileDiscovered, emits JobEnqueueRequested.
-    // Registered after sqlite-store (100) so discovered files are persisted first.
+    // FFprobe introspector — direct-call library invoked by the CLI; no
+    // event subscriptions because no plugin consumes JobType::Introspect jobs.
     register_if_enabled!(
         "ffprobe-introspector",
         voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new(),

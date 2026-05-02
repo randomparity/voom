@@ -203,6 +203,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
     let resolver = Arc::new(resolver);
     let flag_size_increase = args.flag_size_increase;
     let flag_duration_shrink = args.flag_duration_shrink;
+    let force_rescan = args.force_rescan;
 
     let token_for_workers = token.clone();
     let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
@@ -229,6 +230,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
                         plan_only,
                         flag_size_increase,
                         flag_duration_shrink,
+                        force_rescan,
                         token: &token,
                         ffprobe_path: ffprobe_path.as_deref(),
                         capabilities: &capabilities,
@@ -668,6 +670,8 @@ pub(super) struct ProcessContext<'a> {
     pub(super) plan_only: bool,
     pub(super) flag_size_increase: bool,
     pub(super) flag_duration_shrink: bool,
+    /// When true, bypass the introspection cache and force a fresh ffprobe pass.
+    pub(super) force_rescan: bool,
     pub(super) token: &'a CancellationToken,
     pub(super) ffprobe_path: Option<&'a str>,
     pub(super) capabilities: &'a voom_domain::CapabilityMap,
@@ -1245,6 +1249,7 @@ mod tests {
             plan_only: false,
             flag_size_increase: false,
             flag_duration_shrink: false,
+            force_rescan: false,
             token: &token,
             ffprobe_path: None,
             capabilities: &capabilities,
@@ -1290,6 +1295,7 @@ mod tests {
             plan_only: false,
             flag_size_increase: false,
             flag_duration_shrink: false,
+            force_rescan: false,
             token: &token,
             ffprobe_path: None,
             capabilities: &capabilities,
@@ -1359,6 +1365,7 @@ mod tests {
             plan_only: false,
             flag_size_increase: false,
             flag_duration_shrink: false,
+            force_rescan: false,
             token: &token,
             ffprobe_path: None,
             capabilities: &capabilities,
@@ -1426,6 +1433,7 @@ mod tests {
             plan_only: false,
             flag_size_increase: false,
             flag_duration_shrink: false,
+            force_rescan: false,
             token: &token,
             ffprobe_path: None,
             capabilities: &capabilities,
@@ -1500,6 +1508,7 @@ mod tests {
             plan_only: false,
             flag_size_increase: true,
             flag_duration_shrink: false,
+            force_rescan: false,
             token: &token,
             ffprobe_path: None,
             capabilities: &capabilities,
@@ -1554,6 +1563,7 @@ mod tests {
             plan_only: false,
             flag_size_increase: false,
             flag_duration_shrink: false,
+            force_rescan: false,
             token: &token,
             ffprobe_path: None,
             capabilities: &capabilities,
@@ -1595,6 +1605,7 @@ mod tests {
             plan_only: false,
             flag_size_increase: false,
             flag_duration_shrink: true,
+            force_rescan: false,
             token: &token,
             ffprobe_path: None,
             capabilities: &capabilities,
@@ -1637,6 +1648,7 @@ mod tests {
             plan_only: false,
             flag_size_increase: false,
             flag_duration_shrink: true,
+            force_rescan: false,
             token: &token,
             ffprobe_path: None,
             capabilities: &capabilities,

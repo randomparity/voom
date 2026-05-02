@@ -184,7 +184,9 @@ pub struct ProcessArgs {
     #[arg(long)]
     pub no_backup: bool,
 
-    /// Re-attempt introspection on previously failed files
+    /// Re-introspect every file from scratch. Without this flag, files whose
+    /// stored size and content hash already match are reused from the
+    /// database, and previously failed files are skipped.
     #[arg(long)]
     pub force_rescan: bool,
 
