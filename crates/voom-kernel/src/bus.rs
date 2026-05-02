@@ -651,7 +651,7 @@ mod tests {
 
         // The handler-side log must be wrapped in the renamed span and field.
         assert!(
-            logs_contain("dispatch"),
+            logs_contain("dispatch{"),
             "expected span name 'dispatch' in captured logs"
         );
         assert!(
