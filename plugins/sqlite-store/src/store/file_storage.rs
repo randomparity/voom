@@ -519,14 +519,22 @@ fn mark_missing_files(
     Ok(missing)
 }
 
-/// Build a hash-to-(id, size) index of missing files scoped to scanned dirs.
+/// A move-detection candidate: a missing file's identity plus its prior path,
+/// so the resulting transition can record `from_path`.
+struct MissingMatch {
+    id: String,
+    prior_path: String,
+}
+
+/// Build a content-hash → `MissingMatch` index of missing files scoped to
+/// scanned dirs.
 fn build_missing_hash_index(
     tx: &rusqlite::Transaction<'_>,
     scanned_dirs: &[PathBuf],
-) -> Result<HashMap<String, (String, i64)>> {
+) -> Result<HashMap<String, MissingMatch>> {
     let mut stmt = tx
         .prepare(
-            "SELECT id, path, expected_hash, size FROM files \
+            "SELECT id, path, expected_hash FROM files \
              WHERE status = 'missing' AND expected_hash IS NOT NULL \
              AND path IS NOT NULL",
         )
@@ -537,7 +545,6 @@ fn build_missing_hash_index(
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
             ))
         })
         .map_err(storage_err("failed to query missing files"))?
@@ -545,10 +552,13 @@ fn build_missing_hash_index(
         .map_err(storage_err("failed to collect missing files"))?;
 
     let mut map = HashMap::new();
-    for (id, path, hash, size) in rows {
+    for (id, path, hash) in rows {
         let path_obj = Path::new(&path);
         if scanned_dirs.iter().any(|dir| path_obj.starts_with(dir)) {
-            map.entry(hash).or_insert((id, size));
+            map.entry(hash).or_insert(MissingMatch {
+                id,
+                prior_path: path,
+            });
         }
     }
     Ok(map)
@@ -558,7 +568,7 @@ fn build_missing_hash_index(
 fn match_discovered_files(
     tx: &rusqlite::Transaction<'_>,
     discovered: &[DiscoveredFile],
-    missing_by_hash: &HashMap<String, (String, i64)>,
+    missing_by_hash: &HashMap<String, MissingMatch>,
     now: &str,
     result: &mut ReconcileResult,
 ) -> Result<()> {
@@ -694,7 +704,7 @@ fn reconcile_existing_path(
 fn reconcile_new_path(
     tx: &rusqlite::Transaction<'_>,
     df: &DiscoveredFile,
-    missing_by_hash: &HashMap<String, (String, i64)>,
+    missing_by_hash: &HashMap<String, MissingMatch>,
     consumed_missing: &mut HashSet<String>,
     now: &str,
     result: &mut ReconcileResult,
@@ -707,10 +717,11 @@ fn reconcile_new_path(
         .unwrap_or_default();
     let move_match = missing_by_hash
         .get(&df.content_hash)
-        .filter(|(id, _)| !consumed_missing.contains(id))
-        .map(|(id, size)| (id.clone(), *size));
+        .filter(|m| !consumed_missing.contains(&m.id));
 
-    if let Some((missing_id, _missing_size)) = move_match {
+    if let Some(m) = move_match {
+        let missing_id = m.id.clone();
+        let prior_path = m.prior_path.clone();
         consumed_missing.insert(missing_id.clone());
 
         tx.execute(
@@ -737,6 +748,7 @@ fn reconcile_new_path(
             df.size,
             TransitionSource::Discovery,
         )
+        .with_from_path(PathBuf::from(prior_path))
         .with_detail("detected_move");
         insert_transition_in_tx(tx, &move_transition, now)?;
 
@@ -786,16 +798,19 @@ fn insert_transition_in_tx(
 ) -> Result<()> {
     tx.execute(
         "INSERT INTO file_transitions \
-         (id, file_id, path, from_hash, to_hash, from_size, to_size, \
+         (id, file_id, path, from_path, from_hash, to_hash, from_size, to_size, \
           source, source_detail, plan_id, \
           duration_ms, actions_taken, tracks_modified, outcome, \
           policy_name, phase_name, metadata_snapshot, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \
-                 ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
+                 ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
             t.id.to_string(),
             t.file_id.to_string(),
             t.path.to_string_lossy().to_string(),
+            t.from_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
             t.from_hash.as_deref(),
             t.to_hash,
             t.from_size.map(|v| v as i64),
@@ -930,6 +945,62 @@ mod tests {
             new_file.id, file_a_id,
             "/movies/new.mkv must have a new UUID, not stolen from /tv/episode.mkv"
         );
+    }
+
+    #[test]
+    fn reconcile_move_records_from_path_on_move_transition() {
+        use voom_domain::storage::FileTransitionStorage;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+
+        // File begins life at /media/old/film.mkv.
+        let mut file = MediaFile::new(PathBuf::from("/media/old/film.mkv"));
+        file.content_hash = Some("hash".to_string());
+        store.upsert_file(&file).unwrap();
+        let original_id = store
+            .file_by_path(Path::new("/media/old/film.mkv"))
+            .unwrap()
+            .unwrap()
+            .id;
+        // upsert_file doesn't persist expected_hash; set it so the missing-by-hash
+        // index can pick the row up as a move candidate.
+        store.update_expected_hash(&original_id, "hash").unwrap();
+        store.mark_missing(&original_id).unwrap();
+
+        // Same hash discovered at a new path within the same scan root.
+        let discovered = vec![DiscoveredFile::new(
+            PathBuf::from("/media/new/film.mkv"),
+            1_000,
+            "hash".to_string(),
+        )];
+        let scanned = vec![PathBuf::from("/media")];
+        let result = store
+            .reconcile_discovered_files(&discovered, &scanned)
+            .unwrap();
+        assert_eq!(result.moved, 1);
+
+        // The move transition must reference the prior path so old-path lookups work.
+        let by_old_path = store
+            .transitions_for_path(Path::new("/media/old/film.mkv"))
+            .unwrap();
+        assert_eq!(
+            by_old_path.len(),
+            1,
+            "old path should resolve via from_path"
+        );
+        assert_eq!(
+            by_old_path[0].from_path.as_deref(),
+            Some(Path::new("/media/old/film.mkv"))
+        );
+        assert_eq!(by_old_path[0].path, Path::new("/media/new/film.mkv"));
+
+        // And the new path also resolves.
+        let by_new_path = store
+            .transitions_for_path(Path::new("/media/new/film.mkv"))
+            .unwrap();
+        assert_eq!(by_new_path.len(), 1);
+        assert_eq!(by_new_path[0].id, by_old_path[0].id);
     }
 
     #[test]

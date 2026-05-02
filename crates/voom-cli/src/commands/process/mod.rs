@@ -1391,6 +1391,80 @@ mod tests {
     }
 
     #[test]
+    fn record_file_transition_makes_history_lookup_work_for_old_and_new_paths() {
+        // Bypass re-introspection (depends on ffprobe being on PATH) and
+        // exercise `record_file_transition` directly.
+        use std::path::PathBuf;
+        use voom_domain::media::{Container, MediaFile};
+
+        let mut old_file = MediaFile::new(PathBuf::from("/lib/movie.mp4"));
+        old_file.container = Container::Mp4;
+        old_file.size = 1024;
+        old_file.content_hash = Some("old".to_string());
+
+        let mut new_file = MediaFile::new(PathBuf::from("/lib/movie.mkv"));
+        new_file.container = Container::Mkv;
+        new_file.size = 900;
+        new_file.content_hash = Some("new".to_string());
+
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_sqlite_store::store::SqliteStore::in_memory().unwrap());
+        let kernel = Arc::new(voom_kernel::Kernel::new());
+        let capabilities = voom_domain::CapabilityMap::new();
+        let counters = RunCounters::new();
+        let token = CancellationToken::new();
+        let dir = tempfile::tempdir().unwrap();
+        let resolver = PolicyResolver::from_single(
+            voom_dsl::compile_policy(r#"policy "p" { phase convert { container mkv } }"#).unwrap(),
+            dir.path(),
+        );
+        let ctx = ProcessContext {
+            resolver: &resolver,
+            kernel,
+            store: store.clone(),
+            dry_run: false,
+            plan_only: false,
+            flag_size_increase: false,
+            flag_duration_shrink: false,
+            token: &token,
+            ffprobe_path: None,
+            capabilities: &capabilities,
+            counters: &counters,
+        };
+
+        super::transitions::record_file_transition(&super::transitions::FileTransitionContext {
+            old_file: &old_file,
+            new_file: &new_file,
+            executor: "mkvtoolnix-executor",
+            elapsed_ms: 0,
+            actions_taken: 1,
+            tracks_modified: 0,
+            policy_name: "containerize",
+            phase_name: "convert",
+            plan_id: uuid::Uuid::new_v4(),
+            ctx: &ctx,
+        });
+
+        let by_new = store.transitions_for_path(&new_file.path).unwrap();
+        assert_eq!(
+            by_new.len(),
+            1,
+            "new .mkv path must locate the conversion transition"
+        );
+        let by_old = store.transitions_for_path(&old_file.path).unwrap();
+        assert_eq!(
+            by_old.len(),
+            1,
+            "old .mp4 path must locate the conversion transition via from_path"
+        );
+        assert_eq!(by_old[0].id, by_new[0].id);
+        assert_eq!(
+            by_old[0].from_path.as_deref(),
+            Some(old_file.path.as_path())
+        );
+    }
+
+    #[test]
     fn test_check_size_increase_dispatches_plan_failed_without_plan_created() {
         // Write a file with 2048 bytes so the size-increase check fires
         // when the MediaFile reports size = 1024 (smaller than actual).

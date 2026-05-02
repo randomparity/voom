@@ -90,8 +90,11 @@ pub struct FileTransition {
     pub id: Uuid,
     /// The ID of the `MediaFile` this transition belongs to.
     pub file_id: Uuid,
-    /// Path of the file at the time of transition.
+    /// Path of the file after the transition.
     pub path: PathBuf,
+    /// Path of the file before the transition. Set only when the path
+    /// changed; lets path-based history queries find the row by either side.
+    pub from_path: Option<PathBuf>,
     /// Content hash before the change, if known.
     pub from_hash: Option<String>,
     /// Content hash after the change.
@@ -149,6 +152,7 @@ impl FileTransition {
             id: Uuid::new_v4(),
             file_id,
             path,
+            from_path: None,
             from_hash: None,
             to_hash,
             from_size: None,
@@ -188,6 +192,13 @@ impl FileTransition {
     pub fn with_from(mut self, hash: Option<String>, size: Option<u64>) -> Self {
         self.from_hash = hash;
         self.from_size = size;
+        self
+    }
+
+    /// Set the prior path (pre-change state).
+    #[must_use]
+    pub fn with_from_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.from_path = Some(path.into());
         self
     }
 
