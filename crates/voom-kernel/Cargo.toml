@@ -37,6 +37,7 @@ workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
+tracing-test = { workspace = true }
 tempfile = { workspace = true }
 chrono = { workspace = true }
 voom-domain = { workspace = true, features = ["testing"] }

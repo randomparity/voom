@@ -79,7 +79,11 @@ impl EventBus {
     /// Publish an event to all subscribers that handle its type.
     /// Returns results from all handlers, in priority order.
     /// Produced events are automatically cascaded up to a depth limit.
-    #[tracing::instrument(skip(self, event), fields(event_type = %event.event_type()))]
+    #[tracing::instrument(
+        name = "dispatch",
+        skip(self, event),
+        fields(dispatching_event = %event.event_type())
+    )]
     pub fn publish(&self, event: Event) -> Vec<EventResult> {
         self.publish_recursive(event, 0)
     }
@@ -607,6 +611,54 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].plugin_name, "first");
         assert_eq!(results[1].plugin_name, "second");
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_publish_span_uses_dispatch_naming_for_handler_logs() {
+        struct LoggingPlugin;
+
+        impl Plugin for LoggingPlugin {
+            fn name(&self) -> &str {
+                "logging-plugin"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[]
+            }
+            fn handles(&self, event_type: &str) -> bool {
+                event_type == Event::FILE_DISCOVERED
+            }
+            fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
+                tracing::info!("handler-side log message");
+                Ok(Some(EventResult::new("logging-plugin")))
+            }
+        }
+
+        let bus = EventBus::new();
+        bus.subscribe_plugin(Arc::new(LoggingPlugin), 0);
+
+        let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+            "/test.mkv".into(),
+            1024,
+            Some("abc".into()),
+        ));
+        let _ = bus.publish(event);
+
+        assert!(
+            logs_contain("dispatch{"),
+            "expected span name 'dispatch' in captured logs"
+        );
+        assert!(
+            logs_contain("dispatching_event=file.discovered"),
+            "expected dispatching_event field to carry the event type"
+        );
+        assert!(
+            !logs_contain("publish{event_type"),
+            "old span signature 'publish{{event_type=...}}' must not appear"
+        );
     }
 
     #[test]
