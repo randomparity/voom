@@ -231,6 +231,24 @@ fn format_result(result: &ReportResult, args: &ReportArgs) -> Result<()> {
 
 // ── Table formatting ────────────────────────────────────────
 
+const PLANS_TITLE: &str = "Plan Processing Summary";
+const PLANS_EMPTY_HINT: &str = "No plans recorded yet. Run 'voom process' to generate plans.";
+
+const SAVINGS_TITLE: &str = "Space Savings by Provenance";
+const SAVINGS_EMPTY_HINT: &str = "No completed plans with size deltas yet.";
+
+const HISTORY_TITLE: &str = "Snapshot History";
+const HISTORY_EMPTY_HINT: &str = "No snapshots captured yet.";
+
+const ISSUES_TITLE: &str = "Safeguard Violations";
+const ISSUES_EMPTY_HINT: &str = "No safeguard violations found.";
+
+fn print_empty_section(title: &str, hint: &str) {
+    eprintln!("{}", style(title).bold().underlined());
+    eprintln!("  {}", style(hint).dim());
+    eprintln!();
+}
+
 fn format_result_table(result: &ReportResult) {
     if let Some(ref snapshot) = result.library {
         print_stats_table(snapshot);
@@ -393,11 +411,12 @@ fn aggregate_plan_stats(stats: &[PlanPhaseStat]) -> (Vec<String>, HashMap<String
 
 fn print_plans_section_table(stats: &[PlanPhaseStat]) {
     if stats.is_empty() {
+        print_empty_section(PLANS_TITLE, PLANS_EMPTY_HINT);
         return;
     }
     let (phases, by_phase) = aggregate_plan_stats(stats);
 
-    println!("{}", style("Plan Processing Summary").bold().underlined());
+    println!("{}", style(PLANS_TITLE).bold().underlined());
     println!();
 
     let mut table = output::new_table();
@@ -427,15 +446,13 @@ fn print_savings_section_table(report: &SavingsReport) {
     use voom_domain::utils::format::{format_duration, format_size};
 
     if report.buckets.is_empty() {
+        print_empty_section(SAVINGS_TITLE, SAVINGS_EMPTY_HINT);
         return;
     }
 
     let show_period = report.buckets.iter().any(|b| b.period.is_some());
 
-    println!(
-        "{}",
-        style("Space Savings by Provenance").bold().underlined()
-    );
+    println!("{}", style(SAVINGS_TITLE).bold().underlined());
     println!();
 
     let mut table = output::new_table();
@@ -495,10 +512,11 @@ fn print_history_section_table(snapshots: &[LibrarySnapshot]) {
     use voom_domain::utils::format::{format_duration, format_size};
 
     if snapshots.is_empty() {
+        print_empty_section(HISTORY_TITLE, HISTORY_EMPTY_HINT);
         return;
     }
 
-    println!("{}", style("Snapshot History").bold().underlined());
+    println!("{}", style(HISTORY_TITLE).bold().underlined());
     println!();
     let mut table = output::new_table();
     table.set_header(vec![
@@ -527,12 +545,13 @@ fn print_history_section_table(snapshots: &[LibrarySnapshot]) {
 
 fn print_issues_section_table(issues: &[IssueReport]) {
     if issues.is_empty() {
+        print_empty_section(ISSUES_TITLE, ISSUES_EMPTY_HINT);
         return;
     }
 
     println!(
         "{} ({} files)",
-        style("Safeguard Violations").bold().underlined(),
+        style(ISSUES_TITLE).bold().underlined(),
         issues.len()
     );
     println!();
@@ -795,9 +814,6 @@ fn write_library_csv(snapshot: &LibrarySnapshot) -> Result<()> {
 }
 
 fn write_plans_csv(stats: &[PlanPhaseStat]) -> Result<()> {
-    if stats.is_empty() {
-        return Ok(());
-    }
     let (phases, by_phase) = aggregate_plan_stats(stats);
 
     let stdout = std::io::stdout();
@@ -828,10 +844,6 @@ fn write_plans_csv(stats: &[PlanPhaseStat]) -> Result<()> {
 }
 
 fn write_savings_csv(report: &SavingsReport) -> Result<()> {
-    if report.buckets.is_empty() {
-        return Ok(());
-    }
-
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     writeln!(out, "# savings")?;
@@ -870,10 +882,6 @@ fn write_savings_csv(report: &SavingsReport) -> Result<()> {
 }
 
 fn write_history_csv(snapshots: &[LibrarySnapshot]) -> Result<()> {
-    if snapshots.is_empty() {
-        return Ok(());
-    }
-
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     writeln!(out, "# history")?;
@@ -912,10 +920,6 @@ fn write_history_csv(snapshots: &[LibrarySnapshot]) -> Result<()> {
 }
 
 fn write_issues_csv(issues: &[IssueReport]) -> Result<()> {
-    if issues.is_empty() {
-        return Ok(());
-    }
-
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     writeln!(out, "# issues")?;
