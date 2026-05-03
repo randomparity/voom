@@ -1813,13 +1813,17 @@ mod tests {
         assert!(result.is_err(), "duplicate transition id must error");
 
         // Rollback verification: rename, expected_hash, and bad_files DELETE
-        // must all have been rolled back together.
-        assert!(
-            store
-                .file_by_path(Path::new("/media/movie.mp4"))
-                .unwrap()
-                .is_some(),
-            "rename must have been rolled back"
+        // must all have been rolled back together. `upsert_file` does not
+        // persist `expected_hash`, so the pre-bundle value is `None`;
+        // without rollback we'd observe `Some("new_hash")` from the bundle's
+        // UPDATE.
+        let still_at_old = store
+            .file_by_path(Path::new("/media/movie.mp4"))
+            .unwrap()
+            .expect("rename must have been rolled back");
+        assert_eq!(
+            still_at_old.expected_hash, None,
+            "expected_hash UPDATE must have been rolled back"
         );
         assert!(
             store
