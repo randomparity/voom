@@ -73,7 +73,7 @@ pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
         tracing::warn!(
             path = %tctx.old_file.path.display(),
             error = %e,
-            "failed to record post-execution bundle (rename + transition + expected_hash)"
+            "failed to record post-execution bundle"
         );
     }
 }

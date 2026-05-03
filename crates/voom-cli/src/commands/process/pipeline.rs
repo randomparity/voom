@@ -554,13 +554,24 @@ async fn reintrospect_file(
         }
         Err(e) => {
             // Re-introspection failed but the file is on disk at
-            // `current_path`. Preserve the previous state but reflect
-            // the post-execution path/size/hash so the bundled write
-            // downstream still records the rename.
+            // `current_path`. Preserve the previous tracks/codecs/etc.
+            // (best effort — we can't introspect them) but reflect the
+            // post-execution path, size, container, and hash so the
+            // bundled write downstream still records the rename and the
+            // metadata snapshot doesn't misreport the on-disk state.
             tracing::warn!(error = %e, "re-introspection failed, using previous state");
             let mut fallback = file.clone();
+            fallback.container = voom_domain::media::Container::from_extension(
+                current_path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(""),
+            );
             fallback.path = current_path;
             fallback.size = size;
+            // Don't clobber a known-good prior hash with None when
+            // post-execution hashing failed — the prior hash is still
+            // a better signal than nothing.
             if hash.is_some() {
                 fallback.content_hash = hash;
             }
