@@ -770,6 +770,144 @@ mod test_db {
             .success()
             .stdout(predicate::str::contains("1 files"));
     }
+
+    /// Seed the DB with a few rows in jobs, event_log, and file_transitions,
+    /// then verify that `voom db prune --dry-run` reports counts without
+    /// touching the rows.
+    #[test]
+    fn db_prune_dry_run_does_not_modify_database() {
+        let env = TestEnv::new();
+
+        // Initialise the schema by running any lightweight db command.
+        env.voom().args(["db", "vacuum"]).assert().success();
+
+        // Insert rows directly so we don't need ffprobe.
+        let db = env.db_path();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        for _ in 0..3 {
+            let id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO jobs (id, job_type, status, created_at) VALUES (?1, 'test', 'completed', ?2)",
+                rusqlite::params![id, now],
+            )
+            .unwrap();
+        }
+        for _ in 0..3 {
+            let id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO event_log (id, event_type, payload, summary, created_at) \
+                 VALUES (?1, 'test', '{}', 'seed', ?2)",
+                rusqlite::params![id, now],
+            )
+            .unwrap();
+        }
+        // file_transitions requires a non-empty to_hash and to_size.
+        for _ in 0..3 {
+            let id = uuid::Uuid::new_v4().to_string();
+            let file_id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO file_transitions \
+                 (id, file_id, path, to_hash, to_size, source, created_at) \
+                 VALUES (?1, ?2, '/tmp/fake.mkv', 'abc123', 1024, 'discovery', ?3)",
+                rusqlite::params![id, file_id, now],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        // Capture baseline counts.
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let jobs_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0))
+            .unwrap();
+        let events_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM event_log", [], |r| r.get(0))
+            .unwrap();
+        let transitions_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM file_transitions", [], |r| r.get(0))
+            .unwrap();
+        drop(conn);
+
+        assert_eq!(jobs_before, 3);
+        assert_eq!(events_before, 3);
+        assert_eq!(transitions_before, 3);
+
+        // Run dry-run — must succeed and mention each table.
+        env.voom()
+            .args(["db", "prune", "--dry-run"])
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains("jobs")
+                    .and(predicate::str::contains("event_log"))
+                    .and(predicate::str::contains("file_transitions")),
+            );
+
+        // Counts must be unchanged.
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let jobs_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0))
+            .unwrap();
+        let events_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM event_log", [], |r| r.get(0))
+            .unwrap();
+        let transitions_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM file_transitions", [], |r| r.get(0))
+            .unwrap();
+
+        assert_eq!(jobs_after, jobs_before, "dry-run must not delete job rows");
+        assert_eq!(
+            events_after, events_before,
+            "dry-run must not delete event_log rows"
+        );
+        assert_eq!(
+            transitions_after, transitions_before,
+            "dry-run must not delete file_transitions rows"
+        );
+    }
+
+    /// `voom db prune` (no --dry-run) must exit 0 and emit a per-table
+    /// summary, even when no rows fall outside the retention window.
+    #[test]
+    fn db_prune_actually_succeeds() {
+        let env = TestEnv::new();
+
+        // Initialise schema.
+        env.voom().args(["db", "vacuum"]).assert().success();
+
+        // Seed a few recent rows so the command has something to evaluate.
+        let db = env.db_path();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        for _ in 0..2 {
+            let id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO jobs (id, job_type, status, created_at) \
+                 VALUES (?1, 'test', 'completed', ?2)",
+                rusqlite::params![id, now],
+            )
+            .unwrap();
+        }
+        for _ in 0..2 {
+            let id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO event_log (id, event_type, payload, summary, created_at) \
+                 VALUES (?1, 'test', '{}', 'seed', ?2)",
+                rusqlite::params![id, now],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        // Real prune — must exit 0.
+        env.voom().args(["db", "prune"]).assert().success().stdout(
+            predicate::str::contains("jobs")
+                .and(predicate::str::contains("event_log"))
+                .and(predicate::str::contains("file_transitions")),
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
