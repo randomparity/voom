@@ -240,17 +240,16 @@ impl FileStorage for InMemoryStore {
     /// `SqliteStore`.
     fn record_post_execution(
         &self,
-        id: &Uuid,
         new_path: Option<&Path>,
         new_expected_hash: Option<&str>,
         transition: &FileTransition,
     ) -> Result<()> {
-        debug_assert_eq!(
-            id, &transition.file_id,
-            "record_post_execution: id must match transition.file_id"
+        debug_assert!(
+            new_expected_hash.is_none_or(|h| !h.is_empty()),
+            "record_post_execution: empty hash passed as Some — use None instead"
         );
         let mut files = self.files.lock();
-        if let Some(file) = files.get_mut(id) {
+        if let Some(file) = files.get_mut(&transition.file_id) {
             if let Some(path) = new_path {
                 file.path = path.to_path_buf();
             }

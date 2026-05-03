@@ -11,15 +11,15 @@ use voom_domain::transition::{FileTransition, TransitionSource};
 
 use super::{format_datetime, storage_err, SqliteStore};
 
-/// Insert a `FileTransition` into `file_transitions` using the supplied
-/// open transaction. Used by both the standalone `record_transition`
-/// trait impl (which manages its own connection) and bundled writes that
-/// need to insert a transition alongside other operations atomically.
+/// Insert a `FileTransition` into `file_transitions`. Accepts any
+/// `&rusqlite::Connection`, including one obtained via `Deref` from an
+/// open `Transaction` — so callers can either run the insert standalone
+/// (autocommit) or as part of a larger atomic bundle.
 pub(super) fn insert_full_transition_in_tx(
-    tx: &rusqlite::Transaction<'_>,
+    conn: &rusqlite::Connection,
     t: &FileTransition,
 ) -> Result<()> {
-    tx.execute(
+    conn.execute(
         "INSERT INTO file_transitions \
          (id, file_id, path, from_path, from_hash, to_hash, from_size, to_size, \
           source, source_detail, plan_id, \
@@ -66,14 +66,8 @@ pub(super) fn insert_full_transition_in_tx(
 
 impl FileTransitionStorage for SqliteStore {
     fn record_transition(&self, t: &FileTransition) -> Result<()> {
-        let mut conn = self.conn()?;
-        let tx = conn
-            .transaction()
-            .map_err(storage_err("failed to begin transition transaction"))?;
-        insert_full_transition_in_tx(&tx, t)?;
-        tx.commit()
-            .map_err(storage_err("failed to commit transition"))?;
-        Ok(())
+        let conn = self.conn()?;
+        insert_full_transition_in_tx(&conn, t)
     }
 
     fn transitions_for_file(&self, file_id: &Uuid) -> Result<Vec<FileTransition>> {

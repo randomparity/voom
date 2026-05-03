@@ -155,24 +155,20 @@ pub trait FileStorage: Send + Sync {
     /// happen inside one `BEGIN/COMMIT`, so a mid-bundle crash cannot leave
     /// the DB with an audit-trail gap or a path/hash mismatch.
     ///
+    /// The file row to mutate is identified by `transition.file_id`.
+    ///
     /// `new_path` is `Some` only when execution changed the file's on-disk
     /// path (e.g. `ConvertContainer .mp4 → .mkv`). When `None`, the file
     /// row's `path` column is left untouched.
     ///
     /// `new_expected_hash` is `Some` only when re-introspection produced a
     /// usable content hash. When `None`, the file row's `expected_hash` is
-    /// left untouched. Implementations MUST NOT write an empty string —
-    /// downstream reconciliation distinguishes `NULL` (legacy / no fingerprint
-    /// recorded) from a real hash, and an empty string would be misread as a
-    /// real hash that never matches.
-    ///
-    /// The `transition` argument supplies all transition fields, including
-    /// `from_path` if the caller wants the audit trail to record the prior
-    /// path. The caller must ensure `transition.file_id == *id`; behavior is
-    /// otherwise undefined (debug builds will assert).
+    /// left untouched. Callers MUST NOT pass `Some("")` — downstream
+    /// reconciliation distinguishes `NULL` (legacy / no fingerprint recorded)
+    /// from a real hash, and an empty string would be misread as a real hash
+    /// that never matches. Debug builds will assert.
     fn record_post_execution(
         &self,
-        id: &Uuid,
         new_path: Option<&Path>,
         new_expected_hash: Option<&str>,
         transition: &FileTransition,

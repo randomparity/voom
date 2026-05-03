@@ -392,16 +392,16 @@ impl FileStorage for SqliteStore {
 
     fn record_post_execution(
         &self,
-        id: &Uuid,
         new_path: Option<&Path>,
         new_expected_hash: Option<&str>,
         transition: &FileTransition,
     ) -> Result<()> {
-        debug_assert_eq!(
-            id, &transition.file_id,
-            "record_post_execution: id must match transition.file_id"
+        debug_assert!(
+            new_expected_hash.is_none_or(|h| !h.is_empty()),
+            "record_post_execution: empty hash passed as Some — use None instead"
         );
 
+        let id_str = transition.file_id.to_string();
         let mut conn = self.conn()?;
         let tx = conn
             .transaction()
@@ -413,7 +413,7 @@ impl FileStorage for SqliteStore {
             let filename = filename_string(new_path);
             tx.execute(
                 "UPDATE files SET path = ?1, filename = ?2, updated_at = ?3 WHERE id = ?4",
-                params![path_str, filename, now, id.to_string()],
+                params![path_str, filename, now, &id_str],
             )
             .map_err(storage_err("failed to rename file path in bundle"))?;
         }
@@ -423,7 +423,7 @@ impl FileStorage for SqliteStore {
         if let Some(hash) = new_expected_hash {
             tx.execute(
                 "UPDATE files SET expected_hash = ?1 WHERE id = ?2",
-                params![hash, id.to_string()],
+                params![hash, &id_str],
             )
             .map_err(storage_err("failed to update expected_hash in bundle"))?;
         }
@@ -1511,7 +1511,6 @@ mod tests {
 
         store
             .record_post_execution(
-                &original_id,
                 Some(Path::new("/media/movie.mkv")),
                 Some("new_hash"),
                 &transition,
@@ -1566,7 +1565,7 @@ mod tests {
         .with_from(Some("abc123".to_string()), Some(1024));
 
         store
-            .record_post_execution(&id, None, Some("new_hash"), &transition)
+            .record_post_execution(None, Some("new_hash"), &transition)
             .unwrap();
 
         let stored = store
@@ -1603,7 +1602,7 @@ mod tests {
         );
 
         store
-            .record_post_execution(&id, None, None, &transition)
+            .record_post_execution(None, None, &transition)
             .unwrap();
 
         let stored = store
@@ -1654,7 +1653,6 @@ mod tests {
         bundled.id = existing.id; // force a PK collision
 
         let result = store.record_post_execution(
-            &original_id,
             Some(Path::new("/media/movie.mkv")),
             Some("new_hash"),
             &bundled,

@@ -21,12 +21,11 @@ pub(super) struct FileTransitionContext<'a> {
     pub ctx: &'a ProcessContext<'a>,
 }
 
-/// Record a file transition in the store if the content hash changed.
+/// Record a file transition in the store if the content hash or path changed.
 pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
-    if tctx.new_file.content_hash == tctx.old_file.content_hash
-        && tctx.new_file.path == tctx.old_file.path
-    {
-        // Nothing changed — no transition to record, no rename, no hash refresh.
+    let hash_changed = tctx.new_file.content_hash != tctx.old_file.content_hash;
+    let path_changed = tctx.old_file.path != tctx.new_file.path;
+    if !hash_changed && !path_changed {
         return;
     }
 
@@ -53,23 +52,22 @@ pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
     ))
     .with_session_id(tctx.ctx.counters.session_id);
 
-    if tctx.old_file.path != tctx.new_file.path {
+    if path_changed {
         transition = transition.with_from_path(tctx.old_file.path.clone());
     }
 
-    let new_path = if tctx.old_file.path != tctx.new_file.path {
-        Some(tctx.new_file.path.as_path())
-    } else {
-        None
-    };
-    let new_expected_hash = tctx.new_file.content_hash.as_deref();
+    let new_path = path_changed.then_some(tctx.new_file.path.as_path());
+    // Only refresh `expected_hash` when the content actually changed —
+    // otherwise we'd issue a no-op UPDATE on every path-only execution.
+    let new_expected_hash = hash_changed
+        .then_some(tctx.new_file.content_hash.as_deref())
+        .flatten();
 
-    if let Err(e) = tctx.ctx.store.record_post_execution(
-        &tctx.old_file.id,
-        new_path,
-        new_expected_hash,
-        &transition,
-    ) {
+    if let Err(e) = tctx
+        .ctx
+        .store
+        .record_post_execution(new_path, new_expected_hash, &transition)
+    {
         tracing::warn!(
             path = %tctx.old_file.path.display(),
             error = %e,
