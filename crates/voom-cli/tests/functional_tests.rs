@@ -4148,14 +4148,11 @@ mod test_policy_diff {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// test_plan_persistence — regression coverage for issue #162
+// test_plan_persistence — regression coverage for issue #162: voom process
+// must persist completed Plan rows into the SQLite store so downstream
+// commands (`plans show`, `report --plans`, `report --database`) can audit
+// what was executed.
 // ═══════════════════════════════════════════════════════════════════════════
-//
-// `voom process` should persist completed `Plan` rows into the SQLite store
-// so that downstream commands (`plans show`, `report`, etc.) can audit what
-// was actually executed. As of this commit the rows never land in the
-// `plans` table — the live test below FAILS to lock in the reproduction
-// before the fix lands.
 
 mod test_plan_persistence {
     use super::*;
