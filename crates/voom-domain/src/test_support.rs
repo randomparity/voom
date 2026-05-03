@@ -234,6 +234,31 @@ impl FileStorage for InMemoryStore {
         Ok(())
     }
 
+    fn record_post_execution(
+        &self,
+        id: &Uuid,
+        new_path: Option<&Path>,
+        new_expected_hash: Option<&str>,
+        transition: &FileTransition,
+    ) -> Result<()> {
+        debug_assert_eq!(
+            transition.file_id, *id,
+            "record_post_execution: transition.file_id must equal id"
+        );
+        let mut files = self.files.lock();
+        if let Some(file) = files.get_mut(id) {
+            if let Some(path) = new_path {
+                file.path = path.to_path_buf();
+            }
+            if let Some(hash) = new_expected_hash {
+                file.expected_hash = Some(hash.to_string());
+            }
+        }
+        drop(files);
+        self.transitions.lock().push(transition.clone());
+        Ok(())
+    }
+
     fn predecessor_of(&self, _successor_id: &Uuid) -> Result<Option<MediaFile>> {
         Ok(None)
     }

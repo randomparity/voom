@@ -62,6 +62,33 @@ pub async fn introspect_file(
     kernel: &std::sync::Arc<voom_kernel::Kernel>,
     ffprobe_path: Option<&str>,
 ) -> std::result::Result<voom_domain::media::MediaFile, VoomError> {
+    introspect_file_inner(path, file_size, content_hash, kernel, ffprobe_path, true).await
+}
+
+/// Like [`introspect_file`] but skips the `FileIntrospected` event dispatch.
+/// Use this from code paths that take responsibility for persistence
+/// themselves (e.g. the post-execution bundled write).
+// Called by process::handle_plan_success (Task 5). The binary-crate module
+// boundary means rustc sees this as dead until that call-site exists.
+#[allow(dead_code)]
+pub async fn introspect_file_no_dispatch(
+    path: std::path::PathBuf,
+    file_size: u64,
+    content_hash: Option<String>,
+    kernel: &std::sync::Arc<voom_kernel::Kernel>,
+    ffprobe_path: Option<&str>,
+) -> std::result::Result<voom_domain::media::MediaFile, VoomError> {
+    introspect_file_inner(path, file_size, content_hash, kernel, ffprobe_path, false).await
+}
+
+async fn introspect_file_inner(
+    path: std::path::PathBuf,
+    file_size: u64,
+    content_hash: Option<String>,
+    kernel: &std::sync::Arc<voom_kernel::Kernel>,
+    ffprobe_path: Option<&str>,
+    dispatch_event: bool,
+) -> std::result::Result<voom_domain::media::MediaFile, VoomError> {
     let mut introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
     if let Some(fp) = ffprobe_path {
         introspector = introspector.with_ffprobe_path(fp);
@@ -69,16 +96,15 @@ pub async fn introspect_file(
     let path_for_event = path.clone();
     let hash_for_event = content_hash.clone();
     let path_display = path.display().to_string();
-    // Run introspection AND dispatch inside spawn_blocking so the entire
-    // cascade (WASM plugins, subtitle mux) runs on the blocking pool
-    // instead of the tokio runtime.
     let kernel_clone = kernel.clone();
     let intro_result = tokio::task::spawn_blocking(move || {
         let result = introspector.introspect(&path, file_size, content_hash.as_deref());
-        if let Ok(ref intro_event) = result {
-            kernel_clone.dispatch(Event::FileIntrospected(
-                voom_domain::events::FileIntrospectedEvent::new(intro_event.file.clone()),
-            ));
+        if dispatch_event {
+            if let Ok(ref intro_event) = result {
+                kernel_clone.dispatch(Event::FileIntrospected(
+                    voom_domain::events::FileIntrospectedEvent::new(intro_event.file.clone()),
+                ));
+            }
         }
         result
     })
