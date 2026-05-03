@@ -1,7 +1,9 @@
 use rusqlite::params;
 
 use voom_domain::errors::Result;
-use voom_domain::storage::{EventLogFilters, EventLogRecord, EventLogStorage};
+use voom_domain::storage::{
+    EventLogFilters, EventLogRecord, EventLogStorage, PruneReport, RetentionPolicy,
+};
 
 use super::{format_datetime, storage_err, SqliteStore};
 
@@ -89,6 +91,46 @@ impl EventLogStorage for SqliteStore {
             )
             .map_err(storage_err("failed to prune event log"))?;
         Ok(deleted as u64)
+    }
+
+    fn prune_old_event_log(&self, policy: RetentionPolicy) -> Result<PruneReport> {
+        if policy.is_disabled() {
+            let conn = self.conn()?;
+            let kept: u64 = conn
+                .query_row("SELECT COUNT(*) FROM event_log", [], |row| row.get(0))
+                .map_err(storage_err("failed to count event_log"))?;
+            return Ok(PruneReport { deleted: 0, kept });
+        }
+
+        let conn = self.conn()?;
+        let cutoff = policy
+            .max_age
+            .map(|d| super::format_datetime(&(chrono::Utc::now() - d)));
+        let keep_last = policy.keep_last.and_then(|n| i64::try_from(n).ok());
+
+        let deleted = conn
+            .execute(
+                "WITH ranked AS (
+                    SELECT rowid,
+                           ROW_NUMBER() OVER (ORDER BY rowid DESC) AS rn,
+                           created_at
+                    FROM event_log
+                )
+                DELETE FROM event_log
+                WHERE rowid IN (
+                    SELECT rowid FROM ranked
+                    WHERE (?1 IS NOT NULL AND created_at < ?1)
+                       OR (?2 IS NOT NULL AND rn > ?2)
+                )",
+                params![cutoff, keep_last],
+            )
+            .map_err(storage_err("failed to prune event_log"))? as u64;
+
+        let kept: u64 = conn
+            .query_row("SELECT COUNT(*) FROM event_log", [], |row| row.get(0))
+            .map_err(storage_err("failed to count remaining event_log"))?;
+
+        Ok(PruneReport { deleted, kept })
     }
 }
 
@@ -241,5 +283,72 @@ mod tests {
         let store = test_store();
         let pruned = store.prune_event_log(100).expect("prune");
         assert_eq!(pruned, 0);
+    }
+
+    use voom_domain::storage::RetentionPolicy;
+
+    fn insert_at(store: &SqliteStore, when: chrono::DateTime<chrono::Utc>) -> i64 {
+        let mut record = EventLogRecord::new(
+            uuid::Uuid::new_v4(),
+            "file.discovered".into(),
+            "{}".into(),
+            "test".into(),
+        );
+        record.created_at = when;
+        store.insert_event_log(&record).unwrap()
+    }
+
+    #[test]
+    fn prune_old_event_log_disabled_is_noop() {
+        let store = test_store();
+        insert_at(&store, chrono::Utc::now() - chrono::Duration::days(365));
+        let report = store
+            .prune_old_event_log(RetentionPolicy::default())
+            .unwrap();
+        assert_eq!(report.deleted, 0);
+        assert_eq!(report.kept, 1);
+    }
+
+    #[test]
+    fn prune_old_event_log_age_only() {
+        let store = test_store();
+        let now = chrono::Utc::now();
+        insert_at(&store, now - chrono::Duration::days(60));
+        insert_at(&store, now - chrono::Duration::hours(1));
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(30)),
+            keep_last: None,
+        };
+        let report = store.prune_old_event_log(policy).unwrap();
+        assert_eq!(report.deleted, 1);
+        assert_eq!(report.kept, 1);
+    }
+
+    #[test]
+    fn prune_old_event_log_count_only() {
+        let store = test_store();
+        let now = chrono::Utc::now();
+        for i in 0..5i64 {
+            insert_at(&store, now - chrono::Duration::seconds(i));
+        }
+        let policy = RetentionPolicy {
+            max_age: None,
+            keep_last: Some(2),
+        };
+        let report = store.prune_old_event_log(policy).unwrap();
+        assert_eq!(report.deleted, 3);
+        assert_eq!(report.kept, 2);
+    }
+
+    #[test]
+    fn prune_old_event_log_empty_is_noop() {
+        let store = test_store();
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(1)),
+            keep_last: Some(10),
+        };
+        let report = store.prune_old_event_log(policy).unwrap();
+        assert_eq!(report.deleted, 0);
+        assert_eq!(report.kept, 0);
     }
 }
