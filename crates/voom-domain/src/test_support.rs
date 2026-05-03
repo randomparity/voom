@@ -479,6 +479,12 @@ impl FileTransitionStorage for InMemoryStore {
     fn failure_sessions(&self) -> Result<Vec<crate::storage::SessionSummary>> {
         Ok(Vec::new())
     }
+
+    fn prune_old_file_transitions(&self, _policy: crate::storage::RetentionPolicy)
+        -> crate::errors::Result<crate::storage::PruneReport>
+    {
+        Ok(crate::storage::PruneReport::default())
+    }
 }
 
 impl PluginDataStorage for InMemoryStore {

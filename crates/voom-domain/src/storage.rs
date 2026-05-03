@@ -212,6 +212,12 @@ pub trait FileTransitionStorage: Send + Sync {
     fn latest_failure_session(&self) -> Result<Option<Uuid>>;
     /// List sessions that have failures, most recent first.
     fn failure_sessions(&self) -> Result<Vec<SessionSummary>>;
+    /// Delete file_transitions rows per `policy`.
+    ///
+    /// Always preserves the most-recent transition per `file_id` regardless of
+    /// `policy` — this protects "current state" forensics. Age is measured by
+    /// `created_at`.
+    fn prune_old_file_transitions(&self, policy: RetentionPolicy) -> Result<PruneReport>;
 }
 
 /// A failed transition with plan result details for error reporting.
