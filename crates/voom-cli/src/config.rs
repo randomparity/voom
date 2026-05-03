@@ -45,6 +45,69 @@ fn default_retention_days() -> u32 {
     30
 }
 
+/// Per-table retention bounds. Either field may be `Some(0)` to disable that
+/// bound; both being `Some(0)` (or both `None`) disables retention for the table.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TableRetention {
+    pub keep_for_days: Option<u32>,
+    pub keep_last: Option<u64>,
+}
+
+impl TableRetention {
+    fn for_jobs() -> Self {
+        Self {
+            keep_for_days: Some(7),
+            keep_last: Some(50_000),
+        }
+    }
+    fn for_event_log() -> Self {
+        Self {
+            keep_for_days: Some(30),
+            keep_last: Some(100_000),
+        }
+    }
+    fn for_file_transitions() -> Self {
+        Self {
+            keep_for_days: Some(90),
+            keep_last: Some(500_000),
+        }
+    }
+}
+
+/// Top-level retention configuration.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RetentionConfig {
+    #[serde(default = "default_schedule_interval_minutes")]
+    pub schedule_interval_minutes: u32,
+    #[serde(default = "default_run_after_cli")]
+    pub run_after_cli: bool,
+    #[serde(default = "TableRetention::for_jobs")]
+    pub jobs: TableRetention,
+    #[serde(default = "TableRetention::for_event_log")]
+    pub event_log: TableRetention,
+    #[serde(default = "TableRetention::for_file_transitions")]
+    pub file_transitions: TableRetention,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            schedule_interval_minutes: default_schedule_interval_minutes(),
+            run_after_cli: default_run_after_cli(),
+            jobs: TableRetention::for_jobs(),
+            event_log: TableRetention::for_event_log(),
+            file_transitions: TableRetention::for_file_transitions(),
+        }
+    }
+}
+
+fn default_schedule_interval_minutes() -> u32 {
+    60
+}
+fn default_run_after_cli() -> bool {
+    true
+}
+
 /// Application configuration loaded from TOML.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -70,6 +133,8 @@ pub struct AppConfig {
     pub recovery: RecoveryConfig,
     #[serde(default)]
     pub pruning: PruningConfig,
+    #[serde(default)]
+    pub retention: RetentionConfig,
 }
 
 impl std::fmt::Debug for AppConfig {
@@ -86,6 +151,7 @@ impl std::fmt::Debug for AppConfig {
             .field("policy_mapping", &self.policy_mapping)
             .field("recovery", &self.recovery)
             .field("pruning", &self.pruning)
+            .field("retention", &self.retention)
             .finish()
     }
 }
@@ -120,6 +186,7 @@ impl Default for AppConfig {
             policy_mapping: Vec::new(),
             recovery: RecoveryConfig::default(),
             pruning: PruningConfig::default(),
+            retention: RetentionConfig::default(),
         }
     }
 }
@@ -293,6 +360,27 @@ mode = "always_recover"
 # Missing file pruning: how long to keep records for files no longer on disk.
 [pruning]
 retention_days = 30
+
+# Database retention. Bounds the size of jobs, event_log, and file_transitions
+# to keep the database from growing forever. Set keep_for_days = 0 and keep_last = 0
+# for any table to disable retention for that table.
+[retention]
+# How often the periodic prune runs in `serve` mode (minutes).
+schedule_interval_minutes = 60
+# Whether `voom scan` and `voom process` run a single prune pass after they finish.
+run_after_cli = true
+
+[retention.jobs]
+keep_for_days = 7
+keep_last = 50000
+
+[retention.event_log]
+keep_for_days = 30
+keep_last = 100000
+
+[retention.file_transitions]
+keep_for_days = 90
+keep_last = 500000
 "#
     )
 }
@@ -519,6 +607,13 @@ mod tests {
             contents.contains("[pruning]"),
             "should have pruning section"
         );
+        assert!(
+            contents.contains("[retention]"),
+            "should have retention section"
+        );
+        assert!(contents.contains("[retention.jobs]"));
+        assert!(contents.contains("[retention.event_log]"));
+        assert!(contents.contains("[retention.file_transitions]"));
     }
 
     // ── load_config with temp files ──────────────────────────
@@ -699,5 +794,35 @@ api_key = "abc123"
             |t| serde_json::to_value(t).unwrap_or_default(),
         );
         assert_eq!(unconfigured, serde_json::json!({}));
+    }
+
+    #[test]
+    fn retention_config_roundtrips() {
+        let toml_str = r#"
+[retention]
+schedule_interval_minutes = 30
+run_after_cli = false
+
+[retention.jobs]
+keep_for_days = 14
+keep_last = 100000
+"#;
+        let cfg: AppConfig = toml::from_str(toml_str).expect("parse");
+        assert_eq!(cfg.retention.schedule_interval_minutes, 30);
+        assert!(!cfg.retention.run_after_cli);
+        assert_eq!(cfg.retention.jobs.keep_for_days, Some(14));
+        assert_eq!(cfg.retention.jobs.keep_last, Some(100_000));
+        // Tables not listed get the type defaults
+        assert_eq!(cfg.retention.event_log.keep_for_days, Some(30));
+        assert_eq!(cfg.retention.file_transitions.keep_for_days, Some(90));
+    }
+
+    #[test]
+    fn retention_defaults_when_absent() {
+        let cfg: AppConfig = toml::from_str("").expect("parse");
+        assert_eq!(cfg.retention.schedule_interval_minutes, 60);
+        assert!(cfg.retention.run_after_cli);
+        assert_eq!(cfg.retention.jobs.keep_for_days, Some(7));
+        assert_eq!(cfg.retention.jobs.keep_last, Some(50_000));
     }
 }
