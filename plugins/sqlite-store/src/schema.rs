@@ -489,6 +489,12 @@ fn migrate_indexes_and_constraints(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_completed_at ON jobs(completed_at);
+         CREATE INDEX IF NOT EXISTS idx_event_log_created_at ON event_log(created_at);
+         CREATE INDEX IF NOT EXISTS idx_transitions_created_at ON file_transitions(created_at);",
+    )?;
+
     Ok(())
 }
 
@@ -773,5 +779,31 @@ mod tests {
             )
             .unwrap();
         assert!(has_index, "idx_files_superseded_by index should exist");
+    }
+
+    #[test]
+    fn migration_creates_retention_indexes() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        create_schema(&conn).unwrap();
+
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        for required in &[
+            "idx_jobs_completed_at",
+            "idx_event_log_created_at",
+            "idx_transitions_created_at",
+        ] {
+            assert!(
+                names.iter().any(|n| n == required),
+                "missing index {required}; got {names:?}"
+            );
+        }
     }
 }
