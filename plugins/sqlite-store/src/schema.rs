@@ -252,6 +252,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     migrate_metadata_snapshot_column(conn, &has_column)?;
     migrate_execution_capture_columns(conn, &has_column)?;
     migrate_from_path_column(conn, &has_column)?;
+    migrate_cover_art_track_types(conn)?;
 
     Ok(())
 }
@@ -605,6 +606,46 @@ fn migrate_execution_capture_columns(
     Ok(())
 }
 
+/// Reclassify cover-art / thumbnail tracks misclassified as primary video by
+/// older introspector versions. See issue #156.
+///
+/// - `png`/`bmp`/`gif`/`webp` rows are always image-only in a film library.
+/// - `mjpeg` rows are reclassified only when a sibling video track exists for
+///   the same file (protects rare genuine motion-mjpeg encodes).
+///
+/// Idempotent: a clean database has no `track_type='video'` rows with image
+/// codecs, so the UPDATE statements affect zero rows.
+fn migrate_cover_art_track_types(conn: &Connection) -> rusqlite::Result<()> {
+    let tracks_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tracks'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !tracks_exists {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "UPDATE tracks SET track_type = 'attachment' \
+         WHERE track_type = 'video' \
+         AND codec IN ('png', 'bmp', 'gif', 'webp');",
+    )?;
+
+    conn.execute_batch(
+        "UPDATE tracks SET track_type = 'attachment' \
+         WHERE track_type = 'video' \
+         AND codec = 'mjpeg' \
+         AND file_id IN ( \
+             SELECT file_id FROM tracks \
+             WHERE track_type = 'video' \
+             GROUP BY file_id \
+             HAVING COUNT(*) > 1 \
+         );",
+    )?;
+
+    Ok(())
+}
+
 /// Add `from_path` column to `file_transitions` and create the path-lookup
 /// indexes that the OR-match in `transitions_for_path` relies on.
 fn migrate_from_path_column(
@@ -833,5 +874,59 @@ mod tests {
                 "missing index {required}; got {names:?}"
             );
         }
+    }
+
+    #[test]
+    fn migration_reclassifies_cover_art_tracks() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+
+        // file_a: real h264 + mjpeg cover (mjpeg should be reclassified)
+        conn.execute_batch(
+            "INSERT INTO files (id, path, filename, size, content_hash, container, introspected_at, created_at, updated_at) \
+             VALUES ('file_a', '/a.mkv', 'a.mkv', 0, 'h', 'mkv', '2026-01-01', '2026-01-01', '2026-01-01'); \
+             INSERT INTO tracks (id, file_id, stream_index, track_type, codec) \
+             VALUES ('t_a0', 'file_a', 0, 'video', 'h264'), \
+                    ('t_a1', 'file_a', 1, 'video', 'mjpeg');",
+        ).unwrap();
+
+        // file_b: lone mjpeg track (real motion encode — must NOT be reclassified)
+        conn.execute_batch(
+            "INSERT INTO files (id, path, filename, size, content_hash, container, introspected_at, created_at, updated_at) \
+             VALUES ('file_b', '/b.mkv', 'b.mkv', 0, 'h', 'mkv', '2026-01-01', '2026-01-01', '2026-01-01'); \
+             INSERT INTO tracks (id, file_id, stream_index, track_type, codec) \
+             VALUES ('t_b0', 'file_b', 0, 'video', 'mjpeg');",
+        ).unwrap();
+
+        // file_c: hevc + png cover (png ALWAYS reclassified)
+        conn.execute_batch(
+            "INSERT INTO files (id, path, filename, size, content_hash, container, introspected_at, created_at, updated_at) \
+             VALUES ('file_c', '/c.mkv', 'c.mkv', 0, 'h', 'mkv', '2026-01-01', '2026-01-01', '2026-01-01'); \
+             INSERT INTO tracks (id, file_id, stream_index, track_type, codec) \
+             VALUES ('t_c0', 'file_c', 0, 'video', 'hevc'), \
+                    ('t_c1', 'file_c', 1, 'video', 'png');",
+        ).unwrap();
+
+        migrate_cover_art_track_types(&conn).unwrap();
+
+        let track_type = |id: &str| -> String {
+            conn.query_row("SELECT track_type FROM tracks WHERE id = ?", [id], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(track_type("t_a0"), "video");
+        assert_eq!(
+            track_type("t_a1"),
+            "attachment",
+            "mjpeg paired with real video reclassified"
+        );
+        assert_eq!(track_type("t_b0"), "video", "lone mjpeg preserved");
+        assert_eq!(track_type("t_c0"), "video");
+        assert_eq!(track_type("t_c1"), "attachment", "png always reclassified");
+
+        // Re-running is a no-op.
+        migrate_cover_art_track_types(&conn).unwrap();
+        assert_eq!(track_type("t_a1"), "attachment");
     }
 }
