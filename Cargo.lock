@@ -3388,6 +3388,7 @@ name = "voom-ffmpeg-executor"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "rayon",
  "serde",
  "serde_json",
  "tempfile",
