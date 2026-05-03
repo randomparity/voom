@@ -1447,28 +1447,8 @@ mod tests {
         let store: Arc<dyn voom_domain::storage::StorageTrait> =
             Arc::new(voom_sqlite_store::store::SqliteStore::in_memory().unwrap());
         let kernel = Arc::new(voom_kernel::Kernel::new());
-        let capabilities = voom_domain::CapabilityMap::new();
-        let counters = RunCounters::new();
-        let token = CancellationToken::new();
-        let dir = tempfile::tempdir().unwrap();
-        let resolver = PolicyResolver::from_single(
-            voom_dsl::compile_policy(r#"policy "p" { phase convert { container mkv } }"#).unwrap(),
-            dir.path(),
-        );
-        let ctx = ProcessContext {
-            resolver: &resolver,
-            kernel,
-            store: store.clone(),
-            dry_run: false,
-            plan_only: false,
-            flag_size_increase: false,
-            flag_duration_shrink: false,
-            force_rescan: false,
-            token: &token,
-            ffprobe_path: None,
-            capabilities: &capabilities,
-            counters: &counters,
-        };
+        let fixture = TestFixture::with_policy(r#"policy "p" { phase convert { container mkv } }"#);
+        let ctx = fixture.make_ctx(kernel, store.clone());
 
         super::transitions::record_file_transition(&super::transitions::FileTransitionContext {
             old_file: &old_file,
