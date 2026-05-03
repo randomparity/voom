@@ -21,14 +21,22 @@ pub struct BootstrapResult {
 // Plugin priority scheme (lower number = runs first during event dispatch).
 // mkvtoolnix at 39 runs before ffmpeg at 40 so it gets first crack at
 // MKV-specific plans (metadata, convert-to-MKV).
+//
+// Sqlite-store must dispatch BEFORE any plugin that claims an event it needs
+// to persist. Both executors claim PlanCreated, and the kernel's event bus
+// breaks dispatch on claim (see voom_kernel::EventBus::publish_recursive),
+// so storage at 38 runs just ahead of the executor cluster (39/40). Plans
+// land with status='pending' here, and PlanCompleted/PlanSkipped/PlanFailed
+// (none of which are claimed) drive the status updates afterwards via
+// update_plan_status().
 const PRIORITY_BUS_TRACER: i32 = 1;
-const PRIORITY_STORAGE: i32 = 100;
 const PRIORITY_HEALTH_CHECKER: i32 = 95;
 const PRIORITY_TOOL_DETECTOR: i32 = 90;
 const PRIORITY_DISCOVERY: i32 = 80;
 const PRIORITY_FFPROBE_INTROSPECTOR: i32 = 60;
 const PRIORITY_FFMPEG_EXECUTOR: i32 = 40;
 const PRIORITY_MKVTOOLNIX_EXECUTOR: i32 = 39;
+const PRIORITY_STORAGE: i32 = 38;
 // Capability collector dispatches before executors (35 < 39/40) so that
 // ExecutorCapabilities events emitted by executors at init are processed by
 // the collector before any subsequent event reaches the executors.
@@ -38,9 +46,8 @@ const PRIORITY_CAPABILITY_COLLECTOR: i32 = 35;
 // file is backed up before any executor mutates it.
 const PRIORITY_BACKUP_MANAGER: i32 = 30;
 const PRIORITY_JOB_MANAGER: i32 = 20;
-// Report plugin — priority 110 > storage (100), so it dispatches after
-// storage and observes lifecycle events with all upstream side effects
-// already applied.
+// Report plugin — priority 110, dispatched after every other plugin so it
+// observes lifecycle events with all upstream side effects already applied.
 const PRIORITY_REPORT: i32 = 110;
 
 /// Bootstrap a kernel with all native plugins registered.
@@ -109,7 +116,9 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
         };
     }
 
-    // Storage plugin (highest priority — stores everything).
+    // Storage plugin (must-run-before-executor priority — captures all events
+    // including those that executors claim, by running first; persistence and
+    // event log).
     // Initialized manually (not via the macro) so we can capture the store
     // handle and return it to callers, keeping all CLI commands and the event
     // bus on the same connection pool.

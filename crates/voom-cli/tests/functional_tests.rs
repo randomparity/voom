@@ -4146,3 +4146,107 @@ mod test_policy_diff {
             );
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_plan_persistence — regression coverage for issue #162: voom process
+// must persist completed Plan rows into the SQLite store so downstream
+// commands (`plans show`, `report --plans`, `report --database`) can audit
+// what was executed.
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_plan_persistence {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// Count rows in `plans` (and the subset matching `status = 'completed'`).
+    fn plan_counts(db_path: &Path) -> (i64, i64) {
+        let conn = Connection::open(db_path).expect("open voom.db");
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM plans", [], |row| row.get(0))
+            .expect("count plans rows");
+        let completed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM plans WHERE status = 'completed'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count completed plans rows");
+        (total, completed)
+    }
+
+    /// After a successful `voom process` run the `plans` table must contain
+    /// at least one row for the executed file, with `status = 'completed'`.
+    /// This is the regression test for issue #162.
+    #[test]
+    fn process_live_persists_completed_plans() {
+        require_tool!("ffprobe");
+        require_tool!("mkvmerge");
+        require_tool!("mkvpropedit");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--no-backup",
+            ])
+            .timeout(std::time::Duration::from_secs(120))
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("Applying"));
+
+        let db_path = env.db_path();
+        assert!(
+            db_path.exists(),
+            "voom.db should exist after process run at {}",
+            db_path.display()
+        );
+        let (total, completed) = plan_counts(&db_path);
+        assert!(
+            total > 0,
+            "expected plans table to contain rows after a successful process run, got {total}"
+        );
+        assert!(
+            completed > 0,
+            "expected plans table to contain at least one row with status='completed', got {completed} (total rows: {total})"
+        );
+    }
+
+    /// Dry-run mode must NOT persist any plans — they're computed and
+    /// displayed but never executed, so nothing should land in the table.
+    #[test]
+    fn process_dry_run_does_not_persist_plans() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["hevc-surround"]);
+        let policy = env.write_policy("test", TEST_POLICY);
+
+        env.voom()
+            .args([
+                "process",
+                env.media_dir().to_str().unwrap(),
+                "--policy",
+                policy.to_str().unwrap(),
+                "--dry-run",
+            ])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        let db_path = env.db_path();
+        assert!(
+            db_path.exists(),
+            "voom.db should exist after dry-run at {}",
+            db_path.display()
+        );
+        let (total, _completed) = plan_counts(&db_path);
+        assert_eq!(
+            total, 0,
+            "dry-run must not persist plans, but found {total} row(s) in plans table"
+        );
+    }
+}
