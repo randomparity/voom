@@ -801,8 +801,13 @@ impl HealthStatusEvent {
     }
 }
 
-/// Emitted when a scan completes (discovery + introspection).
-/// The report plugin subscribes to this to auto-capture a library snapshot.
+/// Emitted exactly once at the end of a successful `scan` run, after
+/// discovery + introspection finish. Carries both totals so subscribers
+/// (currently just the report plugin's snapshot writer) do not need a
+/// preceding `IntrospectComplete` to learn the introspected count.
+///
+/// **Do NOT also emit `IntrospectComplete` from the same run.** See
+/// `crates/voom-cli/src/commands/scan.rs` and issue #153.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanCompleteEvent {
@@ -820,7 +825,11 @@ impl ScanCompleteEvent {
     }
 }
 
-/// Emitted when introspection completes for a batch of files.
+/// Emitted exactly once at the end of a standalone re-introspection batch
+/// (currently only the `process` command, which re-introspects already-
+/// discovered files before evaluating policies). Reserved for paths that
+/// did NOT run discovery — full scans must emit `ScanComplete` instead.
+///
 /// The report plugin subscribes to this to auto-capture a library snapshot.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]

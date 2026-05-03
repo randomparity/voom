@@ -15,7 +15,7 @@ use console::style;
 use indicatif::HumanDuration;
 use tokio_util::sync::CancellationToken;
 use voom_domain::bad_file::BadFileSource;
-use voom_domain::events::{Event, FileDiscoveredEvent, IntrospectCompleteEvent, ScanCompleteEvent};
+use voom_domain::events::{Event, FileDiscoveredEvent, ScanCompleteEvent};
 
 /// Run the scan command.
 ///
@@ -95,9 +95,12 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     purge_stale_records(&*store, config.pruning.retention_days, quiet);
 
     // Protected from cancelled runs by the early return above (line 91).
-    kernel.dispatch(Event::IntrospectComplete(IntrospectCompleteEvent::new(
-        introspected,
-    )));
+    // `ScanComplete` carries both files_discovered and files_introspected and
+    // is the single lifecycle event for a full scan. We deliberately do NOT
+    // dispatch `IntrospectComplete` here — that event is reserved for
+    // standalone re-introspection runs (see commands/process/mod.rs). Emitting
+    // both would cause subscribers like the report plugin to capture two
+    // back-to-back snapshots (see issue #153).
     kernel.dispatch(Event::ScanComplete(ScanCompleteEvent::new(
         all_events.len() as u64,
         introspected,
