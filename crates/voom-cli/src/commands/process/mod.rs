@@ -1432,6 +1432,66 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn handle_plan_success_clears_orphan_bad_files_row_at_post_execution_path() {
+        use voom_domain::bad_file::{BadFile, BadFileSource};
+        use voom_domain::media::{Container, MediaFile};
+        use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
+
+        let fixture =
+            TestFixture::with_policy(r#"policy "test" { phase convert { container mkv } }"#);
+        let mp4_path = fixture.dir_path().join("movie.mp4");
+        let mkv_path = fixture.dir_path().join("movie.mkv");
+        // Pre-write the target so `resolve_post_execution_path` accepts the new extension.
+        std::fs::write(&mkv_path, vec![0u8; 1024]).unwrap();
+
+        let mut file = MediaFile::new(mp4_path);
+        file.container = Container::Mp4;
+        file.size = 1024;
+        file.content_hash = Some("oldhash".to_string());
+
+        let mut plan = Plan::new(file.clone(), "containerize", "convert");
+        plan.actions = vec![PlannedAction::file_op(
+            OperationType::ConvertContainer,
+            ActionParams::Container {
+                container: Container::Mkv,
+            },
+            "Convert to mkv",
+        )];
+
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_sqlite_store::store::SqliteStore::in_memory().unwrap());
+        store.upsert_file(&file).unwrap();
+
+        // Pre-seed a bad_files row at the post-execution path. This simulates the
+        // FileIntrospectionFailed event that would have fired during re-introspection
+        // of the post-execution file (issue #173). The bundled rename must clear it.
+        let orphan = BadFile::new(
+            mkv_path.clone(),
+            2048,
+            Some("post_exec_hash".into()),
+            "ffprobe failed: process exited with code 1".into(),
+            BadFileSource::Introspection,
+        );
+        store.upsert_bad_file(&orphan).unwrap();
+        assert!(
+            store.bad_file_by_path(&mkv_path).unwrap().is_some(),
+            "precondition: orphan bad_files row must exist before handle_plan_success"
+        );
+
+        let kernel = Arc::new(voom_kernel::Kernel::new());
+        let ctx = fixture.make_ctx(kernel, store.clone());
+
+        let _ =
+            pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx).await;
+
+        // The orphan must be gone after the bundled post-execution write commits.
+        assert!(
+            store.bad_file_by_path(&mkv_path).unwrap().is_none(),
+            "handle_plan_success must clear orphan bad_files row at post-execution path"
+        );
+    }
+
     #[test]
     fn record_file_transition_makes_history_lookup_work_for_old_and_new_paths() {
         // Bypass re-introspection (depends on ffprobe being on PATH) and
