@@ -480,9 +480,10 @@ impl FileTransitionStorage for InMemoryStore {
         Ok(Vec::new())
     }
 
-    fn prune_old_file_transitions(&self, _policy: crate::storage::RetentionPolicy)
-        -> crate::errors::Result<crate::storage::PruneReport>
-    {
+    fn prune_old_file_transitions(
+        &self,
+        _policy: crate::storage::RetentionPolicy,
+    ) -> crate::errors::Result<crate::storage::PruneReport> {
         Ok(crate::storage::PruneReport::default())
     }
 }

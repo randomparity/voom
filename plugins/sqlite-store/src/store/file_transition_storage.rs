@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use voom_domain::errors::Result;
 use voom_domain::stats::{ProcessingOutcome, SavingsBucket, SavingsReport, TimePeriod};
-use voom_domain::storage::FileTransitionStorage;
+use voom_domain::storage::{FileTransitionStorage, PruneReport, RetentionPolicy};
 use voom_domain::transition::{FileTransition, TransitionSource};
 
 use super::{format_datetime, storage_err, SqliteStore};
@@ -299,6 +299,62 @@ impl FileTransitionStorage for SqliteStore {
 
         Ok(rows)
     }
+
+    fn prune_old_file_transitions(&self, policy: RetentionPolicy) -> Result<PruneReport> {
+        if policy.is_disabled() {
+            let conn = self.conn()?;
+            let kept: u64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM file_transitions
+                     WHERE rowid NOT IN (SELECT MAX(rowid) FROM file_transitions GROUP BY file_id)",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(storage_err("failed to count file_transitions"))?;
+            return Ok(PruneReport { deleted: 0, kept });
+        }
+
+        let conn = self.conn()?;
+        let cutoff = policy
+            .max_age
+            .map(|d| format_datetime(&(chrono::Utc::now() - d)));
+        let keep_last = policy.keep_last.and_then(|n| i64::try_from(n).ok());
+
+        let deleted = conn
+            .execute(
+                "WITH last_per_file AS (
+                    SELECT MAX(rowid) AS keep_rowid
+                    FROM file_transitions
+                    GROUP BY file_id
+                ),
+                ranked AS (
+                    SELECT rowid,
+                           ROW_NUMBER() OVER (ORDER BY created_at DESC) AS rn,
+                           created_at
+                    FROM file_transitions
+                    WHERE rowid NOT IN (SELECT keep_rowid FROM last_per_file)
+                )
+                DELETE FROM file_transitions
+                WHERE rowid IN (
+                    SELECT rowid FROM ranked
+                    WHERE (?1 IS NOT NULL AND created_at < ?1)
+                       OR (?2 IS NOT NULL AND rn > ?2)
+                )",
+                params![cutoff, keep_last],
+            )
+            .map_err(storage_err("failed to prune file_transitions"))? as u64;
+
+        let kept: u64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions
+                 WHERE rowid NOT IN (SELECT MAX(rowid) FROM file_transitions GROUP BY file_id)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_err("failed to count remaining file_transitions"))?;
+
+        Ok(PruneReport { deleted, kept })
+    }
 }
 
 fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition> {
@@ -571,5 +627,113 @@ mod tests {
             by_old[0].from_path.as_deref(),
             Some(std::path::Path::new("/media/movie.mp4"))
         );
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+    use voom_domain::storage::RetentionPolicy;
+    use voom_domain::transition::{FileTransition, TransitionSource};
+
+    fn test_store() -> SqliteStore {
+        SqliteStore::in_memory().unwrap()
+    }
+
+    fn make_transition(file_id: uuid::Uuid, when: chrono::DateTime<chrono::Utc>) -> FileTransition {
+        let mut t = FileTransition::new(
+            file_id,
+            std::path::PathBuf::from("/test.mkv"),
+            "h2".into(),
+            1024,
+            TransitionSource::Discovery,
+        );
+        t.created_at = when;
+        t
+    }
+
+    #[test]
+    fn prune_old_file_transitions_preserves_latest_per_file() {
+        let store = test_store();
+        let file_id = uuid::Uuid::new_v4();
+        let now = chrono::Utc::now();
+        // Three transitions for same file: oldest 100d, then 50d, then 1d
+        for days in [100i64, 50, 1] {
+            let t = make_transition(file_id, now - chrono::Duration::days(days));
+            store.record_transition(&t).unwrap();
+        }
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(30)),
+            keep_last: None,
+        };
+        let report = store.prune_old_file_transitions(policy).unwrap();
+        // Most recent (1d) is preserved; the other two (100d, 50d) are eligible
+        // and both exceed the 30d cutoff, so both deleted.
+        assert_eq!(report.deleted, 2);
+        let remaining = store.transitions_for_file(&file_id).unwrap();
+        assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn prune_old_file_transitions_protects_singleton_old_row() {
+        let store = test_store();
+        let file_id = uuid::Uuid::new_v4();
+        let t = make_transition(file_id, chrono::Utc::now() - chrono::Duration::days(365));
+        store.record_transition(&t).unwrap();
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(1)),
+            keep_last: None,
+        };
+        let report = store.prune_old_file_transitions(policy).unwrap();
+        assert_eq!(report.deleted, 0, "the only row for a file is always kept");
+        assert_eq!(store.transitions_for_file(&file_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn prune_old_file_transitions_disabled_is_noop() {
+        let store = test_store();
+        let file_id = uuid::Uuid::new_v4();
+        for _ in 0..3 {
+            store
+                .record_transition(&make_transition(file_id, chrono::Utc::now()))
+                .unwrap();
+        }
+        let report = store
+            .prune_old_file_transitions(RetentionPolicy::default())
+            .unwrap();
+        assert_eq!(report.deleted, 0);
+        // kept counts the rows the policy was eligible to consider — i.e., everything
+        // except the most-recent-per-file. Two are eligible, both kept.
+        assert_eq!(report.kept, 2);
+    }
+
+    #[test]
+    fn prune_old_file_transitions_count_caps_eligible_set() {
+        let store = test_store();
+        // 5 separate files, one transition each — all are "most recent per file"
+        // and therefore exempt.
+        for _ in 0..5 {
+            store
+                .record_transition(&make_transition(uuid::Uuid::new_v4(), chrono::Utc::now()))
+                .unwrap();
+        }
+        let policy = RetentionPolicy {
+            max_age: None,
+            keep_last: Some(0),
+        };
+        let report = store.prune_old_file_transitions(policy).unwrap();
+        assert_eq!(report.deleted, 0, "all rows are most-recent-per-file");
+    }
+
+    #[test]
+    fn prune_old_file_transitions_empty_is_noop() {
+        let store = test_store();
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(1)),
+            keep_last: Some(10),
+        };
+        let report = store.prune_old_file_transitions(policy).unwrap();
+        assert_eq!(report.deleted, 0);
+        assert_eq!(report.kept, 0);
     }
 }
