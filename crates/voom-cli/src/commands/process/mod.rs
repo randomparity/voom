@@ -948,6 +948,85 @@ mod tests {
         plan
     }
 
+    /// Bundle of long-lived test fixtures shared across `ProcessContext`
+    /// construction sites. Owns the `TempDir` so the resolver's working path
+    /// stays valid for the test's lifetime.
+    #[allow(dead_code)] // populated by Tasks 2-6 of issue #159
+    pub(super) struct TestFixture {
+        pub(super) capabilities: voom_domain::CapabilityMap,
+        pub(super) counters: RunCounters,
+        pub(super) token: CancellationToken,
+        pub(super) resolver: PolicyResolver,
+        // Held for lifetime; the resolver borrows `_dir.path()`.
+        _dir: tempfile::TempDir,
+    }
+
+    #[allow(dead_code)] // populated by Tasks 2-6 of issue #159
+    impl TestFixture {
+        /// Default fixture with the canonical `phase normalize { container mkv }` policy.
+        pub(super) fn new() -> Self {
+            Self::with_policy(r#"policy "test" { phase normalize { container mkv } }"#)
+        }
+
+        /// Fixture parameterised by an arbitrary policy DSL source.
+        pub(super) fn with_policy(dsl: &str) -> Self {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let resolver = PolicyResolver::from_single(
+                voom_dsl::compile_policy(dsl).expect("compile fixture policy"),
+                dir.path(),
+            );
+            Self {
+                capabilities: voom_domain::CapabilityMap::new(),
+                counters: RunCounters::new(),
+                token: CancellationToken::new(),
+                resolver,
+                _dir: dir,
+            }
+        }
+
+        /// Path to the held `TempDir`. Use for placing fixture media files
+        /// alongside the resolver's working directory.
+        pub(super) fn dir_path(&self) -> &std::path::Path {
+            self._dir.path()
+        }
+
+        /// Pre-cancel the fixture token. Used by tests that exercise
+        /// cancellation-aware code paths.
+        pub(super) fn cancel(&self) {
+            self.token.cancel();
+        }
+
+        /// Build a `ProcessContext` with all flags defaulted to `false` and
+        /// `ffprobe_path = None`. Override per-test using struct-update syntax:
+        ///
+        /// ```ignore
+        /// let ctx = ProcessContext {
+        ///     flag_size_increase: true,
+        ///     ..fixture.make_ctx(Arc::new(kernel), store)
+        /// };
+        /// ```
+        pub(super) fn make_ctx<'a>(
+            &'a self,
+            kernel: Arc<voom_kernel::Kernel>,
+            store: Arc<dyn voom_domain::storage::StorageTrait>,
+        ) -> ProcessContext<'a> {
+            ProcessContext {
+                resolver: &self.resolver,
+                kernel,
+                store,
+                dry_run: false,
+                plan_only: false,
+                flag_size_increase: false,
+                flag_duration_shrink: false,
+                force_rescan: false,
+                token: &self.token,
+                ffprobe_path: None,
+                capabilities: &self.capabilities,
+                counters: &self.counters,
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_execute_single_plan_dispatches_lifecycle_events() {
         let mut kernel = voom_kernel::Kernel::new();
