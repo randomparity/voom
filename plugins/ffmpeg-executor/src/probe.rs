@@ -2,7 +2,60 @@
 
 use crate::hwaccel::HwAccelBackend;
 use rayon::prelude::*;
+use std::time::Duration;
 use voom_domain::events::CodecCapabilities;
+
+/// Upper bound for a single hardware-encoder validation invocation
+/// (`ffmpeg -c:v <enc> -frames:v 1 ...`). On healthy hardware these
+/// finish in well under 1 s; we cap at 5 s so a wedged GPU driver or
+/// stuck device node can no longer hang a rayon worker forever.
+#[allow(dead_code)]
+const HW_ENCODER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Upper bound for tool-enumeration calls (`nvidia-smi --query-gpu`,
+/// `vainfo`, `nvidia-smi --list-gpus`). These are normally millisecond
+/// operations; 10 s catches pathological hangs while leaving slow
+/// remote-display or first-init paths headroom.
+#[allow(dead_code)]
+const TOOL_ENUMERATION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Run `tool` with `args` under `timeout`; return `true` iff it
+/// exited 0 within the deadline. Spawn errors, non-zero exit, and
+/// timeout all collapse to `false` — matching the prior
+/// `Command::status().map(...).unwrap_or(false)` semantics that the
+/// callers already depend on.
+#[allow(dead_code)]
+fn probe_tool_status(tool: &str, args: &[&str], timeout: Duration) -> bool {
+    voom_process::run_with_timeout(tool, args, timeout)
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Same as [`probe_tool_status`] but with extra environment variables
+/// (used by the Nvenc branch which sets `CUDA_VISIBLE_DEVICES`).
+#[allow(dead_code)]
+fn probe_tool_status_env(
+    tool: &str,
+    args: &[&str],
+    timeout: Duration,
+    env: &[(&str, &str)],
+) -> bool {
+    voom_process::run_with_timeout_env(tool, args, timeout, env)
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Run `tool` with `args` under `timeout`; return its stdout iff
+/// it exited 0 within the deadline. Spawn errors, non-zero exit,
+/// and timeout collapse to `None` — matching the prior
+/// `Command::output().ok().filter(|o| o.status.success())` pattern.
+#[allow(dead_code)]
+fn probe_tool_stdout(tool: &str, args: &[&str], timeout: Duration) -> Option<Vec<u8>> {
+    voom_process::run_with_timeout(tool, args, timeout)
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| o.stdout)
+}
 
 /// Parse `ffmpeg -codecs` output into decoder and encoder lists.
 ///
