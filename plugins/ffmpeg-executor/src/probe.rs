@@ -806,4 +806,114 @@ vainfo: Supported profile and entrypoint
         let result = validate_hw_encoders_parallel(&input, |_| false);
         assert!(result.is_empty());
     }
+
+    #[test]
+    fn probe_tool_status_returns_true_on_success() {
+        // `true` is a POSIX builtin/binary that exits 0 immediately.
+        let ok = probe_tool_status("true", &[], Duration::from_secs(5));
+        assert!(ok, "`true` should report success");
+    }
+
+    #[test]
+    fn probe_tool_status_returns_false_on_nonzero_exit() {
+        // `false` is a POSIX builtin/binary that exits 1 immediately.
+        let ok = probe_tool_status("false", &[], Duration::from_secs(5));
+        assert!(!ok, "`false` should report non-success");
+    }
+
+    #[test]
+    fn probe_tool_status_returns_false_on_missing_tool() {
+        let ok = probe_tool_status(
+            "voom_nonexistent_probe_tool_xyz",
+            &[],
+            Duration::from_secs(5),
+        );
+        assert!(!ok, "missing tool should be treated as unsupported");
+    }
+
+    #[test]
+    fn probe_tool_status_returns_false_on_timeout() {
+        // `sleep 60` will be killed after 1 s; we expect false.
+        let started = std::time::Instant::now();
+        let ok = probe_tool_status("sleep", &["60"], Duration::from_secs(1));
+        let elapsed = started.elapsed();
+        assert!(!ok, "hung tool should be treated as unsupported");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "probe must return within a few seconds of the timeout, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn probe_tool_status_env_passes_environment() {
+        // `sh -c '[ "$VOOM_PROBE_TEST" = "yes" ]'` exits 0 only if the
+        // env var got through.
+        let ok = probe_tool_status_env(
+            "sh",
+            &["-c", "[ \"$VOOM_PROBE_TEST\" = \"yes\" ]"],
+            Duration::from_secs(5),
+            &[("VOOM_PROBE_TEST", "yes")],
+        );
+        assert!(ok, "env var should reach the child");
+
+        let not_ok = probe_tool_status_env(
+            "sh",
+            &["-c", "[ \"$VOOM_PROBE_TEST\" = \"yes\" ]"],
+            Duration::from_secs(5),
+            &[("VOOM_PROBE_TEST", "no")],
+        );
+        assert!(!not_ok, "wrong env value should fail the comparison");
+    }
+
+    #[test]
+    fn probe_tool_status_env_returns_false_on_timeout() {
+        let started = std::time::Instant::now();
+        let ok = probe_tool_status_env(
+            "sleep",
+            &["60"],
+            Duration::from_secs(1),
+            &[("IGNORED", "value")],
+        );
+        let elapsed = started.elapsed();
+        assert!(!ok);
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "env-variant must also honor the timeout, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn probe_tool_stdout_captures_stdout_on_success() {
+        let out = probe_tool_stdout("echo", &["hello"], Duration::from_secs(5))
+            .expect("echo should succeed");
+        assert_eq!(String::from_utf8_lossy(&out).trim(), "hello");
+    }
+
+    #[test]
+    fn probe_tool_stdout_returns_none_on_nonzero_exit() {
+        let out = probe_tool_stdout("false", &[], Duration::from_secs(5));
+        assert!(out.is_none(), "non-zero exit should yield None");
+    }
+
+    #[test]
+    fn probe_tool_stdout_returns_none_on_missing_tool() {
+        let out = probe_tool_stdout(
+            "voom_nonexistent_probe_tool_xyz",
+            &[],
+            Duration::from_secs(5),
+        );
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn probe_tool_stdout_returns_none_on_timeout() {
+        let started = std::time::Instant::now();
+        let out = probe_tool_stdout("sleep", &["60"], Duration::from_secs(1));
+        let elapsed = started.elapsed();
+        assert!(out.is_none(), "hung tool should yield None");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "stdout-variant must also honor the timeout, took {elapsed:?}"
+        );
+    }
 }
