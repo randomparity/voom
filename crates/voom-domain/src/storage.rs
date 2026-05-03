@@ -149,6 +149,26 @@ pub trait FileStorage: Send + Sync {
     ) -> Result<u32>;
     /// Update the expected hash for a file (set after a successful voom operation).
     fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()>;
+    /// Atomically perform the three post-execution writes for a successfully
+    /// executed plan: optionally rename the file's path, insert a transition
+    /// row, and update the file's `expected_hash`. All three writes happen
+    /// inside one `BEGIN/COMMIT`, so a mid-bundle crash cannot leave the DB
+    /// with an audit-trail gap or a path/hash mismatch.
+    ///
+    /// `new_path` is `Some` only when execution changed the file's on-disk
+    /// path (e.g. `ConvertContainer .mp4 → .mkv`). When `None`, the file
+    /// row's `path` column is left untouched.
+    ///
+    /// The `transition` argument supplies all transition fields, including
+    /// `from_path` if the caller wants the audit trail to record the prior
+    /// path. Callers must build the `FileTransition` themselves.
+    fn record_post_execution(
+        &self,
+        id: &Uuid,
+        new_path: Option<&Path>,
+        new_expected_hash: &str,
+        transition: &FileTransition,
+    ) -> Result<()>;
     /// Find the file that was superseded by the given file (predecessor lookup).
     /// Returns the file whose `superseded_by` field equals `successor_id`.
     fn predecessor_of(&self, successor_id: &Uuid) -> Result<Option<MediaFile>>;

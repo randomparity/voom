@@ -390,6 +390,17 @@ impl FileStorage for SqliteStore {
         Ok(())
     }
 
+    fn record_post_execution(
+        &self,
+        _id: &Uuid,
+        _new_path: Option<&Path>,
+        _new_expected_hash: &str,
+        _transition: &FileTransition,
+    ) -> Result<()> {
+        // TODO(Task 3): implement atomic post-execution bundle
+        todo!("record_post_execution not yet implemented — Task 3 will provide the real impl")
+    }
+
     fn predecessor_of(&self, successor_id: &Uuid) -> Result<Option<MediaFile>> {
         let conn = self.conn()?;
         let file_row: Option<FileRow> = conn
