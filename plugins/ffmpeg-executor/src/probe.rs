@@ -37,6 +37,68 @@ pub struct FfmpegCapabilities {
     pub hw_decoders: Vec<String>,
 }
 
+/// Run a single `ffmpeg <flag> -hide_banner` probe and return its stdout
+/// as a UTF-8 string on success. On spawn error, non-zero exit, or
+/// timeout, logs a warning naming `flag` and returns `None`.
+// Allowed: consumed by `probe_capabilities_with_tool` in Task 5 of issue #169.
+#[allow(dead_code)]
+fn run_capability_probe(tool: &str, flag: &str) -> Option<String> {
+    match voom_process::run_with_timeout(tool, &[flag, "-hide_banner"], CAPABILITY_PROBE_TIMEOUT) {
+        Ok(out) if out.status.success() => Some(String::from_utf8_lossy(&out.stdout).into_owned()),
+        Ok(out) => {
+            tracing::warn!(
+                tool,
+                flag,
+                exit = ?out.status.code(),
+                "ffmpeg probe exited non-zero"
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(tool, flag, error = %e, "ffmpeg probe failed");
+            None
+        }
+    }
+}
+
+// Allowed: consumed by `probe_capabilities_with_tool` in Task 5 of issue #169.
+#[allow(dead_code)]
+fn probe_codecs(tool: &str) -> Option<CodecCapabilities> {
+    run_capability_probe(tool, "-codecs").map(|s| parse_codecs(&s))
+}
+
+// Allowed: consumed by `probe_capabilities_with_tool` in Task 5 of issue #169.
+#[allow(dead_code)]
+fn probe_formats(tool: &str) -> Vec<String> {
+    run_capability_probe(tool, "-formats")
+        .map(|s| parse_formats(&s))
+        .unwrap_or_default()
+}
+
+// Allowed: consumed by `probe_capabilities_with_tool` in Task 5 of issue #169.
+#[allow(dead_code)]
+fn probe_hwaccels(tool: &str) -> Vec<String> {
+    run_capability_probe(tool, "-hwaccels")
+        .map(|s| parse_hwaccels(&s))
+        .unwrap_or_default()
+}
+
+// Allowed: consumed by `probe_capabilities_with_tool` in Task 5 of issue #169.
+#[allow(dead_code)]
+fn probe_hw_encoders(tool: &str) -> Vec<String> {
+    run_capability_probe(tool, "-encoders")
+        .map(|s| parse_hw_implementations(&s))
+        .unwrap_or_default()
+}
+
+// Allowed: consumed by `probe_capabilities_with_tool` in Task 5 of issue #169.
+#[allow(dead_code)]
+fn probe_hw_decoders(tool: &str) -> Vec<String> {
+    run_capability_probe(tool, "-decoders")
+        .map(|s| parse_hw_implementations(&s))
+        .unwrap_or_default()
+}
+
 /// Run the five fast `ffmpeg` capability probes concurrently using
 /// `rayon::join`. Each probe is independently bounded by
 /// `CAPABILITY_PROBE_TIMEOUT`. A failure on any non-codecs probe yields
