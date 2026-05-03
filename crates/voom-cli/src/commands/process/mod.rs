@@ -957,8 +957,8 @@ mod tests {
         pub(super) counters: RunCounters,
         pub(super) token: CancellationToken,
         pub(super) resolver: PolicyResolver,
-        // Held for lifetime; the resolver borrows `_dir.path()`.
-        _dir: tempfile::TempDir,
+        // Held for lifetime; the resolver borrows `dir.path()`.
+        dir: tempfile::TempDir,
     }
 
     #[allow(dead_code)] // populated by Tasks 2-6 of issue #159
@@ -970,9 +970,11 @@ mod tests {
 
         /// Fixture parameterised by an arbitrary policy DSL source.
         pub(super) fn with_policy(dsl: &str) -> Self {
-            let dir = tempfile::tempdir().expect("tempdir");
+            let dir =
+                tempfile::tempdir().expect("TestFixture: failed to create tempdir for resolver");
             let resolver = PolicyResolver::from_single(
-                voom_dsl::compile_policy(dsl).expect("compile fixture policy"),
+                voom_dsl::compile_policy(dsl)
+                    .expect("TestFixture: fixture policy DSL must compile"),
                 dir.path(),
             );
             Self {
@@ -980,14 +982,14 @@ mod tests {
                 counters: RunCounters::new(),
                 token: CancellationToken::new(),
                 resolver,
-                _dir: dir,
+                dir,
             }
         }
 
         /// Path to the held `TempDir`. Use for placing fixture media files
         /// alongside the resolver's working directory.
         pub(super) fn dir_path(&self) -> &std::path::Path {
-            self._dir.path()
+            self.dir.path()
         }
 
         /// Pre-cancel the fixture token. Used by tests that exercise
