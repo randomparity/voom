@@ -1480,10 +1480,27 @@ mod tests {
         );
 
         let kernel = Arc::new(voom_kernel::Kernel::new());
-        let ctx = fixture.make_ctx(kernel, store.clone());
+        // Force `reintrospect_file` onto its failure-fallback branch
+        // (pipeline.rs:555) by pointing at a nonexistent ffprobe binary.
+        // This is the exact code path issue #173 describes: re-introspection
+        // fails, the synthetic MediaFile carries the post-execution path, and
+        // the bundled rename must still clear the orphan bad_files row.
+        let ctx = ProcessContext {
+            ffprobe_path: Some("/nonexistent/ffprobe"),
+            ..fixture.make_ctx(kernel, store.clone())
+        };
 
-        let _ =
+        let new_file =
             pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx).await;
+
+        // Pin the test to the actual code path under review: confirm the
+        // returned MediaFile reflects the post-execution path so that
+        // `record_file_transition`'s `path_changed` guard fired and
+        // `record_post_execution` actually ran.
+        assert_eq!(
+            new_file.path, mkv_path,
+            "handle_plan_success must return a MediaFile reflecting the post-execution path"
+        );
 
         // The orphan must be gone after the bundled post-execution write commits.
         assert!(
