@@ -161,6 +161,11 @@ pub trait JobStorage: Send + Sync {
     /// (completed, failed, cancelled). Never deletes pending/running.
     /// Returns the number of deleted rows.
     fn delete_jobs(&self, status: Option<JobStatus>) -> Result<u64>;
+    /// Delete terminal-state jobs (`completed` / `failed` / `cancelled`) per `policy`.
+    ///
+    /// Pending and running jobs are never touched, regardless of age. Returns
+    /// the number deleted and the number that survived (eligible only).
+    fn prune_old_jobs(&self, policy: RetentionPolicy) -> Result<PruneReport>;
 }
 
 /// Plan persistence operations.

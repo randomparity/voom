@@ -386,6 +386,13 @@ impl JobStorage for InMemoryStore {
         }
         Ok((before - jobs.len()) as u64)
     }
+
+    fn prune_old_jobs(
+        &self,
+        _policy: crate::storage::RetentionPolicy,
+    ) -> crate::errors::Result<crate::storage::PruneReport> {
+        Ok(crate::storage::PruneReport::default())
+    }
 }
 
 impl PlanStorage for InMemoryStore {
