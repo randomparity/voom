@@ -12,6 +12,39 @@ use crate::plan::Plan;
 use crate::stats::{LibrarySnapshot, SavingsReport, SnapshotTrigger, TimePeriod};
 use crate::transition::{DiscoveredFile, FileTransition, ReconcileResult, TransitionSource};
 
+/// Row retention policy for time- or count-based pruning.
+///
+/// A row is deleted if **either** `max_age` is exceeded **or** the row's
+/// rank (newest first) exceeds `keep_last`. If both fields are `None`,
+/// the policy is disabled and the implementing trait method must be a no-op.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RetentionPolicy {
+    /// Delete rows older than this. `None` means no age bound.
+    pub max_age: Option<chrono::Duration>,
+    /// Keep at most this many rows (newest-first). `None` means no count bound.
+    pub keep_last: Option<u64>,
+}
+
+impl RetentionPolicy {
+    /// Returns true when no bounds are configured. Trait implementations must
+    /// short-circuit and return `PruneReport { deleted: 0, kept: <count> }`
+    /// without executing a `DELETE` when this is true.
+    #[must_use]
+    pub fn is_disabled(&self) -> bool {
+        self.max_age.is_none() && self.keep_last.is_none()
+    }
+}
+
+/// Outcome of a single `prune_old_*` call.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PruneReport {
+    /// Rows deleted by this call.
+    pub deleted: u64,
+    /// Rows that survived (only counts the rows the policy was *eligible* to delete,
+    /// i.e., for jobs this excludes pending/running rows).
+    pub kept: u64,
+}
+
 /// Filters for querying jobs from storage.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default)]
@@ -558,5 +591,44 @@ impl PlanSummary {
             executed_at: None,
             result: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod retention_policy_tests {
+    use super::{PruneReport, RetentionPolicy};
+
+    #[test]
+    fn retention_policy_disabled_when_both_none() {
+        let p = RetentionPolicy {
+            max_age: None,
+            keep_last: None,
+        };
+        assert!(p.is_disabled());
+    }
+
+    #[test]
+    fn retention_policy_not_disabled_when_age_set() {
+        let p = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(1)),
+            keep_last: None,
+        };
+        assert!(!p.is_disabled());
+    }
+
+    #[test]
+    fn retention_policy_not_disabled_when_count_set() {
+        let p = RetentionPolicy {
+            max_age: None,
+            keep_last: Some(10),
+        };
+        assert!(!p.is_disabled());
+    }
+
+    #[test]
+    fn prune_report_default_is_zero() {
+        let r = PruneReport::default();
+        assert_eq!(r.deleted, 0);
+        assert_eq!(r.kept, 0);
     }
 }
