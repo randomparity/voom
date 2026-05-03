@@ -9,7 +9,6 @@ pub mod hwaccel;
 pub mod probe;
 pub mod progress;
 
-use std::process::Command;
 use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
@@ -27,8 +26,8 @@ use voom_kernel::{Plugin, PluginContext};
 
 use crate::hwaccel::{resolve_hw_config, HwAccelConfig};
 use crate::probe::{
-    enumerate_gpus, parse_codecs, parse_formats, parse_hw_implementations, parse_hwaccels,
-    validate_hw_encoder, validate_hw_encoder_on_device, validate_hw_encoders_parallel, GpuDevice,
+    enumerate_gpus, probe_capabilities, validate_hw_encoder, validate_hw_encoder_on_device,
+    validate_hw_encoders_parallel, GpuDevice,
 };
 
 /// Per-plugin configuration from `[plugin.ffmpeg-executor]` in config.toml.
@@ -509,55 +508,16 @@ impl Plugin for FfmpegExecutorPlugin {
     }
 
     fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
-        let codecs_output = if let Ok(o) = Command::new("ffmpeg")
-            .args(["-codecs", "-hide_banner"])
-            .output()
-        {
-            o
-        } else {
+        let caps = probe_capabilities();
+
+        let Some(codecs) = caps.codecs else {
             tracing::warn!("ffmpeg not found; ffmpeg executor disabled");
             return Ok(vec![]);
         };
         self.available = true;
 
-        let mut codecs = parse_codecs(&String::from_utf8_lossy(&codecs_output.stdout));
-
-        let formats = Command::new("ffmpeg")
-            .args(["-formats", "-hide_banner"])
-            .output()
-            .map(|o| parse_formats(&String::from_utf8_lossy(&o.stdout)))
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to probe ffmpeg formats");
-                Vec::new()
-            });
-
-        let hw_accels = Command::new("ffmpeg")
-            .args(["-hwaccels", "-hide_banner"])
-            .output()
-            .map(|o| parse_hwaccels(&String::from_utf8_lossy(&o.stdout)))
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to probe ffmpeg hwaccels");
-                Vec::new()
-            });
-
-        // Probe HW encoder/decoder implementations
-        codecs.hw_encoders = Command::new("ffmpeg")
-            .args(["-encoders", "-hide_banner"])
-            .output()
-            .map(|o| parse_hw_implementations(&String::from_utf8_lossy(&o.stdout)))
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to probe ffmpeg hw encoders");
-                Vec::new()
-            });
-
-        codecs.hw_decoders = Command::new("ffmpeg")
-            .args(["-decoders", "-hide_banner"])
-            .output()
-            .map(|o| parse_hw_implementations(&String::from_utf8_lossy(&o.stdout)))
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to probe ffmpeg hw decoders");
-                Vec::new()
-            });
+        let formats = caps.formats;
+        let hw_accels = caps.hw_accels;
 
         self.probed_codecs = Some(codecs.clone());
         self.probed_formats = Some(formats.clone());

@@ -15,6 +15,112 @@ const HW_ENCODER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// remote-display paths while still bounding pathological hangs.
 const TOOL_ENUMERATION_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Upper bound for a single fast capability probe (`-codecs`, `-formats`,
+/// `-hwaccels`, `-encoders`, `-decoders`). These calls don't touch the GPU
+/// and normally finish in under 200 ms; 5 s caps a pathological hang.
+const CAPABILITY_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Aggregate result of running the fast `ffmpeg` capability probes
+/// concurrently.
+///
+/// `codecs == None` is the canonical "ffmpeg is unavailable" signal —
+/// callers should disable the plugin in that case. When `codecs` is
+/// `Some`, its `hw_encoders` and `hw_decoders` fields are populated from
+/// separate `-encoders` / `-decoders` probes. `formats` and `hw_accels`
+/// degrade independently to empty `Vec`s on probe failure, with a
+/// `tracing::warn!` recording the cause.
+pub struct FfmpegCapabilities {
+    pub codecs: Option<CodecCapabilities>,
+    pub formats: Vec<String>,
+    pub hw_accels: Vec<String>,
+}
+
+/// Run a single `ffmpeg <flag> -hide_banner` probe and return its stdout
+/// as a UTF-8 string on success. On spawn error, non-zero exit, or
+/// timeout, logs a warning naming `flag` and returns `None`.
+fn run_capability_probe(tool: &str, flag: &str) -> Option<String> {
+    match voom_process::run_with_timeout(tool, &[flag, "-hide_banner"], CAPABILITY_PROBE_TIMEOUT) {
+        Ok(out) if out.status.success() => Some(String::from_utf8_lossy(&out.stdout).into_owned()),
+        Ok(out) => {
+            tracing::warn!(
+                tool,
+                flag,
+                exit = ?out.status.code(),
+                "ffmpeg probe exited non-zero"
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(tool, flag, error = %e, "ffmpeg probe failed");
+            None
+        }
+    }
+}
+
+fn probe_codecs(tool: &str) -> Option<CodecCapabilities> {
+    run_capability_probe(tool, "-codecs").map(|s| parse_codecs(&s))
+}
+
+fn probe_formats(tool: &str) -> Vec<String> {
+    run_capability_probe(tool, "-formats")
+        .map(|s| parse_formats(&s))
+        .unwrap_or_default()
+}
+
+fn probe_hwaccels(tool: &str) -> Vec<String> {
+    run_capability_probe(tool, "-hwaccels")
+        .map(|s| parse_hwaccels(&s))
+        .unwrap_or_default()
+}
+
+fn probe_hw_encoders(tool: &str) -> Vec<String> {
+    run_capability_probe(tool, "-encoders")
+        .map(|s| parse_hw_implementations(&s))
+        .unwrap_or_default()
+}
+
+fn probe_hw_decoders(tool: &str) -> Vec<String> {
+    run_capability_probe(tool, "-decoders")
+        .map(|s| parse_hw_implementations(&s))
+        .unwrap_or_default()
+}
+
+/// Run the five fast `ffmpeg` capability probes concurrently using
+/// `rayon::join`. Each probe is independently bounded by
+/// `CAPABILITY_PROBE_TIMEOUT`; failures degrade to empty values with a
+/// `tracing::warn!` recording the cause.
+#[must_use]
+pub fn probe_capabilities() -> FfmpegCapabilities {
+    probe_capabilities_with_tool("ffmpeg")
+}
+
+/// Internal: parameterized variant of `probe_capabilities` taking the
+/// tool path. Lets tests drive the failure path with a non-existent
+/// binary without manipulating `PATH`.
+fn probe_capabilities_with_tool(tool: &str) -> FfmpegCapabilities {
+    let ((codecs, formats), (hw_accels, (hw_encoders, hw_decoders))) = rayon::join(
+        || rayon::join(|| probe_codecs(tool), || probe_formats(tool)),
+        || {
+            rayon::join(
+                || probe_hwaccels(tool),
+                || rayon::join(|| probe_hw_encoders(tool), || probe_hw_decoders(tool)),
+            )
+        },
+    );
+
+    let codecs = codecs.map(|mut c| {
+        c.hw_encoders = hw_encoders;
+        c.hw_decoders = hw_decoders;
+        c
+    });
+
+    FfmpegCapabilities {
+        codecs,
+        formats,
+        hw_accels,
+    }
+}
+
 /// Run `tool` with `args` and `env`, returning `true` only if it exits 0
 /// before `timeout`. Spawn errors, non-zero exits, and timeouts all yield
 /// `false`. Pass `&[]` for `env` when no extra variables are needed.
@@ -796,6 +902,22 @@ vainfo: Supported profile and entrypoint
         let input: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
         let result = validate_hw_encoders_parallel(&input, |_| false);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn probe_capabilities_with_missing_tool_returns_empty_result() {
+        // Drive the full failure path: every probe will fail to spawn
+        // because the binary doesn't exist. We assert the contract the
+        // plugin's init() relies on: codecs is None (the disable signal)
+        // and the secondary fields are empty.
+        let caps = super::probe_capabilities_with_tool("/nonexistent/ffmpeg-fake");
+
+        assert!(
+            caps.codecs.is_none(),
+            "missing tool must surface as codecs == None"
+        );
+        assert!(caps.formats.is_empty());
+        assert!(caps.hw_accels.is_empty());
     }
 
     #[cfg(unix)]
