@@ -385,6 +385,10 @@ pub trait EventLogStorage: Send + Sync {
     fn insert_event_log(&self, record: &EventLogRecord) -> Result<i64>;
     fn list_event_log(&self, filters: &EventLogFilters) -> Result<Vec<EventLogRecord>>;
     fn prune_event_log(&self, keep_last: u64) -> Result<u64>;
+    /// Delete event_log rows per `policy`.
+    ///
+    /// Age is measured by `created_at`. Rank is by `rowid` DESC (newest first).
+    fn prune_old_event_log(&self, policy: RetentionPolicy) -> Result<PruneReport>;
 }
 
 /// Library snapshot storage operations.

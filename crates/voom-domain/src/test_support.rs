@@ -602,6 +602,13 @@ impl crate::storage::EventLogStorage for InMemoryStore {
             Ok(0)
         }
     }
+
+    fn prune_old_event_log(
+        &self,
+        _policy: crate::storage::RetentionPolicy,
+    ) -> crate::errors::Result<crate::storage::PruneReport> {
+        Ok(crate::storage::PruneReport::default())
+    }
 }
 
 impl SnapshotStorage for InMemoryStore {
