@@ -14,6 +14,7 @@ mod paths;
 mod policy_map;
 mod progress;
 mod recovery;
+pub mod retention;
 mod tools;
 
 use cli::{Cli, Commands};
