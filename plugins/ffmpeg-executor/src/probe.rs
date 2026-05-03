@@ -841,6 +841,24 @@ vainfo: Supported profile and entrypoint
         assert!(result.is_empty());
     }
 
+    #[test]
+    fn probe_capabilities_with_missing_tool_returns_empty_result() {
+        // Drive the full failure path: every probe will fail to spawn
+        // because the binary doesn't exist. We assert the contract the
+        // plugin's init() relies on: codecs is None (the disable signal),
+        // and the four secondary fields are empty.
+        let caps = super::probe_capabilities_with_tool("/nonexistent/ffmpeg-fake");
+
+        assert!(
+            caps.codecs.is_none(),
+            "missing tool must surface as codecs == None"
+        );
+        assert!(caps.formats.is_empty());
+        assert!(caps.hw_accels.is_empty());
+        assert!(caps.hw_encoders.is_empty());
+        assert!(caps.hw_decoders.is_empty());
+    }
+
     #[cfg(unix)]
     mod probe_helpers {
         use super::*;
