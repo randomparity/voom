@@ -214,6 +214,14 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+fn table_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
+        [name],
+        |row| row.get(0),
+    )
+}
+
 /// Run migrations for existing databases that may lack newer columns/tables.
 pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // Check plans table for new columns
@@ -450,12 +458,7 @@ fn migrate_indexes_and_constraints(conn: &Connection) -> rusqlite::Result<()> {
         )
     };
 
-    let tracks_exists: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tracks'",
-        [],
-        |row| row.get(0),
-    )?;
-    if tracks_exists && !has_index("idx_tracks_type")? {
+    if table_exists(conn, "tracks")? && !has_index("idx_tracks_type")? {
         conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tracks_type ON tracks(track_type);")?;
     }
 
@@ -616,12 +619,21 @@ fn migrate_execution_capture_columns(
 /// Idempotent: a clean database has no `track_type='video'` rows with image
 /// codecs, so the UPDATE statements affect zero rows.
 fn migrate_cover_art_track_types(conn: &Connection) -> rusqlite::Result<()> {
-    let tracks_exists: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tracks'",
+    if !table_exists(conn, "tracks")? {
+        return Ok(());
+    }
+
+    // Cheap pre-check using idx_tracks_type: skip the UPDATE work entirely once
+    // a database has been migrated. Avoids re-evaluating the correlated mjpeg
+    // subquery on every startup.
+    let has_candidates: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tracks \
+         WHERE track_type = 'video' \
+         AND codec IN ('png', 'bmp', 'gif', 'webp', 'mjpeg'))",
         [],
         |row| row.get(0),
     )?;
-    if !tracks_exists {
+    if !has_candidates {
         return Ok(());
     }
 

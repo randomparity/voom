@@ -704,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn mjpeg_with_single_frame_classified_as_attachment() {
+    fn test_mjpeg_with_single_frame_classified_as_attachment() {
         let stream = serde_json::json!({
             "index": 0,
             "codec_type": "video",
@@ -723,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn png_cover_without_frame_count_classified_as_attachment() {
+    fn test_png_cover_without_frame_count_classified_as_attachment() {
         let stream = serde_json::json!({
             "index": 0,
             "codec_type": "video",
@@ -741,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn motion_mjpeg_with_real_frames_stays_video() {
+    fn test_motion_mjpeg_with_real_frames_stays_video() {
         let stream = serde_json::json!({
             "index": 0,
             "codec_type": "video",
@@ -761,7 +761,7 @@ mod tests {
     }
 
     #[test]
-    fn hevc_with_missing_nb_frames_stays_video() {
+    fn test_hevc_with_missing_nb_frames_stays_video() {
         let stream = serde_json::json!({
             "index": 0,
             "codec_type": "video",
