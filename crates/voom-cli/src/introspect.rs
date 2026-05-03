@@ -96,6 +96,10 @@ async fn introspect_file_inner(
     let path_for_event = path.clone();
     let hash_for_event = content_hash.clone();
     let path_display = path.display().to_string();
+    // Run introspection AND (optionally) the FileIntrospected dispatch
+    // inside spawn_blocking so the entire cascade (WASM plugins,
+    // subtitle mux subscribers) runs on the blocking pool rather than
+    // the tokio runtime.
     let kernel_clone = kernel.clone();
     let intro_result = tokio::task::spawn_blocking(move || {
         let result = introspector.introspect(&path, file_size, content_hash.as_deref());

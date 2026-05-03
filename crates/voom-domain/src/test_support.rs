@@ -234,6 +234,10 @@ impl FileStorage for InMemoryStore {
         Ok(())
     }
 
+    /// In-memory stub. Unlike the SQLite implementation, this does NOT roll
+    /// back partial mutations on error — the in-memory mutations have no
+    /// fallible path. Tests that exercise rollback semantics must use
+    /// `SqliteStore`.
     fn record_post_execution(
         &self,
         id: &Uuid,
@@ -242,8 +246,8 @@ impl FileStorage for InMemoryStore {
         transition: &FileTransition,
     ) -> Result<()> {
         debug_assert_eq!(
-            transition.file_id, *id,
-            "record_post_execution: transition.file_id must equal id"
+            id, &transition.file_id,
+            "record_post_execution: id must match transition.file_id"
         );
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(id) {
