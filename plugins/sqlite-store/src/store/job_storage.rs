@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use voom_domain::errors::{Result, StorageErrorKind, VoomError};
 use voom_domain::job::{Job, JobStatus, JobUpdate};
-use voom_domain::storage::{JobFilters, JobStorage};
+use voom_domain::storage::{JobFilters, JobStorage, PruneReport, RetentionPolicy};
 
 use super::{format_datetime, other_storage_err, row_to_job, storage_err, SqlQuery, SqliteStore};
 
@@ -236,6 +236,55 @@ impl JobStorage for SqliteStore {
         Ok(count as u64)
     }
 
+    fn prune_old_jobs(&self, policy: RetentionPolicy) -> Result<PruneReport> {
+        if policy.is_disabled() {
+            let conn = self.conn()?;
+            let kept: u64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM jobs WHERE status IN ('completed','failed','cancelled')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(storage_err("failed to count jobs"))?;
+            return Ok(PruneReport { deleted: 0, kept });
+        }
+
+        let conn = self.conn()?;
+        let cutoff = policy
+            .max_age
+            .map(|d| format_datetime(&(chrono::Utc::now() - d)));
+        let keep_last: Option<i64> = policy.keep_last.and_then(|n| i64::try_from(n).ok());
+
+        let deleted = conn
+            .execute(
+                "WITH ranked AS (
+                    SELECT id,
+                           ROW_NUMBER() OVER (ORDER BY COALESCE(completed_at, created_at) DESC) AS rn,
+                           COALESCE(completed_at, created_at) AS effective_at
+                    FROM jobs
+                    WHERE status IN ('completed','failed','cancelled')
+                )
+                DELETE FROM jobs
+                WHERE id IN (
+                    SELECT id FROM ranked
+                    WHERE (?1 IS NOT NULL AND effective_at < ?1)
+                       OR (?2 IS NOT NULL AND rn > ?2)
+                )",
+                rusqlite::params![cutoff, keep_last],
+            )
+            .map_err(storage_err("failed to prune old jobs"))? as u64;
+
+        let kept: u64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE status IN ('completed','failed','cancelled')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_err("failed to count remaining jobs"))?;
+
+        Ok(PruneReport { deleted, kept })
+    }
+
     fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -461,6 +510,144 @@ mod tests {
         let deleted = store.delete_jobs(Some(JobStatus::Completed)).unwrap();
         assert_eq!(deleted, 1);
         assert!(store.job(&job.id).unwrap().is_none());
+    }
+
+    use voom_domain::storage::RetentionPolicy;
+
+    fn insert_test_job(
+        store: &SqliteStore,
+        status: voom_domain::job::JobStatus,
+        completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> uuid::Uuid {
+        let mut job = voom_domain::job::Job::new(voom_domain::job::JobType::Introspect);
+        job.status = status;
+        job.completed_at = completed_at;
+        store.create_job(&job).unwrap();
+        job.id
+    }
+
+    #[test]
+    fn prune_old_jobs_disabled_policy_is_noop() {
+        let store = SqliteStore::in_memory().unwrap();
+        insert_test_job(
+            &store,
+            voom_domain::job::JobStatus::Completed,
+            Some(chrono::Utc::now() - chrono::Duration::days(365)),
+        );
+        let report = store.prune_old_jobs(RetentionPolicy::default()).unwrap();
+        assert_eq!(report.deleted, 0);
+        assert_eq!(report.kept, 1);
+    }
+
+    #[test]
+    fn prune_old_jobs_respects_terminal_status_only() {
+        let store = SqliteStore::in_memory().unwrap();
+        insert_test_job(&store, voom_domain::job::JobStatus::Pending, None);
+        insert_test_job(&store, voom_domain::job::JobStatus::Running, None);
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::seconds(0)),
+            keep_last: None,
+        };
+        let report = store.prune_old_jobs(policy).unwrap();
+        assert_eq!(
+            report.deleted, 0,
+            "pending/running rows must never be deleted"
+        );
+        assert_eq!(report.kept, 0, "kept counts only eligible rows");
+    }
+
+    #[test]
+    fn prune_old_jobs_age_only_deletes_old() {
+        let store = SqliteStore::in_memory().unwrap();
+        let now = chrono::Utc::now();
+        insert_test_job(
+            &store,
+            voom_domain::job::JobStatus::Completed,
+            Some(now - chrono::Duration::days(30)),
+        );
+        insert_test_job(
+            &store,
+            voom_domain::job::JobStatus::Completed,
+            Some(now - chrono::Duration::hours(1)),
+        );
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(7)),
+            keep_last: None,
+        };
+        let report = store.prune_old_jobs(policy).unwrap();
+        assert_eq!(report.deleted, 1);
+        assert_eq!(report.kept, 1);
+    }
+
+    #[test]
+    fn prune_old_jobs_count_only_keeps_newest() {
+        let store = SqliteStore::in_memory().unwrap();
+        let now = chrono::Utc::now();
+        for i in 0..5i64 {
+            insert_test_job(
+                &store,
+                voom_domain::job::JobStatus::Completed,
+                Some(now - chrono::Duration::minutes(i)),
+            );
+        }
+        let policy = RetentionPolicy {
+            max_age: None,
+            keep_last: Some(2),
+        };
+        let report = store.prune_old_jobs(policy).unwrap();
+        assert_eq!(report.deleted, 3);
+        assert_eq!(report.kept, 2);
+    }
+
+    #[test]
+    fn prune_old_jobs_or_semantics_combines_bounds() {
+        let store = SqliteStore::in_memory().unwrap();
+        let now = chrono::Utc::now();
+        // 5 rows, age in days: [10, 5, 3, 1, 0]
+        for days in [10i64, 5, 3, 1, 0] {
+            insert_test_job(
+                &store,
+                voom_domain::job::JobStatus::Completed,
+                Some(now - chrono::Duration::days(days)),
+            );
+        }
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(4)), // deletes 10d, 5d
+            keep_last: Some(3),                       // would also delete the 4th-newest (5d)
+        };
+        let report = store.prune_old_jobs(policy).unwrap();
+        // OR semantics: 10d (too old), 5d (too old AND beyond rank 3), nothing else qualifies
+        assert_eq!(report.deleted, 2);
+        assert_eq!(report.kept, 3);
+    }
+
+    #[test]
+    fn prune_old_jobs_completed_at_fallback_to_created_at() {
+        let store = SqliteStore::in_memory().unwrap();
+        // A failed job with no completed_at — falls back to created_at (defaults to now in Job::new)
+        insert_test_job(&store, voom_domain::job::JobStatus::Failed, None);
+        // Make policy aggressively short so created_at (≈now) is NOT older
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(1)),
+            keep_last: None,
+        };
+        let report = store.prune_old_jobs(policy).unwrap();
+        assert_eq!(
+            report.deleted, 0,
+            "row younger than max_age via created_at fallback"
+        );
+    }
+
+    #[test]
+    fn prune_old_jobs_empty_table_is_noop() {
+        let store = SqliteStore::in_memory().unwrap();
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(1)),
+            keep_last: Some(10),
+        };
+        let report = store.prune_old_jobs(policy).unwrap();
+        assert_eq!(report.deleted, 0);
+        assert_eq!(report.kept, 0);
     }
 
     #[test]
