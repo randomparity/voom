@@ -1486,8 +1486,8 @@ mod tests {
     fn test_check_size_increase_dispatches_plan_failed_without_plan_created() {
         // Write a file with 2048 bytes so the size-increase check fires
         // when the MediaFile reports size = 1024 (smaller than actual).
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("test.mkv");
+        let fixture = TestFixture::new();
+        let file_path = fixture.dir_path().join("test.mkv");
         std::fs::write(&file_path, vec![0u8; 2048]).unwrap();
 
         let mut file = MediaFile::new(file_path);
@@ -1502,27 +1502,9 @@ mod tests {
 
         let store: Arc<dyn voom_domain::storage::StorageTrait> =
             Arc::new(voom_domain::test_support::InMemoryStore::new());
-        let capabilities = voom_domain::CapabilityMap::new();
-        let counters = RunCounters::new();
-        let token = CancellationToken::new();
-        let resolver = PolicyResolver::from_single(
-            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
-                .unwrap(),
-            dir.path(),
-        );
         let ctx = ProcessContext {
-            resolver: &resolver,
-            kernel: Arc::new(kernel),
-            store,
-            dry_run: false,
-            plan_only: false,
             flag_size_increase: true,
-            flag_duration_shrink: false,
-            force_rescan: false,
-            token: &token,
-            ffprobe_path: None,
-            capabilities: &capabilities,
-            counters: &counters,
+            ..fixture.make_ctx(Arc::new(kernel), store)
         };
 
         // Should return true (size increased).
