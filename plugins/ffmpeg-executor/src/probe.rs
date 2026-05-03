@@ -1,6 +1,7 @@
 //! `FFmpeg` capability probing: parse output from `ffmpeg -codecs`, `-formats`, `-hwaccels`.
 
 use crate::hwaccel::HwAccelBackend;
+use rayon::prelude::*;
 use voom_domain::events::CodecCapabilities;
 
 /// Parse `ffmpeg -codecs` output into decoder and encoder lists.
@@ -154,6 +155,26 @@ pub fn parse_hwaccels(output: &str) -> Vec<String> {
     accels
 }
 
+/// Run an encoder validator across all candidates in parallel.
+///
+/// Each `validate_hw_encoder*` call spawns a fresh `ffmpeg` subprocess that
+/// takes ~600ms even when it fails. On a CUDA-only host with ~24 candidates
+/// the sequential filter pays ~14s of startup tax. Running the validator on
+/// `rayon`'s thread pool collapses that to ~1s.
+///
+/// `par_iter().filter().collect()` preserves the source order of
+/// `encoders`, which keeps the resulting list deterministic.
+pub fn validate_hw_encoders_parallel<F>(encoders: &[String], validator: F) -> Vec<String>
+where
+    F: Fn(&str) -> bool + Sync,
+{
+    encoders
+        .par_iter()
+        .filter(|enc| validator(enc.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// Test whether an ffmpeg HW encoder actually works on the current device.
 ///
 /// Tries to encode a single frame from a synthetic source. Returns `false`
@@ -188,7 +209,7 @@ pub fn validate_hw_encoder(encoder: &str) -> bool {
     if ok {
         tracing::debug!(encoder, "HW encoder validated");
     } else {
-        tracing::info!(
+        tracing::debug!(
             encoder,
             "HW encoder not supported by device, will use software fallback"
         );
@@ -722,5 +743,41 @@ vainfo: Supported profile and entrypoint
         let output = "some random output\nwithout driver info\n";
         let name = parse_vainfo_device_name(output);
         assert!(name.is_none());
+    }
+
+    #[test]
+    fn test_validate_hw_encoders_parallel_preserves_order() {
+        let input: Vec<String> = vec![
+            "av1_nvenc".into(),
+            "h264_nvenc".into(),
+            "av1_qsv".into(),
+            "hevc_nvenc".into(),
+            "vp9_qsv".into(),
+        ];
+        // Pass-through validator that accepts only `*_nvenc`.
+        let result = validate_hw_encoders_parallel(&input, |name| name.ends_with("_nvenc"));
+        assert_eq!(
+            result,
+            vec![
+                "av1_nvenc".to_string(),
+                "h264_nvenc".to_string(),
+                "hevc_nvenc".to_string(),
+            ],
+            "filter must preserve source order even when run in parallel"
+        );
+    }
+
+    #[test]
+    fn test_validate_hw_encoders_parallel_empty_input() {
+        let input: Vec<String> = Vec::new();
+        let result = validate_hw_encoders_parallel(&input, |_| true);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_validate_hw_encoders_parallel_all_rejected() {
+        let input: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
+        let result = validate_hw_encoders_parallel(&input, |_| false);
+        assert!(result.is_empty());
     }
 }
