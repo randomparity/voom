@@ -428,15 +428,9 @@ impl FileStorage for SqliteStore {
             .map_err(storage_err("failed to update expected_hash in bundle"))?;
         }
 
-        // Symmetric with `handle_file_introspected`: a successful plan
-        // means there is no longer a bad file at the post-execution path.
-        // If re-introspection failed and dispatched FileIntrospectionFailed
-        // before this bundle ran, an orphan bad_files row may exist at
-        // `transition.path` — clear it inside the same transaction so the
-        // success/failure outcome is durable as a single unit. See issue #173.
-        let path_str = transition.path.to_string_lossy().to_string();
-        tx.execute("DELETE FROM bad_files WHERE path = ?1", params![path_str])
-            .map_err(storage_err("failed to clear bad_files row in bundle"))?;
+        // Symmetric with `handle_file_introspected`'s cleanup: a successful
+        // bundle means the file at `transition.path` is no longer "bad".
+        super::bad_file_storage::delete_bad_file_by_path_in_tx(&tx, &transition.path)?;
 
         tx.commit()
             .map_err(storage_err("failed to commit post-execution bundle"))?;
@@ -1701,11 +1695,9 @@ mod tests {
             .unwrap()
             .id;
 
-        // Simulate the buggy interleaving from issue #173: re-introspection
-        // dispatched FileIntrospectionFailed for the post-execution path,
-        // which inserted a bad_files row at /media/movie.mkv. The bundled
-        // post-execution write is now about to rename the files row to that
-        // same path — and must remove the orphan in the process.
+        // Pre-seed an orphan bad_files row at the post-execution path,
+        // simulating a prior FileIntrospectionFailed dispatch. The bundled
+        // rename must clear it.
         let orphan = BadFile::new(
             PathBuf::from("/media/movie.mkv"),
             2048,
@@ -1782,10 +1774,10 @@ mod tests {
         );
         store.upsert_bad_file(&orphan).unwrap();
 
-        // Pre-insert a transition with a known id, then try to record_post_execution
-        // with the same transition.id. The INSERT will violate the PK constraint
-        // and the entire bundle (rename + expected_hash + bad_files DELETE) must
-        // roll back, leaving the orphan bad_files row in place.
+        // Force the bundle's transition INSERT to fail by colliding on the
+        // primary key with a pre-existing row. All four bundle effects
+        // (rename, transition INSERT, expected_hash UPDATE, bad_files DELETE)
+        // must roll back together.
         let mut existing = FileTransition::new(
             original_id,
             PathBuf::from("/media/movie.mp4"),
@@ -1812,15 +1804,12 @@ mod tests {
         );
         assert!(result.is_err(), "duplicate transition id must error");
 
-        // Rollback verification: rename, expected_hash, and bad_files DELETE
-        // must all have been rolled back together. `upsert_file` does not
-        // persist `expected_hash`, so the pre-bundle value is `None`;
-        // without rollback we'd observe `Some("new_hash")` from the bundle's
-        // UPDATE.
         let still_at_old = store
             .file_by_path(Path::new("/media/movie.mp4"))
             .unwrap()
             .expect("rename must have been rolled back");
+        // `upsert_file` doesn't persist `expected_hash`, so the pre-bundle
+        // value is None; without rollback we'd observe Some("new_hash").
         assert_eq!(
             still_at_old.expected_hash, None,
             "expected_hash UPDATE must have been rolled back"

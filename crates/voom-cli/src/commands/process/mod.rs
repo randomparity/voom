@@ -1463,9 +1463,9 @@ mod tests {
             Arc::new(voom_sqlite_store::store::SqliteStore::in_memory().unwrap());
         store.upsert_file(&file).unwrap();
 
-        // Pre-seed a bad_files row at the post-execution path. This simulates the
-        // FileIntrospectionFailed event that would have fired during re-introspection
-        // of the post-execution file (issue #173). The bundled rename must clear it.
+        // Pre-seed a bad_files row at the post-execution path, simulating the
+        // FileIntrospectionFailed event that fires when reintrospection fails.
+        // The bundled rename must clear it.
         let orphan = BadFile::new(
             mkv_path.clone(),
             2048,
@@ -1480,11 +1480,8 @@ mod tests {
         );
 
         let kernel = Arc::new(voom_kernel::Kernel::new());
-        // Force `reintrospect_file` onto its failure-fallback branch
-        // (pipeline.rs:555) by pointing at a nonexistent ffprobe binary.
-        // This is the exact code path issue #173 describes: re-introspection
-        // fails, the synthetic MediaFile carries the post-execution path, and
-        // the bundled rename must still clear the orphan bad_files row.
+        // Nonexistent ffprobe forces reintrospection onto its failure-fallback
+        // branch deterministically, regardless of $PATH.
         let ctx = ProcessContext {
             ffprobe_path: Some("/nonexistent/ffprobe"),
             ..fixture.make_ctx(kernel, store.clone())
@@ -1493,16 +1490,10 @@ mod tests {
         let new_file =
             pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx).await;
 
-        // Pin the test to the actual code path under review: confirm the
-        // returned MediaFile reflects the post-execution path so that
-        // `record_file_transition`'s `path_changed` guard fired and
-        // `record_post_execution` actually ran.
         assert_eq!(
             new_file.path, mkv_path,
             "handle_plan_success must return a MediaFile reflecting the post-execution path"
         );
-
-        // The orphan must be gone after the bundled post-execution write commits.
         assert!(
             store.bad_file_by_path(&mkv_path).unwrap().is_none(),
             "handle_plan_success must clear orphan bad_files row at post-execution path"

@@ -174,7 +174,7 @@ pub trait FileStorage: Send + Sync {
     /// no longer "bad" — symmetric with the cleanup `FileIntrospected`
     /// performs. Without this, a re-introspection failure followed by a
     /// successful bundle would leave an orphan `bad_files` row at the
-    /// same path as the renamed files row. See issue #173.
+    /// same path as the renamed files row.
     fn record_post_execution(
         &self,
         new_path: Option<&Path>,
