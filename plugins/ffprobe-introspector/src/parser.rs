@@ -81,6 +81,42 @@ fn parse_streams(streams: &[serde_json::Value]) -> Vec<Track> {
         .collect()
 }
 
+/// Codecs that are image-only in a film library context. A track using one of
+/// these codecs is treated as cover art / thumbnail when it lacks evidence of
+/// real motion (frame count > 1 AND non-zero duration).
+const IMAGE_ONLY_CODECS: &[&str] = &["mjpeg", "png", "bmp", "gif", "webp"];
+
+/// Returns true when a `codec_type=video` stream looks like an embedded cover
+/// image rather than primary motion video.
+///
+/// Heuristic (codec must be in `IMAGE_ONLY_CODECS`, then any of):
+/// - `nb_frames` parses to a value `<= 1`
+/// - `nb_frames` is absent AND `duration` is missing/`N/A`/parses to `0.0`
+///
+/// `codec` is the *normalized* codec name (matches the value stored on `Track.codec`).
+fn is_likely_cover_art_stream(codec: &str, stream: &serde_json::Value) -> bool {
+    if !IMAGE_ONLY_CODECS.contains(&codec) {
+        return false;
+    }
+
+    let nb_frames = stream
+        .get("nb_frames")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<u64>().ok());
+
+    if let Some(frames) = nb_frames {
+        return frames <= 1;
+    }
+
+    let duration = stream
+        .get("duration")
+        .and_then(|v| v.as_str())
+        .filter(|s| *s != "N/A")
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    duration <= 0.0
+}
+
 #[allow(clippy::too_many_lines)] // Single match over codec_type; splitting would scatter field logic.
 fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
     let codec_type = stream.get("codec_type")?.as_str()?;
@@ -134,6 +170,14 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
         "video" => {
             // Skip attached pictures (album art)
             if disp_flag("attached_pic") {
+                common.track_type = TrackType::Attachment;
+                return Some(common);
+            }
+
+            // Heuristic: image codecs with no real motion are cover art even
+            // when the muxer didn't set the attached_pic disposition flag.
+            // See issue #156.
+            if is_likely_cover_art_stream(&common.codec, stream) {
                 common.track_type = TrackType::Attachment;
                 return Some(common);
             }
@@ -657,5 +701,80 @@ mod tests {
         let stream = serde_json::json!({"r_frame_rate": "25/1"});
         let rate = parse_frame_rate(&stream).unwrap();
         assert!((rate - 25.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn mjpeg_with_single_frame_classified_as_attachment() {
+        let stream = serde_json::json!({
+            "index": 0,
+            "codec_type": "video",
+            "codec_name": "mjpeg",
+            "width": 600,
+            "height": 600,
+            "r_frame_rate": "0/0",
+            "avg_frame_rate": "0/0",
+            "nb_frames": "1",
+            "disposition": {"default": 0, "forced": 0, "attached_pic": 0, "comment": 0},
+            "tags": {}
+        });
+        let json = make_ffprobe_json(&[stream]);
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
+        assert_eq!(file.tracks[0].track_type, TrackType::Attachment);
+    }
+
+    #[test]
+    fn png_cover_without_frame_count_classified_as_attachment() {
+        let stream = serde_json::json!({
+            "index": 0,
+            "codec_type": "video",
+            "codec_name": "png",
+            "width": 1000,
+            "height": 1500,
+            "r_frame_rate": "0/0",
+            "avg_frame_rate": "0/0",
+            "disposition": {"default": 0, "forced": 0, "attached_pic": 0, "comment": 0},
+            "tags": {}
+        });
+        let json = make_ffprobe_json(&[stream]);
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
+        assert_eq!(file.tracks[0].track_type, TrackType::Attachment);
+    }
+
+    #[test]
+    fn motion_mjpeg_with_real_frames_stays_video() {
+        let stream = serde_json::json!({
+            "index": 0,
+            "codec_type": "video",
+            "codec_name": "mjpeg",
+            "width": 1920,
+            "height": 1080,
+            "r_frame_rate": "24000/1001",
+            "avg_frame_rate": "24000/1001",
+            "nb_frames": "138165",
+            "duration": "5760.000000",
+            "disposition": {"default": 1, "forced": 0, "attached_pic": 0, "comment": 0},
+            "tags": {}
+        });
+        let json = make_ffprobe_json(&[stream]);
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
+        assert_eq!(file.tracks[0].track_type, TrackType::Video);
+    }
+
+    #[test]
+    fn hevc_with_missing_nb_frames_stays_video() {
+        let stream = serde_json::json!({
+            "index": 0,
+            "codec_type": "video",
+            "codec_name": "hevc",
+            "width": 3840,
+            "height": 2160,
+            "r_frame_rate": "24000/1001",
+            "avg_frame_rate": "24000/1001",
+            "disposition": {"default": 1, "forced": 0, "attached_pic": 0, "comment": 0},
+            "tags": {}
+        });
+        let json = make_ffprobe_json(&[stream]);
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
+        assert_eq!(file.tracks[0].track_type, TrackType::Video);
     }
 }
