@@ -5,46 +5,28 @@ use rayon::prelude::*;
 use std::time::Duration;
 use voom_domain::events::CodecCapabilities;
 
-/// Upper bound for a single hardware-encoder validation invocation
-/// (`ffmpeg -c:v <enc> -frames:v 1 ...`). On healthy hardware these
-/// finish in well under 1 s; we cap at 5 s so a wedged GPU driver or
-/// stuck device node can no longer hang a rayon worker forever.
+/// Upper bound for a single hardware-encoder validation invocation.
+/// On healthy hardware these finish well under 1 s; the 5 s cap keeps a
+/// wedged GPU driver or stuck device node from hanging a rayon worker.
 const HW_ENCODER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Upper bound for tool-enumeration calls (`nvidia-smi --query-gpu`,
-/// `vainfo`, `nvidia-smi --list-gpus`). These are normally millisecond
-/// operations; 10 s catches pathological hangs while leaving slow
-/// remote-display or first-init paths headroom.
+/// Upper bound for `nvidia-smi` / `vainfo` enumeration calls. Normally
+/// millisecond operations; 10 s leaves headroom for first-init or
+/// remote-display paths while still bounding pathological hangs.
 const TOOL_ENUMERATION_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Run `tool` with `args` under `timeout`; return `true` iff it
-/// exited 0 within the deadline. Spawn errors, non-zero exit, and
-/// timeout all collapse to `false` — matching the prior
-/// `Command::status().map(...).unwrap_or(false)` semantics that the
-/// callers already depend on.
-fn probe_tool_status(tool: &str, args: &[&str], timeout: Duration) -> bool {
-    voom_process::run_with_timeout(tool, args, timeout)
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Same as [`probe_tool_status`] but with extra environment variables
-/// (used by the Nvenc branch which sets `CUDA_VISIBLE_DEVICES`).
-fn probe_tool_status_env(
-    tool: &str,
-    args: &[&str],
-    timeout: Duration,
-    env: &[(&str, &str)],
-) -> bool {
+/// Run `tool` with `args` and `env`, returning `true` only if it exits 0
+/// before `timeout`. Spawn errors, non-zero exits, and timeouts all yield
+/// `false`. Pass `&[]` for `env` when no extra variables are needed.
+fn probe_tool_status(tool: &str, args: &[&str], timeout: Duration, env: &[(&str, &str)]) -> bool {
     voom_process::run_with_timeout_env(tool, args, timeout, env)
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
-/// Run `tool` with `args` under `timeout`; return its stdout iff
-/// it exited 0 within the deadline. Spawn errors, non-zero exit,
-/// and timeout collapse to `None` — matching the prior
-/// `Command::output().ok().filter(|o| o.status.success())` pattern.
+/// Run `tool` with `args`, returning captured stdout only if it exits 0
+/// before `timeout`. Spawn errors, non-zero exits, and timeouts all yield
+/// `None`.
 fn probe_tool_stdout(tool: &str, args: &[&str], timeout: Duration) -> Option<Vec<u8>> {
     voom_process::run_with_timeout(tool, args, timeout)
         .ok()
@@ -249,6 +231,7 @@ pub fn validate_hw_encoder(encoder: &str) -> bool {
             "-",
         ],
         HW_ENCODER_PROBE_TIMEOUT,
+        &[],
     );
 
     if ok {
@@ -348,7 +331,12 @@ fn enumerate_vaapi_devices() -> Vec<GpuDevice> {
 
 /// Check whether NVIDIA GPU hardware is present.
 pub(crate) fn has_nvidia_hardware() -> bool {
-    probe_tool_status("nvidia-smi", &["--list-gpus"], TOOL_ENUMERATION_TIMEOUT)
+    probe_tool_status(
+        "nvidia-smi",
+        &["--list-gpus"],
+        TOOL_ENUMERATION_TIMEOUT,
+        &[],
+    )
 }
 
 /// Check whether a working VA-API device exists.
@@ -377,6 +365,7 @@ pub(crate) fn has_vaapi_devices() -> bool {
         "vainfo",
         &["--display", "drm", "--device", path_str.as_ref()],
         TOOL_ENUMERATION_TIMEOUT,
+        &[],
     );
 
     if ok {
@@ -476,7 +465,7 @@ pub fn validate_hw_encoder_on_device(
 ) -> bool {
     match backend {
         HwAccelBackend::Nvenc => {
-            let ok = probe_tool_status_env(
+            let ok = probe_tool_status(
                 "ffmpeg",
                 &[
                     "-hide_banner",
@@ -528,6 +517,7 @@ pub fn validate_hw_encoder_on_device(
                     "-",
                 ],
                 HW_ENCODER_PROBE_TIMEOUT,
+                &[],
             );
             if ok {
                 tracing::debug!(
@@ -558,6 +548,7 @@ pub fn validate_hw_encoder_on_device(
                     "-",
                 ],
                 HW_ENCODER_PROBE_TIMEOUT,
+                &[],
             );
             if ok {
                 tracing::debug!(
@@ -807,113 +798,90 @@ vainfo: Supported profile and entrypoint
         assert!(result.is_empty());
     }
 
-    #[test]
-    fn probe_tool_status_returns_true_on_success() {
-        // `true` is a POSIX builtin/binary that exits 0 immediately.
-        let ok = probe_tool_status("true", &[], Duration::from_secs(5));
-        assert!(ok, "`true` should report success");
-    }
+    #[cfg(unix)]
+    mod probe_helpers {
+        use super::*;
+        use std::time::Instant;
 
-    #[test]
-    fn probe_tool_status_returns_false_on_nonzero_exit() {
-        // `false` is a POSIX builtin/binary that exits 1 immediately.
-        let ok = probe_tool_status("false", &[], Duration::from_secs(5));
-        assert!(!ok, "`false` should report non-success");
-    }
+        #[test]
+        fn returns_true_on_success() {
+            let ok = probe_tool_status("true", &[], Duration::from_secs(5), &[]);
+            assert!(ok);
+        }
 
-    #[test]
-    fn probe_tool_status_returns_false_on_missing_tool() {
-        let ok = probe_tool_status(
-            "voom_nonexistent_probe_tool_xyz",
-            &[],
-            Duration::from_secs(5),
-        );
-        assert!(!ok, "missing tool should be treated as unsupported");
-    }
+        #[test]
+        fn returns_false_on_nonzero_exit() {
+            let ok = probe_tool_status("false", &[], Duration::from_secs(5), &[]);
+            assert!(!ok);
+        }
 
-    #[test]
-    fn probe_tool_status_returns_false_on_timeout() {
-        // `sleep 60` will be killed after 1 s; we expect false.
-        let started = std::time::Instant::now();
-        let ok = probe_tool_status("sleep", &["60"], Duration::from_secs(1));
-        let elapsed = started.elapsed();
-        assert!(!ok, "hung tool should be treated as unsupported");
-        assert!(
-            elapsed < Duration::from_secs(5),
-            "probe must return within a few seconds of the timeout, took {elapsed:?}"
-        );
-    }
+        #[test]
+        fn returns_false_on_missing_tool() {
+            let ok = probe_tool_status(
+                "voom_nonexistent_probe_tool_xyz",
+                &[],
+                Duration::from_secs(5),
+                &[],
+            );
+            assert!(!ok);
+        }
 
-    #[test]
-    fn probe_tool_status_env_passes_environment() {
-        // `sh -c '[ "$VOOM_PROBE_TEST" = "yes" ]'` exits 0 only if the
-        // env var got through.
-        let ok = probe_tool_status_env(
-            "sh",
-            &["-c", "[ \"$VOOM_PROBE_TEST\" = \"yes\" ]"],
-            Duration::from_secs(5),
-            &[("VOOM_PROBE_TEST", "yes")],
-        );
-        assert!(ok, "env var should reach the child");
+        #[test]
+        fn returns_false_on_timeout() {
+            let started = Instant::now();
+            let ok = probe_tool_status("sleep", &["60"], Duration::from_secs(1), &[]);
+            let elapsed = started.elapsed();
+            assert!(!ok);
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "probe must return within a few seconds of the timeout, took {elapsed:?}"
+            );
+        }
 
-        let not_ok = probe_tool_status_env(
-            "sh",
-            &["-c", "[ \"$VOOM_PROBE_TEST\" = \"yes\" ]"],
-            Duration::from_secs(5),
-            &[("VOOM_PROBE_TEST", "no")],
-        );
-        assert!(!not_ok, "wrong env value should fail the comparison");
-    }
+        #[test]
+        fn passes_environment() {
+            let ok = probe_tool_status(
+                "sh",
+                &["-c", "[ \"$VOOM_PROBE_TEST\" = \"yes\" ]"],
+                Duration::from_secs(5),
+                &[("VOOM_PROBE_TEST", "yes")],
+            );
+            assert!(ok);
+        }
 
-    #[test]
-    fn probe_tool_status_env_returns_false_on_timeout() {
-        let started = std::time::Instant::now();
-        let ok = probe_tool_status_env(
-            "sleep",
-            &["60"],
-            Duration::from_secs(1),
-            &[("IGNORED", "value")],
-        );
-        let elapsed = started.elapsed();
-        assert!(!ok);
-        assert!(
-            elapsed < Duration::from_secs(5),
-            "env-variant must also honor the timeout, took {elapsed:?}"
-        );
-    }
+        #[test]
+        fn stdout_captures_on_success() {
+            let out = probe_tool_stdout("echo", &["hello"], Duration::from_secs(5))
+                .expect("echo should succeed");
+            assert_eq!(String::from_utf8_lossy(&out).trim(), "hello");
+        }
 
-    #[test]
-    fn probe_tool_stdout_captures_stdout_on_success() {
-        let out = probe_tool_stdout("echo", &["hello"], Duration::from_secs(5))
-            .expect("echo should succeed");
-        assert_eq!(String::from_utf8_lossy(&out).trim(), "hello");
-    }
+        #[test]
+        fn stdout_none_on_nonzero_exit() {
+            let out = probe_tool_stdout("false", &[], Duration::from_secs(5));
+            assert!(out.is_none());
+        }
 
-    #[test]
-    fn probe_tool_stdout_returns_none_on_nonzero_exit() {
-        let out = probe_tool_stdout("false", &[], Duration::from_secs(5));
-        assert!(out.is_none(), "non-zero exit should yield None");
-    }
+        #[test]
+        fn stdout_none_on_missing_tool() {
+            let out = probe_tool_stdout(
+                "voom_nonexistent_probe_tool_xyz",
+                &[],
+                Duration::from_secs(5),
+            );
+            assert!(out.is_none());
+        }
 
-    #[test]
-    fn probe_tool_stdout_returns_none_on_missing_tool() {
-        let out = probe_tool_stdout(
-            "voom_nonexistent_probe_tool_xyz",
-            &[],
-            Duration::from_secs(5),
-        );
-        assert!(out.is_none());
-    }
-
-    #[test]
-    fn probe_tool_stdout_returns_none_on_timeout() {
-        let started = std::time::Instant::now();
-        let out = probe_tool_stdout("sleep", &["60"], Duration::from_secs(1));
-        let elapsed = started.elapsed();
-        assert!(out.is_none(), "hung tool should yield None");
-        assert!(
-            elapsed < Duration::from_secs(5),
-            "stdout-variant must also honor the timeout, took {elapsed:?}"
-        );
+        #[test]
+        fn stdout_none_on_timeout() {
+            let started = Instant::now();
+            let out = probe_tool_stdout("sleep", &["60"], Duration::from_secs(1));
+            let elapsed = started.elapsed();
+            assert!(out.is_none());
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "stdout-variant must also honor the timeout, took {elapsed:?}"
+            );
+        }
     }
 }
