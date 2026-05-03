@@ -9,14 +9,12 @@ use voom_domain::events::CodecCapabilities;
 /// (`ffmpeg -c:v <enc> -frames:v 1 ...`). On healthy hardware these
 /// finish in well under 1 s; we cap at 5 s so a wedged GPU driver or
 /// stuck device node can no longer hang a rayon worker forever.
-#[allow(dead_code)]
 const HW_ENCODER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Upper bound for tool-enumeration calls (`nvidia-smi --query-gpu`,
 /// `vainfo`, `nvidia-smi --list-gpus`). These are normally millisecond
 /// operations; 10 s catches pathological hangs while leaving slow
 /// remote-display or first-init paths headroom.
-#[allow(dead_code)]
 const TOOL_ENUMERATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Run `tool` with `args` under `timeout`; return `true` iff it
@@ -24,7 +22,6 @@ const TOOL_ENUMERATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// timeout all collapse to `false` — matching the prior
 /// `Command::status().map(...).unwrap_or(false)` semantics that the
 /// callers already depend on.
-#[allow(dead_code)]
 fn probe_tool_status(tool: &str, args: &[&str], timeout: Duration) -> bool {
     voom_process::run_with_timeout(tool, args, timeout)
         .map(|o| o.status.success())
@@ -33,7 +30,6 @@ fn probe_tool_status(tool: &str, args: &[&str], timeout: Duration) -> bool {
 
 /// Same as [`probe_tool_status`] but with extra environment variables
 /// (used by the Nvenc branch which sets `CUDA_VISIBLE_DEVICES`).
-#[allow(dead_code)]
 fn probe_tool_status_env(
     tool: &str,
     args: &[&str],
@@ -49,7 +45,6 @@ fn probe_tool_status_env(
 /// it exited 0 within the deadline. Spawn errors, non-zero exit,
 /// and timeout collapse to `None` — matching the prior
 /// `Command::output().ok().filter(|o| o.status.success())` pattern.
-#[allow(dead_code)]
 fn probe_tool_stdout(tool: &str, args: &[&str], timeout: Duration) -> Option<Vec<u8>> {
     voom_process::run_with_timeout(tool, args, timeout)
         .ok()
@@ -298,19 +293,19 @@ pub fn enumerate_gpus(backend: HwAccelBackend) -> Vec<GpuDevice> {
 }
 
 fn enumerate_nvidia_gpus() -> Vec<GpuDevice> {
-    let output = std::process::Command::new("nvidia-smi")
-        .args([
+    match probe_tool_stdout(
+        "nvidia-smi",
+        &[
             "--query-gpu=index,name,memory.total",
             "--format=csv,noheader,nounits",
-        ])
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            parse_nvidia_smi(&stdout)
+        ],
+        TOOL_ENUMERATION_TIMEOUT,
+    ) {
+        Some(stdout) => {
+            let text = String::from_utf8_lossy(&stdout);
+            parse_nvidia_smi(&text)
         }
-        _ => Vec::new(),
+        None => Vec::new(),
     }
 }
 
@@ -330,16 +325,16 @@ fn enumerate_vaapi_devices() -> Vec<GpuDevice> {
         let path = entry.path();
         let path_str = path.to_string_lossy().to_string();
 
-        let device_name = std::process::Command::new("vainfo")
-            .args(["--display", "drm", "--device", &path_str])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .and_then(|o| {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                parse_vainfo_device_name(&stdout)
-            })
-            .unwrap_or_else(|| name_str.to_string());
+        let device_name = probe_tool_stdout(
+            "vainfo",
+            &["--display", "drm", "--device", path_str.as_str()],
+            TOOL_ENUMERATION_TIMEOUT,
+        )
+        .and_then(|stdout| {
+            let text = String::from_utf8_lossy(&stdout);
+            parse_vainfo_device_name(&text)
+        })
+        .unwrap_or_else(|| name_str.to_string());
 
         devices.push(GpuDevice {
             id: path_str,
@@ -353,14 +348,7 @@ fn enumerate_vaapi_devices() -> Vec<GpuDevice> {
 
 /// Check whether NVIDIA GPU hardware is present.
 pub(crate) fn has_nvidia_hardware() -> bool {
-    std::process::Command::new("nvidia-smi")
-        .arg("--list-gpus")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    probe_tool_status("nvidia-smi", &["--list-gpus"], TOOL_ENUMERATION_TIMEOUT)
 }
 
 /// Check whether a working VA-API device exists.
@@ -385,14 +373,11 @@ pub(crate) fn has_vaapi_devices() -> bool {
     let path = entry.path();
     let path_str = path.to_string_lossy();
 
-    let ok = std::process::Command::new("vainfo")
-        .args(["--display", "drm", "--device", &path_str])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let ok = probe_tool_status(
+        "vainfo",
+        &["--display", "drm", "--device", path_str.as_ref()],
+        TOOL_ENUMERATION_TIMEOUT,
+    );
 
     if ok {
         tracing::debug!(device = %path_str, "VA-API device verified via vainfo");
