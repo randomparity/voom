@@ -2,7 +2,37 @@
 
 use crate::hwaccel::HwAccelBackend;
 use rayon::prelude::*;
+use std::time::Duration;
 use voom_domain::events::CodecCapabilities;
+
+/// Upper bound for a single hardware-encoder validation invocation.
+/// On healthy hardware these finish well under 1 s; the 5 s cap keeps a
+/// wedged GPU driver or stuck device node from hanging a rayon worker.
+const HW_ENCODER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Upper bound for `nvidia-smi` / `vainfo` enumeration calls. Normally
+/// millisecond operations; 10 s leaves headroom for first-init or
+/// remote-display paths while still bounding pathological hangs.
+const TOOL_ENUMERATION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Run `tool` with `args` and `env`, returning `true` only if it exits 0
+/// before `timeout`. Spawn errors, non-zero exits, and timeouts all yield
+/// `false`. Pass `&[]` for `env` when no extra variables are needed.
+fn probe_tool_status(tool: &str, args: &[&str], timeout: Duration, env: &[(&str, &str)]) -> bool {
+    voom_process::run_with_timeout_env(tool, args, timeout, env)
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Run `tool` with `args`, returning captured stdout only if it exits 0
+/// before `timeout`. Spawn errors, non-zero exits, and timeouts all yield
+/// `None`.
+fn probe_tool_stdout(tool: &str, args: &[&str], timeout: Duration) -> Option<Vec<u8>> {
+    voom_process::run_with_timeout(tool, args, timeout)
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| o.stdout)
+}
 
 /// Parse `ffmpeg -codecs` output into decoder and encoder lists.
 ///
@@ -183,8 +213,9 @@ where
 ///
 /// Uses 256x256 to satisfy NVENC minimum resolution requirements.
 pub fn validate_hw_encoder(encoder: &str) -> bool {
-    let ok = std::process::Command::new("ffmpeg")
-        .args([
+    let ok = probe_tool_status(
+        "ffmpeg",
+        &[
             "-hide_banner",
             "-nostdin",
             "-f",
@@ -198,13 +229,10 @@ pub fn validate_hw_encoder(encoder: &str) -> bool {
             "-f",
             "null",
             "-",
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        ],
+        HW_ENCODER_PROBE_TIMEOUT,
+        &[],
+    );
 
     if ok {
         tracing::debug!(encoder, "HW encoder validated");
@@ -248,19 +276,19 @@ pub fn enumerate_gpus(backend: HwAccelBackend) -> Vec<GpuDevice> {
 }
 
 fn enumerate_nvidia_gpus() -> Vec<GpuDevice> {
-    let output = std::process::Command::new("nvidia-smi")
-        .args([
+    match probe_tool_stdout(
+        "nvidia-smi",
+        &[
             "--query-gpu=index,name,memory.total",
             "--format=csv,noheader,nounits",
-        ])
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            parse_nvidia_smi(&stdout)
+        ],
+        TOOL_ENUMERATION_TIMEOUT,
+    ) {
+        Some(stdout) => {
+            let text = String::from_utf8_lossy(&stdout);
+            parse_nvidia_smi(&text)
         }
-        _ => Vec::new(),
+        None => Vec::new(),
     }
 }
 
@@ -280,16 +308,16 @@ fn enumerate_vaapi_devices() -> Vec<GpuDevice> {
         let path = entry.path();
         let path_str = path.to_string_lossy().to_string();
 
-        let device_name = std::process::Command::new("vainfo")
-            .args(["--display", "drm", "--device", &path_str])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .and_then(|o| {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                parse_vainfo_device_name(&stdout)
-            })
-            .unwrap_or_else(|| name_str.to_string());
+        let device_name = probe_tool_stdout(
+            "vainfo",
+            &["--display", "drm", "--device", path_str.as_str()],
+            TOOL_ENUMERATION_TIMEOUT,
+        )
+        .and_then(|stdout| {
+            let text = String::from_utf8_lossy(&stdout);
+            parse_vainfo_device_name(&text)
+        })
+        .unwrap_or_else(|| name_str.to_string());
 
         devices.push(GpuDevice {
             id: path_str,
@@ -303,14 +331,12 @@ fn enumerate_vaapi_devices() -> Vec<GpuDevice> {
 
 /// Check whether NVIDIA GPU hardware is present.
 pub(crate) fn has_nvidia_hardware() -> bool {
-    std::process::Command::new("nvidia-smi")
-        .arg("--list-gpus")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    probe_tool_status(
+        "nvidia-smi",
+        &["--list-gpus"],
+        TOOL_ENUMERATION_TIMEOUT,
+        &[],
+    )
 }
 
 /// Check whether a working VA-API device exists.
@@ -335,14 +361,12 @@ pub(crate) fn has_vaapi_devices() -> bool {
     let path = entry.path();
     let path_str = path.to_string_lossy();
 
-    let ok = std::process::Command::new("vainfo")
-        .args(["--display", "drm", "--device", &path_str])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let ok = probe_tool_status(
+        "vainfo",
+        &["--display", "drm", "--device", path_str.as_ref()],
+        TOOL_ENUMERATION_TIMEOUT,
+        &[],
+    );
 
     if ok {
         tracing::debug!(device = %path_str, "VA-API device verified via vainfo");
@@ -441,9 +465,9 @@ pub fn validate_hw_encoder_on_device(
 ) -> bool {
     match backend {
         HwAccelBackend::Nvenc => {
-            let ok = std::process::Command::new("ffmpeg")
-                .env("CUDA_VISIBLE_DEVICES", &device.id)
-                .args([
+            let ok = probe_tool_status(
+                "ffmpeg",
+                &[
                     "-hide_banner",
                     "-nostdin",
                     "-f",
@@ -457,13 +481,10 @@ pub fn validate_hw_encoder_on_device(
                     "-f",
                     "null",
                     "-",
-                ])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+                ],
+                HW_ENCODER_PROBE_TIMEOUT,
+                &[("CUDA_VISIBLE_DEVICES", device.id.as_str())],
+            );
             if ok {
                 tracing::debug!(
                     encoder, gpu = %device.id,
@@ -474,8 +495,9 @@ pub fn validate_hw_encoder_on_device(
         }
         HwAccelBackend::Vaapi => {
             let filter = "format=nv12,hwupload";
-            let ok = std::process::Command::new("ffmpeg")
-                .args([
+            let ok = probe_tool_status(
+                "ffmpeg",
+                &[
                     "-hide_banner",
                     "-nostdin",
                     "-f",
@@ -483,7 +505,7 @@ pub fn validate_hw_encoder_on_device(
                     "-i",
                     "nullsrc=s=256x256:d=0.04",
                     "-vaapi_device",
-                    &device.id,
+                    device.id.as_str(),
                     "-vf",
                     filter,
                     "-frames:v",
@@ -493,13 +515,10 @@ pub fn validate_hw_encoder_on_device(
                     "-f",
                     "null",
                     "-",
-                ])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+                ],
+                HW_ENCODER_PROBE_TIMEOUT,
+                &[],
+            );
             if ok {
                 tracing::debug!(
                     encoder, device = %device.id,
@@ -509,8 +528,9 @@ pub fn validate_hw_encoder_on_device(
             ok
         }
         HwAccelBackend::Qsv => {
-            let ok = std::process::Command::new("ffmpeg")
-                .args([
+            let ok = probe_tool_status(
+                "ffmpeg",
+                &[
                     "-hide_banner",
                     "-nostdin",
                     "-f",
@@ -518,7 +538,7 @@ pub fn validate_hw_encoder_on_device(
                     "-i",
                     "nullsrc=s=256x256:d=0.04",
                     "-qsv_device",
-                    &device.id,
+                    device.id.as_str(),
                     "-frames:v",
                     "1",
                     "-c:v",
@@ -526,13 +546,10 @@ pub fn validate_hw_encoder_on_device(
                     "-f",
                     "null",
                     "-",
-                ])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+                ],
+                HW_ENCODER_PROBE_TIMEOUT,
+                &[],
+            );
             if ok {
                 tracing::debug!(
                     encoder, device = %device.id,
@@ -779,5 +796,92 @@ vainfo: Supported profile and entrypoint
         let input: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
         let result = validate_hw_encoders_parallel(&input, |_| false);
         assert!(result.is_empty());
+    }
+
+    #[cfg(unix)]
+    mod probe_helpers {
+        use super::*;
+        use std::time::Instant;
+
+        #[test]
+        fn returns_true_on_success() {
+            let ok = probe_tool_status("true", &[], Duration::from_secs(5), &[]);
+            assert!(ok);
+        }
+
+        #[test]
+        fn returns_false_on_nonzero_exit() {
+            let ok = probe_tool_status("false", &[], Duration::from_secs(5), &[]);
+            assert!(!ok);
+        }
+
+        #[test]
+        fn returns_false_on_missing_tool() {
+            let ok = probe_tool_status(
+                "voom_nonexistent_probe_tool_xyz",
+                &[],
+                Duration::from_secs(5),
+                &[],
+            );
+            assert!(!ok);
+        }
+
+        #[test]
+        fn returns_false_on_timeout() {
+            let started = Instant::now();
+            let ok = probe_tool_status("sleep", &["60"], Duration::from_secs(1), &[]);
+            let elapsed = started.elapsed();
+            assert!(!ok);
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "probe must return within a few seconds of the timeout, took {elapsed:?}"
+            );
+        }
+
+        #[test]
+        fn passes_environment() {
+            let ok = probe_tool_status(
+                "sh",
+                &["-c", "[ \"$VOOM_PROBE_TEST\" = \"yes\" ]"],
+                Duration::from_secs(5),
+                &[("VOOM_PROBE_TEST", "yes")],
+            );
+            assert!(ok);
+        }
+
+        #[test]
+        fn stdout_captures_on_success() {
+            let out = probe_tool_stdout("echo", &["hello"], Duration::from_secs(5))
+                .expect("echo should succeed");
+            assert_eq!(String::from_utf8_lossy(&out).trim(), "hello");
+        }
+
+        #[test]
+        fn stdout_none_on_nonzero_exit() {
+            let out = probe_tool_stdout("false", &[], Duration::from_secs(5));
+            assert!(out.is_none());
+        }
+
+        #[test]
+        fn stdout_none_on_missing_tool() {
+            let out = probe_tool_stdout(
+                "voom_nonexistent_probe_tool_xyz",
+                &[],
+                Duration::from_secs(5),
+            );
+            assert!(out.is_none());
+        }
+
+        #[test]
+        fn stdout_none_on_timeout() {
+            let started = Instant::now();
+            let out = probe_tool_stdout("sleep", &["60"], Duration::from_secs(1));
+            let elapsed = started.elapsed();
+            assert!(out.is_none());
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "stdout-variant must also honor the timeout, took {elapsed:?}"
+            );
+        }
     }
 }
