@@ -236,8 +236,9 @@ where
 ///
 /// Uses 256x256 to satisfy NVENC minimum resolution requirements.
 pub fn validate_hw_encoder(encoder: &str) -> bool {
-    let ok = std::process::Command::new("ffmpeg")
-        .args([
+    let ok = probe_tool_status(
+        "ffmpeg",
+        &[
             "-hide_banner",
             "-nostdin",
             "-f",
@@ -251,13 +252,9 @@ pub fn validate_hw_encoder(encoder: &str) -> bool {
             "-f",
             "null",
             "-",
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        ],
+        HW_ENCODER_PROBE_TIMEOUT,
+    );
 
     if ok {
         tracing::debug!(encoder, "HW encoder validated");
@@ -494,9 +491,9 @@ pub fn validate_hw_encoder_on_device(
 ) -> bool {
     match backend {
         HwAccelBackend::Nvenc => {
-            let ok = std::process::Command::new("ffmpeg")
-                .env("CUDA_VISIBLE_DEVICES", &device.id)
-                .args([
+            let ok = probe_tool_status_env(
+                "ffmpeg",
+                &[
                     "-hide_banner",
                     "-nostdin",
                     "-f",
@@ -510,13 +507,10 @@ pub fn validate_hw_encoder_on_device(
                     "-f",
                     "null",
                     "-",
-                ])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+                ],
+                HW_ENCODER_PROBE_TIMEOUT,
+                &[("CUDA_VISIBLE_DEVICES", device.id.as_str())],
+            );
             if ok {
                 tracing::debug!(
                     encoder, gpu = %device.id,
@@ -527,8 +521,9 @@ pub fn validate_hw_encoder_on_device(
         }
         HwAccelBackend::Vaapi => {
             let filter = "format=nv12,hwupload";
-            let ok = std::process::Command::new("ffmpeg")
-                .args([
+            let ok = probe_tool_status(
+                "ffmpeg",
+                &[
                     "-hide_banner",
                     "-nostdin",
                     "-f",
@@ -536,7 +531,7 @@ pub fn validate_hw_encoder_on_device(
                     "-i",
                     "nullsrc=s=256x256:d=0.04",
                     "-vaapi_device",
-                    &device.id,
+                    device.id.as_str(),
                     "-vf",
                     filter,
                     "-frames:v",
@@ -546,13 +541,9 @@ pub fn validate_hw_encoder_on_device(
                     "-f",
                     "null",
                     "-",
-                ])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+                ],
+                HW_ENCODER_PROBE_TIMEOUT,
+            );
             if ok {
                 tracing::debug!(
                     encoder, device = %device.id,
@@ -562,8 +553,9 @@ pub fn validate_hw_encoder_on_device(
             ok
         }
         HwAccelBackend::Qsv => {
-            let ok = std::process::Command::new("ffmpeg")
-                .args([
+            let ok = probe_tool_status(
+                "ffmpeg",
+                &[
                     "-hide_banner",
                     "-nostdin",
                     "-f",
@@ -571,7 +563,7 @@ pub fn validate_hw_encoder_on_device(
                     "-i",
                     "nullsrc=s=256x256:d=0.04",
                     "-qsv_device",
-                    &device.id,
+                    device.id.as_str(),
                     "-frames:v",
                     "1",
                     "-c:v",
@@ -579,13 +571,9 @@ pub fn validate_hw_encoder_on_device(
                     "-f",
                     "null",
                     "-",
-                ])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+                ],
+                HW_ENCODER_PROBE_TIMEOUT,
+            );
             if ok {
                 tracing::debug!(
                     encoder, device = %device.id,
