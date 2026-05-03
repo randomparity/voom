@@ -114,6 +114,37 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
         });
     }
 
+    // ── Retention task ────────────────────────────────────────────
+    let retention_runner = Arc::new(crate::retention::RetentionRunner::new(
+        store.clone(),
+        config.retention.clone(),
+        Some(kernel.clone()),
+    ));
+    let retention_interval_secs =
+        u64::from(config.retention.schedule_interval_minutes).saturating_mul(60);
+
+    if retention_interval_secs > 0 && !retention_runner.is_fully_disabled() {
+        let retention_token = token.clone();
+        let runner = retention_runner.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(retention_interval_secs));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let r = runner.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            r.run_once(voom_domain::events::RetentionTrigger::Scheduled);
+                        }).await;
+                    }
+                    () = retention_token.cancelled() => break,
+                }
+            }
+        });
+    } else {
+        tracing::info!("retention task disabled (interval=0 or all tables disabled)");
+    }
+
     println!(
         "{} Starting VOOM web server on {}:{}",
         style("●").bold().green(),
@@ -152,6 +183,33 @@ mod tests {
         assert_eq!(server_config.port, 8080);
         assert_eq!(server_config.host, "127.0.0.1");
         assert!(server_config.auth_token.is_none());
+    }
+
+    #[test]
+    fn retention_runner_is_disabled_when_all_zero() {
+        use std::sync::Arc;
+        use voom_domain::test_support::InMemoryStore;
+
+        let cfg = crate::config::RetentionConfig {
+            schedule_interval_minutes: 60,
+            run_after_cli: true,
+            jobs: crate::config::TableRetention {
+                keep_for_days: Some(0),
+                keep_last: Some(0),
+            },
+            event_log: crate::config::TableRetention {
+                keep_for_days: Some(0),
+                keep_last: Some(0),
+            },
+            file_transitions: crate::config::TableRetention {
+                keep_for_days: Some(0),
+                keep_last: Some(0),
+            },
+        };
+
+        let store: Arc<dyn voom_domain::storage::StorageTrait> = Arc::new(InMemoryStore::new());
+        let runner = crate::retention::RetentionRunner::new(store, cfg, None);
+        assert!(runner.is_fully_disabled());
     }
 
     #[test]

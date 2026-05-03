@@ -6,9 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use voom_domain::events::{Event, RetentionCompletedEvent, RetentionTrigger, TableRetentionResult};
-use voom_domain::storage::{
-    EventLogStorage, FileTransitionStorage, JobStorage, PruneReport, RetentionPolicy,
-};
+use voom_domain::storage::{PruneReport, RetentionPolicy};
 use voom_kernel::Kernel;
 
 use crate::config::{RetentionConfig, TableRetention};
@@ -26,13 +24,8 @@ pub fn table_retention_to_policy(t: &TableRetention) -> RetentionPolicy {
     RetentionPolicy { max_age, keep_last }
 }
 
-/// Storage handle exposing the three trait surfaces the runner needs.
-pub trait RetentionStore: JobStorage + EventLogStorage + FileTransitionStorage {}
-
-impl<T> RetentionStore for T where T: JobStorage + EventLogStorage + FileTransitionStorage {}
-
 pub struct RetentionRunner {
-    store: Arc<dyn RetentionStore>,
+    store: Arc<dyn voom_domain::storage::StorageTrait>,
     config: RetentionConfig,
     kernel: Option<Arc<Kernel>>,
 }
@@ -45,7 +38,7 @@ pub struct RetentionSummary {
 
 impl RetentionRunner {
     pub fn new(
-        store: Arc<dyn RetentionStore>,
+        store: Arc<dyn voom_domain::storage::StorageTrait>,
         config: RetentionConfig,
         kernel: Option<Arc<Kernel>>,
     ) -> Self {
@@ -158,7 +151,7 @@ mod tests {
 
     #[test]
     fn run_once_returns_one_result_per_table() {
-        let store: Arc<dyn RetentionStore> = Arc::new(InMemoryStore::new());
+        let store: Arc<dyn voom_domain::storage::StorageTrait> = Arc::new(InMemoryStore::new());
         let runner = RetentionRunner::new(store, RetentionConfig::default(), None);
         let summary = runner.run_once(RetentionTrigger::OnDemand);
         assert_eq!(summary.per_table.len(), 3);
@@ -177,14 +170,14 @@ mod tests {
             file_transitions: zero,
             ..RetentionConfig::default()
         };
-        let store: Arc<dyn RetentionStore> = Arc::new(InMemoryStore::new());
+        let store: Arc<dyn voom_domain::storage::StorageTrait> = Arc::new(InMemoryStore::new());
         let runner = RetentionRunner::new(store, config, None);
         assert!(runner.is_fully_disabled());
     }
 
     #[test]
     fn is_fully_disabled_false_when_any_enabled() {
-        let store: Arc<dyn RetentionStore> = Arc::new(InMemoryStore::new());
+        let store: Arc<dyn voom_domain::storage::StorageTrait> = Arc::new(InMemoryStore::new());
         let runner = RetentionRunner::new(store, RetentionConfig::default(), None);
         assert!(!runner.is_fully_disabled());
     }
