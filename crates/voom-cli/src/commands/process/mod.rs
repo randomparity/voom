@@ -1371,9 +1371,10 @@ mod tests {
         use voom_domain::media::{Container, MediaFile};
         use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 
-        let dir = tempfile::tempdir().unwrap();
-        let mp4_path = dir.path().join("movie.mp4");
-        let mkv_path = dir.path().join("movie.mkv");
+        let fixture =
+            TestFixture::with_policy(r#"policy "test" { phase convert { container mkv } }"#);
+        let mp4_path = fixture.dir_path().join("movie.mp4");
+        let mkv_path = fixture.dir_path().join("movie.mkv");
         // The executor renames source-to-target; pre-write the target so
         // `resolve_post_execution_path` accepts the new extension.
         std::fs::write(&mkv_path, vec![0u8; 1024]).unwrap();
@@ -1399,28 +1400,7 @@ mod tests {
         assert_eq!(store.count_files(&Default::default()).unwrap(), 1);
 
         let kernel = Arc::new(voom_kernel::Kernel::new());
-        let capabilities = voom_domain::CapabilityMap::new();
-        let counters = RunCounters::new();
-        let token = CancellationToken::new();
-        let resolver = PolicyResolver::from_single(
-            voom_dsl::compile_policy(r#"policy "test" { phase convert { container mkv } }"#)
-                .unwrap(),
-            dir.path(),
-        );
-        let ctx = ProcessContext {
-            resolver: &resolver,
-            kernel,
-            store: store.clone(),
-            dry_run: false,
-            plan_only: false,
-            flag_size_increase: false,
-            flag_duration_shrink: false,
-            force_rescan: false,
-            token: &token,
-            ffprobe_path: None,
-            capabilities: &capabilities,
-            counters: &counters,
-        };
+        let ctx = fixture.make_ctx(kernel, store.clone());
 
         let _ =
             pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx).await;
@@ -1440,7 +1420,7 @@ mod tests {
         );
         assert!(
             store
-                .file_by_path(&dir.path().join("movie.mp4"))
+                .file_by_path(&fixture.dir_path().join("movie.mp4"))
                 .unwrap()
                 .is_none(),
             "the original .mp4 path must no longer resolve to a row",
