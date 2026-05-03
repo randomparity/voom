@@ -335,17 +335,8 @@ fn log_event(store: &SqliteStore, event: &Event) {
         serde_json::to_string(event).unwrap_or_default(),
         event.summary(),
     );
-    match store.insert_event_log(&log_record) {
-        Ok(rowid) => {
-            if rowid % 1000 == 0 {
-                if let Err(e) = store.prune_event_log(10_000) {
-                    tracing::warn!(error = %e, "event log prune failed");
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "event log insert failed");
-        }
+    if let Err(e) = store.insert_event_log(&log_record) {
+        tracing::warn!(error = %e, "event log insert failed");
     }
 }
 
