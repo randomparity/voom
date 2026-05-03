@@ -33,6 +33,21 @@ impl RetentionPolicy {
     pub fn is_disabled(&self) -> bool {
         self.max_age.is_none() && self.keep_last.is_none()
     }
+
+    /// Compute the ISO-8601 cutoff timestamp for age-based deletion, suitable
+    /// for binding directly as a SQL parameter against a `TEXT` datetime column.
+    #[must_use]
+    pub fn cutoff_str(&self) -> Option<String> {
+        self.max_age
+            .map(|d| crate::utils::format::format_iso(&(chrono::Utc::now() - d)))
+    }
+
+    /// Convert `keep_last` to `Option<i64>` for use as a SQL parameter.
+    /// Returns `None` if not configured or if the value would overflow `i64`.
+    #[must_use]
+    pub fn keep_last_i64(&self) -> Option<i64> {
+        self.keep_last.and_then(|n| i64::try_from(n).ok())
+    }
 }
 
 /// Outcome of a single `prune_old_*` call.

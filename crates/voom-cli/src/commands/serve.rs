@@ -125,14 +125,13 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
 
     if retention_interval_secs > 0 && !retention_runner.is_fully_disabled() {
         let retention_token = token.clone();
-        let runner = retention_runner.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(retention_interval_secs));
             interval.tick().await; // skip immediate first tick
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let r = runner.clone();
+                        let r = retention_runner.clone();
                         let _ = tokio::task::spawn_blocking(move || {
                             r.run_once(voom_domain::events::RetentionTrigger::Scheduled);
                         }).await;

@@ -315,10 +315,8 @@ impl FileTransitionStorage for SqliteStore {
         }
 
         let conn = self.conn()?;
-        let cutoff = policy
-            .max_age
-            .map(|d| format_datetime(&(chrono::Utc::now() - d)));
-        let keep_last = policy.keep_last.and_then(|n| i64::try_from(n).ok());
+        let cutoff = policy.cutoff_str();
+        let keep_last = policy.keep_last_i64();
 
         let deleted = conn
             .execute(
@@ -344,6 +342,10 @@ impl FileTransitionStorage for SqliteStore {
             )
             .map_err(storage_err("failed to prune file_transitions"))? as u64;
 
+        // `kept` counts only the rows that were *eligible* for pruning (i.e.,
+        // not the most-recent-per-file). The pinned most-recent rows are
+        // intentionally excluded — `deleted + kept` therefore equals the
+        // eligible-set size, not the total table size.
         let kept: u64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM file_transitions
@@ -371,10 +373,8 @@ impl FileTransitionStorage for SqliteStore {
         }
 
         let conn = self.conn()?;
-        let cutoff = policy
-            .max_age
-            .map(|d| format_datetime(&(chrono::Utc::now() - d)));
-        let keep_last = policy.keep_last.and_then(|n| i64::try_from(n).ok());
+        let cutoff = policy.cutoff_str();
+        let keep_last = policy.keep_last_i64();
 
         let deleted: u64 = conn
             .query_row(

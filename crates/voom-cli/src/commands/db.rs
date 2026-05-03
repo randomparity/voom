@@ -38,7 +38,6 @@ fn prune(dry_run: bool) -> Result<()> {
             );
         }
 
-        // Purge missing files older than retention period
         let retention_days = config.pruning.retention_days;
         if retention_days > 0 {
             let cutoff = chrono::Utc::now() - chrono::Duration::days(i64::from(retention_days));
@@ -55,7 +54,6 @@ fn prune(dry_run: bool) -> Result<()> {
             }
         }
 
-        // Prune health checks using the default retention period
         let retention =
             i64::from(voom_health_checker::HealthCheckerConfig::default().retention_days);
         let health_pruned = store_arc
@@ -71,12 +69,7 @@ fn prune(dry_run: bool) -> Result<()> {
         }
     }
 
-    // Database retention (jobs, event_log, file_transitions).
-    let runner = crate::retention::RetentionRunner::new(
-        store_arc,
-        config.retention.clone(),
-        None, // no event bus dispatch in `db prune`
-    );
+    let runner = crate::retention::RetentionRunner::new(store_arc, config.retention.clone(), None);
     let summary = if dry_run {
         runner.dry_run_summary()
     } else {

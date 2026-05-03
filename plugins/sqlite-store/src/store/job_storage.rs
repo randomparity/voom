@@ -250,10 +250,8 @@ impl JobStorage for SqliteStore {
         }
 
         let conn = self.conn()?;
-        let cutoff = policy
-            .max_age
-            .map(|d| format_datetime(&(chrono::Utc::now() - d)));
-        let keep_last: Option<i64> = policy.keep_last.and_then(|n| i64::try_from(n).ok());
+        let cutoff = policy.cutoff_str();
+        let keep_last = policy.keep_last_i64();
 
         let deleted = conn
             .execute(
@@ -299,10 +297,8 @@ impl JobStorage for SqliteStore {
         }
 
         let conn = self.conn()?;
-        let cutoff = policy
-            .max_age
-            .map(|d| format_datetime(&(chrono::Utc::now() - d)));
-        let keep_last: Option<i64> = policy.keep_last.and_then(|n| i64::try_from(n).ok());
+        let cutoff = policy.cutoff_str();
+        let keep_last = policy.keep_last_i64();
 
         let deleted: u64 = conn
             .query_row(
