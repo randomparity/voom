@@ -68,9 +68,6 @@ pub async fn introspect_file(
 /// Like [`introspect_file`] but skips the `FileIntrospected` event dispatch.
 /// Use this from code paths that take responsibility for persistence
 /// themselves (e.g. the post-execution bundled write).
-// Called by process::handle_plan_success (Task 5). The binary-crate module
-// boundary means rustc sees this as dead until that call-site exists.
-#[allow(dead_code)]
 pub async fn introspect_file_no_dispatch(
     path: std::path::PathBuf,
     file_size: u64,

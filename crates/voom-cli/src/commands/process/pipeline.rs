@@ -431,21 +431,12 @@ pub(super) async fn handle_plan_success(
     let policy_name = plan.policy_name.clone();
     let phase_name = plan.phase_name.clone();
 
-    // Update the existing row's path before re-introspection so the
-    // `FileIntrospected` upsert merges into it instead of inserting a new
-    // row at the post-execution path (preserves UUID and lineage).
+    // The path rename, transition insert, and expected_hash update are
+    // bundled into one atomic write below (record_file_transition →
+    // record_post_execution). Re-introspection uses the no-dispatch
+    // variant so it doesn't auto-upsert the file row at the post-execution
+    // path before the bundle's rename can move the existing row.
     let post_exec_path = resolve_post_execution_path(file, std::slice::from_ref(&plan));
-    if post_exec_path != file.path {
-        if let Err(e) = ctx.store.rename_file_path(&file.id, &post_exec_path) {
-            tracing::warn!(
-                error = %e,
-                old_path = %file.path.display(),
-                new_path = %post_exec_path.display(),
-                "failed to update files.path after path-changing execution"
-            );
-        }
-    }
-
     let new_file = reintrospect_file(file, post_exec_path, ctx).await;
 
     record_file_transition(&FileTransitionContext {
@@ -539,10 +530,10 @@ async fn reintrospect_file(
 
     let ffp = ctx.ffprobe_path.map(String::from);
     let kernel_clone = ctx.kernel.clone();
-    match crate::introspect::introspect_file(
-        current_path,
+    match crate::introspect::introspect_file_no_dispatch(
+        current_path.clone(),
         size,
-        hash,
+        hash.clone(),
         &kernel_clone,
         ffp.as_deref(),
     )
@@ -562,8 +553,18 @@ async fn reintrospect_file(
             new_file
         }
         Err(e) => {
+            // Re-introspection failed but the file is on disk at
+            // `current_path`. Preserve the previous state but reflect
+            // the post-execution path/size/hash so the bundled write
+            // downstream still records the rename.
             tracing::warn!(error = %e, "re-introspection failed, using previous state");
-            file.clone()
+            let mut fallback = file.clone();
+            fallback.path = current_path;
+            fallback.size = size;
+            if hash.is_some() {
+                fallback.content_hash = hash;
+            }
+            fallback
         }
     }
 }

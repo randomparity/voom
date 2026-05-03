@@ -23,9 +23,13 @@ pub(super) struct FileTransitionContext<'a> {
 
 /// Record a file transition in the store if the content hash changed.
 pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
-    if tctx.new_file.content_hash == tctx.old_file.content_hash {
+    if tctx.new_file.content_hash == tctx.old_file.content_hash
+        && tctx.new_file.path == tctx.old_file.path
+    {
+        // Nothing changed — no transition to record, no rename, no hash refresh.
         return;
     }
+
     let mut transition = voom_domain::FileTransition::new(
         tctx.old_file.id,
         tctx.new_file.path.clone(),
@@ -53,22 +57,24 @@ pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
         transition = transition.with_from_path(tctx.old_file.path.clone());
     }
 
-    if let Err(e) = tctx.ctx.store.record_transition(&transition) {
+    let new_path = if tctx.old_file.path != tctx.new_file.path {
+        Some(tctx.new_file.path.as_path())
+    } else {
+        None
+    };
+    let new_expected_hash = tctx.new_file.content_hash.as_deref();
+
+    if let Err(e) = tctx.ctx.store.record_post_execution(
+        &tctx.old_file.id,
+        new_path,
+        new_expected_hash,
+        &transition,
+    ) {
         tracing::warn!(
             path = %tctx.old_file.path.display(),
             error = %e,
-            "failed to record transition"
+            "failed to record post-execution bundle (rename + transition + expected_hash)"
         );
-    }
-
-    if let Some(ref hash) = tctx.new_file.content_hash {
-        if let Err(e) = tctx.ctx.store.update_expected_hash(&tctx.old_file.id, hash) {
-            tracing::warn!(
-                path = %tctx.old_file.path.display(),
-                error = %e,
-                "failed to update expected_hash"
-            );
-        }
     }
 }
 
