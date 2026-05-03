@@ -951,7 +951,6 @@ mod tests {
     /// Bundle of long-lived test fixtures shared across `ProcessContext`
     /// construction sites. Owns the `TempDir` so the resolver's working path
     /// stays valid for the test's lifetime.
-    #[allow(dead_code)] // populated by Tasks 2-6 of issue #159
     pub(super) struct TestFixture {
         pub(super) capabilities: voom_domain::CapabilityMap,
         pub(super) counters: RunCounters,
@@ -961,7 +960,6 @@ mod tests {
         dir: tempfile::TempDir,
     }
 
-    #[allow(dead_code)] // populated by Tasks 2-6 of issue #159
     impl TestFixture {
         /// Default fixture with the canonical `phase normalize { container mkv }` policy.
         pub(super) fn new() -> Self {
