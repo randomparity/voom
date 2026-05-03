@@ -1759,6 +1759,78 @@ mod tests {
     }
 
     #[test]
+    fn record_post_execution_rollback_preserves_bad_files_row() {
+        use voom_domain::bad_file::{BadFile, BadFileSource};
+        use voom_domain::storage::{BadFileStorage, FileTransitionStorage};
+        use voom_domain::transition::{FileTransition, TransitionSource};
+
+        let store = test_store();
+        let file = active_file("/media/movie.mp4");
+        store.upsert_file(&file).unwrap();
+        let original_id = store
+            .file_by_path(Path::new("/media/movie.mp4"))
+            .unwrap()
+            .unwrap()
+            .id;
+
+        let orphan = BadFile::new(
+            PathBuf::from("/media/movie.mkv"),
+            2048,
+            Some("post_exec_hash".into()),
+            "ffprobe failed".into(),
+            BadFileSource::Introspection,
+        );
+        store.upsert_bad_file(&orphan).unwrap();
+
+        // Pre-insert a transition with a known id, then try to record_post_execution
+        // with the same transition.id. The INSERT will violate the PK constraint
+        // and the entire bundle (rename + expected_hash + bad_files DELETE) must
+        // roll back, leaving the orphan bad_files row in place.
+        let mut existing = FileTransition::new(
+            original_id,
+            PathBuf::from("/media/movie.mp4"),
+            "abc123".to_string(),
+            1024,
+            TransitionSource::Voom,
+        );
+        existing.id = uuid::Uuid::new_v4();
+        store.record_transition(&existing).unwrap();
+
+        let mut bundled = FileTransition::new(
+            original_id,
+            PathBuf::from("/media/movie.mkv"),
+            "new_hash".to_string(),
+            2048,
+            TransitionSource::Voom,
+        );
+        bundled.id = existing.id; // force a PK collision
+
+        let result = store.record_post_execution(
+            Some(Path::new("/media/movie.mkv")),
+            Some("new_hash"),
+            &bundled,
+        );
+        assert!(result.is_err(), "duplicate transition id must error");
+
+        // Rollback verification: rename, expected_hash, and bad_files DELETE
+        // must all have been rolled back together.
+        assert!(
+            store
+                .file_by_path(Path::new("/media/movie.mp4"))
+                .unwrap()
+                .is_some(),
+            "rename must have been rolled back"
+        );
+        assert!(
+            store
+                .bad_file_by_path(Path::new("/media/movie.mkv"))
+                .unwrap()
+                .is_some(),
+            "bad_files DELETE must have been rolled back"
+        );
+    }
+
+    #[test]
     fn reconcile_discovered_files_basic_new_file() {
         let store = test_store();
         let discovered = vec![voom_domain::transition::DiscoveredFile::new(
