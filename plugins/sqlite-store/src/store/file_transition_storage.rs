@@ -11,51 +11,68 @@ use voom_domain::transition::{FileTransition, TransitionSource};
 
 use super::{format_datetime, storage_err, SqliteStore};
 
+/// Insert a `FileTransition` into `file_transitions` using the supplied
+/// open transaction. Used by both the standalone `record_transition`
+/// trait impl (which manages its own connection) and bundled writes that
+/// need to insert a transition alongside other operations atomically.
+pub(super) fn insert_full_transition_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    t: &FileTransition,
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO file_transitions \
+         (id, file_id, path, from_path, from_hash, to_hash, from_size, to_size, \
+          source, source_detail, plan_id, \
+          duration_ms, actions_taken, tracks_modified, outcome, \
+          policy_name, phase_name, metadata_snapshot, \
+          error_message, session_id, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
+                 ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+        params![
+            t.id.to_string(),
+            t.file_id.to_string(),
+            t.path.to_string_lossy().to_string(),
+            t.from_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
+            t.from_hash.as_deref().filter(|s| !s.is_empty()),
+            t.to_hash,
+            t.from_size.map(|v| v as i64),
+            t.to_size as i64,
+            t.source.as_str(),
+            t.source_detail.as_deref().filter(|s| !s.is_empty()),
+            t.plan_id.map(|id| id.to_string()),
+            t.duration_ms.map(|v| v as i64),
+            t.actions_taken.map(i64::from),
+            t.tracks_modified.map(i64::from),
+            t.outcome.map(|o| o.as_str()),
+            t.policy_name.as_deref(),
+            t.phase_name.as_deref(),
+            t.metadata_snapshot.as_ref().and_then(|s| {
+                s.to_json()
+                    .map_err(
+                        |e| tracing::warn!(error = %e, "failed to serialize metadata_snapshot"),
+                    )
+                    .ok()
+            }),
+            t.error_message.as_deref(),
+            t.session_id.map(|id| id.to_string()),
+            format_datetime(&t.created_at),
+        ],
+    )
+    .map_err(storage_err("failed to insert transition"))?;
+    Ok(())
+}
+
 impl FileTransitionStorage for SqliteStore {
     fn record_transition(&self, t: &FileTransition) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO file_transitions \
-             (id, file_id, path, from_path, from_hash, to_hash, from_size, to_size, \
-              source, source_detail, plan_id, \
-              duration_ms, actions_taken, tracks_modified, outcome, \
-              policy_name, phase_name, metadata_snapshot, \
-              error_message, session_id, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
-                     ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
-            params![
-                t.id.to_string(),
-                t.file_id.to_string(),
-                t.path.to_string_lossy().to_string(),
-                t.from_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string()),
-                t.from_hash.as_deref().filter(|s| !s.is_empty()),
-                t.to_hash,
-                t.from_size.map(|v| v as i64),
-                t.to_size as i64,
-                t.source.as_str(),
-                t.source_detail.as_deref().filter(|s| !s.is_empty()),
-                t.plan_id.map(|id| id.to_string()),
-                t.duration_ms.map(|v| v as i64),
-                t.actions_taken.map(i64::from),
-                t.tracks_modified.map(i64::from),
-                t.outcome.map(|o| o.as_str()),
-                t.policy_name.as_deref(),
-                t.phase_name.as_deref(),
-                t.metadata_snapshot.as_ref().and_then(|s| {
-                    s.to_json()
-                        .map_err(
-                            |e| tracing::warn!(error = %e, "failed to serialize metadata_snapshot"),
-                        )
-                        .ok()
-                }),
-                t.error_message.as_deref(),
-                t.session_id.map(|id| id.to_string()),
-                format_datetime(&t.created_at),
-            ],
-        )
-        .map_err(storage_err("failed to record transition"))?;
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction()
+            .map_err(storage_err("failed to begin transition transaction"))?;
+        insert_full_transition_in_tx(&tx, t)?;
+        tx.commit()
+            .map_err(storage_err("failed to commit transition"))?;
         Ok(())
     }
 
