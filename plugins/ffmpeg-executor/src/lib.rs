@@ -510,14 +510,12 @@ impl Plugin for FfmpegExecutorPlugin {
     fn init(&mut self, ctx: &PluginContext) -> Result<Vec<Event>> {
         let caps = probe_capabilities();
 
-        let Some(mut codecs) = caps.codecs else {
+        let Some(codecs) = caps.codecs else {
             tracing::warn!("ffmpeg not found; ffmpeg executor disabled");
             return Ok(vec![]);
         };
         self.available = true;
 
-        codecs.hw_encoders = caps.hw_encoders;
-        codecs.hw_decoders = caps.hw_decoders;
         let formats = caps.formats;
         let hw_accels = caps.hw_accels;
 

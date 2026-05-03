@@ -20,19 +20,19 @@ const TOOL_ENUMERATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// and normally finish in under 200 ms; 5 s caps a pathological hang.
 const CAPABILITY_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Aggregate result of running the five fast `ffmpeg` capability probes
+/// Aggregate result of running the fast `ffmpeg` capability probes
 /// concurrently.
 ///
-/// `codecs == None` means the `-codecs` probe failed (treated by the
-/// plugin as "ffmpeg not found / unusable"). The four secondary fields
-/// degrade independently to empty `Vec`s on probe failure, matching the
-/// pre-parallel sequential code path.
+/// `codecs == None` is the canonical "ffmpeg is unavailable" signal —
+/// callers should disable the plugin in that case. When `codecs` is
+/// `Some`, its `hw_encoders` and `hw_decoders` fields are populated from
+/// separate `-encoders` / `-decoders` probes. `formats` and `hw_accels`
+/// degrade independently to empty `Vec`s on probe failure, with a
+/// `tracing::warn!` recording the cause.
 pub struct FfmpegCapabilities {
     pub codecs: Option<CodecCapabilities>,
     pub formats: Vec<String>,
     pub hw_accels: Vec<String>,
-    pub hw_encoders: Vec<String>,
-    pub hw_decoders: Vec<String>,
 }
 
 /// Run a single `ffmpeg <flag> -hide_banner` probe and return its stdout
@@ -87,11 +87,8 @@ fn probe_hw_decoders(tool: &str) -> Vec<String> {
 
 /// Run the five fast `ffmpeg` capability probes concurrently using
 /// `rayon::join`. Each probe is independently bounded by
-/// `CAPABILITY_PROBE_TIMEOUT`. A failure on any non-codecs probe yields
-/// an empty `Vec` for that field, with a `tracing::warn!` recording why.
-///
-/// `codecs == None` is the canonical "ffmpeg is unavailable" signal —
-/// callers should disable the plugin in that case.
+/// `CAPABILITY_PROBE_TIMEOUT`; failures degrade to empty values with a
+/// `tracing::warn!` recording the cause.
 #[must_use]
 pub fn probe_capabilities() -> FfmpegCapabilities {
     probe_capabilities_with_tool("ffmpeg")
@@ -111,12 +108,16 @@ fn probe_capabilities_with_tool(tool: &str) -> FfmpegCapabilities {
         },
     );
 
+    let codecs = codecs.map(|mut c| {
+        c.hw_encoders = hw_encoders;
+        c.hw_decoders = hw_decoders;
+        c
+    });
+
     FfmpegCapabilities {
         codecs,
         formats,
         hw_accels,
-        hw_encoders,
-        hw_decoders,
     }
 }
 
@@ -907,8 +908,8 @@ vainfo: Supported profile and entrypoint
     fn probe_capabilities_with_missing_tool_returns_empty_result() {
         // Drive the full failure path: every probe will fail to spawn
         // because the binary doesn't exist. We assert the contract the
-        // plugin's init() relies on: codecs is None (the disable signal),
-        // and the four secondary fields are empty.
+        // plugin's init() relies on: codecs is None (the disable signal)
+        // and the secondary fields are empty.
         let caps = super::probe_capabilities_with_tool("/nonexistent/ffmpeg-fake");
 
         assert!(
@@ -917,8 +918,6 @@ vainfo: Supported profile and entrypoint
         );
         assert!(caps.formats.is_empty());
         assert!(caps.hw_accels.is_empty());
-        assert!(caps.hw_encoders.is_empty());
-        assert!(caps.hw_decoders.is_empty());
     }
 
     #[cfg(unix)]
