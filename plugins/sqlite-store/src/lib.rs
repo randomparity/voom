@@ -177,9 +177,12 @@ fn handle_plan_executing(store: &SqliteStore, e: &voom_domain::events::PlanExecu
     }
 }
 
-// sqlite-store runs at priority 100, so executors (priority 39/40)
-// have already processed the plan by the time we record it here.
-// This is audit-after-execution by design, not a race condition.
+// sqlite-store runs at priority 38, BEFORE the executors (priority 39/40),
+// so the plan is recorded with status='pending' before any executor claims
+// the event and short-circuits dispatch (see
+// voom_kernel::EventBus::publish_recursive's break-on-claim behavior).
+// PlanCompleted / PlanSkipped / PlanFailed (none claimed) drive the status
+// update via update_plan_status() in their respective handlers.
 fn handle_plan_created(
     store: &SqliteStore,
     e: &voom_domain::events::PlanCreatedEvent,
