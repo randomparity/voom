@@ -123,6 +123,24 @@ impl RetentionRunner {
     }
 }
 
+/// Best-effort end-of-run prune. Returns whether retention ran.
+/// Failures are logged but never propagate. No-op when `run_after_cli` is
+/// false or when fully disabled.
+pub fn maybe_run_after_cli(
+    store: Arc<dyn voom_domain::storage::StorageTrait>,
+    config: &RetentionConfig,
+    kernel: Option<Arc<Kernel>>,
+) {
+    if !config.run_after_cli {
+        return;
+    }
+    let runner = RetentionRunner::new(store, config.clone(), kernel);
+    if runner.is_fully_disabled() {
+        return;
+    }
+    let _ = runner.run_once(voom_domain::events::RetentionTrigger::CliEndOfRun);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
