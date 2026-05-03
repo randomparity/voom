@@ -394,10 +394,9 @@ impl FileStorage for SqliteStore {
         &self,
         _id: &Uuid,
         _new_path: Option<&Path>,
-        _new_expected_hash: &str,
+        _new_expected_hash: Option<&str>,
         _transition: &FileTransition,
     ) -> Result<()> {
-        // TODO(Task 3): implement atomic post-execution bundle
         todo!("record_post_execution not yet implemented — Task 3 will provide the real impl")
     }
 
