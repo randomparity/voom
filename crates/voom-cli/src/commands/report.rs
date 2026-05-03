@@ -41,6 +41,9 @@ pub fn run(args: &ReportArgs) -> Result<()> {
         format_summary(&result, args.format)?;
     } else {
         format_result(&result, args)?;
+        if args.database && !args.format.is_machine() {
+            print_retention_footer(&*store);
+        }
     }
     Ok(())
 }
@@ -602,6 +605,30 @@ fn print_database_section_table(db: &DatabaseStats) {
         style(format_size(free)).dim(),
     );
     println!();
+}
+
+fn print_retention_footer(store: &dyn voom_domain::storage::StorageTrait) {
+    if let Ok(Some(record)) = store.latest_event_of_type("retention.completed") {
+        if let Ok(voom_domain::events::Event::RetentionCompleted(e)) =
+            serde_json::from_str::<voom_domain::events::Event>(&record.payload)
+        {
+            println!();
+            println!(
+                "Last retention pass: {:?} ({} ms)",
+                e.trigger, e.duration_ms
+            );
+            for table in &e.per_table {
+                if let Some(ref err) = table.error {
+                    println!("  {:20} ERROR: {err}", table.table);
+                } else {
+                    println!(
+                        "  {:20} deleted={} kept={}",
+                        table.table, table.deleted, table.kept
+                    );
+                }
+            }
+        }
+    }
 }
 
 // ── Plain formatting ────────────────────────────────────────

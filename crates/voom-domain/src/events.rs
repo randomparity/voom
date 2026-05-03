@@ -46,6 +46,9 @@ pub enum Event {
     ScanComplete(ScanCompleteEvent),
     /// Emitted at the end of a standalone introspection pass.
     IntrospectComplete(IntrospectCompleteEvent),
+    /// Emitted by the retention runner after each scheduled, on-demand, or
+    /// end-of-CLI prune pass. Includes per-table results and an overall duration.
+    RetentionCompleted(RetentionCompletedEvent),
 }
 
 impl Event {
@@ -72,6 +75,7 @@ impl Event {
     pub const HEALTH_STATUS: &str = "health.status";
     pub const SCAN_COMPLETE: &str = "scan.complete";
     pub const INTROSPECT_COMPLETE: &str = "introspect.complete";
+    pub const RETENTION_COMPLETED: &str = "retention.completed";
 
     /// One-line human-readable summary of the event payload.
     ///
@@ -193,6 +197,13 @@ impl Event {
             Event::IntrospectComplete(e) => {
                 format!("files_introspected={}", e.files_introspected)
             }
+            Event::RetentionCompleted(e) => {
+                let total_deleted: u64 = e.per_table.iter().map(|t| t.deleted).sum();
+                format!(
+                    "trigger={:?} deleted={total_deleted} ms={}",
+                    e.trigger, e.duration_ms
+                )
+            }
         }
     }
 
@@ -220,6 +231,7 @@ impl Event {
             Event::HealthStatus(_) => Self::HEALTH_STATUS,
             Event::ScanComplete(_) => Self::SCAN_COMPLETE,
             Event::IntrospectComplete(_) => Self::INTROSPECT_COMPLETE,
+            Event::RetentionCompleted(_) => Self::RETENTION_COMPLETED,
         }
     }
 }
@@ -844,6 +856,35 @@ impl IntrospectCompleteEvent {
     }
 }
 
+/// Why retention ran.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RetentionTrigger {
+    /// Periodic task during `serve` mode.
+    Scheduled,
+    /// End-of-run hook from `voom scan` / `voom process`.
+    CliEndOfRun,
+    /// On-demand from `voom db prune`.
+    OnDemand,
+}
+
+/// Result of pruning a single table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableRetentionResult {
+    pub table: String,
+    pub deleted: u64,
+    pub kept: u64,
+    pub error: Option<String>,
+}
+
+/// Emitted once per retention pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetentionCompletedEvent {
+    pub trigger: RetentionTrigger,
+    pub per_table: Vec<TableRetentionResult>,
+    pub duration_ms: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1200,5 +1241,31 @@ mod tests {
         let bytes = rmp_serde::to_vec(&event).unwrap();
         let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(deserialized.event_type(), "plan.skipped");
+    }
+
+    #[test]
+    fn retention_completed_event_type_and_summary() {
+        let event = Event::RetentionCompleted(RetentionCompletedEvent {
+            trigger: RetentionTrigger::Scheduled,
+            per_table: vec![
+                TableRetentionResult {
+                    table: "jobs".into(),
+                    deleted: 12,
+                    kept: 34,
+                    error: None,
+                },
+                TableRetentionResult {
+                    table: "event_log".into(),
+                    deleted: 5,
+                    kept: 10,
+                    error: None,
+                },
+            ],
+            duration_ms: 42,
+        });
+        assert_eq!(event.event_type(), Event::RETENTION_COMPLETED);
+        let s = event.summary();
+        assert!(s.contains("deleted=17"), "got: {s}");
+        assert!(s.contains("ms=42"), "got: {s}");
     }
 }

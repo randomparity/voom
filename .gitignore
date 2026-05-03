@@ -19,3 +19,4 @@ scorecard.png
 
 # More Claude agent ignores
 docs/superpowers/
+.worktrees/

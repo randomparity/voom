@@ -12,6 +12,54 @@ use crate::plan::Plan;
 use crate::stats::{LibrarySnapshot, SavingsReport, SnapshotTrigger, TimePeriod};
 use crate::transition::{DiscoveredFile, FileTransition, ReconcileResult, TransitionSource};
 
+/// Row retention policy for time- or count-based pruning.
+///
+/// A row is deleted if **either** `max_age` is exceeded **or** the row's
+/// rank (newest first) exceeds `keep_last`. If both fields are `None`,
+/// the policy is disabled and the implementing trait method must be a no-op.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RetentionPolicy {
+    /// Delete rows older than this. `None` means no age bound.
+    pub max_age: Option<chrono::Duration>,
+    /// Keep at most this many rows (newest-first). `None` means no count bound.
+    pub keep_last: Option<u64>,
+}
+
+impl RetentionPolicy {
+    /// Returns true when no bounds are configured. Trait implementations must
+    /// short-circuit and return `PruneReport { deleted: 0, kept: <count> }`
+    /// without executing a `DELETE` when this is true.
+    #[must_use]
+    pub fn is_disabled(&self) -> bool {
+        self.max_age.is_none() && self.keep_last.is_none()
+    }
+
+    /// Compute the ISO-8601 cutoff timestamp for age-based deletion, suitable
+    /// for binding directly as a SQL parameter against a `TEXT` datetime column.
+    #[must_use]
+    pub fn cutoff_str(&self) -> Option<String> {
+        self.max_age
+            .map(|d| crate::utils::format::format_iso(&(chrono::Utc::now() - d)))
+    }
+
+    /// Convert `keep_last` to `Option<i64>` for use as a SQL parameter.
+    /// Returns `None` if not configured or if the value would overflow `i64`.
+    #[must_use]
+    pub fn keep_last_i64(&self) -> Option<i64> {
+        self.keep_last.and_then(|n| i64::try_from(n).ok())
+    }
+}
+
+/// Outcome of a single `prune_old_*` call.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PruneReport {
+    /// Rows deleted by this call.
+    pub deleted: u64,
+    /// Rows that survived (only counts the rows the policy was *eligible* to delete,
+    /// i.e., for jobs this excludes pending/running rows).
+    pub kept: u64,
+}
+
 /// Filters for querying jobs from storage.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default)]
@@ -128,6 +176,14 @@ pub trait JobStorage: Send + Sync {
     /// (completed, failed, cancelled). Never deletes pending/running.
     /// Returns the number of deleted rows.
     fn delete_jobs(&self, status: Option<JobStatus>) -> Result<u64>;
+    /// Delete terminal-state jobs (`completed` / `failed` / `cancelled`) per `policy`.
+    ///
+    /// Pending and running jobs are never touched, regardless of age. Returns
+    /// the number deleted and the number that survived (eligible only).
+    fn prune_old_jobs(&self, policy: RetentionPolicy) -> Result<PruneReport>;
+    /// Count how many terminal-state jobs would be deleted by `policy`.
+    /// Mirrors `prune_old_jobs` but does not modify the database.
+    fn count_old_jobs(&self, policy: RetentionPolicy) -> Result<PruneReport>;
 }
 
 /// Plan persistence operations.
@@ -174,6 +230,15 @@ pub trait FileTransitionStorage: Send + Sync {
     fn latest_failure_session(&self) -> Result<Option<Uuid>>;
     /// List sessions that have failures, most recent first.
     fn failure_sessions(&self) -> Result<Vec<SessionSummary>>;
+    /// Delete file_transitions rows per `policy`.
+    ///
+    /// Always preserves the most-recent transition per `file_id` regardless of
+    /// `policy` — this protects "current state" forensics. Age is measured by
+    /// `created_at`.
+    fn prune_old_file_transitions(&self, policy: RetentionPolicy) -> Result<PruneReport>;
+    /// Count how many file_transitions rows would be deleted by `policy`.
+    /// Always preserves most-recent-per-file (mirrors prune behavior).
+    fn count_old_file_transitions(&self, policy: RetentionPolicy) -> Result<PruneReport>;
 }
 
 /// A failed transition with plan result details for error reporting.
@@ -347,6 +412,14 @@ pub trait EventLogStorage: Send + Sync {
     fn insert_event_log(&self, record: &EventLogRecord) -> Result<i64>;
     fn list_event_log(&self, filters: &EventLogFilters) -> Result<Vec<EventLogRecord>>;
     fn prune_event_log(&self, keep_last: u64) -> Result<u64>;
+    /// Delete event_log rows per `policy`.
+    ///
+    /// Age is measured by `created_at`. Rank is by `rowid` DESC (newest first).
+    fn prune_old_event_log(&self, policy: RetentionPolicy) -> Result<PruneReport>;
+    /// Count how many event_log rows would be deleted by `policy`.
+    fn count_old_event_log(&self, policy: RetentionPolicy) -> Result<PruneReport>;
+    /// Return the most recent event of the given type, or None if none exist.
+    fn latest_event_of_type(&self, event_type: &str) -> Result<Option<EventLogRecord>>;
 }
 
 /// Library snapshot storage operations.
@@ -558,5 +631,44 @@ impl PlanSummary {
             executed_at: None,
             result: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod retention_policy_tests {
+    use super::{PruneReport, RetentionPolicy};
+
+    #[test]
+    fn retention_policy_disabled_when_both_none() {
+        let p = RetentionPolicy {
+            max_age: None,
+            keep_last: None,
+        };
+        assert!(p.is_disabled());
+    }
+
+    #[test]
+    fn retention_policy_not_disabled_when_age_set() {
+        let p = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(1)),
+            keep_last: None,
+        };
+        assert!(!p.is_disabled());
+    }
+
+    #[test]
+    fn retention_policy_not_disabled_when_count_set() {
+        let p = RetentionPolicy {
+            max_age: None,
+            keep_last: Some(10),
+        };
+        assert!(!p.is_disabled());
+    }
+
+    #[test]
+    fn prune_report_default_is_zero() {
+        let r = PruneReport::default();
+        assert_eq!(r.deleted, 0);
+        assert_eq!(r.kept, 0);
     }
 }

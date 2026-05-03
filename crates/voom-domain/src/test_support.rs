@@ -386,6 +386,20 @@ impl JobStorage for InMemoryStore {
         }
         Ok((before - jobs.len()) as u64)
     }
+
+    fn prune_old_jobs(
+        &self,
+        _policy: crate::storage::RetentionPolicy,
+    ) -> crate::errors::Result<crate::storage::PruneReport> {
+        Ok(crate::storage::PruneReport::default())
+    }
+
+    fn count_old_jobs(
+        &self,
+        _policy: crate::storage::RetentionPolicy,
+    ) -> crate::errors::Result<crate::storage::PruneReport> {
+        Ok(crate::storage::PruneReport::default())
+    }
 }
 
 impl PlanStorage for InMemoryStore {
@@ -471,6 +485,20 @@ impl FileTransitionStorage for InMemoryStore {
 
     fn failure_sessions(&self) -> Result<Vec<crate::storage::SessionSummary>> {
         Ok(Vec::new())
+    }
+
+    fn prune_old_file_transitions(
+        &self,
+        _policy: crate::storage::RetentionPolicy,
+    ) -> crate::errors::Result<crate::storage::PruneReport> {
+        Ok(crate::storage::PruneReport::default())
+    }
+
+    fn count_old_file_transitions(
+        &self,
+        _policy: crate::storage::RetentionPolicy,
+    ) -> crate::errors::Result<crate::storage::PruneReport> {
+        Ok(crate::storage::PruneReport::default())
     }
 }
 
@@ -594,6 +622,27 @@ impl crate::storage::EventLogStorage for InMemoryStore {
         } else {
             Ok(0)
         }
+    }
+
+    fn prune_old_event_log(
+        &self,
+        _policy: crate::storage::RetentionPolicy,
+    ) -> crate::errors::Result<crate::storage::PruneReport> {
+        Ok(crate::storage::PruneReport::default())
+    }
+
+    fn count_old_event_log(
+        &self,
+        _policy: crate::storage::RetentionPolicy,
+    ) -> crate::errors::Result<crate::storage::PruneReport> {
+        Ok(crate::storage::PruneReport::default())
+    }
+
+    fn latest_event_of_type(
+        &self,
+        _event_type: &str,
+    ) -> crate::errors::Result<Option<crate::storage::EventLogRecord>> {
+        Ok(None)
     }
 }
 

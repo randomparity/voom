@@ -26,91 +26,99 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     let config = config::load_config()?;
     let app::BootstrapResult { kernel, store, .. } = app::bootstrap_kernel_with_store(&config)?;
     let kernel = Arc::new(kernel);
-    let paths = resolve_paths(&args.paths)?;
-    let hash_files = !args.no_hash;
-    let start = Instant::now();
 
-    if !quiet {
-        let path_list: Vec<_> = paths
-            .iter()
-            .map(|p| style(p.display()).cyan().to_string())
-            .collect();
-        eprintln!("{} {}", style("Scanning").bold(), path_list.join(", "));
-    }
+    let primary_result: Result<()> = async {
+        let paths = resolve_paths(&args.paths)?;
+        let hash_files = !args.no_hash;
+        let start = Instant::now();
 
-    let (mut all_events, orphans, disc_errors) =
-        run_discovery(&args, &paths, hash_files, quiet, &kernel, store.clone())?;
+        if !quiet {
+            let path_list: Vec<_> = paths
+                .iter()
+                .map(|p| style(p.display()).cyan().to_string())
+                .collect();
+            eprintln!("{} {}", style("Scanning").bold(), path_list.join(", "));
+        }
 
-    // Deduplicate events by path in case multiple scan roots overlap
-    let mut seen = HashSet::new();
-    all_events.retain(|e| seen.insert(e.path.clone()));
+        let (mut all_events, orphans, disc_errors) =
+            run_discovery(&args, &paths, hash_files, quiet, &kernel, store.clone())?;
 
-    if all_events.is_empty() {
-        handle_empty_scan(&*store, &paths, hash_files, orphans, quiet, args.format)?;
-        return Ok(());
-    }
+        // Deduplicate events by path in case multiple scan roots overlap
+        let mut seen = HashSet::new();
+        all_events.retain(|e| seen.insert(e.path.clone()));
 
-    if !quiet {
-        print_discovery_summary(
-            all_events.len(),
+        if all_events.is_empty() {
+            handle_empty_scan(&*store, &paths, hash_files, orphans, quiet, args.format)?;
+            return Ok(());
+        }
+
+        if !quiet {
+            print_discovery_summary(
+                all_events.len(),
+                start.elapsed(),
+                hash_files,
+                orphans,
+                disc_errors,
+            );
+        }
+
+        mark_missing_without_hash(&*store, &all_events, &paths, hash_files, quiet)?;
+        let reconcile_paths = reconcile_files(&*store, &all_events, &paths, hash_files, quiet)?;
+
+        // Dispatch FileDiscovered events through the kernel so subscribers react.
+        for event in &all_events {
+            kernel.dispatch(Event::FileDiscovered(event.clone()));
+        }
+
+        let needs_introspection = filter_for_introspection(&all_events, reconcile_paths.as_ref());
+        let (introspected, errors) = run_introspection(
+            &needs_introspection,
+            &kernel,
+            config.ffprobe_path(),
+            &token,
+            quiet,
+        )
+        .await;
+
+        print_scan_summary(
+            &all_events,
+            introspected,
+            errors,
             start.elapsed(),
-            hash_files,
-            orphans,
-            disc_errors,
+            token.is_cancelled(),
+            quiet,
+            args.format,
         );
+
+        if token.is_cancelled() {
+            return Ok(());
+        }
+
+        purge_stale_records(&*store, config.pruning.retention_days, quiet);
+
+        // Protected from cancelled runs by the early return above (line 91).
+        // `ScanComplete` carries both files_discovered and files_introspected and
+        // is the single lifecycle event for a full scan. We deliberately do NOT
+        // dispatch `IntrospectComplete` here — that event is reserved for
+        // standalone re-introspection runs (see commands/process/mod.rs). Emitting
+        // both would cause subscribers like the report plugin to capture two
+        // back-to-back snapshots (see issue #153).
+        kernel.dispatch(Event::ScanComplete(ScanCompleteEvent::new(
+            all_events.len() as u64,
+            introspected,
+        )));
+
+        if let Some(format) = args.format {
+            output::format_scan_results(&format_results(&all_events), format);
+        }
+
+        Ok(())
     }
-
-    mark_missing_without_hash(&*store, &all_events, &paths, hash_files, quiet)?;
-    let reconcile_paths = reconcile_files(&*store, &all_events, &paths, hash_files, quiet)?;
-
-    // Dispatch FileDiscovered events through the kernel so subscribers react.
-    for event in &all_events {
-        kernel.dispatch(Event::FileDiscovered(event.clone()));
-    }
-
-    let needs_introspection = filter_for_introspection(&all_events, reconcile_paths.as_ref());
-    let (introspected, errors) = run_introspection(
-        &needs_introspection,
-        &kernel,
-        config.ffprobe_path(),
-        &token,
-        quiet,
-    )
     .await;
 
-    print_scan_summary(
-        &all_events,
-        introspected,
-        errors,
-        start.elapsed(),
-        token.is_cancelled(),
-        quiet,
-        args.format,
-    );
+    crate::retention::maybe_run_after_cli(store, &config.retention, Some(kernel));
 
-    if token.is_cancelled() {
-        return Ok(());
-    }
-
-    purge_stale_records(&*store, config.pruning.retention_days, quiet);
-
-    // Protected from cancelled runs by the early return above (line 91).
-    // `ScanComplete` carries both files_discovered and files_introspected and
-    // is the single lifecycle event for a full scan. We deliberately do NOT
-    // dispatch `IntrospectComplete` here — that event is reserved for
-    // standalone re-introspection runs (see commands/process/mod.rs). Emitting
-    // both would cause subscribers like the report plugin to capture two
-    // back-to-back snapshots (see issue #153).
-    kernel.dispatch(Event::ScanComplete(ScanCompleteEvent::new(
-        all_events.len() as u64,
-        introspected,
-    )));
-
-    if let Some(format) = args.format {
-        output::format_scan_results(&format_results(&all_events), format);
-    }
-
-    Ok(())
+    primary_result
 }
 
 /// Run filesystem discovery across all paths, returning events and counters.

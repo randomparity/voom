@@ -887,6 +887,20 @@ mod tests {
         ) -> voom_domain::errors::Result<u64> {
             self.inner.delete_jobs(status)
         }
+
+        fn prune_old_jobs(
+            &self,
+            policy: voom_domain::storage::RetentionPolicy,
+        ) -> voom_domain::errors::Result<voom_domain::storage::PruneReport> {
+            self.inner.prune_old_jobs(policy)
+        }
+
+        fn count_old_jobs(
+            &self,
+            policy: voom_domain::storage::RetentionPolicy,
+        ) -> voom_domain::errors::Result<voom_domain::storage::PruneReport> {
+            self.inner.count_old_jobs(policy)
+        }
     }
 
     #[tokio::test]

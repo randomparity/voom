@@ -71,197 +71,210 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         ..
     } = app::bootstrap_kernel_with_store(&config)?;
     let kernel = Arc::new(kernel);
+    let store_for_retention = store.clone();
+    let kernel_for_retention = kernel.clone();
     let capabilities = Arc::new(collector.snapshot());
 
     let paths = resolve_paths(&args.paths)?;
 
-    let root = if paths.len() == 1 && paths[0].is_file() {
-        paths[0]
-            .parent()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "cannot determine parent directory of {}",
-                    paths[0].display()
-                )
-            })?
-            .to_path_buf()
-    } else {
-        paths[0].clone()
-    };
+    let primary_result: Result<()> = async {
+        let root = if paths.len() == 1 && paths[0].is_file() {
+            paths[0]
+                .parent()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "cannot determine parent directory of {}",
+                        paths[0].display()
+                    )
+                })?
+                .to_path_buf()
+        } else {
+            paths[0].clone()
+        };
 
-    let resolver = build_policy_resolver(&args, &config, &root)?;
-    let counters = RunCounters::new();
+        let resolver = build_policy_resolver(&args, &config, &root)?;
+        let counters = RunCounters::new();
 
-    if !plan_only && !quiet {
-        let path_list: Vec<_> = paths.iter().map(|p| p.display().to_string()).collect();
-        let display_paths = path_list.join(", ");
-        print_run_header(
-            &resolver.summary(),
-            &display_paths,
-            dry_run,
-            counters.session_id,
-        );
-    }
-
-    // Auto-prune stale file entries under the target directories
-    for path in &paths {
-        match store.prune_missing_files_under(path) {
-            Ok(n) if n > 0 && !plan_only && !quiet => eprintln!("Pruned {n} stale entries."),
-            Ok(_) => {}
-            Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
-        }
-    }
-
-    // Check for orphaned backups left by a previous crashed execution
-    // Extract backup-manager's global backup dir from plugin config, if set.
-    let global_backup_dir: Option<std::path::PathBuf> =
-        config.plugin.get("backup-manager").and_then(|t| {
-            let use_global = t
-                .get("use_global_dir")
-                .and_then(toml::Value::as_bool)
-                .unwrap_or(false);
-            if use_global {
-                t.get("backup_dir")
-                    .and_then(|v| v.as_str())
-                    .map(std::path::PathBuf::from)
-            } else {
-                None
-            }
-        });
-    match crate::recovery::check_and_recover_under(
-        &config.recovery,
-        &paths,
-        store.as_ref(),
-        global_backup_dir.as_deref(),
-    ) {
-        Ok(recovered) if recovered > 0 && !plan_only && !quiet => {
-            eprintln!(
-                "{} {} {} from crashed execution",
-                console::style("Recovered").bold().green(),
-                recovered,
-                if recovered == 1 { "file" } else { "files" }
+        if !plan_only && !quiet {
+            let path_list: Vec<_> = paths.iter().map(|p| p.display().to_string()).collect();
+            let display_paths = path_list.join(", ");
+            print_run_header(
+                &resolver.summary(),
+                &display_paths,
+                dry_run,
+                counters.session_id,
             );
         }
-        Ok(_) => {}
-        Err(e) => tracing::warn!(error = %e, "crash recovery check failed"),
-    }
 
-    if token.is_cancelled() {
-        if !plan_only && !quiet {
-            eprintln!("{}", style("Interrupted before discovery.").yellow());
+        // Auto-prune stale file entries under the target directories
+        for path in &paths {
+            match store.prune_missing_files_under(path) {
+                Ok(n) if n > 0 && !plan_only && !quiet => eprintln!("Pruned {n} stale entries."),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
+            }
         }
-        return Ok(());
-    }
 
-    let mut events = discover_files(&paths, &args, &kernel, quiet, store.clone())?;
-    if events.is_empty() {
-        if plan_only {
-            println!("[]");
-        } else if !quiet {
-            eprintln!("{}", style("No media files found.").yellow());
-        }
-        return Ok(());
-    }
-
-    // Filter out known-bad files unless --force-rescan is set
-    if !args.force_rescan {
-        filter_bad_files(&mut events, &store, plan_only, quiet)?;
-    }
-
-    if events.is_empty() {
-        if plan_only {
-            println!("[]");
-        } else if !quiet {
-            eprintln!("{}", style("No processable files found.").yellow());
-        }
-        return Ok(());
-    }
-
-    let file_count = events.len();
-    if !plan_only && !quiet {
-        eprintln!("Found {} media files.", style(file_count).bold());
-    }
-
-    let on_error = match args.on_error {
-        ErrorHandling::Fail => JobErrorStrategy::Fail,
-        ErrorHandling::Continue => JobErrorStrategy::Continue,
-    };
-
-    if token.is_cancelled() {
-        if !quiet {
-            eprintln!("{}", style("Interrupted before processing.").yellow());
-        }
-        return Ok(());
-    }
-
-    let (pool, effective_workers) = create_worker_pool(job_queue, &args, token.clone());
-
-    let reporter = build_reporter(&events, effective_workers, plan_only, quiet, kernel.clone());
-
-    let items = build_work_items(&events, args.priority_by_date);
-    let all_phase_names = resolver.all_phase_names();
-    let resolver = Arc::new(resolver);
-    let flag_size_increase = args.flag_size_increase;
-    let flag_duration_shrink = args.flag_duration_shrink;
-    let force_rescan = args.force_rescan;
-
-    let token_for_workers = token.clone();
-    let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
-    let ffprobe_path = Arc::new(ffprobe_path);
-    let counters_for_summary = counters.clone();
-    let kernel_for_completion = kernel.clone();
-    let _results = pool
-        .process_batch(
-            items,
-            move |job| {
-                let resolver = resolver.clone();
-                let kernel = kernel.clone();
-                let store = store.clone();
-                let token = token_for_workers.clone();
-                let ffprobe_path = ffprobe_path.clone();
-                let capabilities = capabilities.clone();
-                let counters = counters.clone();
-                async move {
-                    let ctx = ProcessContext {
-                        resolver: &resolver,
-                        kernel,
-                        store,
-                        dry_run,
-                        plan_only,
-                        flag_size_increase,
-                        flag_duration_shrink,
-                        force_rescan,
-                        token: &token,
-                        ffprobe_path: ffprobe_path.as_deref(),
-                        capabilities: &capabilities,
-                        counters: &counters,
-                    };
-                    process_single_file(job, &ctx).await
+        // Check for orphaned backups left by a previous crashed execution
+        // Extract backup-manager's global backup dir from plugin config, if set.
+        let global_backup_dir: Option<std::path::PathBuf> =
+            config.plugin.get("backup-manager").and_then(|t| {
+                let use_global = t
+                    .get("use_global_dir")
+                    .and_then(toml::Value::as_bool)
+                    .unwrap_or(false);
+                if use_global {
+                    t.get("backup_dir")
+                        .and_then(|v| v.as_str())
+                        .map(std::path::PathBuf::from)
+                } else {
+                    None
                 }
-            },
-            on_error,
-            reporter.clone(),
-        )
-        .await;
+            });
+        match crate::recovery::check_and_recover_under(
+            &config.recovery,
+            &paths,
+            store.as_ref(),
+            global_backup_dir.as_deref(),
+        ) {
+            Ok(recovered) if recovered > 0 && !plan_only && !quiet => {
+                eprintln!(
+                    "{} {} {} from crashed execution",
+                    console::style("Recovered").bold().green(),
+                    recovered,
+                    if recovered == 1 { "file" } else { "files" }
+                );
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "crash recovery check failed"),
+        }
 
-    if !token.is_cancelled() {
-        kernel_for_completion.dispatch(Event::IntrospectComplete(IntrospectCompleteEvent::new(
-            pool.completed_count(),
-        )));
+        if token.is_cancelled() {
+            if !plan_only && !quiet {
+                eprintln!("{}", style("Interrupted before discovery.").yellow());
+            }
+            return Ok(());
+        }
+
+        let mut events = discover_files(&paths, &args, &kernel, quiet, store.clone())?;
+        if events.is_empty() {
+            if plan_only {
+                println!("[]");
+            } else if !quiet {
+                eprintln!("{}", style("No media files found.").yellow());
+            }
+            return Ok(());
+        }
+
+        // Filter out known-bad files unless --force-rescan is set
+        if !args.force_rescan {
+            filter_bad_files(&mut events, &store, plan_only, quiet)?;
+        }
+
+        if events.is_empty() {
+            if plan_only {
+                println!("[]");
+            } else if !quiet {
+                eprintln!("{}", style("No processable files found.").yellow());
+            }
+            return Ok(());
+        }
+
+        let file_count = events.len();
+        if !plan_only && !quiet {
+            eprintln!("Found {} media files.", style(file_count).bold());
+        }
+
+        let on_error = match args.on_error {
+            ErrorHandling::Fail => JobErrorStrategy::Fail,
+            ErrorHandling::Continue => JobErrorStrategy::Continue,
+        };
+
+        if token.is_cancelled() {
+            if !quiet {
+                eprintln!("{}", style("Interrupted before processing.").yellow());
+            }
+            return Ok(());
+        }
+
+        let (pool, effective_workers) = create_worker_pool(job_queue, &args, token.clone());
+
+        let reporter = build_reporter(&events, effective_workers, plan_only, quiet, kernel.clone());
+
+        let items = build_work_items(&events, args.priority_by_date);
+        let all_phase_names = resolver.all_phase_names();
+        let resolver = Arc::new(resolver);
+        let flag_size_increase = args.flag_size_increase;
+        let flag_duration_shrink = args.flag_duration_shrink;
+        let force_rescan = args.force_rescan;
+
+        let token_for_workers = token.clone();
+        let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
+        let ffprobe_path = Arc::new(ffprobe_path);
+        let counters_for_summary = counters.clone();
+        let kernel_for_completion = kernel.clone();
+        let _results = pool
+            .process_batch(
+                items,
+                move |job| {
+                    let resolver = resolver.clone();
+                    let kernel = kernel.clone();
+                    let store = store.clone();
+                    let token = token_for_workers.clone();
+                    let ffprobe_path = ffprobe_path.clone();
+                    let capabilities = capabilities.clone();
+                    let counters = counters.clone();
+                    async move {
+                        let ctx = ProcessContext {
+                            resolver: &resolver,
+                            kernel,
+                            store,
+                            dry_run,
+                            plan_only,
+                            flag_size_increase,
+                            flag_duration_shrink,
+                            force_rescan,
+                            token: &token,
+                            ffprobe_path: ffprobe_path.as_deref(),
+                            capabilities: &capabilities,
+                            counters: &counters,
+                        };
+                        process_single_file(job, &ctx).await
+                    }
+                },
+                on_error,
+                reporter.clone(),
+            )
+            .await;
+
+        if !token.is_cancelled() {
+            kernel_for_completion.dispatch(Event::IntrospectComplete(
+                IntrospectCompleteEvent::new(pool.completed_count()),
+            ));
+        }
+
+        print_run_results(&RunResultsContext {
+            counters: &counters_for_summary,
+            plan_only,
+            quiet,
+            cancelled: token.is_cancelled(),
+            pool: &pool,
+            file_count,
+            effective_workers,
+            dry_run,
+            paths: &paths,
+            all_phase_names: &all_phase_names,
+        })
     }
+    .await;
 
-    print_run_results(&RunResultsContext {
-        counters: &counters_for_summary,
-        plan_only,
-        quiet,
-        cancelled: token.is_cancelled(),
-        pool: &pool,
-        file_count,
-        effective_workers,
-        dry_run,
-        paths: &paths,
-        all_phase_names: &all_phase_names,
-    })
+    crate::retention::maybe_run_after_cli(
+        store_for_retention,
+        &config.retention,
+        Some(kernel_for_retention),
+    );
+
+    primary_result
 }
 
 /// Remove known-bad files from the event list, logging how many were skipped.

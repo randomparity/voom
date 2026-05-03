@@ -489,6 +489,40 @@ fn migrate_indexes_and_constraints(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    let jobs_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='jobs'",
+        [],
+        |row| row.get(0),
+    )?;
+    if jobs_exists && !has_index("idx_jobs_completed_at")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_completed_at ON jobs(completed_at);",
+        )?;
+    }
+
+    let event_log_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='event_log'",
+        [],
+        |row| row.get(0),
+    )?;
+    if event_log_exists && !has_index("idx_event_log_created_at")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_event_log_created_at ON event_log(created_at);",
+        )?;
+    }
+
+    let transitions_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='file_transitions'",
+        [],
+        |row| row.get(0),
+    )?;
+    if transitions_exists && !has_index("idx_transitions_created_at")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_transitions_created_at \
+             ON file_transitions(created_at);",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -773,5 +807,31 @@ mod tests {
             )
             .unwrap();
         assert!(has_index, "idx_files_superseded_by index should exist");
+    }
+
+    #[test]
+    fn migration_creates_retention_indexes() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        create_schema(&conn).unwrap();
+
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        for required in &[
+            "idx_jobs_completed_at",
+            "idx_event_log_created_at",
+            "idx_transitions_created_at",
+        ] {
+            assert!(
+                names.iter().any(|n| n == required),
+                "missing index {required}; got {names:?}"
+            );
+        }
     }
 }
