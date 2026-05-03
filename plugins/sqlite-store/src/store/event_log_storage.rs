@@ -1,4 +1,4 @@
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 
 use voom_domain::errors::Result;
 use voom_domain::storage::{
@@ -171,6 +171,19 @@ impl EventLogStorage for SqliteStore {
             deleted,
             kept: total.saturating_sub(deleted),
         })
+    }
+
+    fn latest_event_of_type(&self, event_type: &str) -> Result<Option<EventLogRecord>> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT rowid, id, event_type, payload, summary, created_at
+             FROM event_log WHERE event_type = ?1
+             ORDER BY rowid DESC LIMIT 1",
+            params![event_type],
+            row_to_event_log,
+        )
+        .optional()
+        .map_err(storage_err("failed to query latest event"))
     }
 }
 
@@ -390,6 +403,32 @@ mod tests {
         let report = store.prune_old_event_log(policy).unwrap();
         assert_eq!(report.deleted, 0);
         assert_eq!(report.kept, 0);
+    }
+
+    #[test]
+    fn latest_event_of_type_returns_newest() {
+        let store = test_store();
+        for i in 0..5 {
+            let r = EventLogRecord::new(
+                uuid::Uuid::new_v4(),
+                "retention.completed".into(),
+                format!(r#"{{"n":{i}}}"#),
+                format!("event {i}"),
+            );
+            store.insert_event_log(&r).unwrap();
+        }
+        let got = store
+            .latest_event_of_type("retention.completed")
+            .unwrap()
+            .unwrap();
+        assert!(got.payload.contains(r#""n":4"#));
+    }
+
+    #[test]
+    fn latest_event_of_type_none_when_absent() {
+        let store = test_store();
+        let got = store.latest_event_of_type("retention.completed").unwrap();
+        assert!(got.is_none());
     }
 
     #[test]

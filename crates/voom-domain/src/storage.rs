@@ -403,6 +403,8 @@ pub trait EventLogStorage: Send + Sync {
     fn prune_old_event_log(&self, policy: RetentionPolicy) -> Result<PruneReport>;
     /// Count how many event_log rows would be deleted by `policy`.
     fn count_old_event_log(&self, policy: RetentionPolicy) -> Result<PruneReport>;
+    /// Return the most recent event of the given type, or None if none exist.
+    fn latest_event_of_type(&self, event_type: &str) -> Result<Option<EventLogRecord>>;
 }
 
 /// Library snapshot storage operations.

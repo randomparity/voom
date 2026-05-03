@@ -637,6 +637,13 @@ impl crate::storage::EventLogStorage for InMemoryStore {
     ) -> crate::errors::Result<crate::storage::PruneReport> {
         Ok(crate::storage::PruneReport::default())
     }
+
+    fn latest_event_of_type(
+        &self,
+        _event_type: &str,
+    ) -> crate::errors::Result<Option<crate::storage::EventLogRecord>> {
+        Ok(None)
+    }
 }
 
 impl SnapshotStorage for InMemoryStore {
