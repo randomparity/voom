@@ -285,6 +285,56 @@ impl JobStorage for SqliteStore {
         Ok(PruneReport { deleted, kept })
     }
 
+    fn count_old_jobs(&self, policy: RetentionPolicy) -> Result<PruneReport> {
+        if policy.is_disabled() {
+            let conn = self.conn()?;
+            let kept: u64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM jobs WHERE status IN ('completed','failed','cancelled')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(storage_err("failed to count jobs"))?;
+            return Ok(PruneReport { deleted: 0, kept });
+        }
+
+        let conn = self.conn()?;
+        let cutoff = policy
+            .max_age
+            .map(|d| format_datetime(&(chrono::Utc::now() - d)));
+        let keep_last: Option<i64> = policy.keep_last.and_then(|n| i64::try_from(n).ok());
+
+        let deleted: u64 = conn
+            .query_row(
+                "WITH ranked AS (
+                    SELECT id,
+                           ROW_NUMBER() OVER (ORDER BY COALESCE(completed_at, created_at) DESC) AS rn,
+                           COALESCE(completed_at, created_at) AS effective_at
+                    FROM jobs
+                    WHERE status IN ('completed','failed','cancelled')
+                )
+                SELECT COUNT(*) FROM ranked
+                WHERE (?1 IS NOT NULL AND effective_at < ?1)
+                   OR (?2 IS NOT NULL AND rn > ?2)",
+                rusqlite::params![cutoff, keep_last],
+                |row| row.get(0),
+            )
+            .map_err(storage_err("failed to count old jobs"))?;
+
+        let total: u64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE status IN ('completed','failed','cancelled')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_err("failed to count terminal jobs"))?;
+
+        Ok(PruneReport {
+            deleted,
+            kept: total.saturating_sub(deleted),
+        })
+    }
+
     fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -648,6 +698,41 @@ mod tests {
         let report = store.prune_old_jobs(policy).unwrap();
         assert_eq!(report.deleted, 0);
         assert_eq!(report.kept, 0);
+    }
+
+    #[test]
+    fn count_old_jobs_matches_prune_count() {
+        let store = SqliteStore::in_memory().unwrap();
+        let now = chrono::Utc::now();
+        for days in [10i64, 5, 3, 1, 0] {
+            insert_test_job(
+                &store,
+                voom_domain::job::JobStatus::Completed,
+                Some(now - chrono::Duration::days(days)),
+            );
+        }
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(4)),
+            keep_last: Some(3),
+        };
+        let count_report = store.count_old_jobs(policy).unwrap();
+        // Same data still in store (count is non-destructive): verify by counting
+        let total_before: u64 = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE status IN ('completed','failed','cancelled')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            total_before, 5,
+            "count_old_jobs must not modify the database"
+        );
+        let prune_report = store.prune_old_jobs(policy).unwrap();
+        assert_eq!(count_report.deleted, prune_report.deleted);
+        assert_eq!(count_report.kept, prune_report.kept);
     }
 
     #[test]

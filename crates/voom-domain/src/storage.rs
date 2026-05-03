@@ -166,6 +166,9 @@ pub trait JobStorage: Send + Sync {
     /// Pending and running jobs are never touched, regardless of age. Returns
     /// the number deleted and the number that survived (eligible only).
     fn prune_old_jobs(&self, policy: RetentionPolicy) -> Result<PruneReport>;
+    /// Count how many terminal-state jobs would be deleted by `policy`.
+    /// Mirrors `prune_old_jobs` but does not modify the database.
+    fn count_old_jobs(&self, policy: RetentionPolicy) -> Result<PruneReport>;
 }
 
 /// Plan persistence operations.
@@ -218,6 +221,9 @@ pub trait FileTransitionStorage: Send + Sync {
     /// `policy` — this protects "current state" forensics. Age is measured by
     /// `created_at`.
     fn prune_old_file_transitions(&self, policy: RetentionPolicy) -> Result<PruneReport>;
+    /// Count how many file_transitions rows would be deleted by `policy`.
+    /// Always preserves most-recent-per-file (mirrors prune behavior).
+    fn count_old_file_transitions(&self, policy: RetentionPolicy) -> Result<PruneReport>;
 }
 
 /// A failed transition with plan result details for error reporting.
@@ -395,6 +401,8 @@ pub trait EventLogStorage: Send + Sync {
     ///
     /// Age is measured by `created_at`. Rank is by `rowid` DESC (newest first).
     fn prune_old_event_log(&self, policy: RetentionPolicy) -> Result<PruneReport>;
+    /// Count how many event_log rows would be deleted by `policy`.
+    fn count_old_event_log(&self, policy: RetentionPolicy) -> Result<PruneReport>;
 }
 
 /// Library snapshot storage operations.

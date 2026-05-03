@@ -388,8 +388,12 @@ pub struct ServeArgs {
 
 #[derive(Subcommand)]
 pub enum DbCommands {
-    /// Remove entries for files that no longer exist
-    Prune,
+    /// Prune missing files, expired health checks, and run database retention.
+    Prune {
+        /// Show what would be pruned without making any changes.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Compact the database
     Vacuum,
     /// Reset the database (destructive!)
@@ -1223,7 +1227,19 @@ mod tests {
     #[test]
     fn test_db_prune() {
         let cli = parse(&["voom", "db", "prune"]);
-        assert!(matches!(cli.command, Commands::Db(DbCommands::Prune)));
+        assert!(matches!(
+            cli.command,
+            Commands::Db(DbCommands::Prune { dry_run: false })
+        ));
+    }
+
+    #[test]
+    fn test_db_prune_dry_run() {
+        let cli = parse(&["voom", "db", "prune", "--dry-run"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Db(DbCommands::Prune { dry_run: true })
+        ));
     }
 
     #[test]

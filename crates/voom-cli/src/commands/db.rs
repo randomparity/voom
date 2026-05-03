@@ -10,7 +10,7 @@ use crate::output;
 
 pub async fn run(cmd: DbCommands, global_yes: bool) -> Result<()> {
     match cmd {
-        DbCommands::Prune => prune(),
+        DbCommands::Prune { dry_run } => prune(dry_run),
         DbCommands::Vacuum => vacuum(),
         DbCommands::Reset { yes } => reset(yes || global_yes).await,
         DbCommands::ListBad { path, format } => list_bad(path, format),
@@ -19,54 +19,70 @@ pub async fn run(cmd: DbCommands, global_yes: bool) -> Result<()> {
     }
 }
 
-fn prune() -> Result<()> {
+fn prune(dry_run: bool) -> Result<()> {
     let config = config::load_config()?;
-    let store = app::open_store(&config)?;
+    let store_arc = app::open_store(&config)?;
 
-    let count = store
-        .prune_missing_files()
-        .context("failed to prune missing files")?;
+    if !dry_run {
+        let count = store_arc
+            .prune_missing_files()
+            .context("failed to prune missing files")?;
 
-    if count == 0 {
-        println!("{}", style("No stale entries found.").dim());
-    } else {
-        println!(
-            "{} Marked {} files as missing.",
-            style("OK").bold().green(),
-            style(count).bold()
-        );
-    }
+        if count == 0 {
+            println!("{}", style("No stale entries found.").dim());
+        } else {
+            println!(
+                "{} Marked {} files as missing.",
+                style("OK").bold().green(),
+                style(count).bold()
+            );
+        }
 
-    // Purge missing files older than retention period
-    let retention_days = config.pruning.retention_days;
-    if retention_days > 0 {
-        let cutoff = chrono::Utc::now() - chrono::Duration::days(i64::from(retention_days));
-        match store.purge_missing(cutoff) {
-            Ok(n) if n > 0 => {
-                println!(
-                    "{} Purged {} missing file records.",
-                    style("OK").bold().green(),
-                    style(n).bold()
-                );
+        // Purge missing files older than retention period
+        let retention_days = config.pruning.retention_days;
+        if retention_days > 0 {
+            let cutoff = chrono::Utc::now() - chrono::Duration::days(i64::from(retention_days));
+            match store_arc.purge_missing(cutoff) {
+                Ok(n) if n > 0 => {
+                    println!(
+                        "{} Purged {} missing file records.",
+                        style("OK").bold().green(),
+                        style(n).bold()
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "purge_missing failed"),
             }
-            Ok(_) => {}
-            Err(e) => tracing::warn!(error = %e, "purge_missing failed"),
+        }
+
+        // Prune health checks using the default retention period
+        let retention =
+            i64::from(voom_health_checker::HealthCheckerConfig::default().retention_days);
+        let health_pruned = store_arc
+            .prune_health_checks(chrono::Utc::now() - chrono::Duration::days(retention))
+            .context("failed to prune old health checks")?;
+
+        if health_pruned > 0 {
+            println!(
+                "{} Pruned {} old health check records.",
+                style("OK").bold().green(),
+                style(health_pruned).bold()
+            );
         }
     }
 
-    // Prune health checks using the default retention period
-    let retention = i64::from(voom_health_checker::HealthCheckerConfig::default().retention_days);
-    let health_pruned = store
-        .prune_health_checks(chrono::Utc::now() - chrono::Duration::days(retention))
-        .context("failed to prune old health checks")?;
-
-    if health_pruned > 0 {
-        println!(
-            "{} Pruned {} old health check records.",
-            style("OK").bold().green(),
-            style(health_pruned).bold()
-        );
-    }
+    // Database retention (jobs, event_log, file_transitions).
+    let runner = crate::retention::RetentionRunner::new(
+        store_arc,
+        config.retention.clone(),
+        None, // no event bus dispatch in `db prune`
+    );
+    let summary = if dry_run {
+        runner.dry_run_summary()
+    } else {
+        runner.run_once(voom_domain::events::RetentionTrigger::OnDemand)
+    };
+    print_retention_summary(&summary, dry_run);
 
     Ok(())
 }
@@ -288,6 +304,34 @@ async fn clean_bad(yes: bool) -> Result<()> {
     Ok(())
 }
 
+fn print_retention_summary(summary: &crate::retention::RetentionSummary, dry_run: bool) {
+    let prefix = if dry_run { "Would prune" } else { "Pruned" };
+    for (table, result) in &summary.per_table {
+        match result {
+            Ok(r) if r.deleted > 0 => println!(
+                "{} {} {} rows from {} (kept {})",
+                style("OK").bold().green(),
+                prefix,
+                style(r.deleted).bold(),
+                style(table).cyan(),
+                r.kept,
+            ),
+            Ok(_) => {
+                println!(
+                    "{} no rows to prune in {}",
+                    style("·").dim(),
+                    style(table).cyan()
+                );
+            }
+            Err(e) => println!(
+                "{} {}: {e}",
+                style("WARN").bold().yellow(),
+                style(table).cyan(),
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::app;
@@ -312,5 +356,14 @@ mod tests {
         };
         let store = app::open_store(&cfg);
         assert!(store.is_ok(), "should open store in temp directory");
+    }
+
+    #[test]
+    fn print_retention_summary_handles_empty() {
+        let summary = crate::retention::RetentionSummary {
+            per_table: vec![],
+            duration: std::time::Duration::from_millis(1),
+        };
+        super::print_retention_summary(&summary, false);
     }
 }

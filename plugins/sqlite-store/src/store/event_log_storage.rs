@@ -132,6 +132,46 @@ impl EventLogStorage for SqliteStore {
 
         Ok(PruneReport { deleted, kept })
     }
+    fn count_old_event_log(&self, policy: RetentionPolicy) -> Result<PruneReport> {
+        if policy.is_disabled() {
+            let conn = self.conn()?;
+            let kept: u64 = conn
+                .query_row("SELECT COUNT(*) FROM event_log", [], |row| row.get(0))
+                .map_err(storage_err("failed to count event_log"))?;
+            return Ok(PruneReport { deleted: 0, kept });
+        }
+
+        let conn = self.conn()?;
+        let cutoff = policy
+            .max_age
+            .map(|d| super::format_datetime(&(chrono::Utc::now() - d)));
+        let keep_last = policy.keep_last.and_then(|n| i64::try_from(n).ok());
+
+        let deleted: u64 = conn
+            .query_row(
+                "WITH ranked AS (
+                    SELECT rowid,
+                           ROW_NUMBER() OVER (ORDER BY rowid DESC) AS rn,
+                           created_at
+                    FROM event_log
+                )
+                SELECT COUNT(*) FROM ranked
+                WHERE (?1 IS NOT NULL AND created_at < ?1)
+                   OR (?2 IS NOT NULL AND rn > ?2)",
+                params![cutoff, keep_last],
+                |row| row.get(0),
+            )
+            .map_err(storage_err("failed to count old event_log"))?;
+
+        let total: u64 = conn
+            .query_row("SELECT COUNT(*) FROM event_log", [], |row| row.get(0))
+            .map_err(storage_err("failed to count event_log"))?;
+
+        Ok(PruneReport {
+            deleted,
+            kept: total.saturating_sub(deleted),
+        })
+    }
 }
 
 fn row_to_event_log(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventLogRecord> {
@@ -350,5 +390,32 @@ mod tests {
         let report = store.prune_old_event_log(policy).unwrap();
         assert_eq!(report.deleted, 0);
         assert_eq!(report.kept, 0);
+    }
+
+    #[test]
+    fn count_old_event_log_matches_prune_count() {
+        let store = test_store();
+        let now = chrono::Utc::now();
+        for days in [10i64, 5, 3, 1, 0] {
+            insert_at(&store, now - chrono::Duration::days(days));
+        }
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(4)),
+            keep_last: Some(3),
+        };
+        let count_report = store.count_old_event_log(policy).unwrap();
+        // Verify non-destructive: all 5 rows still present
+        let total_before: u64 = store
+            .conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM event_log", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            total_before, 5,
+            "count_old_event_log must not modify the database"
+        );
+        let prune_report = store.prune_old_event_log(policy).unwrap();
+        assert_eq!(count_report.deleted, prune_report.deleted);
+        assert_eq!(count_report.kept, prune_report.kept);
     }
 }

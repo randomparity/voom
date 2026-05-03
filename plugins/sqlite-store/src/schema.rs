@@ -489,11 +489,39 @@ fn migrate_indexes_and_constraints(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_jobs_completed_at ON jobs(completed_at);
-         CREATE INDEX IF NOT EXISTS idx_event_log_created_at ON event_log(created_at);
-         CREATE INDEX IF NOT EXISTS idx_transitions_created_at ON file_transitions(created_at);",
+    let jobs_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='jobs'",
+        [],
+        |row| row.get(0),
     )?;
+    if jobs_exists && !has_index("idx_jobs_completed_at")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_completed_at ON jobs(completed_at);",
+        )?;
+    }
+
+    let event_log_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='event_log'",
+        [],
+        |row| row.get(0),
+    )?;
+    if event_log_exists && !has_index("idx_event_log_created_at")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_event_log_created_at ON event_log(created_at);",
+        )?;
+    }
+
+    let transitions_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='file_transitions'",
+        [],
+        |row| row.get(0),
+    )?;
+    if transitions_exists && !has_index("idx_transitions_created_at")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_transitions_created_at \
+             ON file_transitions(created_at);",
+        )?;
+    }
 
     Ok(())
 }

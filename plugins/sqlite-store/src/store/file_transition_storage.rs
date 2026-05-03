@@ -355,6 +355,63 @@ impl FileTransitionStorage for SqliteStore {
 
         Ok(PruneReport { deleted, kept })
     }
+
+    fn count_old_file_transitions(&self, policy: RetentionPolicy) -> Result<PruneReport> {
+        if policy.is_disabled() {
+            let conn = self.conn()?;
+            let kept: u64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM file_transitions
+                     WHERE rowid NOT IN (SELECT MAX(rowid) FROM file_transitions GROUP BY file_id)",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(storage_err("failed to count file_transitions"))?;
+            return Ok(PruneReport { deleted: 0, kept });
+        }
+
+        let conn = self.conn()?;
+        let cutoff = policy
+            .max_age
+            .map(|d| format_datetime(&(chrono::Utc::now() - d)));
+        let keep_last = policy.keep_last.and_then(|n| i64::try_from(n).ok());
+
+        let deleted: u64 = conn
+            .query_row(
+                "WITH last_per_file AS (
+                    SELECT MAX(rowid) AS keep_rowid
+                    FROM file_transitions
+                    GROUP BY file_id
+                ),
+                ranked AS (
+                    SELECT rowid,
+                           ROW_NUMBER() OVER (ORDER BY created_at DESC) AS rn,
+                           created_at
+                    FROM file_transitions
+                    WHERE rowid NOT IN (SELECT keep_rowid FROM last_per_file)
+                )
+                SELECT COUNT(*) FROM ranked
+                WHERE (?1 IS NOT NULL AND created_at < ?1)
+                   OR (?2 IS NOT NULL AND rn > ?2)",
+                params![cutoff, keep_last],
+                |row| row.get(0),
+            )
+            .map_err(storage_err("failed to count old file_transitions"))?;
+
+        let eligible: u64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions
+                 WHERE rowid NOT IN (SELECT MAX(rowid) FROM file_transitions GROUP BY file_id)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_err("failed to count eligible file_transitions"))?;
+
+        Ok(PruneReport {
+            deleted,
+            kept: eligible.saturating_sub(deleted),
+        })
+    }
 }
 
 fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition> {
@@ -735,5 +792,37 @@ mod retention_tests {
         let report = store.prune_old_file_transitions(policy).unwrap();
         assert_eq!(report.deleted, 0);
         assert_eq!(report.kept, 0);
+    }
+
+    #[test]
+    fn count_old_file_transitions_matches_prune_count() {
+        let store = test_store();
+        let now = chrono::Utc::now();
+        // Single file with 5 transitions at different ages
+        let file_id = uuid::Uuid::new_v4();
+        for days in [10i64, 5, 3, 1, 0] {
+            let t = make_transition(file_id, now - chrono::Duration::days(days));
+            store.record_transition(&t).unwrap();
+        }
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(4)),
+            keep_last: Some(3),
+        };
+        let count_report = store.count_old_file_transitions(policy).unwrap();
+        // Verify non-destructive: all 5 rows still present
+        let total_before: u64 = store
+            .conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM file_transitions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            total_before, 5,
+            "count_old_file_transitions must not modify the database"
+        );
+        let prune_report = store.prune_old_file_transitions(policy).unwrap();
+        assert_eq!(count_report.deleted, prune_report.deleted);
+        assert_eq!(count_report.kept, prune_report.kept);
     }
 }

@@ -107,6 +107,23 @@ impl RetentionRunner {
         }
     }
 
+    /// Compute what `run_once` would delete, without modifying the database.
+    pub fn dry_run_summary(&self) -> RetentionSummary {
+        let start = Instant::now();
+        let per_table: Vec<(String, anyhow::Result<PruneReport>)> = vec![
+            ("jobs".to_string(), self.count_jobs()),
+            ("event_log".to_string(), self.count_event_log()),
+            (
+                "file_transitions".to_string(),
+                self.count_file_transitions(),
+            ),
+        ];
+        RetentionSummary {
+            per_table,
+            duration: start.elapsed(),
+        }
+    }
+
     fn prune_jobs(&self) -> anyhow::Result<PruneReport> {
         let policy = table_retention_to_policy(&self.config.jobs);
         Ok(self.store.prune_old_jobs(policy)?)
@@ -120,6 +137,21 @@ impl RetentionRunner {
     fn prune_file_transitions(&self) -> anyhow::Result<PruneReport> {
         let policy = table_retention_to_policy(&self.config.file_transitions);
         Ok(self.store.prune_old_file_transitions(policy)?)
+    }
+
+    fn count_jobs(&self) -> anyhow::Result<PruneReport> {
+        let policy = table_retention_to_policy(&self.config.jobs);
+        Ok(self.store.count_old_jobs(policy)?)
+    }
+
+    fn count_event_log(&self) -> anyhow::Result<PruneReport> {
+        let policy = table_retention_to_policy(&self.config.event_log);
+        Ok(self.store.count_old_event_log(policy)?)
+    }
+
+    fn count_file_transitions(&self) -> anyhow::Result<PruneReport> {
+        let policy = table_retention_to_policy(&self.config.file_transitions);
+        Ok(self.store.count_old_file_transitions(policy)?)
     }
 }
 
