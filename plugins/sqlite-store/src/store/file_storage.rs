@@ -428,6 +428,10 @@ impl FileStorage for SqliteStore {
             .map_err(storage_err("failed to update expected_hash in bundle"))?;
         }
 
+        // Symmetric with `handle_file_introspected`'s cleanup: a successful
+        // bundle means the file at `transition.path` is no longer "bad".
+        super::bad_file_storage::delete_bad_file_by_path_in_tx(&tx, &transition.path)?;
+
         tx.commit()
             .map_err(storage_err("failed to commit post-execution bundle"))?;
         Ok(())
@@ -1673,6 +1677,149 @@ mod tests {
             store.transitions_for_file(&original_id).unwrap().len(),
             1,
             "only the pre-existing transition should remain"
+        );
+    }
+
+    #[test]
+    fn record_post_execution_clears_orphan_bad_files_row_at_destination() {
+        use voom_domain::bad_file::{BadFile, BadFileSource};
+        use voom_domain::storage::BadFileStorage;
+        use voom_domain::transition::{FileTransition, TransitionSource};
+
+        let store = test_store();
+        let file = active_file("/media/movie.mp4");
+        store.upsert_file(&file).unwrap();
+        let original_id = store
+            .file_by_path(Path::new("/media/movie.mp4"))
+            .unwrap()
+            .unwrap()
+            .id;
+
+        // Pre-seed an orphan bad_files row at the post-execution path,
+        // simulating a prior FileIntrospectionFailed dispatch. The bundled
+        // rename must clear it.
+        let orphan = BadFile::new(
+            PathBuf::from("/media/movie.mkv"),
+            2048,
+            Some("post_exec_hash".into()),
+            "ffprobe failed: process exited with code 1".into(),
+            BadFileSource::Introspection,
+        );
+        store.upsert_bad_file(&orphan).unwrap();
+        assert!(
+            store
+                .bad_file_by_path(Path::new("/media/movie.mkv"))
+                .unwrap()
+                .is_some(),
+            "precondition: orphan bad_files row must exist before record_post_execution"
+        );
+
+        let transition = FileTransition::new(
+            original_id,
+            PathBuf::from("/media/movie.mkv"),
+            "new_hash".to_string(),
+            2048,
+            TransitionSource::Voom,
+        )
+        .with_from(Some("abc123".to_string()), Some(1024))
+        .with_from_path(PathBuf::from("/media/movie.mp4"));
+
+        store
+            .record_post_execution(
+                Some(Path::new("/media/movie.mkv")),
+                Some("new_hash"),
+                &transition,
+            )
+            .unwrap();
+
+        // Files row was renamed (existing assertion shape from the
+        // ..._atomically_writes_all_three test).
+        let renamed = store
+            .file_by_path(Path::new("/media/movie.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(renamed.id, original_id);
+
+        // The orphan bad_files row at the post-execution path must be gone.
+        assert!(
+            store
+                .bad_file_by_path(Path::new("/media/movie.mkv"))
+                .unwrap()
+                .is_none(),
+            "record_post_execution must clear orphan bad_files row at the post-execution path"
+        );
+    }
+
+    #[test]
+    fn record_post_execution_rollback_preserves_bad_files_row() {
+        use voom_domain::bad_file::{BadFile, BadFileSource};
+        use voom_domain::storage::{BadFileStorage, FileTransitionStorage};
+        use voom_domain::transition::{FileTransition, TransitionSource};
+
+        let store = test_store();
+        let file = active_file("/media/movie.mp4");
+        store.upsert_file(&file).unwrap();
+        let original_id = store
+            .file_by_path(Path::new("/media/movie.mp4"))
+            .unwrap()
+            .unwrap()
+            .id;
+
+        let orphan = BadFile::new(
+            PathBuf::from("/media/movie.mkv"),
+            2048,
+            Some("post_exec_hash".into()),
+            "ffprobe failed".into(),
+            BadFileSource::Introspection,
+        );
+        store.upsert_bad_file(&orphan).unwrap();
+
+        // Force the bundle's transition INSERT to fail by colliding on the
+        // primary key with a pre-existing row. All four bundle effects
+        // (rename, transition INSERT, expected_hash UPDATE, bad_files DELETE)
+        // must roll back together.
+        let mut existing = FileTransition::new(
+            original_id,
+            PathBuf::from("/media/movie.mp4"),
+            "abc123".to_string(),
+            1024,
+            TransitionSource::Voom,
+        );
+        existing.id = uuid::Uuid::new_v4();
+        store.record_transition(&existing).unwrap();
+
+        let mut bundled = FileTransition::new(
+            original_id,
+            PathBuf::from("/media/movie.mkv"),
+            "new_hash".to_string(),
+            2048,
+            TransitionSource::Voom,
+        );
+        bundled.id = existing.id; // force a PK collision
+
+        let result = store.record_post_execution(
+            Some(Path::new("/media/movie.mkv")),
+            Some("new_hash"),
+            &bundled,
+        );
+        assert!(result.is_err(), "duplicate transition id must error");
+
+        let still_at_old = store
+            .file_by_path(Path::new("/media/movie.mp4"))
+            .unwrap()
+            .expect("rename must have been rolled back");
+        // `upsert_file` doesn't persist `expected_hash`, so the pre-bundle
+        // value is None; without rollback we'd observe Some("new_hash").
+        assert_eq!(
+            still_at_old.expected_hash, None,
+            "expected_hash UPDATE must have been rolled back"
+        );
+        assert!(
+            store
+                .bad_file_by_path(Path::new("/media/movie.mkv"))
+                .unwrap()
+                .is_some(),
+            "bad_files DELETE must have been rolled back"
         );
     }
 

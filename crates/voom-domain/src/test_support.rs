@@ -236,8 +236,9 @@ impl FileStorage for InMemoryStore {
 
     /// In-memory stub. Unlike the SQLite implementation, this does NOT roll
     /// back partial mutations on error — the in-memory mutations have no
-    /// fallible path. Tests that exercise rollback semantics must use
-    /// `SqliteStore`.
+    /// fallible path. It also does NOT clear `bad_files` rows at the
+    /// post-execution path. Tests that exercise rollback semantics or
+    /// `bad_files` cleanup must use `SqliteStore`.
     fn record_post_execution(
         &self,
         new_path: Option<&Path>,

@@ -167,6 +167,14 @@ pub trait FileStorage: Send + Sync {
     /// reconciliation distinguishes `NULL` (legacy / no fingerprint recorded)
     /// from a real hash, and an empty string would be misread as a real hash
     /// that never matches. Debug builds will assert.
+    ///
+    /// Implementations MUST also delete any `bad_files` row whose path
+    /// equals `transition.path` inside the same transaction. A successful
+    /// post-execution bundle means the file at the post-execution path is
+    /// no longer "bad" — symmetric with the cleanup `FileIntrospected`
+    /// performs. Without this, a re-introspection failure followed by a
+    /// successful bundle would leave an orphan `bad_files` row at the
+    /// same path as the renamed files row.
     fn record_post_execution(
         &self,
         new_path: Option<&Path>,

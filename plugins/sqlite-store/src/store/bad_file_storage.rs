@@ -9,6 +9,22 @@ use voom_domain::storage::{BadFileFilters, BadFileStorage};
 
 use super::{escape_like, row_to_bad_file, storage_err, OptionalExt, SqlQuery, SqliteStore};
 
+/// Delete the `bad_files` row at `path` using the supplied connection.
+/// Accepts any `&rusqlite::Connection`, including one obtained via `Deref`
+/// from an open `Transaction`, so callers can run the delete standalone or
+/// as part of a larger atomic bundle.
+pub(super) fn delete_bad_file_by_path_in_tx(
+    conn: &rusqlite::Connection,
+    path: &Path,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM bad_files WHERE path = ?1",
+        params![path.to_string_lossy().to_string()],
+    )
+    .map_err(storage_err("failed to delete bad file by path"))?;
+    Ok(())
+}
+
 impl BadFileStorage for SqliteStore {
     /// Insert or update a bad file record.
     ///
@@ -124,12 +140,7 @@ impl BadFileStorage for SqliteStore {
 
     fn delete_bad_file_by_path(&self, path: &Path) -> Result<()> {
         let conn = self.conn()?;
-        conn.execute(
-            "DELETE FROM bad_files WHERE path = ?1",
-            params![path.to_string_lossy().to_string()],
-        )
-        .map_err(storage_err("failed to delete bad file by path"))?;
-        Ok(())
+        delete_bad_file_by_path_in_tx(&conn, path)
     }
 }
 
