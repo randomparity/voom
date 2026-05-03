@@ -21,11 +21,14 @@ pub(super) struct FileTransitionContext<'a> {
     pub ctx: &'a ProcessContext<'a>,
 }
 
-/// Record a file transition in the store if the content hash changed.
+/// Record a file transition in the store if the content hash or path changed.
 pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
-    if tctx.new_file.content_hash == tctx.old_file.content_hash {
+    let hash_changed = tctx.new_file.content_hash != tctx.old_file.content_hash;
+    let path_changed = tctx.old_file.path != tctx.new_file.path;
+    if !hash_changed && !path_changed {
         return;
     }
+
     let mut transition = voom_domain::FileTransition::new(
         tctx.old_file.id,
         tctx.new_file.path.clone(),
@@ -49,26 +52,27 @@ pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
     ))
     .with_session_id(tctx.ctx.counters.session_id);
 
-    if tctx.old_file.path != tctx.new_file.path {
+    if path_changed {
         transition = transition.with_from_path(tctx.old_file.path.clone());
     }
 
-    if let Err(e) = tctx.ctx.store.record_transition(&transition) {
+    let new_path = path_changed.then_some(tctx.new_file.path.as_path());
+    // Only refresh `expected_hash` when the content actually changed —
+    // otherwise we'd issue a no-op UPDATE on every path-only execution.
+    let new_expected_hash = hash_changed
+        .then_some(tctx.new_file.content_hash.as_deref())
+        .flatten();
+
+    if let Err(e) = tctx
+        .ctx
+        .store
+        .record_post_execution(new_path, new_expected_hash, &transition)
+    {
         tracing::warn!(
             path = %tctx.old_file.path.display(),
             error = %e,
-            "failed to record transition"
+            "failed to record post-execution bundle"
         );
-    }
-
-    if let Some(ref hash) = tctx.new_file.content_hash {
-        if let Err(e) = tctx.ctx.store.update_expected_hash(&tctx.old_file.id, hash) {
-            tracing::warn!(
-                path = %tctx.old_file.path.display(),
-                error = %e,
-                "failed to update expected_hash"
-            );
-        }
     }
 }
 

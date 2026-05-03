@@ -149,6 +149,30 @@ pub trait FileStorage: Send + Sync {
     ) -> Result<u32>;
     /// Update the expected hash for a file (set after a successful voom operation).
     fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()>;
+    /// Atomically perform the post-execution writes for a successfully
+    /// executed plan: optionally rename the file's path, insert a transition
+    /// row, and optionally update the file's `expected_hash`. All writes
+    /// happen inside one `BEGIN/COMMIT`, so a mid-bundle crash cannot leave
+    /// the DB with an audit-trail gap or a path/hash mismatch.
+    ///
+    /// The file row to mutate is identified by `transition.file_id`.
+    ///
+    /// `new_path` is `Some` only when execution changed the file's on-disk
+    /// path (e.g. `ConvertContainer .mp4 → .mkv`). When `None`, the file
+    /// row's `path` column is left untouched.
+    ///
+    /// `new_expected_hash` is `Some` only when re-introspection produced a
+    /// usable content hash. When `None`, the file row's `expected_hash` is
+    /// left untouched. Callers MUST NOT pass `Some("")` — downstream
+    /// reconciliation distinguishes `NULL` (legacy / no fingerprint recorded)
+    /// from a real hash, and an empty string would be misread as a real hash
+    /// that never matches. Debug builds will assert.
+    fn record_post_execution(
+        &self,
+        new_path: Option<&Path>,
+        new_expected_hash: Option<&str>,
+        transition: &FileTransition,
+    ) -> Result<()>;
     /// Find the file that was superseded by the given file (predecessor lookup).
     /// Returns the file whose `superseded_by` field equals `successor_id`.
     fn predecessor_of(&self, successor_id: &Uuid) -> Result<Option<MediaFile>>;

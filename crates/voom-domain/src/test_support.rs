@@ -234,6 +234,34 @@ impl FileStorage for InMemoryStore {
         Ok(())
     }
 
+    /// In-memory stub. Unlike the SQLite implementation, this does NOT roll
+    /// back partial mutations on error — the in-memory mutations have no
+    /// fallible path. Tests that exercise rollback semantics must use
+    /// `SqliteStore`.
+    fn record_post_execution(
+        &self,
+        new_path: Option<&Path>,
+        new_expected_hash: Option<&str>,
+        transition: &FileTransition,
+    ) -> Result<()> {
+        debug_assert!(
+            new_expected_hash.is_none_or(|h| !h.is_empty()),
+            "record_post_execution: empty hash passed as Some — use None instead"
+        );
+        let mut files = self.files.lock();
+        if let Some(file) = files.get_mut(&transition.file_id) {
+            if let Some(path) = new_path {
+                file.path = path.to_path_buf();
+            }
+            if let Some(hash) = new_expected_hash {
+                file.expected_hash = Some(hash.to_string());
+            }
+        }
+        drop(files);
+        self.transitions.lock().push(transition.clone());
+        Ok(())
+    }
+
     fn predecessor_of(&self, _successor_id: &Uuid) -> Result<Option<MediaFile>> {
         Ok(None)
     }
