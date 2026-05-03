@@ -15,6 +15,49 @@ const HW_ENCODER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// remote-display paths while still bounding pathological hangs.
 const TOOL_ENUMERATION_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Upper bound for a single fast capability probe (`-codecs`, `-formats`,
+/// `-hwaccels`, `-encoders`, `-decoders`). These calls don't touch the GPU
+/// and normally finish in under 200 ms; 5 s caps a pathological hang.
+// Allowed: consumed by `probe_capabilities_with_tool` in Task 4 of issue #169.
+#[allow(dead_code)]
+const CAPABILITY_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Aggregate result of running the five fast `ffmpeg` capability probes
+/// concurrently.
+///
+/// `codecs == None` means the `-codecs` probe failed (treated by the
+/// plugin as "ffmpeg not found / unusable"). The four secondary fields
+/// degrade independently to empty `Vec`s on probe failure, matching the
+/// pre-parallel sequential code path.
+pub struct FfmpegCapabilities {
+    pub codecs: Option<CodecCapabilities>,
+    pub formats: Vec<String>,
+    pub hw_accels: Vec<String>,
+    pub hw_encoders: Vec<String>,
+    pub hw_decoders: Vec<String>,
+}
+
+/// Run the five fast `ffmpeg` capability probes concurrently using
+/// `rayon::join`. Each probe is independently bounded by
+/// `CAPABILITY_PROBE_TIMEOUT`. A failure on any non-codecs probe yields
+/// an empty `Vec` for that field, with a `tracing::warn!` recording why.
+///
+/// `codecs == None` is the canonical "ffmpeg is unavailable" signal —
+/// callers should disable the plugin in that case.
+#[must_use]
+pub fn probe_capabilities() -> FfmpegCapabilities {
+    probe_capabilities_with_tool("ffmpeg")
+}
+
+/// Internal: parameterized variant of `probe_capabilities` taking the
+/// tool path. Lets tests drive the failure path with a non-existent
+/// binary without manipulating `PATH`.
+// Allowed: parameter is consumed once Task 5 of issue #169 fills in the body.
+#[allow(unused_variables)]
+fn probe_capabilities_with_tool(tool: &str) -> FfmpegCapabilities {
+    todo!("filled in by Task 5")
+}
+
 /// Run `tool` with `args` and `env`, returning `true` only if it exits 0
 /// before `timeout`. Spawn errors, non-zero exits, and timeouts all yield
 /// `false`. Pass `&[]` for `env` when no extra variables are needed.
