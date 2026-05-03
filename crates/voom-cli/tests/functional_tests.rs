@@ -649,6 +649,56 @@ mod test_report {
             "snapshot count should increase by 1 after --snapshot (was {before_count}, got {after_count})"
         );
     }
+
+    /// Regression test for #153: a single `scan` invocation must produce
+    /// exactly one library snapshot, not two.
+    ///
+    /// Before the fix, `scan` dispatched both `IntrospectComplete` and
+    /// `ScanComplete`, and the report plugin subscribed to both, producing
+    /// duplicate snapshot rows captured milliseconds apart.
+    #[test]
+    fn scan_produces_single_snapshot() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+
+        // Baseline snapshot count before the scan.
+        let before_output = env
+            .voom()
+            .args(["report", "--history", "100", "--format", "json"])
+            .output()
+            .expect("run report --history before scan");
+        assert!(before_output.status.success());
+        let before_stdout = String::from_utf8_lossy(&before_output.stdout);
+        let before_json: serde_json::Value = serde_json::from_str(&before_stdout)
+            .expect("report --history --format json should produce valid JSON");
+        let before_count = before_json["history"].as_array().map(Vec::len).unwrap_or(0);
+
+        // Run a single scan.
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .assert()
+            .success();
+
+        // After the scan, exactly one new snapshot row should exist.
+        let after_output = env
+            .voom()
+            .args(["report", "--history", "100", "--format", "json"])
+            .output()
+            .expect("run report --history after scan");
+        assert!(after_output.status.success());
+        let after_stdout = String::from_utf8_lossy(&after_output.stdout);
+        let after_json: serde_json::Value = serde_json::from_str(&after_stdout)
+            .expect("report --history --format json should produce valid JSON");
+        let after_count = after_json["history"].as_array().map(Vec::len).unwrap_or(0);
+
+        assert_eq!(
+            after_count,
+            before_count + 1,
+            "a single `scan` must produce exactly one new snapshot \
+             (was {before_count}, got {after_count})"
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
