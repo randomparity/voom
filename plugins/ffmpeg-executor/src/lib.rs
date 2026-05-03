@@ -28,7 +28,7 @@ use voom_kernel::{Plugin, PluginContext};
 use crate::hwaccel::{resolve_hw_config, HwAccelConfig};
 use crate::probe::{
     enumerate_gpus, parse_codecs, parse_formats, parse_hw_implementations, parse_hwaccels,
-    validate_hw_encoder, validate_hw_encoder_on_device, GpuDevice,
+    validate_hw_encoder, validate_hw_encoder_on_device, validate_hw_encoders_parallel, GpuDevice,
 };
 
 /// Per-plugin configuration from `[plugin.ffmpeg-executor]` in config.toml.
@@ -603,18 +603,12 @@ impl Plugin for FfmpegExecutorPlugin {
         // ffmpeg -encoders lists all compiled-in encoders, but the GPU may
         // not support all of them (e.g. av1_nvenc on a GPU without AV1).
         let validated_encoders: Vec<String> = match (&hw_config.backend, &target_device) {
-            (Some(backend), Some(device)) => codecs
-                .hw_encoders
-                .iter()
-                .filter(|enc| validate_hw_encoder_on_device(enc, *backend, device))
-                .cloned()
-                .collect(),
-            _ => codecs
-                .hw_encoders
-                .iter()
-                .filter(|enc| validate_hw_encoder(enc))
-                .cloned()
-                .collect(),
+            (Some(backend), Some(device)) => {
+                validate_hw_encoders_parallel(&codecs.hw_encoders, |enc| {
+                    validate_hw_encoder_on_device(enc, *backend, device)
+                })
+            }
+            _ => validate_hw_encoders_parallel(&codecs.hw_encoders, validate_hw_encoder),
         };
 
         tracing::info!(
