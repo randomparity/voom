@@ -95,6 +95,11 @@ When review agents surface pre-existing issues that are out of scope for the cur
   ```
 - Do not submit a PR if any test fails. Fix all failures first.
 
+## Long-Running Commands
+- The `Bash` tool's hard cap is 10 minutes. The functional test suite (`cargo test -p voom-cli --features functional`) regularly exceeds this. **Always** dispatch it (and any other potentially long-running command — full workspace `cargo test`, large `cargo build` from cold cache, etc.) with `run_in_background: true`. Do not raise the foreground `timeout` parameter and hope — the cap is fixed.
+- After dispatching a background command, **wait for the auto-completion notification**. Do not poll the output file, do not re-run the command, do not sleep. The system delivers the result when it's ready.
+- Read the output file only after the notification arrives.
+
 ## Git Workflow
 - When staging commits, be precise about which files to include. Use `git add <specific-files>` rather than `git add .` to avoid staging unrelated changes.
 
