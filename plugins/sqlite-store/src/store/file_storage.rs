@@ -434,12 +434,9 @@ impl FileStorage for SqliteStore {
         // before this bundle ran, an orphan bad_files row may exist at
         // `transition.path` — clear it inside the same transaction so the
         // success/failure outcome is durable as a single unit. See issue #173.
-        let post_exec_path = transition.path.to_string_lossy().to_string();
-        tx.execute(
-            "DELETE FROM bad_files WHERE path = ?1",
-            params![post_exec_path],
-        )
-        .map_err(storage_err("failed to clear bad_files row in bundle"))?;
+        let path_str = transition.path.to_string_lossy().to_string();
+        tx.execute("DELETE FROM bad_files WHERE path = ?1", params![path_str])
+            .map_err(storage_err("failed to clear bad_files row in bundle"))?;
 
         tx.commit()
             .map_err(storage_err("failed to commit post-execution bundle"))?;
