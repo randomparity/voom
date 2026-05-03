@@ -392,12 +392,45 @@ impl FileStorage for SqliteStore {
 
     fn record_post_execution(
         &self,
-        _id: &Uuid,
-        _new_path: Option<&Path>,
-        _new_expected_hash: Option<&str>,
-        _transition: &FileTransition,
+        id: &Uuid,
+        new_path: Option<&Path>,
+        new_expected_hash: Option<&str>,
+        transition: &FileTransition,
     ) -> Result<()> {
-        todo!("record_post_execution not yet implemented — Task 3 will provide the real impl")
+        debug_assert_eq!(
+            id, &transition.file_id,
+            "record_post_execution: id must match transition.file_id"
+        );
+
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction()
+            .map_err(storage_err("failed to begin post-execution transaction"))?;
+
+        if let Some(new_path) = new_path {
+            let now = format_datetime(&Utc::now());
+            let path_str = new_path.to_string_lossy().to_string();
+            let filename = filename_string(new_path);
+            tx.execute(
+                "UPDATE files SET path = ?1, filename = ?2, updated_at = ?3 WHERE id = ?4",
+                params![path_str, filename, now, id.to_string()],
+            )
+            .map_err(storage_err("failed to rename file path in bundle"))?;
+        }
+
+        super::file_transition_storage::insert_full_transition_in_tx(&tx, transition)?;
+
+        if let Some(hash) = new_expected_hash {
+            tx.execute(
+                "UPDATE files SET expected_hash = ?1 WHERE id = ?2",
+                params![hash, id.to_string()],
+            )
+            .map_err(storage_err("failed to update expected_hash in bundle"))?;
+        }
+
+        tx.commit()
+            .map_err(storage_err("failed to commit post-execution bundle"))?;
+        Ok(())
     }
 
     fn predecessor_of(&self, successor_id: &Uuid) -> Result<Option<MediaFile>> {
@@ -1450,6 +1483,199 @@ mod tests {
 
         let stored = store.file(&file.id).unwrap().unwrap();
         assert_eq!(stored.expected_hash.as_deref(), Some("new-hash"));
+    }
+
+    #[test]
+    fn record_post_execution_atomically_writes_all_three() {
+        use voom_domain::storage::FileTransitionStorage;
+        use voom_domain::transition::{FileTransition, TransitionSource};
+
+        let store = test_store();
+        let file = active_file("/media/movie.mp4");
+        store.upsert_file(&file).unwrap();
+        let original_id = store
+            .file_by_path(Path::new("/media/movie.mp4"))
+            .unwrap()
+            .unwrap()
+            .id;
+
+        let transition = FileTransition::new(
+            original_id,
+            PathBuf::from("/media/movie.mkv"),
+            "new_hash".to_string(),
+            2048,
+            TransitionSource::Voom,
+        )
+        .with_from(Some("abc123".to_string()), Some(1024))
+        .with_from_path(PathBuf::from("/media/movie.mp4"));
+
+        store
+            .record_post_execution(
+                &original_id,
+                Some(Path::new("/media/movie.mkv")),
+                Some("new_hash"),
+                &transition,
+            )
+            .unwrap();
+
+        // 1. Path is renamed
+        assert!(store
+            .file_by_path(Path::new("/media/movie.mp4"))
+            .unwrap()
+            .is_none());
+        let renamed = store
+            .file_by_path(Path::new("/media/movie.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(renamed.id, original_id);
+
+        // 2. expected_hash is updated
+        assert_eq!(renamed.expected_hash.as_deref(), Some("new_hash"));
+
+        // 3. Transition is recorded with from_path preserved
+        let transitions = store.transitions_for_file(&original_id).unwrap();
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].to_hash, "new_hash");
+        assert_eq!(
+            transitions[0].from_path.as_deref(),
+            Some(Path::new("/media/movie.mp4"))
+        );
+    }
+
+    #[test]
+    fn record_post_execution_no_path_change_skips_rename() {
+        use voom_domain::storage::FileTransitionStorage;
+        use voom_domain::transition::{FileTransition, TransitionSource};
+
+        let store = test_store();
+        let file = active_file("/media/movie.mkv");
+        store.upsert_file(&file).unwrap();
+        let id = store
+            .file_by_path(Path::new("/media/movie.mkv"))
+            .unwrap()
+            .unwrap()
+            .id;
+
+        let transition = FileTransition::new(
+            id,
+            PathBuf::from("/media/movie.mkv"),
+            "new_hash".to_string(),
+            2048,
+            TransitionSource::Voom,
+        )
+        .with_from(Some("abc123".to_string()), Some(1024));
+
+        store
+            .record_post_execution(&id, None, Some("new_hash"), &transition)
+            .unwrap();
+
+        let stored = store
+            .file_by_path(Path::new("/media/movie.mkv"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.id, id);
+        assert_eq!(stored.expected_hash.as_deref(), Some("new_hash"));
+        assert_eq!(store.transitions_for_file(&id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn record_post_execution_no_hash_skips_expected_hash_update() {
+        use voom_domain::storage::FileTransitionStorage;
+        use voom_domain::transition::{FileTransition, TransitionSource};
+
+        let store = test_store();
+        let file = active_file("/media/movie.mkv"); // active_file sets expected_hash="abc123"
+        store.upsert_file(&file).unwrap();
+        let id = store
+            .file_by_path(Path::new("/media/movie.mkv"))
+            .unwrap()
+            .unwrap()
+            .id;
+        // Set a known prior expected_hash directly so we can verify it's preserved.
+        store.update_expected_hash(&id, "prior_hash").unwrap();
+
+        let transition = FileTransition::new(
+            id,
+            PathBuf::from("/media/movie.mkv"),
+            String::new(),
+            2048,
+            TransitionSource::Voom,
+        );
+
+        store
+            .record_post_execution(&id, None, None, &transition)
+            .unwrap();
+
+        let stored = store
+            .file_by_path(Path::new("/media/movie.mkv"))
+            .unwrap()
+            .unwrap();
+        // expected_hash MUST be untouched when None is passed
+        assert_eq!(stored.expected_hash.as_deref(), Some("prior_hash"));
+        // Transition still recorded
+        assert_eq!(store.transitions_for_file(&id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn record_post_execution_rolls_back_on_duplicate_transition_id() {
+        use voom_domain::storage::FileTransitionStorage;
+        use voom_domain::transition::{FileTransition, TransitionSource};
+
+        let store = test_store();
+        let file = active_file("/media/movie.mp4");
+        store.upsert_file(&file).unwrap();
+        let original_id = store
+            .file_by_path(Path::new("/media/movie.mp4"))
+            .unwrap()
+            .unwrap()
+            .id;
+        store.update_expected_hash(&original_id, "abc123").unwrap();
+
+        // Pre-insert a transition with a known id, then try to record_post_execution
+        // with the same transition.id. The INSERT will violate the PK constraint,
+        // and the entire bundle (rename + expected_hash) must roll back.
+        let mut existing = FileTransition::new(
+            original_id,
+            PathBuf::from("/media/movie.mp4"),
+            "abc123".to_string(),
+            1024,
+            TransitionSource::Voom,
+        );
+        existing.id = uuid::Uuid::new_v4();
+        store.record_transition(&existing).unwrap();
+
+        let mut bundled = FileTransition::new(
+            original_id,
+            PathBuf::from("/media/movie.mkv"),
+            "new_hash".to_string(),
+            2048,
+            TransitionSource::Voom,
+        );
+        bundled.id = existing.id; // force a PK collision
+
+        let result = store.record_post_execution(
+            &original_id,
+            Some(Path::new("/media/movie.mkv")),
+            Some("new_hash"),
+            &bundled,
+        );
+        assert!(result.is_err(), "duplicate transition id must error");
+
+        // Rollback verification: path NOT renamed, expected_hash NOT updated,
+        // only the original transition exists.
+        let still_at_old = store.file_by_path(Path::new("/media/movie.mp4")).unwrap();
+        assert!(still_at_old.is_some(), "rename must have been rolled back");
+        let stored = still_at_old.unwrap();
+        assert_eq!(
+            stored.expected_hash.as_deref(),
+            Some("abc123"),
+            "expected_hash must have been rolled back"
+        );
+        assert_eq!(
+            store.transitions_for_file(&original_id).unwrap().len(),
+            1,
+            "only the pre-existing transition should remain"
+        );
     }
 
     #[test]
