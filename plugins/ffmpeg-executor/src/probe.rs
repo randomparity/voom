@@ -209,7 +209,7 @@ pub fn validate_hw_encoder(encoder: &str) -> bool {
     if ok {
         tracing::debug!(encoder, "HW encoder validated");
     } else {
-        tracing::info!(
+        tracing::debug!(
             encoder,
             "HW encoder not supported by device, will use software fallback"
         );
