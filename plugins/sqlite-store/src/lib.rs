@@ -187,26 +187,7 @@ fn handle_plan_created(
     store: &SqliteStore,
     e: &voom_domain::events::PlanCreatedEvent,
 ) -> Result<()> {
-    tracing::info!(
-        plan_id = %e.plan.id,
-        path = %e.plan.file.path.display(),
-        phase = %e.plan.phase_name,
-        "ISSUE-162 PROBE: handle_plan_created entered"
-    );
-    let plan_id = match store.save_plan(&e.plan) {
-        Ok(id) => {
-            tracing::info!(%id, "ISSUE-162 PROBE: save_plan OK");
-            id
-        }
-        Err(err) => {
-            tracing::error!(
-                error = %err,
-                plan_id = %e.plan.id,
-                "ISSUE-162 PROBE: save_plan FAILED"
-            );
-            return Err(err);
-        }
-    };
+    let plan_id = store.save_plan(&e.plan)?;
     tracing::info!(%plan_id, "stored plan");
     Ok(())
 }
@@ -215,7 +196,6 @@ fn handle_plan_completed(
     store: &SqliteStore,
     e: &voom_domain::events::PlanCompletedEvent,
 ) -> Result<()> {
-    tracing::info!(plan_id = %e.plan_id, "ISSUE-162 PROBE: handle_plan_completed entered");
     tracing::info!(path = %e.path.display(), phase = %e.phase_name, "plan completed");
     store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Completed)?;
     if let Err(err) = store.delete_pending_op(&e.plan_id) {
@@ -232,7 +212,6 @@ fn handle_plan_skipped(
     store: &SqliteStore,
     e: &voom_domain::events::PlanSkippedEvent,
 ) -> Result<()> {
-    tracing::info!(plan_id = %e.plan_id, "ISSUE-162 PROBE: handle_plan_skipped entered");
     tracing::info!(
         path = %e.path.display(),
         phase = %e.phase_name,
@@ -244,7 +223,6 @@ fn handle_plan_skipped(
 }
 
 fn handle_plan_failed(store: &SqliteStore, e: &voom_domain::events::PlanFailedEvent) -> Result<()> {
-    tracing::info!(plan_id = %e.plan_id, "ISSUE-162 PROBE: handle_plan_failed entered");
     tracing::info!(path = %e.path.display(), phase = %e.phase_name, error = %e.error, "plan failed");
     store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Failed)?;
     store.update_plan_error(&e.plan_id, &e.error, e.execution_detail.as_ref())?;

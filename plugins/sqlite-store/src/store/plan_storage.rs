@@ -74,32 +74,22 @@ impl PlanStorage for SqliteStore {
         // When a file is re-scanned, upsert_file keeps the original DB ID, but
         // the Plan's file.id may be a fresh UUID from the new introspection.
         let path_str = plan.file.path.to_string_lossy().to_string();
-        let resolved: Option<String> = conn
+        let effective_file_id: String = conn
             .query_row(
                 "SELECT id FROM files WHERE path = ?1",
                 params![&path_str],
                 |row| row.get(0),
             )
             .optional()
-            .map_err(storage_err("failed to resolve file id"))?;
-        let effective_file_id: String = match resolved {
-            Some(id) => {
-                tracing::info!(
-                    path = %path_str,
-                    %id,
-                    "ISSUE-162 PROBE: save_plan resolved file_id by path"
-                );
-                id
-            }
-            None => {
+            .map_err(storage_err("failed to resolve file id"))?
+            .unwrap_or_else(|| {
                 tracing::warn!(
                     path = %path_str,
                     fallback_id = %plan.file.id,
-                    "ISSUE-162 PROBE: file path not found in DB, falling back to plan.file.id"
+                    "file path not found in DB, falling back to plan.file.id"
                 );
                 plan.file.id.to_string()
-            }
-        };
+            });
 
         conn.execute(
             "INSERT INTO plans (id, file_id, policy_name, phase_name, status, actions, warnings, skip_reason, policy_hash, evaluated_at, created_at, session_id)
