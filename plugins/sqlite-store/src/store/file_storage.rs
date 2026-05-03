@@ -15,6 +15,12 @@ use super::{
     FileRow, OptionalExt, SqlQuery, SqliteStore,
 };
 
+fn filename_string(path: &Path) -> String {
+    path.file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
 impl FileStorage for SqliteStore {
     fn upsert_file(&self, file: &MediaFile) -> Result<()> {
         let mut conn = self.conn()?;
@@ -23,11 +29,7 @@ impl FileStorage for SqliteStore {
             .map_err(other_storage_err("failed to serialize tags"))?;
         let meta_json = serde_json::to_string(&file.plugin_metadata)
             .map_err(other_storage_err("failed to serialize metadata"))?;
-        let filename = file
-            .path
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let filename = filename_string(&file.path);
         let path_str = file.path.to_string_lossy().to_string();
 
         // Preserve existing file ID on re-scan to avoid orphaning related records
@@ -312,10 +314,7 @@ impl FileStorage for SqliteStore {
         let conn = self.conn()?;
         let now = format_datetime(&Utc::now());
         let path_str = new_path.to_string_lossy().to_string();
-        let filename = new_path
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let filename = filename_string(new_path);
         conn.execute(
             "UPDATE files SET status = 'active', missing_since = NULL, path = ?1, filename = ?2, updated_at = ?3 WHERE id = ?4",
             params![path_str, filename, now, id.to_string()],
@@ -328,10 +327,7 @@ impl FileStorage for SqliteStore {
         let conn = self.conn()?;
         let now = format_datetime(&Utc::now());
         let path_str = new_path.to_string_lossy().to_string();
-        let filename = new_path
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let filename = filename_string(new_path);
         conn.execute(
             "UPDATE files SET path = ?1, filename = ?2, updated_at = ?3 WHERE id = ?4",
             params![path_str, filename, now, id.to_string()],
@@ -620,11 +616,7 @@ fn reconcile_existing_path(
     result: &mut ReconcileResult,
 ) -> Result<()> {
     let path_str = df.path.to_string_lossy().to_string();
-    let filename = df
-        .path
-        .file_name()
-        .map(|f| f.to_string_lossy().to_string())
-        .unwrap_or_default();
+    let filename = filename_string(&df.path);
     let hash_matches = expected_hash
         .as_ref()
         .is_none_or(|eh| eh == &df.content_hash);
@@ -710,11 +702,7 @@ fn reconcile_new_path(
     result: &mut ReconcileResult,
 ) -> Result<()> {
     let path_str = df.path.to_string_lossy().to_string();
-    let filename = df
-        .path
-        .file_name()
-        .map(|f| f.to_string_lossy().to_string())
-        .unwrap_or_default();
+    let filename = filename_string(&df.path);
     let move_match = missing_by_hash
         .get(&df.content_hash)
         .filter(|m| !consumed_missing.contains(&m.id));
