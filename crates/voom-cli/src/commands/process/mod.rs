@@ -1526,8 +1526,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_duration_shrink_flag_disabled_returns_false() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("test.mkv");
+        let fixture = TestFixture::new();
+        let file_path = fixture.dir_path().join("test.mkv");
         std::fs::write(&file_path, vec![0u8; 1024]).unwrap();
 
         let mut file = MediaFile::new(file_path);
@@ -1536,31 +1536,10 @@ mod tests {
 
         let plan = test_plan("normalize", false);
 
-        let kernel = voom_kernel::Kernel::new();
+        let kernel = Arc::new(voom_kernel::Kernel::new());
         let store: Arc<dyn voom_domain::storage::StorageTrait> =
             Arc::new(voom_domain::test_support::InMemoryStore::new());
-        let capabilities = voom_domain::CapabilityMap::new();
-        let counters = RunCounters::new();
-        let token = CancellationToken::new();
-        let resolver = PolicyResolver::from_single(
-            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
-                .unwrap(),
-            dir.path(),
-        );
-        let ctx = ProcessContext {
-            resolver: &resolver,
-            kernel: Arc::new(kernel),
-            store,
-            dry_run: false,
-            plan_only: false,
-            flag_size_increase: false,
-            flag_duration_shrink: false,
-            force_rescan: false,
-            token: &token,
-            ffprobe_path: None,
-            capabilities: &capabilities,
-            counters: &counters,
-        };
+        let ctx = fixture.make_ctx(kernel, store);
 
         // Flag disabled — must early-return false without invoking ffprobe.
         assert!(!check_duration_shrink(&plan, &file, &ctx).await);
@@ -1568,8 +1547,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_duration_shrink_zero_input_duration_returns_false() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("test.mkv");
+        let fixture = TestFixture::new();
+        let file_path = fixture.dir_path().join("test.mkv");
         std::fs::write(&file_path, vec![0u8; 1024]).unwrap();
 
         let mut file = MediaFile::new(file_path);
@@ -1578,30 +1557,12 @@ mod tests {
 
         let plan = test_plan("normalize", false);
 
-        let kernel = voom_kernel::Kernel::new();
+        let kernel = Arc::new(voom_kernel::Kernel::new());
         let store: Arc<dyn voom_domain::storage::StorageTrait> =
             Arc::new(voom_domain::test_support::InMemoryStore::new());
-        let capabilities = voom_domain::CapabilityMap::new();
-        let counters = RunCounters::new();
-        let token = CancellationToken::new();
-        let resolver = PolicyResolver::from_single(
-            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
-                .unwrap(),
-            dir.path(),
-        );
         let ctx = ProcessContext {
-            resolver: &resolver,
-            kernel: Arc::new(kernel),
-            store,
-            dry_run: false,
-            plan_only: false,
-            flag_size_increase: false,
             flag_duration_shrink: true,
-            force_rescan: false,
-            token: &token,
-            ffprobe_path: None,
-            capabilities: &capabilities,
-            counters: &counters,
+            ..fixture.make_ctx(kernel, store)
         };
 
         // Input duration is 0.0 — can't compute a percentage; must early-return false.
@@ -1610,8 +1571,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_duration_shrink_cancelled_returns_false() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("test.mkv");
+        let fixture = TestFixture::new();
+        let file_path = fixture.dir_path().join("test.mkv");
         std::fs::write(&file_path, vec![0u8; 1024]).unwrap();
 
         let mut file = MediaFile::new(file_path);
@@ -1620,31 +1581,13 @@ mod tests {
 
         let plan = test_plan("normalize", false);
 
-        let kernel = voom_kernel::Kernel::new();
+        let kernel = Arc::new(voom_kernel::Kernel::new());
         let store: Arc<dyn voom_domain::storage::StorageTrait> =
             Arc::new(voom_domain::test_support::InMemoryStore::new());
-        let capabilities = voom_domain::CapabilityMap::new();
-        let counters = RunCounters::new();
-        let token = CancellationToken::new();
-        token.cancel();
-        let resolver = PolicyResolver::from_single(
-            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
-                .unwrap(),
-            dir.path(),
-        );
+        fixture.cancel();
         let ctx = ProcessContext {
-            resolver: &resolver,
-            kernel: Arc::new(kernel),
-            store,
-            dry_run: false,
-            plan_only: false,
-            flag_size_increase: false,
             flag_duration_shrink: true,
-            force_rescan: false,
-            token: &token,
-            ffprobe_path: None,
-            capabilities: &capabilities,
-            counters: &counters,
+            ..fixture.make_ctx(kernel, store)
         };
 
         // Token cancelled — must early-return false without launching ffprobe.
