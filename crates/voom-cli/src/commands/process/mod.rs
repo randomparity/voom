@@ -1314,9 +1314,8 @@ mod tests {
 
     #[test]
     fn test_check_disk_space_passes_with_enough_space() {
-        // Use a tempdir — the local filesystem should have plenty of space.
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("test.mkv");
+        let fixture = TestFixture::new();
+        let file_path = fixture.dir_path().join("test.mkv");
         std::fs::write(&file_path, vec![0u8; 1024]).unwrap();
 
         let mut file = MediaFile::new(file_path);
@@ -1324,31 +1323,10 @@ mod tests {
 
         let plan = test_plan("normalize", false);
 
-        let kernel = voom_kernel::Kernel::new();
+        let kernel = Arc::new(voom_kernel::Kernel::new());
         let store: Arc<dyn voom_domain::storage::StorageTrait> =
             Arc::new(voom_domain::test_support::InMemoryStore::new());
-        let capabilities = voom_domain::CapabilityMap::new();
-        let counters = RunCounters::new();
-        let token = CancellationToken::new();
-        let resolver = PolicyResolver::from_single(
-            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
-                .unwrap(),
-            dir.path(),
-        );
-        let ctx = ProcessContext {
-            resolver: &resolver,
-            kernel: Arc::new(kernel),
-            store,
-            dry_run: false,
-            plan_only: false,
-            flag_size_increase: false,
-            flag_duration_shrink: false,
-            force_rescan: false,
-            token: &token,
-            ffprobe_path: None,
-            capabilities: &capabilities,
-            counters: &counters,
-        };
+        let ctx = fixture.make_ctx(kernel, store);
 
         // Should return false (enough space)
         assert!(!check_disk_space(&plan, &file, &ctx));
@@ -1356,9 +1334,8 @@ mod tests {
 
     #[test]
     fn test_check_disk_space_dispatches_plan_failed_without_plan_created() {
-        // Use a tempdir so we get a valid path for disk-space checks.
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("test.mkv");
+        let fixture = TestFixture::new();
+        let file_path = fixture.dir_path().join("test.mkv");
         std::fs::write(&file_path, vec![0u8; 1024]).unwrap();
 
         let mut file = MediaFile::new(file_path);
@@ -1373,28 +1350,7 @@ mod tests {
 
         let store: Arc<dyn voom_domain::storage::StorageTrait> =
             Arc::new(voom_domain::test_support::InMemoryStore::new());
-        let capabilities = voom_domain::CapabilityMap::new();
-        let counters = RunCounters::new();
-        let token = CancellationToken::new();
-        let resolver = PolicyResolver::from_single(
-            voom_dsl::compile_policy(r#"policy "test" { phase normalize { container mkv } }"#)
-                .unwrap(),
-            dir.path(),
-        );
-        let ctx = ProcessContext {
-            resolver: &resolver,
-            kernel: Arc::new(kernel),
-            store,
-            dry_run: false,
-            plan_only: false,
-            flag_size_increase: false,
-            flag_duration_shrink: false,
-            force_rescan: false,
-            token: &token,
-            ffprobe_path: None,
-            capabilities: &capabilities,
-            counters: &counters,
-        };
+        let ctx = fixture.make_ctx(Arc::new(kernel), store);
 
         // Should return true (insufficient space).
         assert!(check_disk_space(&plan, &file, &ctx));
