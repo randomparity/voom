@@ -952,10 +952,10 @@ mod tests {
     /// construction sites. Owns the `TempDir` so the resolver's working path
     /// stays valid for the test's lifetime.
     pub(super) struct TestFixture {
-        pub(super) capabilities: voom_domain::CapabilityMap,
-        pub(super) counters: RunCounters,
-        pub(super) token: CancellationToken,
-        pub(super) resolver: PolicyResolver,
+        capabilities: voom_domain::CapabilityMap,
+        counters: RunCounters,
+        token: CancellationToken,
+        resolver: PolicyResolver,
         // Held for lifetime; the resolver borrows `dir.path()`.
         dir: tempfile::TempDir,
     }
@@ -1005,11 +1005,11 @@ mod tests {
         ///     ..fixture.make_ctx(Arc::new(kernel), store)
         /// };
         /// ```
-        pub(super) fn make_ctx<'a>(
-            &'a self,
+        pub(super) fn make_ctx(
+            &self,
             kernel: Arc<voom_kernel::Kernel>,
             store: Arc<dyn voom_domain::storage::StorageTrait>,
-        ) -> ProcessContext<'a> {
+        ) -> ProcessContext<'_> {
             ProcessContext {
                 resolver: &self.resolver,
                 kernel,
@@ -1024,6 +1024,16 @@ mod tests {
                 capabilities: &self.capabilities,
                 counters: &self.counters,
             }
+        }
+
+        /// Convenience: builds a `ProcessContext` with a fresh empty `Kernel`
+        /// and an `InMemoryStore`. Use for tests that don't need to register
+        /// plugins or use a SQLite store.
+        pub(super) fn make_default_ctx(&self) -> ProcessContext<'_> {
+            self.make_ctx(
+                Arc::new(voom_kernel::Kernel::new()),
+                Arc::new(voom_domain::test_support::InMemoryStore::new()),
+            )
         }
     }
 
@@ -1321,10 +1331,7 @@ mod tests {
 
         let plan = test_plan("normalize", false);
 
-        let kernel = Arc::new(voom_kernel::Kernel::new());
-        let store: Arc<dyn voom_domain::storage::StorageTrait> =
-            Arc::new(voom_domain::test_support::InMemoryStore::new());
-        let ctx = fixture.make_ctx(kernel, store);
+        let ctx = fixture.make_default_ctx();
 
         // Should return false (enough space)
         assert!(!check_disk_space(&plan, &file, &ctx));
@@ -1445,7 +1452,8 @@ mod tests {
         let store: Arc<dyn voom_domain::storage::StorageTrait> =
             Arc::new(voom_sqlite_store::store::SqliteStore::in_memory().unwrap());
         let kernel = Arc::new(voom_kernel::Kernel::new());
-        let fixture = TestFixture::with_policy(r#"policy "p" { phase convert { container mkv } }"#);
+        let fixture =
+            TestFixture::with_policy(r#"policy "test" { phase convert { container mkv } }"#);
         let ctx = fixture.make_ctx(kernel, store.clone());
 
         super::transitions::record_file_transition(&super::transitions::FileTransitionContext {
@@ -1534,10 +1542,7 @@ mod tests {
 
         let plan = test_plan("normalize", false);
 
-        let kernel = Arc::new(voom_kernel::Kernel::new());
-        let store: Arc<dyn voom_domain::storage::StorageTrait> =
-            Arc::new(voom_domain::test_support::InMemoryStore::new());
-        let ctx = fixture.make_ctx(kernel, store);
+        let ctx = fixture.make_default_ctx();
 
         // Flag disabled — must early-return false without invoking ffprobe.
         assert!(!check_duration_shrink(&plan, &file, &ctx).await);
@@ -1555,12 +1560,9 @@ mod tests {
 
         let plan = test_plan("normalize", false);
 
-        let kernel = Arc::new(voom_kernel::Kernel::new());
-        let store: Arc<dyn voom_domain::storage::StorageTrait> =
-            Arc::new(voom_domain::test_support::InMemoryStore::new());
         let ctx = ProcessContext {
             flag_duration_shrink: true,
-            ..fixture.make_ctx(kernel, store)
+            ..fixture.make_default_ctx()
         };
 
         // Input duration is 0.0 — can't compute a percentage; must early-return false.
@@ -1579,13 +1581,10 @@ mod tests {
 
         let plan = test_plan("normalize", false);
 
-        let kernel = Arc::new(voom_kernel::Kernel::new());
-        let store: Arc<dyn voom_domain::storage::StorageTrait> =
-            Arc::new(voom_domain::test_support::InMemoryStore::new());
         fixture.cancel();
         let ctx = ProcessContext {
             flag_duration_shrink: true,
-            ..fixture.make_ctx(kernel, store)
+            ..fixture.make_default_ctx()
         };
 
         // Token cancelled — must early-return false without launching ffprobe.
