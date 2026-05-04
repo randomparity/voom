@@ -4,8 +4,8 @@ use console::style;
 use voom_domain::storage::HealthCheckFilters;
 use voom_ffmpeg_executor::hwaccel::{resolve_hw_config, HwAccelBackend};
 use voom_ffmpeg_executor::probe::{
-    probe_hw_details, probe_hwaccels, validate_hw_encoder, validate_hw_encoder_on_device,
-    validate_hw_encoders_parallel_with_status, GpuDevice, HwDetails,
+    enumerate_gpus, probe_hw_capabilities, validate_hw_encoder, validate_hw_encoder_on_device,
+    validate_hw_encoders_parallel_with_status, GpuDevice, HwCapabilities,
 };
 
 use crate::app;
@@ -286,7 +286,11 @@ fn print_hw_accel_status(app_config: &config::AppConfig, ffmpeg_path: &std::path
     println!("{}", style("Hardware acceleration:").bold());
 
     let ffmpeg = ffmpeg_path.to_string_lossy();
-    let hw_accels = probe_hwaccels(&ffmpeg);
+    let HwCapabilities {
+        hw_accels,
+        encoders,
+        decoders,
+    } = probe_hw_capabilities(&ffmpeg);
 
     let hw_accel_override = app_config
         .plugin
@@ -298,11 +302,7 @@ fn print_hw_accel_status(app_config: &config::AppConfig, ffmpeg_path: &std::path
         return;
     };
 
-    let HwDetails {
-        encoders,
-        decoders,
-        devices,
-    } = probe_hw_details(&ffmpeg, backend);
+    let devices = enumerate_gpus(backend);
 
     if !devices.is_empty() {
         println!();
