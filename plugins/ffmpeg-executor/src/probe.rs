@@ -114,26 +114,21 @@ pub fn probe_capabilities() -> FfmpegCapabilities {
 /// tool path. Lets tests drive the failure path with a non-existent
 /// binary without manipulating `PATH`.
 fn probe_capabilities_with_tool(tool: &str) -> FfmpegCapabilities {
-    let ((codecs, formats), (hw_accels, (hw_encoders, hw_decoders))) = rayon::join(
+    let ((codecs, formats), hw) = rayon::join(
         || rayon::join(|| probe_codecs(tool), || probe_formats(tool)),
-        || {
-            rayon::join(
-                || probe_hwaccels(tool),
-                || rayon::join(|| probe_hw_encoders(tool), || probe_hw_decoders(tool)),
-            )
-        },
+        || probe_hw_capabilities(tool),
     );
 
     let codecs = codecs.map(|mut c| {
-        c.hw_encoders = hw_encoders;
-        c.hw_decoders = hw_decoders;
+        c.hw_encoders = hw.encoders;
+        c.hw_decoders = hw.decoders;
         c
     });
 
     FfmpegCapabilities {
         codecs,
         formats,
-        hw_accels,
+        hw_accels: hw.hw_accels,
     }
 }
 
@@ -141,9 +136,7 @@ fn probe_capabilities_with_tool(tool: &str) -> FfmpegCapabilities {
 ///
 /// All three fields degrade independently to empty `Vec`s on probe
 /// failure (spawn error, non-zero exit, or timeout), with a
-/// `tracing::warn!` recording the cause. The caller derives the active
-/// HW backend from `hw_accels` and applies any early-return gate after
-/// the parallel block has completed.
+/// `tracing::warn!` recording the cause.
 pub struct HwCapabilities {
     pub hw_accels: Vec<String>,
     pub encoders: Vec<String>,
@@ -1071,19 +1064,16 @@ vainfo: Supported profile and entrypoint
 
     #[test]
     fn probe_hw_capabilities_returns_promptly_under_failure_path() {
-        // Three failed spawns of a non-existent binary should each
-        // return in <100 ms. Run sequentially that's <300 ms; in
-        // parallel it's <100 ms. The 500 ms ceiling is the smallest
-        // budget that still catches a regression to serial dispatch
-        // on a slow CI host while remaining stable across runs.
-        use std::time::Instant;
-        let started = Instant::now();
+        // Smallest budget that still catches a regression to serial
+        // dispatch while remaining stable on slow CI runners.
+        const BUDGET: Duration = Duration::from_millis(500);
+        let started = std::time::Instant::now();
         let _ = super::probe_hw_capabilities("/nonexistent/ffmpeg-fake");
         let elapsed = started.elapsed();
         assert!(
-            elapsed < std::time::Duration::from_millis(500),
+            elapsed < BUDGET,
             "probe_hw_capabilities took {elapsed:?} on the failure path; \
-             expected <500 ms — regression to serial dispatch?"
+             expected <{BUDGET:?} — regression to serial dispatch?"
         );
     }
 
