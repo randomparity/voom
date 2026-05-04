@@ -1070,6 +1070,24 @@ vainfo: Supported profile and entrypoint
     }
 
     #[test]
+    fn probe_hw_capabilities_returns_promptly_under_failure_path() {
+        // Three failed spawns of a non-existent binary should each
+        // return in <100 ms. Run sequentially that's <300 ms; in
+        // parallel it's <100 ms. The 500 ms ceiling is the smallest
+        // budget that still catches a regression to serial dispatch
+        // on a slow CI host while remaining stable across runs.
+        use std::time::Instant;
+        let started = Instant::now();
+        let _ = super::probe_hw_capabilities("/nonexistent/ffmpeg-fake");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "probe_hw_capabilities took {elapsed:?} on the failure path; \
+             expected <500 ms — regression to serial dispatch?"
+        );
+    }
+
+    #[test]
     fn probe_capabilities_with_missing_tool_returns_empty_result() {
         // Drive the full failure path: every probe will fail to spawn
         // because the binary doesn't exist. We assert the contract the
