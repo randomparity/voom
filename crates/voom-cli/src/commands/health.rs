@@ -4,8 +4,8 @@ use console::style;
 use voom_domain::storage::HealthCheckFilters;
 use voom_ffmpeg_executor::hwaccel::{resolve_hw_config, HwAccelBackend};
 use voom_ffmpeg_executor::probe::{
-    enumerate_gpus, probe_hw_decoders, probe_hw_encoders, probe_hwaccels, validate_hw_encoder,
-    validate_hw_encoder_on_device, GpuDevice,
+    probe_hw_details, probe_hwaccels, validate_hw_encoder, validate_hw_encoder_on_device,
+    GpuDevice, HwDetails,
 };
 
 use crate::app;
@@ -295,7 +295,12 @@ fn print_hw_accel_status(app_config: &config::AppConfig, ffmpeg_path: &std::path
         return;
     };
 
-    let devices = enumerate_gpus(backend);
+    let HwDetails {
+        encoders,
+        decoders,
+        devices,
+    } = probe_hw_details(&ffmpeg, backend);
+
     if !devices.is_empty() {
         println!();
         println!("  {}:", gpu_section_header(backend));
@@ -305,12 +310,8 @@ fn print_hw_accel_status(app_config: &config::AppConfig, ffmpeg_path: &std::path
     }
 
     print_configured_gpu(app_config, &devices);
-
-    let hw_encoders = probe_hw_encoders(&ffmpeg);
-    print_hw_encoders(&hw_encoders, &devices, backend);
-
-    let hw_decoders = probe_hw_decoders(&ffmpeg);
-    print_hw_decoders(&hw_decoders);
+    print_hw_encoders(&encoders, &devices, backend);
+    print_hw_decoders(&decoders);
 }
 
 fn history(
