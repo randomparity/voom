@@ -163,7 +163,7 @@ impl Plugin for ReportPlugin {
     }
 
     fn handles(&self, event_type: &str) -> bool {
-        event_type == Event::SCAN_COMPLETE || event_type == Event::INTROSPECT_COMPLETE
+        event_type == Event::SCAN_COMPLETE || event_type == Event::INTROSPECT_SESSION_COMPLETED
     }
 
     fn on_event(&self, event: &Event) -> Result<Option<EventResult>> {
@@ -171,7 +171,7 @@ impl Plugin for ReportPlugin {
             Event::ScanComplete(_) => {
                 Ok(self.handle_lifecycle_event(SnapshotTrigger::ScanComplete))
             }
-            Event::IntrospectComplete(_) => {
+            Event::IntrospectSessionCompleted(_) => {
                 Ok(self.handle_lifecycle_event(SnapshotTrigger::IntrospectComplete))
             }
             _ => Ok(None),

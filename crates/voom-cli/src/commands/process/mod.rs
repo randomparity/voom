@@ -25,7 +25,7 @@ use crate::policy_map::PolicyResolver;
 use crate::progress::{BatchProgress, DiscoveryProgress};
 use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{
-    Event, IntrospectCompleteEvent, JobCompletedEvent, JobProgressEvent, JobStartedEvent,
+    Event, IntrospectSessionCompletedEvent, JobCompletedEvent, JobProgressEvent, JobStartedEvent,
 };
 use voom_domain::utils::format::format_size;
 use voom_job_manager::progress::{CompositeReporter, ProgressReporter};
@@ -248,8 +248,8 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
             .await;
 
         if !token.is_cancelled() {
-            kernel_for_completion.dispatch(Event::IntrospectComplete(
-                IntrospectCompleteEvent::new(pool.completed_count()),
+            kernel_for_completion.dispatch(Event::IntrospectSessionCompleted(
+                IntrospectSessionCompletedEvent::new(pool.completed_count()),
             ));
         }
 
