@@ -171,34 +171,6 @@ pub fn probe_hw_capabilities(tool: &str) -> HwCapabilities {
     }
 }
 
-/// Aggregate result of [`probe_hw_details`].
-///
-/// `encoders` and `decoders` come from `-encoders` / `-decoders` ffmpeg
-/// probes and degrade to empty `Vec`s on probe failure. `devices`
-/// follows the per-backend [`enumerate_gpus`] contract (e.g. always
-/// non-empty for `Videotoolbox`, dependent on `nvidia-smi` / `vainfo`
-/// availability for the others).
-pub struct HwDetails {
-    pub encoders: Vec<String>,
-    pub decoders: Vec<String>,
-    pub devices: Vec<GpuDevice>,
-}
-
-/// Run [`probe_hw_encoders`], [`probe_hw_decoders`], and
-/// [`enumerate_gpus`] concurrently using nested `rayon::join`.
-#[must_use]
-pub fn probe_hw_details(tool: &str, backend: HwAccelBackend) -> HwDetails {
-    let ((encoders, decoders), devices) = rayon::join(
-        || rayon::join(|| probe_hw_encoders(tool), || probe_hw_decoders(tool)),
-        || enumerate_gpus(backend),
-    );
-    HwDetails {
-        encoders,
-        decoders,
-        devices,
-    }
-}
-
 /// Run `tool` with `args` and `env`, returning `true` only if it exits 0
 /// before `timeout`. Spawn errors, non-zero exits, and timeouts all yield
 /// `false`. Pass `&[]` for `env` when no extra variables are needed.
@@ -1087,17 +1059,6 @@ vainfo: Supported profile and entrypoint
                 ("c".to_string(), true),
             ],
         );
-    }
-
-    #[test]
-    fn probe_hw_details_with_missing_tool_returns_empty_lists() {
-        // `devices` is intentionally not asserted: enumerate_gpus follows
-        // a different contract (Videotoolbox returns a hardcoded entry).
-        let details =
-            super::probe_hw_details("/nonexistent/ffmpeg-fake", HwAccelBackend::Videotoolbox);
-
-        assert!(details.encoders.is_empty());
-        assert!(details.decoders.is_empty());
     }
 
     #[test]
