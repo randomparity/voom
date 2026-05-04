@@ -44,8 +44,11 @@ pub enum Event {
     /// Emitted at the end of a scan. Consumed by the report plugin to
     /// auto-capture a library snapshot.
     ScanComplete(ScanCompleteEvent),
-    /// Emitted at the end of a standalone introspection pass.
-    IntrospectComplete(IntrospectCompleteEvent),
+    /// Emitted at the end of a standalone introspection batch (one per
+    /// `voom process` run). This is a **session-level** event, not a
+    /// per-file signal — subscribers wanting per-file completion should
+    /// use `Event::FileIntrospected` (`file.introspected`) instead.
+    IntrospectSessionCompleted(IntrospectSessionCompletedEvent),
     /// Emitted by the retention runner after each scheduled, on-demand, or
     /// end-of-CLI prune pass. Includes per-table results and an overall duration.
     RetentionCompleted(RetentionCompletedEvent),
@@ -74,7 +77,7 @@ impl Event {
     pub const PLUGIN_ERROR: &str = "plugin.error";
     pub const HEALTH_STATUS: &str = "health.status";
     pub const SCAN_COMPLETE: &str = "scan.complete";
-    pub const INTROSPECT_COMPLETE: &str = "introspect.complete";
+    pub const INTROSPECT_SESSION_COMPLETED: &str = "introspect.session.completed";
     pub const RETENTION_COMPLETED: &str = "retention.completed";
 
     /// One-line human-readable summary of the event payload.
@@ -194,7 +197,7 @@ impl Event {
                     e.files_discovered, e.files_introspected
                 )
             }
-            Event::IntrospectComplete(e) => {
+            Event::IntrospectSessionCompleted(e) => {
                 format!("files_introspected={}", e.files_introspected)
             }
             Event::RetentionCompleted(e) => {
@@ -230,7 +233,7 @@ impl Event {
             Event::PluginError(_) => Self::PLUGIN_ERROR,
             Event::HealthStatus(_) => Self::HEALTH_STATUS,
             Event::ScanComplete(_) => Self::SCAN_COMPLETE,
-            Event::IntrospectComplete(_) => Self::INTROSPECT_COMPLETE,
+            Event::IntrospectSessionCompleted(_) => Self::INTROSPECT_SESSION_COMPLETED,
             Event::RetentionCompleted(_) => Self::RETENTION_COMPLETED,
         }
     }
@@ -816,9 +819,9 @@ impl HealthStatusEvent {
 /// Emitted exactly once at the end of a successful `scan` run, after
 /// discovery + introspection finish. Carries both totals so subscribers
 /// (currently just the report plugin's snapshot writer) do not need a
-/// preceding `IntrospectComplete` to learn the introspected count.
+/// preceding `IntrospectSessionCompleted` to learn the introspected count.
 ///
-/// **Do NOT also emit `IntrospectComplete` from the same run.** See
+/// **Do NOT also emit `IntrospectSessionCompleted` from the same run.** See
 /// `crates/voom-cli/src/commands/scan.rs` and issue #153.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -842,14 +845,18 @@ impl ScanCompleteEvent {
 /// discovered files before evaluating policies). Reserved for paths that
 /// did NOT run discovery — full scans must emit `ScanComplete` instead.
 ///
+/// This is a **session-level** event. Subscribers wanting a per-file
+/// completion signal should use `FileIntrospectedEvent`
+/// (`file.introspected`), which fires once per file. See issue #193.
+///
 /// The report plugin subscribes to this to auto-capture a library snapshot.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IntrospectCompleteEvent {
+pub struct IntrospectSessionCompletedEvent {
     pub files_introspected: u64,
 }
 
-impl IntrospectCompleteEvent {
+impl IntrospectSessionCompletedEvent {
     #[must_use]
     pub fn new(files_introspected: u64) -> Self {
         Self { files_introspected }
@@ -1216,14 +1223,14 @@ mod tests {
     }
 
     #[test]
-    fn test_introspect_complete_event_type() {
-        let event = Event::IntrospectComplete(IntrospectCompleteEvent {
+    fn test_introspect_session_completed_event_type() {
+        let event = Event::IntrospectSessionCompleted(IntrospectSessionCompletedEvent {
             files_introspected: 15,
         });
-        assert_eq!(event.event_type(), "introspect.complete");
+        assert_eq!(event.event_type(), "introspect.session.completed");
         let json = serde_json::to_string(&event).expect("serialize");
         let deserialized: Event = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(deserialized.event_type(), "introspect.complete");
+        assert_eq!(deserialized.event_type(), "introspect.session.completed");
     }
 
     #[test]

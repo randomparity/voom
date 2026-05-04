@@ -519,7 +519,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use voom_domain::capabilities::Capability;
     use voom_domain::events::{
-        EventResult, FileDiscoveredEvent, FileIntrospectedEvent, IntrospectCompleteEvent,
+        EventResult, FileDiscoveredEvent, FileIntrospectedEvent, IntrospectSessionCompletedEvent,
     };
     use voom_domain::media::MediaFile;
 
@@ -527,8 +527,8 @@ mod tests {
     struct RecordingPlugin {
         discovered_count: AtomicUsize,
         introspected_count: AtomicUsize,
-        introspect_complete_count: AtomicUsize,
-        introspect_complete_files: AtomicU64,
+        introspect_session_completed_count: AtomicUsize,
+        introspect_session_completed_files: AtomicU64,
     }
 
     impl RecordingPlugin {
@@ -536,8 +536,8 @@ mod tests {
             Self {
                 discovered_count: AtomicUsize::new(0),
                 introspected_count: AtomicUsize::new(0),
-                introspect_complete_count: AtomicUsize::new(0),
-                introspect_complete_files: AtomicU64::new(0),
+                introspect_session_completed_count: AtomicUsize::new(0),
+                introspect_session_completed_files: AtomicU64::new(0),
             }
         }
     }
@@ -555,7 +555,9 @@ mod tests {
         fn handles(&self, event_type: &str) -> bool {
             matches!(
                 event_type,
-                Event::FILE_DISCOVERED | Event::FILE_INTROSPECTED | Event::INTROSPECT_COMPLETE
+                Event::FILE_DISCOVERED
+                    | Event::FILE_INTROSPECTED
+                    | Event::INTROSPECT_SESSION_COMPLETED
             )
         }
         fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
@@ -566,10 +568,10 @@ mod tests {
                 Event::FileIntrospected(_) => {
                     self.introspected_count.fetch_add(1, Ordering::SeqCst);
                 }
-                Event::IntrospectComplete(e) => {
-                    self.introspect_complete_count
+                Event::IntrospectSessionCompleted(e) => {
+                    self.introspect_session_completed_count
                         .fetch_add(1, Ordering::SeqCst);
-                    self.introspect_complete_files
+                    self.introspect_session_completed_files
                         .store(e.files_introspected, Ordering::SeqCst);
                 }
                 _ => {}
@@ -625,16 +627,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_introspect_complete_kernel_roundtrip() {
+    async fn test_introspect_session_completed_kernel_roundtrip() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(RecordingPlugin::new());
         kernel.register_plugin(recorder.clone(), 50).unwrap();
 
-        kernel.dispatch(Event::IntrospectComplete(IntrospectCompleteEvent::new(42)));
+        kernel.dispatch(Event::IntrospectSessionCompleted(
+            IntrospectSessionCompletedEvent::new(42),
+        ));
 
-        assert_eq!(recorder.introspect_complete_count.load(Ordering::SeqCst), 1);
         assert_eq!(
-            recorder.introspect_complete_files.load(Ordering::SeqCst),
+            recorder
+                .introspect_session_completed_count
+                .load(Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            recorder
+                .introspect_session_completed_files
+                .load(Ordering::SeqCst),
             42
         );
     }
