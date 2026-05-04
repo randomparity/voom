@@ -67,19 +67,35 @@ fn probe_formats(tool: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn probe_hwaccels(tool: &str) -> Vec<String> {
+/// Probe `tool` (an `ffmpeg` command name or path) for available hardware
+/// acceleration backend names via `-hwaccels`. Bounded by
+/// `CAPABILITY_PROBE_TIMEOUT`. Returns an empty `Vec` on spawn failure,
+/// non-zero exit, or timeout (logged via `tracing::warn!`); empty is also
+/// the legitimate "no HW backends" result, so the two are not
+/// distinguishable from the return value alone.
+#[must_use]
+pub fn probe_hwaccels(tool: &str) -> Vec<String> {
     run_capability_probe(tool, "-hwaccels")
         .map(|s| parse_hwaccels(&s))
         .unwrap_or_default()
 }
 
-fn probe_hw_encoders(tool: &str) -> Vec<String> {
+/// Probe `tool` for hardware-accelerated encoder names via `-encoders`,
+/// keeping only entries whose suffix matches a known HW backend
+/// (`_nvenc`, `_qsv`, `_vaapi`, etc.). See [`probe_hwaccels`] for the
+/// failure-mode contract.
+#[must_use]
+pub fn probe_hw_encoders(tool: &str) -> Vec<String> {
     run_capability_probe(tool, "-encoders")
         .map(|s| parse_hw_implementations(&s))
         .unwrap_or_default()
 }
 
-fn probe_hw_decoders(tool: &str) -> Vec<String> {
+/// Probe `tool` for hardware-accelerated decoder names via `-decoders`,
+/// keeping only entries whose suffix matches a known HW backend. See
+/// [`probe_hwaccels`] for the failure-mode contract.
+#[must_use]
+pub fn probe_hw_decoders(tool: &str) -> Vec<String> {
     run_capability_probe(tool, "-decoders")
         .map(|s| parse_hw_implementations(&s))
         .unwrap_or_default()
@@ -145,7 +161,7 @@ fn probe_tool_stdout(tool: &str, args: &[&str], timeout: Duration) -> Option<Vec
 /// Each codec line (after the `-------` separator) has flags in columns 0-5:
 /// `D` = decoding, `E` = encoding. The codec name follows after whitespace.
 #[must_use]
-pub fn parse_codecs(output: &str) -> CodecCapabilities {
+fn parse_codecs(output: &str) -> CodecCapabilities {
     let mut decoders = Vec::new();
     let mut encoders = Vec::new();
     let mut past_separator = false;
@@ -186,7 +202,7 @@ pub fn parse_codecs(output: &str) -> CodecCapabilities {
 /// Each format line (after the `-------` separator) has flags in columns 0-2:
 /// `D` = demux, `E` = mux. We collect any format that can be muxed or demuxed.
 #[must_use]
-pub fn parse_formats(output: &str) -> Vec<String> {
+fn parse_formats(output: &str) -> Vec<String> {
     let mut formats = Vec::new();
     let mut past_separator = false;
 
@@ -238,7 +254,7 @@ const HW_SUFFIXES: &[&str] = &[
 /// The format mirrors `-codecs`: a flag block, then a name, after a
 /// `------` separator.
 #[must_use]
-pub fn parse_hw_implementations(output: &str) -> Vec<String> {
+fn parse_hw_implementations(output: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut past_separator = false;
 
@@ -271,7 +287,7 @@ pub fn parse_hw_implementations(output: &str) -> Vec<String> {
 ///
 /// Lines after "Hardware acceleration methods:" are individual backend names.
 #[must_use]
-pub fn parse_hwaccels(output: &str) -> Vec<String> {
+fn parse_hwaccels(output: &str) -> Vec<String> {
     let mut accels = Vec::new();
     let mut past_header = false;
 
@@ -520,7 +536,7 @@ pub(crate) fn has_intel_gpu() -> bool {
 /// 1, Quadro RTX 4000, 8192
 /// ```
 #[must_use]
-pub fn parse_nvidia_smi(output: &str) -> Vec<GpuDevice> {
+fn parse_nvidia_smi(output: &str) -> Vec<GpuDevice> {
     let mut devices = Vec::new();
     for line in output.lines() {
         let line = line.trim();
@@ -545,7 +561,7 @@ pub fn parse_nvidia_smi(output: &str) -> Vec<GpuDevice> {
 /// Looks for a line like `Driver version: Intel iHD driver - 24.1.0`
 /// or `vainfo: Driver version: Mesa Gallium driver 23.3.1 ...`
 #[must_use]
-pub fn parse_vainfo_device_name(output: &str) -> Option<String> {
+fn parse_vainfo_device_name(output: &str) -> Option<String> {
     for line in output.lines() {
         if line.contains("Driver version") {
             let after_colon = line.rsplit(':').next()?.trim();

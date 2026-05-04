@@ -4,7 +4,7 @@ use console::style;
 use voom_domain::storage::HealthCheckFilters;
 use voom_ffmpeg_executor::hwaccel::{resolve_hw_config, HwAccelBackend};
 use voom_ffmpeg_executor::probe::{
-    enumerate_gpus, parse_hw_implementations, parse_hwaccels, validate_hw_encoder,
+    enumerate_gpus, probe_hw_decoders, probe_hw_encoders, probe_hwaccels, validate_hw_encoder,
     validate_hw_encoder_on_device, GpuDevice,
 };
 
@@ -282,17 +282,8 @@ fn print_hw_accel_status(app_config: &config::AppConfig, ffmpeg_path: &std::path
     println!();
     println!("{}", style("Hardware acceleration:").bold());
 
-    let hwaccels_output = std::process::Command::new(ffmpeg_path)
-        .args(["-hwaccels", "-hide_banner"])
-        .output();
-
-    let hw_accels = match hwaccels_output {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            parse_hwaccels(&stdout)
-        }
-        Err(_) => return,
-    };
+    let ffmpeg = ffmpeg_path.to_string_lossy();
+    let hw_accels = probe_hwaccels(&ffmpeg);
 
     let hw_accel_override = app_config
         .plugin
@@ -315,24 +306,11 @@ fn print_hw_accel_status(app_config: &config::AppConfig, ffmpeg_path: &std::path
 
     print_configured_gpu(app_config, &devices);
 
-    let encoders_output = std::process::Command::new(ffmpeg_path)
-        .args(["-encoders", "-hide_banner"])
-        .output();
-    let decoders_output = std::process::Command::new(ffmpeg_path)
-        .args(["-decoders", "-hide_banner"])
-        .output();
+    let hw_encoders = probe_hw_encoders(&ffmpeg);
+    print_hw_encoders(&hw_encoders, &devices, backend);
 
-    if let Ok(output) = encoders_output {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let hw_encoders = parse_hw_implementations(&stdout);
-        print_hw_encoders(&hw_encoders, &devices, backend);
-    }
-
-    if let Ok(output) = decoders_output {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let hw_decoders = parse_hw_implementations(&stdout);
-        print_hw_decoders(&hw_decoders);
-    }
+    let hw_decoders = probe_hw_decoders(&ffmpeg);
+    print_hw_decoders(&hw_decoders);
 }
 
 fn history(
