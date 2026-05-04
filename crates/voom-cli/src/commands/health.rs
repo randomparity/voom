@@ -17,14 +17,19 @@ use crate::tools::print_tool_status;
 mod retention_coverage {
     use chrono::{DateTime, Utc};
 
-    /// Hard floor below which we treat a positive lag as noise (clock skew,
-    /// the gap between an event being inserted and a job row being written).
-    /// Anything below this is reported as `Ok`.
+    /// Hard floor below which we treat a positive lag as noise: the two
+    /// `MIN(created_at)` queries that feed `evaluate` are not atomic, and a
+    /// short pruning burst can briefly leave the event log starting after the
+    /// oldest job by minutes. Anything strictly greater than this floor is
+    /// reported as an asymmetry. Operators who want a stricter check can lower
+    /// the threshold; doing so trades fewer false negatives for more false
+    /// positives during normal retention runs.
     const NOISE_FLOOR: chrono::TimeDelta = chrono::Duration::hours(1);
 
     #[derive(Debug, PartialEq, Eq)]
     pub enum CoverageStatus {
-        /// No jobs and no events, or events comfortably cover the jobs.
+        /// No jobs to under-cover (table empty, regardless of event_log),
+        /// or events comfortably cover the jobs.
         Ok,
         /// Jobs exist but the event_log is empty.
         EventLogEmptyButJobsExist,
@@ -146,13 +151,15 @@ pub fn check() -> Result<()> {
             }
             retention_coverage::CoverageStatus::AsymmetryDetected { gap_seconds } => {
                 let hours = gap_seconds / 3600;
+                let unit = if hours == 1 { "hour" } else { "hours" };
                 println!(
-                    "{} oldest event is {} hours newer than the oldest job. \
+                    "{} oldest event is {} {} newer than the oldest job. \
                      event_log retention is pruning events faster than jobs \
                      are pruned, so `voom events` and SSE history will \
                      undercount completed work. See issue #194.",
                     style("WARN").yellow(),
-                    hours
+                    hours,
+                    unit
                 );
                 issues += 1;
             }
@@ -551,6 +558,28 @@ mod retention_coverage_tests {
         match evaluate(oldest_job, None) {
             CoverageStatus::EventLogEmptyButJobsExist => {}
             other => panic!("expected EventLogEmptyButJobsExist, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ok_when_lag_equals_noise_floor() {
+        let oldest_job = chrono::Utc::now() - chrono::Duration::days(1);
+        let oldest_event = oldest_job + chrono::Duration::hours(1);
+        assert_eq!(
+            evaluate(Some(oldest_job), Some(oldest_event)),
+            CoverageStatus::Ok
+        );
+    }
+
+    #[test]
+    fn warn_when_lag_exceeds_noise_floor_by_one_second() {
+        let oldest_job = chrono::Utc::now() - chrono::Duration::days(1);
+        let oldest_event = oldest_job + chrono::Duration::hours(1) + chrono::Duration::seconds(1);
+        match evaluate(Some(oldest_job), Some(oldest_event)) {
+            CoverageStatus::AsymmetryDetected { gap_seconds } => {
+                assert_eq!(gap_seconds, 3601);
+            }
+            other => panic!("expected AsymmetryDetected, got {other:?}"),
         }
     }
 }
