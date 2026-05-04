@@ -464,41 +464,67 @@ fn enumerate_nvidia_gpus() -> Vec<GpuDevice> {
     }
 }
 
+/// Probe each `(device_path, fallback_name)` candidate concurrently and
+/// build a sorted `Vec<GpuDevice>`.
+///
+/// `probe` is called once per candidate and may run on any rayon worker
+/// thread; it must therefore be `Sync`. Returning `None` causes the
+/// fallback name to be used (matching the legacy single-threaded
+/// behavior). The resulting list is sorted by `id` ascending so output
+/// remains deterministic regardless of probe completion order.
+fn build_vaapi_devices<F>(candidates: Vec<(String, String)>, probe: F) -> Vec<GpuDevice>
+where
+    F: Fn(&str) -> Option<String> + Sync,
+{
+    let mut devices: Vec<GpuDevice> = candidates
+        .into_par_iter()
+        .map(|(path_str, fallback)| {
+            let name = probe(&path_str).unwrap_or(fallback);
+            GpuDevice {
+                id: path_str,
+                name,
+                vram_mib: None,
+            }
+        })
+        .collect();
+    devices.sort_by(|a, b| a.id.cmp(&b.id));
+    devices
+}
+
 fn enumerate_vaapi_devices() -> Vec<GpuDevice> {
     let entries = match std::fs::read_dir("/dev/dri") {
         Ok(entries) => entries,
         Err(_) => return Vec::new(),
     };
 
-    let mut devices: Vec<GpuDevice> = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if !name_str.starts_with("renderD") {
-            continue;
-        }
-        let path = entry.path();
-        let path_str = path.to_string_lossy().to_string();
+    // Collect all render-node candidates first so the per-node `vainfo`
+    // calls below can fan out across rayon's pool instead of paying a
+    // sequential N × TOOL_ENUMERATION_TIMEOUT worst case on multi-GPU
+    // hosts. The directory walk itself is microseconds and stays serial.
+    let candidates: Vec<(String, String)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.starts_with("renderD") {
+                return None;
+            }
+            let path_str = entry.path().to_string_lossy().into_owned();
+            Some((path_str, name_str.into_owned()))
+        })
+        .collect();
 
-        let device_name = probe_tool_stdout(
+    build_vaapi_devices(candidates, |path_str| {
+        probe_tool_stdout(
             "vainfo",
-            &["--display", "drm", "--device", path_str.as_str()],
+            &["--display", "drm", "--device", path_str],
             TOOL_ENUMERATION_TIMEOUT,
         )
         .and_then(|stdout| {
             let text = String::from_utf8_lossy(&stdout);
             parse_vainfo_device_name(&text)
         })
-        .unwrap_or_else(|| name_str.to_string());
-
-        devices.push(GpuDevice {
-            id: path_str,
-            name: device_name,
-            vram_mib: None,
-        });
-    }
-    devices.sort_by(|a, b| a.id.cmp(&b.id));
-    devices
+    })
 }
 
 /// Check whether NVIDIA GPU hardware is present.
@@ -1141,5 +1167,79 @@ vainfo: Supported profile and entrypoint
                 "stdout-variant must also honor the timeout, took {elapsed:?}"
             );
         }
+    }
+
+    #[test]
+    fn build_vaapi_devices_uses_probe_and_falls_back_and_sorts() {
+        // Mixed input: one device whose probe returns a driver name, one
+        // whose probe returns None (forcing the fallback). Provided in
+        // reverse-sorted order so we also exercise the sort.
+        let candidates: Vec<(String, String)> = vec![
+            ("/dev/dri/renderD129".to_string(), "renderD129".to_string()),
+            ("/dev/dri/renderD128".to_string(), "renderD128".to_string()),
+        ];
+
+        let probe = |path: &str| -> Option<String> {
+            if path == "/dev/dri/renderD128" {
+                Some("Intel iHD driver - 24.1.0".to_string())
+            } else {
+                None
+            }
+        };
+
+        let devices = build_vaapi_devices(candidates, probe);
+
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].id, "/dev/dri/renderD128");
+        assert_eq!(devices[0].name, "Intel iHD driver - 24.1.0");
+        assert!(devices[0].vram_mib.is_none());
+        assert_eq!(devices[1].id, "/dev/dri/renderD129");
+        // Fallback path: probe returned None, so name == fallback.
+        assert_eq!(devices[1].name, "renderD129");
+        assert!(devices[1].vram_mib.is_none());
+    }
+
+    #[test]
+    fn build_vaapi_devices_runs_probes_in_parallel() {
+        // Each fake probe sleeps `per_probe`; sequential execution would
+        // therefore take at least `per_probe * n`. We assert elapsed is
+        // shorter than that floor by a meaningful margin so a regression
+        // to sequential execution still fails the test on a slow CI host.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+
+        let per_probe = Duration::from_millis(200);
+        let n = 4u32;
+        let sequential_floor = per_probe * n;
+
+        let candidates: Vec<(String, String)> = (0..n)
+            .map(|i| {
+                (
+                    format!("/dev/dri/renderD{}", 128 + i),
+                    format!("renderD{}", 128 + i),
+                )
+            })
+            .collect();
+
+        let counter = AtomicUsize::new(0);
+        let probe = |_path: &str| -> Option<String> {
+            counter.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(per_probe);
+            None
+        };
+
+        let started = Instant::now();
+        let devices = build_vaapi_devices(candidates, probe);
+        let elapsed = started.elapsed();
+
+        assert_eq!(devices.len(), n as usize);
+        assert_eq!(counter.load(Ordering::SeqCst), n as usize);
+        // Allow a 100ms cushion below the sequential floor for a cold
+        // rayon pool / busy CI runner; still well clear of sequential.
+        let ceiling = sequential_floor - Duration::from_millis(100);
+        assert!(
+            elapsed < ceiling,
+            "probes did not run in parallel: took {elapsed:?} (sequential floor {sequential_floor:?})"
+        );
     }
 }
