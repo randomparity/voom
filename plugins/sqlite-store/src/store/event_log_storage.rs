@@ -5,7 +5,7 @@ use voom_domain::storage::{
     EventLogFilters, EventLogRecord, EventLogStorage, PruneReport, RetentionPolicy,
 };
 
-use super::{format_datetime, storage_err, SqliteStore};
+use super::{format_datetime, parse_datetime, storage_err, SqliteStore};
 
 impl EventLogStorage for SqliteStore {
     fn insert_event_log(&self, record: &EventLogRecord) -> Result<i64> {
@@ -180,6 +180,19 @@ impl EventLogStorage for SqliteStore {
         )
         .optional()
         .map_err(storage_err("failed to query latest event"))
+    }
+
+    fn oldest_event_at(&self) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let conn = self.conn()?;
+        let oldest: Option<String> = conn
+            .query_row("SELECT MIN(created_at) FROM event_log", [], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(storage_err("failed to query oldest event"))?
+            .flatten();
+
+        oldest.map(|s| parse_datetime(&s)).transpose()
     }
 }
 
@@ -428,6 +441,30 @@ mod tests {
     }
 
     #[test]
+    fn oldest_event_at_returns_min_on_sqlite() {
+        let store = test_store();
+        let mut older = EventLogRecord::new(
+            uuid::Uuid::new_v4(),
+            "file.discovered".into(),
+            "{}".into(),
+            "x".into(),
+        );
+        older.created_at = chrono::Utc::now() - chrono::Duration::days(2);
+        store.insert_event_log(&older).unwrap();
+        let mut newer = EventLogRecord::new(
+            uuid::Uuid::new_v4(),
+            "file.discovered".into(),
+            "{}".into(),
+            "y".into(),
+        );
+        newer.created_at = chrono::Utc::now();
+        store.insert_event_log(&newer).unwrap();
+
+        let got = store.oldest_event_at().unwrap().unwrap();
+        assert_eq!(got.timestamp_millis(), older.created_at.timestamp_millis());
+    }
+
+    #[test]
     fn count_old_event_log_matches_prune_count() {
         let store = test_store();
         let now = chrono::Utc::now();
@@ -452,5 +489,60 @@ mod tests {
         let prune_report = store.prune_old_event_log(policy).unwrap();
         assert_eq!(count_report.deleted, prune_report.deleted);
         assert_eq!(count_report.kept, prune_report.kept);
+    }
+
+    #[test]
+    fn pruning_event_log_can_outpace_pruning_jobs_with_tight_default_ratio() {
+        use voom_domain::job::{Job, JobType};
+        use voom_domain::storage::JobStorage;
+
+        let store = test_store();
+
+        // Mimic a run where each job produces ~7 events. Insert the events first
+        // (older rowids) and then the corresponding job rows, so that pruning
+        // event_log to keep_last=100 deletes the early events while the jobs row
+        // count (50) is well under jobs.keep_last=50.
+        let job_count: usize = 50;
+        let events_per_job: usize = 7;
+        for i in 0..(job_count * events_per_job) {
+            let r = EventLogRecord::new(
+                uuid::Uuid::new_v4(),
+                "file.discovered".into(),
+                format!(r#"{{"i":{i}}}"#),
+                format!("event {i}"),
+            );
+            store.insert_event_log(&r).unwrap();
+        }
+        for _ in 0..job_count {
+            let job = Job::new(JobType::Process);
+            store.create_job(&job).unwrap();
+        }
+
+        // event_log retention: keep_last=100 (mirror of production: smaller of
+        // event_log.keep_last vs total events emitted)
+        let event_pruned = store.prune_event_log(100).unwrap();
+        assert_eq!(
+            event_pruned, 250,
+            "expected aggressive event pruning in this scenario"
+        );
+
+        // jobs retention: not run (or run with keep_last=50000 — same outcome)
+        // Surviving event_log rows
+        let kept_events = store
+            .list_event_log(&EventLogFilters::default())
+            .unwrap()
+            .len();
+        let kept_jobs = store
+            .list_jobs(&voom_domain::storage::JobFilters::default())
+            .unwrap()
+            .len();
+        assert_eq!(kept_events, 100);
+        assert_eq!(kept_jobs, 50);
+
+        // The asymmetry: jobs > number of jobs whose events still exist.
+        assert!(
+            kept_jobs * events_per_job > kept_events,
+            "this test exists to lock in the diagnosis from issue #194"
+        );
     }
 }

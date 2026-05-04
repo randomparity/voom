@@ -6,7 +6,10 @@ use voom_domain::errors::{Result, StorageErrorKind, VoomError};
 use voom_domain::job::{Job, JobStatus, JobUpdate};
 use voom_domain::storage::{JobFilters, JobStorage, PruneReport, RetentionPolicy};
 
-use super::{format_datetime, other_storage_err, row_to_job, storage_err, SqlQuery, SqliteStore};
+use super::{
+    format_datetime, other_storage_err, parse_datetime, row_to_job, storage_err, SqlQuery,
+    SqliteStore,
+};
 
 fn serialize_json(value: &serde_json::Value) -> Result<String> {
     serde_json::to_string(value).map_err(other_storage_err("failed to serialize JSON"))
@@ -329,6 +332,17 @@ impl JobStorage for SqliteStore {
             deleted,
             kept: total.saturating_sub(deleted),
         })
+    }
+
+    fn oldest_job_created_at(&self) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let conn = self.conn()?;
+        let oldest: Option<String> = conn
+            .query_row("SELECT MIN(created_at) FROM jobs", [], |row| row.get(0))
+            .optional()
+            .map_err(storage_err("failed to query oldest job"))?
+            .flatten();
+
+        oldest.map(|s| parse_datetime(&s)).transpose()
     }
 
     fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>> {
@@ -694,6 +708,21 @@ mod tests {
         let report = store.prune_old_jobs(policy).unwrap();
         assert_eq!(report.deleted, 0);
         assert_eq!(report.kept, 0);
+    }
+
+    #[test]
+    fn oldest_job_created_at_returns_min_on_sqlite() {
+        use voom_domain::job::{Job, JobType};
+        let store = test_store();
+        let mut older = Job::new(JobType::Process);
+        older.created_at = chrono::Utc::now() - chrono::Duration::days(3);
+        store.create_job(&older).unwrap();
+        let mut newer = Job::new(JobType::Process);
+        newer.created_at = chrono::Utc::now();
+        store.create_job(&newer).unwrap();
+
+        let got = store.oldest_job_created_at().unwrap().unwrap();
+        assert_eq!(got.timestamp_millis(), older.created_at.timestamp_millis());
     }
 
     #[test]

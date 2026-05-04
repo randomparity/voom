@@ -61,9 +61,14 @@ impl TableRetention {
         }
     }
     fn for_event_log() -> Self {
+        // event_log carries ~7 rows per process job (file.discovered,
+        // file.introspected, three plan.* events for transformed files, and
+        // job.started/completed). To preserve at least one full
+        // `jobs.keep_last` bucket of activity, keep_last must outlive jobs
+        // by roughly that ratio. See issue #194 for the diagnosis.
         Self {
-            keep_for_days: Some(30),
-            keep_last: Some(100_000),
+            keep_for_days: Some(60),
+            keep_last: Some(500_000),
         }
     }
     fn for_file_transitions() -> Self {
@@ -364,6 +369,13 @@ retention_days = 30
 # Database retention. Bounds the size of jobs, event_log, and file_transitions
 # to keep the database from growing forever. Set keep_for_days = 0 and keep_last = 0
 # for any table to disable retention for that table.
+#
+# Invariant: event_log must outlive jobs by ~10x on both axes. Each job row
+# produces ~7 event_log rows (file.discovered, file.introspected, three
+# plan.* events, job.started, job.completed). If event_log is pruned while
+# jobs are not, `voom events` and SSE history will undercount completed
+# work. `voom health check` reports when this invariant is violated.
+# See issue #194.
 [retention]
 # How often the periodic prune runs in `serve` mode (minutes).
 schedule_interval_minutes = 60
@@ -375,8 +387,10 @@ keep_for_days = 7
 keep_last = 50000
 
 [retention.event_log]
-keep_for_days = 30
-keep_last = 100000
+# Must outlive [retention.jobs] by ~10x: event_log carries ~7 rows per
+# process job. See issue #194.
+keep_for_days = 60
+keep_last = 500000
 
 [retention.file_transitions]
 keep_for_days = 90
@@ -813,7 +827,7 @@ keep_last = 100000
         assert_eq!(cfg.retention.jobs.keep_for_days, Some(14));
         assert_eq!(cfg.retention.jobs.keep_last, Some(100_000));
         // Tables not listed get the type defaults
-        assert_eq!(cfg.retention.event_log.keep_for_days, Some(30));
+        assert_eq!(cfg.retention.event_log.keep_for_days, Some(60));
         assert_eq!(cfg.retention.file_transitions.keep_for_days, Some(90));
     }
 
@@ -824,5 +838,10 @@ keep_last = 100000
         assert!(cfg.retention.run_after_cli);
         assert_eq!(cfg.retention.jobs.keep_for_days, Some(7));
         assert_eq!(cfg.retention.jobs.keep_last, Some(50_000));
+        // event_log must outlive jobs by ~10x to cover all events emitted by
+        // a full jobs.keep_last bucket of process jobs (~7 events each).
+        // See issue #194.
+        assert_eq!(cfg.retention.event_log.keep_for_days, Some(60));
+        assert_eq!(cfg.retention.event_log.keep_last, Some(500_000));
     }
 }
