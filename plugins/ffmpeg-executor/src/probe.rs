@@ -137,6 +137,40 @@ fn probe_capabilities_with_tool(tool: &str) -> FfmpegCapabilities {
     }
 }
 
+/// Aggregate result of [`probe_hw_capabilities`].
+///
+/// All three fields degrade independently to empty `Vec`s on probe
+/// failure (spawn error, non-zero exit, or timeout), with a
+/// `tracing::warn!` recording the cause. The caller derives the active
+/// HW backend from `hw_accels` and applies any early-return gate after
+/// the parallel block has completed.
+pub struct HwCapabilities {
+    pub hw_accels: Vec<String>,
+    pub encoders: Vec<String>,
+    pub decoders: Vec<String>,
+}
+
+/// Run [`probe_hwaccels`], [`probe_hw_encoders`], and
+/// [`probe_hw_decoders`] concurrently using nested `rayon::join`.
+///
+/// Each probe is independently bounded by `CAPABILITY_PROBE_TIMEOUT`;
+/// the three calls run on rayon's pool so the wall-clock cost is
+/// roughly one probe instead of three. GPU device enumeration is *not*
+/// part of this bundle: it depends on the resolved backend and is the
+/// caller's responsibility (see [`enumerate_gpus`]).
+#[must_use]
+pub fn probe_hw_capabilities(tool: &str) -> HwCapabilities {
+    let (hw_accels, (encoders, decoders)) = rayon::join(
+        || probe_hwaccels(tool),
+        || rayon::join(|| probe_hw_encoders(tool), || probe_hw_decoders(tool)),
+    );
+    HwCapabilities {
+        hw_accels,
+        encoders,
+        decoders,
+    }
+}
+
 /// Aggregate result of [`probe_hw_details`].
 ///
 /// `encoders` and `decoders` come from `-encoders` / `-decoders` ffmpeg
@@ -1064,6 +1098,14 @@ vainfo: Supported profile and entrypoint
 
         assert!(details.encoders.is_empty());
         assert!(details.decoders.is_empty());
+    }
+
+    #[test]
+    fn probe_hw_capabilities_with_missing_tool_returns_empty_lists() {
+        let caps = super::probe_hw_capabilities("/nonexistent/ffmpeg-fake");
+        assert!(caps.hw_accels.is_empty());
+        assert!(caps.encoders.is_empty());
+        assert!(caps.decoders.is_empty());
     }
 
     #[test]
