@@ -4,7 +4,7 @@
 use assert_cmd::Command;
 
 #[test]
-fn health_check_runs_against_empty_data_dir() {
+fn health_check_reports_retention_coverage_section() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_dir = tempfile::tempdir().unwrap();
     let cfg_path = cfg_dir.path().join("voom").join("config.toml");

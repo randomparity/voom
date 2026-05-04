@@ -15,7 +15,7 @@ use crate::output::sanitize_for_display;
 use crate::tools::print_tool_status;
 
 mod retention_coverage {
-    use chrono::{DateTime, Utc};
+    use chrono::{DateTime, Duration, Utc};
 
     /// Hard floor below which we treat a positive lag as noise: the two
     /// `MIN(created_at)` queries that feed `evaluate` are not atomic, and a
@@ -24,7 +24,7 @@ mod retention_coverage {
     /// reported as an asymmetry. Operators who want a stricter check can lower
     /// the threshold; doing so trades fewer false negatives for more false
     /// positives during normal retention runs.
-    const NOISE_FLOOR: chrono::TimeDelta = chrono::Duration::hours(1);
+    const NOISE_FLOOR: Duration = Duration::hours(1);
 
     #[derive(Debug, PartialEq, Eq)]
     pub enum CoverageStatus {
@@ -131,7 +131,7 @@ pub fn check() -> Result<()> {
         }
     }
 
-    // 2b. Retention coverage (issue #194)
+    // 2b. Retention coverage
     print!("  Retention coverage ... ");
     if let Ok(app::BootstrapResult { store, .. }) = &kernel_result {
         let oldest_job = store.oldest_job_created_at().ok().flatten();

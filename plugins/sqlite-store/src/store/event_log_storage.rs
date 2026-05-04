@@ -5,7 +5,7 @@ use voom_domain::storage::{
     EventLogFilters, EventLogRecord, EventLogStorage, PruneReport, RetentionPolicy,
 };
 
-use super::{format_datetime, other_storage_err, storage_err, SqliteStore};
+use super::{format_datetime, parse_datetime, storage_err, SqliteStore};
 
 impl EventLogStorage for SqliteStore {
     fn insert_event_log(&self, record: &EventLogRecord) -> Result<i64> {
@@ -192,13 +192,7 @@ impl EventLogStorage for SqliteStore {
             .map_err(storage_err("failed to query oldest event"))?
             .flatten();
 
-        match oldest {
-            None => Ok(None),
-            Some(s) => s
-                .parse::<chrono::DateTime<chrono::Utc>>()
-                .map(Some)
-                .map_err(other_storage_err("invalid created_at on event_log row")),
-        }
+        oldest.map(|s| parse_datetime(&s)).transpose()
     }
 }
 

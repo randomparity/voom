@@ -6,7 +6,10 @@ use voom_domain::errors::{Result, StorageErrorKind, VoomError};
 use voom_domain::job::{Job, JobStatus, JobUpdate};
 use voom_domain::storage::{JobFilters, JobStorage, PruneReport, RetentionPolicy};
 
-use super::{format_datetime, other_storage_err, row_to_job, storage_err, SqlQuery, SqliteStore};
+use super::{
+    format_datetime, other_storage_err, parse_datetime, row_to_job, storage_err, SqlQuery,
+    SqliteStore,
+};
 
 fn serialize_json(value: &serde_json::Value) -> Result<String> {
     serde_json::to_string(value).map_err(other_storage_err("failed to serialize JSON"))
@@ -339,13 +342,7 @@ impl JobStorage for SqliteStore {
             .map_err(storage_err("failed to query oldest job"))?
             .flatten();
 
-        match oldest {
-            None => Ok(None),
-            Some(s) => s
-                .parse::<chrono::DateTime<chrono::Utc>>()
-                .map(Some)
-                .map_err(other_storage_err("invalid created_at on jobs row")),
-        }
+        oldest.map(|s| parse_datetime(&s)).transpose()
     }
 
     fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>> {
