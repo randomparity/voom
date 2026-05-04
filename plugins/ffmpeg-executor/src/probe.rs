@@ -1016,6 +1016,20 @@ vainfo: Supported profile and entrypoint
     }
 
     #[test]
+    fn test_validate_hw_encoders_parallel_with_status_all_accepted() {
+        let input: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
+        let result = validate_hw_encoders_parallel_with_status(&input, |_| true);
+        assert_eq!(
+            result,
+            vec![
+                ("a".to_string(), true),
+                ("b".to_string(), true),
+                ("c".to_string(), true),
+            ],
+        );
+    }
+
+    #[test]
     fn probe_hw_details_with_missing_tool_returns_empty_lists() {
         // `devices` is intentionally not asserted: enumerate_gpus follows
         // a different contract (Videotoolbox returns a hardcoded entry).
