@@ -224,6 +224,10 @@ pub trait JobStorage: Send + Sync {
     /// Count how many terminal-state jobs would be deleted by `policy`.
     /// Mirrors `prune_old_jobs` but does not modify the database.
     fn count_old_jobs(&self, policy: RetentionPolicy) -> Result<PruneReport>;
+    /// Return the `created_at` of the oldest job row, or `None` if the table
+    /// is empty. Used by `voom health check` to compare against
+    /// `EventLogStorage::oldest_event_at` and detect retention asymmetry.
+    fn oldest_job_created_at(&self) -> Result<Option<chrono::DateTime<chrono::Utc>>>;
 }
 
 /// Plan persistence operations.
@@ -460,6 +464,9 @@ pub trait EventLogStorage: Send + Sync {
     fn count_old_event_log(&self, policy: RetentionPolicy) -> Result<PruneReport>;
     /// Return the most recent event of the given type, or None if none exist.
     fn latest_event_of_type(&self, event_type: &str) -> Result<Option<EventLogRecord>>;
+    /// Return the `created_at` of the oldest event row, or `None` if the
+    /// table is empty.
+    fn oldest_event_at(&self) -> Result<Option<chrono::DateTime<chrono::Utc>>>;
 }
 
 /// Library snapshot storage operations.

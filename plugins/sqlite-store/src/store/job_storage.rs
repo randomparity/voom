@@ -331,6 +331,23 @@ impl JobStorage for SqliteStore {
         })
     }
 
+    fn oldest_job_created_at(&self) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let conn = self.conn()?;
+        let oldest: Option<String> = conn
+            .query_row("SELECT MIN(created_at) FROM jobs", [], |row| row.get(0))
+            .optional()
+            .map_err(storage_err("failed to query oldest job"))?
+            .flatten();
+
+        match oldest {
+            None => Ok(None),
+            Some(s) => s
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .map(Some)
+                .map_err(other_storage_err("invalid created_at on jobs row")),
+        }
+    }
+
     fn count_jobs_by_status(&self) -> Result<Vec<(JobStatus, u64)>> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -694,6 +711,21 @@ mod tests {
         let report = store.prune_old_jobs(policy).unwrap();
         assert_eq!(report.deleted, 0);
         assert_eq!(report.kept, 0);
+    }
+
+    #[test]
+    fn oldest_job_created_at_returns_min_on_sqlite() {
+        use voom_domain::job::{Job, JobType};
+        let store = test_store();
+        let mut older = Job::new(JobType::Process);
+        older.created_at = chrono::Utc::now() - chrono::Duration::days(3);
+        store.create_job(&older).unwrap();
+        let mut newer = Job::new(JobType::Process);
+        newer.created_at = chrono::Utc::now();
+        store.create_job(&newer).unwrap();
+
+        let got = store.oldest_job_created_at().unwrap().unwrap();
+        assert_eq!(got.timestamp_millis(), older.created_at.timestamp_millis());
     }
 
     #[test]

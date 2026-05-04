@@ -5,7 +5,7 @@ use voom_domain::storage::{
     EventLogFilters, EventLogRecord, EventLogStorage, PruneReport, RetentionPolicy,
 };
 
-use super::{format_datetime, storage_err, SqliteStore};
+use super::{format_datetime, other_storage_err, storage_err, SqliteStore};
 
 impl EventLogStorage for SqliteStore {
     fn insert_event_log(&self, record: &EventLogRecord) -> Result<i64> {
@@ -180,6 +180,25 @@ impl EventLogStorage for SqliteStore {
         )
         .optional()
         .map_err(storage_err("failed to query latest event"))
+    }
+
+    fn oldest_event_at(&self) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let conn = self.conn()?;
+        let oldest: Option<String> = conn
+            .query_row("SELECT MIN(created_at) FROM event_log", [], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(storage_err("failed to query oldest event"))?
+            .flatten();
+
+        match oldest {
+            None => Ok(None),
+            Some(s) => s
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .map(Some)
+                .map_err(other_storage_err("invalid created_at on event_log row")),
+        }
     }
 }
 
@@ -425,6 +444,30 @@ mod tests {
         let store = test_store();
         let got = store.latest_event_of_type("retention.completed").unwrap();
         assert!(got.is_none());
+    }
+
+    #[test]
+    fn oldest_event_at_returns_min_on_sqlite() {
+        let store = test_store();
+        let mut older = EventLogRecord::new(
+            uuid::Uuid::new_v4(),
+            "file.discovered".into(),
+            "{}".into(),
+            "x".into(),
+        );
+        older.created_at = chrono::Utc::now() - chrono::Duration::days(2);
+        store.insert_event_log(&older).unwrap();
+        let mut newer = EventLogRecord::new(
+            uuid::Uuid::new_v4(),
+            "file.discovered".into(),
+            "{}".into(),
+            "y".into(),
+        );
+        newer.created_at = chrono::Utc::now();
+        store.insert_event_log(&newer).unwrap();
+
+        let got = store.oldest_event_at().unwrap().unwrap();
+        assert_eq!(got.timestamp_millis(), older.created_at.timestamp_millis());
     }
 
     #[test]

@@ -901,6 +901,12 @@ mod tests {
         ) -> voom_domain::errors::Result<voom_domain::storage::PruneReport> {
             self.inner.count_old_jobs(policy)
         }
+
+        fn oldest_job_created_at(
+            &self,
+        ) -> voom_domain::errors::Result<Option<chrono::DateTime<chrono::Utc>>> {
+            self.inner.oldest_job_created_at()
+        }
     }
 
     #[tokio::test]

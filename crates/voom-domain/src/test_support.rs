@@ -429,6 +429,11 @@ impl JobStorage for InMemoryStore {
     ) -> crate::errors::Result<crate::storage::PruneReport> {
         Ok(crate::storage::PruneReport::default())
     }
+
+    fn oldest_job_created_at(&self) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let jobs = self.jobs.lock();
+        Ok(jobs.values().map(|j| j.created_at).min())
+    }
 }
 
 impl PlanStorage for InMemoryStore {
@@ -673,6 +678,11 @@ impl crate::storage::EventLogStorage for InMemoryStore {
     ) -> crate::errors::Result<Option<crate::storage::EventLogRecord>> {
         Ok(None)
     }
+
+    fn oldest_event_at(&self) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let events = self.event_log.lock();
+        Ok(events.iter().map(|r| r.created_at).min())
+    }
 }
 
 impl SnapshotStorage for InMemoryStore {
@@ -763,5 +773,70 @@ impl PendingOpsStorage for InMemoryStore {
         let mut ops = self.pending_ops.lock().clone();
         ops.sort_by_key(|o| o.started_at);
         Ok(ops)
+    }
+}
+
+#[cfg(test)]
+mod oldest_at_tests {
+    use super::*;
+    use crate::job::{Job, JobType};
+    use crate::storage::{EventLogRecord, EventLogStorage, JobStorage};
+
+    #[test]
+    fn oldest_job_created_at_none_when_empty() {
+        let store = InMemoryStore::new();
+        assert!(store.oldest_job_created_at().unwrap().is_none());
+    }
+
+    #[test]
+    fn oldest_job_created_at_returns_min_created_at() {
+        let store = InMemoryStore::new();
+        let mut j1 = Job::new(JobType::Process);
+        j1.created_at = chrono::Utc::now() - chrono::Duration::hours(2);
+        let mut j2 = Job::new(JobType::Process);
+        j2.created_at = chrono::Utc::now() - chrono::Duration::hours(1);
+        store.create_job(&j1).unwrap();
+        store.create_job(&j2).unwrap();
+        assert_eq!(
+            store
+                .oldest_job_created_at()
+                .unwrap()
+                .map(|t| t.timestamp_millis()),
+            Some(j1.created_at.timestamp_millis())
+        );
+    }
+
+    #[test]
+    fn oldest_event_at_none_when_empty() {
+        let store = InMemoryStore::new();
+        assert!(store.oldest_event_at().unwrap().is_none());
+    }
+
+    #[test]
+    fn oldest_event_at_returns_min_created_at() {
+        let store = InMemoryStore::new();
+        let mut a = EventLogRecord::new(
+            uuid::Uuid::new_v4(),
+            "file.discovered".into(),
+            "{}".into(),
+            "older".into(),
+        );
+        a.created_at = chrono::Utc::now() - chrono::Duration::hours(3);
+        let mut b = EventLogRecord::new(
+            uuid::Uuid::new_v4(),
+            "file.discovered".into(),
+            "{}".into(),
+            "newer".into(),
+        );
+        b.created_at = chrono::Utc::now() - chrono::Duration::hours(1);
+        store.insert_event_log(&a).unwrap();
+        store.insert_event_log(&b).unwrap();
+        assert_eq!(
+            store
+                .oldest_event_at()
+                .unwrap()
+                .map(|t| t.timestamp_millis()),
+            Some(a.created_at.timestamp_millis())
+        );
     }
 }
