@@ -607,7 +607,8 @@ pub struct EventsArgs {
     #[arg(short, long, default_value = "table")]
     pub format: OutputFormat,
 
-    /// Maximum events to display
+    /// Maximum events to display. Values above 10,000 are fetched from
+    /// storage in pages of 10,000 and streamed to stdout.
     #[arg(short = 'n', long, default_value = "50")]
     pub limit: u32,
 }
