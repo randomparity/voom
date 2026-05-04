@@ -114,54 +114,53 @@ pub fn probe_capabilities() -> FfmpegCapabilities {
 /// tool path. Lets tests drive the failure path with a non-existent
 /// binary without manipulating `PATH`.
 fn probe_capabilities_with_tool(tool: &str) -> FfmpegCapabilities {
-    let ((codecs, formats), (hw_accels, (hw_encoders, hw_decoders))) = rayon::join(
+    let ((codecs, formats), hw) = rayon::join(
         || rayon::join(|| probe_codecs(tool), || probe_formats(tool)),
-        || {
-            rayon::join(
-                || probe_hwaccels(tool),
-                || rayon::join(|| probe_hw_encoders(tool), || probe_hw_decoders(tool)),
-            )
-        },
+        || probe_hw_capabilities(tool),
     );
 
     let codecs = codecs.map(|mut c| {
-        c.hw_encoders = hw_encoders;
-        c.hw_decoders = hw_decoders;
+        c.hw_encoders = hw.encoders;
+        c.hw_decoders = hw.decoders;
         c
     });
 
     FfmpegCapabilities {
         codecs,
         formats,
-        hw_accels,
+        hw_accels: hw.hw_accels,
     }
 }
 
-/// Aggregate result of [`probe_hw_details`].
+/// Aggregate result of [`probe_hw_capabilities`].
 ///
-/// `encoders` and `decoders` come from `-encoders` / `-decoders` ffmpeg
-/// probes and degrade to empty `Vec`s on probe failure. `devices`
-/// follows the per-backend [`enumerate_gpus`] contract (e.g. always
-/// non-empty for `Videotoolbox`, dependent on `nvidia-smi` / `vainfo`
-/// availability for the others).
-pub struct HwDetails {
+/// All three fields degrade independently to empty `Vec`s on probe
+/// failure (spawn error, non-zero exit, or timeout), with a
+/// `tracing::warn!` recording the cause.
+pub struct HwCapabilities {
+    pub hw_accels: Vec<String>,
     pub encoders: Vec<String>,
     pub decoders: Vec<String>,
-    pub devices: Vec<GpuDevice>,
 }
 
-/// Run [`probe_hw_encoders`], [`probe_hw_decoders`], and
-/// [`enumerate_gpus`] concurrently using nested `rayon::join`.
+/// Run [`probe_hwaccels`], [`probe_hw_encoders`], and
+/// [`probe_hw_decoders`] concurrently using nested `rayon::join`.
+///
+/// Each probe is independently bounded by `CAPABILITY_PROBE_TIMEOUT`;
+/// the three calls run on rayon's pool so the wall-clock cost is
+/// roughly one probe instead of three. GPU device enumeration is *not*
+/// part of this bundle: it depends on the resolved backend and is the
+/// caller's responsibility (see [`enumerate_gpus`]).
 #[must_use]
-pub fn probe_hw_details(tool: &str, backend: HwAccelBackend) -> HwDetails {
-    let ((encoders, decoders), devices) = rayon::join(
+pub fn probe_hw_capabilities(tool: &str) -> HwCapabilities {
+    let (hw_accels, (encoders, decoders)) = rayon::join(
+        || probe_hwaccels(tool),
         || rayon::join(|| probe_hw_encoders(tool), || probe_hw_decoders(tool)),
-        || enumerate_gpus(backend),
     );
-    HwDetails {
+    HwCapabilities {
+        hw_accels,
         encoders,
         decoders,
-        devices,
     }
 }
 
@@ -1056,14 +1055,26 @@ vainfo: Supported profile and entrypoint
     }
 
     #[test]
-    fn probe_hw_details_with_missing_tool_returns_empty_lists() {
-        // `devices` is intentionally not asserted: enumerate_gpus follows
-        // a different contract (Videotoolbox returns a hardcoded entry).
-        let details =
-            super::probe_hw_details("/nonexistent/ffmpeg-fake", HwAccelBackend::Videotoolbox);
+    fn probe_hw_capabilities_with_missing_tool_returns_empty_lists() {
+        let caps = super::probe_hw_capabilities("/nonexistent/ffmpeg-fake");
+        assert!(caps.hw_accels.is_empty());
+        assert!(caps.encoders.is_empty());
+        assert!(caps.decoders.is_empty());
+    }
 
-        assert!(details.encoders.is_empty());
-        assert!(details.decoders.is_empty());
+    #[test]
+    fn probe_hw_capabilities_returns_promptly_under_failure_path() {
+        // Smallest budget that still catches a regression to serial
+        // dispatch while remaining stable on slow CI runners.
+        const BUDGET: Duration = Duration::from_millis(500);
+        let started = std::time::Instant::now();
+        let _ = super::probe_hw_capabilities("/nonexistent/ffmpeg-fake");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < BUDGET,
+            "probe_hw_capabilities took {elapsed:?} on the failure path; \
+             expected <{BUDGET:?} — regression to serial dispatch?"
+        );
     }
 
     #[test]
