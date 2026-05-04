@@ -53,6 +53,24 @@ fn fetch_paginated(
     Ok(())
 }
 
+/// Treat a broken pipe (e.g., `voom events | head`) as a clean exit instead of
+/// propagating an error. Other I/O failures still bubble up.
+fn ignore_broken_pipe(result: Result<()>) -> Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            for cause in err.chain() {
+                if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
+                    if io_err.kind() == std::io::ErrorKind::BrokenPipe {
+                        return Ok(());
+                    }
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
 pub async fn run(args: EventsArgs, token: CancellationToken) -> Result<()> {
     let config = config::load_config().unwrap_or_default();
     let store = app::open_store(&config)?;
@@ -80,7 +98,7 @@ fn run_streaming(
         OutputFormat::Table => {
             let mut header_written = false;
             let mut any = false;
-            fetch_paginated(store, base_filters, limit, |r| {
+            ignore_broken_pipe(fetch_paginated(store, base_filters, limit, |r| {
                 if !header_written {
                     writeln!(out, "{:<20} {:<28} SUMMARY", "TIMESTAMP", "TYPE")?;
                     writeln!(out, "{}", "-".repeat(78))?;
@@ -95,7 +113,7 @@ fn run_streaming(
                     r.summary,
                 )?;
                 Ok(())
-            })?;
+            }))?;
             if !any {
                 eprintln!("No events found.");
             }
@@ -104,32 +122,33 @@ fn run_streaming(
             // Stream a JSON array element-by-element so memory stays bounded
             // by EVENT_LOG_PAGE_SIZE rather than scaling with `limit`.
             let mut first = true;
-            writeln!(out, "[")?;
-            fetch_paginated(store, base_filters, limit, |r| {
-                if !first {
-                    writeln!(out, ",")?;
-                }
-                first = false;
-                let value = record_to_json(r);
-                let s = serde_json::to_string_pretty(&value)?;
-                // Indent each line by two spaces so output matches the prior
-                // pretty-printed array shape.
-                for (i, line) in s.lines().enumerate() {
-                    if i == 0 {
-                        write!(out, "  {line}")?;
-                    } else {
-                        write!(out, "\n  {line}")?;
+            ignore_broken_pipe((|| -> Result<()> {
+                writeln!(out, "[")?;
+                fetch_paginated(store, base_filters, limit, |r| {
+                    if !first {
+                        writeln!(out, ",")?;
                     }
-                }
+                    first = false;
+                    let value = record_to_json(r);
+                    let s = serde_json::to_string_pretty(&value)?;
+                    // Indent each line by two spaces so output matches the prior
+                    // pretty-printed array shape.
+                    for (i, line) in s.lines().enumerate() {
+                        if i == 0 {
+                            write!(out, "  {line}")?;
+                        } else {
+                            write!(out, "\n  {line}")?;
+                        }
+                    }
+                    Ok(())
+                })?;
+                writeln!(out)?;
+                writeln!(out, "]")?;
                 Ok(())
-            })?;
-            writeln!(out)?;
-            writeln!(out, "]")?;
+            })())?;
         }
         OutputFormat::Plain | OutputFormat::Csv => {
-            let mut any = false;
-            fetch_paginated(store, base_filters, limit, |r| {
-                any = true;
+            ignore_broken_pipe(fetch_paginated(store, base_filters, limit, |r| {
                 writeln!(
                     out,
                     "{}\t{}\t{}",
@@ -138,10 +157,7 @@ fn run_streaming(
                     r.summary,
                 )?;
                 Ok(())
-            })?;
-            if !any {
-                eprintln!("No events found.");
-            }
+            }))?;
         }
     }
     Ok(())
@@ -156,14 +172,11 @@ async fn run_follow(
     let mut last_rowid = 0i64;
 
     // Initial backfill — same behavior as non-follow mode, including pagination.
-    {
-        let store_ref = &store;
-        fetch_paginated(store_ref, &base_filters, args.limit, |r| {
-            print_follow_row(args.format, r);
-            last_rowid = last_rowid.max(r.rowid);
-            Ok(())
-        })?;
-    }
+    fetch_paginated(&store, &base_filters, args.limit, |r| {
+        print_follow_row(args.format, r);
+        last_rowid = last_rowid.max(r.rowid);
+        Ok(())
+    })?;
 
     let mut poll_filters = base_filters.clone();
     poll_filters.limit = Some(200);
