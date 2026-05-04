@@ -188,6 +188,26 @@ The event bus is the sole communication mechanism between plugins. It uses synch
 
 Events are published to all subscribed plugins, ordered by priority (lower = runs first). Each subscriber can optionally return an `EventResult` that may influence downstream processing.
 
+### Retention invariants
+
+`event_log` records every event dispatched on the bus, including
+`job.started` and `job.completed`. `jobs` records one row per work item the
+worker pool processed.
+
+For a single `voom process` run, the event_log gains roughly **seven rows
+per job row**: file.discovered, file.introspected, three plan.* rows for
+files that were transformed, plus job.started/completed. Default retention
+must therefore keep `event_log` at *least* `7×` longer than `jobs`, on
+both axes (`keep_last` and `keep_for_days`), or the event log will be
+pruned while jobs survive — producing the misleading appearance that jobs
+completed without announcing themselves on the bus.
+
+The shipped defaults satisfy this: `jobs.keep_last = 50_000` and
+`event_log.keep_last = 500_000`; `jobs.keep_for_days = 7` and
+`event_log.keep_for_days = 60`. Operators who tighten `event_log` in
+`config.toml` should keep the multiplier in mind — `voom health check`
+warns when the oldest event is newer than the oldest job (issue #194).
+
 ## CLI Dual-Dispatch Pattern
 
 CLI commands (`scan`, `process`) use a **hybrid approach**: direct plugin calls for CLI control flow, with event publishing for plugin coordination. This is an intentional architectural decision, not interim scaffolding.

@@ -369,6 +369,13 @@ retention_days = 30
 # Database retention. Bounds the size of jobs, event_log, and file_transitions
 # to keep the database from growing forever. Set keep_for_days = 0 and keep_last = 0
 # for any table to disable retention for that table.
+#
+# Invariant: event_log must outlive jobs by ~10x on both axes. Each job row
+# produces ~7 event_log rows (file.discovered, file.introspected, three
+# plan.* events, job.started, job.completed). If event_log is pruned while
+# jobs are not, `voom events` and SSE history will undercount completed
+# work. `voom health check` reports when this invariant is violated.
+# See issue #194.
 [retention]
 # How often the periodic prune runs in `serve` mode (minutes).
 schedule_interval_minutes = 60
