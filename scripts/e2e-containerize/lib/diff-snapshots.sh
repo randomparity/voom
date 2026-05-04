@@ -24,17 +24,19 @@ post_paths=$(mktemp)
 classify_tmp=$(mktemp)
 trap 'find "${pre_paths}" "${post_paths}" "${classify_tmp}" -maxdepth 0 -delete 2>/dev/null || true' EXIT
 
-awk -F'\t' 'NR>1 {print $1}' "${pre_m}" | sort >"${pre_paths}"
-awk -F'\t' 'NR>1 {print $1}' "${post_m}" | sort >"${post_paths}"
+# LC_ALL=C ensures sort and join agree on byte-order collation; default
+# locale uses unicode-aware sort which join treats as out-of-order.
+awk -F'\t' 'NR>1 {print $1}' "${pre_m}" | LC_ALL=C sort >"${pre_paths}"
+awk -F'\t' 'NR>1 {print $1}' "${post_m}" | LC_ALL=C sort >"${post_paths}"
 
-disappeared=$(comm -23 "${pre_paths}" "${post_paths}" | wc -l)
-new_files=$(comm -13 "${pre_paths}" "${post_paths}" | wc -l)
-common=$(comm -12 "${pre_paths}" "${post_paths}" | wc -l)
+disappeared=$(LC_ALL=C comm -23 "${pre_paths}" "${post_paths}" | wc -l)
+new_files=$(LC_ALL=C comm -13 "${pre_paths}" "${post_paths}" | wc -l)
+common=$(LC_ALL=C comm -12 "${pre_paths}" "${post_paths}" | wc -l)
 
 # Classify common files: unchanged / mtime-changed / size-changed
-join -t $'\t' -j1 \
-    <(awk -F'\t' 'NR>1 {print $1"\t"$2"\t"$3}' "${pre_m}" | sort -k1,1) \
-    <(awk -F'\t' 'NR>1 {print $1"\t"$2"\t"$3}' "${post_m}" | sort -k1,1) |
+LC_ALL=C join -t $'\t' -j1 \
+    <(awk -F'\t' 'NR>1 {print $1"\t"$2"\t"$3}' "${pre_m}" | LC_ALL=C sort -k1,1) \
+    <(awk -F'\t' 'NR>1 {print $1"\t"$2"\t"$3}' "${post_m}" | LC_ALL=C sort -k1,1) |
     awk -F'\t' 'BEGIN{u=0;m=0;s=0}
         { if ($2==$4 && $3==$5) u++;
           else if ($2!=$4) s++;
@@ -52,14 +54,26 @@ ext_delta=$(
 
 # keep_backups invariant: every pre non-MKV must have a counterpart under
 # <dir>/.voom-backup/<basename>.<timestamp>.vbak (VOOM's actual convention).
+# Build the index from the post-manifest rather than the live filesystem so
+# special characters in paths (brackets, parens, !) don't trip glob matching.
 nonmkv_pre="${pre}/non-mkv-files.txt"
+declare -A vbak_index=()
+while IFS=$'\t' read -r vpath _ _ vext; do
+    [[ "${vext}" == "vbak" ]] || continue
+    vdir=$(dirname "${vpath}")
+    vfile=$(basename "${vpath}")
+    # Strip the trailing .<timestamp>.vbak to recover the original filename.
+    vprefix=${vfile%.*.vbak}
+    vbak_index["${vdir}/${vprefix}"]=1
+done < <(awk -F'\t' 'NR>1' "${post_m}")
+
 missing_bak=0
 while IFS= read -r src; do
     [[ -z "${src}" ]] && continue
     src_dir=$(dirname "${src}")
     src_base=$(basename "${src}")
-    backup_dir="${src_dir}/.voom-backup"
-    if ! compgen -G "${backup_dir}/${src_base}.*.vbak" >/dev/null; then
+    key="${src_dir}/.voom-backup/${src_base}"
+    if [[ -z "${vbak_index[${key}]:-}" ]]; then
         missing_bak=$((missing_bak + 1))
     fi
 done <"${nonmkv_pre}"

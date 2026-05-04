@@ -24,12 +24,13 @@ done
 
 manifest="${out_dir}/library-manifest.tsv"
 printf 'path\tsize\tmtime\textension\n' >"${manifest}"
+# LC_ALL=C: byte-order sort so downstream join has consistent collation.
 find "${lib_root}" -type f \( "${find_args[@]}" \) -printf '%p\t%s\t%T@\t%f\n' |
     awk -F'\t' 'BEGIN{OFS="\t"} {
         n = split($4, parts, "."); ext = tolower(parts[n]);
         print $1, $2, $3, ext
       }' |
-    sort -k1,1 \
+    LC_ALL=C sort -k1,1 \
         >>"${manifest}"
 
 # Extension tally
