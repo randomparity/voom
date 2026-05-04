@@ -355,6 +355,28 @@ where
         .collect()
 }
 
+/// Run an encoder validator across all candidates in parallel, returning
+/// `(name, ok)` pairs in source order.
+///
+/// Same parallelization rationale as [`validate_hw_encoders_parallel`], but
+/// keeps both passing and failing entries so callers can render per-encoder
+/// status (e.g. `OK` vs `UNSUPPORTED`) instead of a filtered list.
+///
+/// `par_iter().map().collect()` preserves the source order of `encoders`,
+/// which keeps grouped output deterministic.
+pub fn validate_hw_encoders_parallel_with_status<F>(
+    encoders: &[String],
+    validator: F,
+) -> Vec<(String, bool)>
+where
+    F: Fn(&str) -> bool + Sync,
+{
+    encoders
+        .par_iter()
+        .map(|enc| (enc.clone(), validator(enc.as_str())))
+        .collect()
+}
+
 /// Test whether an ffmpeg HW encoder actually works on the current device.
 ///
 /// Tries to encode a single frame from a synthetic source. Returns `false`
@@ -946,6 +968,65 @@ vainfo: Supported profile and entrypoint
         let input: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
         let result = validate_hw_encoders_parallel(&input, |_| false);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_validate_hw_encoders_parallel_with_status_preserves_order() {
+        let input: Vec<String> = vec![
+            "av1_nvenc".into(),
+            "h264_nvenc".into(),
+            "av1_qsv".into(),
+            "hevc_nvenc".into(),
+            "vp9_qsv".into(),
+        ];
+        let result =
+            validate_hw_encoders_parallel_with_status(&input, |name| name.ends_with("_nvenc"));
+        assert_eq!(
+            result,
+            vec![
+                ("av1_nvenc".to_string(), true),
+                ("h264_nvenc".to_string(), true),
+                ("av1_qsv".to_string(), false),
+                ("hevc_nvenc".to_string(), true),
+                ("vp9_qsv".to_string(), false),
+            ],
+            "with_status must preserve source order even when run in parallel"
+        );
+    }
+
+    #[test]
+    fn test_validate_hw_encoders_parallel_with_status_empty_input() {
+        let input: Vec<String> = Vec::new();
+        let result = validate_hw_encoders_parallel_with_status(&input, |_| true);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_validate_hw_encoders_parallel_with_status_all_rejected() {
+        let input: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
+        let result = validate_hw_encoders_parallel_with_status(&input, |_| false);
+        assert_eq!(
+            result,
+            vec![
+                ("a".to_string(), false),
+                ("b".to_string(), false),
+                ("c".to_string(), false),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_validate_hw_encoders_parallel_with_status_all_accepted() {
+        let input: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
+        let result = validate_hw_encoders_parallel_with_status(&input, |_| true);
+        assert_eq!(
+            result,
+            vec![
+                ("a".to_string(), true),
+                ("b".to_string(), true),
+                ("c".to_string(), true),
+            ],
+        );
     }
 
     #[test]

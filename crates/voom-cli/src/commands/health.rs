@@ -5,7 +5,7 @@ use voom_domain::storage::HealthCheckFilters;
 use voom_ffmpeg_executor::hwaccel::{resolve_hw_config, HwAccelBackend};
 use voom_ffmpeg_executor::probe::{
     probe_hw_details, probe_hwaccels, validate_hw_encoder, validate_hw_encoder_on_device,
-    GpuDevice, HwDetails,
+    validate_hw_encoders_parallel_with_status, GpuDevice, HwDetails,
 };
 
 use crate::app;
@@ -176,8 +176,11 @@ fn print_encoder_block(hw_encoders: &[String], backend: HwAccelBackend, device: 
     let label = encoder_block_label(device, backend);
     println!();
     println!("  HW Encoders ({label}):");
-    for enc in hw_encoders {
-        if validate_hw_encoder_on_device(enc, backend, device) {
+    let results = validate_hw_encoders_parallel_with_status(hw_encoders, |enc| {
+        validate_hw_encoder_on_device(enc, backend, device)
+    });
+    for (enc, ok) in results {
+        if ok {
             println!("    {:<20}{}", enc, style("OK (device validated)").green());
         } else {
             println!("    {:<20}{}", enc, style("UNSUPPORTED").yellow());
