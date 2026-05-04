@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 use voom_domain::storage::EventLogFilters;
@@ -9,15 +11,11 @@ use crate::config;
 /// Storage clamps `list_event_log` to 10_000 rows per call; we use the same
 /// chunk size so a single call returns either everything matching or a full
 /// page that we can advance past via `since_rowid`.
-// `dead_code` allow lifts once `run` is wired up to use the helper (issue #192, task 3).
-#[allow(dead_code)]
 const EVENT_LOG_PAGE_SIZE: u32 = 10_000;
 
 /// Page through the event log via `since_rowid`, invoking `f` on each record
 /// in order, until either `max_total` records have been emitted or storage
 /// returns fewer than `EVENT_LOG_PAGE_SIZE` rows (i.e., the table is drained).
-// `dead_code` allow lifts once `run` is wired up to use the helper (issue #192, task 3).
-#[allow(dead_code)]
 fn fetch_paginated(
     store: &std::sync::Arc<dyn voom_domain::storage::StorageTrait>,
     base_filters: &EventLogFilters,
@@ -59,52 +57,90 @@ pub async fn run(args: EventsArgs, token: CancellationToken) -> Result<()> {
     let config = config::load_config().unwrap_or_default();
     let store = app::open_store(&config)?;
 
-    let mut filters = EventLogFilters::default();
-    filters.event_type = args.filter.clone();
-    filters.limit = Some(args.limit);
-
-    let records = store.list_event_log(&filters)?;
+    let mut base_filters = EventLogFilters::default();
+    base_filters.event_type = args.filter.clone();
 
     if args.follow {
-        run_follow(store, &args, records, token).await
+        run_follow(store, &args, base_filters, token).await
     } else {
-        run_default(args.format, &records)
+        run_streaming(&store, &base_filters, args.limit, args.format)
     }
 }
 
-fn run_default(
+fn run_streaming(
+    store: &std::sync::Arc<dyn voom_domain::storage::StorageTrait>,
+    base_filters: &EventLogFilters,
+    limit: u32,
     format: OutputFormat,
-    records: &[voom_domain::storage::EventLogRecord],
 ) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+
     match format {
         OutputFormat::Table => {
-            if records.is_empty() {
-                eprintln!("No events found.");
-                return Ok(());
-            }
-            println!("{:<20} {:<28} SUMMARY", "TIMESTAMP", "TYPE");
-            println!("{}", "-".repeat(78));
-            for r in records {
-                println!(
+            let mut header_written = false;
+            let mut any = false;
+            fetch_paginated(store, base_filters, limit, |r| {
+                if !header_written {
+                    writeln!(out, "{:<20} {:<28} SUMMARY", "TIMESTAMP", "TYPE")?;
+                    writeln!(out, "{}", "-".repeat(78))?;
+                    header_written = true;
+                }
+                any = true;
+                writeln!(
+                    out,
                     "{:<20} {:<28} {}",
                     r.created_at.format("%Y-%m-%d %H:%M:%S"),
                     r.event_type,
                     r.summary,
-                );
+                )?;
+                Ok(())
+            })?;
+            if !any {
+                eprintln!("No events found.");
             }
         }
         OutputFormat::Json => {
-            let json: Vec<serde_json::Value> = records.iter().map(record_to_json).collect();
-            println!("{}", serde_json::to_string_pretty(&json)?);
+            // Stream a JSON array element-by-element so memory stays bounded
+            // by EVENT_LOG_PAGE_SIZE rather than scaling with `limit`.
+            let mut first = true;
+            writeln!(out, "[")?;
+            fetch_paginated(store, base_filters, limit, |r| {
+                if !first {
+                    writeln!(out, ",")?;
+                }
+                first = false;
+                let value = record_to_json(r);
+                let s = serde_json::to_string_pretty(&value)?;
+                // Indent each line by two spaces so output matches the prior
+                // pretty-printed array shape.
+                for (i, line) in s.lines().enumerate() {
+                    if i == 0 {
+                        write!(out, "  {line}")?;
+                    } else {
+                        write!(out, "\n  {line}")?;
+                    }
+                }
+                Ok(())
+            })?;
+            writeln!(out)?;
+            writeln!(out, "]")?;
         }
         OutputFormat::Plain | OutputFormat::Csv => {
-            for r in records {
-                println!(
+            let mut any = false;
+            fetch_paginated(store, base_filters, limit, |r| {
+                any = true;
+                writeln!(
+                    out,
                     "{}\t{}\t{}",
                     r.event_type,
                     r.created_at.format("%Y-%m-%d %H:%M:%S"),
                     r.summary,
-                );
+                )?;
+                Ok(())
+            })?;
+            if !any {
+                eprintln!("No events found.");
             }
         }
     }
@@ -114,19 +150,22 @@ fn run_default(
 async fn run_follow(
     store: std::sync::Arc<dyn voom_domain::storage::StorageTrait>,
     args: &EventsArgs,
-    initial: Vec<voom_domain::storage::EventLogRecord>,
+    base_filters: EventLogFilters,
     token: CancellationToken,
 ) -> Result<()> {
     let mut last_rowid = 0i64;
 
-    // Print initial batch
-    for r in &initial {
-        print_follow_row(args.format, r);
-        last_rowid = last_rowid.max(r.rowid);
+    // Initial backfill — same behavior as non-follow mode, including pagination.
+    {
+        let store_ref = &store;
+        fetch_paginated(store_ref, &base_filters, args.limit, |r| {
+            print_follow_row(args.format, r);
+            last_rowid = last_rowid.max(r.rowid);
+            Ok(())
+        })?;
     }
 
-    let mut poll_filters = EventLogFilters::default();
-    poll_filters.event_type = args.filter.clone();
+    let mut poll_filters = base_filters.clone();
     poll_filters.limit = Some(200);
 
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
