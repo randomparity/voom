@@ -172,6 +172,8 @@ The event bus is the sole communication mechanism between plugins. It uses synch
 | `file.discovered` | Discovery | New file found during scan |
 | `file.introspected` | CLI (introspect helper) | File metadata extracted via ffprobe |
 | `file.introspection_failed` | CLI (introspect helper) | File introspection failed |
+| `introspect.session.completed` | CLI (`process` command) | End of a standalone re-introspection batch (one per run); session-level, not per-file — for per-file see `file.introspected` |
+| `scan.complete` | CLI (`scan` command) | End of a discovery + introspection scan; carries both totals |
 | `metadata.enriched` | WASM plugins | External metadata added |
 | `plan.created` | CLI (process command) | Execution plan dispatched for executor claiming |
 | `plan.executing` | CLI (process command) | Plan execution about to start (triggers backup) |
