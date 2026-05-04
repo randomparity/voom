@@ -119,33 +119,7 @@ fn run_streaming(
             }
         }
         OutputFormat::Json => {
-            // Stream a JSON array element-by-element so memory stays bounded
-            // by EVENT_LOG_PAGE_SIZE rather than scaling with `limit`.
-            let mut first = true;
-            ignore_broken_pipe((|| -> Result<()> {
-                writeln!(out, "[")?;
-                fetch_paginated(store, base_filters, limit, |r| {
-                    if !first {
-                        writeln!(out, ",")?;
-                    }
-                    first = false;
-                    let value = record_to_json(r);
-                    let s = serde_json::to_string_pretty(&value)?;
-                    // Indent each line by two spaces so output matches the prior
-                    // pretty-printed array shape.
-                    for (i, line) in s.lines().enumerate() {
-                        if i == 0 {
-                            write!(out, "  {line}")?;
-                        } else {
-                            write!(out, "\n  {line}")?;
-                        }
-                    }
-                    Ok(())
-                })?;
-                writeln!(out)?;
-                writeln!(out, "]")?;
-                Ok(())
-            })())?;
+            ignore_broken_pipe(write_json_stream(&mut out, store, base_filters, limit))?;
         }
         OutputFormat::Plain | OutputFormat::Csv => {
             ignore_broken_pipe(fetch_paginated(store, base_filters, limit, |r| {
@@ -160,6 +134,39 @@ fn run_streaming(
             }))?;
         }
     }
+    Ok(())
+}
+
+/// Stream the event log as a single JSON array, hand-formatted so output is
+/// byte-compatible with the previous `serde_json::to_string_pretty(&Vec<_>)`
+/// call site — downstream consumers (e.g., `voom events -f json | jq`) keep
+/// working unchanged.
+fn write_json_stream<W: Write>(
+    out: &mut W,
+    store: &std::sync::Arc<dyn voom_domain::storage::StorageTrait>,
+    base_filters: &EventLogFilters,
+    limit: u32,
+) -> Result<()> {
+    let mut first = true;
+    writeln!(out, "[")?;
+    fetch_paginated(store, base_filters, limit, |r| {
+        if !first {
+            writeln!(out, ",")?;
+        }
+        first = false;
+        let value = record_to_json(r);
+        let s = serde_json::to_string_pretty(&value)?;
+        for (i, line) in s.lines().enumerate() {
+            if i == 0 {
+                write!(out, "  {line}")?;
+            } else {
+                write!(out, "\n  {line}")?;
+            }
+        }
+        Ok(())
+    })?;
+    writeln!(out)?;
+    writeln!(out, "]")?;
     Ok(())
 }
 
