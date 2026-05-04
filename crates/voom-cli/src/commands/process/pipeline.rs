@@ -452,6 +452,22 @@ pub(super) async fn handle_plan_success(
         ctx,
     });
 
+    // Defense-in-depth: clear any `bad_files` row at the post-execution
+    // path. The bundle in `record_post_execution` already does this for
+    // the path-change / hash-change paths atomically, but
+    // `record_file_transition` short-circuits when nothing changed
+    // (same path AND same hash), so the bundle never runs and an orphan
+    // row from a re-introspection failure (or stale scan-time failure)
+    // would persist. Idempotent — DELETE WHERE path = … is safe even
+    // when no row exists. See issue #180.
+    if let Err(e) = ctx.store.delete_bad_file_by_path(&new_file.path) {
+        tracing::warn!(
+            path = %new_file.path.display(),
+            error = %e,
+            "failed to clear bad_files row at post-execution path"
+        );
+    }
+
     new_file
 }
 

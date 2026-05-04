@@ -1500,6 +1500,95 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn handle_plan_success_clears_bad_files_row_when_plan_is_no_op_and_reintrospection_fails()
+    {
+        // Issue #180: when a plan executes "successfully" but produces no
+        // observable change (same path AND same hash), `record_file_transition`
+        // short-circuits (hash_changed=false, path_changed=false) before the
+        // bundled `record_post_execution` call can clear any `bad_files` row.
+        //
+        // This test simulates the orphan row that exists at the start of
+        // `handle_plan_success` (e.g. left by a previous failed scan or a
+        // re-introspection failure in a concurrent job) and verifies it is
+        // cleared even when the plan produces no observable change.
+        use voom_domain::bad_file::{BadFile, BadFileSource};
+        use voom_domain::media::{Container, MediaFile};
+        use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
+
+        let fixture = TestFixture::with_policy(
+            r#"policy "test" { phase tag { defaults { audio: first } } }"#,
+        );
+        let path = fixture.dir_path().join("movie.mkv");
+        // Real bytes on disk so post-execution hashing succeeds and matches the
+        // pre-execution hash — that is what triggers the no-change short-circuit.
+        let payload = vec![7u8; 1024];
+        std::fs::write(&path, &payload).unwrap();
+        let known_hash = voom_discovery::hash_file(&path).unwrap();
+
+        let mut file = MediaFile::new(path.clone());
+        file.container = Container::Mkv;
+        file.size = u64::try_from(payload.len()).unwrap();
+        file.content_hash = Some(known_hash.clone());
+
+        // A track-op-only plan: same container, same path, no container
+        // conversion — `record_file_transition` will see hash_changed=false
+        // and path_changed=false and return early without calling
+        // `record_post_execution`.
+        let mut plan = Plan::new(file.clone(), "tag-defaults", "tag");
+        plan.actions = vec![PlannedAction::track_op(
+            OperationType::SetDefault,
+            0,
+            ActionParams::Empty,
+            "Mark first track default",
+        )];
+
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_sqlite_store::store::SqliteStore::in_memory().unwrap());
+        store.upsert_file(&file).unwrap();
+
+        // Pre-seed a bad_files row at `path`, simulating the state that the
+        // bug leaves behind: a FileIntrospectionFailed event from a previous
+        // pass (or re-introspection failure) wrote a bad_files row, and the
+        // bundled cleanup in `record_post_execution` was never reached because
+        // `record_file_transition` short-circuited on the no-change check.
+        let orphan = BadFile::new(
+            path.clone(),
+            file.size,
+            file.content_hash.clone(),
+            "ffprobe failed: no such file".into(),
+            BadFileSource::Introspection,
+        );
+        store.upsert_bad_file(&orphan).unwrap();
+        assert!(
+            store.bad_file_by_path(&path).unwrap().is_some(),
+            "precondition: orphan bad_files row must exist before handle_plan_success"
+        );
+
+        let kernel = Arc::new(voom_kernel::Kernel::new());
+        let ctx = ProcessContext {
+            ffprobe_path: Some("/nonexistent/ffprobe"),
+            ..fixture.make_ctx(kernel, store.clone())
+        };
+
+        let new_file =
+            pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx).await;
+
+        assert_eq!(
+            new_file.path, path,
+            "no-op plan must leave the file path unchanged"
+        );
+        assert_eq!(
+            new_file.content_hash.as_deref(),
+            Some(known_hash.as_str()),
+            "no-op plan must leave the content hash unchanged (this is what triggers the short-circuit)"
+        );
+        assert!(
+            store.bad_file_by_path(&path).unwrap().is_none(),
+            "handle_plan_success must not leave an orphan bad_files row when the plan produces no observable change"
+        );
+    }
+
     #[test]
     fn record_file_transition_makes_history_lookup_work_for_old_and_new_paths() {
         // Bypass re-introspection (depends on ffprobe being on PATH) and

@@ -172,9 +172,17 @@ pub trait FileStorage: Send + Sync {
     /// equals `transition.path` inside the same transaction. A successful
     /// post-execution bundle means the file at the post-execution path is
     /// no longer "bad" — symmetric with the cleanup `FileIntrospected`
-    /// performs. Without this, a re-introspection failure followed by a
-    /// successful bundle would leave an orphan `bad_files` row at the
-    /// same path as the renamed files row.
+    /// performs.
+    ///
+    /// This is one of two cleanup layers. The bundle's in-transaction
+    /// DELETE handles plans that change the file's path or content hash
+    /// (so the rename + transition INSERT + bad_files DELETE all commit
+    /// atomically). For no-change plans where `record_file_transition`
+    /// short-circuits before calling `record_post_execution`, the
+    /// orchestration in `handle_plan_success` performs an additional
+    /// idempotent DELETE on the post-execution path so an orphan row
+    /// (e.g. from a re-introspection failure) cannot survive a
+    /// successful plan. See issue #180.
     fn record_post_execution(
         &self,
         new_path: Option<&Path>,
