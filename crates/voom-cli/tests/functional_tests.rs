@@ -1660,6 +1660,54 @@ mod test_events {
                 .or(predicate::str::contains("file.introspected")),
         );
     }
+
+    #[test]
+    fn events_returns_more_than_10000_when_limit_is_higher() {
+        use rusqlite::Connection;
+
+        let env = TestEnv::new();
+
+        // Run the CLI once with no events so the schema is created.
+        env.voom().args(["events"]).assert().success();
+
+        // Insert 12_000 event_log rows directly via SQLite.
+        let conn = Connection::open(env.db_path()).expect("open db");
+        let tx = conn.unchecked_transaction().expect("begin tx");
+        for i in 0..12_000u32 {
+            tx.execute(
+                "INSERT INTO event_log (id, event_type, payload, summary, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![
+                    uuid::Uuid::new_v4().to_string(),
+                    "file.discovered",
+                    format!(r#"{{"FileDiscovered":{{"path":"/x/{i}.mkv","size":{i}}}}}"#),
+                    format!("path=/x/{i}.mkv"),
+                    "2026-05-04T00:00:00Z",
+                ],
+            )
+            .expect("insert event_log row");
+        }
+        tx.commit().expect("commit");
+        drop(conn);
+
+        let output = env
+            .voom()
+            .args(["events", "-n", "20000", "-f", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let json: serde_json::Value =
+            serde_json::from_slice(&output).expect("stdout is valid JSON");
+        let arr = json.as_array().expect("JSON array at top level");
+        assert_eq!(
+            arr.len(),
+            12_000,
+            "expected all 12k events, got {}",
+            arr.len()
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
