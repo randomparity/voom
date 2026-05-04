@@ -89,7 +89,6 @@ fi
 
 log_run version "${voom_bin}" --version
 log_run doctor "${voom_bin}" doctor
-log_run health "${voom_bin}" health
 log_run policy-validate "${voom_bin}" policy validate "${policy}"
 
 # ---- Pre-snapshot ----
@@ -100,9 +99,9 @@ pre_count=$(awk -F'\t' 'NR>1' "${run_dir}/pre/library-manifest.tsv" | wc -l)
 
 # ---- Discovery + introspection ----
 echo "==> voom scan"
-log_run scan "${voom_bin}" scan "${library}"
+log_run scan "${voom_bin}" scan -r -y "${library}"
 
-log_run files "${voom_bin}" files
+log_run files-list "${voom_bin}" files list -f csv
 
 # Spot-check inspect on up to 3 sample paths (one of each common ext)
 sample_paths=$(awk -F'\t' 'NR>1 && $4=="mkv" {print $1; exit}' \
@@ -119,27 +118,25 @@ while IFS= read -r p; do
 done <<<"${sample_paths}"
 
 # ---- Planning + execution ----
-echo "==> voom plans (preview)"
-log_run plans-preview "${voom_bin}" plans --policy "${policy}"
+echo "==> voom process --plan-only (preview)"
+log_run plans-preview "${voom_bin}" process --plan-only -y --policy "${policy}" "${library}"
 
 run_start=$(date -Iseconds)
 echo "==> voom process (long run starts at ${run_start})"
-log_run process "${voom_bin}" process --policy "${policy}"
+log_run process "${voom_bin}" process -y --on-error continue --policy "${policy}" "${library}"
 
-log_run jobs "${voom_bin}" jobs
+log_run jobs-list "${voom_bin}" jobs list
 
 # ---- Post-run inspection ----
-echo "==> Post-run inspection"
-log_run events "${voom_bin}" events --since "${run_start}"
-cp "${run_dir}/logs/events.log" "${run_dir}/reports/events.jsonl"
+echo "==> Post-run inspection (run_start=${run_start})"
+log_run events "${voom_bin}" events -n 1000000 -f json
+cp "${run_dir}/logs/events.log" "${run_dir}/reports/events.json"
 
-log_run report "${voom_bin}" report
+log_run report "${voom_bin}" report --all
 cp "${run_dir}/logs/report.log" "${run_dir}/reports/report.txt"
-log_run history "${voom_bin}" history
-cp "${run_dir}/logs/history.log" "${run_dir}/reports/history.txt"
-cp "${run_dir}/logs/files.log" "${run_dir}/reports/files.txt"
-cp "${run_dir}/logs/plans-preview.log" "${run_dir}/reports/plans.txt"
-cp "${run_dir}/logs/jobs.log" "${run_dir}/reports/jobs.txt"
+cp "${run_dir}/logs/files-list.log" "${run_dir}/reports/files.csv"
+cp "${run_dir}/logs/plans-preview.log" "${run_dir}/reports/plans.json"
+cp "${run_dir}/logs/jobs-list.log" "${run_dir}/reports/jobs.txt"
 
 db_path="${HOME}/.config/voom/voom.db"
 if [[ -f "${db_path}" ]]; then

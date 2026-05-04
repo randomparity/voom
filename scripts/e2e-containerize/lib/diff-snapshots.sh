@@ -50,12 +50,16 @@ ext_delta=$(
         <(awk '{print $2"\t"$1}' "${post}/ext-tally.txt" | sort -k1,1)
 )
 
-# keep_backups invariant: every pre non-MKV must have sibling .bak post
+# keep_backups invariant: every pre non-MKV must have a counterpart under
+# <dir>/.voom-backup/<basename>.<timestamp>.vbak (VOOM's actual convention).
 nonmkv_pre="${pre}/non-mkv-files.txt"
 missing_bak=0
 while IFS= read -r src; do
     [[ -z "${src}" ]] && continue
-    if [[ ! -e "${src}.bak" ]]; then
+    src_dir=$(dirname "${src}")
+    src_base=$(basename "${src}")
+    backup_dir="${src_dir}/.voom-backup"
+    if ! compgen -G "${backup_dir}/${src_base}.*.vbak" >/dev/null; then
         missing_bak=$((missing_bak + 1))
     fi
 done <"${nonmkv_pre}"
@@ -99,7 +103,7 @@ nonmkv_count=$(wc -l <"${nonmkv_pre}")
     echo "## keep_backups invariant"
     echo
     echo "Pre non-MKV files: ${nonmkv_count}"
-    echo "Missing sibling .bak post-run: ${missing_bak}"
+    echo "Missing backup post-run: ${missing_bak}"
 } >"${out}"
 
 echo "diff-snapshots: wrote ${out}"

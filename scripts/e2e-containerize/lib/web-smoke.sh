@@ -26,7 +26,7 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 
-endpoints=(/ /api/files /api/jobs /api/events)
+endpoints=(/ /api/files /api/jobs /api/jobs/stats /api/stats /api/health /api/plugins)
 status_file="${out}/statuses.tsv"
 printf 'endpoint\tstatus\n' >"${status_file}"
 for ep in "${endpoints[@]}"; do
@@ -40,6 +40,11 @@ for ep in "${endpoints[@]}"; do
         mv "${body_file}.head" "${body_file}"
     fi
 done
+
+# SSE: open the stream briefly, capture the first chunk, then close.
+sse_status=$(curl -s -o "${out}/body_events.txt" -w '%{http_code}' \
+    --max-time 3 "http://127.0.0.1:${port}/events" || true)
+printf '/events (sse)\t%s\n' "${sse_status:-timeout}" >>"${status_file}"
 
 cat "${status_file}"
 echo "web-smoke: artifacts in ${out}"

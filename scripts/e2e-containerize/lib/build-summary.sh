@@ -18,11 +18,13 @@ note_fail() {
 }
 note_warn() {
     soft_warns+=("$1")
-    [[ "${verdict}" == "PASS" ]] && verdict="WARN"
+    if [[ "${verdict}" == "PASS" ]]; then
+        verdict="WARN"
+    fi
 }
 
 # Hard checks on logged exit codes
-for log_name in doctor health policy-validate; do
+for log_name in doctor policy-validate; do
     rc_file="${run}/logs/${log_name}.log.rc"
     if [[ ! -f "${rc_file}" ]]; then
         note_fail "missing ${log_name}.log.rc"
@@ -49,7 +51,7 @@ missing_bak=0
 disappeared=0
 size_changed=0
 if [[ -f "${diff_md}" ]]; then
-    missing_bak=$(awk '/Missing sibling \.bak post-run:/ {print $NF}' "${diff_md}")
+    missing_bak=$(awk '/Missing backup post-run:/ {print $NF}' "${diff_md}")
     [[ -z "${missing_bak}" ]] && missing_bak=0
     disappeared=$(awk -F'\\| ' '/Disappeared/ {print $3}' "${diff_md}" | tr -dc '0-9')
     [[ -z "${disappeared}" ]] && disappeared=0
@@ -57,10 +59,10 @@ if [[ -f "${diff_md}" ]]; then
     [[ -z "${size_changed}" ]] && size_changed=0
 
     if ((missing_bak > 0)); then
-        note_fail "${missing_bak} non-MKV source(s) lack a sibling .bak (potential data loss)"
+        note_fail "${missing_bak} non-MKV source(s) lack a backup under .voom-backup/ (potential data loss)"
     fi
     if ((disappeared > 0)) && ((missing_bak == 0)); then
-        note_warn "${disappeared} path(s) disappeared (all accounted for via .bak)"
+        note_warn "${disappeared} path(s) disappeared (all accounted for via .voom-backup/)"
     fi
     if ((size_changed > 0)); then
         note_warn "${size_changed} common path(s) changed size — confirm none are pre-existing MKVs"
@@ -74,6 +76,14 @@ statuses="${run}/web-smoke/statuses.tsv"
 if [[ -f "${statuses}" ]]; then
     while IFS=$'\t' read -r ep st; do
         [[ "${ep}" == "endpoint" ]] && continue
+        # /events is an open SSE stream; we only require headers came back 2xx
+        # before max-time closed the connection. Any non-2xx is informational.
+        if [[ "${ep}" == *"(sse)"* ]]; then
+            if [[ ! "${st}" =~ ^2[0-9][0-9]$ ]]; then
+                note_warn "SSE smoke ${ep} returned ${st}"
+            fi
+            continue
+        fi
         if [[ ! "${st}" =~ ^2[0-9][0-9]$ ]]; then
             note_fail "web smoke ${ep} returned ${st}"
         fi

@@ -13,8 +13,9 @@ if [[ ! -d "${lib_root}" ]]; then
 fi
 mkdir -p "${out_dir}"
 
-# Extensions VOOM scans plus .bak (created post-run).
-exts=(mkv mp4 avi m4v mov ts webm bak)
+# Extensions VOOM scans plus .vbak (timestamped backups VOOM writes
+# under <dir>/.voom-backup/ when keep_backups is true).
+exts=(mkv mp4 avi m4v mov ts webm vbak)
 find_args=()
 for i in "${!exts[@]}"; do
     if ((i > 0)); then find_args+=(-o); fi
@@ -43,7 +44,7 @@ awk -F'\t' 'NR>1 {b[$4]+=$2; t+=$2} END {
     sort >"${out_dir}/size-totals.txt"
 
 # Non-MKV path list (the population the policy will transform)
-awk -F'\t' 'NR>1 && $4!="mkv" && $4!="bak" {print $1}' "${manifest}" \
+awk -F'\t' 'NR>1 && $4!="mkv" && $4!="vbak" {print $1}' "${manifest}" \
     >"${out_dir}/non-mkv-files.txt"
 
 count=$(awk -F'\t' 'NR>1' "${manifest}" | wc -l)
