@@ -477,11 +477,11 @@ where
     F: Fn(&str) -> Option<String> + Sync,
 {
     let mut devices: Vec<GpuDevice> = candidates
-        .par_iter()
+        .into_par_iter()
         .map(|(path_str, fallback)| {
-            let name = probe(path_str.as_str()).unwrap_or_else(|| fallback.clone());
+            let name = probe(&path_str).unwrap_or(fallback);
             GpuDevice {
-                id: path_str.clone(),
+                id: path_str,
                 name,
                 vram_mib: None,
             }
@@ -1190,7 +1190,6 @@ vainfo: Supported profile and entrypoint
         let devices = build_vaapi_devices(candidates, probe);
 
         assert_eq!(devices.len(), 2);
-        // Sorted by id ascending.
         assert_eq!(devices[0].id, "/dev/dri/renderD128");
         assert_eq!(devices[0].name, "Intel iHD driver - 24.1.0");
         assert!(devices[0].vram_mib.is_none());
@@ -1202,14 +1201,18 @@ vainfo: Supported profile and entrypoint
 
     #[test]
     fn build_vaapi_devices_runs_probes_in_parallel() {
-        // Verify probes overlap rather than serialize. Each fake probe
-        // sleeps 200ms, so sequential execution would take ~800ms total.
-        // The 700ms ceiling below keeps the test robust on slow CI runners
-        // while still catching a regression to sequential execution.
+        // Each fake probe sleeps `per_probe`; sequential execution would
+        // therefore take at least `per_probe * n`. We assert elapsed is
+        // shorter than that floor by a meaningful margin so a regression
+        // to sequential execution still fails the test on a slow CI host.
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::{Duration, Instant};
 
-        let candidates: Vec<(String, String)> = (0..4)
+        let per_probe = Duration::from_millis(200);
+        let n = 4u32;
+        let sequential_floor = per_probe * n;
+
+        let candidates: Vec<(String, String)> = (0..n)
             .map(|i| {
                 (
                     format!("/dev/dri/renderD{}", 128 + i),
@@ -1221,7 +1224,7 @@ vainfo: Supported profile and entrypoint
         let counter = AtomicUsize::new(0);
         let probe = |_path: &str| -> Option<String> {
             counter.fetch_add(1, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(200));
+            std::thread::sleep(per_probe);
             None
         };
 
@@ -1229,13 +1232,14 @@ vainfo: Supported profile and entrypoint
         let devices = build_vaapi_devices(candidates, probe);
         let elapsed = started.elapsed();
 
-        assert_eq!(devices.len(), 4);
-        assert_eq!(counter.load(Ordering::SeqCst), 4);
-        // Sequential would be ~800ms (4 * 200ms). With rayon's pool we
-        // expect well under 600ms; allow 700ms slack for a cold pool.
+        assert_eq!(devices.len(), n as usize);
+        assert_eq!(counter.load(Ordering::SeqCst), n as usize);
+        // Allow a 100ms cushion below the sequential floor for a cold
+        // rayon pool / busy CI runner; still well clear of sequential.
+        let ceiling = sequential_floor - Duration::from_millis(100);
         assert!(
-            elapsed < Duration::from_millis(700),
-            "probes did not run in parallel: took {elapsed:?}"
+            elapsed < ceiling,
+            "probes did not run in parallel: took {elapsed:?} (sequential floor {sequential_floor:?})"
         );
     }
 }
