@@ -25,5 +25,6 @@ workspace = true
 
 [dev-dependencies]
 insta = { workspace = true }
+proptest = { workspace = true }
 voom-dsl = { workspace = true }
 voom-domain = { workspace = true, features = ["testing"] }

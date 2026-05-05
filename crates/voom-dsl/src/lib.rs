@@ -28,6 +28,9 @@ pub mod parser;
 pub mod service;
 pub mod validator;
 
+#[cfg(any(test, feature = "proptest"))]
+pub mod testing;
+
 pub use ast::{
     ActionNode, CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode,
     PolicyAst, RuleNode, RunIfNode, Span, SpannedOperation, SynthSetting, TrackQueryNode,
