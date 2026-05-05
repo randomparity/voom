@@ -1044,4 +1044,52 @@ mod tests {
             other => panic!("expected Conditional, got {other:?}"),
         }
     }
+
+    // ---- safe_u32 boundary tests (issue #236, cluster A) ----
+    // These tests target the five cargo-mutants survivors on
+    // crates/voom-dsl/src/compiler.rs:29. Each value below is chosen so the
+    // original predicate `n >= 0.0 && n <= u32::MAX && n.fract() == 0.0`
+    // returns a different result than at least one mutant variant.
+
+    #[test]
+    fn safe_u32_accepts_zero() {
+        // Kills `>= -> <` (0.0 >= 0.0 is true; 0.0 < 0.0 is false)
+        // and `== -> !=` (0.0.fract() == 0.0 is true; != is false).
+        assert_eq!(safe_u32(0.0), Some(0));
+    }
+
+    #[test]
+    fn safe_u32_accepts_u32_max() {
+        // Kills `<= -> >` at u32::MAX (MAX <= MAX true; MAX > MAX false).
+        let n = f64::from(u32::MAX);
+        assert_eq!(safe_u32(n), Some(u32::MAX));
+    }
+
+    #[test]
+    fn safe_u32_rejects_negative() {
+        // Kills `&& -> ||` (first conjunction): with ||, -1.0 satisfies the
+        // chain via the second branch and returns Some.
+        assert_eq!(safe_u32(-1.0), None);
+    }
+
+    #[test]
+    fn safe_u32_rejects_overflow() {
+        // Kills `&& -> ||` (second conjunction): with ||, n.fract() == 0.0
+        // alone admits overflow values that should be rejected.
+        let n = f64::from(u32::MAX) + 1.0;
+        assert_eq!(safe_u32(n), None);
+    }
+
+    #[test]
+    fn safe_u32_rejects_fractional_in_range() {
+        // Reinforces both `&& -> ||` mutants and the `== -> !=` mutant.
+        assert_eq!(safe_u32(0.5), None);
+        assert_eq!(safe_u32(1.5), None);
+    }
+
+    #[test]
+    fn safe_u32_typical_value_round_trips() {
+        // Sanity guard that protects later refactors of `safe_u32`.
+        assert_eq!(safe_u32(42.0), Some(42));
+    }
 }
