@@ -853,4 +853,158 @@ mod tests {
             &ctx,
         ));
     }
+
+    // ---- resolve_track_field video-track arms (issue #240) ----
+    // Each test targets a single match arm. Seeding the field with a
+    // known non-default value and asserting FieldCompare(Eq) succeeds
+    // means deleting the arm — which makes resolve_track_field return
+    // None — flips the assertion to false and kills the mutant.
+
+    fn file_with_seeded_video() -> MediaFile {
+        // First video track has width=1920, height=1080, frame_rate=24.0,
+        // is_default/is_forced/is_hdr/is_vfr=true, hdr_format="HDR10".
+        let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
+        file.tracks = vec![{
+            let mut t = Track::new(0, TrackType::Video, "hevc".into());
+            t.width = Some(1920);
+            t.height = Some(1080);
+            t.frame_rate = Some(24.0);
+            t.is_default = true;
+            t.is_forced = true;
+            t.is_hdr = true;
+            t.is_vfr = true;
+            t.hdr_format = Some("HDR10".into());
+            t
+        }];
+        file
+    }
+
+    #[test]
+    fn resolve_track_field_width() {
+        // Kills `delete match arm "width"`.
+        let file = file_with_seeded_video();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["video".into(), "width".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(1920),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_track_field_height() {
+        // Kills `delete match arm "height"`.
+        let file = file_with_seeded_video();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["video".into(), "height".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(1080),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_track_field_frame_rate() {
+        // Kills `delete match arm "frame_rate"`. Uses 24.0 (exactly
+        // representable) to avoid f64 equality flakes.
+        let file = file_with_seeded_video();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["video".into(), "frame_rate".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(24.0),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_track_field_is_default() {
+        // Kills `delete match arm "is_default"`.
+        let file = file_with_seeded_video();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["video".into(), "is_default".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(true),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_track_field_is_forced() {
+        // Kills `delete match arm "is_forced"`.
+        let file = file_with_seeded_video();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["video".into(), "is_forced".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(true),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_track_field_is_hdr() {
+        // Kills `delete match arm "is_hdr"`.
+        let file = file_with_seeded_video();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["video".into(), "is_hdr".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(true),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_track_field_is_vfr() {
+        // Kills `delete match arm "is_vfr"`.
+        let file = file_with_seeded_video();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["video".into(), "is_vfr".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(true),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_track_field_hdr_format() {
+        // Kills `delete match arm "hdr_format"`.
+        let file = file_with_seeded_video();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["video".into(), "hdr_format".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("HDR10".into()),
+            },
+            &file,
+            &ctx,
+        ));
+    }
 }
