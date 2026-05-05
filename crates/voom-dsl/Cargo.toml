@@ -11,6 +11,11 @@ keywords.workspace = true
 categories.workspace = true
 description = "DSL parser and compiler for VOOM policy files"
 
+[features]
+# Exposes `voom_dsl::testing` strategies for downstream proptest consumers.
+# Enabled by integration tests via dev-dependencies on this crate with features = ["proptest"].
+proptest = ["dep:proptest", "dep:proptest-derive"]
+
 [dependencies]
 pest = "2"
 pest_derive = "2"
@@ -20,9 +25,14 @@ regex = { workspace = true }
 thiserror = { workspace = true }
 voom-domain = { workspace = true }
 xxhash-rust = { workspace = true }
+proptest = { workspace = true, optional = true }
+proptest-derive = { workspace = true, optional = true }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 insta = { workspace = true }
+proptest = { workspace = true }
+proptest-derive = { workspace = true }
+voom-dsl = { path = ".", features = ["proptest"] }
