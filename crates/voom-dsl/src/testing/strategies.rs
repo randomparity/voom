@@ -64,6 +64,13 @@ fn numeric_compare_op_strategy() -> impl Strategy<Value = CompareOp> {
     ]
 }
 
+/// Comparison operators valid for `lang`/`codec` field-access comparisons.
+/// The parser whitelists only `==` / `!=` for these
+/// (see `parser.rs::build_list_or_compare_filter`).
+fn field_compare_op_strategy() -> impl Strategy<Value = CompareOp> {
+    prop_oneof![Just(CompareOp::Eq), Just(CompareOp::Ne)]
+}
+
 fn track_target_strategy() -> impl Strategy<Value = String> {
     prop_oneof![
         Just("audio".to_string()),
@@ -326,11 +333,6 @@ fn action_vec_strategy(
 /// Only `Ne` survives as `LangCompare`/`CodecCompare`; other operators are
 /// rejected by the parser entirely.
 fn filter_leaf_strategy() -> impl Strategy<Value = FilterNode> {
-    // Title strings: avoid the chars touched by escape_string ("\\" and "\"")
-    // so format/parse is byte-stable. `title matches` accepts arbitrary
-    // strings — the parser does not compile the regex itself.
-    let title_regex = "[A-Za-z0-9 _\\-]{1,16}";
-
     prop_oneof![
         vec(language_strategy(), 1..=3).prop_map(FilterNode::LangIn),
         vec(codec_strategy(), 1..=3).prop_map(FilterNode::CodecIn),
@@ -339,19 +341,10 @@ fn filter_leaf_strategy() -> impl Strategy<Value = FilterNode> {
         // `lang` / `codec` against a field_access path (≥2 segments per the
         // grammar's `field_access` rule). Unlike literal-value comparisons,
         // the parser does NOT rewrite the field-access form into an In-list,
-        // so both `Eq` and `Ne` round-trip faithfully. Only `==` / `!=` are
-        // accepted for these field comparisons (see `parser.rs::build_list_
-        // or_compare_filter`); the other comparison operators are rejected
-        // with "operator X is not valid for {lang,codec} field comparisons".
-        (
-            prop_oneof![Just(CompareOp::Eq), Just(CompareOp::Ne)],
-            vec(ident_strategy(), 2..=3)
-        )
+        // so both `Eq` and `Ne` round-trip faithfully.
+        (field_compare_op_strategy(), vec(ident_strategy(), 2..=3))
             .prop_map(|(op, p)| FilterNode::LangField(op, p)),
-        (
-            prop_oneof![Just(CompareOp::Eq), Just(CompareOp::Ne)],
-            vec(ident_strategy(), 2..=3)
-        )
+        (field_compare_op_strategy(), vec(ident_strategy(), 2..=3))
             .prop_map(|(op, p)| FilterNode::CodecField(op, p)),
         (
             numeric_compare_op_strategy(),
@@ -362,12 +355,10 @@ fn filter_leaf_strategy() -> impl Strategy<Value = FilterNode> {
         Just(FilterNode::Forced),
         Just(FilterNode::Default),
         Just(FilterNode::Font),
-        string_regex(title_regex)
-            .expect("title regex compiles")
-            .prop_map(FilterNode::TitleContains),
-        string_regex(title_regex)
-            .expect("title regex compiles")
-            .prop_map(FilterNode::TitleMatches),
+        // Title strings reuse `safe_string_strategy` — same constraints
+        // (no `"` or `\`) and `title matches` does not compile the regex.
+        safe_string_strategy().prop_map(FilterNode::TitleContains),
+        safe_string_strategy().prop_map(FilterNode::TitleMatches),
     ]
 }
 
