@@ -38,6 +38,13 @@ fn language_strategy() -> impl Strategy<Value = String> {
     string_regex("[a-z]{2,3}").expect("language regex compiles")
 }
 
+/// `field_access` path: ≥2 segment ident chain (`a.b`, `a.b.c`).
+/// Each call returns a fresh strategy so callers can compose without `.clone()`
+/// (`VecStrategy` does not implement `Clone`).
+fn field_path_strategy() -> impl Strategy<Value = Vec<String>> {
+    vec(ident_strategy(), 2..=3)
+}
+
 fn codec_strategy() -> impl Strategy<Value = String> {
     prop_oneof![
         Just("aac".to_string()),
@@ -119,7 +126,7 @@ fn value_strategy() -> impl Strategy<Value = crate::ast::Value> {
 fn value_or_field_strategy() -> impl Strategy<Value = crate::ast::ValueOrField> {
     use crate::ast::ValueOrField;
 
-    let field = vec(ident_strategy(), 2..=3).prop_map(ValueOrField::Field);
+    let field = field_path_strategy().prop_map(ValueOrField::Field);
     let value = value_strategy().prop_map(ValueOrField::Value);
     prop_oneof![field, value]
 }
@@ -132,7 +139,7 @@ fn value_or_field_strategy() -> impl Strategy<Value = crate::ast::ValueOrField> 
 fn field_or_string_strategy() -> impl Strategy<Value = crate::ast::ValueOrField> {
     use crate::ast::{Value, ValueOrField};
 
-    let field = vec(ident_strategy(), 2..=3).prop_map(ValueOrField::Field);
+    let field = field_path_strategy().prop_map(ValueOrField::Field);
     let string_value = safe_string_strategy().prop_map(|s| ValueOrField::Value(Value::String(s)));
     prop_oneof![field, string_value]
 }
@@ -234,7 +241,7 @@ fn condition_leaf_strategy() -> impl Strategy<Value = ConditionNode> {
     ]
 }
 
-/// Recursive condition strategy. Mirrors [`filter_strategy`]:
+/// Public for downstream proptest authors; mirrors [`filter_strategy`]'s shape and invariants:
 ///
 /// * `And` children are never `And` (parser flattens `A and (B and C)` →
 ///   `And([A, B, C])`).
@@ -245,18 +252,14 @@ fn condition_leaf_strategy() -> impl Strategy<Value = ConditionNode> {
 /// because they exercise the `field_access ~ compare_op ~ value` grammar
 /// branch — distinct from `LangField` / `CodecField` in filters.
 pub fn condition_strategy() -> impl Strategy<Value = ConditionNode> {
-    // `vec(...)` returns a `VecStrategy` which is not `Clone`; use a closure
-    // factory so each consumer constructs a fresh strategy instance.
-    let field_path = || vec(ident_strategy(), 2..=3);
-
     let field_cmp = (
-        field_path(),
+        field_path_strategy(),
         numeric_compare_op_strategy(),
         value_strategy(),
     )
         .prop_map(|(path, op, v)| ConditionNode::FieldCompare(path, op, v));
 
-    let field_exists = field_path().prop_map(ConditionNode::FieldExists);
+    let field_exists = field_path_strategy().prop_map(ConditionNode::FieldExists);
 
     let leaf = prop_oneof![condition_leaf_strategy(), field_cmp, field_exists];
 
@@ -390,9 +393,9 @@ fn filter_leaf_strategy() -> impl Strategy<Value = FilterNode> {
         // grammar's `field_access` rule). Unlike literal-value comparisons,
         // the parser does NOT rewrite the field-access form into an In-list,
         // so both `Eq` and `Ne` round-trip faithfully.
-        (field_compare_op_strategy(), vec(ident_strategy(), 2..=3))
+        (field_compare_op_strategy(), field_path_strategy())
             .prop_map(|(op, p)| FilterNode::LangField(op, p)),
-        (field_compare_op_strategy(), vec(ident_strategy(), 2..=3))
+        (field_compare_op_strategy(), field_path_strategy())
             .prop_map(|(op, p)| FilterNode::CodecField(op, p)),
         (
             numeric_compare_op_strategy(),
@@ -592,6 +595,9 @@ fn spanned_op_strategy() -> impl Strategy<Value = SpannedOperation> {
 }
 
 fn phase_strategy() -> impl Strategy<Value = PhaseNode> {
+    // Idents may collide with grammar keywords (`when`, `not`, `policy`, etc.);
+    // the grammar's positional matching tolerates this and 256 cases confirm it.
+    // No filter is applied here.
     use crate::ast::RunIfNode;
 
     let run_if_trigger = prop_oneof![Just("modified".to_string()), Just("completed".to_string()),];
