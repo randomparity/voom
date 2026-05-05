@@ -140,4 +140,7 @@ governor = "0.10"
 
 # Testing
 insta = { version = "1", features = ["yaml"] }
+# Property-based testing
+proptest = "1.11"
+proptest-derive = "0.8"
 tempfile = "3"
