@@ -18,9 +18,6 @@ test = false
 doc = false
 bench = false
 
-# Source file is added in a follow-up commit; `cargo +nightly fuzz build
-# compile_policy` will fail until then. The workspace build is unaffected
-# because this crate is in the workspace `exclude` list.
 [[bin]]
 name = "compile_policy"
 path = "fuzz_targets/compile_policy.rs"
