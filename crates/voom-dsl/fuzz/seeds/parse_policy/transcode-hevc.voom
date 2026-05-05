@@ -1,0 +1,86 @@
+// HEVC transcoding policy with hardware acceleration.
+//
+// Transcodes video to HEVC and audio to AAC, with synthesized
+// compatibility stereo track. Demonstrates:
+// - skip when with field access (video.codec)
+// - Transcode video with full settings (crf, preset, hw accel, resolution)
+// - Transcode audio with codec preservation
+// - synthesize with all settings (codec, channels, source, bitrate,
+//   skip_if_exists, create_if, title, language, position)
+// - Phase dependencies and conditional execution (run_if modified)
+//
+// Designed for use with: ffmpeg-executor (transcoding + synthesis),
+// mkvtoolnix-executor (metadata), backup-manager
+
+policy "transcode-hevc" {
+  config {
+    on_error: abort
+  }
+
+  // Phase 1: Ensure MKV container for broad codec support
+  phase containerize {
+    container mkv
+  }
+
+  // Phase 2: Video transcode — skip if already HEVC
+  phase transcode-video {
+    depends_on: [containerize]
+    skip when video.codec in [hevc, h265]
+    on_error: abort
+
+    transcode video to hevc {
+      crf: 20
+      preset: medium
+      max_resolution: 1080p
+      scale_algorithm: lanczos
+      hw: auto
+      hw_fallback: true
+      hdr_mode: preserve
+      tune: film
+    }
+  }
+
+  // Phase 3: Audio transcode — preserve lossless, convert lossy
+  phase transcode-audio {
+    depends_on: [containerize]
+    skip when not exists(audio where codec in [dts, ac3, mp3, pcm, flac, truehd, dts_hd])
+
+    transcode audio to aac {
+      preserve: [truehd, dts_hd, flac, pcm]
+      bitrate: 192k
+      channels: preserve
+    }
+  }
+
+  // Phase 4: Create stereo compatibility track
+  phase stereo-compat {
+    depends_on: [transcode-audio]
+    run_if transcode-audio.completed
+
+    synthesize "Stereo AAC" {
+      codec: aac
+      channels: stereo
+      source: prefer(codec in [truehd, dts_hd, flac] and channels >= 6)
+      bitrate: "192k"
+      skip_if_exists { codec in [aac] and channels == 2 and not commentary }
+      create_if exists(audio where channels >= 6)
+      title: "Stereo (AAC)"
+      language: inherit
+      position: after_source
+    }
+  }
+
+  // Phase 5: Post-transcode validation
+  phase post-validate {
+    depends_on: [transcode-video, transcode-audio, stereo-compat]
+    run_if transcode-video.modified
+
+    when not exists(video where codec == hevc) {
+      fail "Transcode failed — no HEVC video track in {filename}"
+    }
+
+    when video.height > 1080 {
+      warn "Video resolution exceeds 1080p after transcode in {filename}"
+    }
+  }
+}

@@ -1,0 +1,140 @@
+// Metadata enrichment policy using WASM plugin data.
+//
+// Uses external metadata from Radarr and Sonarr plugins to set
+// container tags and track languages. Demonstrates:
+// - field_access for plugin metadata (plugin.radarr.*, plugin.sonarr.*)
+// - field "exists" conditions
+// - set_language with field access values
+// - set_tag with field access and literal values
+// - is_original / is_dubbed predicates
+// - Nested when blocks
+// - skip action (skip current phase)
+// - skip action with named phase target
+// - rules "first" mode (stop after first match)
+// - Compare operators: ==, !=, >, >=, <, <=
+//
+// Designed for use with: radarr-metadata, sonarr-metadata (WASM plugins),
+// mkvtoolnix-executor (tag setting)
+
+policy "metadata-enrichment" {
+  config {
+    on_error: skip
+  }
+
+  // Phase 1: Classify media type based on available plugin metadata
+  phase classify {
+    // First matching rule wins
+    rules first {
+      rule "radarr-movie" {
+        when plugin.radarr.title exists {
+          set_tag "title" plugin.radarr.title
+          set_tag "media_type" "movie"
+        }
+      }
+
+      rule "sonarr-series" {
+        when plugin.sonarr.series_title exists {
+          set_tag "title" plugin.sonarr.series_title
+          set_tag "media_type" "series"
+        }
+      }
+
+      rule "unknown-media" {
+        when not plugin.radarr.title exists and not plugin.sonarr.series_title exists {
+          warn "No metadata source for {filename} — skipping enrichment"
+          skip
+        }
+      }
+    }
+  }
+
+  // Phase 2: Set original language from movie metadata
+  phase movie-language {
+    depends_on: [classify]
+
+    // Only process if Radarr metadata available
+    when plugin.radarr.original_language exists {
+      set_language audio where default plugin.radarr.original_language
+    }
+
+    // Tag year if available
+    when plugin.radarr.year exists {
+      set_tag "date" plugin.radarr.year
+    }
+
+    // Tag studio
+    when plugin.radarr.studio exists {
+      set_tag "studio" plugin.radarr.studio
+    }
+  }
+
+  // Phase 3: Set series metadata
+  phase series-metadata {
+    depends_on: [classify]
+
+    when plugin.sonarr.original_language exists {
+      set_language audio where default plugin.sonarr.original_language
+    }
+
+    when plugin.sonarr.network exists {
+      set_tag "network" plugin.sonarr.network
+    }
+  }
+
+  // Phase 4: Dub/original detection and tagging
+  phase dub-detection {
+    depends_on: [movie-language, series-metadata]
+
+    when is_original {
+      set_tag "audio_type" "original"
+    }
+
+    when is_dubbed and not is_original {
+      set_tag "audio_type" "dubbed"
+      warn "Dubbed content detected in {filename}"
+    }
+  }
+
+  // Phase 5: Quality tagging based on video properties
+  phase quality-tags {
+    depends_on: [classify]
+
+    rules all {
+      rule "resolution-4k" {
+        when video.width >= 3840 {
+          set_tag "resolution" "4K"
+        }
+      }
+
+      rule "resolution-1080p" {
+        when video.width >= 1920 and video.width < 3840 {
+          set_tag "resolution" "1080p"
+        }
+      }
+
+      rule "resolution-720p" {
+        when video.width >= 1280 and video.width < 1920 {
+          set_tag "resolution" "720p"
+        }
+      }
+
+      rule "resolution-sd" {
+        when video.width < 1280 {
+          set_tag "resolution" "SD"
+        }
+      }
+
+      rule "hdr-content" {
+        when video.hdr == true {
+          set_tag "hdr" "true"
+        }
+      }
+
+      rule "codec-tag" {
+        when video.codec == hevc {
+          set_tag "video_codec" "HEVC"
+        }
+      }
+    }
+  }
+}

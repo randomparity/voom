@@ -1,0 +1,70 @@
+name: Fuzz
+
+on:
+  schedule:
+    # Mondays at 06:00 UTC. Runs the weekly fuzz sweep before US/EU work hours.
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  FUZZ_SECONDS: 600
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [parse_policy, compile_policy]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install nightly toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
+        with:
+          toolchain: nightly
+
+      - name: Install cargo-fuzz with stable Rust
+        # cargo-fuzz's pinned old rustix won't compile on modern nightly,
+        # so install cargo-fuzz itself with stable. The fuzz harness still
+        # builds and runs with nightly via `cargo +nightly fuzz`.
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          cargo +stable install cargo-fuzz --locked
+
+      - name: Restore fuzz corpus
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: crates/voom-dsl/fuzz/corpus/${{ matrix.target }}
+          # run_id makes the primary key unique per run so each run writes a
+          # fresh corpus snapshot; restore-keys pulls the most recent prior one.
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Seed corpus from committed inputs
+        run: |
+          seeds=crates/voom-dsl/fuzz/seeds/${{ matrix.target }}
+          test -d "$seeds" || { echo "missing seeds dir: $seeds" >&2; exit 1; }
+          mkdir -p crates/voom-dsl/fuzz/corpus/${{ matrix.target }}
+          cp -n "$seeds"/*.voom crates/voom-dsl/fuzz/corpus/${{ matrix.target }}/
+
+      - name: Run fuzz target
+        working-directory: crates/voom-dsl/fuzz
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=${{ env.FUZZ_SECONDS }}
+
+      - name: Upload crash artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: crates/voom-dsl/fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
+          retention-days: 30

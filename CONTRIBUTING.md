@@ -25,3 +25,7 @@ cargo llvm-cov -p voom-dsl --html --open
 `cargo llvm-cov --workspace` covers the root cargo workspace under `crates/` and `plugins/`. The `wasm-plugins/` directory is a separate cargo workspace and is not currently included in the coverage baseline; if you need WASM plugin coverage, run `cargo llvm-cov` from inside `wasm-plugins/` against that workspace.
 
 The CI invocation lives in `.github/workflows/sonarcloud.yml`. The path `lcov.info` is referenced by `sonar-project.properties` via `sonar.rust.lcov.reportPaths`; do not rename it without updating both files.
+
+## Fuzzing the DSL
+
+The `voom-dsl` parser and compiler have fuzz harnesses under `crates/voom-dsl/fuzz/`. See `crates/voom-dsl/fuzz/README.md` for instructions on running locally and triaging crashes. The harnesses also run weekly in CI via `.github/workflows/fuzz.yml`.
