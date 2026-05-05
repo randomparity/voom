@@ -1,0 +1,8 @@
+// Minimal policy — the simplest valid VOOM policy.
+// Ensures all files are in MKV container format.
+
+policy "minimal" {
+  phase containerize {
+    container mkv
+  }
+}
