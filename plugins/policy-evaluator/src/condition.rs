@@ -855,14 +855,14 @@ mod tests {
     }
 
     // ---- resolve_track_field video-track arms (issue #240) ----
-    // Each test targets a single match arm on lines 135–142. Seeding the
-    // field with a known non-default value and asserting FieldCompare(Eq)
-    // succeeds means deleting the arm — which makes resolve_track_field
-    // return None — flips the assertion to false and kills the mutant.
+    // Each test targets a single match arm. Seeding the field with a
+    // known non-default value and asserting FieldCompare(Eq) succeeds
+    // means deleting the arm — which makes resolve_track_field return
+    // None — flips the assertion to false and kills the mutant.
 
     fn file_with_seeded_video() -> MediaFile {
-        // Single video track with every line-135–142 field populated so
-        // each arm can be probed via `video.<field>` paths.
+        // First video track has width=1920, height=1080, frame_rate=24.0,
+        // is_default/is_forced/is_hdr/is_vfr=true, hdr_format="HDR10".
         let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
         file.tracks = vec![{
             let mut t = Track::new(0, TrackType::Video, "hevc".into());
