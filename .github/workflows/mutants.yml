@@ -69,13 +69,17 @@ jobs:
             echo "::warning::no outcomes.json produced — cargo mutants exited before generating results"
             exit 0
           fi
-          # outcomes.json is a list of objects each with a `summary` field
-          # ("caught", "missed", "timeout", "unviable", "success").
-          caught=$(jq '[.outcomes[] | select(.summary == "caught")] | length' "$out")
-          missed=$(jq '[.outcomes[] | select(.summary == "missed")] | length' "$out")
-          timeout=$(jq '[.outcomes[] | select(.summary == "timeout")] | length' "$out")
-          unviable=$(jq '[.outcomes[] | select(.summary == "unviable")] | length' "$out")
-          total=$(jq '.outcomes | length' "$out")
+          # outcomes.json: each entry has a `summary` field whose value is one
+          # of "CaughtMutant" / "MissedMutant" / "Timeout" / "Unviable" /
+          # "Success". "Success" is the baseline (unmutated) sanity run that
+          # cargo-mutants does once per invocation; it is not a mutant outcome
+          # and is excluded from the per-mutant total below. Mutant data lives
+          # under .scenario.Mutant (capital M).
+          caught=$(jq '[.outcomes[] | select(.summary == "CaughtMutant")] | length' "$out")
+          missed=$(jq '[.outcomes[] | select(.summary == "MissedMutant")] | length' "$out")
+          timeout=$(jq '[.outcomes[] | select(.summary == "Timeout")] | length' "$out")
+          unviable=$(jq '[.outcomes[] | select(.summary == "Unviable")] | length' "$out")
+          total=$((caught + missed + timeout + unviable))
           {
             echo "## cargo mutants — ${{ matrix.package }}"
             echo
@@ -85,11 +89,11 @@ jobs:
             echo "| Missed   | $missed |"
             echo "| Timeout  | $timeout |"
             echo "| Unviable | $unviable |"
-            echo "| **Total** | **$total** |"
+            echo "| **Total mutants** | **$total** |"
             echo
             echo "Surviving mutants (first 10):"
             echo
-            jq -r '.outcomes[] | select(.summary == "missed") | "- `\(.scenario.mutant.package_name)` \(.scenario.mutant.source_file.tree_relative_slashes):\(.scenario.mutant.span.start.line) — \(.scenario.mutant.replacement)"' "$out" | head -10
+            jq -r '.outcomes[] | select(.summary == "MissedMutant") | "- \(.scenario.Mutant.name)"' "$out" | head -10
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload mutants.out artifact
