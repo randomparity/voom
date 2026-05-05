@@ -182,7 +182,6 @@ fn skip_fires(file: &MediaFile, condition_dsl: &str) -> bool {
 /// how to look up; unresolvable paths still produce deterministic
 /// `false`, but keeping the strategy on resolvable paths exercises more
 /// of the evaluator.
-#[allow(dead_code)] // wired into algebra tests in Task 3; remove then.
 fn condition_dsl_strategy() -> impl Strategy<Value = String> {
     // Scalars used inside generated strings.
     let lang = prop_oneof![
@@ -313,14 +312,22 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// Identity: `not (not P) ≡ P`.
+    /// Identity: `not (not P) ≡ P` for any predicate P drawn from
+    /// `condition_dsl_strategy`.
     #[test]
-    fn double_negation_identity(audio in vec(audio_track_strategy(), 0..=4)) {
+    fn double_negation_identity(
+        audio in vec(audio_track_strategy(), 0..=4),
+        p in condition_dsl_strategy(),
+    ) {
         let file = build_file(&audio);
-        let p = "exists(audio where lang in [eng])";
-        let direct = skip_fires(&file, p);
+        let direct = skip_fires(&file, &p);
         let double_neg = skip_fires(&file, &format!("not (not ({p}))"));
-        prop_assert_eq!(direct, double_neg);
+        // Positional arg: prop_assert_eq! routes through concat!, which rejects {capture}.
+        prop_assert_eq!(
+            direct, double_neg,
+            "double-negation broke for predicate `{}`",
+            p,
+        );
     }
 
     /// De Morgan's law: `not (A and B) ≡ (not A) or (not B)`.
