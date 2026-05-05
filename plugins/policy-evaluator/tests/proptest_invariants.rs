@@ -147,3 +147,49 @@ fn apply_default_actions(file: &mut MediaFile, plan: &Plan) {
         }
     }
 }
+
+/// Build a `skip when <condition>` policy and return whether the skip fires
+/// (i.e., whether the condition evaluates to true) when applied to `file`.
+fn skip_fires(file: &MediaFile, condition_dsl: &str) -> bool {
+    let src =
+        format!("policy \"p\" {{ phase init {{ skip when {condition_dsl} container mkv }} }}");
+    let policy = compile_policy(&src).unwrap_or_else(|e| panic!("dsl: {src}\nerr: {e:?}"));
+    let result = evaluate(&policy, file);
+    result.plans[0].is_skipped()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// Identity: `not (not P) ≡ P`.
+    #[test]
+    fn double_negation_identity(audio in vec(audio_track_strategy(), 0..=4)) {
+        let file = build_file(&audio);
+        let p = "exists(audio where lang in [eng])";
+        let direct = skip_fires(&file, p);
+        let double_neg = skip_fires(&file, &format!("not (not ({p}))"));
+        prop_assert_eq!(direct, double_neg);
+    }
+
+    /// De Morgan's law: `not (A and B) ≡ (not A) or (not B)`.
+    #[test]
+    fn de_morgan_and(audio in vec(audio_track_strategy(), 0..=4)) {
+        let file = build_file(&audio);
+        let a = "exists(audio where lang in [eng])";
+        let b = "exists(audio where codec in [aac])";
+        let lhs = skip_fires(&file, &format!("not (({a}) and ({b}))"));
+        let rhs = skip_fires(&file, &format!("(not ({a})) or (not ({b}))"));
+        prop_assert_eq!(lhs, rhs);
+    }
+
+    /// De Morgan's law: `not (A or B) ≡ (not A) and (not B)`.
+    #[test]
+    fn de_morgan_or(audio in vec(audio_track_strategy(), 0..=4)) {
+        let file = build_file(&audio);
+        let a = "exists(audio where lang in [eng])";
+        let b = "exists(audio where codec in [aac])";
+        let lhs = skip_fires(&file, &format!("not (({a}) or ({b}))"));
+        let rhs = skip_fires(&file, &format!("(not ({a})) and (not ({b}))"));
+        prop_assert_eq!(lhs, rhs);
+    }
+}
