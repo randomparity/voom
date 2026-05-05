@@ -166,6 +166,130 @@ fn skip_fires(file: &MediaFile, condition_dsl: &str) -> bool {
     result.plans[0].is_skipped()
 }
 
+/// Strategy for a grammar-valid DSL `condition_atom` string.
+///
+/// Covers the shapes called out in issue #229:
+/// - plain atoms: `is_dubbed`, `is_original`, `audio_is_multi_language`
+/// - `exists(<target> [where <filter_atom>])`
+/// - `count(<target> [where <filter_atom>]) <op> <number>`
+/// - `<field_access> <op> <value>`
+/// - `<field_access> exists`
+///
+/// Excludes `in` from comparison ops in field-compare and count variants
+/// (it requires a list RHS, which is handled by dedicated list-shaped
+/// variants in the filter sub-strategy). Field paths are restricted to
+/// `audio.*` and `video.*`, which the evaluator's `resolve_field` knows
+/// how to look up; unresolvable paths still produce deterministic
+/// `false`, but keeping the strategy on resolvable paths exercises more
+/// of the evaluator.
+#[allow(dead_code)] // wired into algebra tests in Task 3; remove then.
+fn condition_dsl_strategy() -> impl Strategy<Value = String> {
+    // Scalars used inside generated strings.
+    let lang = prop_oneof![
+        Just("eng"),
+        Just("jpn"),
+        Just("fre"),
+        Just("spa"),
+        Just("ger"),
+    ];
+    let codec = prop_oneof![
+        Just("aac"),
+        Just("ac3"),
+        Just("dts"),
+        Just("flac"),
+        Just("opus"),
+    ];
+    let target = prop_oneof![Just("audio"), Just("subtitle"), Just("video")];
+    // Comparison ops that take scalar RHS (no `in`).
+    let scalar_cmp = prop_oneof![
+        Just("=="),
+        Just("!="),
+        Just("<"),
+        Just("<="),
+        Just(">"),
+        Just(">="),
+    ];
+    let small_num = 0u32..=8u32;
+
+    // ----- filter_atom variants used inside `where` clauses -----
+
+    let lang_in_list = lang.clone().prop_map(|l| format!("lang in [{l}]"));
+    let codec_in_list = codec.clone().prop_map(|c| format!("codec in [{c}]"));
+    let channels_cmp =
+        (scalar_cmp.clone(), small_num.clone()).prop_map(|(op, n)| format!("channels {op} {n}"));
+    let bare_filter = prop_oneof![
+        Just("commentary".to_string()),
+        Just("forced".to_string()),
+        Just("default".to_string()),
+    ];
+    let filter_atom = prop_oneof![lang_in_list, codec_in_list, channels_cmp, bare_filter];
+
+    // Optional ` where <filter_atom>` suffix (or empty).
+    let where_clause = proptest::option::of(filter_atom)
+        .prop_map(|f| f.map_or(String::new(), |s| format!(" where {s}")));
+
+    // ----- condition_atom variants -----
+
+    let plain = prop_oneof![
+        Just("is_dubbed".to_string()),
+        Just("is_original".to_string()),
+        Just("audio_is_multi_language".to_string()),
+    ];
+
+    let exists_atom =
+        (target.clone(), where_clause.clone()).prop_map(|(t, w)| format!("exists({t}{w})"));
+
+    let count_atom = (
+        target.clone(),
+        where_clause.clone(),
+        scalar_cmp.clone(),
+        small_num.clone(),
+    )
+        .prop_map(|(t, w, op, n)| format!("count({t}{w}) {op} {n}"));
+
+    // Field-access compare with a string RHS (codec/language fields).
+    let field_string_cmp = (
+        prop_oneof![
+            Just("audio.codec"),
+            Just("audio.language"),
+            Just("audio.title"),
+        ],
+        scalar_cmp.clone(),
+        prop_oneof![
+            codec.clone().prop_map(|c| format!("\"{c}\"")),
+            lang.clone().prop_map(|l| format!("\"{l}\"")),
+        ],
+    )
+        .prop_map(|(f, op, v)| format!("{f} {op} {v}"));
+
+    // Field-access compare with a numeric RHS (channels/width/height).
+    let field_num_cmp = (
+        prop_oneof![
+            Just("audio.channels"),
+            Just("video.width"),
+            Just("video.height"),
+        ],
+        scalar_cmp,
+        small_num,
+    )
+        .prop_map(|(f, op, n)| format!("{f} {op} {n}"));
+
+    let field_exists = prop_oneof![
+        Just("audio.codec exists".to_string()),
+        Just("audio.language exists".to_string()),
+        Just("video.codec exists".to_string()),
+    ];
+
+    prop_oneof![
+        plain,
+        exists_atom,
+        count_atom,
+        field_string_cmp,
+        field_num_cmp,
+        field_exists,
+    ]
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
