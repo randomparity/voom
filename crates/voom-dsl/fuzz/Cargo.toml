@@ -25,7 +25,5 @@ test = false
 doc = false
 bench = false
 
-# Required by cargo-fuzz: prevent this crate from being picked up as a
-# workspace member. Combined with the workspace `exclude` entry below,
-# this isolates the fuzz crate from the stable workspace build.
+# Isolate from the parent workspace (cargo-fuzz convention).
 [workspace]

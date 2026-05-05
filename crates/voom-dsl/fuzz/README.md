@@ -22,7 +22,6 @@ Run a target for 60 seconds:
 
 ```bash
 cd crates/voom-dsl/fuzz
-# Copy committed seeds into the working corpus (libFuzzer mutates this dir)
 mkdir -p corpus/parse_policy
 cp seeds/parse_policy/*.voom corpus/parse_policy/
 
@@ -44,9 +43,10 @@ On a modern x86_64 box you should see roughly:
 
 ## When the fuzzer finds a crash
 
-`libFuzzer` writes the offending input to `artifacts/<target>/crash-<sha256>`. Reproduce with:
+`libFuzzer` writes the offending input to `artifacts/<target>/crash-<sha256>`. Reproduce from `crates/voom-dsl/fuzz/`:
 
 ```bash
+cd crates/voom-dsl/fuzz
 cargo +nightly fuzz run parse_policy artifacts/parse_policy/crash-<sha>
 ```
 
