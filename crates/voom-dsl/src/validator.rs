@@ -2417,4 +2417,103 @@ mod tests {
             err.errors
         );
     }
+
+    // ---- validate_filter arm-deletion tests (issue #236, phase 2) ----
+    // Each test invokes validate_filter with a focused FilterNode that the
+    // original code rejects (or accepts) and the mutated code does the
+    // opposite. For arm-deletion mutants, an invalid filter that originally
+    // emits an error becomes silent under the mutant. For the `delete !`
+    // mutant on line 735, both an invalid-language test (catches the deleted
+    // arm + flipped predicate) and a valid-language test (catches the
+    // flipped predicate alone) make the distinction explicit.
+
+    use crate::ast::CompareOp;
+
+    fn run_validate_filter(filter: FilterNode) -> (Vec<DslError>, Vec<DslWarning>) {
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        validate_filter(&filter, 1, 1, &mut errors, &mut warnings);
+        (errors, warnings)
+    }
+
+    #[test]
+    fn validate_filter_lang_in_invalid_emits_error() {
+        let (errors, _) = run_validate_filter(FilterNode::LangIn(vec!["xxx".into()]));
+        assert!(
+            !errors.is_empty(),
+            "expected an error for invalid language in LangIn, got none"
+        );
+    }
+
+    #[test]
+    fn validate_filter_lang_compare_invalid_emits_error() {
+        let (errors, _) = run_validate_filter(FilterNode::LangCompare(CompareOp::Eq, "xxx".into()));
+        assert!(
+            !errors.is_empty(),
+            "expected an error for invalid language in LangCompare, got none"
+        );
+    }
+
+    #[test]
+    fn validate_filter_lang_compare_valid_emits_no_error() {
+        let (errors, _) = run_validate_filter(FilterNode::LangCompare(CompareOp::Eq, "eng".into()));
+        assert!(
+            errors.is_empty(),
+            "expected no error for valid language in LangCompare, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_filter_codec_in_invalid_emits_error() {
+        let (errors, _) = run_validate_filter(FilterNode::CodecIn(vec!["bogus_codec".into()]));
+        assert!(
+            !errors.is_empty(),
+            "expected an error for invalid codec in CodecIn, got none"
+        );
+    }
+
+    #[test]
+    fn validate_filter_codec_compare_invalid_emits_error() {
+        let (errors, _) = run_validate_filter(FilterNode::CodecCompare(
+            CompareOp::Eq,
+            "bogus_codec".into(),
+        ));
+        assert!(
+            !errors.is_empty(),
+            "expected an error for invalid codec in CodecCompare, got none"
+        );
+    }
+
+    #[test]
+    fn validate_filter_and_recurses_into_invalid_inner() {
+        let (errors, _) =
+            run_validate_filter(FilterNode::And(vec![FilterNode::LangIn(
+                vec!["xxx".into()],
+            )]));
+        assert!(
+            !errors.is_empty(),
+            "expected And to recurse into LangIn and surface its error, got none"
+        );
+    }
+
+    #[test]
+    fn validate_filter_or_recurses_into_invalid_inner() {
+        let (errors, _) =
+            run_validate_filter(FilterNode::Or(vec![FilterNode::LangIn(vec!["xxx".into()])]));
+        assert!(
+            !errors.is_empty(),
+            "expected Or to recurse into LangIn and surface its error, got none"
+        );
+    }
+
+    #[test]
+    fn validate_filter_not_recurses_into_invalid_inner() {
+        let (errors, _) = run_validate_filter(FilterNode::Not(Box::new(FilterNode::LangIn(vec![
+            "xxx".into(),
+        ]))));
+        assert!(
+            !errors.is_empty(),
+            "expected Not to recurse into LangIn and surface its error, got none"
+        );
+    }
 }
