@@ -2,12 +2,11 @@
 //! in depth and width to keep test runtime tractable — the goal is to catch
 //! parser/formatter drift, not to enumerate the entire grammar.
 //!
-//! Coverage (per GitHub issue #228 — Round 4 complete):
-//! every `OperationNode` variant participates in [`operation_strategy`];
-//! every `FilterNode` variant participates via [`filter_leaf_strategy`] +
-//! [`filter_strategy`]; the recursive [`condition_strategy`] feeds
-//! `When`, `Rules`, `SynthSetting::CreateIf`, and the phase-level
-//! `skip_when` / `run_if` / `when` shapes.
+//! Coverage: every `OperationNode` variant participates in
+//! [`operation_strategy`]; every `FilterNode` variant participates via
+//! [`filter_leaf_strategy`] + [`filter_strategy`]; the recursive
+//! [`condition_strategy`] feeds `When`, `Rules`, `SynthSetting::CreateIf`,
+//! and the phase-level `skip_when` / `run_if` / `when` shapes.
 
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -153,8 +152,8 @@ fn action_setting_strategy() -> impl Strategy<Value = (String, crate::ast::Value
 }
 
 /// `SynthSetting` strategy. `CreateIf` is included via the recursive
-/// [`condition_strategy`] (Round 4) — it exercises the same condition
-/// grammar as `When`/`Rules`/`skip_when`.
+/// [`condition_strategy`] — it exercises the same condition grammar as
+/// `When` / `Rules` / `skip_when`.
 fn synth_setting_strategy() -> impl Strategy<Value = crate::ast::SynthSetting> {
     use crate::ast::{SynthSetting, Value};
 
@@ -204,15 +203,15 @@ fn synth_setting_strategy() -> impl Strategy<Value = crate::ast::SynthSetting> {
 /// Track-query target accepted inside `exists()` / `count()` conditions.
 /// Currently delegates to [`track_target_strategy`]; the literal `"track"`
 /// (any-kind) variant of the grammar's `track_query` rule is intentionally
-/// excluded for now — that branch parses through a separate code path and
-/// will be added when round 4 widens condition coverage.
+/// excluded — that branch parses through a separate code path with its own
+/// test coverage.
 fn track_query_target_strategy() -> impl Strategy<Value = String> {
     track_target_strategy()
 }
 
-/// Condition leaves used inside Round 1's `When`/`Rules`. This is the
-/// minimal set; Round 4 wraps these in a recursive `condition_strategy`
-/// with `And`/`Or`/`Not` and the `field_access` shapes.
+/// Condition leaves (no `And`/`Or`/`Not`, no `FieldCompare`/`FieldExists`).
+/// Composed by [`condition_strategy`] which adds the field-access leaves and
+/// the recursive logical connectives.
 fn condition_leaf_strategy() -> impl Strategy<Value = ConditionNode> {
     use crate::ast::TrackQueryNode;
 
@@ -241,7 +240,8 @@ fn condition_leaf_strategy() -> impl Strategy<Value = ConditionNode> {
     ]
 }
 
-/// Public for downstream proptest authors; mirrors [`filter_strategy`]'s shape and invariants:
+/// Recursive condition strategy. Mirrors [`filter_strategy`]'s shape and
+/// invariants:
 ///
 /// * `And` children are never `And` (parser flattens `A and (B and C)` →
 ///   `And([A, B, C])`).
@@ -284,14 +284,21 @@ pub fn condition_strategy() -> impl Strategy<Value = ConditionNode> {
     })
 }
 
-fn track_ref_strategy() -> impl Strategy<Value = crate::ast::TrackRefNode> {
-    use crate::ast::TrackRefNode;
-
+/// `(target, Option<filter>)` tuple shared by `Keep`/`Remove` in both
+/// [`OperationNode`] and `ActionNode`. Returned as a fresh strategy each
+/// call so callers can compose without `.clone()` (`TupleStrategy` over
+/// non-`Clone` children).
+fn target_and_filter_strategy() -> impl Strategy<Value = (String, Option<FilterNode>)> {
     (
         track_target_strategy(),
         proptest::option::of(filter_strategy()),
     )
-        .prop_map(|(target, filter)| TrackRefNode { target, filter })
+}
+
+fn track_ref_strategy() -> impl Strategy<Value = crate::ast::TrackRefNode> {
+    use crate::ast::TrackRefNode;
+
+    target_and_filter_strategy().prop_map(|(target, filter)| TrackRefNode { target, filter })
 }
 
 /// Non-`Skip` `ActionNode` strategy. `Skip` is excluded here because the
@@ -301,23 +308,15 @@ fn track_ref_strategy() -> impl Strategy<Value = crate::ast::TrackRefNode> {
 /// to assemble lists; it appends an optional `Skip` only at the end via
 /// [`skip_action_strategy`].
 ///
-/// All Round 2 additions (`SetDefault`, `SetForced`, `SetLanguage`,
-/// `SetTag`) have required tail tokens (a `track_ref`, a value/field, or a
-/// string + value) so they have no greedy-grammar hazard and remain in the
-/// non-skip pool.
+/// `SetDefault`, `SetForced`, `SetLanguage`, and `SetTag` all have required
+/// tail tokens (a `track_ref`, a value/field, or a string + value), so they
+/// have no greedy-grammar hazard and remain in the non-skip pool.
 fn non_skip_action_strategy() -> impl Strategy<Value = crate::ast::ActionNode> {
     use crate::ast::ActionNode;
 
-    let keep = (
-        track_target_strategy(),
-        proptest::option::of(filter_strategy()),
-    )
+    let keep = target_and_filter_strategy()
         .prop_map(|(target, filter)| ActionNode::Keep { target, filter });
-
-    let remove = (
-        track_target_strategy(),
-        proptest::option::of(filter_strategy()),
-    )
+    let remove = target_and_filter_strategy()
         .prop_map(|(target, filter)| ActionNode::Remove { target, filter });
 
     let warn = safe_string_strategy().prop_map(ActionNode::Warn);
@@ -456,16 +455,9 @@ pub fn operation_strategy() -> impl Strategy<Value = OperationNode> {
         Just(OperationNode::Container("mp4".to_string())),
     ];
 
-    let keep = (
-        track_target_strategy(),
-        proptest::option::of(filter_strategy()),
-    )
+    let keep = target_and_filter_strategy()
         .prop_map(|(target, filter)| OperationNode::Keep { target, filter });
-
-    let remove = (
-        track_target_strategy(),
-        proptest::option::of(filter_strategy()),
-    )
+    let remove = target_and_filter_strategy()
         .prop_map(|(target, filter)| OperationNode::Remove { target, filter });
 
     let order = vec(language_strategy(), 1..=4).prop_map(OperationNode::Order);
@@ -596,8 +588,7 @@ fn spanned_op_strategy() -> impl Strategy<Value = SpannedOperation> {
 
 fn phase_strategy() -> impl Strategy<Value = PhaseNode> {
     // Idents may collide with grammar keywords (`when`, `not`, `policy`, etc.);
-    // the grammar's positional matching tolerates this and 256 cases confirm it.
-    // No filter is applied here.
+    // the grammar's positional matching tolerates this, so no filter is applied.
     use crate::ast::RunIfNode;
 
     let run_if_trigger = prop_oneof![Just("modified".to_string()), Just("completed".to_string()),];
