@@ -2516,4 +2516,103 @@ mod tests {
             "expected Not to recurse into LangIn and surface its error, got none"
         );
     }
+
+    // EQUIVALENT MUTANT (issue #236, phase 2):
+    // crates/voom-dsl/src/validator.rs:390:26: replace < with <= in check_tag_conflicts
+    //
+    // The compared values `i` and `clear_idx` both come from `enumerate()` on
+    // `phase.operations` — they are unique sequential indices into the same
+    // vec. The condition runs only when the spanned op at index `i` is a
+    // SetTag; ClearTags has its own (different) index `clear_idx`. So `i`
+    // cannot equal `clear_idx`, and `i < clear_idx` and `i <= clear_idx` are
+    // always equivalent on every reachable input.
+    //
+    // Per #236 policy: documented inline rather than suppressed in
+    // .cargo/mutants.toml so the analysis stays discoverable.
+
+    // ---- check_tag_conflicts arm-deletion + boundary tests (issue #236, phase 2) ----
+
+    fn phase_with_ops(name: &str, ops: Vec<OperationNode>) -> PhaseNode {
+        use crate::ast::{Span, SpannedOperation};
+
+        let operations = ops
+            .into_iter()
+            .enumerate()
+            .map(|(i, node)| SpannedOperation {
+                node,
+                span: Span {
+                    start: i,
+                    end: i + 1,
+                    line: i + 1,
+                    col: 1,
+                },
+            })
+            .collect();
+        PhaseNode {
+            name: name.into(),
+            skip_when: None,
+            depends_on: vec![],
+            run_if: None,
+            on_error: None,
+            operations,
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 1,
+                col: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn check_tag_conflicts_set_and_delete_same_tag_emits_error() {
+        let phase = phase_with_ops(
+            "p",
+            vec![
+                OperationNode::SetTag {
+                    tag: "x".into(),
+                    value: ValueOrField::Value(Value::String("dummy".into())),
+                },
+                OperationNode::DeleteTag("x".into()),
+            ],
+        );
+        let mut errors = Vec::new();
+        check_tag_conflicts(&phase, &mut errors);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got {errors:?}"
+        );
+        let msg = format!("{}", errors[0]);
+        assert!(
+            msg.contains("both set and deleted"),
+            "expected 'both set and deleted' in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn check_tag_conflicts_set_before_clear_emits_warning() {
+        let phase = phase_with_ops(
+            "p",
+            vec![
+                OperationNode::SetTag {
+                    tag: "y".into(),
+                    value: ValueOrField::Value(Value::String("dummy".into())),
+                },
+                OperationNode::ClearTags,
+            ],
+        );
+        let mut errors = Vec::new();
+        check_tag_conflicts(&phase, &mut errors);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got {errors:?}"
+        );
+        let msg = format!("{}", errors[0]);
+        assert!(
+            msg.contains("appears before clear_tags"),
+            "expected 'appears before clear_tags' in error, got: {msg}"
+        );
+    }
 }
