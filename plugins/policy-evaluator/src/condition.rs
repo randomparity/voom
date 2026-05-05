@@ -618,4 +618,128 @@ mod tests {
             &ctx,
         ));
     }
+
+    // ---- IsDubbed / IsOriginal predicate tests (issue #236, cluster D) ----
+    // Targets the six surviving mutants on condition.rs:59 and :61. The four
+    // IsDubbed cases pick boundary corners so each operator flip changes the
+    // boolean output.
+
+    fn file_with_audio_langs(langs: &[&str]) -> MediaFile {
+        let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
+        file.tracks = langs
+            .iter()
+            .enumerate()
+            .map(|(i, lang)| {
+                let mut t = Track::new(
+                    i as u32,
+                    if i == 0 {
+                        TrackType::AudioMain
+                    } else {
+                        TrackType::AudioAlternate
+                    },
+                    "aac".into(),
+                );
+                t.language = (*lang).into();
+                t
+            })
+            .collect();
+        file
+    }
+
+    fn add_subtitle(file: &mut MediaFile, lang: &str) {
+        let next_idx = file.tracks.len() as u32;
+        let mut sub = Track::new(next_idx, TrackType::SubtitleMain, "srt".into());
+        sub.language = lang.into();
+        file.tracks.push(sub);
+    }
+
+    #[test]
+    fn is_dubbed_true_when_multi_lang_with_subtitles() {
+        // count=2, !empty=true → original true. Kills `> -> <` (2<1 false).
+        let mut file = file_with_audio_langs(&["eng", "jpn"]);
+        add_subtitle(&mut file, "eng");
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::IsDubbed,
+            &file,
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn is_dubbed_false_when_single_lang_with_subtitles() {
+        // count=1, !empty=true → original false.
+        // Kills `> -> ==` (1==1 true), `> -> >=` (1>=1 true), and
+        // `&& -> ||` first form (false || true = true).
+        let mut file = file_with_audio_langs(&["eng"]);
+        add_subtitle(&mut file, "eng");
+        let ctx = no_ctx();
+        assert!(!evaluate_condition(
+            &CompiledCondition::IsDubbed,
+            &file,
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn is_dubbed_false_when_multi_lang_no_subtitles() {
+        // count=2, !empty=false → original false.
+        // Kills `delete !` (count>1 true && empty=true → mutant true) and
+        // reinforces the `&& -> ||` second form (true || false = true).
+        let file = file_with_audio_langs(&["eng", "jpn"]);
+        let ctx = no_ctx();
+        assert!(!evaluate_condition(
+            &CompiledCondition::IsDubbed,
+            &file,
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn is_dubbed_false_when_no_audio_no_subtitles() {
+        // count=0, no subs → original false. Sanity baseline.
+        let file = MediaFile::new(PathBuf::from("/test.mkv"));
+        let ctx = no_ctx();
+        assert!(!evaluate_condition(
+            &CompiledCondition::IsDubbed,
+            &file,
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn is_original_true_with_one_audio_lang() {
+        // count=1 → original `1 <= 1` true. Kills `<= -> >` (1>1 false).
+        let file = file_with_audio_langs(&["eng"]);
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::IsOriginal,
+            &file,
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn is_original_true_with_zero_audio_langs() {
+        // count=0 → original true. Reinforces the boundary direction.
+        let file = MediaFile::new(PathBuf::from("/test.mkv"));
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::IsOriginal,
+            &file,
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn is_original_false_with_multi_audio_langs() {
+        // count=2 → original false. Confirms `<= -> >` direction (2>1 true).
+        let file = file_with_audio_langs(&["eng", "jpn"]);
+        let ctx = no_ctx();
+        assert!(!evaluate_condition(
+            &CompiledCondition::IsOriginal,
+            &file,
+            &ctx
+        ));
+    }
 }
