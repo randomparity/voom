@@ -5,10 +5,6 @@ on:
     # Mondays at 06:00 UTC. Runs the weekly fuzz sweep before US/EU work hours.
     - cron: '0 6 * * 1'
   workflow_dispatch: {}
-  # TEMPORARY: validate workflow on this branch before merging. Removed before PR.
-  push:
-    branches:
-      - fuzz/voom-dsl-cargo-fuzz
 
 permissions:
   contents: read
