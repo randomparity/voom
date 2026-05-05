@@ -1007,4 +1007,106 @@ mod tests {
             &ctx,
         ));
     }
+
+    // ---- resolve_file_field arms (issue #236, phase 2) ----
+    // Each test targets a single match arm in resolve_file_field. Seeding the
+    // field with a known non-default value and asserting FieldCompare(Eq)
+    // succeeds means deleting the arm — which makes resolve_file_field fall
+    // through to the tag-lookup `_` branch (which finds nothing because the
+    // helper leaves `tags` empty) — flips the assertion to false. The same
+    // assertions also kill the function-level `replace -> None` and
+    // `replace -> Some(Default::default())` (Value::Null) mutants because
+    // each compares against a specific, non-null expected value.
+
+    fn file_with_seeded_file_fields() -> MediaFile {
+        // container=Mkv (as_str() = "mkv"), size=12_345_678, duration=90.5,
+        // path=/movies/test.mkv (filename "test.mkv"), tags empty.
+        use voom_domain::media::Container;
+        let mut file = MediaFile::new(PathBuf::from("/movies/test.mkv"));
+        file.container = Container::Mkv;
+        file.size = 12_345_678;
+        file.duration = 90.5;
+        file
+    }
+
+    #[test]
+    fn resolve_file_field_container() {
+        // Kills `delete match arm "container"`.
+        let file = file_with_seeded_file_fields();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["file".into(), "container".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("mkv".into()),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_file_field_size() {
+        // Kills `delete match arm "size"`.
+        let file = file_with_seeded_file_fields();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["file".into(), "size".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(12_345_678u64),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_file_field_duration() {
+        // Kills `delete match arm "duration"`. 90.5 is exactly representable
+        // in f64 to avoid equality flakes.
+        let file = file_with_seeded_file_fields();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["file".into(), "duration".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(90.5),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_file_field_path() {
+        // Kills `delete match arm "path"`.
+        let file = file_with_seeded_file_fields();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["file".into(), "path".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("/movies/test.mkv".into()),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_file_field_filename() {
+        // Kills `delete match arm "filename"`.
+        let file = file_with_seeded_file_fields();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["file".into(), "filename".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("test.mkv".into()),
+            },
+            &file,
+            &ctx,
+        ));
+    }
 }
