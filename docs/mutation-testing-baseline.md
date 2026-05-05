@@ -66,7 +66,7 @@ No surviving mutants.
 
 ## Triage
 
-A single tracking issue gathers follow-up work to drive surviving-mutant counts down: see [#TBD — track triage of cargo-mutants survivors](https://github.com/randomparity/voom/issues/TBD). Update the issue number once it is opened.
+A single tracking issue gathers follow-up work to drive surviving-mutant counts down: see [#236 — track triage of cargo-mutants survivors](https://github.com/randomparity/voom/issues/236).
 
 The general approach for triaging a survivor:
 
