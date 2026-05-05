@@ -4,8 +4,9 @@
 //!
 //! Coverage is grown in rounds (see GitHub issue #228). Currently covered:
 //! `Container`, `Keep`, `Remove`, `Order`, `Defaults`, `When`, `Rules`,
-//! `Transcode` for `OperationNode`; the filter leaves enumerated in
-//! [`filter_leaf_strategy`]; and a minimal `condition_leaf_strategy` /
+//! `Transcode` for `OperationNode`; the filter leaves currently enumerated
+//! in [`filter_leaf_strategy`] (full coverage in Round 3); and a minimal
+//! `condition_leaf_strategy` /
 //! `non_skip_action_strategy` (assembled by `action_vec_strategy`) used by
 //! `When`/`Rules`.
 
@@ -82,10 +83,10 @@ fn safe_string_strategy() -> impl Strategy<Value = String> {
 }
 
 /// Track-query target accepted inside `exists()` / `count()` conditions.
-/// Includes the literal `"track"` (any kind) which the parser handles via a
-/// special path. We avoid it here for now because the formatter writes the
-/// stored target string verbatim and reparsing depends on grammar branches
-/// that have separate test coverage.
+/// Currently delegates to [`track_target_strategy`]; the literal `"track"`
+/// (any-kind) variant of the grammar's `track_query` rule is intentionally
+/// excluded for now — that branch parses through a separate code path and
+/// will be added when round 4 widens condition coverage.
 fn track_query_target_strategy() -> impl Strategy<Value = String> {
     track_target_strategy()
 }
@@ -147,6 +148,13 @@ fn non_skip_action_strategy() -> impl Strategy<Value = crate::ast::ActionNode> {
     prop_oneof![keep, remove, warn, fail]
 }
 
+/// `Skip` action strategy — used as the only valid trailing action in a
+/// `then_actions` / `else_actions` sequence (see [`action_vec_strategy`]).
+fn skip_action_strategy() -> impl Strategy<Value = crate::ast::ActionNode> {
+    use crate::ast::ActionNode;
+    proptest::option::of(ident_strategy()).prop_map(ActionNode::Skip)
+}
+
 /// Build a sequence of actions of length within `min..=max`. A trailing
 /// `Skip` is occasionally appended; it is never placed in a non-final
 /// position because the grammar greedily attaches the next action's leading
@@ -155,21 +163,19 @@ fn action_vec_strategy(
     min: usize,
     max: usize,
 ) -> impl Strategy<Value = Vec<crate::ast::ActionNode>> {
-    use crate::ast::ActionNode;
-
     debug_assert!(min <= max && max >= 1);
 
     (
         vec(non_skip_action_strategy(), min..=max),
-        proptest::option::of(proptest::option::of(ident_strategy())),
+        proptest::option::of(skip_action_strategy()),
     )
         .prop_map(move |(mut body, trailing_skip)| {
-            if let Some(phase) = trailing_skip {
+            if let Some(skip) = trailing_skip {
                 if body.len() == max {
                     // Replace the last element instead of overflowing `max`.
                     body.pop();
                 }
-                body.push(ActionNode::Skip(phase));
+                body.push(skip);
             }
             body
         })
@@ -311,6 +317,7 @@ pub fn operation_strategy() -> impl Strategy<Value = OperationNode> {
     // CompiledTranscodeSettings name-space; values are constrained to
     // shapes whose AST -> source -> AST roundtrip is byte-stable.
     let transcode_setting = prop_oneof![
+        // Standard x264/x265 CRF range.
         (1u32..=51).prop_map(|n| (
             "crf".to_string(),
             Value::Number(f64::from(n), n.to_string())
@@ -319,12 +326,12 @@ pub fn operation_strategy() -> impl Strategy<Value = OperationNode> {
             Just("ultrafast"),
             Just("medium"),
             Just("slow"),
-            Just("veryslow"),
+            Just("veryslow")
         ]
         .prop_map(|p| ("preset".to_string(), Value::Ident(p.to_string()))),
-        prop_oneof![Just("128k"), Just("192k"), Just("256k"), Just("320k"),]
+        prop_oneof![Just("128k"), Just("192k"), Just("256k"), Just("320k")]
             .prop_map(|b| ("bitrate".to_string(), Value::String(b.to_string()))),
-        prop_oneof![Just("auto"), Just("nvenc"), Just("vaapi"), Just("none"),]
+        prop_oneof![Just("auto"), Just("nvenc"), Just("vaapi"), Just("none")]
             .prop_map(|h| ("hw".to_string(), Value::Ident(h.to_string()))),
     ];
 
