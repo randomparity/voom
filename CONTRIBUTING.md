@@ -29,3 +29,16 @@ The CI invocation lives in `.github/workflows/sonarcloud.yml`. The path `lcov.in
 ## Fuzzing the DSL
 
 The `voom-dsl` parser and compiler have fuzz harnesses under `crates/voom-dsl/fuzz/`. See `crates/voom-dsl/fuzz/README.md` for instructions on running locally and triaging crashes. The harnesses also run weekly in CI via `.github/workflows/fuzz.yml`.
+
+## Mutation testing
+
+The `voom-dsl`, `voom-policy-evaluator`, and `voom-phase-orchestrator` crates run nightly mutation testing in CI via `.github/workflows/mutants.yml`. To reproduce a single-crate run locally:
+
+```bash
+cargo install cargo-mutants --locked
+cargo mutants -p voom-dsl
+```
+
+Surviving mutants and per-mutant outcomes land in `mutants.out/`. The workspace config at `.cargo/mutants.toml` excludes tests and benches and the workflow caps each cargo command at 300 seconds via `--timeout 300` — pass `--timeout <seconds>` to override locally.
+
+The current baseline counts per crate are recorded in `docs/mutation-testing-baseline.md`; new code in the targeted crates should aim to keep the missed-mutant count flat or drive it down.
