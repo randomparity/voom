@@ -1109,4 +1109,85 @@ mod tests {
             &ctx,
         ));
     }
+
+    // ---- compare_json comparison-operator tests (issue #236, phase 2) ----
+    // Each test calls compare_json directly via super::* so we don't have to
+    // route String/Bool fixtures through FieldCompare. The String tests use
+    // single-character strings to make the lexicographic ordering obvious;
+    // the Bool test exercises the only valid bool comparison op (Ne) since
+    // ordering ops fall through to `_ => false` regardless.
+
+    #[test]
+    fn compare_json_returns_false_for_type_mismatch() {
+        // Kills `replace compare_json -> bool with true`: the type-mismatch
+        // fallback must return false, not true.
+        let left = serde_json::Value::String("a".into());
+        let right = serde_json::json!(1);
+        assert!(!compare_json(&left, CompiledCompareOp::Eq, &right));
+    }
+
+    #[test]
+    fn compare_json_string_ne_different() {
+        // Kills String Ne `!= -> ==`: distinct strings should be Ne-true.
+        let left = serde_json::Value::String("a".into());
+        let right = serde_json::Value::String("b".into());
+        assert!(compare_json(&left, CompiledCompareOp::Ne, &right));
+    }
+
+    #[test]
+    fn compare_json_string_lt_equal_inputs() {
+        // Kills String Lt `< -> ==` and `< -> <=`: equal strings are not Lt.
+        let left = serde_json::Value::String("a".into());
+        let right = serde_json::Value::String("a".into());
+        assert!(!compare_json(&left, CompiledCompareOp::Lt, &right));
+    }
+
+    #[test]
+    fn compare_json_string_lt_less() {
+        // Kills String Lt `< -> >`: "a" < "b" is true; "a" > "b" is false.
+        let left = serde_json::Value::String("a".into());
+        let right = serde_json::Value::String("b".into());
+        assert!(compare_json(&left, CompiledCompareOp::Lt, &right));
+    }
+
+    #[test]
+    fn compare_json_string_le_equal_inputs() {
+        // Kills String Le `<= -> >`: equal strings are Le-true, not Gt.
+        let left = serde_json::Value::String("a".into());
+        let right = serde_json::Value::String("a".into());
+        assert!(compare_json(&left, CompiledCompareOp::Le, &right));
+    }
+
+    #[test]
+    fn compare_json_string_gt_equal_inputs() {
+        // Kills String Gt `> -> ==` and `> -> >=`: equal strings are not Gt.
+        let left = serde_json::Value::String("a".into());
+        let right = serde_json::Value::String("a".into());
+        assert!(!compare_json(&left, CompiledCompareOp::Gt, &right));
+    }
+
+    #[test]
+    fn compare_json_string_gt_greater() {
+        // Kills String Gt `> -> <`: "b" > "a" is true; "b" < "a" is false.
+        let left = serde_json::Value::String("b".into());
+        let right = serde_json::Value::String("a".into());
+        assert!(compare_json(&left, CompiledCompareOp::Gt, &right));
+    }
+
+    #[test]
+    fn compare_json_string_ge_equal_inputs() {
+        // Kills String Ge `>= -> <`: equal strings are Ge-true, not Lt.
+        let left = serde_json::Value::String("a".into());
+        let right = serde_json::Value::String("a".into());
+        assert!(compare_json(&left, CompiledCompareOp::Ge, &right));
+    }
+
+    #[test]
+    fn compare_json_bool_ne_different() {
+        // Kills both Bool Ne mutants: `delete match arm Ne` (would fall through
+        // to `_ => false`) and `!= -> ==` (would yield `true == false` = false).
+        let left = serde_json::Value::Bool(true);
+        let right = serde_json::Value::Bool(false);
+        assert!(compare_json(&left, CompiledCompareOp::Ne, &right));
+    }
 }
