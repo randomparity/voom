@@ -517,3 +517,48 @@ pub enum CompiledValueOrField {
     Value(serde_json::Value),
     Field(Vec<String>),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- CompiledRegex::pattern accessor (issue #236, cluster C) ----
+
+    #[test]
+    fn compiled_regex_pattern_returns_input() {
+        // Kills both `pattern -> &str` mutants ("" and "xyzzy"): the original
+        // returns the exact input string, not a constant placeholder.
+        let r = CompiledRegex::new("hello.*world").unwrap();
+        assert_eq!(r.pattern(), "hello.*world");
+    }
+
+    #[test]
+    fn compiled_regex_pattern_distinct_from_mutant_constants() {
+        // Belt-and-suspenders: explicitly assert the value is neither of the
+        // two constants cargo-mutants substitutes.
+        let r = CompiledRegex::new("commentary").unwrap();
+        let pat = r.pattern();
+        assert_ne!(pat, "");
+        assert_ne!(pat, "xyzzy");
+        assert_eq!(pat, "commentary");
+    }
+
+    #[test]
+    fn compiled_regex_serializes_as_pattern_string() {
+        // Serde uses the pattern field directly. Guards against silent drift
+        // if Serialize is ever rewritten to emit the compiled regex shape.
+        let r = CompiledRegex::new(r"\d+").unwrap();
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(json, r#""\\d+""#);
+    }
+
+    #[test]
+    fn compiled_regex_serde_roundtrip_preserves_pattern() {
+        let original = CompiledRegex::new(r"foo\d+bar").unwrap();
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: CompiledRegex = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.pattern(), original.pattern());
+        // Verify the regex still matches after roundtrip.
+        assert!(decoded.regex().is_match("foo42bar"));
+    }
+}
