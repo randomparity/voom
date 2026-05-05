@@ -1,0 +1,60 @@
+name: Fuzz
+
+on:
+  schedule:
+    # Mondays at 06:00 UTC. Runs the weekly fuzz sweep before US/EU work hours.
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [parse_policy, compile_policy]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install nightly toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7  # v1
+        with:
+          toolchain: nightly
+          components: ''
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Restore fuzz corpus
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: crates/voom-dsl/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Seed corpus from committed inputs
+        run: |
+          mkdir -p crates/voom-dsl/fuzz/corpus/${{ matrix.target }}
+          cp -n crates/voom-dsl/fuzz/seeds/${{ matrix.target }}/*.voom \
+                crates/voom-dsl/fuzz/corpus/${{ matrix.target }}/ || true
+
+      - name: Run fuzz target (10 minutes)
+        working-directory: crates/voom-dsl/fuzz
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=600
+
+      - name: Upload crash artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: crates/voom-dsl/fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
+          retention-days: 30
