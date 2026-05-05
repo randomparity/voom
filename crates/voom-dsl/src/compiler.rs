@@ -1151,4 +1151,80 @@ mod tests {
     fn parse_default_strategy_unknown_returns_none() {
         assert_eq!(parse_default_strategy("nonsense"), None);
     }
+
+    // ---- compile_transcode setting-extraction tests (issue #236, phase 2) ----
+    // Each test exercises one match arm in compile_transcode by constructing
+    // a single-entry settings vec and asserting the resulting field. The
+    // single-entry settings also distinguish the `== to !=` mutant on the
+    // `get` closure (line 232): with one element, `find(|(k,_)| k != key)`
+    // returns None while the original returns Some.
+    fn transcode_with(key: &str, val: Value) -> CompiledTranscodeSettings {
+        let settings = vec![(key.to_string(), val)];
+        let CompiledOperation::Transcode { settings, .. } =
+            compile_transcode("video", "hevc", &settings)
+        else {
+            unreachable!("compile_transcode always returns Transcode")
+        };
+        settings
+    }
+
+    #[test]
+    fn compile_transcode_preserve_list() {
+        let s = transcode_with(
+            "preserve",
+            Value::List(vec![
+                Value::String("metadata".into()),
+                Value::String("subtitles".into()),
+            ]),
+        );
+        assert_eq!(s.preserve, vec!["metadata", "subtitles"]);
+    }
+
+    #[test]
+    fn compile_transcode_crf_number() {
+        let s = transcode_with("crf", Value::Number(23.0, "23".into()));
+        assert_eq!(s.crf, Some(23));
+    }
+
+    #[test]
+    fn compile_transcode_preset_string() {
+        let s = transcode_with("preset", Value::String("fast".into()));
+        assert_eq!(s.preset, Some("fast".into()));
+    }
+
+    #[test]
+    fn compile_transcode_bitrate_string() {
+        let s = transcode_with("bitrate", Value::String("8M".into()));
+        assert_eq!(s.bitrate, Some("8M".into()));
+    }
+
+    #[test]
+    fn compile_transcode_channels_number() {
+        let s = transcode_with("channels", Value::Number(6.0, "6".into()));
+        assert_eq!(s.channels, Some(TranscodeChannels::Count(6)));
+    }
+
+    #[test]
+    fn compile_transcode_channels_named() {
+        let s = transcode_with("channels", Value::Ident("stereo".into()));
+        assert_eq!(s.channels, Some(TranscodeChannels::Named("stereo".into())));
+    }
+
+    #[test]
+    fn compile_transcode_hw_fallback_bool() {
+        let s = transcode_with("hw_fallback", Value::Bool(true));
+        assert_eq!(s.hw_fallback, Some(true));
+    }
+
+    #[test]
+    fn compile_transcode_max_resolution_ident() {
+        let s = transcode_with("max_resolution", Value::Ident("1080p".into()));
+        assert_eq!(s.max_resolution, Some("1080p".into()));
+    }
+
+    #[test]
+    fn compile_transcode_max_resolution_number_raw() {
+        let s = transcode_with("max_resolution", Value::Number(1080.0, "1080".into()));
+        assert_eq!(s.max_resolution, Some("1080".into()));
+    }
 }
