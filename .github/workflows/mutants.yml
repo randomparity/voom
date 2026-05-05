@@ -1,0 +1,102 @@
+name: Mutants
+
+on:
+  schedule:
+    # Nightly at 03:00 UTC. Off-hours for the maintainer's timezone and well
+    # away from the weekly fuzz sweep at 06:00 UTC Mondays.
+    - cron: '0 3 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  mutants:
+    name: Mutants ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    # Hard ceiling per matrix job. Mutation testing is slow; 6 hours matches
+    # the GitHub-hosted runner cap. If any package consistently approaches
+    # this limit, shard with `cargo mutants --shard N/M` instead of raising.
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - voom-dsl
+          - voom-policy-evaluator
+          - voom-phase-orchestrator
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@9d7e65c320fdb52dcd45ffaa68deb6c02c8754d9  # v1.12.0
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0  # v2.8.0
+        with:
+          # Per-package cache key so the three matrix jobs don't fight over
+          # the same target/ snapshot.
+          key: mutants-${{ matrix.package }}
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@9ca1734d8940023f074414ee621fd530c4ce10f2  # v2.55.3
+        with:
+          tool: cargo-mutants
+
+      - name: Run cargo mutants
+        # Surviving mutants are the steady-state signal, not a regression. Let
+        # cargo-mutants exit 2 ("some mutants missed") without failing the job.
+        # Real failures (config errors, baseline test failures, exit 1/3/4)
+        # will still show up in the summary step's parsed counts.
+        continue-on-error: true
+        run: |
+          cargo mutants \
+            --package ${{ matrix.package }} \
+            --output mutants.out \
+            --timeout 300 \
+            --no-shuffle \
+            --colors=never
+
+      - name: Summarize outcomes
+        if: always()
+        run: |
+          set -euo pipefail
+          out=mutants.out/outcomes.json
+          if [ ! -f "$out" ]; then
+            echo "::warning::no outcomes.json produced — cargo mutants exited before generating results"
+            exit 0
+          fi
+          # outcomes.json is a list of objects each with a `summary` field
+          # ("caught", "missed", "timeout", "unviable", "success").
+          caught=$(jq '[.outcomes[] | select(.summary == "caught")] | length' "$out")
+          missed=$(jq '[.outcomes[] | select(.summary == "missed")] | length' "$out")
+          timeout=$(jq '[.outcomes[] | select(.summary == "timeout")] | length' "$out")
+          unviable=$(jq '[.outcomes[] | select(.summary == "unviable")] | length' "$out")
+          total=$(jq '.outcomes | length' "$out")
+          {
+            echo "## cargo mutants — ${{ matrix.package }}"
+            echo
+            echo "| Outcome  | Count |"
+            echo "|----------|-------|"
+            echo "| Caught   | $caught |"
+            echo "| Missed   | $missed |"
+            echo "| Timeout  | $timeout |"
+            echo "| Unviable | $unviable |"
+            echo "| **Total** | **$total** |"
+            echo
+            echo "Surviving mutants (first 10):"
+            echo
+            jq -r '.outcomes[] | select(.summary == "missed") | "- `\(.scenario.mutant.package_name)` \(.scenario.mutant.source_file.tree_relative_slashes):\(.scenario.mutant.span.start.line) — \(.scenario.mutant.replacement)"' "$out" | head -10
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload mutants.out artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: mutants-${{ matrix.package }}
+          path: mutants.out/
+          retention-days: 90
+          if-no-files-found: warn
