@@ -1,0 +1,103 @@
+policy "production-normalize" {
+  config {
+    languages audio: [eng, und]
+    languages subtitle: [eng, und]
+    commentary_patterns: ["commentary", "director", "cast"]
+    on_error: continue
+  }
+
+  // Phase 1: Ensure MKV container
+  phase containerize {
+    container mkv
+  }
+
+  // Phase 2: Normalize tracks
+  phase normalize {
+    depends_on: [containerize]
+
+    audio actions {
+      clear_all_default: true
+      clear_all_forced: true
+      clear_all_titles: true
+    }
+
+    subtitle actions {
+      clear_all_default: true
+      clear_all_forced: true
+    }
+
+    keep audio where lang in [eng, jpn, und]
+    keep subtitles where lang in [eng] and not commentary
+    remove attachments where not font
+
+    order tracks [
+      video, audio_main, audio_alternate,
+      subtitle_main, subtitle_forced,
+      audio_commentary, subtitle_commentary, attachment
+    ]
+
+    defaults {
+      audio: first_per_language
+      subtitle: none
+    }
+  }
+
+  // Phase 3: Transcode if needed
+  phase transcode {
+    skip when video.codec in [hevc, h265]
+
+    transcode video to hevc {
+      crf: 20
+      preset: medium
+      hw: auto
+      hw_fallback: true
+    }
+
+    transcode audio to aac {
+      preserve: [truehd, dts_hd, flac]
+      bitrate: 192k
+    }
+  }
+
+  // Phase 4: Create compatibility audio
+  phase audio_compat {
+    depends_on: [normalize]
+
+    synthesize "Stereo AAC" {
+      codec: aac
+      channels: stereo
+      source: prefer(codec in [truehd, dts_hd, flac] and channels >= 6)
+      bitrate: "192k"
+      skip_if_exists { codec in [aac] and channels == 2 and not commentary }
+      title: "Stereo (AAC)"
+      language: inherit
+      position: after_source
+    }
+  }
+
+  // Phase 5: Validation rules
+  phase validate {
+    depends_on: [transcode, audio_compat]
+    run_if transcode.modified
+
+    when exists(audio where lang == jpn) and not exists(subtitle where lang == eng) {
+      warn "Japanese audio but no English subtitles in {filename}"
+    }
+
+    rules first {
+      rule "multi-language" {
+        when audio_is_multi_language {
+          warn "Multiple audio languages in {filename}"
+        }
+      }
+    }
+  }
+
+  // Phase 6: Plugin metadata
+  phase metadata {
+    when plugin.radarr.original_language exists {
+      set_language audio where default plugin.radarr.original_language
+      set_tag "title" plugin.radarr.title
+    }
+  }
+}

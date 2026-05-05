@@ -1,0 +1,90 @@
+// Movie library normalization policy.
+//
+// A comprehensive policy for organizing a movie library. Demonstrates:
+// - Config block with all settings
+// - Phase dependencies and ordering
+// - Track keep/remove with complex filters
+// - Track reordering and defaults
+// - Audio/subtitle/video actions for bulk metadata ops
+// - Container conversion
+//
+// Designed for use with: discovery, ffprobe-introspector, sqlite-store,
+// policy-evaluator, phase-orchestrator, mkvtoolnix-executor, backup-manager
+
+policy "movie-library" {
+  config {
+    languages audio: [eng, und]
+    languages subtitle: [eng, und]
+    commentary_patterns: ["commentary", "director", "cast", "crew"]
+    on_error: continue
+  }
+
+  // Phase 1: Convert everything to MKV
+  phase containerize {
+    on_error: abort
+    container mkv
+  }
+
+  // Phase 2: Clean up track metadata flags
+  phase clean-metadata {
+    depends_on: [containerize]
+
+    video actions {
+      clear_all_titles: true
+    }
+
+    audio actions {
+      clear_all_default: true
+      clear_all_forced: true
+      clear_all_titles: true
+    }
+
+    subtitle actions {
+      clear_all_default: true
+      clear_all_forced: true
+    }
+  }
+
+  // Phase 3: Filter and organize tracks
+  phase normalize {
+    depends_on: [clean-metadata]
+
+    // Keep only desired audio languages
+    keep audio where lang in [eng, jpn, und]
+
+    // Keep English subtitles, drop commentary subs
+    keep subtitles where lang in [eng, und] and not commentary
+
+    // Remove non-font attachments (covers, thumbnails)
+    remove attachments where not font
+
+    // Canonical track ordering
+    order tracks [
+      video, audio_main, audio_alternate,
+      subtitle_main, subtitle_forced,
+      audio_commentary, subtitle_commentary, attachment
+    ]
+
+    // Set default flags
+    defaults {
+      audio: first_per_language
+      subtitle: none
+    }
+  }
+
+  // Phase 4: Validation checks
+  phase validate {
+    depends_on: [normalize]
+    run_if normalize.completed
+
+    // Warn if no audio tracks remain
+    when count(audio) == 0 {
+      fail "No audio tracks remaining in {filename}"
+    }
+
+    // Warn about files with commentary but no main audio
+    when not exists(audio where not commentary) {
+      warn "Only commentary audio tracks in {filename}"
+    }
+  }
+}

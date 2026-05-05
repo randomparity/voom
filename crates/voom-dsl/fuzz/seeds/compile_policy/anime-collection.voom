@@ -1,0 +1,139 @@
+// Anime collection policy.
+//
+// Multi-language policy for anime libraries. Demonstrates:
+// - Multiple audio/subtitle language handling
+// - Forced subtitle detection and marking
+// - is_dubbed / is_original conditions
+// - audio_is_multi_language predicate
+// - count() conditions with comparison operators
+// - Complex filter expressions with or/and/not/parentheses
+// - Title-based filtering (contains, matches)
+// - set_default / set_forced actions
+// - rules block with "all" match mode
+// - when/else blocks
+//
+// Designed for use with: all native plugins + sonarr-metadata (WASM)
+
+policy "anime-collection" {
+  config {
+    languages audio: [jpn, eng, und]
+    languages subtitle: [eng, und]
+    commentary_patterns: ["commentary", "director"]
+    on_error: continue
+  }
+
+  // Phase 1: Container normalization
+  phase containerize {
+    container mkv
+  }
+
+  // Phase 2: Track cleanup
+  phase cleanup {
+    depends_on: [containerize]
+
+    // Keep Japanese and English audio
+    keep audio where lang in [jpn, eng, und]
+
+    // Keep English subtitles: both regular and forced (for sign/song translations)
+    keep subtitle where lang in [eng, und]
+
+    // Remove non-font attachments
+    remove attachments where not font
+
+    // Remove subtitle tracks that are clearly auto-generated junk
+    remove subtitles where title contains "auto-generated"
+
+    // Remove low-channel-count duplicate audio (e.g., mono promo tracks)
+    remove audio where channels < 2 and not default
+  }
+
+  // Phase 3: Track ordering and defaults
+  phase organize {
+    depends_on: [cleanup]
+
+    audio actions {
+      clear_all_default: true
+      clear_all_forced: true
+    }
+
+    subtitle actions {
+      clear_all_default: true
+      clear_all_forced: true
+    }
+
+    order tracks [
+      video, audio_main, audio_alternate,
+      subtitle_forced, subtitle_main,
+      audio_commentary, subtitle_commentary, attachment
+    ]
+
+    // Japanese audio is default; if dubbed, English gets default too
+    when exists(audio where lang == jpn) {
+      set_default audio where lang == jpn
+    } else {
+      set_default audio where lang == eng
+    }
+
+    // Mark forced subtitles
+    when exists(subtitle where forced) {
+      set_forced subtitle where forced
+    }
+
+    defaults {
+      subtitle: first
+    }
+  }
+
+  // Phase 4: Validation rules
+  phase validate {
+    depends_on: [organize]
+    run_if organize.completed
+
+    // Evaluate all rules (not just first match)
+    rules all {
+      rule "missing-japanese-audio" {
+        when not exists(audio where lang == jpn) {
+          warn "No Japanese audio track in {filename}"
+        }
+      }
+
+      rule "missing-subtitles-for-japanese" {
+        // Japanese audio present but no English subs — unwatchable for EN audience
+        when exists(audio where lang == jpn) and not exists(subtitle where lang == eng) {
+          warn "Japanese audio without English subtitles in {filename}"
+        }
+      }
+
+      rule "multi-language-check" {
+        when audio_is_multi_language {
+          warn "Multiple audio languages detected in {filename}"
+        }
+      }
+
+      rule "too-many-subtitle-tracks" {
+        when count(subtitle) > 10 {
+          warn "Excessive subtitle tracks ({filename}) — review manually"
+        }
+      }
+
+      rule "dubbed-without-original" {
+        when is_dubbed and not exists(audio where lang == jpn) {
+          warn "Dubbed version missing original Japanese audio in {filename}"
+        }
+      }
+    }
+  }
+
+  // Phase 5: Sonarr metadata enrichment (requires sonarr-metadata WASM plugin)
+  phase metadata {
+    depends_on: [validate]
+
+    when plugin.sonarr.series_title exists {
+      set_tag "title" plugin.sonarr.series_title
+    }
+
+    when plugin.sonarr.original_language exists {
+      set_language audio where default plugin.sonarr.original_language
+    }
+  }
+}

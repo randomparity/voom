@@ -1,0 +1,207 @@
+// English-optimized background processing policy
+//
+// Based on english-optimized.voom but tuned for unattended operation:
+// - Uses whisper-transcriber with per-segment language detection
+// - Generates forced English subtitles from multi-language transcripts
+// - on_error: continue throughout (no interactive prompts)
+// - Skips files that already have whisper transcripts
+//
+// Usage: voom process /media --policy english-optimized-background.voom --priority-by-date
+
+policy "english-optimized-background" {
+  config {
+    languages audio: [eng]
+    languages subtitle: [eng]
+    commentary_patterns: [
+      "commentary", "director", "cast", "crew",
+      "behind the scenes", "making of"
+    ]
+    on_error: continue
+    keep_backups: true
+  }
+
+  // Phase 1: MKV conversion — enables mkvtoolnix for all subsequent phases
+  phase containerize {
+    on_error: continue
+    container mkv
+  }
+
+  // Phase 2: Strip container metadata and non-font attachments
+  phase strip {
+    depends_on: [containerize]
+    on_error: continue
+    clear_tags
+    remove attachments where not font
+  }
+
+  // Phase 3: Video transcode — convert to HEVC if needed
+  phase transcode {
+    depends_on: [strip]
+    on_error: continue
+    skip when video.codec == "hevc"
+
+    transcode video to hevc {
+      crf: 20
+      preset: medium
+      hw: auto
+      hw_fallback: true
+    }
+  }
+
+  // Phase 4: Set video track language from external metadata
+  phase enrich {
+    depends_on: [transcode]
+    on_error: continue
+
+    rules first {
+      rule "radarr" {
+        when plugin.radarr.original_language exists {
+          set_language video plugin.radarr.original_language
+        }
+      }
+      rule "sonarr" {
+        when plugin.sonarr.original_language exists {
+          set_language video plugin.sonarr.original_language
+        }
+      }
+    }
+  }
+
+  // Phase 5a: Audio cleanup — remove commentary and silent tracks
+  phase audio-cleanup {
+    depends_on: [enrich]
+    on_error: continue
+
+    remove audio where commentary
+    remove audio where lang == zxx
+  }
+
+  // Phase 5b: Audio filtering for non-English primary content
+  phase audio-filter-foreign {
+    depends_on: [audio-cleanup]
+    on_error: continue
+    skip when not plugin.radarr.original_language exists
+              or plugin.radarr.original_language == "eng"
+
+    keep audio where lang == eng
+         or lang == plugin.radarr.original_language
+  }
+
+  // Phase 5c: Audio filtering for English/unknown content
+  phase audio-filter-english {
+    depends_on: [audio-cleanup]
+    on_error: continue
+    skip when plugin.radarr.original_language exists
+              and plugin.radarr.original_language != "eng"
+
+    keep audio where lang in [eng, und]
+  }
+
+  // Phase 6: Subtitle filtering
+  phase subtitle-filter {
+    depends_on: [enrich]
+    on_error: continue
+
+    keep subtitles where lang == eng and not commentary
+  }
+
+  // Phase 7: Audio normalization — create compatible default track
+  phase audio-normalize {
+    depends_on: [audio-filter-foreign, audio-filter-english]
+    on_error: continue
+
+    // EAC3 5.1 from best surround source (7.1+)
+    synthesize "EAC3 5.1" {
+      codec: eac3
+      channels: 5.1
+      source: prefer(
+        lang == eng and not commentary
+        and codec in [truehd, dts_hd, flac, dts, pcm]
+        and channels > 6
+      )
+      bitrate: "640k"
+      skip_if_exists {
+        codec in [ac3, eac3] and channels >= 6
+        and lang == eng and not commentary
+      }
+      create_if exists(audio where lang == eng
+                       and not commentary and channels > 6)
+      title: "Surround 5.1 (EAC3)"
+      language: inherit
+      position: after_source
+    }
+
+    // Transcode non-AC3/EAC3 5.1 surround to EAC3 5.1
+    synthesize "EAC3 5.1 from 5.1" {
+      codec: eac3
+      channels: 5.1
+      source: prefer(
+        lang == eng and not commentary
+        and channels == 6 and not codec in [ac3, eac3]
+      )
+      bitrate: "640k"
+      skip_if_exists {
+        codec in [ac3, eac3] and channels >= 6
+        and lang == eng and not commentary
+      }
+      create_if exists(audio where lang == eng and not commentary
+                       and channels == 6)
+               and not exists(audio where codec in [ac3, eac3]
+                              and channels >= 6 and lang == eng
+                              and not commentary)
+      title: "Surround 5.1 (EAC3)"
+      language: inherit
+      position: after_source
+    }
+
+    // AAC stereo fallback when no surround source exists
+    synthesize "AAC Stereo" {
+      codec: aac
+      channels: stereo
+      source: prefer(lang == eng and not commentary)
+      bitrate: "192k"
+      skip_if_exists {
+        codec == aac and channels == 2
+        and lang == eng and not commentary
+      }
+      create_if not exists(audio where lang == eng
+                           and not commentary and channels >= 6)
+      title: "Stereo (AAC)"
+      language: inherit
+      position: after_source
+    }
+  }
+
+  // Phase 8: Track ordering and defaults
+  phase finalize {
+    depends_on: [audio-normalize, subtitle-filter]
+    on_error: continue
+
+    order tracks [
+      video,
+      audio_main, audio_alternate,
+      subtitle_main, subtitle_forced,
+      attachment
+    ]
+
+    defaults {
+      audio: first_per_language
+      subtitle: none
+    }
+  }
+
+  // Phase 9: Validation (non-fatal in background mode)
+  phase validate {
+    depends_on: [finalize]
+    on_error: continue
+    run_if finalize.completed
+
+    when count(audio where not commentary) == 0 {
+      fail "No non-commentary audio tracks remain in {filename}"
+    }
+
+    when not exists(audio where lang == eng) {
+      warn "No English audio in {filename}"
+    }
+  }
+}

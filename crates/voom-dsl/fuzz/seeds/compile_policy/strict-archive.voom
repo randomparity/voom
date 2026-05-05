@@ -1,0 +1,138 @@
+// Strict archival policy with aggressive validation.
+//
+// Enforces strict quality standards and fails on violations.
+// Demonstrates:
+// - fail action (halts processing)
+// - All comparison operators (==, !=, >, >=, <, <=, in)
+// - count() with various operators
+// - Complex boolean conditions (and, or, not with parentheses)
+// - Field access comparisons on video/audio properties
+// - title matches (regex-style pattern matching)
+// - on_error: abort at policy and phase level
+// - Exhaustive track filtering
+//
+// Designed for use with: all native plugins, backup-manager (mandatory backups)
+
+policy "strict-archive" {
+  config {
+    languages audio: [eng, jpn, fre, ger, spa, und]
+    languages subtitle: [eng, jpn, fre, ger, spa, und]
+    commentary_patterns: ["commentary", "director", "cast", "production", "technical"]
+    on_error: abort
+  }
+
+  // Phase 1: Container must be MKV
+  phase container-check {
+    on_error: abort
+
+    container mkv
+  }
+
+  // Phase 2: Strict quality gate — fail if below standards
+  phase quality-gate {
+    depends_on: [container-check]
+    on_error: abort
+
+    // Must have at least one video track
+    when count(video) == 0 {
+      fail "No video track found in {filename}"
+    }
+
+    // Must have at least one audio track
+    when count(audio) == 0 {
+      fail "No audio track found in {filename}"
+    }
+
+    // Reject files with more than one video track (multi-angle)
+    when count(video) > 1 {
+      fail "Multiple video tracks not supported in archive: {filename}"
+    }
+
+    // Reject very low bitrate video (likely corrupt or cam rip)
+    when video.bitrate < 1000000 {
+      fail "Video bitrate too low (< 1Mbps) in {filename}"
+    }
+
+    // Reject VFR content
+    when video.vfr == true {
+      warn "Variable frame rate detected in {filename} — may cause sync issues"
+    }
+  }
+
+  // Phase 3: Remove unwanted tracks strictly
+  phase strict-filter {
+    depends_on: [quality-gate]
+    on_error: abort
+
+    // Only keep specified languages
+    keep audio where lang in [eng, jpn, fre, ger, spa, und]
+    keep subtitle where lang in [eng, jpn, fre, ger, spa, und]
+
+    // Remove commentary tracks entirely
+    remove audio where commentary
+    remove subtitles where commentary
+
+    // Remove tracks with junk titles
+    remove audio where title matches "sample|preview|promo"
+    remove subtitle where title matches "sample|preview|promo|advertisement"
+
+    // Remove very low quality audio (mono, low bitrate)
+    remove audio where channels <= 1
+
+    // Only keep font attachments
+    remove attachments where not font
+
+    // Clean metadata
+    video actions {
+      clear_all_titles: true
+    }
+
+    audio actions {
+      clear_all_default: true
+      clear_all_forced: true
+      clear_all_titles: true
+    }
+
+    subtitle actions {
+      clear_all_default: true
+      clear_all_forced: true
+    }
+  }
+
+  // Phase 4: Organize remaining tracks
+  phase organize {
+    depends_on: [strict-filter]
+
+    order tracks [
+      video, audio_main, audio_alternate,
+      subtitle_main, subtitle_forced,
+      attachment
+    ]
+
+    defaults {
+      audio: first
+      subtitle: none
+    }
+  }
+
+  // Phase 5: Post-filter validation
+  phase post-validate {
+    depends_on: [organize]
+    run_if strict-filter.modified
+
+    // Ensure we didn't remove all audio
+    when count(audio) == 0 {
+      fail "All audio tracks were removed from {filename}"
+    }
+
+    // Warn about potentially stripped content
+    when count(audio) == 1 and count(subtitle) == 0 {
+      warn "Only one audio track and no subtitles remain in {filename}"
+    }
+
+    // Ensure subtitle count is reasonable
+    when count(subtitle) > 15 {
+      warn "Unusually high subtitle count in {filename} — review manually"
+    }
+  }
+}
