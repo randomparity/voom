@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 805245950aae0a5bd5b4ea0633c028a1aa244400b6555eaf02150e9a20d1be57 # shrinks to ast = PolicyAst { name: "a", config: None, phases: [PhaseNode { name: "a", skip_when: None, depends_on: [], run_if: None, on_error: None, operations: [SpannedOperation { node: Keep { target: "audio", filter: Some(LangCompare(Lt, "aa")) }, span: Span { start: 0, end: 0, line: 1, col: 1 } }], span: Span { start: 0, end: 0, line: 1, col: 1 } }], span: Span { start: 0, end: 0, line: 1, col: 1 } }
+cc 807203a8e5759f2c31aa339a1e48b628c21274e66cb406ecb27e28f07cb08998 # shrinks to ast = PolicyAst { name: " ", config: None, phases: [PhaseNode { name: "a", skip_when: None, depends_on: [], run_if: None, on_error: None, operations: [SpannedOperation { node: Remove { target: "audio", filter: Some(And([CodecCompare(Ne, "ac3"), And([Commentary, CodecCompare(Ne, "opus")])])) }, span: Span { start: 0, end: 0, line: 1, col: 1 } }], span: Span { start: 0, end: 0, line: 1, col: 1 } }], span: Span { start: 0, end: 0, line: 1, col: 1 } }
