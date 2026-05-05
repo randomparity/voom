@@ -742,4 +742,115 @@ mod tests {
             &ctx
         ));
     }
+
+    // ---- resolve_track_field / resolve_system_field aliases (issue #236, cluster E) ----
+    // Each test targets a single match arm. Deleting the arm makes resolve_*
+    // return None, which flips FieldExists from true to false (or makes
+    // FieldCompare unable to find a value, returning false).
+
+    fn file_with_seeded_audio() -> MediaFile {
+        // First audio track has language=eng, channels=6, title="Director's Cut".
+        let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
+        file.tracks = vec![{
+            let mut t = Track::new(0, TrackType::AudioMain, "aac".into());
+            t.language = "eng".into();
+            t.title = "Director's Cut".into();
+            t.channels = Some(6);
+            t
+        }];
+        file
+    }
+
+    #[test]
+    fn resolve_track_field_language_alias_long_form() {
+        // Kills `delete match arm "language" | "lang"` via the long form.
+        let file = file_with_seeded_audio();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["audio".into(), "language".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("eng".into()),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_track_field_language_alias_short_form() {
+        // Reinforces the same arm via the `lang` literal.
+        let file = file_with_seeded_audio();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["audio".into(), "lang".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("eng".into()),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_track_field_title() {
+        // Kills `delete match arm "title"`.
+        let file = file_with_seeded_audio();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["audio".into(), "title".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("Director's Cut".into()),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_track_field_channels() {
+        // Kills `delete match arm "channels"`.
+        let file = file_with_seeded_audio();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["audio".into(), "channels".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(6),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_system_field_hwaccels_array() {
+        // Kills `delete match arm "hwaccels"` in resolve_system_field.
+        // FieldExists is sufficient: deleting the arm makes the function
+        // fall through to `_ => None`, flipping the assertion.
+        use voom_domain::capability_map::CapabilityMap;
+        use voom_domain::events::{CodecCapabilities, ExecutorCapabilitiesEvent};
+
+        let file = file_with_seeded_audio();
+        let mut map = CapabilityMap::new();
+        map.register(ExecutorCapabilitiesEvent::new(
+            "ffmpeg",
+            CodecCapabilities::empty(),
+            vec![],
+            vec!["cuda".into(), "vaapi".into()],
+        ));
+        let ctx = EvalContext {
+            capabilities: Some(&map),
+        };
+
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldExists {
+                path: vec!["system".into(), "hwaccels".into()],
+            },
+            &file,
+            &ctx,
+        ));
+    }
 }
