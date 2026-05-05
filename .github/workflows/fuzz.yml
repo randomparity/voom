@@ -33,8 +33,13 @@ jobs:
           toolchain: nightly
           components: ''
 
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+      - name: Install cargo-fuzz with stable Rust
+        # cargo-fuzz's pinned old rustix won't compile on modern nightly,
+        # so install cargo-fuzz itself with stable. The fuzz harness still
+        # builds and runs with nightly via `cargo +nightly fuzz`.
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          cargo +stable install cargo-fuzz --locked
 
       - name: Restore fuzz corpus
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
