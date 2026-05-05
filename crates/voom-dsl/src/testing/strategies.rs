@@ -2,13 +2,12 @@
 //! in depth and width to keep test runtime tractable — the goal is to catch
 //! parser/formatter drift, not to enumerate the entire grammar.
 //!
-//! Coverage is grown in rounds (see GitHub issue #228). Currently covered:
-//! every `OperationNode` variant except `SynthSetting::CreateIf` and the
-//! phase-level `skip_when` / `run_if` / `when` shapes (Round 4); every
-//! `FilterNode` variant participates via [`filter_leaf_strategy`] +
-//! [`filter_strategy`]; and a minimal `condition_leaf_strategy` /
-//! `non_skip_action_strategy` (assembled by `action_vec_strategy`) used by
-//! `When`/`Rules`.
+//! Coverage (per GitHub issue #228 — Round 4 complete):
+//! every `OperationNode` variant participates in [`operation_strategy`];
+//! every `FilterNode` variant participates via [`filter_leaf_strategy`] +
+//! [`filter_strategy`]; the recursive [`condition_strategy`] feeds
+//! `When`, `Rules`, `SynthSetting::CreateIf`, and the phase-level
+//! `skip_when` / `run_if` / `when` shapes.
 
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -146,9 +145,9 @@ fn action_setting_strategy() -> impl Strategy<Value = (String, crate::ast::Value
     (ident_strategy(), value_strategy())
 }
 
-/// `SynthSetting` strategy. `CreateIf` is intentionally excluded — it
-/// requires the full `condition_strategy` introduced in Round 4 and is
-/// added to this `prop_oneof!` at that point.
+/// `SynthSetting` strategy. `CreateIf` is included via the recursive
+/// [`condition_strategy`] (Round 4) — it exercises the same condition
+/// grammar as `When`/`Rules`/`skip_when`.
 fn synth_setting_strategy() -> impl Strategy<Value = crate::ast::SynthSetting> {
     use crate::ast::{SynthSetting, Value};
 
@@ -180,6 +179,7 @@ fn synth_setting_strategy() -> impl Strategy<Value = crate::ast::SynthSetting> {
         (0u32..=16)
             .prop_map(|n| SynthSetting::Position(Value::Number(f64::from(n), n.to_string()))),
     ];
+    let create_if = condition_strategy().prop_map(SynthSetting::CreateIf);
 
     prop_oneof![
         codec,
@@ -190,6 +190,7 @@ fn synth_setting_strategy() -> impl Strategy<Value = crate::ast::SynthSetting> {
         title,
         language,
         position,
+        create_if,
     ]
 }
 
@@ -231,6 +232,53 @@ fn condition_leaf_strategy() -> impl Strategy<Value = ConditionNode> {
         exists,
         count,
     ]
+}
+
+/// Recursive condition strategy. Mirrors [`filter_strategy`]:
+///
+/// * `And` children are never `And` (parser flattens `A and (B and C)` →
+///   `And([A, B, C])`).
+/// * `Or` children are never `Or` (same flattening for `or`).
+/// * `Not` children are never `Not` (`not not X` does not parse).
+///
+/// Field-access conditions (`FieldCompare`, `FieldExists`) are included
+/// because they exercise the `field_access ~ compare_op ~ value` grammar
+/// branch — distinct from `LangField` / `CodecField` in filters.
+pub fn condition_strategy() -> impl Strategy<Value = ConditionNode> {
+    // `vec(...)` returns a `VecStrategy` which is not `Clone`; use a closure
+    // factory so each consumer constructs a fresh strategy instance.
+    let field_path = || vec(ident_strategy(), 2..=3);
+
+    let field_cmp = (
+        field_path(),
+        numeric_compare_op_strategy(),
+        value_strategy(),
+    )
+        .prop_map(|(path, op, v)| ConditionNode::FieldCompare(path, op, v));
+
+    let field_exists = field_path().prop_map(ConditionNode::FieldExists);
+
+    let leaf = prop_oneof![condition_leaf_strategy(), field_cmp, field_exists];
+
+    leaf.prop_recursive(3, 12, 3, |inner| {
+        let and_child = inner.clone().prop_map(|c| match c {
+            ConditionNode::And(_) => ConditionNode::Not(Box::new(c)),
+            other => other,
+        });
+        let or_child = inner.clone().prop_map(|c| match c {
+            ConditionNode::Or(_) => ConditionNode::Not(Box::new(c)),
+            other => other,
+        });
+        let not_child = inner.prop_map(|c| match c {
+            ConditionNode::Not(inner) => *inner,
+            other => other,
+        });
+        prop_oneof![
+            vec(and_child, 2..=3).prop_map(ConditionNode::And),
+            vec(or_child, 2..=3).prop_map(ConditionNode::Or),
+            not_child.prop_map(|c| ConditionNode::Not(Box::new(c))),
+        ]
+    })
 }
 
 fn track_ref_strategy() -> impl Strategy<Value = crate::ast::TrackRefNode> {
@@ -437,7 +485,7 @@ pub fn operation_strategy() -> impl Strategy<Value = OperationNode> {
     .prop_map(OperationNode::Defaults);
 
     let when = (
-        condition_leaf_strategy(),
+        condition_strategy(),
         action_vec_strategy(1, 3),
         action_vec_strategy(0, 2),
     )
@@ -455,7 +503,7 @@ pub fn operation_strategy() -> impl Strategy<Value = OperationNode> {
         vec(
             (
                 safe_string_strategy(),
-                condition_leaf_strategy(),
+                condition_strategy(),
                 action_vec_strategy(1, 2),
             )
                 .prop_map(|(name, condition, then_actions)| RuleNode {
@@ -544,15 +592,32 @@ fn spanned_op_strategy() -> impl Strategy<Value = SpannedOperation> {
 }
 
 fn phase_strategy() -> impl Strategy<Value = PhaseNode> {
-    (ident_strategy(), vec(spanned_op_strategy(), 0..=4)).prop_map(|(name, operations)| PhaseNode {
-        name,
-        skip_when: None,
-        depends_on: Vec::new(),
-        run_if: None,
-        on_error: None,
-        operations,
-        span: dummy_span(),
-    })
+    use crate::ast::RunIfNode;
+
+    let run_if_trigger = prop_oneof![Just("modified".to_string()), Just("completed".to_string()),];
+
+    (
+        ident_strategy(),
+        proptest::option::of(condition_strategy()),
+        // depends_on: list of phase idents.
+        vec(ident_strategy(), 0..=2),
+        proptest::option::of(
+            (ident_strategy(), run_if_trigger)
+                .prop_map(|(phase, trigger)| RunIfNode { phase, trigger }),
+        ),
+        vec(spanned_op_strategy(), 0..=4),
+    )
+        .prop_map(
+            |(name, skip_when, depends_on, run_if, operations)| PhaseNode {
+                name,
+                skip_when,
+                depends_on,
+                run_if,
+                on_error: None,
+                operations,
+                span: dummy_span(),
+            },
+        )
 }
 
 fn config_strategy() -> impl Strategy<Value = ConfigNode> {
