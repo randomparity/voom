@@ -109,16 +109,13 @@ proptest! {
         let mut updated = file.clone();
         apply_default_actions(&mut updated, &first.plans[0]);
 
-        // End-state witness: after one pass, every language that had any
-        // AudioMain track must have exactly one default AudioMain track.
-        // This is the actual fixpoint semantics of `first_per_language`;
-        // the "second pass emits zero actions" check below is its
-        // downstream consequence. We assert both so that an evaluator that
-        // produced no second-pass actions for the wrong reason (e.g. by
-        // short-circuiting) cannot pass.
+        // Asserted alongside the idempotence check below: a short-circuiting
+        // evaluator could emit zero second-pass actions without actually
+        // reaching the `first_per_language` fixpoint, so we witness the
+        // end-state directly here.
         let mut counts: HashMap<&str, u32> = HashMap::new();
         for t in &updated.tracks {
-            if matches!(t.track_type, TrackType::AudioMain) && t.is_default {
+            if t.track_type == TrackType::AudioMain && t.is_default {
                 *counts.entry(t.language.as_str()).or_default() += 1;
             }
         }
