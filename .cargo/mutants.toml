@@ -1,0 +1,24 @@
+# cargo-mutants configuration for the VOOM workspace.
+#
+# Scope: only the logic-dense crates carry mutation-testing budget. The matrix
+# in .github/workflows/mutants.yml selects packages via `cargo mutants -p ...`;
+# this file applies workspace-wide exclusions and per-mutant timeouts that are
+# safe regardless of which package is being mutated.
+#
+# See: https://mutants.rs/
+
+# Skip non-source paths. Tests and benchmarks are not interesting targets —
+# mutating them produces noise (a "passing" mutated test that still tested
+# nothing useful). Examples follow the same logic.
+exclude_globs = [
+    "**/tests/**",
+    "**/benches/**",
+    "**/examples/**",
+]
+
+# Maximum wall-clock per cargo command (build + test) for a single mutant.
+# Mutants that exceed this are recorded as "timeout" rather than "missed", so
+# they do not falsely inflate the survived count when the test suite gets
+# pathologically slow on a particular mutation. 300s comfortably covers the
+# slowest expected single-package cargo test.
+timeout = 300
