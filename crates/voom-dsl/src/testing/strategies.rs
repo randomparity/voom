@@ -3,10 +3,10 @@
 //! parser/formatter drift, not to enumerate the entire grammar.
 //!
 //! Coverage is grown in rounds (see GitHub issue #228). Currently covered:
-//! `Container`, `Keep`, `Remove`, `Order`, `Defaults`, `When`, `Rules`,
-//! `Transcode` for `OperationNode`; the filter leaves currently enumerated
-//! in [`filter_leaf_strategy`] (full coverage in Round 3); and a minimal
-//! `condition_leaf_strategy` /
+//! every `OperationNode` variant except `SynthSetting::CreateIf` and the
+//! phase-level `skip_when` / `run_if` / `when` shapes (Round 4); the filter
+//! leaves currently enumerated in [`filter_leaf_strategy`] (full coverage
+//! in Round 3); and a minimal `condition_leaf_strategy` /
 //! `non_skip_action_strategy` (assembled by `action_vec_strategy`) used by
 //! `When`/`Rules`.
 
@@ -82,6 +82,109 @@ fn safe_string_strategy() -> impl Strategy<Value = String> {
     string_regex("[A-Za-z0-9 _\\-]{1,16}").expect("safe string regex compiles")
 }
 
+/// `Value` strategy whose AST -> source -> AST roundtrip is byte-stable.
+/// `Value::Number` is restricted to small non-negative integers whose raw
+/// text equals the digit form printed by the formatter. Idents that would
+/// re-parse as another `Value` shape (`true`/`false` re-parse as
+/// `Value::Bool`) are excluded.
+fn value_strategy() -> impl Strategy<Value = crate::ast::Value> {
+    use crate::ast::Value;
+
+    let int_number = (0u32..=4096).prop_map(|n| Value::Number(f64::from(n), n.to_string()));
+
+    // The grammar's `value` rule tries `boolean` before `ident`, so an
+    // ident literally spelled `true` or `false` would round-trip as a
+    // `Value::Bool` instead of a `Value::Ident`.
+    let safe_ident = ident_strategy().prop_filter("ident must not collide with boolean", |s| {
+        s != "true" && s != "false"
+    });
+
+    prop_oneof![
+        safe_string_strategy().prop_map(Value::String),
+        int_number,
+        prop_oneof![Just(true), Just(false)].prop_map(Value::Bool),
+        safe_ident.prop_map(Value::Ident),
+    ]
+}
+
+/// `ValueOrField` strategy used by `set_tag` (action and operation).
+/// `Field` paths must contain >=2 segments to satisfy the
+/// `field_access = ident ~ ("." ~ ident)+` grammar rule.
+fn value_or_field_strategy() -> impl Strategy<Value = crate::ast::ValueOrField> {
+    use crate::ast::ValueOrField;
+
+    let field = vec(ident_strategy(), 2..=3).prop_map(ValueOrField::Field);
+    let value = value_strategy().prop_map(ValueOrField::Value);
+    prop_oneof![field, value]
+}
+
+/// `ValueOrField` strategy specialised for `set_language`. The grammar rule
+/// `"set_language" ~ track_ref ~ (field_access | string)` accepts only a
+/// field access or a string literal — not the broader `value` shape that
+/// `set_tag` allows. The parser always materialises the literal arm as
+/// `ValueOrField::Value(Value::String(_))`, so this strategy produces only
+/// those two variants.
+fn set_language_value_strategy() -> impl Strategy<Value = crate::ast::ValueOrField> {
+    use crate::ast::{Value, ValueOrField};
+
+    let field = vec(ident_strategy(), 2..=3).prop_map(ValueOrField::Field);
+    let string = safe_string_strategy().prop_map(|s| ValueOrField::Value(Value::String(s)));
+    prop_oneof![field, string]
+}
+
+/// `kv_pair` strategy used inside `actions { ... }` blocks. Keys are
+/// identifiers (matching the `kv_pair = ident ~ ":" ~ value` rule).
+fn action_setting_strategy() -> impl Strategy<Value = (String, crate::ast::Value)> {
+    (ident_strategy(), value_strategy())
+}
+
+/// `SynthSetting` strategy. `CreateIf` is intentionally excluded — it
+/// requires the full `condition_strategy` introduced in Round 4 and is
+/// added to this `prop_oneof!` at that point.
+fn synth_setting_strategy() -> impl Strategy<Value = crate::ast::SynthSetting> {
+    use crate::ast::{SynthSetting, Value};
+
+    let codec = prop_oneof![
+        Just("aac".to_string()),
+        Just("ac3".to_string()),
+        Just("opus".to_string()),
+    ]
+    .prop_map(SynthSetting::Codec);
+
+    let channels = prop_oneof![
+        (1u32..=8).prop_map(|n| SynthSetting::Channels(Value::Number(f64::from(n), n.to_string()))),
+        Just(SynthSetting::Channels(Value::Ident("stereo".to_string()))),
+        Just(SynthSetting::Channels(Value::Ident("surround".to_string()))),
+    ];
+
+    let source = filter_strategy().prop_map(SynthSetting::Source);
+    let bitrate = prop_oneof![Just("128k"), Just("192k"), Just("256k")]
+        .prop_map(|b| SynthSetting::Bitrate(b.to_string()));
+    let skip_if_exists = filter_strategy().prop_map(SynthSetting::SkipIfExists);
+    let title = safe_string_strategy().prop_map(SynthSetting::Title);
+    let language = prop_oneof![
+        language_strategy().prop_map(SynthSetting::Language),
+        Just(SynthSetting::Language("inherit".to_string())),
+    ];
+    let position = prop_oneof![
+        Just(SynthSetting::Position(Value::Ident("first".to_string()))),
+        Just(SynthSetting::Position(Value::Ident("last".to_string()))),
+        (0u32..=16)
+            .prop_map(|n| SynthSetting::Position(Value::Number(f64::from(n), n.to_string()))),
+    ];
+
+    prop_oneof![
+        codec,
+        channels,
+        source,
+        bitrate,
+        skip_if_exists,
+        title,
+        language,
+        position
+    ]
+}
+
 /// Track-query target accepted inside `exists()` / `count()` conditions.
 /// Currently delegates to [`track_target_strategy`]; the literal `"track"`
 /// (any-kind) variant of the grammar's `track_query` rule is intentionally
@@ -126,9 +229,15 @@ fn condition_leaf_strategy() -> impl Strategy<Value = ConditionNode> {
 /// grammar rule `"skip" ~ ident?` is greedy: when followed by another
 /// action, the next action's leading identifier (e.g. `keep`, `audio`) is
 /// silently consumed as the optional skip phase. Use [`action_vec_strategy`]
-/// to assemble lists; it appends an optional `Skip` only at the end.
+/// to assemble lists; it appends an optional `Skip` only at the end via
+/// [`skip_action_strategy`].
+///
+/// All Round 2 additions (`SetDefault`, `SetForced`, `SetLanguage`,
+/// `SetTag`) have required tail tokens (a `track_ref`, a value/field, or a
+/// string + value) so they have no greedy-grammar hazard and remain in the
+/// non-skip pool.
 fn non_skip_action_strategy() -> impl Strategy<Value = crate::ast::ActionNode> {
-    use crate::ast::ActionNode;
+    use crate::ast::{ActionNode, TrackRefNode};
 
     let keep = (
         track_target_strategy(),
@@ -145,7 +254,34 @@ fn non_skip_action_strategy() -> impl Strategy<Value = crate::ast::ActionNode> {
     let warn = safe_string_strategy().prop_map(ActionNode::Warn);
     let fail = safe_string_strategy().prop_map(ActionNode::Fail);
 
-    prop_oneof![keep, remove, warn, fail]
+    let track_ref_for = || {
+        (
+            track_target_strategy(),
+            proptest::option::of(filter_strategy()),
+        )
+            .prop_map(|(target, filter)| TrackRefNode { target, filter })
+    };
+
+    let set_default = track_ref_for().prop_map(ActionNode::SetDefault);
+    let set_forced = track_ref_for().prop_map(ActionNode::SetForced);
+    // `set_language` accepts only `field_access | string` per the grammar;
+    // the parser materialises the literal arm as `Value::String(...)`, so
+    // we restrict the value strategy accordingly.
+    let set_language = (track_ref_for(), set_language_value_strategy())
+        .prop_map(|(track, val)| ActionNode::SetLanguage(track, val));
+    let set_tag = (safe_string_strategy(), value_or_field_strategy())
+        .prop_map(|(tag, val)| ActionNode::SetTag(tag, val));
+
+    prop_oneof![
+        keep,
+        remove,
+        warn,
+        fail,
+        set_default,
+        set_forced,
+        set_language,
+        set_tag,
+    ]
 }
 
 /// `Skip` action strategy — used as the only valid trailing action in a
@@ -351,7 +487,30 @@ pub fn operation_strategy() -> impl Strategy<Value = OperationNode> {
             settings,
         });
 
-    prop_oneof![container, keep, remove, order, defaults, when, rules, transcode]
+    let actions_op = (
+        prop_oneof![
+            Just("audio".to_string()),
+            Just("subtitle".to_string()),
+            Just("video".to_string()),
+        ],
+        vec(action_setting_strategy(), 0..=3),
+    )
+        .prop_map(|(target, settings)| OperationNode::Actions { target, settings });
+
+    let clear_tags = Just(OperationNode::ClearTags);
+
+    let set_tag = (safe_string_strategy(), value_or_field_strategy())
+        .prop_map(|(tag, value)| OperationNode::SetTag { tag, value });
+
+    let delete_tag = safe_string_strategy().prop_map(OperationNode::DeleteTag);
+
+    let synthesize = (safe_string_strategy(), vec(synth_setting_strategy(), 1..=4))
+        .prop_map(|(name, settings)| OperationNode::Synthesize { name, settings });
+
+    prop_oneof![
+        container, keep, remove, order, defaults, when, rules, transcode, actions_op, clear_tags,
+        set_tag, delete_tag, synthesize,
+    ]
 }
 
 fn spanned_op_strategy() -> impl Strategy<Value = SpannedOperation> {
