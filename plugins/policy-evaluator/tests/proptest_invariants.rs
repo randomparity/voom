@@ -6,6 +6,7 @@ use proptest::collection::vec;
 use proptest::prelude::*;
 
 use voom_domain::media::{MediaFile, Track, TrackType};
+use voom_domain::plan::{OperationType, Plan};
 use voom_dsl::compile_policy;
 use voom_policy_evaluator::evaluate;
 
@@ -98,10 +99,10 @@ proptest! {
     /// `is_default` flag set.
     #[test]
     fn defaults_first_per_language_is_idempotent(
-        audio in proptest::collection::vec(audio_track_strategy(), 1..=6),
+        audio in vec(audio_track_strategy(), 1..=6),
     ) {
         let file = build_file(&audio);
-        let policy = voom_dsl::compile_policy(
+        let policy = compile_policy(
             r#"policy "test" { phase init { defaults { audio: first_per_language } } }"#,
         ).unwrap();
 
@@ -115,6 +116,7 @@ proptest! {
 
         // Second evaluation against the updated file must be a no-op.
         let second = evaluate(&policy, &updated);
+        prop_assert_eq!(second.plans.len(), 1);
         prop_assert_eq!(
             second.plans[0].actions.len(),
             0,
@@ -127,9 +129,7 @@ proptest! {
 /// Apply `SetDefault` / `ClearDefault` actions from a Plan to a MediaFile,
 /// mirroring what an executor would do at run-time. Lives in this test file
 /// because no production code performs this in-place mutation.
-fn apply_default_actions(file: &mut voom_domain::media::MediaFile, plan: &voom_domain::plan::Plan) {
-    use voom_domain::plan::OperationType;
-
+fn apply_default_actions(file: &mut MediaFile, plan: &Plan) {
     for action in &plan.actions {
         let Some(idx) = action.track_index else {
             continue;
@@ -140,7 +140,10 @@ fn apply_default_actions(file: &mut voom_domain::media::MediaFile, plan: &voom_d
         match action.operation {
             OperationType::SetDefault => track.is_default = true,
             OperationType::ClearDefault => track.is_default = false,
-            _ => {}
+            other => panic!(
+                "apply_default_actions only models SetDefault/ClearDefault; got {other:?} \
+                 — extend the helper or narrow the policy"
+            ),
         }
     }
 }
