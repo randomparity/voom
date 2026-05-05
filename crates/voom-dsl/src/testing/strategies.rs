@@ -118,22 +118,23 @@ fn value_or_field_strategy() -> impl Strategy<Value = crate::ast::ValueOrField> 
     prop_oneof![field, value]
 }
 
-/// `ValueOrField` strategy specialised for `set_language`. The grammar rule
-/// `"set_language" ~ track_ref ~ (field_access | string)` accepts only a
-/// field access or a string literal — not the broader `value` shape that
-/// `set_tag` allows. The parser always materialises the literal arm as
-/// `ValueOrField::Value(Value::String(_))`, so this strategy produces only
-/// those two variants.
-fn set_language_value_strategy() -> impl Strategy<Value = crate::ast::ValueOrField> {
+/// `ValueOrField` narrowed to the `(field_access | string)` arm.
+/// Used by `set_language`, whose grammar is
+/// `set_language ~ track_ref ~ (field_access | string)` — the parser
+/// materialises the literal arm as `ValueOrField::Value(Value::String(_))`,
+/// so generating `Value::Number`/`Bool`/`Ident` here would not round-trip.
+fn field_or_string_strategy() -> impl Strategy<Value = crate::ast::ValueOrField> {
     use crate::ast::{Value, ValueOrField};
 
     let field = vec(ident_strategy(), 2..=3).prop_map(ValueOrField::Field);
-    let string = safe_string_strategy().prop_map(|s| ValueOrField::Value(Value::String(s)));
-    prop_oneof![field, string]
+    let string_value = safe_string_strategy().prop_map(|s| ValueOrField::Value(Value::String(s)));
+    prop_oneof![field, string_value]
 }
 
-/// `kv_pair` strategy used inside `actions { ... }` blocks. Keys are
-/// identifiers (matching the `kv_pair = ident ~ ":" ~ value` rule).
+/// `action_setting` strategy used inside `actions { ... }` blocks. Keys
+/// are identifiers (matching the `action_setting = ident ~ ":" ~ value`
+/// rule). Structurally identical to `kv_pair` used inside `transcode`
+/// `block`s.
 fn action_setting_strategy() -> impl Strategy<Value = (String, crate::ast::Value)> {
     (ident_strategy(), value_strategy())
 }
@@ -181,7 +182,7 @@ fn synth_setting_strategy() -> impl Strategy<Value = crate::ast::SynthSetting> {
         skip_if_exists,
         title,
         language,
-        position
+        position,
     ]
 }
 
@@ -225,6 +226,16 @@ fn condition_leaf_strategy() -> impl Strategy<Value = ConditionNode> {
     ]
 }
 
+fn track_ref_strategy() -> impl Strategy<Value = crate::ast::TrackRefNode> {
+    use crate::ast::TrackRefNode;
+
+    (
+        track_target_strategy(),
+        proptest::option::of(filter_strategy()),
+    )
+        .prop_map(|(target, filter)| TrackRefNode { target, filter })
+}
+
 /// Non-`Skip` `ActionNode` strategy. `Skip` is excluded here because the
 /// grammar rule `"skip" ~ ident?` is greedy: when followed by another
 /// action, the next action's leading identifier (e.g. `keep`, `audio`) is
@@ -237,7 +248,7 @@ fn condition_leaf_strategy() -> impl Strategy<Value = ConditionNode> {
 /// string + value) so they have no greedy-grammar hazard and remain in the
 /// non-skip pool.
 fn non_skip_action_strategy() -> impl Strategy<Value = crate::ast::ActionNode> {
-    use crate::ast::{ActionNode, TrackRefNode};
+    use crate::ast::ActionNode;
 
     let keep = (
         track_target_strategy(),
@@ -254,20 +265,12 @@ fn non_skip_action_strategy() -> impl Strategy<Value = crate::ast::ActionNode> {
     let warn = safe_string_strategy().prop_map(ActionNode::Warn);
     let fail = safe_string_strategy().prop_map(ActionNode::Fail);
 
-    let track_ref_for = || {
-        (
-            track_target_strategy(),
-            proptest::option::of(filter_strategy()),
-        )
-            .prop_map(|(target, filter)| TrackRefNode { target, filter })
-    };
-
-    let set_default = track_ref_for().prop_map(ActionNode::SetDefault);
-    let set_forced = track_ref_for().prop_map(ActionNode::SetForced);
+    let set_default = track_ref_strategy().prop_map(ActionNode::SetDefault);
+    let set_forced = track_ref_strategy().prop_map(ActionNode::SetForced);
     // `set_language` accepts only `field_access | string` per the grammar;
     // the parser materialises the literal arm as `Value::String(...)`, so
     // we restrict the value strategy accordingly.
-    let set_language = (track_ref_for(), set_language_value_strategy())
+    let set_language = (track_ref_strategy(), field_or_string_strategy())
         .prop_map(|(track, val)| ActionNode::SetLanguage(track, val));
     let set_tag = (safe_string_strategy(), value_or_field_strategy())
         .prop_map(|(tag, val)| ActionNode::SetTag(tag, val));
