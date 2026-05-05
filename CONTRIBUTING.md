@@ -42,3 +42,11 @@ cargo mutants -p voom-dsl
 Surviving mutants and per-mutant outcomes land in `mutants.out/`. The workspace config at `.cargo/mutants.toml` excludes tests and benches and the workflow caps each cargo command at 300 seconds via `--timeout 300` — pass `--timeout <seconds>` to override locally.
 
 The current baseline counts per crate are recorded in `docs/mutation-testing-baseline.md`; new code in the targeted crates should aim to keep the missed-mutant count flat or drive it down.
+
+## Property-based testing
+
+Several crates use [`proptest`](https://docs.rs/proptest) for property-based tests. When proptest finds a failing case it shrinks it and writes the seed to a sibling `*.proptest-regressions` file (for example, `crates/voom-dsl/tests/proptest_roundtrip.proptest-regressions`).
+
+**Commit these files.** This matches proptest's own recommendation in the auto-generated header of each file and ensures every developer and every CI run benefits from previously-found shrunk failures. New crates that adopt proptest should commit their regressions file alongside the test once the first useful seed exists.
+
+Do not add `*.proptest-regressions` to `.gitignore`.
