@@ -1092,4 +1092,63 @@ mod tests {
         // Sanity guard that protects later refactors of `safe_u32`.
         assert_eq!(safe_u32(42.0), Some(42));
     }
+
+    // ---- parse_error_strategy / parse_default_strategy arms (issue #236, cluster B) ----
+    // Each arm needs a test that returns Some(<variant>) for the literal it
+    // matches; the cargo-mutants "delete match arm" mutation falls through
+    // to the wildcard `_ => None` arm and would fail the assertion.
+
+    #[test]
+    fn parse_error_strategy_continue() {
+        assert_eq!(
+            parse_error_strategy("continue"),
+            Some(ErrorStrategy::Continue),
+        );
+    }
+
+    #[test]
+    fn parse_error_strategy_skip() {
+        assert_eq!(parse_error_strategy("skip"), Some(ErrorStrategy::Skip));
+    }
+
+    #[test]
+    fn parse_error_strategy_abort() {
+        assert_eq!(parse_error_strategy("abort"), Some(ErrorStrategy::Abort));
+    }
+
+    #[test]
+    fn parse_error_strategy_unknown_returns_none() {
+        assert_eq!(parse_error_strategy("nonsense"), None);
+    }
+
+    #[test]
+    fn parse_default_strategy_first_per_language() {
+        assert_eq!(
+            parse_default_strategy("first_per_language"),
+            Some(DefaultStrategy::FirstPerLanguage),
+        );
+    }
+
+    #[test]
+    fn parse_default_strategy_none() {
+        assert_eq!(parse_default_strategy("none"), Some(DefaultStrategy::None));
+    }
+
+    #[test]
+    fn parse_default_strategy_first() {
+        assert_eq!(
+            parse_default_strategy("first"),
+            Some(DefaultStrategy::First)
+        );
+    }
+
+    #[test]
+    fn parse_default_strategy_all() {
+        assert_eq!(parse_default_strategy("all"), Some(DefaultStrategy::All));
+    }
+
+    #[test]
+    fn parse_default_strategy_unknown_returns_none() {
+        assert_eq!(parse_default_strategy("nonsense"), None);
+    }
 }
