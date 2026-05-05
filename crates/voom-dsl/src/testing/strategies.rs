@@ -2,16 +2,20 @@
 //! in depth and width to keep test runtime tractable — the goal is to catch
 //! parser/formatter drift, not to enumerate the entire grammar.
 //!
-//! Scope is deliberately narrow: only the operations `Container`, `Keep`,
-//! `Remove`, `Order`, `Defaults`. Other `OperationNode` variants are not
-//! generated yet — extend the strategies as new variants gain coverage.
+//! Coverage is grown in rounds (see GitHub issue #228). Currently covered:
+//! `Container`, `Keep`, `Remove`, `Order`, `Defaults`, `When`, `Rules`,
+//! `Transcode` for `OperationNode`; the filter leaves enumerated in
+//! [`filter_leaf_strategy`]; and a minimal `condition_leaf_strategy` /
+//! `non_skip_action_strategy` (assembled by `action_vec_strategy`) used by
+//! `When`/`Rules`.
 
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::string::string_regex;
 
 use crate::ast::{
-    CompareOp, ConfigNode, FilterNode, OperationNode, PhaseNode, PolicyAst, Span, SpannedOperation,
+    CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode, PolicyAst, Span,
+    SpannedOperation,
 };
 
 /// Dummy span used for generated ASTs. The parser overwrites spans on the
@@ -68,6 +72,107 @@ fn track_target_strategy() -> impl Strategy<Value = String> {
         Just("attachment".to_string()),
         Just("attachments".to_string()),
     ]
+}
+
+/// Short, parser-safe string used for `warn`/`fail` messages, synthesize
+/// names, and `set_tag` keys. Avoids `"` and `\` (the only chars the string
+/// escape pass touches) so format/parse is byte-identical.
+fn safe_string_strategy() -> impl Strategy<Value = String> {
+    string_regex("[A-Za-z0-9 _\\-]{1,16}").expect("safe string regex compiles")
+}
+
+/// Track-query target accepted inside `exists()` / `count()` conditions.
+/// Includes the literal `"track"` (any kind) which the parser handles via a
+/// special path. We avoid it here for now because the formatter writes the
+/// stored target string verbatim and reparsing depends on grammar branches
+/// that have separate test coverage.
+fn track_query_target_strategy() -> impl Strategy<Value = String> {
+    track_target_strategy()
+}
+
+/// Condition leaves used inside Round 1's `When`/`Rules`. This is the
+/// minimal set; Round 4 wraps these in a recursive `condition_strategy`
+/// with `And`/`Or`/`Not` and the `field_access` shapes.
+fn condition_leaf_strategy() -> impl Strategy<Value = ConditionNode> {
+    use crate::ast::TrackQueryNode;
+
+    let exists = (
+        track_query_target_strategy(),
+        proptest::option::of(filter_strategy()),
+    )
+        .prop_map(|(target, filter)| ConditionNode::Exists(TrackQueryNode { target, filter }));
+
+    let count = (
+        track_query_target_strategy(),
+        proptest::option::of(filter_strategy()),
+        numeric_compare_op_strategy(),
+        (0u32..=8).prop_map(f64::from),
+    )
+        .prop_map(|(target, filter, op, n)| {
+            ConditionNode::Count(TrackQueryNode { target, filter }, op, n)
+        });
+
+    prop_oneof![
+        Just(ConditionNode::AudioIsMultiLanguage),
+        Just(ConditionNode::IsDubbed),
+        Just(ConditionNode::IsOriginal),
+        exists,
+        count,
+    ]
+}
+
+/// Non-`Skip` `ActionNode` strategy. `Skip` is excluded here because the
+/// grammar rule `"skip" ~ ident?` is greedy: when followed by another
+/// action, the next action's leading identifier (e.g. `keep`, `audio`) is
+/// silently consumed as the optional skip phase. Use [`action_vec_strategy`]
+/// to assemble lists; it appends an optional `Skip` only at the end.
+fn non_skip_action_strategy() -> impl Strategy<Value = crate::ast::ActionNode> {
+    use crate::ast::ActionNode;
+
+    let keep = (
+        track_target_strategy(),
+        proptest::option::of(filter_strategy()),
+    )
+        .prop_map(|(target, filter)| ActionNode::Keep { target, filter });
+
+    let remove = (
+        track_target_strategy(),
+        proptest::option::of(filter_strategy()),
+    )
+        .prop_map(|(target, filter)| ActionNode::Remove { target, filter });
+
+    let warn = safe_string_strategy().prop_map(ActionNode::Warn);
+    let fail = safe_string_strategy().prop_map(ActionNode::Fail);
+
+    prop_oneof![keep, remove, warn, fail]
+}
+
+/// Build a sequence of actions of length within `min..=max`. A trailing
+/// `Skip` is occasionally appended; it is never placed in a non-final
+/// position because the grammar greedily attaches the next action's leading
+/// identifier to the optional `skip <phase>` argument.
+fn action_vec_strategy(
+    min: usize,
+    max: usize,
+) -> impl Strategy<Value = Vec<crate::ast::ActionNode>> {
+    use crate::ast::ActionNode;
+
+    debug_assert!(min <= max && max >= 1);
+
+    (
+        vec(non_skip_action_strategy(), min..=max),
+        proptest::option::of(proptest::option::of(ident_strategy())),
+    )
+        .prop_map(move |(mut body, trailing_skip)| {
+            if let Some(phase) = trailing_skip {
+                if body.len() == max {
+                    // Replace the last element instead of overflowing `max`.
+                    body.pop();
+                }
+                body.push(ActionNode::Skip(phase));
+            }
+            body
+        })
 }
 
 /// Atomic `FilterNode` leaves — no logical connectives. The parser rewrites
@@ -128,37 +233,118 @@ pub fn filter_strategy() -> impl Strategy<Value = FilterNode> {
 
 /// Strategy for the focused subset of [`OperationNode`] currently covered.
 pub fn operation_strategy() -> impl Strategy<Value = OperationNode> {
-    prop_oneof![
+    use crate::ast::{RuleNode, Value, WhenNode};
+
+    let container = prop_oneof![
         Just(OperationNode::Container("mkv".to_string())),
         Just(OperationNode::Container("mp4".to_string())),
+    ];
+
+    let keep = (
+        track_target_strategy(),
+        proptest::option::of(filter_strategy()),
+    )
+        .prop_map(|(target, filter)| OperationNode::Keep { target, filter });
+
+    let remove = (
+        track_target_strategy(),
+        proptest::option::of(filter_strategy()),
+    )
+        .prop_map(|(target, filter)| OperationNode::Remove { target, filter });
+
+    let order = vec(language_strategy(), 1..=4).prop_map(OperationNode::Order);
+
+    let defaults = vec(
         (
-            track_target_strategy(),
-            proptest::option::of(filter_strategy())
-        )
-            .prop_map(|(target, filter)| OperationNode::Keep { target, filter }),
-        (
-            track_target_strategy(),
-            proptest::option::of(filter_strategy())
-        )
-            .prop_map(|(target, filter)| OperationNode::Remove { target, filter }),
-        vec(language_strategy(), 1..=4).prop_map(OperationNode::Order),
+            // Grammar accepts only "audio" or "subtitle" as the kind in
+            // `default_item`, even though the parser normalizes
+            // "subtitles" to "subtitle" elsewhere.
+            prop_oneof![Just("audio".to_string()), Just("subtitle".to_string())],
+            prop_oneof![
+                Just("first".to_string()),
+                Just("first_per_language".to_string()),
+                Just("none".to_string()),
+                Just("all".to_string()),
+            ],
+        ),
+        1..=2,
+    )
+    .prop_map(OperationNode::Defaults);
+
+    let when = (
+        condition_leaf_strategy(),
+        action_vec_strategy(1, 3),
+        action_vec_strategy(0, 2),
+    )
+        .prop_map(|(condition, then_actions, else_actions)| {
+            OperationNode::When(WhenNode {
+                condition,
+                then_actions,
+                else_actions,
+                span: dummy_span(),
+            })
+        });
+
+    let rules = (
+        prop_oneof![Just("first".to_string()), Just("all".to_string())],
         vec(
             (
-                // Grammar accepts only "audio" or "subtitle" as the kind in
-                // `default_item`, even though the parser normalizes
-                // "subtitles" to "subtitle" elsewhere.
-                prop_oneof![Just("audio".to_string()), Just("subtitle".to_string())],
-                prop_oneof![
-                    Just("first".to_string()),
-                    Just("first_per_language".to_string()),
-                    Just("none".to_string()),
-                    Just("all".to_string()),
-                ],
-            ),
-            1..=2,
-        )
-        .prop_map(OperationNode::Defaults),
-    ]
+                safe_string_strategy(),
+                condition_leaf_strategy(),
+                action_vec_strategy(1, 2),
+            )
+                .prop_map(|(name, condition, then_actions)| RuleNode {
+                    name,
+                    when: WhenNode {
+                        condition,
+                        then_actions,
+                        else_actions: Vec::new(),
+                        span: dummy_span(),
+                    },
+                }),
+            1..=3,
+        ),
+    )
+        .prop_map(|(mode, rules)| OperationNode::Rules { mode, rules });
+
+    // Transcode kv settings: keys are valid identifiers from the
+    // CompiledTranscodeSettings name-space; values are constrained to
+    // shapes whose AST -> source -> AST roundtrip is byte-stable.
+    let transcode_setting = prop_oneof![
+        (1u32..=51).prop_map(|n| (
+            "crf".to_string(),
+            Value::Number(f64::from(n), n.to_string())
+        )),
+        prop_oneof![
+            Just("ultrafast"),
+            Just("medium"),
+            Just("slow"),
+            Just("veryslow"),
+        ]
+        .prop_map(|p| ("preset".to_string(), Value::Ident(p.to_string()))),
+        prop_oneof![Just("128k"), Just("192k"), Just("256k"), Just("320k"),]
+            .prop_map(|b| ("bitrate".to_string(), Value::String(b.to_string()))),
+        prop_oneof![Just("auto"), Just("nvenc"), Just("vaapi"), Just("none"),]
+            .prop_map(|h| ("hw".to_string(), Value::Ident(h.to_string()))),
+    ];
+
+    let transcode = (
+        prop_oneof![Just("video".to_string()), Just("audio".to_string())],
+        prop_oneof![
+            Just("hevc".to_string()),
+            Just("h264".to_string()),
+            Just("aac".to_string()),
+            Just("opus".to_string()),
+        ],
+        vec(transcode_setting, 0..=4),
+    )
+        .prop_map(|(target, codec, settings)| OperationNode::Transcode {
+            target,
+            codec,
+            settings,
+        });
+
+    prop_oneof![container, keep, remove, order, defaults, when, rules, transcode]
 }
 
 fn spanned_op_strategy() -> impl Strategy<Value = SpannedOperation> {
