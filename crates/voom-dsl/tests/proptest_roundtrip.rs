@@ -29,7 +29,7 @@ fn strip_spans(value: &mut serde_json::Value) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig::with_cases(256))]
 
     #[test]
     fn format_parse_roundtrip(ast in policy_ast_strategy()) {
@@ -38,5 +38,6 @@ proptest! {
             panic!("failed to reparse formatted output:\n---\n{source}\n---\nerror: {e:?}")
         });
         prop_assert_eq!(normalize(&ast), normalize(&reparsed));
+        prop_assert_eq!(format_policy(&ast), format_policy(&reparsed));
     }
 }
