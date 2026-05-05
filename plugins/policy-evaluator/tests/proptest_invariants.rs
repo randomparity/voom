@@ -182,6 +182,11 @@ fn skip_fires(file: &MediaFile, condition_dsl: &str) -> bool {
 /// how to look up; unresolvable paths still produce deterministic
 /// `false`, but keeping the strategy on resolvable paths exercises more
 /// of the evaluator.
+///
+/// Lives here (string-emitting, local) rather than in
+/// `voom_dsl::testing::strategies` because issue #229 scoped this work to
+/// raw DSL strings; an AST-level `condition_strategy` paired with
+/// `format_policy` is the right home if/when this is hoisted.
 fn condition_dsl_strategy() -> impl Strategy<Value = String> {
     // Scalars used inside generated strings.
     let lang = prop_oneof![
