@@ -1075,4 +1075,87 @@ mod tests {
             "container operation should be indented by 4 spaces; got:\n{out}"
         );
     }
+
+    // ---- format_config indent-arithmetic tests (issue #236, phase 2) ----
+    // Mirrors the cluster 7 (format_phase) recipe: each test exercises one
+    // optional config section by calling format_config at level=1 and
+    // asserting the inner line is indented by exactly 4 spaces. Both `+ to
+    // -` (gives 0 spaces) and `+ to *` (gives 2 spaces) mutants on each
+    // `level + 1` site fail the substring check.
+
+    fn empty_config() -> ConfigNode {
+        ConfigNode {
+            audio_languages: vec![],
+            subtitle_languages: vec![],
+            on_error: None,
+            commentary_patterns: vec![],
+            keep_backups: None,
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 1,
+                col: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn format_config_audio_languages_indents_one_deeper() {
+        let mut config = empty_config();
+        config.audio_languages = vec!["eng".into()];
+        let mut out = String::new();
+        format_config(&config, &mut out, 1);
+        assert!(
+            out.contains("\n    languages audio: [eng]\n"),
+            "audio languages line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_config_subtitle_languages_indents_one_deeper() {
+        let mut config = empty_config();
+        config.subtitle_languages = vec!["eng".into()];
+        let mut out = String::new();
+        format_config(&config, &mut out, 1);
+        assert!(
+            out.contains("\n    languages subtitle: [eng]\n"),
+            "subtitle languages line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_config_commentary_patterns_indents_one_deeper() {
+        let mut config = empty_config();
+        config.commentary_patterns = vec!["commentary".into()];
+        let mut out = String::new();
+        format_config(&config, &mut out, 1);
+        assert!(
+            out.contains("\n    commentary_patterns: [\"commentary\"]\n"),
+            "commentary_patterns line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_config_on_error_indents_one_deeper() {
+        let mut config = empty_config();
+        config.on_error = Some("skip".into());
+        let mut out = String::new();
+        format_config(&config, &mut out, 1);
+        assert!(
+            out.contains("\n    on_error: skip\n"),
+            "on_error line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_config_keep_backups_indents_one_deeper() {
+        let mut config = empty_config();
+        config.keep_backups = Some(true);
+        let mut out = String::new();
+        format_config(&config, &mut out, 1);
+        assert!(
+            out.contains("\n    keep_backups: true\n"),
+            "keep_backups line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
 }
