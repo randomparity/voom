@@ -1158,4 +1158,63 @@ mod tests {
             "keep_backups line should be indented by 4 spaces; got:\n{out}"
         );
     }
+
+    // ---- format_rules indent-arithmetic tests (issue #236, phase 2) ----
+    // Calls format_rules at level=1 with a single rule and asserts each of
+    // the three indented inner lines (rule-open `rule "r1" {` at 4 spaces,
+    // the recursive `when ...` at 6 spaces, and the rule-close `}` at 4
+    // spaces) appears at the correct depth. The `+ to -` mutants on each
+    // site cause usize subtraction underflow at level=1, panicking the test
+    // before the assertion runs — that still counts as caught. The `+ to *`
+    // mutants produce wrong indentation that fails the substring check.
+
+    fn simple_rule(name: &str) -> RuleNode {
+        RuleNode {
+            name: name.into(),
+            when: WhenNode {
+                condition: ConditionNode::IsDubbed,
+                then_actions: vec![],
+                else_actions: vec![],
+                span: Span {
+                    start: 0,
+                    end: 0,
+                    line: 1,
+                    col: 1,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn format_rules_rule_open_indents_two_levels() {
+        let rules = vec![simple_rule("r1")];
+        let mut out = String::new();
+        format_rules("first_match", &rules, &mut out, 1);
+        assert!(
+            out.contains("\n    rule \"r1\" {\n"),
+            "rule-open line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_rules_when_indents_three_levels() {
+        let rules = vec![simple_rule("r1")];
+        let mut out = String::new();
+        format_rules("first_match", &rules, &mut out, 1);
+        assert!(
+            out.contains("\n      when "),
+            "when line should be indented by 6 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_rules_rule_close_indents_two_levels() {
+        let rules = vec![simple_rule("r1")];
+        let mut out = String::new();
+        format_rules("first_match", &rules, &mut out, 1);
+        assert!(
+            out.contains("\n    }\n"),
+            "rule-close brace should be indented by 4 spaces; got:\n{out}"
+        );
+    }
 }
