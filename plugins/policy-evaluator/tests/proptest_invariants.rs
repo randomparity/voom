@@ -349,14 +349,22 @@ proptest! {
         );
     }
 
-    /// De Morgan's law: `not (A or B) ≡ (not A) and (not B)`.
+    /// De Morgan's law: `not (A or B) ≡ (not A) and (not B)` for any A, B
+    /// drawn from `condition_dsl_strategy`.
     #[test]
-    fn de_morgan_or(audio in vec(audio_track_strategy(), 0..=4)) {
+    fn de_morgan_or(
+        audio in vec(audio_track_strategy(), 0..=4),
+        a in condition_dsl_strategy(),
+        b in condition_dsl_strategy(),
+    ) {
         let file = build_file(&audio);
-        let a = "exists(audio where lang in [eng])";
-        let b = "exists(audio where codec in [aac])";
         let lhs = skip_fires(&file, &format!("not (({a}) or ({b}))"));
         let rhs = skip_fires(&file, &format!("(not ({a})) and (not ({b}))"));
-        prop_assert_eq!(lhs, rhs);
+        // Positional arg: prop_assert_eq! routes through concat!, which rejects {capture}.
+        prop_assert_eq!(
+            lhs, rhs,
+            "De Morgan (or) broke for predicates a=`{}` b=`{}`",
+            a, b,
+        );
     }
 }
