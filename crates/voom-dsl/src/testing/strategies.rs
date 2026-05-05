@@ -2,9 +2,9 @@
 //! in depth and width to keep test runtime tractable — the goal is to catch
 //! parser/formatter drift, not to enumerate the entire grammar.
 //!
-//! Scope is deliberately narrow: only the operations called out in issue #216
-//! (`Container`, `Keep`, `Remove`, `Order`, `Defaults`). Other variants of
-//! `OperationNode` will be added in follow-up tasks.
+//! Scope is deliberately narrow: only the operations `Container`, `Keep`,
+//! `Remove`, `Order`, `Defaults`. Other `OperationNode` variants are not
+//! generated yet — extend the strategies as new variants gain coverage.
 
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -126,7 +126,7 @@ pub fn filter_strategy() -> impl Strategy<Value = FilterNode> {
     })
 }
 
-/// Strategy for the focused subset of [`OperationNode`] called out in #216.
+/// Strategy for the focused subset of [`OperationNode`] currently covered.
 pub fn operation_strategy() -> impl Strategy<Value = OperationNode> {
     prop_oneof![
         Just(OperationNode::Container("mkv".to_string())),

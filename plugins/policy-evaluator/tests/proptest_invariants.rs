@@ -1,4 +1,5 @@
-//! Property-based invariants for the policy evaluator. See issue #216.
+//! Property-based invariants for the policy evaluator: sort stability,
+//! dedup idempotence, and predicate algebra (double-negation, De Morgan).
 
 use std::path::PathBuf;
 
@@ -37,19 +38,17 @@ fn audio_track_strategy() -> impl Strategy<Value = (String, String, u32)> {
 /// audio tracks at sequential indices starting at 1.
 fn build_file(audio: &[(String, String, u32)]) -> MediaFile {
     let mut file = MediaFile::new(PathBuf::from("/test/movie.mkv"));
-    let mut next_index = 0u32;
 
-    let mut video = Track::new(next_index, TrackType::Video, "h264".into());
+    let mut video = Track::new(0, TrackType::Video, "h264".into());
     video.language = "und".into();
     file.tracks.push(video);
-    next_index += 1;
 
-    for (lang, codec, channels) in audio {
-        let mut t = Track::new(next_index, TrackType::AudioMain, codec.clone());
+    for (i, (lang, codec, channels)) in audio.iter().enumerate() {
+        let idx = u32::try_from(i + 1).expect("audio count fits in u32");
+        let mut t = Track::new(idx, TrackType::AudioMain, codec.clone());
         t.language = lang.clone();
         t.channels = Some(*channels);
         file.tracks.push(t);
-        next_index += 1;
     }
     file
 }
@@ -70,19 +69,16 @@ proptest! {
         ).unwrap();
 
         let result = evaluate(&policy, &file);
-        // Phase 'init' produces exactly one Plan.
         prop_assert_eq!(result.plans.len(), 1);
 
-        // Extract the track indices the plan touches, in emission order.
         let touched: Vec<u32> = result.plans[0]
             .actions
             .iter()
             .filter_map(|a| a.track_index)
             .collect();
 
-        // The indices must be strictly increasing — equivalent to "preserves
-        // original file order" since file indices are assigned sequentially
-        // in insertion order.
+        // Strictly increasing indices ⇔ original file order preserved, because
+        // file indices are assigned sequentially in insertion order.
         for w in touched.windows(2) {
             prop_assert!(w[0] < w[1], "Plan emitted indices out of order: {touched:?}");
         }
@@ -106,15 +102,12 @@ proptest! {
             r#"policy "test" { phase init { defaults { audio: first_per_language } } }"#,
         ).unwrap();
 
-        // First evaluation produces the (set_default, clear_default) actions.
         let first = evaluate(&policy, &file);
         prop_assert_eq!(first.plans.len(), 1);
 
-        // Apply the default-flag actions to a mutable clone of the file.
         let mut updated = file.clone();
         apply_default_actions(&mut updated, &first.plans[0]);
 
-        // Second evaluation against the updated file must be a no-op.
         let second = evaluate(&policy, &updated);
         prop_assert_eq!(second.plans.len(), 1);
         prop_assert_eq!(
