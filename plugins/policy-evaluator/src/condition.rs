@@ -618,4 +618,239 @@ mod tests {
             &ctx,
         ));
     }
+
+    // ---- IsDubbed / IsOriginal predicate tests (issue #236, cluster D) ----
+    // Targets the six surviving mutants on condition.rs:59 and :61. The four
+    // IsDubbed cases pick boundary corners so each operator flip changes the
+    // boolean output.
+
+    fn file_with_audio_langs(langs: &[&str]) -> MediaFile {
+        let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
+        file.tracks = langs
+            .iter()
+            .enumerate()
+            .map(|(i, lang)| {
+                let mut t = Track::new(
+                    i as u32,
+                    if i == 0 {
+                        TrackType::AudioMain
+                    } else {
+                        TrackType::AudioAlternate
+                    },
+                    "aac".into(),
+                );
+                t.language = (*lang).into();
+                t
+            })
+            .collect();
+        file
+    }
+
+    fn add_subtitle(file: &mut MediaFile, lang: &str) {
+        let next_idx = file.tracks.len() as u32;
+        let mut sub = Track::new(next_idx, TrackType::SubtitleMain, "srt".into());
+        sub.language = lang.into();
+        file.tracks.push(sub);
+    }
+
+    #[test]
+    fn is_dubbed_true_when_multi_lang_with_subtitles() {
+        // count=2, !empty=true → original true. Kills `> -> <` (2<1 false).
+        let mut file = file_with_audio_langs(&["eng", "jpn"]);
+        add_subtitle(&mut file, "eng");
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::IsDubbed,
+            &file,
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn is_dubbed_false_when_single_lang_with_subtitles() {
+        // count=1, !empty=true → original false.
+        // Kills `> -> ==` (1==1 true), `> -> >=` (1>=1 true), and
+        // `&& -> ||` first form (false || true = true).
+        let mut file = file_with_audio_langs(&["eng"]);
+        add_subtitle(&mut file, "eng");
+        let ctx = no_ctx();
+        assert!(!evaluate_condition(
+            &CompiledCondition::IsDubbed,
+            &file,
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn is_dubbed_false_when_multi_lang_no_subtitles() {
+        // count=2, !empty=false → original false.
+        // Kills `delete !` (count>1 true && empty=true → mutant true) and
+        // reinforces the `&& -> ||` second form (true || false = true).
+        let file = file_with_audio_langs(&["eng", "jpn"]);
+        let ctx = no_ctx();
+        assert!(!evaluate_condition(
+            &CompiledCondition::IsDubbed,
+            &file,
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn is_dubbed_false_when_no_audio_no_subtitles() {
+        // count=0, no subs → original false. Sanity baseline.
+        let file = MediaFile::new(PathBuf::from("/test.mkv"));
+        let ctx = no_ctx();
+        assert!(!evaluate_condition(
+            &CompiledCondition::IsDubbed,
+            &file,
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn is_original_true_with_one_audio_lang() {
+        // count=1 → original `1 <= 1` true. Kills `<= -> >` (1>1 false).
+        let file = file_with_audio_langs(&["eng"]);
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::IsOriginal,
+            &file,
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn is_original_true_with_zero_audio_langs() {
+        // count=0 → original true. Reinforces the boundary direction.
+        let file = MediaFile::new(PathBuf::from("/test.mkv"));
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::IsOriginal,
+            &file,
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn is_original_false_with_multi_audio_langs() {
+        // count=2 → original false. Confirms `<= -> >` direction (2>1 true).
+        let file = file_with_audio_langs(&["eng", "jpn"]);
+        let ctx = no_ctx();
+        assert!(!evaluate_condition(
+            &CompiledCondition::IsOriginal,
+            &file,
+            &ctx
+        ));
+    }
+
+    // ---- resolve_track_field / resolve_system_field aliases (issue #236, cluster E) ----
+    // Each test targets a single match arm. Deleting the arm makes resolve_*
+    // return None, which flips FieldExists from true to false (or makes
+    // FieldCompare unable to find a value, returning false).
+
+    fn file_with_seeded_audio() -> MediaFile {
+        // First audio track has language=eng, channels=6, title="Director's Cut".
+        let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
+        file.tracks = vec![{
+            let mut t = Track::new(0, TrackType::AudioMain, "aac".into());
+            t.language = "eng".into();
+            t.title = "Director's Cut".into();
+            t.channels = Some(6);
+            t
+        }];
+        file
+    }
+
+    #[test]
+    fn resolve_track_field_language_alias_long_form() {
+        // Kills `delete match arm "language" | "lang"` via the long form.
+        let file = file_with_seeded_audio();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["audio".into(), "language".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("eng".into()),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_track_field_language_alias_short_form() {
+        // Reinforces the same arm via the `lang` literal.
+        let file = file_with_seeded_audio();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["audio".into(), "lang".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("eng".into()),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_track_field_title() {
+        // Kills `delete match arm "title"`.
+        let file = file_with_seeded_audio();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["audio".into(), "title".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("Director's Cut".into()),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_track_field_channels() {
+        // Kills `delete match arm "channels"`.
+        let file = file_with_seeded_audio();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["audio".into(), "channels".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(6),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_system_field_hwaccels_array() {
+        // Kills `delete match arm "hwaccels"` in resolve_system_field.
+        // FieldExists is sufficient: deleting the arm makes the function
+        // fall through to `_ => None`, flipping the assertion.
+        use voom_domain::capability_map::CapabilityMap;
+        use voom_domain::events::{CodecCapabilities, ExecutorCapabilitiesEvent};
+
+        let file = file_with_seeded_audio();
+        let mut map = CapabilityMap::new();
+        map.register(ExecutorCapabilitiesEvent::new(
+            "ffmpeg",
+            CodecCapabilities::empty(),
+            vec![],
+            vec!["cuda".into(), "vaapi".into()],
+        ));
+        let ctx = EvalContext {
+            capabilities: Some(&map),
+        };
+
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldExists {
+                path: vec!["system".into(), "hwaccels".into()],
+            },
+            &file,
+            &ctx,
+        ));
+    }
 }

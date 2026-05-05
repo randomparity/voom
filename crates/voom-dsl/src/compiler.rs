@@ -1044,4 +1044,111 @@ mod tests {
             other => panic!("expected Conditional, got {other:?}"),
         }
     }
+
+    // ---- safe_u32 boundary tests (issue #236, cluster A) ----
+    // These tests target the five cargo-mutants survivors on
+    // crates/voom-dsl/src/compiler.rs:29. Each value below is chosen so the
+    // original predicate `n >= 0.0 && n <= u32::MAX && n.fract() == 0.0`
+    // returns a different result than at least one mutant variant.
+
+    #[test]
+    fn safe_u32_accepts_zero() {
+        // Kills `>= -> <` (0.0 >= 0.0 is true; 0.0 < 0.0 is false)
+        // and `== -> !=` (0.0.fract() == 0.0 is true; != is false).
+        assert_eq!(safe_u32(0.0), Some(0));
+    }
+
+    #[test]
+    fn safe_u32_accepts_u32_max() {
+        // Kills `<= -> >` at u32::MAX (MAX <= MAX true; MAX > MAX false).
+        let n = f64::from(u32::MAX);
+        assert_eq!(safe_u32(n), Some(u32::MAX));
+    }
+
+    #[test]
+    fn safe_u32_rejects_negative() {
+        // Kills `&& -> ||` (first conjunction): with ||, -1.0 satisfies the
+        // chain via the second branch and returns Some.
+        assert_eq!(safe_u32(-1.0), None);
+    }
+
+    #[test]
+    fn safe_u32_rejects_overflow() {
+        // Kills `&& -> ||` (second conjunction): with ||, n.fract() == 0.0
+        // alone admits overflow values that should be rejected.
+        let n = f64::from(u32::MAX) + 1.0;
+        assert_eq!(safe_u32(n), None);
+    }
+
+    #[test]
+    fn safe_u32_rejects_fractional_in_range() {
+        // Reinforces both `&& -> ||` mutants and the `== -> !=` mutant.
+        assert_eq!(safe_u32(0.5), None);
+        assert_eq!(safe_u32(1.5), None);
+    }
+
+    #[test]
+    fn safe_u32_typical_value_round_trips() {
+        // Sanity guard that protects later refactors of `safe_u32`.
+        assert_eq!(safe_u32(42.0), Some(42));
+    }
+
+    // ---- parse_error_strategy / parse_default_strategy arms (issue #236, cluster B) ----
+    // Each arm needs a test that returns Some(<variant>) for the literal it
+    // matches; the cargo-mutants "delete match arm" mutation falls through
+    // to the wildcard `_ => None` arm and would fail the assertion.
+
+    #[test]
+    fn parse_error_strategy_continue() {
+        assert_eq!(
+            parse_error_strategy("continue"),
+            Some(ErrorStrategy::Continue),
+        );
+    }
+
+    #[test]
+    fn parse_error_strategy_skip() {
+        assert_eq!(parse_error_strategy("skip"), Some(ErrorStrategy::Skip));
+    }
+
+    #[test]
+    fn parse_error_strategy_abort() {
+        assert_eq!(parse_error_strategy("abort"), Some(ErrorStrategy::Abort));
+    }
+
+    #[test]
+    fn parse_error_strategy_unknown_returns_none() {
+        assert_eq!(parse_error_strategy("nonsense"), None);
+    }
+
+    #[test]
+    fn parse_default_strategy_first_per_language() {
+        assert_eq!(
+            parse_default_strategy("first_per_language"),
+            Some(DefaultStrategy::FirstPerLanguage),
+        );
+    }
+
+    #[test]
+    fn parse_default_strategy_none() {
+        assert_eq!(parse_default_strategy("none"), Some(DefaultStrategy::None));
+    }
+
+    #[test]
+    fn parse_default_strategy_first() {
+        assert_eq!(
+            parse_default_strategy("first"),
+            Some(DefaultStrategy::First)
+        );
+    }
+
+    #[test]
+    fn parse_default_strategy_all() {
+        assert_eq!(parse_default_strategy("all"), Some(DefaultStrategy::All));
+    }
+
+    #[test]
+    fn parse_default_strategy_unknown_returns_none() {
+        assert_eq!(parse_default_strategy("nonsense"), None);
+    }
 }
