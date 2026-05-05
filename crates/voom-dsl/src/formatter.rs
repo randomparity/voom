@@ -978,4 +978,101 @@ mod tests {
             _ => panic!("expected When"),
         }
     }
+
+    // ---- format_phase indent-arithmetic tests (issue #236, phase 2) ----
+    // Each test exercises one optional section of format_phase by calling it
+    // at level=1 and asserting the inner line is indented by exactly 4
+    // spaces (two indent steps × 2 spaces). Both `+ to -` (gives 0 spaces)
+    // and `+ to *` (gives 2 spaces) mutants on each `level + 1` site fail
+    // the substring assertion.
+
+    use crate::ast::{RunIfNode, Span, SpannedOperation};
+
+    fn empty_phase(name: &str) -> PhaseNode {
+        PhaseNode {
+            name: name.into(),
+            skip_when: None,
+            depends_on: vec![],
+            run_if: None,
+            on_error: None,
+            operations: vec![],
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 1,
+                col: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn format_phase_depends_on_indents_one_deeper() {
+        let mut phase = empty_phase("build");
+        phase.depends_on = vec!["init".into()];
+        let mut out = String::new();
+        format_phase(&phase, &mut out, 1);
+        assert!(
+            out.contains("\n    depends_on: [init]\n"),
+            "depends_on line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_phase_skip_when_indents_one_deeper() {
+        let mut phase = empty_phase("build");
+        phase.skip_when = Some(ConditionNode::IsDubbed);
+        let mut out = String::new();
+        format_phase(&phase, &mut out, 1);
+        assert!(
+            out.contains("\n    skip when "),
+            "skip when line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_phase_run_if_indents_one_deeper() {
+        let mut phase = empty_phase("build");
+        phase.run_if = Some(RunIfNode {
+            phase: "init".into(),
+            trigger: "modified".into(),
+        });
+        let mut out = String::new();
+        format_phase(&phase, &mut out, 1);
+        assert!(
+            out.contains("\n    run_if init.modified\n"),
+            "run_if line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_phase_on_error_indents_one_deeper() {
+        let mut phase = empty_phase("build");
+        phase.on_error = Some("skip".into());
+        let mut out = String::new();
+        format_phase(&phase, &mut out, 1);
+        assert!(
+            out.contains("\n    on_error: skip\n"),
+            "on_error line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_phase_operation_indents_one_deeper() {
+        let mut phase = empty_phase("build");
+        phase.operations = vec![SpannedOperation {
+            node: OperationNode::Container("mkv".into()),
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 1,
+                col: 1,
+            },
+        }];
+        let mut out = String::new();
+        format_phase(&phase, &mut out, 1);
+        assert!(
+            out.contains("\n    container mkv\n"),
+            "container operation should be indented by 4 spaces; got:\n{out}"
+        );
+    }
 }
