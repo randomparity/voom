@@ -87,3 +87,60 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// Dedup idempotence: applying `defaults audio first_per_language` and
+    /// then mutating the file in place to reflect those default-flag changes
+    /// must leave no further work for a second evaluation. Equivalently:
+    /// `defaults first_per_language` is a fixpoint operator on the
+    /// `is_default` flag set.
+    #[test]
+    fn defaults_first_per_language_is_idempotent(
+        audio in proptest::collection::vec(audio_track_strategy(), 1..=6),
+    ) {
+        let file = build_file(&audio);
+        let policy = voom_dsl::compile_policy(
+            r#"policy "test" { phase init { defaults { audio: first_per_language } } }"#,
+        ).unwrap();
+
+        // First evaluation produces the (set_default, clear_default) actions.
+        let first = evaluate(&policy, &file);
+        prop_assert_eq!(first.plans.len(), 1);
+
+        // Apply the default-flag actions to a mutable clone of the file.
+        let mut updated = file.clone();
+        apply_default_actions(&mut updated, &first.plans[0]);
+
+        // Second evaluation against the updated file must be a no-op.
+        let second = evaluate(&policy, &updated);
+        prop_assert_eq!(
+            second.plans[0].actions.len(),
+            0,
+            "second pass emitted actions: {:?}",
+            second.plans[0].actions,
+        );
+    }
+}
+
+/// Apply `SetDefault` / `ClearDefault` actions from a Plan to a MediaFile,
+/// mirroring what an executor would do at run-time. Lives in this test file
+/// because no production code performs this in-place mutation.
+fn apply_default_actions(file: &mut voom_domain::media::MediaFile, plan: &voom_domain::plan::Plan) {
+    use voom_domain::plan::OperationType;
+
+    for action in &plan.actions {
+        let Some(idx) = action.track_index else {
+            continue;
+        };
+        let Some(track) = file.tracks.iter_mut().find(|t| t.index == idx) else {
+            continue;
+        };
+        match action.operation {
+            OperationType::SetDefault => track.is_default = true,
+            OperationType::ClearDefault => track.is_default = false,
+            _ => {}
+        }
+    }
+}
