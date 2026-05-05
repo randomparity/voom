@@ -7,6 +7,7 @@
 | [cli-reference.md](cli-reference.md) | Complete CLI command and REST API reference |
 | [dsl-reference.md](dsl-reference.md) | DSL language reference for `.voom` policy files |
 | [quickstart.md](quickstart.md) | Getting started guide |
+| [../CONTRIBUTING.md](../CONTRIBUTING.md) | Local development, coverage, and CI workflow notes |
 | [plugin-development.md](plugin-development.md) | Guide for writing native and WASM plugins |
 | [functional-test-plan.md](functional-test-plan.md) | QA test plan covering all user-facing features |
 | [troubleshooting.md](troubleshooting.md) | Troubleshooting guide for common issues |
