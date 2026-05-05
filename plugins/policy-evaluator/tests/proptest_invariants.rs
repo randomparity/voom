@@ -293,6 +293,26 @@ fn condition_dsl_strategy() -> impl Strategy<Value = String> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
+    /// Every string emitted by `condition_dsl_strategy` must compile as a
+    /// `skip when <p>` policy. This catches grammar-violating shapes in
+    /// the strategy itself before the algebra tests would notice.
+    #[test]
+    fn condition_dsl_strategy_emits_compilable_predicates(
+        p in condition_dsl_strategy(),
+    ) {
+        let src = format!("policy \"p\" {{ phase init {{ skip when {p} container mkv }} }}");
+        let res = compile_policy(&src);
+        prop_assert!(
+            res.is_ok(),
+            "strategy emitted non-compilable predicate `{p}`: {:?}",
+            res.err(),
+        );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
     /// Identity: `not (not P) ≡ P`.
     #[test]
     fn double_negation_identity(audio in vec(audio_track_strategy(), 0..=4)) {
