@@ -17,17 +17,14 @@ assert_match() {
 }
 
 for scenario in "${fixtures[@]}"; do
-    # shellcheck disable=SC2034  # pre/post used by Task 8-11 invocations (stub)
     pre="tests/fixtures/${scenario}/pre"
-    # shellcheck disable=SC2034  # pre/post used by Task 8-11 invocations (stub)
     post="tests/fixtures/${scenario}/post"
     expected="tests/expected/${scenario}"
     actual=$(mktemp -d)
     trap 'rm -rf "${actual}"' EXIT
 
-    # Diff scripts will be invoked here once they exist (Tasks 8, 9, 10, 11).
-    # Each invocation: write to ${actual}/<artifact>, then assert_match against
-    # ${expected}/<artifact>.
+    "lib/diff-snapshots.sh" "${pre}" "${post}" "${actual}/files-summary.md"
+    assert_match "${actual}/files-summary.md" "${expected}/files-summary.md"
 
     rm -rf "${actual}"
     trap - EXIT

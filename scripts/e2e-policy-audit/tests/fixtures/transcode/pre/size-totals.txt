@@ -1,0 +1,4 @@
+avi                       200
+mkv                       100
+mp4                       300
+TOTAL                     600
