@@ -30,12 +30,11 @@ def ext_to_container(p):
     else "other" end;
 
 def parse_frame_rate:
-    if . == null or . == "0/0" then null
+    if . == null or . == "" then null
     else
-        ([splits("/")] | map(tonumber)) as $p |
-        if ($p | length) == 2 and $p[1] != 0
-        then ($p[0] / $p[1])
-        else null end
+        (try ([split("/") | .[] | tonumber] |
+              if length == 2 and .[1] != 0 then .[0] / .[1] else null end)
+         catch null)
     end;
 
 def map_video_stream:
@@ -65,7 +64,7 @@ def map_audio_stream:
         is_forced: ((.disposition.forced // 0) == 1),
         channels: (.channels // null),
         channel_layout: (.channel_layout // null),
-        sample_rate: (.sample_rate | if . == null then null else tonumber end),
+        sample_rate: (.sample_rate | if . == null or . == "" then null else tonumber end),
         bit_depth: (.bits_per_raw_sample | if . == null or . == "" then null else tonumber end),
         track_type: (.codec_type | codec_type_to_track_type)
     };
