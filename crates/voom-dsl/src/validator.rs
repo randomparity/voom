@@ -2591,7 +2591,7 @@ mod tests {
     }
 
     #[test]
-    fn check_tag_conflicts_set_before_clear_emits_warning() {
+    fn check_tag_conflicts_set_before_clear_emits_error() {
         let phase = phase_with_ops(
             "p",
             vec![

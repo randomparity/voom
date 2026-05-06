@@ -1019,13 +1019,19 @@ mod tests {
     // each compares against a specific, non-null expected value.
 
     fn file_with_seeded_file_fields() -> MediaFile {
-        // container=Mkv (as_str() = "mkv"), size=12_345_678, duration=90.5,
-        // path=/movies/test.mkv (filename "test.mkv"), tags empty.
         use voom_domain::media::Container;
         let mut file = MediaFile::new(PathBuf::from("/movies/test.mkv"));
         file.container = Container::Mkv;
         file.size = 12_345_678;
         file.duration = 90.5;
+        // The cluster's tests rely on `tags` being empty so that the `_` arm of
+        // resolve_file_field cannot accidentally satisfy a built-in field name.
+        // Assert the precondition so a future change to MediaFile::new defaults
+        // surfaces here instead of silently weakening the mutant kills.
+        assert!(
+            file.tags.is_empty(),
+            "fixture precondition: tags must be empty"
+        );
         file
     }
 
