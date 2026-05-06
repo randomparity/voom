@@ -31,13 +31,18 @@ probe() {
     local url="$2"
     local body_path="${out_dir}/${label}.body"
     local status
-    status=$(curl -s -o "${body_path}" -w '%{http_code}' --max-time 8 "${url}" || echo "000")
+    # `|| true` keeps the script alive when curl exits non-zero (e.g. SSE
+    # times out on the open stream). The curl output is the HTTP code from
+    # the response headers — even when the body never finishes. If curl
+    # produced nothing (connection refused before headers), default to 000.
+    status=$(curl -s -o "${body_path}" -w '%{http_code}' --max-time 8 "${url}" || true)
+    [[ -z "${status}" ]] && status="000"
     printf '%s\t%s\n' "${label}" "${status}" >>"${statuses}"
 }
 
 probe root "http://127.0.0.1:${port}/"
 probe api-files "http://127.0.0.1:${port}/api/files"
 probe api-jobs "http://127.0.0.1:${port}/api/jobs"
-probe "api-events(sse)" "http://127.0.0.1:${port}/api/events"
+probe "events(sse)" "http://127.0.0.1:${port}/events"
 
 cat "${statuses}"
