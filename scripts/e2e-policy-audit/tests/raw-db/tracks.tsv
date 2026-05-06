@@ -1,0 +1,6 @@
+id	file_id	stream_index	track_type	codec	language	title	is_default	is_forced	channels	channel_layout	sample_rate	bit_depth	width	height	frame_rate	is_vfr	is_hdr	hdr_format	pixel_format
+t-1	file-1	0	video	h264	und		1	0					1920	1080	23.976	0	0		yuv420p
+t-2	file-1	1	audio_main	ac3	eng		1	0	6	5.1	48000					0	0		
+t-3	file-1	2	subtitle_main	subrip	eng		0	0								0	0		
+t-4	file-2	0	video	hevc	und		1	0					3840	2160	23.976	0	1	PQ	yuv420p10le
+t-5	file-2	1	audio_main	aac	eng		1	0	2	stereo	48000					0	0		

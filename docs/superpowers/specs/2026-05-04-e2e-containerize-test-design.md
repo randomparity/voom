@@ -2,7 +2,8 @@
 
 **Date:** 2026-05-04
 **Author:** David Christensen (with Claude)
-**Status:** Approved
+**Status:** Superseded
+**Superseded by:** [`2026-05-05-e2e-policy-audit-design.md`](2026-05-05-e2e-policy-audit-design.md)
 
 ## Goal
 

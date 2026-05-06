@@ -7,6 +7,10 @@ wasm-plugins/*/Cargo.lock
 # Python virtual environment (pre-commit)
 .venv/
 
+# Python bytecode cache (e2e-policy-audit harness uses Python helpers)
+__pycache__/
+*.pyc
+
 # Claude & Claude Flow artifacts
 .claude/worktrees/
 .claude-flow/

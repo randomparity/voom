@@ -1,0 +1,14 @@
+# Fields ignored by diff-ndjson.py across all comparisons.
+# One dotted-path per line. `[]` denotes "any element of this array".
+# Lines starting with # are comments.
+#
+# Why these are ignored:
+# - audio[].track_type, subtitle[].track_type: VOOM may semantically refine
+#   (audio_commentary, subtitle_forced); ffprobe always reports the base type.
+#   Comparing them produces noise on the db-vs-ffprobe axis.
+# - mtime: voom-db doesn't carry it (always null); comparing null to a real
+#   value would flood every file. ffprobe-pre-vs-post still compares mtime
+#   correctly because both sides have it.
+audio[].track_type
+subtitle[].track_type
+mtime
