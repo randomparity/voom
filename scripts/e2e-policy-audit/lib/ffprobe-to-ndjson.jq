@@ -15,7 +15,7 @@ def codec_type_to_track_type:
     elif . == "audio" then "audio_main"
     elif . == "subtitle" then "subtitle_main"
     elif . == "attachment" then "attachment"
-    else "video" end;
+    else "other" end;
 
 def ext_to_container(p):
     p | ascii_downcase | capture("\\.(?<e>[a-z0-9]+)$") | .e |

@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import argparse
-import json
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _pyutil import render_markdown_table, stream_records  # noqa: E402
 
 
 def load(path: str, bucket: str) -> dict[tuple[str, str], int]:
     counts: dict[tuple[str, str], int] = {}
-    with open(path) as f:
-        for raw in f:
-            raw = raw.strip()
-            if not raw:
-                continue
-            obj = json.loads(raw)
-            for t in obj.get(bucket) or []:
-                key = (t.get("codec", "?"), t.get("language", "und"))
-                counts[key] = counts.get(key, 0) + 1
+    for obj in stream_records(path):
+        for t in obj.get(bucket) or []:
+            key = (t.get("codec", "?"), t.get("language", "und"))
+            counts[key] = counts.get(key, 0) + 1
     return counts
 
 
@@ -28,9 +26,8 @@ def render_pivot(title: str, pre: dict, post: dict) -> list[str]:
     for label, data in (("Pre", pre), ("Post", post)):
         out.append(f"### {label}")
         out.append("")
-        header = "| codec | " + " | ".join(langs) + " | total |"
-        sep = "|" + "|".join(["---"] * (len(langs) + 2)) + "|"
-        out.extend([header, sep])
+        headers = ["codec"] + langs + ["total"]
+        rows = []
         for codec in codecs:
             row = [codec]
             total = 0
@@ -39,7 +36,8 @@ def render_pivot(title: str, pre: dict, post: dict) -> list[str]:
                 row.append(str(v))
                 total += v
             row.append(str(total))
-            out.append("| " + " | ".join(row) + " |")
+            rows.append(row)
+        out.extend(render_markdown_table(headers, rows))
         out.append("")
     return out
 

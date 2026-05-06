@@ -3,22 +3,20 @@
 from __future__ import annotations
 
 import argparse
-import json
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _pyutil import render_markdown_table, stream_records  # noqa: E402
 
 
 def load_pivot(path: str) -> dict[tuple[str, str], int]:
     counts: dict[tuple[str, str], int] = {}
-    with open(path) as f:
-        for raw in f:
-            raw = raw.strip()
-            if not raw:
-                continue
-            obj = json.loads(raw)
-            container = obj.get("container", "?")
-            video = obj.get("video") or []
-            codec = video[0]["codec"] if video else "(none)"
-            counts[(codec, container)] = counts.get((codec, container), 0) + 1
+    for obj in stream_records(path):
+        container = obj.get("container", "?")
+        video = obj.get("video") or []
+        codec = video[0]["codec"] if video else "(none)"
+        counts[(codec, container)] = counts.get((codec, container), 0) + 1
     return counts
 
 
@@ -29,9 +27,8 @@ def render(pre: dict, post: dict) -> str:
     for label, data in (("Pre", pre), ("Post", post)):
         lines.append(f"## {label}")
         lines.append("")
-        header = "| codec | " + " | ".join(containers) + " | total |"
-        sep = "|" + "|".join(["---"] * (len(containers) + 2)) + "|"
-        lines.extend([header, sep])
+        headers = ["codec"] + containers + ["total"]
+        rows = []
         for codec in codecs:
             row = [codec]
             total = 0
@@ -40,7 +37,8 @@ def render(pre: dict, post: dict) -> str:
                 row.append(str(v))
                 total += v
             row.append(str(total))
-            lines.append("| " + " | ".join(row) + " |")
+            rows.append(row)
+        lines.extend(render_markdown_table(headers, rows))
         lines.append("")
     return "\n".join(lines)
 

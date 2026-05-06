@@ -16,10 +16,13 @@ Fields listed in `--ignore-file` are skipped wholesale.
 from __future__ import annotations
 
 import argparse
-import json
+import os
 import re
 import sys
 from dataclasses import dataclass
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _pyutil import load_keyed  # noqa: E402
 
 
 @dataclass
@@ -47,19 +50,7 @@ class IgnoreSpec:
 
 def load_ndjson(path: str) -> dict[str, dict]:
     """Read NDJSON; return dict keyed by record['path']."""
-    out: dict[str, dict] = {}
-    with open(path) as f:
-        for ln, raw in enumerate(f, 1):
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                obj = json.loads(raw)
-            except json.JSONDecodeError as e:
-                print(f"WARN: {path}:{ln} parse error: {e}", file=sys.stderr)
-                continue
-            out[obj["path"]] = obj
-    return out
+    return load_keyed(path)
 
 
 def both_present(a, b) -> bool:

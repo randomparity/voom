@@ -75,31 +75,37 @@ if [[ -f "${jobs_report}" ]]; then
     ((failed_jobs > 0)) && note_warn "${failed_jobs} job(s) reported as failed"
 fi
 
-# Per-phase 100%-failure check from db-export jobs.tsv (if present).
-# Joins jobs to plans on payload→plan_id is overkill; we approximate by
-# parsing phase from `voom jobs list` output — voom prints phase per row.
+# Per-phase 100%-failure check from db-export/jobs.tsv (header-driven column
+# lookup so the script doesn't break if column order changes). Phase is
+# extracted from the JSON payload column via jq.
 phase_summary="${run}/diffs/phase-summary.tsv"
-if [[ -f "${jobs_report}" ]]; then
-    awk '/^[A-Z]/ {next}  # skip header lines
-         {
-           # Best-effort: phase column is field 4 in default jobs list output;
-           # if format changes, this gracefully degrades to no per-phase check.
-           phase=$4; status=$NF;
-           tot[phase]++;
-           if (status=="failed") fails[phase]++;
-         }
-         END {
-           print "phase\ttotal\tfailed";
-           for (p in tot) printf "%s\t%d\t%d\n", p, tot[p], fails[p]+0;
-         }' "${jobs_report}" >"${phase_summary}" 2>/dev/null || true
-    if [[ -s "${phase_summary}" ]]; then
-        while IFS=$'\t' read -r p tot fail; do
-            [[ "${p}" == "phase" ]] && continue
-            if ((tot > 0 && fail == tot)); then
-                note_fail "phase ${p}: 100% (${fail}/${tot}) jobs failed"
-            fi
-        done <"${phase_summary}"
-    fi
+jobs_tsv="${run}/db-export/jobs.tsv"
+if [[ -f "${jobs_tsv}" ]]; then
+    awk -F'\t' '
+        NR==1 { for (i=1; i<=NF; i++) h[$i]=i; next }
+        {
+            payload = $h["payload"]; status = $h["status"]
+            print payload "\t" status
+        }
+    ' "${jobs_tsv}" |
+        while IFS=$'\t' read -r payload status; do
+            phase=$(printf '%s' "${payload}" | jq -r '.phase_name // .phase // "unknown"' 2>/dev/null || echo "unknown")
+            printf '%s\t%s\n' "${phase}" "${status}"
+        done |
+        awk -F'\t' '
+            { tot[$1]++; if ($2=="failed") fails[$1]++ }
+            END {
+                print "phase\ttotal\tfailed"
+                for (p in tot) printf "%s\t%d\t%d\n", p, tot[p], fails[p]+0
+            }
+        ' >"${phase_summary}"
+
+    while IFS=$'\t' read -r p tot fail; do
+        [[ "${p}" == "phase" ]] && continue
+        if ((tot > 0 && fail == tot)); then
+            note_fail "phase ${p}: 100% (${fail}/${tot}) jobs failed"
+        fi
+    done <"${phase_summary}"
 fi
 
 # Render

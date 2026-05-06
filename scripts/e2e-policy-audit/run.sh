@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
     cat <<EOF
 Usage: $0 [--library DIR] [--policy PATH] [--run-dir DIR]
-          [--probe-workers N] [--no-build] [--no-web] [--no-probe] [--smoke]
+          [--probe-workers N] [--no-build] [--no-web] [--no-probe]
 
 Defaults:
   --library         /mnt/raid0/media/series
@@ -22,9 +22,7 @@ probe_workers=8
 do_build=1
 do_web=1
 do_probe=1
-smoke=0
 
-# shellcheck disable=SC2034 # smoke reserved for future --smoke-only mode
 while (($# > 0)); do
     case "$1" in
     --library)
@@ -53,10 +51,6 @@ while (($# > 0)); do
         ;;
     --no-probe)
         do_probe=0
-        shift
-        ;;
-    --smoke)
-        smoke=1
         shift
         ;;
     -h | --help)
@@ -213,6 +207,7 @@ t=$(stage_start)
 "${lib_dir}/diff-snapshots.sh" "${run_dir}/pre" "${run_dir}/post" "${run_dir}/diffs/files-summary.md"
 ignore="${lib_dir}/ndjson-ignore.txt"
 if ((do_probe)); then
+    diff_pids=()
     for combo in \
         "pre/voom-db.ndjson:pre/ffprobe.ndjson:db-vs-ffprobe-pre.tsv" \
         "post/voom-db.ndjson:post/ffprobe.ndjson:db-vs-ffprobe-post.tsv" \
@@ -222,17 +217,26 @@ if ((do_probe)); then
         if [[ -r "${run_dir}/${left}" && -r "${run_dir}/${right}" ]]; then
             "${lib_dir}/diff-ndjson.py" \
                 "${run_dir}/${left}" "${run_dir}/${right}" \
-                "${run_dir}/diffs/${out}" --ignore-file "${ignore}"
+                "${run_dir}/diffs/${out}" --ignore-file "${ignore}" &
+            diff_pids+=($!)
         fi
     done
     if [[ -r "${run_dir}/pre/ffprobe.ndjson" && -r "${run_dir}/post/ffprobe.ndjson" ]]; then
         "${lib_dir}/codec-pivot.py" \
             "${run_dir}/pre/ffprobe.ndjson" "${run_dir}/post/ffprobe.ndjson" \
-            "${run_dir}/diffs/codec-pivot.md"
+            "${run_dir}/diffs/codec-pivot.md" &
+        diff_pids+=($!)
         "${lib_dir}/tracks-pivot.py" \
             "${run_dir}/pre/ffprobe.ndjson" "${run_dir}/post/ffprobe.ndjson" \
-            "${run_dir}/diffs/tracks-pivot.md"
+            "${run_dir}/diffs/tracks-pivot.md" &
+        diff_pids+=($!)
     fi
+    # Wait for all diff/pivot scripts; report failures but continue.
+    for pid in "${diff_pids[@]}"; do
+        if ! wait "${pid}"; then
+            echo "diff/pivot pid ${pid} failed (continuing)" >&2
+        fi
+    done
 fi
 stage_end diff "$t"
 

@@ -31,7 +31,6 @@ All flags have defaults (see `run.sh --help`):
 | `--no-build` | (off) | Skip `cargo build --release` |
 | `--no-web` | (off) | Skip the `voom serve` smoke-test |
 | `--no-probe` | (off) | Skip the independent `ffprobe` sweep (DB-only diffs) |
-| `--smoke` | (off) | Reserved for future use |
 
 ## Pre-conditions
 

@@ -20,10 +20,10 @@
 
 ### Pre
 
-| codec |  | total |
+| codec | total |
 |---|---|
 
 ### Post
 
-| codec |  | total |
+| codec | total |
 |---|---|

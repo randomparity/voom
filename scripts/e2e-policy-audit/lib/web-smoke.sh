@@ -8,15 +8,19 @@ voom_bin="${1:?voom binary path required}"
 out_dir="${2:?output dir required}"
 
 mkdir -p "${out_dir}"
-port=18080
+port="${WEB_SMOKE_PORT:-18080}"
 log="${out_dir}/serve.log"
 
 "${voom_bin}" serve --port "${port}" >"${log}" 2>&1 &
 serve_pid=$!
 trap 'kill "${serve_pid}" 2>/dev/null || true; wait "${serve_pid}" 2>/dev/null || true' EXIT
 
-# Wait up to 10s for the server to come up.
+# Wait up to 10s for the server to come up; detect early death.
 for _ in {1..20}; do
+    if ! kill -0 "${serve_pid}" 2>/dev/null; then
+        echo "web-smoke: voom serve died before binding (see ${log})" >&2
+        exit 1
+    fi
     if curl -fsS "http://127.0.0.1:${port}/" >/dev/null 2>&1; then
         break
     fi

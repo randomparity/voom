@@ -42,10 +42,9 @@ filter="$(dirname "$0")/ffprobe-to-ndjson.jq"
 # per-worker temp files concatenated after xargs.
 worker() {
     local tsv_line="$1"
-    local path size mtime
-    path=$(printf '%s' "${tsv_line}" | awk -F'\t' '{print $1}')
-    size=$(printf '%s' "${tsv_line}" | awk -F'\t' '{print $2}')
-    mtime=$(printf '%s' "${tsv_line}" | awk -F'\t' '{print int($3)}')
+    local path size mtime_raw mtime _ext
+    IFS=$'\t' read -r path size mtime_raw _ext <<<"${tsv_line}"
+    mtime=${mtime_raw%.*} # truncate fractional seconds (find -printf %T@ is float)
     local raw
     if ! raw=$(ffprobe -v error -show_streams -show_format -of json "${path}" 2>&1); then
         printf '%s\t%s\n' "${path}" "${raw##*$'\n'}" >>"${failures}"
@@ -54,6 +53,7 @@ worker() {
     local tmp_out tmp_err rc=0
     tmp_out=$(mktemp)
     tmp_err=$(mktemp)
+    trap 'rm -f "${tmp_out}" "${tmp_err}"' RETURN
     printf '%s' "${raw}" | jq -c \
         --arg path "${path}" \
         --arg size "${size}" \
@@ -67,7 +67,6 @@ worker() {
         err=$(tr '\n' ' ' <"${tmp_err}" | sed 's/[[:space:]]*$//')
         printf '%s\tjq: %s\n' "${path}" "${err}" >>"${failures}"
     fi
-    rm -f "${tmp_out}" "${tmp_err}"
 }
 export -f worker
 export filter ndjson failures
