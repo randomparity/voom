@@ -1007,4 +1007,193 @@ mod tests {
             &ctx,
         ));
     }
+
+    // ---- resolve_file_field arms (issue #236, phase 2) ----
+    // Each test targets a single match arm in resolve_file_field. Seeding the
+    // field with a known non-default value and asserting FieldCompare(Eq)
+    // succeeds means deleting the arm — which makes resolve_file_field fall
+    // through to the tag-lookup `_` branch (which finds nothing because the
+    // helper leaves `tags` empty) — flips the assertion to false. The same
+    // assertions also kill the function-level `replace -> None` and
+    // `replace -> Some(Default::default())` (Value::Null) mutants because
+    // each compares against a specific, non-null expected value.
+
+    fn file_with_seeded_file_fields() -> MediaFile {
+        use voom_domain::media::Container;
+        let mut file = MediaFile::new(PathBuf::from("/movies/test.mkv"));
+        file.container = Container::Mkv;
+        file.size = 12_345_678;
+        file.duration = 90.5;
+        // The cluster's tests rely on `tags` being empty so that the `_` arm of
+        // resolve_file_field cannot accidentally satisfy a built-in field name.
+        // Assert the precondition so a future change to MediaFile::new defaults
+        // surfaces here instead of silently weakening the mutant kills.
+        assert!(
+            file.tags.is_empty(),
+            "fixture precondition: tags must be empty"
+        );
+        file
+    }
+
+    #[test]
+    fn resolve_file_field_container() {
+        // Kills `delete match arm "container"`.
+        let file = file_with_seeded_file_fields();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["file".into(), "container".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("mkv".into()),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_file_field_size() {
+        // Kills `delete match arm "size"`.
+        let file = file_with_seeded_file_fields();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["file".into(), "size".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(12_345_678u64),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_file_field_duration() {
+        // Kills `delete match arm "duration"`. 90.5 is exactly representable
+        // in f64 to avoid equality flakes.
+        let file = file_with_seeded_file_fields();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["file".into(), "duration".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::json!(90.5),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_file_field_path() {
+        // Kills `delete match arm "path"`.
+        let file = file_with_seeded_file_fields();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["file".into(), "path".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("/movies/test.mkv".into()),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    #[test]
+    fn resolve_file_field_filename() {
+        // Kills `delete match arm "filename"`.
+        let file = file_with_seeded_file_fields();
+        let ctx = no_ctx();
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["file".into(), "filename".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("test.mkv".into()),
+            },
+            &file,
+            &ctx,
+        ));
+    }
+
+    // ---- compare_json comparison-operator tests (issue #236, phase 2) ----
+    // Each test calls compare_json directly via super::* so we don't have to
+    // route String/Bool fixtures through FieldCompare. The String tests use
+    // single-character strings to make the lexicographic ordering obvious;
+    // the Bool test exercises the only valid bool comparison op (Ne) since
+    // ordering ops fall through to `_ => false` regardless.
+
+    #[test]
+    fn compare_json_returns_false_for_type_mismatch() {
+        // Kills `replace compare_json -> bool with true`: the type-mismatch
+        // fallback must return false, not true.
+        let left = serde_json::Value::String("a".into());
+        let right = serde_json::json!(1);
+        assert!(!compare_json(&left, CompiledCompareOp::Eq, &right));
+    }
+
+    #[test]
+    fn compare_json_string_ne_different() {
+        // Kills String Ne `!= -> ==`: distinct strings should be Ne-true.
+        let left = serde_json::Value::String("a".into());
+        let right = serde_json::Value::String("b".into());
+        assert!(compare_json(&left, CompiledCompareOp::Ne, &right));
+    }
+
+    #[test]
+    fn compare_json_string_lt_equal_inputs() {
+        // Kills String Lt `< -> ==` and `< -> <=`: equal strings are not Lt.
+        let left = serde_json::Value::String("a".into());
+        let right = serde_json::Value::String("a".into());
+        assert!(!compare_json(&left, CompiledCompareOp::Lt, &right));
+    }
+
+    #[test]
+    fn compare_json_string_lt_less() {
+        // Kills String Lt `< -> >`: "a" < "b" is true; "a" > "b" is false.
+        let left = serde_json::Value::String("a".into());
+        let right = serde_json::Value::String("b".into());
+        assert!(compare_json(&left, CompiledCompareOp::Lt, &right));
+    }
+
+    #[test]
+    fn compare_json_string_le_equal_inputs() {
+        // Kills String Le `<= -> >`: equal strings are Le-true, not Gt.
+        let left = serde_json::Value::String("a".into());
+        let right = serde_json::Value::String("a".into());
+        assert!(compare_json(&left, CompiledCompareOp::Le, &right));
+    }
+
+    #[test]
+    fn compare_json_string_gt_equal_inputs() {
+        // Kills String Gt `> -> ==` and `> -> >=`: equal strings are not Gt.
+        let left = serde_json::Value::String("a".into());
+        let right = serde_json::Value::String("a".into());
+        assert!(!compare_json(&left, CompiledCompareOp::Gt, &right));
+    }
+
+    #[test]
+    fn compare_json_string_gt_greater() {
+        // Kills String Gt `> -> <`: "b" > "a" is true; "b" < "a" is false.
+        let left = serde_json::Value::String("b".into());
+        let right = serde_json::Value::String("a".into());
+        assert!(compare_json(&left, CompiledCompareOp::Gt, &right));
+    }
+
+    #[test]
+    fn compare_json_string_ge_equal_inputs() {
+        // Kills String Ge `>= -> <`: equal strings are Ge-true, not Lt.
+        let left = serde_json::Value::String("a".into());
+        let right = serde_json::Value::String("a".into());
+        assert!(compare_json(&left, CompiledCompareOp::Ge, &right));
+    }
+
+    #[test]
+    fn compare_json_bool_ne_different() {
+        // Kills both Bool Ne mutants: `delete match arm Ne` (would fall through
+        // to `_ => false`) and `!= -> ==` (would yield `true == false` = false).
+        let left = serde_json::Value::Bool(true);
+        let right = serde_json::Value::Bool(false);
+        assert!(compare_json(&left, CompiledCompareOp::Ne, &right));
+    }
 }

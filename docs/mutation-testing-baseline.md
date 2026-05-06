@@ -1,12 +1,12 @@
 # Mutation Testing Baseline
 
-This document captures the initial `cargo mutants` baseline for the three logic-dense crates targeted by issue #214. The numbers below are the reference point that follow-up triage work needs to drive down.
+This document captures the current `cargo mutants` baseline for the three logic-dense crates targeted by issue #214. The numbers below are the reference point that follow-up triage work needs to drive down. The original baseline (SHA `dd69cfa`, 2026-05-05) has been replaced in place by the post-Phase-2 numbers from issue #236; the `Source SHA` field below identifies the snapshot the counts correspond to.
 
 | | |
 |---|---|
 | **Captured** | 2026-05-05 |
-| **Workflow run** | [actions/runs/25374530315](https://github.com/randomparity/voom/actions/runs/25374530315) (`workflow_dispatch` on `main`) |
-| **Source SHA** | `dd69cfa` |
+| **Workflow run** | Local re-baseline on `homer.pdx.drc.nz` (no GitHub Actions URL) |
+| **Source SHA** | `5363860` |
 | **cargo-mutants version** | 27.0.0 |
 | **Config** | `.cargo/mutants.toml` (`exclude_globs = ["**/tests/**", "**/benches/**", "**/examples/**"]`) |
 | **Per-mutant timeout** | 300 s, passed via `--timeout 300` in the workflow |
@@ -17,48 +17,57 @@ This document captures the initial `cargo mutants` baseline for the three logic-
 
 | Crate | Total mutants | Caught | Missed | Unviable | Catch rate |
 |---|---:|---:|---:|---:|---:|
-| `voom-dsl` | 514 | 197 | 122 | 195 | 61.8 % |
-| `voom-policy-evaluator` | 265 | 74 | 73 | 118 | 50.3 % |
-| `voom-phase-orchestrator` | 11 | 5 | 0 | 6 | 100.0 % |
-| **Total** | **790** | **276** | **195** | **319** | **58.6 %** |
+| `voom-dsl` | 518 | 392 | 58 | 68 | 87.1 % |
+| `voom-policy-evaluator` | 265 | 217 | 42 | 6 | 83.8 % |
+| `voom-phase-orchestrator`* | 11 | 5 | 0 | 6 | 100.0 % |
+| **Total** | **794** | **614** | **100** | **80** | **86.0 %** |
+
+\* not re-run for Phase 2; logic unchanged since the original baseline.
 
 Catch rate is `Caught / (Caught + Missed)` — `Unviable` mutants are excluded because they never reach the test suite.
 
-`voom-phase-orchestrator` already catches every viable mutant; its 11 mutants live in a single `lib.rs` whose DAG-resolution logic is exercised by the existing depends_on / skip when / run_if test matrix. Triage work concentrates on the other two crates.
+`voom-phase-orchestrator` already catches every viable mutant; its 11 mutants live in a single `lib.rs` whose DAG-resolution logic is exercised by the existing depends_on / skip when / run_if test matrix. Triage work concentrates on the other two crates. After issue #236's Phase 2 (PR for branch `test/issue-236-mutation-triage-phase2`), both `voom-dsl` and `voom-policy-evaluator` exceed the 80% catch-rate threshold defined in #236's Definition of Done.
+
+Progression across the three baselines captured to date:
+
+| Crate | Pre-Phase-1 (`dd69cfa`) | Post-Phase-1 (`3da0275`) | Post-Phase-2 (`5363860`) |
+|---|---:|---:|---:|
+| `voom-dsl` | 61.8 % | 70.7 % | **87.1 %** |
+| `voom-policy-evaluator` | 50.3 % | 73.0 % | **83.8 %** |
 
 ## Representative surviving mutants
 
 The first 10 surviving mutants per crate, taken in declaration order from `outcomes.json`. The full lists are in each workflow run's `mutants-<crate>` artifact (90-day retention) under `mutants.out/missed.txt` and `mutants.out/outcomes.json`.
 
-### `voom-dsl` (122 surviving)
+### `voom-dsl` (58 surviving)
 
-- `crates/voom-dsl/src/compiled.rs:46:9: replace CompiledRegex::pattern -> &str with ""`
-- `crates/voom-dsl/src/compiled.rs:46:9: replace CompiledRegex::pattern -> &str with "xyzzy"`
-- `crates/voom-dsl/src/compiler.rs:29:45: replace && with || in safe_u32`
-- `crates/voom-dsl/src/compiler.rs:29:17: replace && with || in safe_u32`
-- `crates/voom-dsl/src/compiler.rs:29:10: replace >= with < in safe_u32`
-- `crates/voom-dsl/src/compiler.rs:29:22: replace <= with > in safe_u32`
-- `crates/voom-dsl/src/compiler.rs:29:58: replace == with != in safe_u32`
-- `crates/voom-dsl/src/compiler.rs:78:9: delete match arm "skip" in parse_error_strategy`
-- `crates/voom-dsl/src/compiler.rs:90:9: delete match arm "first" in parse_default_strategy`
-- `crates/voom-dsl/src/compiler.rs:91:9: delete match arm "all" in parse_default_strategy`
+- `crates/voom-dsl/src/compiled.rs:52:9: replace <impl fmt::Debug for CompiledRegex>::fmt -> fmt::Result with Ok(Default::default())`
+- `crates/voom-dsl/src/compiler.rs:171:38: replace == with != in compile_operation`
+- `crates/voom-dsl/src/compiler.rs:218:21: delete match arm "all" in compile_operation`
+- `crates/voom-dsl/src/compiler.rs:318:21: delete match arm Value::Number(n, _) in compile_synthesize`
+- `crates/voom-dsl/src/compiler.rs:319:21: delete match arm Value::Ident(s) | Value::String(s) in compile_synthesize`
+- `crates/voom-dsl/src/compiler.rs:329:38: replace == with != in compile_synthesize`
+- `crates/voom-dsl/src/compiler.rs:337:21: delete match arm Value::Number(n, _) in compile_synthesize`
+- `crates/voom-dsl/src/compiler.rs:338:21: delete match arm Value::Ident(s) in compile_synthesize`
+- `crates/voom-dsl/src/compiler.rs:541:9: delete match arm "track" in parse_track_target`
+- `crates/voom-dsl/src/compiler.rs:590:60: replace > with == in topological_sort`
 
-The cluster on `compiler.rs:29` is a single line — `safe_u32`'s range-check predicate. A handful of focused tests exercising u32 boundary values would knock out all five mutants on that line at once. `parse_error_strategy` / `parse_default_strategy` are similarly clustered: missing tests for each enum arm.
+What remains in `voom-dsl` after Phase 2 is concentrated in the formatter and the compiler's synthesize/topological-sort paths. The largest remaining clusters are `format_operation` (6 survivors) and `format_number`, `compile_synthesize`, `topological_sort`, and `validator::broad_track_category` (5 each), with `format_when` and `format_policy` trailing at 4 apiece. The formatter clusters reflect the fact that round-trip / golden-output tests cover the common cases but not every per-operation rendering branch; the `compile_synthesize` cluster is missing coverage for individual `Value::*` arms feeding the synth-track parameters.
 
-### `voom-policy-evaluator` (73 surviving)
+### `voom-policy-evaluator` (42 surviving)
 
-- `plugins/policy-evaluator/src/condition.rs:59:40: replace && with || in evaluate_condition`
-- `plugins/policy-evaluator/src/condition.rs:59:36: replace > with == in evaluate_condition`
-- `plugins/policy-evaluator/src/condition.rs:59:36: replace > with < in evaluate_condition`
-- `plugins/policy-evaluator/src/condition.rs:59:36: replace > with >= in evaluate_condition`
-- `plugins/policy-evaluator/src/condition.rs:59:43: delete ! in evaluate_condition`
-- `plugins/policy-evaluator/src/condition.rs:61:65: replace <= with > in evaluate_condition`
-- `plugins/policy-evaluator/src/condition.rs:101:9: delete match arm "hwaccels" in resolve_system_field`
-- `plugins/policy-evaluator/src/condition.rs:132:9: delete match arm "language" | "lang" in resolve_track_field`
-- `plugins/policy-evaluator/src/condition.rs:133:9: delete match arm "title" in resolve_track_field`
-- `plugins/policy-evaluator/src/condition.rs:134:9: delete match arm "channels" in resolve_track_field`
+- `plugins/policy-evaluator/src/lib.rs:71:5: replace evaluate_single_phase_with_hints -> Option<voom_domain::plan::Plan> with None`
+- `plugins/policy-evaluator/src/condition.rs:258:9: delete match arm (serde_json::Value::Number(l), serde_json::Value::Number(r)) in json_values_equal`
+- `plugins/policy-evaluator/src/condition.rs:258:84: replace == with != in json_values_equal`
+- `plugins/policy-evaluator/src/container_compat.rs:42:9: delete match arm Container::Mov | Container::Ts | Container::Flv | Container::Wmv | Container::Other in codec_supported`
+- `plugins/policy-evaluator/src/evaluator.rs:266:33: replace == with != in apply_safeguards`
+- `plugins/policy-evaluator/src/evaluator.rs:272:8: delete ! in apply_safeguards`
+- `plugins/policy-evaluator/src/evaluator.rs:386:37: replace > with == in apply_container_safeguard`
+- `plugins/policy-evaluator/src/evaluator.rs:386:37: replace > with >= in apply_container_safeguard`
+- `plugins/policy-evaluator/src/evaluator.rs:410:5: replace apply_safeguard_for_track_type with ()`
+- `plugins/policy-evaluator/src/evaluator.rs:415:14: replace == with != in apply_safeguard_for_track_type`
 
-The `evaluate_condition` cluster on lines 59 and 61 is the predicate at the heart of policy evaluation — six surviving mutants on two lines means the comparison operators and boolean composition aren't being exercised end-to-end. The `resolve_*_field` mutants are missing test coverage for individual track/system field aliases.
+The dominant remaining cluster is `apply_safeguard_for_track_type` in `evaluator.rs` with 9 survivors, followed by `is_font_attachment` in `filter.rs` (5) and the `apply_safeguards` predicate cluster in `evaluator.rs` (3). The safeguard clusters indicate that the per-track-type guard branches and their boundary comparisons aren't yet exercised end-to-end; `is_font_attachment` is a small classification helper whose individual MIME/extension branches are uncovered.
 
 ### `voom-phase-orchestrator`
 
@@ -66,14 +75,14 @@ No surviving mutants.
 
 ## Triage
 
-A single tracking issue gathers follow-up work to drive surviving-mutant counts down: see [#236 — track triage of cargo-mutants survivors](https://github.com/randomparity/voom/issues/236).
+Issue [#236 — track triage of cargo-mutants survivors](https://github.com/randomparity/voom/issues/236) drove the Phase 1 and Phase 2 work that produced the catch rates above and was closed alongside this re-baseline. The clusters listed above are candidates for a follow-up triage issue if the project decides to push catch rates further.
 
 The general approach for triaging a survivor:
 
 1. Read the survivor's `name` field — it includes the file, line, and the exact mutation cargo-mutants applied.
 2. Write a focused unit test that distinguishes the original code from the mutant. If the mutation is a comparison operator flip, the test should hit the boundary value; if it is a deleted match arm, the test should pass that arm's input.
 3. Verify locally with `cargo mutants -p <crate> --file <relative-path> --regex <fragment of the mutation name>`.
-4. Group several survivors into a single PR when they touch related code (e.g. the five `safe_u32` mutants in `voom-dsl/compiler.rs:29` belong together).
+4. Group several survivors into a single PR when they touch related code (e.g. the nine `apply_safeguard_for_track_type` mutants in `policy-evaluator/src/evaluator.rs` belong together).
 
 If a mutant is provably equivalent (no observable behavior change), document the reasoning in the test file rather than suppressing it via `cargo-mutants` config — that keeps the analysis reviewable and discoverable.
 

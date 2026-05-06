@@ -2417,4 +2417,202 @@ mod tests {
             err.errors
         );
     }
+
+    // ---- validate_filter arm-deletion tests (issue #236, phase 2) ----
+    // Each test invokes validate_filter with a focused FilterNode that the
+    // original code rejects (or accepts) and the mutated code does the
+    // opposite. For arm-deletion mutants, an invalid filter that originally
+    // emits an error becomes silent under the mutant. For the `delete !`
+    // mutant on line 735, both an invalid-language test (catches the deleted
+    // arm + flipped predicate) and a valid-language test (catches the
+    // flipped predicate alone) make the distinction explicit.
+
+    use crate::ast::CompareOp;
+
+    fn run_validate_filter(filter: FilterNode) -> (Vec<DslError>, Vec<DslWarning>) {
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        validate_filter(&filter, 1, 1, &mut errors, &mut warnings);
+        (errors, warnings)
+    }
+
+    #[test]
+    fn validate_filter_lang_in_invalid_emits_error() {
+        let (errors, _) = run_validate_filter(FilterNode::LangIn(vec!["xxx".into()]));
+        assert!(
+            !errors.is_empty(),
+            "expected an error for invalid language in LangIn, got none"
+        );
+    }
+
+    #[test]
+    fn validate_filter_lang_compare_invalid_emits_error() {
+        let (errors, _) = run_validate_filter(FilterNode::LangCompare(CompareOp::Eq, "xxx".into()));
+        assert!(
+            !errors.is_empty(),
+            "expected an error for invalid language in LangCompare, got none"
+        );
+    }
+
+    #[test]
+    fn validate_filter_lang_compare_valid_emits_no_error() {
+        let (errors, _) = run_validate_filter(FilterNode::LangCompare(CompareOp::Eq, "eng".into()));
+        assert!(
+            errors.is_empty(),
+            "expected no error for valid language in LangCompare, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_filter_codec_in_invalid_emits_error() {
+        let (errors, _) = run_validate_filter(FilterNode::CodecIn(vec!["bogus_codec".into()]));
+        assert!(
+            !errors.is_empty(),
+            "expected an error for invalid codec in CodecIn, got none"
+        );
+    }
+
+    #[test]
+    fn validate_filter_codec_compare_invalid_emits_error() {
+        let (errors, _) = run_validate_filter(FilterNode::CodecCompare(
+            CompareOp::Eq,
+            "bogus_codec".into(),
+        ));
+        assert!(
+            !errors.is_empty(),
+            "expected an error for invalid codec in CodecCompare, got none"
+        );
+    }
+
+    #[test]
+    fn validate_filter_and_recurses_into_invalid_inner() {
+        let (errors, _) =
+            run_validate_filter(FilterNode::And(vec![FilterNode::LangIn(
+                vec!["xxx".into()],
+            )]));
+        assert!(
+            !errors.is_empty(),
+            "expected And to recurse into LangIn and surface its error, got none"
+        );
+    }
+
+    #[test]
+    fn validate_filter_or_recurses_into_invalid_inner() {
+        let (errors, _) =
+            run_validate_filter(FilterNode::Or(vec![FilterNode::LangIn(vec!["xxx".into()])]));
+        assert!(
+            !errors.is_empty(),
+            "expected Or to recurse into LangIn and surface its error, got none"
+        );
+    }
+
+    #[test]
+    fn validate_filter_not_recurses_into_invalid_inner() {
+        let (errors, _) = run_validate_filter(FilterNode::Not(Box::new(FilterNode::LangIn(vec![
+            "xxx".into(),
+        ]))));
+        assert!(
+            !errors.is_empty(),
+            "expected Not to recurse into LangIn and surface its error, got none"
+        );
+    }
+
+    // EQUIVALENT MUTANT (issue #236, phase 2):
+    // crates/voom-dsl/src/validator.rs:390:26: replace < with <= in check_tag_conflicts
+    //
+    // The compared values `i` and `clear_idx` both come from `enumerate()` on
+    // `phase.operations` — they are unique sequential indices into the same
+    // vec. The condition runs only when the spanned op at index `i` is a
+    // SetTag; ClearTags has its own (different) index `clear_idx`. So `i`
+    // cannot equal `clear_idx`, and `i < clear_idx` and `i <= clear_idx` are
+    // always equivalent on every reachable input.
+    //
+    // Per #236 policy: documented inline rather than suppressed in
+    // .cargo/mutants.toml so the analysis stays discoverable.
+
+    // ---- check_tag_conflicts arm-deletion + boundary tests (issue #236, phase 2) ----
+
+    fn phase_with_ops(name: &str, ops: Vec<OperationNode>) -> PhaseNode {
+        use crate::ast::{Span, SpannedOperation};
+
+        let operations = ops
+            .into_iter()
+            .enumerate()
+            .map(|(i, node)| SpannedOperation {
+                node,
+                span: Span {
+                    start: i,
+                    end: i + 1,
+                    line: i + 1,
+                    col: 1,
+                },
+            })
+            .collect();
+        PhaseNode {
+            name: name.into(),
+            skip_when: None,
+            depends_on: vec![],
+            run_if: None,
+            on_error: None,
+            operations,
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 1,
+                col: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn check_tag_conflicts_set_and_delete_same_tag_emits_error() {
+        let phase = phase_with_ops(
+            "p",
+            vec![
+                OperationNode::SetTag {
+                    tag: "x".into(),
+                    value: ValueOrField::Value(Value::String("dummy".into())),
+                },
+                OperationNode::DeleteTag("x".into()),
+            ],
+        );
+        let mut errors = Vec::new();
+        check_tag_conflicts(&phase, &mut errors);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got {errors:?}"
+        );
+        let msg = format!("{}", errors[0]);
+        assert!(
+            msg.contains("both set and deleted"),
+            "expected 'both set and deleted' in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn check_tag_conflicts_set_before_clear_emits_error() {
+        let phase = phase_with_ops(
+            "p",
+            vec![
+                OperationNode::SetTag {
+                    tag: "y".into(),
+                    value: ValueOrField::Value(Value::String("dummy".into())),
+                },
+                OperationNode::ClearTags,
+            ],
+        );
+        let mut errors = Vec::new();
+        check_tag_conflicts(&phase, &mut errors);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got {errors:?}"
+        );
+        let msg = format!("{}", errors[0]);
+        assert!(
+            msg.contains("appears before clear_tags"),
+            "expected 'appears before clear_tags' in error, got: {msg}"
+        );
+    }
 }

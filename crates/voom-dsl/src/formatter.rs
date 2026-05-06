@@ -978,4 +978,243 @@ mod tests {
             _ => panic!("expected When"),
         }
     }
+
+    // ---- format_phase indent-arithmetic tests (issue #236, phase 2) ----
+    // Each test exercises one optional section of format_phase by calling it
+    // at level=1 and asserting the inner line is indented by exactly 4
+    // spaces (two indent steps × 2 spaces). Both `+ to -` (gives 0 spaces)
+    // and `+ to *` (gives 2 spaces) mutants on each `level + 1` site fail
+    // the substring assertion.
+
+    use crate::ast::{RunIfNode, Span, SpannedOperation};
+
+    fn empty_phase(name: &str) -> PhaseNode {
+        PhaseNode {
+            name: name.into(),
+            skip_when: None,
+            depends_on: vec![],
+            run_if: None,
+            on_error: None,
+            operations: vec![],
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 1,
+                col: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn format_phase_depends_on_indents_one_deeper() {
+        let mut phase = empty_phase("build");
+        phase.depends_on = vec!["init".into()];
+        let mut out = String::new();
+        format_phase(&phase, &mut out, 1);
+        assert!(
+            out.contains("\n    depends_on: [init]\n"),
+            "depends_on line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_phase_skip_when_indents_one_deeper() {
+        let mut phase = empty_phase("build");
+        phase.skip_when = Some(ConditionNode::IsDubbed);
+        let mut out = String::new();
+        format_phase(&phase, &mut out, 1);
+        assert!(
+            out.contains("\n    skip when "),
+            "skip when line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_phase_run_if_indents_one_deeper() {
+        let mut phase = empty_phase("build");
+        phase.run_if = Some(RunIfNode {
+            phase: "init".into(),
+            trigger: "modified".into(),
+        });
+        let mut out = String::new();
+        format_phase(&phase, &mut out, 1);
+        assert!(
+            out.contains("\n    run_if init.modified\n"),
+            "run_if line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_phase_on_error_indents_one_deeper() {
+        let mut phase = empty_phase("build");
+        phase.on_error = Some("skip".into());
+        let mut out = String::new();
+        format_phase(&phase, &mut out, 1);
+        assert!(
+            out.contains("\n    on_error: skip\n"),
+            "on_error line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_phase_operation_indents_one_deeper() {
+        let mut phase = empty_phase("build");
+        phase.operations = vec![SpannedOperation {
+            node: OperationNode::Container("mkv".into()),
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 1,
+                col: 1,
+            },
+        }];
+        let mut out = String::new();
+        format_phase(&phase, &mut out, 1);
+        assert!(
+            out.contains("\n    container mkv\n"),
+            "container operation should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    // ---- format_config indent-arithmetic tests (issue #236, phase 2) ----
+    // Mirrors the cluster 7 (format_phase) recipe: each test exercises one
+    // optional config section by calling format_config at level=1 and
+    // asserting the inner line is indented by exactly 4 spaces. Both `+ to
+    // -` (gives 0 spaces) and `+ to *` (gives 2 spaces) mutants on each
+    // `level + 1` site fail the substring check.
+
+    fn empty_config() -> ConfigNode {
+        ConfigNode {
+            audio_languages: vec![],
+            subtitle_languages: vec![],
+            on_error: None,
+            commentary_patterns: vec![],
+            keep_backups: None,
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 1,
+                col: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn format_config_audio_languages_indents_one_deeper() {
+        let mut config = empty_config();
+        config.audio_languages = vec!["eng".into()];
+        let mut out = String::new();
+        format_config(&config, &mut out, 1);
+        assert!(
+            out.contains("\n    languages audio: [eng]\n"),
+            "audio languages line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_config_subtitle_languages_indents_one_deeper() {
+        let mut config = empty_config();
+        config.subtitle_languages = vec!["eng".into()];
+        let mut out = String::new();
+        format_config(&config, &mut out, 1);
+        assert!(
+            out.contains("\n    languages subtitle: [eng]\n"),
+            "subtitle languages line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_config_commentary_patterns_indents_one_deeper() {
+        let mut config = empty_config();
+        config.commentary_patterns = vec!["commentary".into()];
+        let mut out = String::new();
+        format_config(&config, &mut out, 1);
+        assert!(
+            out.contains("\n    commentary_patterns: [\"commentary\"]\n"),
+            "commentary_patterns line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_config_on_error_indents_one_deeper() {
+        let mut config = empty_config();
+        config.on_error = Some("skip".into());
+        let mut out = String::new();
+        format_config(&config, &mut out, 1);
+        assert!(
+            out.contains("\n    on_error: skip\n"),
+            "on_error line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_config_keep_backups_indents_one_deeper() {
+        let mut config = empty_config();
+        config.keep_backups = Some(true);
+        let mut out = String::new();
+        format_config(&config, &mut out, 1);
+        assert!(
+            out.contains("\n    keep_backups: true\n"),
+            "keep_backups line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    // ---- format_rules indent-arithmetic tests (issue #236, phase 2) ----
+    // Calls format_rules at level=1 with a single rule and asserts each of
+    // the three indented inner lines (rule-open `rule "r1" {` at 4 spaces,
+    // the recursive `when ...` at 6 spaces, and the rule-close `}` at 4
+    // spaces) appears at the correct depth. The `+ to -` mutants on each
+    // site cause usize subtraction underflow at level=1, panicking the test
+    // before the assertion runs — that still counts as caught. The `+ to *`
+    // mutants produce wrong indentation that fails the substring check.
+
+    fn simple_rule(name: &str) -> RuleNode {
+        RuleNode {
+            name: name.into(),
+            when: WhenNode {
+                condition: ConditionNode::IsDubbed,
+                then_actions: vec![],
+                else_actions: vec![],
+                span: Span {
+                    start: 0,
+                    end: 0,
+                    line: 1,
+                    col: 1,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn format_rules_rule_open_indents_two_levels() {
+        let rules = vec![simple_rule("r1")];
+        let mut out = String::new();
+        format_rules("first_match", &rules, &mut out, 1);
+        assert!(
+            out.contains("\n    rule \"r1\" {\n"),
+            "rule-open line should be indented by 4 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_rules_when_indents_three_levels() {
+        let rules = vec![simple_rule("r1")];
+        let mut out = String::new();
+        format_rules("first_match", &rules, &mut out, 1);
+        assert!(
+            out.contains("\n      when "),
+            "when line should be indented by 6 spaces; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_rules_rule_close_indents_two_levels() {
+        let rules = vec![simple_rule("r1")];
+        let mut out = String::new();
+        format_rules("first_match", &rules, &mut out, 1);
+        assert!(
+            out.contains("\n    }\n"),
+            "rule-close brace should be indented by 4 spaces; got:\n{out}"
+        );
+    }
 }

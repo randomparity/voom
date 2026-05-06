@@ -461,4 +461,61 @@ mod tests {
         // track_matches (no context) should return false for field refs
         assert!(!track_matches(&track, &filter));
     }
+
+    // ---- compare_f64 boundary tests (issue #236, phase 2) ----
+    // Each test targets specific surviving mutants on lines 131–134. The
+    // EPSILON-boundary tests use input pairs whose absolute difference is
+    // exactly f64::EPSILON, the only inputs that distinguish `<` from `<=`
+    // (or `>=` from `<`) on that branch. The Ne `replace - with +/replace -
+    // with /` mutants need inputs where (left-right), (left+right), and
+    // (left/right) all give different absolute values, which is why we use
+    // `(1.0, -1.0)` and `(2.0, 2.0)`.
+
+    #[test]
+    fn compare_f64_eq_at_epsilon_boundary() {
+        // |0 - EPSILON| = EPSILON. EPSILON < EPSILON is false, but the
+        // `< to <=` mutant would flip this to true.
+        assert!(!compare_f64(0.0, CompiledCompareOp::Eq, f64::EPSILON));
+    }
+
+    #[test]
+    fn compare_f64_ne_at_epsilon_boundary() {
+        // |0 - EPSILON| = EPSILON. EPSILON >= EPSILON is true, but the
+        // `>= to <` mutant would flip this to false.
+        assert!(compare_f64(0.0, CompiledCompareOp::Ne, f64::EPSILON));
+    }
+
+    #[test]
+    fn compare_f64_ne_subtraction_distinguishes_addition() {
+        // |1 - (-1)| = 2 (>= EPSILON, true). The `- to +` mutant computes
+        // |1 + (-1)| = 0 (< EPSILON, false), so the result flips.
+        assert!(compare_f64(1.0, CompiledCompareOp::Ne, -1.0));
+    }
+
+    #[test]
+    fn compare_f64_ne_subtraction_distinguishes_division() {
+        // |2 - 2| = 0 (< EPSILON, false). The `- to /` mutant computes
+        // |2 / 2| = 1 (>= EPSILON, true), so the result flips.
+        assert!(!compare_f64(2.0, CompiledCompareOp::Ne, 2.0));
+    }
+
+    #[test]
+    fn compare_f64_lt_equal_inputs() {
+        // 1 < 1 is false. Both `< to ==` (1 == 1 = true) and `< to <=`
+        // (1 <= 1 = true) mutants flip the result, so this single test
+        // kills two surviving mutants on line 133.
+        assert!(!compare_f64(1.0, CompiledCompareOp::Lt, 1.0));
+    }
+
+    #[test]
+    fn compare_f64_lt_left_less() {
+        // 1 < 2 is true. The `< to >` mutant (1 > 2 = false) flips it.
+        assert!(compare_f64(1.0, CompiledCompareOp::Lt, 2.0));
+    }
+
+    #[test]
+    fn compare_f64_le_equal_inputs() {
+        // 1 <= 1 is true. The `<= to >` mutant (1 > 1 = false) flips it.
+        assert!(compare_f64(1.0, CompiledCompareOp::Le, 1.0));
+    }
 }
