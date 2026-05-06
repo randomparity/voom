@@ -26,6 +26,21 @@ for scenario in "${fixtures[@]}"; do
     "lib/diff-snapshots.sh" "${pre}" "${post}" "${actual}/files-summary.md"
     assert_match "${actual}/files-summary.md" "${expected}/files-summary.md"
 
+    ignore="lib/ndjson-ignore.txt"
+    for combo in \
+        "pre/voom-db.ndjson:pre/ffprobe.ndjson:db-vs-ffprobe-pre.tsv" \
+        "post/voom-db.ndjson:post/ffprobe.ndjson:db-vs-ffprobe-post.tsv" \
+        "pre/voom-db.ndjson:post/voom-db.ndjson:voom-db-pre-vs-post.tsv" \
+        "pre/ffprobe.ndjson:post/ffprobe.ndjson:ffprobe-pre-vs-post.tsv"; do
+        IFS=: read -r left right out <<<"${combo}"
+        "lib/diff-ndjson.py" \
+            "tests/fixtures/${scenario}/${left}" \
+            "tests/fixtures/${scenario}/${right}" \
+            "${actual}/${out}" \
+            --ignore-file "${ignore}"
+        assert_match "${actual}/${out}" "${expected}/${out}"
+    done
+
     rm -rf "${actual}"
     trap - EXIT
 done
