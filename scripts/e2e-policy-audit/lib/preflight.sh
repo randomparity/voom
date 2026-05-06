@@ -45,32 +45,30 @@ fi
 
 policy_sha=$(sha256sum "${policy_path}" | awk '{print $1}')
 voom_version=$("${voom_bin}" --version 2>/dev/null || echo "unknown")
-git_sha=$(git -C "$(dirname "$0")" rev-parse HEAD 2>/dev/null || echo "unknown")
+git_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
 kernel=$(uname -sr)
 cpu=$(awk -F': ' '/^model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null || echo "unknown")
 gpu=$(command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null | head -1 || echo "none")
 
-cat >"${run_dir}/manifest.json" <<EOF
-{
-  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "completed_at": null,
-  "voom": {
-    "version": "${voom_version}",
-    "git_sha": "${git_sha}",
-    "binary": "${voom_bin}"
-  },
-  "policy": {
-    "path": "${policy_path}",
-    "sha256": "${policy_sha}"
-  },
-  "library": "${library_path}",
-  "host": {
-    "kernel": "${kernel}",
-    "cpu": "${cpu}",
-    "gpu": "${gpu}"
-  },
-  "stages": {}
-}
-EOF
+jq -n \
+    --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg voom_version "${voom_version}" \
+    --arg git_sha "${git_sha}" \
+    --arg voom_binary "${voom_bin}" \
+    --arg policy_path "${policy_path}" \
+    --arg policy_sha256 "${policy_sha}" \
+    --arg library "${library_path}" \
+    --arg kernel "${kernel}" \
+    --arg cpu "${cpu}" \
+    --arg gpu "${gpu}" \
+    '{
+        started_at: $started_at,
+        completed_at: null,
+        voom: { version: $voom_version, git_sha: $git_sha, binary: $voom_binary },
+        policy: { path: $policy_path, sha256: $policy_sha256 },
+        library: $library,
+        host: { kernel: $kernel, cpu: $cpu, gpu: $gpu },
+        stages: {}
+    }' >"${run_dir}/manifest.json"
 
 echo "preflight OK"
