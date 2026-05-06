@@ -41,6 +41,11 @@ def map_video_stream:
     {
         index: .index,
         codec: (.codec_name // "unknown"),
+        language: (.tags.language // "und"),
+        title: (.tags.title // ""),
+        is_default: ((.disposition.default // 0) == 1),
+        is_forced: ((.disposition.forced // 0) == 1),
+        track_type: (.codec_type | codec_type_to_track_type),
         width: (.width // null),
         height: (.height // null),
         frame_rate: (.r_frame_rate | parse_frame_rate),
@@ -84,8 +89,12 @@ def map_attachment_stream:
     {
         index: .index,
         codec: (.codec_name // "unknown"),
-        filename: (.tags.filename // ""),
-        track_type: "attachment"
+        language: (.tags.language // "und"),
+        title: (.tags.title // ""),
+        is_default: ((.disposition.default // 0) == 1),
+        is_forced: ((.disposition.forced // 0) == 1),
+        track_type: "attachment",
+        filename: (.tags.filename // "")
     };
 
 {
