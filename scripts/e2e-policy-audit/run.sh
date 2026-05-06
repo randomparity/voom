@@ -241,7 +241,7 @@ python3 - "${run_dir}/manifest.json" <<'PY'
 import json, sys, datetime
 path = sys.argv[1]
 with open(path) as f: m = json.load(f)
-m["completed_at"] = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+m["completed_at"] = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 with open(path, "w") as f: json.dump(m, f, indent=2)
 PY
 
