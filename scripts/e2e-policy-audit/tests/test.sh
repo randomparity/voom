@@ -41,6 +41,12 @@ for scenario in "${fixtures[@]}"; do
         assert_match "${actual}/${out}" "${expected}/${out}"
     done
 
+    "lib/codec-pivot.py" \
+        "tests/fixtures/${scenario}/pre/ffprobe.ndjson" \
+        "tests/fixtures/${scenario}/post/ffprobe.ndjson" \
+        "${actual}/codec-pivot.md"
+    assert_match "${actual}/codec-pivot.md" "${expected}/codec-pivot.md"
+
     rm -rf "${actual}"
     trap - EXIT
 done
