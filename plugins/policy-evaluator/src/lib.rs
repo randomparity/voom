@@ -15,7 +15,10 @@ use voom_domain::capability_map::CapabilityMap;
 use voom_domain::media::MediaFile;
 use voom_dsl::compiled::CompiledPolicy;
 
-pub use evaluator::{apply_capability_hints, evaluate, evaluate_with_context, EvaluationOutcome};
+pub use evaluator::{
+    apply_capability_hints, evaluate, evaluate_with_context, evaluate_with_phase_outputs,
+    EvaluationOutcome,
+};
 
 /// Evaluate a policy with system capabilities available to conditions,
 /// then validate plans against executor capabilities.

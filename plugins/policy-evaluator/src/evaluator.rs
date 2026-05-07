@@ -20,7 +20,9 @@ use voom_dsl::compiled::{
     RunIfTrigger, SynthLanguage, SynthPosition, TrackTarget, TranscodeChannels,
 };
 
-use crate::condition::{evaluate_condition, resolve_value_or_field, EvalContext};
+use crate::condition::{
+    evaluate_condition, resolve_value_or_field, EvalContext, PhaseOutputLookup,
+};
 use crate::container_compat::codec_supported;
 use crate::filter::{track_matches_with_context, tracks_for_target};
 
@@ -71,7 +73,26 @@ pub fn evaluate_with_context(
     file: &MediaFile,
     capabilities: Option<&CapabilityMap>,
 ) -> EvaluationResult {
-    let eval_ctx = EvalContext { capabilities };
+    evaluate_with_phase_outputs(policy, file, capabilities, None)
+}
+
+/// Evaluate a compiled policy with optional system capabilities and a
+/// closure-based lookup that resolves cross-phase field access
+/// (e.g. `verify.outcome`) against persisted phase outputs.
+///
+/// The lookup is `None` by default; callers (CLI, phase orchestrator)
+/// populate it from persisted state before evaluating downstream phases.
+#[must_use]
+pub fn evaluate_with_phase_outputs<'a>(
+    policy: &CompiledPolicy,
+    file: &MediaFile,
+    capabilities: Option<&'a CapabilityMap>,
+    phase_output_lookup: Option<&'a PhaseOutputLookup<'a>>,
+) -> EvaluationResult {
+    let eval_ctx = EvalContext {
+        capabilities,
+        phase_output_lookup,
+    };
     let mut plans = Vec::new();
     let mut phase_outcomes: HashMap<String, EvaluationOutcome> = HashMap::new();
 
@@ -134,7 +155,39 @@ pub fn evaluate_single_phase(
     capabilities: Option<&CapabilityMap>,
 ) -> Option<Plan> {
     let phase = policy.phases.iter().find(|p| p.name == phase_name)?;
-    let eval_ctx = EvalContext { capabilities };
+    let eval_ctx = EvalContext {
+        capabilities,
+        phase_output_lookup: None,
+    };
+    Some(evaluate_phase(
+        phase,
+        policy,
+        file,
+        phase_outcomes,
+        &eval_ctx,
+    ))
+}
+
+/// Evaluate a single phase with both system capabilities and a phase-output
+/// lookup for cross-phase field access.
+///
+/// Used by the per-phase evaluate-execute loop when the orchestrator already
+/// has persisted phase outputs available.
+#[must_use]
+#[allow(clippy::implicit_hasher)]
+pub fn evaluate_single_phase_with_phase_outputs<'a>(
+    phase_name: &str,
+    policy: &CompiledPolicy,
+    file: &MediaFile,
+    phase_outcomes: &HashMap<String, EvaluationOutcome>,
+    capabilities: Option<&'a CapabilityMap>,
+    phase_output_lookup: Option<&'a PhaseOutputLookup<'a>>,
+) -> Option<Plan> {
+    let phase = policy.phases.iter().find(|p| p.name == phase_name)?;
+    let eval_ctx = EvalContext {
+        capabilities,
+        phase_output_lookup,
+    };
     Some(evaluate_phase(
         phase,
         policy,
@@ -3206,6 +3259,119 @@ mod tests {
         assert!(
             !plan.is_skipped(),
             "depends_on should be satisfied by ExecutionFailed"
+        );
+    }
+
+    // ---- Phase output cross-phase field access (issue #196) ----
+
+    #[test]
+    fn skip_when_verify_outcome_not_ok_skips_phase() {
+        use voom_domain::plan::PhaseOutput;
+
+        let policy = voom_dsl::compile_policy(
+            r#"policy "p" {
+                phase verify {
+                    verify quick
+                }
+                phase backup {
+                    depends_on: [verify]
+                    skip when verify.outcome != "ok"
+                    container mkv
+                }
+            }"#,
+        )
+        .expect("policy must compile");
+
+        let file = MediaFile::new(PathBuf::from("/m/x.mkv"));
+
+        let lookup = |name: &str| -> Option<PhaseOutput> {
+            (name == "verify").then(|| {
+                PhaseOutput::new()
+                    .with_completed(true)
+                    .with_outcome("error")
+                    .with_error_count(1)
+            })
+        };
+        let result = evaluate_with_phase_outputs(&policy, &file, None, Some(&lookup));
+
+        let backup_plan = result
+            .plans
+            .iter()
+            .find(|p| p.phase_name == "backup")
+            .expect("backup plan present");
+        assert!(
+            backup_plan.is_skipped(),
+            "backup phase should be skipped when verify.outcome != ok, got actions: {:?}",
+            backup_plan.actions
+        );
+    }
+
+    #[test]
+    fn skip_when_verify_outcome_ok_runs_phase() {
+        use voom_domain::plan::PhaseOutput;
+
+        let policy = voom_dsl::compile_policy(
+            r#"policy "p" {
+                phase verify {
+                    verify quick
+                }
+                phase backup {
+                    depends_on: [verify]
+                    skip when verify.outcome != "ok"
+                    container mkv
+                }
+            }"#,
+        )
+        .expect("policy must compile");
+
+        let file = MediaFile::new(PathBuf::from("/m/x.mkv"));
+
+        let lookup = |name: &str| -> Option<PhaseOutput> {
+            (name == "verify").then(|| PhaseOutput::new().with_completed(true).with_outcome("ok"))
+        };
+        let result = evaluate_with_phase_outputs(&policy, &file, None, Some(&lookup));
+
+        let backup_plan = result
+            .plans
+            .iter()
+            .find(|p| p.phase_name == "backup")
+            .expect("backup plan present");
+        assert!(
+            !backup_plan.is_skipped(),
+            "backup phase should run when verify.outcome == ok"
+        );
+    }
+
+    #[test]
+    fn evaluate_without_phase_outputs_treats_phase_field_as_missing() {
+        // Without a lookup, FieldCompare resolves to None and the condition
+        // evaluates to false — so `skip when verify.outcome != "ok"` does not
+        // trigger and the phase runs.
+        let policy = voom_dsl::compile_policy(
+            r#"policy "p" {
+                phase verify {
+                    verify quick
+                }
+                phase backup {
+                    depends_on: [verify]
+                    skip when verify.outcome != "ok"
+                    container mkv
+                }
+            }"#,
+        )
+        .expect("policy must compile");
+
+        let file = MediaFile::new(PathBuf::from("/m/x.mkv"));
+        let result = evaluate_with_phase_outputs(&policy, &file, None, None);
+
+        let backup_plan = result
+            .plans
+            .iter()
+            .find(|p| p.phase_name == "backup")
+            .expect("backup plan present");
+        assert!(
+            !backup_plan.is_skipped(),
+            "without lookup, FieldCompare returns false and phase runs"
         );
     }
 }

@@ -707,6 +707,82 @@ impl OperationType {
     }
 }
 
+/// Side-channel data a phase exposes for downstream phases to reference
+/// via `<phase>.<field>` field access in conditions.
+///
+/// Populated by callers (CLI, orchestrator) from persisted phase results
+/// before evaluating downstream phases. The evaluator itself does not
+/// produce these — it only reads them through a closure-based lookup
+/// passed into `EvalContext`.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PhaseOutput {
+    /// Whether the phase ran to completion (executed without skip/error).
+    pub completed: bool,
+    /// Whether the phase modified the file.
+    pub modified: bool,
+    /// Phase-specific outcome string (e.g. `"ok"`, `"error"`, `"warning"`
+    /// from a verify phase).
+    pub outcome: Option<String>,
+    /// Number of errors recorded by the phase.
+    pub error_count: u32,
+    /// Number of warnings recorded by the phase.
+    pub warning_count: u32,
+}
+
+impl PhaseOutput {
+    /// Create a fully-default `PhaseOutput`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the `completed` flag.
+    #[must_use]
+    pub fn with_completed(mut self, completed: bool) -> Self {
+        self.completed = completed;
+        self
+    }
+
+    /// Set the `modified` flag.
+    #[must_use]
+    pub fn with_modified(mut self, modified: bool) -> Self {
+        self.modified = modified;
+        self
+    }
+
+    /// Set the `outcome` field.
+    #[must_use]
+    pub fn with_outcome(mut self, outcome: impl Into<String>) -> Self {
+        self.outcome = Some(outcome.into());
+        self
+    }
+
+    /// Set the `error_count` field.
+    #[must_use]
+    pub fn with_error_count(mut self, error_count: u32) -> Self {
+        self.error_count = error_count;
+        self
+    }
+
+    /// Set the `warning_count` field.
+    #[must_use]
+    pub fn with_warning_count(mut self, warning_count: u32) -> Self {
+        self.warning_count = warning_count;
+        self
+    }
+}
+
+/// Set of field names addressable on a `PhaseOutput` via cross-phase
+/// field access (e.g. `verify.outcome`).
+pub const PHASE_OUTPUT_FIELDS: &[&str] = &[
+    "completed",
+    "modified",
+    "outcome",
+    "error_count",
+    "warning_count",
+];
+
 /// The result of executing a single phase.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1179,6 +1255,41 @@ mod tests {
         assert!(!json.contains("temp_path"));
         let restored: PhaseResult = serde_json::from_str(&json).unwrap();
         assert!(restored.temp_path.is_none());
+    }
+
+    #[test]
+    fn test_phase_output_default() {
+        let out = PhaseOutput::new();
+        assert!(!out.completed);
+        assert!(!out.modified);
+        assert!(out.outcome.is_none());
+        assert_eq!(out.error_count, 0);
+        assert_eq!(out.warning_count, 0);
+    }
+
+    #[test]
+    fn test_phase_output_serde_roundtrip() {
+        let out = PhaseOutput {
+            completed: true,
+            modified: false,
+            outcome: Some("ok".into()),
+            error_count: 1,
+            warning_count: 2,
+        };
+        let json = serde_json::to_string(&out).unwrap();
+        let restored: PhaseOutput = serde_json::from_str(&json).unwrap();
+        assert_eq!(out, restored);
+    }
+
+    #[test]
+    fn test_phase_output_field_set_matches_struct() {
+        // Sanity check: the const list and struct fields stay in sync.
+        for name in PHASE_OUTPUT_FIELDS {
+            match *name {
+                "completed" | "modified" | "outcome" | "error_count" | "warning_count" => {}
+                other => panic!("unexpected phase-output field {other}"),
+            }
+        }
     }
 
     #[test]

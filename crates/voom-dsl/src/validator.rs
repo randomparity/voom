@@ -71,8 +71,10 @@ fn validate_collecting_warnings(
     validate_cycle_detection(ast, &mut errors);
     validate_reachability(ast, &mut errors);
 
+    let phase_names: HashSet<&str> = ast.phases.iter().map(|p| p.name.as_str()).collect();
+
     for phase in &ast.phases {
-        validate_phase(phase, &mut errors, &mut warnings);
+        validate_phase(phase, &phase_names, &mut errors, &mut warnings);
     }
 
     let result = if errors.is_empty() {
@@ -312,13 +314,25 @@ fn validate_reachability(ast: &PolicyAst, errors: &mut Vec<DslError>) {
     }
 }
 
-fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>, warnings: &mut Vec<DslWarning>) {
+fn validate_phase(
+    phase: &PhaseNode,
+    phase_names: &HashSet<&str>,
+    errors: &mut Vec<DslError>,
+    warnings: &mut Vec<DslWarning>,
+) {
     if let Some(on_error) = &phase.on_error {
         validate_on_error(on_error, phase.span.line, phase.span.col, errors);
     }
 
     if let Some(skip_when) = &phase.skip_when {
-        validate_condition(skip_when, phase.span.line, phase.span.col, errors, warnings);
+        validate_condition(
+            skip_when,
+            phase.span.line,
+            phase.span.col,
+            phase_names,
+            errors,
+            warnings,
+        );
     }
 
     // Track keep/remove conflicts (target, has_filter)
@@ -330,6 +344,7 @@ fn validate_phase(phase: &PhaseNode, errors: &mut Vec<DslError>, warnings: &mut 
             &spanned_op.node,
             spanned_op.span.line,
             spanned_op.span.col,
+            phase_names,
             errors,
             warnings,
         );
@@ -443,6 +458,7 @@ fn validate_operation(
     op: &OperationNode,
     line: usize,
     col: usize,
+    phase_names: &HashSet<&str>,
     errors: &mut Vec<DslError>,
     warnings: &mut Vec<DslWarning>,
 ) {
@@ -462,7 +478,7 @@ fn validate_operation(
         OperationNode::Keep { target, filter } | OperationNode::Remove { target, filter } => {
             validate_track_target(target, line, col, errors);
             if let Some(f) = filter {
-                validate_filter(f, line, col, errors, warnings);
+                validate_filter(f, line, col, phase_names, errors, warnings);
             }
         }
         OperationNode::Transcode {
@@ -473,10 +489,10 @@ fn validate_operation(
             validate_transcode_operation(target, codec, settings, line, col, errors);
         }
         OperationNode::Synthesize { settings, .. } => {
-            validate_synthesize_operation(settings, line, col, errors, warnings);
+            validate_synthesize_operation(settings, line, col, phase_names, errors, warnings);
         }
         OperationNode::When(when) => {
-            validate_when(when, errors, warnings);
+            validate_when(when, phase_names, errors, warnings);
         }
         OperationNode::Rules { mode, rules } => {
             match mode.as_str() {
@@ -490,7 +506,7 @@ fn validate_operation(
                 }
             }
             for rule in rules {
-                validate_when(&rule.when, errors, warnings);
+                validate_when(&rule.when, phase_names, errors, warnings);
             }
         }
         OperationNode::Order(items) => {
@@ -596,6 +612,7 @@ fn validate_synthesize_operation(
     settings: &[SynthSetting],
     line: usize,
     col: usize,
+    phase_names: &HashSet<&str>,
     errors: &mut Vec<DslError>,
     warnings: &mut Vec<DslWarning>,
 ) {
@@ -612,7 +629,7 @@ fn validate_synthesize_operation(
                 }
             }
             SynthSetting::Source(f) | SynthSetting::SkipIfExists(f) => {
-                validate_filter(f, line, col, errors, warnings);
+                validate_filter(f, line, col, phase_names, errors, warnings);
             }
             SynthSetting::Channels(v) => {
                 validate_synth_channels(v, line, col, errors);
@@ -670,6 +687,7 @@ fn validate_field_path(
     path: &[String],
     line: usize,
     col: usize,
+    phase_names: &HashSet<&str>,
     errors: &mut Vec<DslError>,
     warnings: &mut Vec<DslWarning>,
 ) {
@@ -681,18 +699,29 @@ fn validate_field_path(
         ));
         return;
     }
-    if !KNOWN_FIELD_ROOTS.contains(&path[0].as_str()) {
+    let head = path[0].as_str();
+    let is_known_root = KNOWN_FIELD_ROOTS.contains(&head);
+    let is_phase_ref = phase_names.contains(head);
+
+    if !is_known_root && !is_phase_ref {
         errors.push(DslError::validation(
             line,
             col,
             format!(
                 "unknown field root \"{}\" in filter; \
-                 expected one of: {}",
+                 expected one of: {} or a declared phase name",
                 path[0],
                 KNOWN_FIELD_ROOTS.join(", ")
             ),
         ));
+        return;
     }
+
+    if is_phase_ref && !is_known_root {
+        validate_phase_output_path(path, line, col, errors);
+        return;
+    }
+
     if path[0] == "plugin" && path.len() >= 2 {
         let plugin_name = &path[1];
         if !KNOWN_PLUGIN_NAMES.contains(&plugin_name.as_str()) {
@@ -715,10 +744,59 @@ fn validate_field_path(
     }
 }
 
+/// Validate that a `<phase>.<field>` reference uses a recognised phase
+/// output field. Trailing path beyond the first segment is not allowed
+/// (phase outputs are flat).
+fn validate_phase_output_path(
+    path: &[String],
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    if path.len() < 2 {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!(
+                "phase reference \"{}\" requires a field; \
+                 expected one of: {}",
+                path[0],
+                voom_domain::PHASE_OUTPUT_FIELDS.join(", "),
+            ),
+        ));
+        return;
+    }
+    if path.len() > 2 {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!(
+                "phase output \"{}.{}\" does not support nested fields",
+                path[0], path[1]
+            ),
+        ));
+        return;
+    }
+    let field = path[1].as_str();
+    if !voom_domain::PHASE_OUTPUT_FIELDS.contains(&field) {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!(
+                "unknown phase output field \"{}.{}\"; expected one of: {}",
+                path[0],
+                field,
+                voom_domain::PHASE_OUTPUT_FIELDS.join(", "),
+            ),
+        ));
+    }
+}
+
 fn validate_filter(
     filter: &FilterNode,
     line: usize,
     col: usize,
+    phase_names: &HashSet<&str>,
     errors: &mut Vec<DslError>,
     warnings: &mut Vec<DslWarning>,
 ) {
@@ -744,7 +822,7 @@ fn validate_filter(
             }
         }
         FilterNode::LangField(_, path) | FilterNode::CodecField(_, path) => {
-            validate_field_path(path, line, col, errors, warnings);
+            validate_field_path(path, line, col, phase_names, errors, warnings);
         }
         FilterNode::CodecIn(codecs_list) => {
             for codec in codecs_list {
@@ -756,7 +834,7 @@ fn validate_filter(
         }
         FilterNode::And(items) | FilterNode::Or(items) => {
             for item in items {
-                validate_filter(item, line, col, errors, warnings);
+                validate_filter(item, line, col, phase_names, errors, warnings);
             }
         }
         FilterNode::TitleMatches(pattern) => {
@@ -768,7 +846,7 @@ fn validate_filter(
                 ));
             }
         }
-        FilterNode::Not(inner) => validate_filter(inner, line, col, errors, warnings),
+        FilterNode::Not(inner) => validate_filter(inner, line, col, phase_names, errors, warnings),
         _ => {}
     }
 }
@@ -1234,15 +1312,20 @@ fn validate_actions_settings(
     }
 }
 
-fn validate_when(when: &WhenNode, errors: &mut Vec<DslError>, warnings: &mut Vec<DslWarning>) {
+fn validate_when(
+    when: &WhenNode,
+    phase_names: &HashSet<&str>,
+    errors: &mut Vec<DslError>,
+    warnings: &mut Vec<DslWarning>,
+) {
     let line = when.span.line;
     let col = when.span.col;
-    validate_condition(&when.condition, line, col, errors, warnings);
+    validate_condition(&when.condition, line, col, phase_names, errors, warnings);
     for action in &when.then_actions {
-        validate_action(action, line, col, errors, warnings);
+        validate_action(action, line, col, phase_names, errors, warnings);
     }
     for action in &when.else_actions {
-        validate_action(action, line, col, errors, warnings);
+        validate_action(action, line, col, phase_names, errors, warnings);
     }
 }
 
@@ -1250,6 +1333,7 @@ fn validate_action(
     action: &ActionNode,
     line: usize,
     col: usize,
+    phase_names: &HashSet<&str>,
     errors: &mut Vec<DslError>,
     warnings: &mut Vec<DslWarning>,
 ) {
@@ -1257,19 +1341,19 @@ fn validate_action(
         ActionNode::Keep { target, filter } | ActionNode::Remove { target, filter } => {
             validate_track_target(target, line, col, errors);
             if let Some(f) = filter {
-                validate_filter(f, line, col, errors, warnings);
+                validate_filter(f, line, col, phase_names, errors, warnings);
             }
         }
         ActionNode::SetDefault(track_ref) | ActionNode::SetForced(track_ref) => {
             validate_track_target(&track_ref.target, line, col, errors);
             if let Some(f) = &track_ref.filter {
-                validate_filter(f, line, col, errors, warnings);
+                validate_filter(f, line, col, phase_names, errors, warnings);
             }
         }
         ActionNode::SetLanguage(track_ref, val) => {
             validate_track_target(&track_ref.target, line, col, errors);
             if let Some(f) = &track_ref.filter {
-                validate_filter(f, line, col, errors, warnings);
+                validate_filter(f, line, col, phase_names, errors, warnings);
             }
             match val {
                 ValueOrField::Value(Value::String(s)) => {
@@ -1282,14 +1366,14 @@ fn validate_action(
                     }
                 }
                 ValueOrField::Field(path) => {
-                    validate_field_path(path, line, col, errors, warnings);
+                    validate_field_path(path, line, col, phase_names, errors, warnings);
                 }
                 ValueOrField::Value(_) => {}
             }
         }
         ActionNode::SetTag(_, val) => {
             if let ValueOrField::Field(path) = val {
-                validate_field_path(path, line, col, errors, warnings);
+                validate_field_path(path, line, col, phase_names, errors, warnings);
             }
         }
         ActionNode::Skip(_) | ActionNode::Warn(_) | ActionNode::Fail(_) => {}
@@ -1300,6 +1384,7 @@ fn validate_condition(
     cond: &ConditionNode,
     line: usize,
     col: usize,
+    phase_names: &HashSet<&str>,
     errors: &mut Vec<DslError>,
     warnings: &mut Vec<DslWarning>,
 ) {
@@ -1307,22 +1392,24 @@ fn validate_condition(
         ConditionNode::Exists(query) | ConditionNode::Count(query, _, _) => {
             validate_track_target(&query.target, line, col, errors);
             if let Some(f) = &query.filter {
-                validate_filter(f, line, col, errors, warnings);
+                validate_filter(f, line, col, phase_names, errors, warnings);
             }
         }
         ConditionNode::FieldCompare(path, _, value) => {
-            validate_field_path(path, line, col, errors, warnings);
+            validate_field_path(path, line, col, phase_names, errors, warnings);
             validate_value(value, line, col, errors);
         }
         ConditionNode::FieldExists(path) => {
-            validate_field_path(path, line, col, errors, warnings);
+            validate_field_path(path, line, col, phase_names, errors, warnings);
         }
         ConditionNode::And(items) | ConditionNode::Or(items) => {
             for item in items {
-                validate_condition(item, line, col, errors, warnings);
+                validate_condition(item, line, col, phase_names, errors, warnings);
             }
         }
-        ConditionNode::Not(inner) => validate_condition(inner, line, col, errors, warnings),
+        ConditionNode::Not(inner) => {
+            validate_condition(inner, line, col, phase_names, errors, warnings);
+        }
         ConditionNode::AudioIsMultiLanguage
         | ConditionNode::IsDubbed
         | ConditionNode::IsOriginal => {}
@@ -2020,6 +2107,74 @@ mod tests {
     }
 
     #[test]
+    fn test_skip_when_phase_output_outcome_valid() {
+        let input = r#"policy "test" {
+            phase verify {
+                verify quick
+            }
+            phase backup {
+                depends_on: [verify]
+                skip when verify.outcome != "ok"
+                container mkv
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let result = validate(&ast);
+        assert!(
+            result.is_ok(),
+            "verify.outcome should be a valid phase output field: {:?}",
+            result.unwrap_err().errors
+        );
+    }
+
+    #[test]
+    fn test_skip_when_phase_output_unknown_field() {
+        let input = r#"policy "test" {
+            phase verify {
+                verify quick
+            }
+            phase backup {
+                depends_on: [verify]
+                skip when verify.bogus_field == "ok"
+                container mkv
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("unknown phase output field")),
+            "expected unknown phase output field error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_skip_when_phase_output_nested_field_rejected() {
+        // Phase outputs are flat; nested access like verify.outcome.code is invalid.
+        let input = r#"policy "test" {
+            phase verify {
+                verify quick
+            }
+            phase backup {
+                depends_on: [verify]
+                skip when verify.outcome.code == "ok"
+                container mkv
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("does not support nested fields")),
+            "expected nested-field rejection, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
     fn test_skip_when_valid_field_path() {
         let input = r#"policy "test" {
             phase norm {
@@ -2435,7 +2590,8 @@ mod tests {
     fn run_validate_filter(filter: FilterNode) -> (Vec<DslError>, Vec<DslWarning>) {
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
-        validate_filter(&filter, 1, 1, &mut errors, &mut warnings);
+        let phase_names: HashSet<&str> = HashSet::new();
+        validate_filter(&filter, 1, 1, &phase_names, &mut errors, &mut warnings);
         (errors, warnings)
     }
 
