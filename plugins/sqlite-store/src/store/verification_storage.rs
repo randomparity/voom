@@ -137,15 +137,13 @@ impl VerificationStorage for SqliteStore {
 
         let with_errors: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM ( \
-                     SELECT v.file_id FROM verifications v \
-                     JOIN ( \
-                         SELECT file_id, MAX(verified_at) AS m \
-                         FROM verifications GROUP BY file_id \
-                     ) latest \
-                       ON v.file_id = latest.file_id AND v.verified_at = latest.m \
-                     WHERE v.outcome = 'error' \
-                 )",
+                "SELECT COUNT(DISTINCT file_id) FROM ( \
+                     SELECT file_id, outcome, \
+                         ROW_NUMBER() OVER ( \
+                             PARTITION BY file_id ORDER BY verified_at DESC, id DESC \
+                         ) AS rn \
+                     FROM verifications \
+                 ) WHERE rn = 1 AND outcome = 'error'",
                 [],
                 |r| r.get(0),
             )
@@ -153,15 +151,13 @@ impl VerificationStorage for SqliteStore {
 
         let with_warnings: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM ( \
-                     SELECT v.file_id FROM verifications v \
-                     JOIN ( \
-                         SELECT file_id, MAX(verified_at) AS m \
-                         FROM verifications GROUP BY file_id \
-                     ) latest \
-                       ON v.file_id = latest.file_id AND v.verified_at = latest.m \
-                     WHERE v.outcome = 'warning' \
-                 )",
+                "SELECT COUNT(DISTINCT file_id) FROM ( \
+                     SELECT file_id, outcome, \
+                         ROW_NUMBER() OVER ( \
+                             PARTITION BY file_id ORDER BY verified_at DESC, id DESC \
+                         ) AS rn \
+                     FROM verifications \
+                 ) WHERE rn = 1 AND outcome = 'warning'",
                 [],
                 |r| r.get(0),
             )
@@ -289,5 +285,109 @@ mod tests {
         assert_eq!(summary.with_errors, 0);
         assert_eq!(summary.with_warnings, 0);
         assert_eq!(summary.hash_mismatches, 0);
+    }
+
+    #[test]
+    fn hash_mismatch_detected() {
+        let (store, fid) = store_with_file();
+        // First hash run — baseline
+        let first = VerificationRecord::new(
+            Uuid::new_v4(),
+            fid.clone(),
+            Utc::now() - chrono::Duration::hours(2),
+            VerificationMode::Hash,
+            voom_domain::verification::VerificationOutcome::Ok,
+            0,
+            0,
+            Some("hash-a".into()),
+            None,
+        );
+        // Second hash run — different content
+        let second = VerificationRecord::new(
+            Uuid::new_v4(),
+            fid,
+            Utc::now(),
+            VerificationMode::Hash,
+            voom_domain::verification::VerificationOutcome::Error,
+            1,
+            0,
+            Some("hash-b".into()),
+            Some(r#"{"prior_hash":"hash-a"}"#.into()),
+        );
+        store.insert_verification(&first).unwrap();
+        store.insert_verification(&second).unwrap();
+        let summary = store
+            .integrity_summary(Utc::now() - chrono::Duration::days(30))
+            .unwrap();
+        assert_eq!(summary.hash_mismatches, 1);
+    }
+
+    #[test]
+    fn no_hash_mismatch_when_identical() {
+        let (store, fid) = store_with_file();
+        let first = VerificationRecord::new(
+            Uuid::new_v4(),
+            fid.clone(),
+            Utc::now() - chrono::Duration::hours(2),
+            VerificationMode::Hash,
+            voom_domain::verification::VerificationOutcome::Ok,
+            0,
+            0,
+            Some("same-hash".into()),
+            None,
+        );
+        let second = VerificationRecord::new(
+            Uuid::new_v4(),
+            fid,
+            Utc::now(),
+            VerificationMode::Hash,
+            voom_domain::verification::VerificationOutcome::Ok,
+            0,
+            0,
+            Some("same-hash".into()),
+            None,
+        );
+        store.insert_verification(&first).unwrap();
+        store.insert_verification(&second).unwrap();
+        let summary = store
+            .integrity_summary(Utc::now() - chrono::Duration::days(30))
+            .unwrap();
+        assert_eq!(summary.hash_mismatches, 0);
+    }
+
+    #[test]
+    fn with_errors_uses_latest_only() {
+        let (store, fid) = store_with_file();
+        // Older error
+        let earlier = VerificationRecord::new(
+            Uuid::new_v4(),
+            fid.clone(),
+            Utc::now() - chrono::Duration::hours(2),
+            VerificationMode::Quick,
+            voom_domain::verification::VerificationOutcome::Error,
+            1,
+            0,
+            None,
+            None,
+        );
+        // Newer ok — should make this file NOT count as with_errors
+        let later = VerificationRecord::new(
+            Uuid::new_v4(),
+            fid,
+            Utc::now(),
+            VerificationMode::Quick,
+            voom_domain::verification::VerificationOutcome::Ok,
+            0,
+            0,
+            None,
+            None,
+        );
+        store.insert_verification(&earlier).unwrap();
+        store.insert_verification(&later).unwrap();
+        let summary = store
+            .integrity_summary(Utc::now() - chrono::Duration::days(30))
+            .unwrap();
+        assert_eq!(summary.with_errors, 0);
+        assert_eq!(summary.with_warnings, 0);
     }
 }
