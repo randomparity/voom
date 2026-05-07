@@ -563,6 +563,9 @@ fn validate_operation(
                 ));
             }
         }
+        OperationNode::Verify { .. } => {
+            // Verify mode is constrained by the grammar; no additional validation needed.
+        }
     }
 }
 

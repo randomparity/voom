@@ -211,6 +211,15 @@ fn format_operation(op: &OperationNode, out: &mut String, level: usize) {
             format_when(when, out, level);
         }
         OperationNode::Rules { mode, rules } => format_rules(mode, rules, out, level),
+        OperationNode::Verify { mode } => {
+            indent(out, level);
+            let mode_str = match mode {
+                crate::ast::VerifyMode::Quick => "quick",
+                crate::ast::VerifyMode::Thorough => "thorough",
+                crate::ast::VerifyMode::Hash => "hash",
+            };
+            let _ = writeln!(out, "verify {mode_str}");
+        }
     }
 }
 

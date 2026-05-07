@@ -15,7 +15,7 @@ use pest_derive::Parser;
 use crate::ast::{
     ActionNode, CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode,
     PolicyAst, RuleNode, RunIfNode, Span, SpannedOperation, SynthSetting, TrackQueryNode,
-    TrackRefNode, Value, ValueOrField, WhenNode,
+    TrackRefNode, Value, ValueOrField, VerifyMode, WhenNode,
 };
 use crate::errors::{DslError, Result};
 
@@ -324,6 +324,24 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
             Rule::rules_block => {
                 let span = span_from_pair(&child);
                 emit_op(&mut operations, span, build_rules(child)?);
+            }
+            Rule::verify_op => {
+                let span = span_from_pair(&child);
+                let mode_pair = child.into_inner().next().unwrap();
+                let mode = match mode_pair.as_str() {
+                    "quick" => VerifyMode::Quick,
+                    "thorough" => VerifyMode::Thorough,
+                    "hash" => VerifyMode::Hash,
+                    other => {
+                        let (line, col) = mode_pair.as_span().start_pos().line_col();
+                        return Err(DslError::build(
+                            line,
+                            col,
+                            format!("unknown verify mode: {other}"),
+                        ));
+                    }
+                };
+                emit_op(&mut operations, span, OperationNode::Verify { mode });
             }
             other => {
                 let (line, col) = child.as_span().start_pos().line_col();
@@ -1608,6 +1626,58 @@ mod tests {
             }
             _ => panic!("expected Rules"),
         }
+    }
+
+    #[test]
+    fn test_parse_verify_op() {
+        let input = r#"policy "p" {
+            phase verify {
+                verify thorough
+            }
+        }"#;
+        let ast = parse_policy(input).expect("parse");
+        let phase = &ast.phases[0];
+        let op = phase.operations.first().expect("op");
+        assert!(matches!(
+            op.node,
+            OperationNode::Verify {
+                mode: VerifyMode::Thorough
+            }
+        ));
+    }
+
+    #[test]
+    fn test_parse_verify_quick_and_hash() {
+        for (src_mode, expected) in [
+            ("quick", VerifyMode::Quick),
+            ("thorough", VerifyMode::Thorough),
+            ("hash", VerifyMode::Hash),
+        ] {
+            let input = format!(
+                r#"policy "p" {{
+                    phase v {{
+                        verify {src_mode}
+                    }}
+                }}"#
+            );
+            let ast = parse_policy(&input).expect("parse");
+            match &ast.phases[0].operations[0].node {
+                OperationNode::Verify { mode } => assert_eq!(*mode, expected),
+                other => panic!("expected Verify, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_on_error_quarantine() {
+        let input = r#"policy "p" {
+            phase verify {
+                on_error: quarantine
+                verify quick
+            }
+        }"#;
+        let ast = parse_policy(input).expect("parse");
+        assert_eq!(ast.phases[0].on_error.as_deref(), Some("quarantine"));
     }
 
     #[test]

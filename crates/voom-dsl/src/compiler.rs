@@ -221,6 +221,12 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
                 rules: compiled_rules,
             })
         }
+        OperationNode::Verify { .. } => {
+            // TODO(Task 20): replace with CompiledOperation::Verify lowering.
+            Err(DslError::compile(
+                "verify operation not yet supported by compiler (Task 20)",
+            ))
+        }
     }
 }
 
