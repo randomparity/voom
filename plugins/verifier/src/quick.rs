@@ -12,6 +12,8 @@ use uuid::Uuid;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::verification::{VerificationMode, VerificationOutcome, VerificationRecord};
 
+use crate::util::truncate;
+
 /// Run quick verification on `path` for the file with id `file_id`.
 ///
 /// # Errors
@@ -80,16 +82,6 @@ pub fn run_quick(
     ))
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        let mut t = s[..max].to_string();
-        t.push_str("...[truncated]");
-        t
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +91,13 @@ mod tests {
         let s = "a".repeat(5000);
         let t = truncate(&s, 4096);
         assert!(t.len() <= 4096 + "...[truncated]".len());
+        assert!(t.ends_with("[truncated]"));
+    }
+
+    #[test]
+    fn truncate_handles_multibyte_safely() {
+        let s = "ä".repeat(5000);
+        let t = truncate(&s, 100);
         assert!(t.ends_with("[truncated]"));
     }
 

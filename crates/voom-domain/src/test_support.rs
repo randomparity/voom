@@ -236,12 +236,10 @@ impl FileStorage for InMemoryStore {
         Ok(())
     }
 
-    fn set_file_status(&self, id: &Uuid, status: &str) -> Result<()> {
+    fn set_file_status(&self, id: &Uuid, status: FileStatus) -> Result<()> {
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(id) {
-            if let Some(parsed) = FileStatus::parse(status) {
-                file.status = parsed;
-            }
+            file.status = status;
         }
         Ok(())
     }

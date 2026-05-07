@@ -16,12 +16,10 @@ use voom_domain::errors::{Result, VoomError};
 /// can't be created/written, or no unique destination can be found in 9999
 /// attempts.
 pub fn quarantine_file(src: &Path, quarantine_dir: &Path) -> Result<PathBuf> {
-    if !quarantine_dir.exists() {
-        std::fs::create_dir_all(quarantine_dir).map_err(|e| VoomError::ToolExecution {
-            tool: "quarantine".into(),
-            message: format!("create {}: {e}", quarantine_dir.display()),
-        })?;
-    }
+    std::fs::create_dir_all(quarantine_dir).map_err(|e| VoomError::ToolExecution {
+        tool: "quarantine".into(),
+        message: format!("create {}: {e}", quarantine_dir.display()),
+    })?;
 
     let basename = src.file_name().ok_or_else(|| VoomError::ToolExecution {
         tool: "quarantine".into(),

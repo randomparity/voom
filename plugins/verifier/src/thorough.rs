@@ -12,6 +12,8 @@ use uuid::Uuid;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::verification::{VerificationMode, VerificationOutcome, VerificationRecord};
 
+use crate::util::truncate;
+
 /// Run thorough verification on `path`. `timeout` is the absolute kill-after.
 ///
 /// # Errors
@@ -78,22 +80,6 @@ fn classify_lines(stderr: &str) -> (u32, u32) {
     (errors, 0)
 }
 
-/// UTF-8-safe truncation. Avoids panic on multi-byte boundaries.
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let cut = s
-        .char_indices()
-        .map(|(i, _)| i)
-        .take_while(|i| *i <= max)
-        .last()
-        .unwrap_or(0);
-    let mut t = s[..cut].to_string();
-    t.push_str("...[truncated]");
-    t
-}
-
 /// Compute a thorough-mode timeout from a known duration.
 /// Falls back to the floor if `duration` is None or zero.
 #[must_use]
@@ -140,16 +126,5 @@ mod tests {
     fn timeout_scales_with_duration() {
         let t = timeout_from_duration(Some(120.0), 4.0, 60);
         assert_eq!(t, Duration::from_secs(480));
-    }
-
-    #[test]
-    fn truncate_handles_multibyte_safely() {
-        // Build a string with a multi-byte char crossing the cut boundary
-        let s = "ä".repeat(5000); // each ä is 2 bytes in UTF-8
-        let t = truncate(&s, 100);
-        // No panic; result is valid UTF-8 and bounded by max + marker.
-        let marker_len = "...[truncated]".len();
-        assert!(t.len() <= 100 + marker_len);
-        assert!(t.ends_with("[truncated]"));
     }
 }

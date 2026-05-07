@@ -131,17 +131,12 @@ fn resolve_explicit_paths(
     let mut out = Vec::new();
     for p in paths {
         let canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
-        let mut filters = FileFilters::default();
-        filters.path_prefix = Some(canon.to_string_lossy().to_string());
-        let files = store.list_files(&filters)?;
-        for f in files {
-            if f.path == canon {
-                out.push(VerifyTarget {
-                    file_id: f.id.to_string(),
-                    path: f.path.clone(),
-                    duration: Some(f.duration),
-                });
-            }
+        if let Some(f) = store.file_by_path(&canon)? {
+            out.push(VerifyTarget {
+                file_id: f.id.to_string(),
+                path: f.path.clone(),
+                duration: Some(f.duration),
+            });
         }
     }
     if out.is_empty() {
@@ -155,7 +150,7 @@ fn resolve_due_targets(
     args: &VerifyArgs,
 ) -> Result<Vec<VerifyTarget>> {
     let cutoff = if args.all {
-        epoch_dt()
+        DateTime::<Utc>::UNIX_EPOCH
     } else {
         parse_since(&args.since).context("parsing --since")?
     };
@@ -180,16 +175,6 @@ fn resolve_due_targets(
         }
     }
     Ok(out)
-}
-
-fn epoch_dt() -> DateTime<Utc> {
-    DateTime::<Utc>::from_naive_utc_and_offset(
-        chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
-            .expect("epoch date is valid")
-            .and_hms_opt(0, 0, 0)
-            .expect("midnight is always valid"),
-        Utc,
-    )
 }
 
 fn run_one(
@@ -279,12 +264,8 @@ fn run_report(args: VerifyReportArgs) -> Result<()> {
     }
     if let Some(p) = args.file {
         let canon = std::fs::canonicalize(&p).unwrap_or(p);
-        let mut file_filters = FileFilters::default();
-        file_filters.path_prefix = Some(canon.to_string_lossy().to_string());
-        let files = store.list_files(&file_filters)?;
-        let id = files
-            .into_iter()
-            .find(|f| f.path == canon)
+        let id = store
+            .file_by_path(&canon)?
             .map(|f| f.id.to_string())
             .ok_or_else(|| anyhow!("no file in DB at {}", canon.display()))?;
         filters.file_id = Some(id);

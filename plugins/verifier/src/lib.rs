@@ -10,6 +10,7 @@ pub mod hash;
 pub mod quarantine;
 pub mod quick;
 pub mod thorough;
+mod util;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -54,7 +55,7 @@ impl VerifierPlugin {
     }
 
     /// Construct with an injected storage handle. Used by the CLI bootstrap
-    /// (Task 14) so `on_event` can persist verification records and update
+    /// so `on_event` can persist verification records and update
     /// `files.status` on quarantine.
     #[must_use]
     pub fn with_store(store: Arc<dyn StorageTrait>) -> Self {
@@ -127,7 +128,7 @@ impl VerifierPlugin {
 
         let from = plan.file.path.clone();
         let to = quarantine::quarantine_file(&from, dir)?;
-        store.set_file_status(&plan.file.id, FileStatus::Quarantined.as_str())?;
+        store.set_file_status(&plan.file.id, FileStatus::Quarantined)?;
 
         Ok(Some(quarantine_result(
             plan.file.id.to_string(),
