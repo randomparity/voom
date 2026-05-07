@@ -64,6 +64,7 @@ tracing-subscriber.workspace = true
 
 # Concurrency
 parking_lot.workspace = true
+rayon.workspace = true
 
 # Other
 uuid.workspace = true

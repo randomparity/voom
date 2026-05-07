@@ -79,9 +79,7 @@ async fn main() -> Result<()> {
         Commands::Db(sub) => commands::db::run(sub, global_yes).await,
         Commands::Config(sub) => commands::config::run(sub),
         Commands::Tools(sub) => commands::tools::run(sub),
-        Commands::Verify(_cmd) => {
-            anyhow::bail!("voom verify is not yet implemented (Task 16)")
-        }
+        Commands::Verify(cmd) => commands::verify::run(cmd),
         Commands::History(args) => commands::history::run(&args),
         Commands::Backup(sub) => commands::backup::run(sub, global_yes),
         Commands::Init => commands::init::run(),
@@ -93,7 +91,7 @@ async fn main() -> Result<()> {
 ///
 /// Read-only commands (report, status, history, inspect, etc.) skip the lock.
 fn command_needs_lock(command: &Commands) -> bool {
-    use cli::{BackupCommands, FilesCommands, JobsCommands};
+    use cli::{BackupCommands, FilesCommands, JobsCommands, VerifyCommands};
     match command {
         Commands::Scan(_) | Commands::Process(_) | Commands::Db(_) => true,
         Commands::Jobs(sub) => matches!(
@@ -105,6 +103,7 @@ fn command_needs_lock(command: &Commands) -> bool {
             sub,
             BackupCommands::Restore { .. } | BackupCommands::Cleanup { .. }
         ),
+        Commands::Verify(sub) => matches!(sub, VerifyCommands::Run(_)),
         _ => false,
     }
 }
