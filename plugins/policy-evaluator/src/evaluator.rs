@@ -9,7 +9,9 @@ use std::collections::{HashMap, HashSet};
 use voom_domain::capability_map::CapabilityMap;
 use voom_domain::errors::VoomError;
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
-use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings};
+use voom_domain::plan::{
+    ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings, VerifyMediaParams,
+};
 use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
 use voom_dsl::compiled::{
     ClearActionsSettings, CompiledAction, CompiledConditional, CompiledDefault, CompiledFilter,
@@ -235,7 +237,9 @@ fn evaluate_phase(
                     ctx.plan.skip_reason = Some(format!("Error (skipping phase): {msg}"));
                     break;
                 }
-                // TODO(Task 22): refine quarantine handling in evaluator.
+                // Quarantine halts the phase like Abort; the actual quarantine
+                // plan emission for the failed file is handled by the
+                // phase-orchestrator / executor coordination, not the evaluator.
                 ErrorStrategy::Quarantine => {
                     ctx.plan.warnings.push(format!("Error (aborting): {msg}"));
                     break;
@@ -503,8 +507,9 @@ fn emit_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), 
         CompiledOperation::Rules { mode, rules } => {
             emit_rules(*mode, rules, ctx)?;
         }
-        // TODO(Task 22): emit a VerifyMedia planned action.
-        CompiledOperation::Verify { .. } => {}
+        CompiledOperation::Verify { mode } => {
+            emit_verify(*mode, ctx);
+        }
     }
     Ok(())
 }
@@ -521,6 +526,14 @@ fn emit_set_container(target: Container, ctx: &mut PhaseContext) {
             ),
         ));
     }
+}
+
+fn emit_verify(mode: voom_domain::verification::VerificationMode, ctx: &mut PhaseContext) {
+    ctx.plan.actions.push(PlannedAction::file_op(
+        OperationType::VerifyMedia,
+        ActionParams::VerifyMedia(VerifyMediaParams { mode }),
+        format!("Verify media integrity ({})", mode.as_str()),
+    ));
 }
 
 fn emit_remove_track(track: &Track, target: TrackTarget, reason: &str, ctx: &mut PhaseContext) {
@@ -2298,6 +2311,46 @@ mod tests {
             .safeguard_violations
             .iter()
             .all(|v| v.kind != SafeguardKind::ContainerIncompatible));
+    }
+
+    // --- Verify operation tests ---
+
+    #[test]
+    fn verify_op_produces_verify_media_action() {
+        let policy = test_policy(r#"policy "p" { phase v { verify quick } }"#);
+        let file = MediaFile::new(std::path::PathBuf::from("/m/x.mkv"));
+        let result = evaluate(&policy, &file);
+        assert_eq!(result.plans.len(), 1);
+        let plan = &result.plans[0];
+        assert_eq!(plan.actions.len(), 1);
+        assert_eq!(plan.actions[0].operation, OperationType::VerifyMedia);
+    }
+
+    #[test]
+    fn verify_op_carries_mode_in_params() {
+        use voom_domain::verification::VerificationMode;
+        let policy = test_policy(r#"policy "p" { phase v { verify thorough } }"#);
+        let file = MediaFile::new(std::path::PathBuf::from("/m/x.mkv"));
+        let result = evaluate(&policy, &file);
+        let action = &result.plans[0].actions[0];
+        assert_eq!(action.operation, OperationType::VerifyMedia);
+        match &action.parameters {
+            ActionParams::VerifyMedia(p) => assert_eq!(p.mode, VerificationMode::Thorough),
+            other => panic!("expected VerifyMedia params, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_op_supports_hash_mode() {
+        use voom_domain::verification::VerificationMode;
+        let policy = test_policy(r#"policy "p" { phase v { verify hash } }"#);
+        let file = MediaFile::new(std::path::PathBuf::from("/m/x.mkv"));
+        let result = evaluate(&policy, &file);
+        let action = &result.plans[0].actions[0];
+        match &action.parameters {
+            ActionParams::VerifyMedia(p) => assert_eq!(p.mode, VerificationMode::Hash),
+            other => panic!("expected VerifyMedia params, got {other:?}"),
+        }
     }
 
     // --- Capability validation tests ---
