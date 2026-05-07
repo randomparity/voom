@@ -351,6 +351,8 @@ enum ActionParamsCompat {
         forced: bool,
         title: Option<String>,
     },
+    VerifyMedia(VerifyMediaParams),
+    Quarantine(QuarantineParams),
 }
 
 impl From<ActionParamsCompat> for ActionParams {
@@ -438,6 +440,8 @@ impl From<ActionParamsCompat> for ActionParams {
                 forced,
                 title,
             },
+            ActionParamsCompat::VerifyMedia(params) => Self::VerifyMedia(params),
+            ActionParamsCompat::Quarantine(params) => Self::Quarantine(params),
         }
     }
 }
@@ -572,6 +576,20 @@ pub enum ActionParams {
         forced: bool,
         title: Option<String>,
     },
+    VerifyMedia(VerifyMediaParams),
+    Quarantine(QuarantineParams),
+}
+
+/// Parameters for `OperationType::VerifyMedia`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerifyMediaParams {
+    pub mode: crate::verification::VerificationMode,
+}
+
+/// Parameters for `OperationType::Quarantine`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuarantineParams {
+    pub reason: String,
 }
 
 /// The type of operation to perform on a media file.
@@ -599,6 +617,8 @@ pub enum OperationType {
     /// Handled by `mkvtoolnix-executor` (MKV files) and `ffmpeg-executor`
     /// (non-MKV files) via the normal plan execution path.
     MuxSubtitle,
+    VerifyMedia,
+    Quarantine,
 }
 
 impl OperationType {
@@ -634,6 +654,8 @@ impl OperationType {
             "clear_container_tags" => Some(Self::ClearContainerTags),
             "delete_container_tag" => Some(Self::DeleteContainerTag),
             "mux_subtitle" => Some(Self::MuxSubtitle),
+            "verify_media" => Some(Self::VerifyMedia),
+            "quarantine" => Some(Self::Quarantine),
             _ => None,
         }
     }
@@ -679,6 +701,8 @@ impl OperationType {
             OperationType::ClearContainerTags => "clear_container_tags",
             OperationType::DeleteContainerTag => "delete_container_tag",
             OperationType::MuxSubtitle => "mux_subtitle",
+            OperationType::VerifyMedia => "verify_media",
+            OperationType::Quarantine => "quarantine",
         }
     }
 }
