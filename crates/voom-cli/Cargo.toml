@@ -35,6 +35,7 @@ voom-health-checker.workspace = true
 voom-bus-tracer.workspace = true
 voom-capability-collector.workspace = true
 voom-report.workspace = true
+voom-verifier.workspace = true
 
 # CLI
 clap = { version = "4", features = ["derive"] }

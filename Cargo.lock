@@ -3410,6 +3410,7 @@ dependencies = [
  "voom-report",
  "voom-sqlite-store",
  "voom-tool-detector",
+ "voom-verifier",
  "voom-web-server",
  "voom-web-sse-bridge",
 ]

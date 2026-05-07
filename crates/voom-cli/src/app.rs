@@ -34,6 +34,9 @@ const PRIORITY_HEALTH_CHECKER: i32 = 95;
 const PRIORITY_TOOL_DETECTOR: i32 = 90;
 const PRIORITY_DISCOVERY: i32 = 80;
 const PRIORITY_FFPROBE_INTROSPECTOR: i32 = 60;
+// Verifier — between policy-evaluator and executors. Subscribes to
+// PlanCreated for verify and quarantine ops.
+const PRIORITY_VERIFIER: i32 = 50;
 const PRIORITY_FFMPEG_EXECUTOR: i32 = 40;
 const PRIORITY_MKVTOOLNIX_EXECUTOR: i32 = 39;
 const PRIORITY_STORAGE: i32 = 38;
@@ -274,6 +277,23 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
             "job manager",
             &ctx
         );
+    }
+
+    // Verifier — media integrity (quick / thorough / hash modes). Store is
+    // injected at construction; mirrors the ReportPlugin manual-init pattern.
+    if !disabled.iter().any(|d| d == "verifier") {
+        let mut verifier_plugin = voom_verifier::VerifierPlugin::with_store(Arc::clone(&store));
+        let ctx = voom_kernel::PluginContext::new(plugin_json("verifier"), data_dir.clone());
+        let init_events = verifier_plugin
+            .init(&ctx)
+            .context("Failed to initialize verifier plugin")?;
+        kernel.register_plugin(
+            Arc::new(verifier_plugin) as Arc<dyn voom_kernel::Plugin>,
+            PRIORITY_VERIFIER,
+        )?;
+        for event in init_events {
+            kernel.dispatch(event);
+        }
     }
 
     #[cfg(feature = "wasm")]
