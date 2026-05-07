@@ -86,6 +86,10 @@ pub enum Commands {
     #[command(subcommand)]
     Tools(ToolsCommands),
 
+    /// Media file integrity verification
+    #[command(subcommand)]
+    Verify(VerifyCommands),
+
     /// Show file change history
     History(HistoryArgs),
 
@@ -358,6 +362,10 @@ pub struct ReportArgs {
     #[arg(long)]
     pub files: bool,
 
+    /// Show library integrity summary (counts of never-verified / stale / errors)
+    #[arg(long)]
+    pub integrity: bool,
+
     /// Show errors from a processing session (default: most recent)
     #[arg(long)]
     pub errors: bool,
@@ -505,6 +513,78 @@ pub enum BackupCommands {
         #[arg(long)]
         yes: bool,
     },
+}
+
+// === Verify ===
+
+#[derive(Subcommand)]
+pub enum VerifyCommands {
+    /// Run verification on files
+    Run(VerifyArgs),
+    /// Show files with verification issues / history
+    Report(VerifyReportArgs),
+}
+
+// Each bool corresponds to a distinct CLI flag (`--thorough`, `--hash`, `--all`);
+// grouping them into enums would break clap's derive.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(clap::Args)]
+pub struct VerifyArgs {
+    /// Files or directories to verify. Empty = all files needing verification.
+    #[arg(num_args = 0..)]
+    pub paths: Vec<PathBuf>,
+
+    /// Run thorough mode (full ffmpeg decode pass; slow)
+    #[arg(long, conflicts_with = "hash")]
+    pub thorough: bool,
+
+    /// Run hash mode (sha256 bit-rot detection)
+    #[arg(long, conflicts_with = "thorough")]
+    pub hash: bool,
+
+    /// Re-verify files whose last verification is older than this duration.
+    /// Accepts `30d`, `4w`, `12h`, or `YYYY-MM-DD`. Default `30d`.
+    #[arg(long, default_value = "30d")]
+    pub since: String,
+
+    /// Re-verify all files regardless of when last verified.
+    #[arg(long)]
+    pub all: bool,
+
+    /// Number of parallel workers (quick/hash modes only). Default = num CPUs.
+    #[arg(short, long, default_value_t = 0)]
+    pub workers: usize,
+
+    /// Output format
+    #[arg(short, long)]
+    pub format: Option<OutputFormat>,
+}
+
+#[derive(clap::Args)]
+pub struct VerifyReportArgs {
+    /// Filter to a single file
+    #[arg(long)]
+    pub file: Option<PathBuf>,
+
+    /// Filter by mode
+    #[arg(long)]
+    pub mode: Option<String>,
+
+    /// Filter by outcome (ok/warning/error)
+    #[arg(long)]
+    pub outcome: Option<String>,
+
+    /// Show only records since this duration / date (e.g. `7d`, `2026-01-15`)
+    #[arg(long)]
+    pub since: Option<String>,
+
+    /// Maximum number of records
+    #[arg(long, default_value_t = 100)]
+    pub limit: u32,
+
+    /// Output format
+    #[arg(short, long, default_value = "table")]
+    pub format: OutputFormat,
 }
 
 // === Files ===

@@ -79,6 +79,9 @@ async fn main() -> Result<()> {
         Commands::Db(sub) => commands::db::run(sub, global_yes).await,
         Commands::Config(sub) => commands::config::run(sub),
         Commands::Tools(sub) => commands::tools::run(sub),
+        Commands::Verify(_cmd) => {
+            anyhow::bail!("voom verify is not yet implemented (Task 16)")
+        }
         Commands::History(args) => commands::history::run(&args),
         Commands::Backup(sub) => commands::backup::run(sub, global_yes),
         Commands::Init => commands::init::run(),
