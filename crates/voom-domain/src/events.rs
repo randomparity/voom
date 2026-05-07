@@ -52,6 +52,11 @@ pub enum Event {
     /// Emitted by the retention runner after each scheduled, on-demand, or
     /// end-of-CLI prune pass. Includes per-table results and an overall duration.
     RetentionCompleted(RetentionCompletedEvent),
+    /// Emitted by the verifier plugin after each verification run (quick,
+    /// thorough, or hash). Carries the outcome, mode, and error/warning counts.
+    VerifyCompleted(VerifyCompletedEvent),
+    /// Emitted by the verifier plugin when a file is moved to quarantine.
+    FileQuarantined(FileQuarantinedEvent),
 }
 
 impl Event {
@@ -79,6 +84,8 @@ impl Event {
     pub const SCAN_COMPLETE: &str = "scan.complete";
     pub const INTROSPECT_SESSION_COMPLETED: &str = "introspect.session.completed";
     pub const RETENTION_COMPLETED: &str = "retention.completed";
+    pub const VERIFY_COMPLETED: &str = "verify.completed";
+    pub const FILE_QUARANTINED: &str = "file.quarantined";
 
     /// One-line human-readable summary of the event payload.
     ///
@@ -207,6 +214,20 @@ impl Event {
                     e.trigger, e.duration_ms
                 )
             }
+            Event::VerifyCompleted(e) => format!(
+                "path={} mode={} outcome={} errors={} warnings={}",
+                e.path.display(),
+                e.mode.as_str(),
+                e.outcome.as_str(),
+                e.error_count,
+                e.warning_count,
+            ),
+            Event::FileQuarantined(e) => format!(
+                "from={} to={} reason={}",
+                e.from.display(),
+                e.to.display(),
+                e.reason,
+            ),
         }
     }
 
@@ -235,6 +256,8 @@ impl Event {
             Event::ScanComplete(_) => Self::SCAN_COMPLETE,
             Event::IntrospectSessionCompleted(_) => Self::INTROSPECT_SESSION_COMPLETED,
             Event::RetentionCompleted(_) => Self::RETENTION_COMPLETED,
+            Event::VerifyCompleted(_) => Self::VERIFY_COMPLETED,
+            Event::FileQuarantined(_) => Self::FILE_QUARANTINED,
         }
     }
 }
@@ -892,6 +915,27 @@ pub struct RetentionCompletedEvent {
     pub duration_ms: u64,
 }
 
+/// Emitted by the verifier plugin after each verification run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyCompletedEvent {
+    pub file_id: String,
+    pub path: PathBuf,
+    pub mode: crate::verification::VerificationMode,
+    pub outcome: crate::verification::VerificationOutcome,
+    pub error_count: u32,
+    pub warning_count: u32,
+    pub verification_id: Uuid,
+}
+
+/// Emitted by the verifier plugin when a file is moved to quarantine.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileQuarantinedEvent {
+    pub file_id: String,
+    pub from: PathBuf,
+    pub to: PathBuf,
+    pub reason: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1274,5 +1318,43 @@ mod tests {
         let s = event.summary();
         assert!(s.contains("deleted=17"), "got: {s}");
         assert!(s.contains("ms=42"), "got: {s}");
+    }
+}
+
+#[cfg(test)]
+mod verify_event_tests {
+    use super::*;
+    use crate::verification::{VerificationMode, VerificationOutcome};
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    #[test]
+    fn verify_completed_summary() {
+        let ev = Event::VerifyCompleted(VerifyCompletedEvent {
+            file_id: "file-id".into(),
+            path: PathBuf::from("/m/x.mkv"),
+            mode: VerificationMode::Thorough,
+            outcome: VerificationOutcome::Error,
+            error_count: 3,
+            warning_count: 1,
+            verification_id: Uuid::nil(),
+        });
+        let s = ev.summary();
+        assert!(s.contains("/m/x.mkv"));
+        assert!(s.contains("error"));
+        assert!(s.contains("thorough"));
+    }
+
+    #[test]
+    fn file_quarantined_summary() {
+        let ev = Event::FileQuarantined(FileQuarantinedEvent {
+            file_id: "file-id".into(),
+            from: PathBuf::from("/m/bad.mkv"),
+            to: PathBuf::from("/q/bad.mkv"),
+            reason: "decode error".into(),
+        });
+        let s = ev.summary();
+        assert!(s.contains("/m/bad.mkv"));
+        assert!(s.contains("/q/bad.mkv"));
     }
 }
