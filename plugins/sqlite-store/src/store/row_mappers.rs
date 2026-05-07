@@ -10,6 +10,7 @@ use voom_domain::errors::Result;
 use voom_domain::job::{Job, JobStatus};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::transition::FileStatus;
+use voom_domain::verification::{VerificationMode, VerificationOutcome, VerificationRecord};
 
 use super::{other_storage_err, parse_datetime, parse_uuid};
 
@@ -258,6 +259,43 @@ pub(crate) fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
     bf.first_seen_at = parse_required_datetime(first_seen_str, "bad_files.first_seen_at")?;
     bf.last_seen_at = parse_required_datetime(last_seen_str, "bad_files.last_seen_at")?;
     Ok(bf)
+}
+
+pub(crate) fn row_to_verification(row: &Row<'_>) -> rusqlite::Result<VerificationRecord> {
+    let id_str: String = row.get("id")?;
+    let id = row_uuid(&id_str, "verifications")?;
+    let file_id: String = row.get("file_id")?;
+    let verified_at_str: String = row.get("verified_at")?;
+    let verified_at = parse_required_datetime(verified_at_str, "verifications.verified_at")?;
+    let mode_str: String = row.get("mode")?;
+    let mode = VerificationMode::parse(&mode_str).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("unknown verification mode: {mode_str}").into(),
+        )
+    })?;
+    let outcome_str: String = row.get("outcome")?;
+    let outcome = VerificationOutcome::parse(&outcome_str).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("unknown verification outcome: {outcome_str}").into(),
+        )
+    })?;
+    let error_count = u32::try_from(row.get::<_, i64>("error_count")?.max(0)).unwrap_or(0);
+    let warning_count = u32::try_from(row.get::<_, i64>("warning_count")?.max(0)).unwrap_or(0);
+    Ok(VerificationRecord::new(
+        id,
+        file_id,
+        verified_at,
+        mode,
+        outcome,
+        error_count,
+        warning_count,
+        row.get("content_hash")?,
+        row.get("details")?,
+    ))
 }
 
 #[cfg(test)]

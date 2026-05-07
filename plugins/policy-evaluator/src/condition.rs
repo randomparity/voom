@@ -4,14 +4,54 @@ use std::collections::HashSet;
 
 use voom_domain::capability_map::CapabilityMap;
 use voom_domain::media::MediaFile;
+use voom_domain::plan::PhaseOutput;
 use voom_dsl::compiled::{CompiledCompareOp, CompiledCondition};
 
 use crate::filter::{compare_f64, track_matches_with_context, tracks_for_target};
 
+/// Closure that resolves a phase name to its persisted `PhaseOutput`.
+///
+/// Returns `None` when no phase output is recorded for the given name.
+/// Callers (CLI, phase orchestrator) populate this from persisted state
+/// before evaluating downstream phases.
+pub type PhaseOutputLookup<'a> = dyn Fn(&str) -> Option<PhaseOutput> + 'a;
+
 /// Evaluation context carrying system-level information (e.g. hwaccel
-/// capabilities) into condition evaluation.
+/// capabilities) and cross-phase outputs into condition evaluation.
 pub struct EvalContext<'a> {
     pub capabilities: Option<&'a CapabilityMap>,
+    /// Optional closure that resolves `<phase>.<field>` references to
+    /// previously-recorded phase outputs.
+    pub phase_output_lookup: Option<&'a PhaseOutputLookup<'a>>,
+}
+
+impl<'a> EvalContext<'a> {
+    /// Construct a context with neither capabilities nor phase outputs.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            capabilities: None,
+            phase_output_lookup: None,
+        }
+    }
+
+    /// Construct a context with only system capabilities.
+    #[must_use]
+    pub fn with_capabilities(capabilities: Option<&'a CapabilityMap>) -> Self {
+        Self {
+            capabilities,
+            phase_output_lookup: None,
+        }
+    }
+
+    /// Construct a context with only a phase-output lookup.
+    #[must_use]
+    pub fn with_phase_outputs(lookup: &'a PhaseOutputLookup<'a>) -> Self {
+        Self {
+            capabilities: None,
+            phase_output_lookup: Some(lookup),
+        }
+    }
 }
 
 /// Evaluate a condition against a media file.
@@ -69,7 +109,8 @@ pub fn evaluate_condition(
     }
 }
 
-/// Resolve a field path against the media file (and optionally system context).
+/// Resolve a field path against the media file (and optionally system context
+/// or cross-phase outputs).
 pub(crate) fn resolve_field(
     file: &MediaFile,
     path: &[String],
@@ -85,6 +126,33 @@ pub(crate) fn resolve_field(
         "plugin" => resolve_plugin_field(file, &path[1..]),
         "file" => resolve_file_field(file, &path[1..]),
         "system" => resolve_system_field(&path[1..], ctx),
+        // Any other leading ident is treated as a phase name; the validator
+        // rejects unknown phase names at compile time so this is reached
+        // only for declared phases.
+        _ => resolve_phase_field(ctx, &path[0], &path[1..]),
+    }
+}
+
+/// Resolve `<phase>.<field>` against the cross-phase output lookup.
+///
+/// Returns `None` when no lookup is configured, the phase is unknown to
+/// the lookup, or the requested field is not recognised.
+pub(crate) fn resolve_phase_field(
+    ctx: &EvalContext<'_>,
+    phase: &str,
+    path: &[String],
+) -> Option<serde_json::Value> {
+    if path.len() != 1 {
+        return None;
+    }
+    let lookup = ctx.phase_output_lookup?;
+    let out = lookup(phase)?;
+    match path[0].as_str() {
+        "outcome" => out.outcome.map(serde_json::Value::String),
+        "completed" => Some(serde_json::Value::Bool(out.completed)),
+        "modified" => Some(serde_json::Value::Bool(out.modified)),
+        "error_count" => Some(serde_json::json!(out.error_count)),
+        "warning_count" => Some(serde_json::json!(out.warning_count)),
         _ => None,
     }
 }
@@ -293,7 +361,7 @@ mod tests {
     }
 
     fn no_ctx() -> EvalContext<'static> {
-        EvalContext { capabilities: None }
+        EvalContext::empty()
     }
 
     #[test]
@@ -535,9 +603,7 @@ mod tests {
             vec![],
             vec!["cuda".into(), "vaapi".into()],
         ));
-        let ctx = EvalContext {
-            capabilities: Some(&map),
-        };
+        let ctx = EvalContext::with_capabilities(Some(&map));
 
         // system.hwaccel == "nvenc"
         assert!(evaluate_condition(
@@ -592,9 +658,7 @@ mod tests {
             vec![],
             vec![], // no hwaccels
         ));
-        let ctx = EvalContext {
-            capabilities: Some(&map),
-        };
+        let ctx = EvalContext::with_capabilities(Some(&map));
 
         // system.hwaccel == "none"
         assert!(evaluate_condition(
@@ -841,9 +905,7 @@ mod tests {
             vec![],
             vec!["cuda".into(), "vaapi".into()],
         ));
-        let ctx = EvalContext {
-            capabilities: Some(&map),
-        };
+        let ctx = EvalContext::with_capabilities(Some(&map));
 
         assert!(evaluate_condition(
             &CompiledCondition::FieldExists {
@@ -1195,5 +1257,112 @@ mod tests {
         let left = serde_json::Value::Bool(true);
         let right = serde_json::Value::Bool(false);
         assert!(compare_json(&left, CompiledCompareOp::Ne, &right));
+    }
+
+    // ---- Phase-output cross-phase field access (issue #196) ----
+
+    fn verify_output() -> PhaseOutput {
+        PhaseOutput::new()
+            .with_completed(true)
+            .with_outcome("error")
+            .with_error_count(2)
+            .with_warning_count(1)
+    }
+
+    #[test]
+    fn resolves_phase_outcome_field() {
+        let out = verify_output();
+        let lookup =
+            move |name: &str| -> Option<PhaseOutput> { (name == "verify").then(|| out.clone()) };
+        let ctx = EvalContext::with_phase_outputs(&lookup);
+        let v = resolve_phase_field(&ctx, "verify", &["outcome".to_string()]).unwrap();
+        assert_eq!(v, serde_json::Value::String("error".into()));
+    }
+
+    #[test]
+    fn resolves_phase_completed_and_modified() {
+        let out = verify_output();
+        let lookup =
+            move |name: &str| -> Option<PhaseOutput> { (name == "verify").then(|| out.clone()) };
+        let ctx = EvalContext::with_phase_outputs(&lookup);
+        assert_eq!(
+            resolve_phase_field(&ctx, "verify", &["completed".to_string()]),
+            Some(serde_json::Value::Bool(true))
+        );
+        assert_eq!(
+            resolve_phase_field(&ctx, "verify", &["modified".to_string()]),
+            Some(serde_json::Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn resolves_phase_counts() {
+        let out = verify_output();
+        let lookup =
+            move |name: &str| -> Option<PhaseOutput> { (name == "verify").then(|| out.clone()) };
+        let ctx = EvalContext::with_phase_outputs(&lookup);
+        assert_eq!(
+            resolve_phase_field(&ctx, "verify", &["error_count".to_string()]),
+            Some(serde_json::json!(2))
+        );
+        assert_eq!(
+            resolve_phase_field(&ctx, "verify", &["warning_count".to_string()]),
+            Some(serde_json::json!(1))
+        );
+    }
+
+    #[test]
+    fn unknown_phase_field_returns_none() {
+        let out = verify_output();
+        let lookup =
+            move |name: &str| -> Option<PhaseOutput> { (name == "verify").then(|| out.clone()) };
+        let ctx = EvalContext::with_phase_outputs(&lookup);
+        assert!(resolve_phase_field(&ctx, "verify", &["bogus".to_string()]).is_none());
+    }
+
+    #[test]
+    fn unknown_phase_returns_none() {
+        let lookup = |_: &str| -> Option<PhaseOutput> { None };
+        let ctx = EvalContext::with_phase_outputs(&lookup);
+        assert!(resolve_phase_field(&ctx, "missing", &["outcome".to_string()]).is_none());
+    }
+
+    #[test]
+    fn phase_field_without_lookup_returns_none() {
+        let ctx = EvalContext::empty();
+        assert!(resolve_phase_field(&ctx, "verify", &["outcome".to_string()]).is_none());
+    }
+
+    #[test]
+    fn phase_outcome_drives_field_compare_skip() {
+        // Full-stack: a FieldCompare against a phase output should resolve
+        // through resolve_field's fallback branch.
+        let file = test_file();
+        let out = PhaseOutput::new()
+            .with_completed(true)
+            .with_outcome("error");
+        let lookup =
+            move |name: &str| -> Option<PhaseOutput> { (name == "verify").then(|| out.clone()) };
+        let ctx = EvalContext::with_phase_outputs(&lookup);
+        // verify.outcome != "ok" should be true because outcome == "error".
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["verify".into(), "outcome".into()],
+                op: CompiledCompareOp::Ne,
+                value: serde_json::Value::String("ok".into()),
+            },
+            &file,
+            &ctx,
+        ));
+        // verify.outcome == "error" should be true.
+        assert!(evaluate_condition(
+            &CompiledCondition::FieldCompare {
+                path: vec!["verify".into(), "outcome".into()],
+                op: CompiledCompareOp::Eq,
+                value: serde_json::Value::String("error".into()),
+            },
+            &file,
+            &ctx,
+        ));
     }
 }

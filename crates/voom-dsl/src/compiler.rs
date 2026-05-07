@@ -20,7 +20,7 @@ use voom_domain::utils::codecs;
 
 use crate::ast::{
     ActionNode, CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode,
-    PolicyAst, SynthSetting, Value, ValueOrField, WhenNode,
+    PolicyAst, SynthSetting, Value, ValueOrField, VerifyMode, WhenNode,
 };
 use crate::errors::DslError;
 
@@ -77,6 +77,7 @@ pub(crate) fn parse_error_strategy(value: &str) -> Option<ErrorStrategy> {
         "continue" => Some(ErrorStrategy::Continue),
         "skip" => Some(ErrorStrategy::Skip),
         "abort" => Some(ErrorStrategy::Abort),
+        "quarantine" => Some(ErrorStrategy::Quarantine),
         _ => None,
     }
 }
@@ -221,6 +222,13 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
                 rules: compiled_rules,
             })
         }
+        OperationNode::Verify { mode } => Ok(CompiledOperation::Verify {
+            mode: match mode {
+                VerifyMode::Quick => voom_domain::verification::VerificationMode::Quick,
+                VerifyMode::Thorough => voom_domain::verification::VerificationMode::Thorough,
+                VerifyMode::Hash => voom_domain::verification::VerificationMode::Hash,
+            },
+        }),
     }
 }
 
@@ -1117,8 +1125,86 @@ mod tests {
     }
 
     #[test]
+    fn parse_error_strategy_quarantine() {
+        assert_eq!(
+            parse_error_strategy("quarantine"),
+            Some(ErrorStrategy::Quarantine),
+        );
+    }
+
+    #[test]
     fn parse_error_strategy_unknown_returns_none() {
         assert_eq!(parse_error_strategy("nonsense"), None);
+    }
+
+    #[test]
+    fn compiles_verify_thorough() {
+        let policy = compile(
+            r#"policy "p" {
+            phase v {
+                verify thorough
+            }
+        }"#,
+        )
+        .unwrap();
+        let op = &policy.phases[0].operations[0];
+        assert!(matches!(
+            op,
+            CompiledOperation::Verify {
+                mode: voom_domain::verification::VerificationMode::Thorough
+            }
+        ));
+    }
+
+    #[test]
+    fn compiles_verify_quick_and_hash() {
+        let policy = compile(
+            r#"policy "p" {
+            phase q { verify quick }
+            phase h { verify hash }
+        }"#,
+        )
+        .unwrap();
+        let q = &policy.phases[0].operations[0];
+        let h = &policy.phases[1].operations[0];
+        assert!(matches!(
+            q,
+            CompiledOperation::Verify {
+                mode: voom_domain::verification::VerificationMode::Quick
+            }
+        ));
+        assert!(matches!(
+            h,
+            CompiledOperation::Verify {
+                mode: voom_domain::verification::VerificationMode::Hash
+            }
+        ));
+    }
+
+    #[test]
+    fn compiles_on_error_quarantine_in_config() {
+        let policy = compile(
+            r#"policy "p" {
+            config { on_error: quarantine }
+            phase v { verify quick }
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(policy.config.on_error, ErrorStrategy::Quarantine);
+    }
+
+    #[test]
+    fn compiles_on_error_quarantine_in_phase() {
+        let policy = compile(
+            r#"policy "p" {
+            phase v {
+                on_error: quarantine
+                verify quick
+            }
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(policy.phases[0].on_error, ErrorStrategy::Quarantine);
     }
 
     #[test]

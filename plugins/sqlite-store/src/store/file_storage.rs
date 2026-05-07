@@ -8,7 +8,9 @@ use uuid::Uuid;
 use voom_domain::errors::Result;
 use voom_domain::media::{MediaFile, StoredFingerprint};
 use voom_domain::storage::{FileFilters, FileStorage};
-use voom_domain::transition::{DiscoveredFile, FileTransition, ReconcileResult, TransitionSource};
+use voom_domain::transition::{
+    DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
+};
 
 use super::{
     escape_like, format_datetime, other_storage_err, parse_datetime, row_to_file, storage_err,
@@ -387,6 +389,17 @@ impl FileStorage for SqliteStore {
             params![hash, id.to_string()],
         )
         .map_err(storage_err("failed to update expected_hash"))?;
+        Ok(())
+    }
+
+    fn set_file_status(&self, id: &Uuid, status: FileStatus) -> Result<()> {
+        let conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+        conn.execute(
+            "UPDATE files SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            params![status.as_str(), now, id.to_string()],
+        )
+        .map_err(storage_err("failed to set file status"))?;
         Ok(())
     }
 

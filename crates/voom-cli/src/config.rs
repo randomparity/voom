@@ -289,6 +289,7 @@ pub const KNOWN_PLUGIN_NAMES: &[&str] = &[
     "backup-manager",
     "job-manager",
     "report",
+    "verifier",
 ];
 
 /// Generate a default config.toml with all options commented out and documented.
@@ -560,7 +561,7 @@ mod tests {
 
     #[test]
     fn test_known_plugin_names_count() {
-        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 12);
+        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 13);
     }
 
     #[test]

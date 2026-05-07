@@ -133,6 +133,17 @@ pub fn capability_from_wit(cap_str: &str) -> Option<Capability> {
         "synthesize" => Some(Capability::Synthesize),
         "generate_subtitle" => Some(Capability::GenerateSubtitle),
         "health_check" => Some(Capability::HealthCheck),
+        "verify" => {
+            let modes = if params.is_empty() {
+                vec![]
+            } else {
+                params
+                    .split(',')
+                    .filter_map(|s| voom_domain::verification::VerificationMode::parse(s.trim()))
+                    .collect()
+            };
+            Some(Capability::Verify { modes })
+        }
         _ => None,
     }
 }
@@ -193,6 +204,18 @@ pub fn capability_to_wit(cap: &Capability) -> String {
         Capability::Synthesize => "synthesize".to_string(),
         Capability::GenerateSubtitle => "generate_subtitle".to_string(),
         Capability::HealthCheck => "health_check".to_string(),
+        Capability::Verify { modes } => {
+            if modes.is_empty() {
+                "verify".to_string()
+            } else {
+                let parts = modes
+                    .iter()
+                    .map(|m| m.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("verify:{parts}")
+            }
+        }
         other => other.kind().to_string(),
     }
 }
@@ -299,6 +322,27 @@ mod tests {
         };
         let s = capability_to_wit(&cap);
         assert_eq!(s, "store:sqlite");
+        let restored = capability_from_wit(&s).unwrap();
+        assert_eq!(restored, cap);
+    }
+
+    #[test]
+    fn test_capability_roundtrip_verify() {
+        use voom_domain::verification::VerificationMode;
+        let cap = Capability::Verify {
+            modes: vec![VerificationMode::Quick, VerificationMode::Thorough],
+        };
+        let s = capability_to_wit(&cap);
+        assert_eq!(s, "verify:quick,thorough");
+        let restored = capability_from_wit(&s).unwrap();
+        assert_eq!(restored, cap);
+    }
+
+    #[test]
+    fn test_capability_roundtrip_verify_empty_modes() {
+        let cap = Capability::Verify { modes: vec![] };
+        let s = capability_to_wit(&cap);
+        assert_eq!(s, "verify");
         let restored = capability_from_wit(&s).unwrap();
         assert_eq!(restored, cap);
     }

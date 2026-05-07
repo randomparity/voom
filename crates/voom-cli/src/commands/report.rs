@@ -11,6 +11,7 @@ use crate::config;
 use crate::output;
 use voom_domain::stats::{LibrarySnapshot, SavingsReport, TimePeriod};
 use voom_domain::storage::PlanPhaseStat;
+use voom_domain::verification::IntegritySummary;
 use voom_report::{
     DatabaseStats, IssueReport, ReportPlugin, ReportRequest, ReportResult, ReportSection,
 };
@@ -32,6 +33,10 @@ pub fn run(args: &ReportArgs) -> Result<()> {
 
     if args.files {
         return run_file_list(&*store, args.format);
+    }
+
+    if args.integrity {
+        return run_integrity(&*store, args.format);
     }
 
     let request = build_request(args)?;
@@ -1143,6 +1148,123 @@ fn codec_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
     })
 }
 
+// ── Integrity summary ──────────────────────────────────────
+
+const INTEGRITY_STALE_DAYS: i64 = 30;
+
+fn run_integrity(
+    store: &dyn voom_domain::storage::StorageTrait,
+    format: OutputFormat,
+) -> Result<()> {
+    let since_cutoff = chrono::Utc::now() - chrono::Duration::days(INTEGRITY_STALE_DAYS);
+    let summary = store
+        .integrity_summary(since_cutoff)
+        .context("failed to query integrity summary")?;
+
+    match format {
+        OutputFormat::Json => print_integrity_json(&summary, since_cutoff)?,
+        OutputFormat::Table => print_integrity_table(&summary, since_cutoff),
+        OutputFormat::Plain => print_integrity_plain(&summary),
+        OutputFormat::Csv => print_integrity_csv(&summary)?,
+    }
+    Ok(())
+}
+
+fn print_integrity_table(summary: &IntegritySummary, since_cutoff: chrono::DateTime<chrono::Utc>) {
+    println!(
+        "{} (stale cutoff: {})",
+        style("Library Integrity").bold().underlined(),
+        since_cutoff.format("%Y-%m-%d"),
+    );
+    println!();
+    let mut table = output::new_table();
+    table.set_header(vec!["Metric", "Count"]);
+    table.add_row(vec![
+        Cell::new("Total files"),
+        Cell::new(summary.total_files),
+    ]);
+    table.add_row(vec![
+        Cell::new("Never verified"),
+        Cell::new(summary.never_verified),
+    ]);
+    table.add_row(vec![
+        Cell::new(format!("Stale (> {INTEGRITY_STALE_DAYS}d)")),
+        Cell::new(summary.stale),
+    ]);
+    table.add_row(vec![
+        Cell::new("With errors"),
+        Cell::new(summary.with_errors),
+    ]);
+    table.add_row(vec![
+        Cell::new("With warnings"),
+        Cell::new(summary.with_warnings),
+    ]);
+    table.add_row(vec![
+        Cell::new("Hash mismatches"),
+        Cell::new(summary.hash_mismatches),
+    ]);
+    println!("{table}");
+    println!();
+}
+
+fn print_integrity_plain(summary: &IntegritySummary) {
+    println!("total_files={}", summary.total_files);
+    println!("never_verified={}", summary.never_verified);
+    println!("stale={}", summary.stale);
+    println!("with_errors={}", summary.with_errors);
+    println!("with_warnings={}", summary.with_warnings);
+    println!("hash_mismatches={}", summary.hash_mismatches);
+}
+
+fn print_integrity_json(
+    summary: &IntegritySummary,
+    since_cutoff: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    let payload = serde_json::json!({
+        "stale_cutoff": since_cutoff.to_rfc3339(),
+        "stale_cutoff_days": INTEGRITY_STALE_DAYS,
+        "summary": summary,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&payload).context("serialize integrity summary")?
+    );
+    Ok(())
+}
+
+fn print_integrity_csv(summary: &IntegritySummary) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out, "# integrity")?;
+    drop(out);
+
+    let stdout = std::io::stdout();
+    let mut wtr = csv::Writer::from_writer(stdout.lock());
+    wtr.write_record([
+        "total_files",
+        "never_verified",
+        "stale",
+        "with_errors",
+        "with_warnings",
+        "hash_mismatches",
+    ])?;
+    wtr.write_record([
+        summary.total_files.to_string(),
+        summary.never_verified.to_string(),
+        summary.stale.to_string(),
+        summary.with_errors.to_string(),
+        summary.with_warnings.to_string(),
+        summary.hash_mismatches.to_string(),
+    ])?;
+    wtr.flush()?;
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out)?;
+    drop(out);
+    Ok(())
+}
+
 // ── Error reporting ────────────────────────────────────────
 
 // This handler threads through multiple error-report modes (list sessions,
@@ -1331,6 +1453,7 @@ mod tests {
             all: false,
             snapshot: false,
             files: false,
+            integrity: false,
             errors: false,
             session: None,
             list_sessions: false,
@@ -1354,6 +1477,7 @@ mod tests {
             all: true,
             snapshot: false,
             files: false,
+            integrity: false,
             errors: false,
             session: None,
             list_sessions: false,
@@ -1378,6 +1502,7 @@ mod tests {
             all: false,
             snapshot: false,
             files: false,
+            integrity: false,
             errors: false,
             session: None,
             list_sessions: false,
@@ -1387,6 +1512,22 @@ mod tests {
         assert!(req.includes(ReportSection::History));
         assert!(!req.includes(ReportSection::Library));
         assert_eq!(req.history_limit, Some(10));
+    }
+
+    #[test]
+    fn test_run_integrity_on_empty_store() {
+        use voom_domain::test_support::InMemoryStore;
+        let store = InMemoryStore::new();
+        // All formats must succeed against an empty store; integrity_summary
+        // returns the default (all zeros) so no rows are missing.
+        for format in [
+            OutputFormat::Table,
+            OutputFormat::Plain,
+            OutputFormat::Json,
+            OutputFormat::Csv,
+        ] {
+            run_integrity(&store, format).expect("integrity summary on empty store");
+        }
     }
 
     #[test]
@@ -1403,6 +1544,7 @@ mod tests {
             all: false,
             snapshot: false,
             files: false,
+            integrity: false,
             errors: false,
             session: None,
             list_sessions: false,

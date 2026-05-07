@@ -136,6 +136,7 @@ pub enum ErrorStrategy {
     Continue,
     Abort,
     Skip,
+    Quarantine,
 }
 
 /// A compiled phase with resolved references.
@@ -206,6 +207,9 @@ pub enum CompiledOperation {
     Rules {
         mode: RulesMode,
         rules: Vec<CompiledRule>,
+    },
+    Verify {
+        mode: voom_domain::verification::VerificationMode,
     },
 }
 

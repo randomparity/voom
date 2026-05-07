@@ -116,6 +116,18 @@ pub enum OperationNode {
         mode: String,
         rules: Vec<RuleNode>,
     },
+    /// A `verify <mode>` operation.
+    Verify {
+        mode: VerifyMode,
+    },
+}
+
+/// Verification mode for a `verify` operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum VerifyMode {
+    Quick,
+    Thorough,
+    Hash,
 }
 
 /// A synthesize setting.

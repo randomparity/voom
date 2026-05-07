@@ -371,7 +371,7 @@ mod tests {
             "radarr".into(),
             serde_json::json!({"original_language": "jpn"}),
         );
-        let ctx = EvalContext { capabilities: None };
+        let ctx = EvalContext::empty();
 
         let jpn_track = audio_track("jpn", "aac", 2);
         let eng_track = audio_track("eng", "aac", 2);
@@ -391,7 +391,7 @@ mod tests {
     fn test_lang_field_returns_false_when_field_missing() {
         use std::path::PathBuf;
         let file = MediaFile::new(PathBuf::from("/test.mkv"));
-        let ctx = EvalContext { capabilities: None };
+        let ctx = EvalContext::empty();
 
         let track = audio_track("eng", "aac", 2);
         let filter = CompiledFilter::LangField(
@@ -410,7 +410,7 @@ mod tests {
             "radarr".into(),
             serde_json::json!({"original_language": "jpn"}),
         );
-        let ctx = EvalContext { capabilities: None };
+        let ctx = EvalContext::empty();
 
         let eng_track = audio_track("eng", "aac", 2);
         let jpn_track = audio_track("jpn", "aac", 2);
@@ -432,7 +432,7 @@ mod tests {
         let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
         file.plugin_metadata
             .insert("detector".into(), serde_json::json!({"codec": "aac"}));
-        let ctx = EvalContext { capabilities: None };
+        let ctx = EvalContext::empty();
 
         let aac_track = audio_track("eng", "aac", 2);
         let flac_track = audio_track("eng", "flac", 2);

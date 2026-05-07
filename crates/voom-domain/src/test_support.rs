@@ -69,7 +69,9 @@ pub fn test_media_file() -> MediaFile {
 }
 
 fn matches_filter(file: &MediaFile, filters: &FileFilters) -> bool {
-    if !filters.include_missing && file.status == FileStatus::Missing {
+    // Mirrors the SQLite backend: when `include_missing` is false, only
+    // Active files are returned (excluding both Missing and Quarantined).
+    if !filters.include_missing && file.status != FileStatus::Active {
         return false;
     }
     if let Some(container) = filters.container {
@@ -230,6 +232,14 @@ impl FileStorage for InMemoryStore {
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(id) {
             file.expected_hash = Some(hash.to_string());
+        }
+        Ok(())
+    }
+
+    fn set_file_status(&self, id: &Uuid, status: FileStatus) -> Result<()> {
+        let mut files = self.files.lock();
+        if let Some(file) = files.get_mut(id) {
+            file.status = status;
         }
         Ok(())
     }
@@ -773,6 +783,34 @@ impl PendingOpsStorage for InMemoryStore {
         let mut ops = self.pending_ops.lock().clone();
         ops.sort_by_key(|o| o.started_at);
         Ok(ops)
+    }
+}
+
+impl crate::storage::VerificationStorage for InMemoryStore {
+    fn insert_verification(&self, _record: &crate::verification::VerificationRecord) -> Result<()> {
+        Ok(())
+    }
+
+    fn list_verifications(
+        &self,
+        _filters: &crate::verification::VerificationFilters,
+    ) -> Result<Vec<crate::verification::VerificationRecord>> {
+        Ok(Vec::new())
+    }
+
+    fn latest_verification(
+        &self,
+        _file_id: &str,
+        _mode: crate::verification::VerificationMode,
+    ) -> Result<Option<crate::verification::VerificationRecord>> {
+        Ok(None)
+    }
+
+    fn integrity_summary(
+        &self,
+        _since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::verification::IntegritySummary> {
+        Ok(crate::verification::IntegritySummary::default())
     }
 }
 

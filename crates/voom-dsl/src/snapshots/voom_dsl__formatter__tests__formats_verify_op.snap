@@ -1,0 +1,10 @@
+---
+source: crates/voom-dsl/src/formatter.rs
+assertion_line: 1241
+expression: formatted
+---
+policy "p" {
+  phase v {
+    verify thorough
+  }
+}

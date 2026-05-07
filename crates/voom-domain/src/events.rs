@@ -52,6 +52,11 @@ pub enum Event {
     /// Emitted by the retention runner after each scheduled, on-demand, or
     /// end-of-CLI prune pass. Includes per-table results and an overall duration.
     RetentionCompleted(RetentionCompletedEvent),
+    /// Emitted by the verifier plugin after each verification run (quick,
+    /// thorough, or hash). Carries the outcome, mode, and error/warning counts.
+    VerifyCompleted(VerifyCompletedEvent),
+    /// Emitted by the verifier plugin when a file is moved to quarantine.
+    FileQuarantined(FileQuarantinedEvent),
 }
 
 impl Event {
@@ -79,6 +84,8 @@ impl Event {
     pub const SCAN_COMPLETE: &str = "scan.complete";
     pub const INTROSPECT_SESSION_COMPLETED: &str = "introspect.session.completed";
     pub const RETENTION_COMPLETED: &str = "retention.completed";
+    pub const VERIFY_COMPLETED: &str = "verify.completed";
+    pub const FILE_QUARANTINED: &str = "file.quarantined";
 
     /// One-line human-readable summary of the event payload.
     ///
@@ -207,6 +214,20 @@ impl Event {
                     e.trigger, e.duration_ms
                 )
             }
+            Event::VerifyCompleted(e) => format!(
+                "path={} mode={} outcome={} errors={} warnings={}",
+                e.path.display(),
+                e.mode.as_str(),
+                e.outcome.as_str(),
+                e.error_count,
+                e.warning_count,
+            ),
+            Event::FileQuarantined(e) => format!(
+                "from={} to={} reason={}",
+                e.from.display(),
+                e.to.display(),
+                e.reason,
+            ),
         }
     }
 
@@ -235,6 +256,8 @@ impl Event {
             Event::ScanComplete(_) => Self::SCAN_COMPLETE,
             Event::IntrospectSessionCompleted(_) => Self::INTROSPECT_SESSION_COMPLETED,
             Event::RetentionCompleted(_) => Self::RETENTION_COMPLETED,
+            Event::VerifyCompleted(_) => Self::VERIFY_COMPLETED,
+            Event::FileQuarantined(_) => Self::FILE_QUARANTINED,
         }
     }
 }
@@ -892,6 +915,69 @@ pub struct RetentionCompletedEvent {
     pub duration_ms: u64,
 }
 
+/// Emitted by the verifier plugin after each verification run.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyCompletedEvent {
+    pub file_id: String,
+    pub path: PathBuf,
+    pub mode: crate::verification::VerificationMode,
+    pub outcome: crate::verification::VerificationOutcome,
+    pub error_count: u32,
+    pub warning_count: u32,
+    pub verification_id: Uuid,
+}
+
+impl VerifyCompletedEvent {
+    #[must_use]
+    pub fn new(
+        file_id: impl Into<String>,
+        path: PathBuf,
+        mode: crate::verification::VerificationMode,
+        outcome: crate::verification::VerificationOutcome,
+        error_count: u32,
+        warning_count: u32,
+        verification_id: Uuid,
+    ) -> Self {
+        Self {
+            file_id: file_id.into(),
+            path,
+            mode,
+            outcome,
+            error_count,
+            warning_count,
+            verification_id,
+        }
+    }
+}
+
+/// Emitted by the verifier plugin when a file is moved to quarantine.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileQuarantinedEvent {
+    pub file_id: String,
+    pub from: PathBuf,
+    pub to: PathBuf,
+    pub reason: String,
+}
+
+impl FileQuarantinedEvent {
+    #[must_use]
+    pub fn new(
+        file_id: impl Into<String>,
+        from: PathBuf,
+        to: PathBuf,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            file_id: file_id.into(),
+            from,
+            to,
+            reason: reason.into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1274,5 +1360,75 @@ mod tests {
         let s = event.summary();
         assert!(s.contains("deleted=17"), "got: {s}");
         assert!(s.contains("ms=42"), "got: {s}");
+    }
+}
+
+#[cfg(test)]
+mod verify_event_tests {
+    use super::*;
+    use crate::verification::{VerificationMode, VerificationOutcome};
+
+    #[test]
+    fn verify_completed_summary() {
+        let ev = Event::VerifyCompleted(VerifyCompletedEvent::new(
+            "file-id",
+            PathBuf::from("/m/x.mkv"),
+            VerificationMode::Thorough,
+            VerificationOutcome::Error,
+            3,
+            1,
+            Uuid::nil(),
+        ));
+        let s = ev.summary();
+        assert!(s.contains("path=/m/x.mkv"));
+        assert!(s.contains("mode=thorough"));
+        assert!(s.contains("outcome=error"));
+        assert!(s.contains("errors=3"));
+        assert!(s.contains("warnings=1"));
+        assert_eq!(ev.event_type(), Event::VERIFY_COMPLETED);
+    }
+
+    #[test]
+    fn file_quarantined_summary() {
+        let ev = Event::FileQuarantined(FileQuarantinedEvent::new(
+            "file-id",
+            PathBuf::from("/m/bad.mkv"),
+            PathBuf::from("/q/bad.mkv"),
+            "decode error",
+        ));
+        let s = ev.summary();
+        assert!(s.contains("from=/m/bad.mkv"));
+        assert!(s.contains("to=/q/bad.mkv"));
+        assert!(s.contains("reason=decode error"));
+        assert_eq!(ev.event_type(), Event::FILE_QUARANTINED);
+    }
+
+    #[test]
+    fn verify_completed_event_json_roundtrip() {
+        let ev = VerifyCompletedEvent::new(
+            "f",
+            PathBuf::from("/x.mkv"),
+            VerificationMode::Hash,
+            VerificationOutcome::Ok,
+            0,
+            0,
+            Uuid::nil(),
+        );
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: VerifyCompletedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ev.path, back.path);
+        assert_eq!(ev.mode, back.mode);
+        assert_eq!(ev.outcome, back.outcome);
+        assert_eq!(ev.error_count, back.error_count);
+    }
+
+    #[test]
+    fn file_quarantined_event_json_roundtrip() {
+        let ev = FileQuarantinedEvent::new("f", PathBuf::from("/a"), PathBuf::from("/b"), "r");
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: FileQuarantinedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ev.from, back.from);
+        assert_eq!(ev.to, back.to);
+        assert_eq!(ev.reason, back.reason);
     }
 }

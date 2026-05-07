@@ -14,7 +14,7 @@ use proptest::string::string_regex;
 
 use crate::ast::{
     CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode, PolicyAst, Span,
-    SpannedOperation,
+    SpannedOperation, VerifyMode,
 };
 
 /// Dummy span used for generated ASTs. The parser overwrites spans on the
@@ -573,9 +573,21 @@ pub fn operation_strategy() -> impl Strategy<Value = OperationNode> {
     let synthesize = (safe_string_strategy(), vec(synth_setting_strategy(), 1..=4))
         .prop_map(|(name, settings)| OperationNode::Synthesize { name, settings });
 
+    let verify = prop_oneof![
+        Just(OperationNode::Verify {
+            mode: VerifyMode::Quick
+        }),
+        Just(OperationNode::Verify {
+            mode: VerifyMode::Thorough
+        }),
+        Just(OperationNode::Verify {
+            mode: VerifyMode::Hash
+        }),
+    ];
+
     prop_oneof![
         container, keep, remove, order, defaults, when, rules, transcode, actions_op, clear_tags,
-        set_tag, delete_tag, synthesize,
+        set_tag, delete_tag, synthesize, verify,
     ]
 }
 

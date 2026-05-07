@@ -23,6 +23,7 @@ phase_item = {
   | clear_tags_op | set_tag_op | delete_tag_op
   | container_op | keep_op | remove_op | order_op
   | defaults_op | actions_op | transcode_op | synthesize_op
+  | verify_op
   | when_block | rules_block
 }
 
@@ -53,6 +54,10 @@ actions_op = { ("audio" | "subtitle" | "video") ~ "actions" ~ "{" ~ action_setti
 action_setting = { ident ~ ":" ~ value }
 
 transcode_op = { "transcode" ~ ("video" | "audio") ~ "to" ~ ident ~ block? }
+
+verify_op   = { "verify" ~ verify_mode }
+verify_mode = { "quick" | "thorough" | "hash" }
+
 block = { "{" ~ kv_pair* ~ "}" }
 kv_pair = { ident ~ ":" ~ value }
 

@@ -23,6 +23,7 @@ pub mod temp_file;
 pub mod test_support;
 pub mod transition;
 pub mod utils;
+pub mod verification;
 
 pub use bad_file::{BadFile, BadFileSource};
 pub use capabilities::Capability;
@@ -32,8 +33,8 @@ pub use events::Event;
 pub use job::{DiscoveredFilePayload, Job, JobStatus, JobUpdate};
 pub use media::{Container, MediaFile, Track, TrackType};
 pub use plan::{
-    ActionParams, ActionResult, OperationType, PhaseOutcome, PhaseResult, Plan, PlannedAction,
-    TranscodeChannels, TranscodeSettings,
+    ActionParams, ActionResult, OperationType, PhaseOutcome, PhaseOutput, PhaseResult, Plan,
+    PlannedAction, TranscodeChannels, TranscodeSettings, PHASE_OUTPUT_FIELDS,
 };
 pub use safeguard::{SafeguardKind, SafeguardViolation};
 pub use snapshot::MetadataSnapshot;
@@ -49,4 +50,8 @@ pub use storage::{
 };
 pub use transition::{
     DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
+};
+pub use verification::{
+    IntegritySummary, VerificationFilters, VerificationMode, VerificationOutcome,
+    VerificationRecord,
 };

@@ -211,6 +211,15 @@ fn format_operation(op: &OperationNode, out: &mut String, level: usize) {
             format_when(when, out, level);
         }
         OperationNode::Rules { mode, rules } => format_rules(mode, rules, out, level),
+        OperationNode::Verify { mode } => {
+            indent(out, level);
+            let mode_str = match mode {
+                crate::ast::VerifyMode::Quick => "quick",
+                crate::ast::VerifyMode::Thorough => "thorough",
+                crate::ast::VerifyMode::Hash => "hash",
+            };
+            let _ = writeln!(out, "verify {mode_str}");
+        }
     }
 }
 
@@ -1216,5 +1225,86 @@ mod tests {
             out.contains("\n    }\n"),
             "rule-close brace should be indented by 4 spaces; got:\n{out}"
         );
+    }
+
+    // ---- verify op formatter tests (issue #196, task 21) ----
+
+    #[test]
+    fn formats_verify_op() {
+        let input = r#"policy "p" {
+            phase v {
+                verify thorough
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast);
+        insta::assert_snapshot!(formatted);
+    }
+
+    #[test]
+    fn formats_on_error_quarantine() {
+        let input = r#"policy "p" {
+            config {
+                on_error: quarantine
+            }
+            phase v {
+                verify quick
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast);
+        insta::assert_snapshot!(formatted);
+    }
+
+    #[test]
+    fn verify_op_roundtrips_through_formatter() {
+        for mode in ["quick", "thorough", "hash"] {
+            let input = format!(
+                r#"policy "p" {{
+                    phase v {{
+                        verify {mode}
+                    }}
+                }}"#
+            );
+            let ast1 = parse_policy(&input).expect("parse");
+            let formatted = format_policy(&ast1);
+            let ast2 = parse_policy(&formatted).expect("re-parse formatted");
+            assert_eq!(ast1.phases.len(), ast2.phases.len());
+            assert_eq!(
+                ast1.phases[0].operations.len(),
+                ast2.phases[0].operations.len()
+            );
+            match (
+                &ast1.phases[0].operations[0].node,
+                &ast2.phases[0].operations[0].node,
+            ) {
+                (OperationNode::Verify { mode: m1 }, OperationNode::Verify { mode: m2 }) => {
+                    assert_eq!(m1, m2, "verify mode {mode} did not roundtrip")
+                }
+                other => panic!("expected Verify ops, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn quarantine_strategy_roundtrips_through_formatter() {
+        let input = r#"policy "p" {
+            config {
+                on_error: quarantine
+            }
+            phase v {
+                on_error: quarantine
+                verify quick
+            }
+        }"#;
+        let ast1 = parse_policy(input).unwrap();
+        let formatted = format_policy(&ast1);
+        assert!(formatted.contains("on_error: quarantine"));
+        let ast2 = parse_policy(&formatted).expect("re-parse formatted");
+        assert_eq!(
+            ast1.config.as_ref().unwrap().on_error,
+            ast2.config.as_ref().unwrap().on_error
+        );
+        assert_eq!(ast1.phases[0].on_error, ast2.phases[0].on_error);
     }
 }

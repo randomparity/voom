@@ -43,7 +43,10 @@ pub fn build_router(state: AppState) -> Router {
             "/executor-capabilities",
             get(api::tools::list_executor_capabilities),
         )
-        .route("/health", get(api::health::get_health));
+        .route("/health", get(api::health::get_health))
+        .route("/verify", get(api::verify::list_verifications))
+        .route("/verify/:file_id", get(api::verify::get_file_verifications))
+        .route("/integrity-summary", get(api::verify::integrity_summary));
 
     let page_routes = Router::new()
         .route("/", get(templates::dashboard))

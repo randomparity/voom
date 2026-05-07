@@ -128,6 +128,22 @@ Plugins that participate in event-driven coordination override `handles()` and `
 
 The ffprobe-introspector is both kernel-registered (subscribes to `FileDiscovered` to enqueue introspection jobs) and called directly by the CLI (for deterministic progress reporting). The bus-tracer is a development tool that logs events to a file with configurable glob-pattern filtering.
 
+### `verifier` vs `health-checker`
+
+Two distinct integrity concepts share similar names but check different things:
+
+- **`voom health check`** (plugin: `health-checker`) — environment readiness:
+  ffmpeg / mkvtoolnix presence, GPU availability, data-directory writability,
+  database connectivity. Run periodically by the serve loop.
+- **`voom verify`** (plugin: `verifier`) — per-file media integrity:
+  container header (quick), full decode (thorough), or sha256 bit-rot (hash).
+  Persisted to the `verifications` table, reportable via
+  `voom verify report` and `voom report --integrity`.
+
+The two are intentionally orthogonal and never share a database table.
+
+See [`docs/usage/verify.md`](usage/verify.md) for `voom verify` usage details.
+
 ### WASM Plugins
 
 - Compiled to WebAssembly (`wasm32-wasi`), loaded at runtime via wasmtime 29

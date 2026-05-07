@@ -18,6 +18,9 @@ pub enum FileStatus {
     Active,
     /// File was not found at its expected path during the last scan.
     Missing,
+    /// File was moved out of the library (e.g. by the verifier after a
+    /// thorough-mode failure) and should be excluded from normal flows.
+    Quarantined,
 }
 
 impl FileStatus {
@@ -27,6 +30,7 @@ impl FileStatus {
         match self {
             FileStatus::Active => "active",
             FileStatus::Missing => "missing",
+            FileStatus::Quarantined => "quarantined",
         }
     }
 
@@ -36,6 +40,7 @@ impl FileStatus {
         match s {
             "active" => Some(FileStatus::Active),
             "missing" => Some(FileStatus::Missing),
+            "quarantined" => Some(FileStatus::Quarantined),
             _ => None,
         }
     }
@@ -292,9 +297,22 @@ mod tests {
 
     #[test]
     fn test_file_status_roundtrip() {
-        for status in [FileStatus::Active, FileStatus::Missing] {
+        for status in [
+            FileStatus::Active,
+            FileStatus::Missing,
+            FileStatus::Quarantined,
+        ] {
             assert_eq!(FileStatus::parse(status.as_str()), Some(status));
         }
+    }
+
+    #[test]
+    fn test_file_status_quarantined_canonical_string() {
+        assert_eq!(FileStatus::Quarantined.as_str(), "quarantined");
+        assert_eq!(
+            FileStatus::parse("quarantined"),
+            Some(FileStatus::Quarantined)
+        );
     }
 
     #[test]
@@ -445,7 +463,11 @@ mod tests {
 
     #[test]
     fn test_file_status_serde_roundtrip() {
-        let statuses = [FileStatus::Active, FileStatus::Missing];
+        let statuses = [
+            FileStatus::Active,
+            FileStatus::Missing,
+            FileStatus::Quarantined,
+        ];
         for status in statuses {
             let json = serde_json::to_string(&status).expect("serialize");
             let back: FileStatus = serde_json::from_str(&json).expect("deserialize");

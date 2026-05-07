@@ -205,6 +205,22 @@ CREATE TABLE IF NOT EXISTS pending_operations (
     phase_name TEXT NOT NULL,
     started_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS verifications (
+    id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    verified_at TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    warning_count INTEGER NOT NULL DEFAULT 0,
+    content_hash TEXT,
+    details TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_verifications_file ON verifications(file_id);
+CREATE INDEX IF NOT EXISTS idx_verifications_outcome ON verifications(outcome);
+CREATE INDEX IF NOT EXISTS idx_verifications_time ON verifications(verified_at);
 ";
 
 /// Initialize the database schema.
@@ -239,6 +255,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "subtitles",
         "library_snapshots",
         "pending_operations",
+        "verifications",
     ];
     let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
         assert!(KNOWN_TABLES.contains(&table), "unknown table: {table}");
@@ -442,6 +459,25 @@ fn migrate_missing_tables(conn: &Connection) -> rusqlite::Result<()> {
                 phase_name TEXT NOT NULL,
                 started_at TEXT NOT NULL
             );",
+        )?;
+    }
+
+    if table_missing("verifications")? {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS verifications (
+                id TEXT PRIMARY KEY,
+                file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                verified_at TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                warning_count INTEGER NOT NULL DEFAULT 0,
+                content_hash TEXT,
+                details TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_verifications_file ON verifications(file_id);
+            CREATE INDEX IF NOT EXISTS idx_verifications_outcome ON verifications(outcome);
+            CREATE INDEX IF NOT EXISTS idx_verifications_time ON verifications(verified_at);",
         )?;
     }
 
@@ -940,5 +976,36 @@ mod tests {
         // Re-running is a no-op.
         migrate_cover_art_track_types(&conn).unwrap();
         assert_eq!(track_type("t_a1"), "attachment");
+    }
+
+    #[test]
+    fn verifications_table_is_created() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='verifications'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(exists);
+    }
+
+    #[test]
+    fn verifications_indexes_are_created() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name='verifications'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            count >= 3,
+            "expected at least 3 indexes on verifications, got {count}"
+        );
     }
 }

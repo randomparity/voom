@@ -351,6 +351,8 @@ enum ActionParamsCompat {
         forced: bool,
         title: Option<String>,
     },
+    VerifyMedia(VerifyMediaParams),
+    Quarantine(QuarantineParams),
 }
 
 impl From<ActionParamsCompat> for ActionParams {
@@ -438,6 +440,8 @@ impl From<ActionParamsCompat> for ActionParams {
                 forced,
                 title,
             },
+            ActionParamsCompat::VerifyMedia(params) => Self::VerifyMedia(params),
+            ActionParamsCompat::Quarantine(params) => Self::Quarantine(params),
         }
     }
 }
@@ -572,6 +576,20 @@ pub enum ActionParams {
         forced: bool,
         title: Option<String>,
     },
+    VerifyMedia(VerifyMediaParams),
+    Quarantine(QuarantineParams),
+}
+
+/// Parameters for `OperationType::VerifyMedia`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerifyMediaParams {
+    pub mode: crate::verification::VerificationMode,
+}
+
+/// Parameters for `OperationType::Quarantine`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuarantineParams {
+    pub reason: String,
 }
 
 /// The type of operation to perform on a media file.
@@ -599,6 +617,8 @@ pub enum OperationType {
     /// Handled by `mkvtoolnix-executor` (MKV files) and `ffmpeg-executor`
     /// (non-MKV files) via the normal plan execution path.
     MuxSubtitle,
+    VerifyMedia,
+    Quarantine,
 }
 
 impl OperationType {
@@ -634,6 +654,8 @@ impl OperationType {
             "clear_container_tags" => Some(Self::ClearContainerTags),
             "delete_container_tag" => Some(Self::DeleteContainerTag),
             "mux_subtitle" => Some(Self::MuxSubtitle),
+            "verify_media" => Some(Self::VerifyMedia),
+            "quarantine" => Some(Self::Quarantine),
             _ => None,
         }
     }
@@ -679,9 +701,87 @@ impl OperationType {
             OperationType::ClearContainerTags => "clear_container_tags",
             OperationType::DeleteContainerTag => "delete_container_tag",
             OperationType::MuxSubtitle => "mux_subtitle",
+            OperationType::VerifyMedia => "verify_media",
+            OperationType::Quarantine => "quarantine",
         }
     }
 }
+
+/// Side-channel data a phase exposes for downstream phases to reference
+/// via `<phase>.<field>` field access in conditions.
+///
+/// Populated by callers (CLI, orchestrator) from persisted phase results
+/// before evaluating downstream phases. The evaluator itself does not
+/// produce these — it only reads them through a closure-based lookup
+/// passed into `EvalContext`.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PhaseOutput {
+    /// Whether the phase ran to completion (executed without skip/error).
+    pub completed: bool,
+    /// Whether the phase modified the file.
+    pub modified: bool,
+    /// Phase-specific outcome string (e.g. `"ok"`, `"error"`, `"warning"`
+    /// from a verify phase).
+    pub outcome: Option<String>,
+    /// Number of errors recorded by the phase.
+    pub error_count: u32,
+    /// Number of warnings recorded by the phase.
+    pub warning_count: u32,
+}
+
+impl PhaseOutput {
+    /// Create a fully-default `PhaseOutput`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the `completed` flag.
+    #[must_use]
+    pub fn with_completed(mut self, completed: bool) -> Self {
+        self.completed = completed;
+        self
+    }
+
+    /// Set the `modified` flag.
+    #[must_use]
+    pub fn with_modified(mut self, modified: bool) -> Self {
+        self.modified = modified;
+        self
+    }
+
+    /// Set the `outcome` field.
+    #[must_use]
+    pub fn with_outcome(mut self, outcome: impl Into<String>) -> Self {
+        self.outcome = Some(outcome.into());
+        self
+    }
+
+    /// Set the `error_count` field.
+    #[must_use]
+    pub fn with_error_count(mut self, error_count: u32) -> Self {
+        self.error_count = error_count;
+        self
+    }
+
+    /// Set the `warning_count` field.
+    #[must_use]
+    pub fn with_warning_count(mut self, warning_count: u32) -> Self {
+        self.warning_count = warning_count;
+        self
+    }
+}
+
+/// Set of field names addressable on a `PhaseOutput` via cross-phase
+/// field access (e.g. `verify.outcome`).
+pub const PHASE_OUTPUT_FIELDS: &[&str] = &[
+    "completed",
+    "modified",
+    "outcome",
+    "error_count",
+    "warning_count",
+];
 
 /// The result of executing a single phase.
 #[non_exhaustive]
@@ -1056,6 +1156,86 @@ mod tests {
     }
 
     #[test]
+    fn test_operation_type_verify_media_roundtrip() {
+        assert_eq!(
+            OperationType::parse("verify_media"),
+            Some(OperationType::VerifyMedia)
+        );
+        assert_eq!(OperationType::VerifyMedia.as_str(), "verify_media");
+    }
+
+    #[test]
+    fn test_action_params_verify_media_serde_json_roundtrip() {
+        use crate::verification::VerificationMode;
+        let params = ActionParams::VerifyMedia(VerifyMediaParams {
+            mode: VerificationMode::Quick,
+        });
+        let json = serde_json::to_string(&params).unwrap();
+        let restored: ActionParams = serde_json::from_str(&json).unwrap();
+        match restored {
+            ActionParams::VerifyMedia(p) => {
+                assert_eq!(p.mode, VerificationMode::Quick);
+            }
+            other => panic!("expected VerifyMedia, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_action_params_verify_media_serde_msgpack_roundtrip() {
+        use crate::verification::VerificationMode;
+        let params = ActionParams::VerifyMedia(VerifyMediaParams {
+            mode: VerificationMode::Hash,
+        });
+        let bytes = rmp_serde::to_vec(&params).unwrap();
+        let restored: ActionParams = rmp_serde::from_slice(&bytes).unwrap();
+        match restored {
+            ActionParams::VerifyMedia(p) => {
+                assert_eq!(p.mode, VerificationMode::Hash);
+            }
+            other => panic!("expected VerifyMedia, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_operation_type_quarantine_roundtrip() {
+        assert_eq!(
+            OperationType::parse("quarantine"),
+            Some(OperationType::Quarantine)
+        );
+        assert_eq!(OperationType::Quarantine.as_str(), "quarantine");
+    }
+
+    #[test]
+    fn test_action_params_quarantine_serde_json_roundtrip() {
+        let params = ActionParams::Quarantine(QuarantineParams {
+            reason: "test".into(),
+        });
+        let json = serde_json::to_string(&params).unwrap();
+        let restored: ActionParams = serde_json::from_str(&json).unwrap();
+        match restored {
+            ActionParams::Quarantine(p) => {
+                assert_eq!(p.reason, "test");
+            }
+            other => panic!("expected Quarantine, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_action_params_quarantine_serde_msgpack_roundtrip() {
+        let params = ActionParams::Quarantine(QuarantineParams {
+            reason: "test".into(),
+        });
+        let bytes = rmp_serde::to_vec(&params).unwrap();
+        let restored: ActionParams = rmp_serde::from_slice(&bytes).unwrap();
+        match restored {
+            ActionParams::Quarantine(p) => {
+                assert_eq!(p.reason, "test");
+            }
+            other => panic!("expected Quarantine, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_phase_result_serde_with_temp_path() {
         let mut pr = PhaseResult::new("normalize", PhaseOutcome::Completed);
         pr.temp_path = Some("/media/movie.voom_tmp_abc.mkv".into());
@@ -1075,6 +1255,41 @@ mod tests {
         assert!(!json.contains("temp_path"));
         let restored: PhaseResult = serde_json::from_str(&json).unwrap();
         assert!(restored.temp_path.is_none());
+    }
+
+    #[test]
+    fn test_phase_output_default() {
+        let out = PhaseOutput::new();
+        assert!(!out.completed);
+        assert!(!out.modified);
+        assert!(out.outcome.is_none());
+        assert_eq!(out.error_count, 0);
+        assert_eq!(out.warning_count, 0);
+    }
+
+    #[test]
+    fn test_phase_output_serde_roundtrip() {
+        let out = PhaseOutput {
+            completed: true,
+            modified: false,
+            outcome: Some("ok".into()),
+            error_count: 1,
+            warning_count: 2,
+        };
+        let json = serde_json::to_string(&out).unwrap();
+        let restored: PhaseOutput = serde_json::from_str(&json).unwrap();
+        assert_eq!(out, restored);
+    }
+
+    #[test]
+    fn test_phase_output_field_set_matches_struct() {
+        // Sanity check: the const list and struct fields stay in sync.
+        for name in PHASE_OUTPUT_FIELDS {
+            match *name {
+                "completed" | "modified" | "outcome" | "error_count" | "warning_count" => {}
+                other => panic!("unexpected phase-output field {other}"),
+            }
+        }
     }
 
     #[test]

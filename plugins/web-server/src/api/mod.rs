@@ -8,3 +8,4 @@ pub mod policy;
 pub mod stats;
 pub mod tools;
 pub mod transitions;
+pub mod verify;

@@ -4298,3 +4298,142 @@ mod test_plan_persistence {
         );
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// test_verify
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_verify {
+    use super::*;
+
+    /// `voom verify run` (quick mode default) on a clean fixture must succeed
+    /// and the resulting record must be queryable via `verify report`.
+    #[test]
+    fn verify_quick_passes_for_clean_fixture() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+        let fixture = env.media_dir().join("basic-h264-aac.mp4");
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        env.voom()
+            .args(["verify", "run", fixture.to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        let output = env
+            .voom()
+            .args(["verify", "report", "--format", "json"])
+            .output()
+            .expect("run verify report");
+        assert!(output.status.success(), "verify report should succeed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value =
+            serde_json::from_str(&stdout).expect("verify report --format json must be valid JSON");
+        let records = json.as_array().expect("verify report json is an array");
+        assert!(
+            !records.is_empty(),
+            "expected at least one verification record, got: {stdout}"
+        );
+        assert!(
+            records.iter().any(|r| r["outcome"] == "ok"),
+            "expected at least one ok outcome, got: {stdout}"
+        );
+    }
+
+    /// `voom verify run --thorough` must exit non-zero when ffmpeg's full
+    /// decode pass detects errors (e.g. on a file truncated mid-stream).
+    #[test]
+    fn verify_thorough_detects_truncation() {
+        require_tool!("ffprobe");
+        require_tool!("ffmpeg");
+        let env = TestEnv::new();
+        // Use an mkv fixture so scan+ffprobe still succeed after we truncate
+        // (mp4 moov atoms typically live at file end and would break ffprobe).
+        env.populate_media(&["hevc-surround"]);
+        let fixture = env.media_dir().join("hevc-surround.mkv");
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        // Truncate the file in place to trigger decode errors during thorough mode.
+        let bytes = std::fs::read(&fixture).expect("read fixture");
+        assert!(bytes.len() > 256, "fixture too small to truncate");
+        std::fs::write(&fixture, &bytes[..bytes.len() / 2]).expect("truncate fixture");
+
+        let output = env
+            .voom()
+            .args(["verify", "run", "--thorough", fixture.to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(120))
+            .output()
+            .expect("run verify --thorough");
+        assert!(
+            !output.status.success(),
+            "verify --thorough on a truncated fixture must exit non-zero; \
+             stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    /// `report --integrity` must reflect the verification state of the library:
+    /// before any verify run, every scanned file is "never_verified"; after a
+    /// successful verify it drops out of that bucket.
+    #[test]
+    fn integrity_summary_reflects_verification_state() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+        let fixture = env.media_dir().join("basic-h264-aac.mp4");
+
+        env.voom()
+            .args(["scan", env.media_dir().to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        // Plain format prints `key=value` lines; easy to grep.
+        let before = env
+            .voom()
+            .args(["report", "--integrity", "--format", "plain"])
+            .output()
+            .expect("run report --integrity");
+        assert!(before.status.success());
+        let before_out = String::from_utf8_lossy(&before.stdout);
+        assert!(
+            before_out.contains("never_verified=1"),
+            "expected never_verified=1 before any verify, got: {before_out}"
+        );
+        assert!(
+            before_out.contains("total_files=1"),
+            "expected total_files=1 after scanning one fixture, got: {before_out}"
+        );
+
+        env.voom()
+            .args(["verify", "run", fixture.to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .success();
+
+        let after = env
+            .voom()
+            .args(["report", "--integrity", "--format", "plain"])
+            .output()
+            .expect("run report --integrity (after verify)");
+        assert!(after.status.success());
+        let after_out = String::from_utf8_lossy(&after.stdout);
+        assert!(
+            after_out.contains("never_verified=0"),
+            "expected never_verified=0 after a successful verify, got: {after_out}"
+        );
+    }
+}

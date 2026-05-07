@@ -32,6 +32,9 @@ pub enum Capability {
     Synthesize,
     GenerateSubtitle,
     HealthCheck,
+    Verify {
+        modes: Vec<crate::verification::VerificationMode>,
+    },
 }
 
 impl Capability {
@@ -54,6 +57,21 @@ impl Capability {
             Capability::Synthesize => "synthesize",
             Capability::GenerateSubtitle => "generate_subtitle",
             Capability::HealthCheck => "health_check",
+            Capability::Verify { .. } => "verify",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_capability_kind() {
+        use crate::verification::VerificationMode;
+        let cap = Capability::Verify {
+            modes: vec![VerificationMode::Quick, VerificationMode::Thorough],
+        };
+        assert_eq!(cap.kind(), "verify");
     }
 }
