@@ -15,3 +15,4 @@
 | [TODO.md](TODO.md) | Outstanding work items |
 | [file-identity-and-lineage.md](file-identity-and-lineage.md) | File identity continuity and lineage tracking |
 | [file-lifecycle-tracking-architecture.md](file-lifecycle-tracking-architecture.md) | Architecture for file lifecycle and transition tracking |
+| [usage/verify.md](usage/verify.md) | `voom verify` per-file integrity verification (modes, quarantine, DSL, API) |
