@@ -1,0 +1,14 @@
+---
+source: crates/voom-dsl/src/formatter.rs
+assertion_line: 1256
+expression: formatted
+---
+policy "p" {
+  config {
+    on_error: quarantine
+  }
+
+  phase v {
+    verify quick
+  }
+}
