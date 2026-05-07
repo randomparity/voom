@@ -19,6 +19,7 @@ use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{Event, EventResult, FileQuarantinedEvent, VerifyCompletedEvent};
 use voom_domain::plan::{ActionParams, OperationType, Plan};
 use voom_domain::storage::StorageTrait;
+use voom_domain::transition::FileStatus;
 use voom_domain::verification::{VerificationMode, VerificationRecord};
 use voom_kernel::{Plugin, PluginContext};
 
@@ -126,7 +127,7 @@ impl VerifierPlugin {
 
         let from = plan.file.path.clone();
         let to = quarantine::quarantine_file(&from, dir)?;
-        store.set_file_status(&plan.file.id, "quarantined")?;
+        store.set_file_status(&plan.file.id, FileStatus::Quarantined.as_str())?;
 
         Ok(Some(quarantine_result(
             plan.file.id.to_string(),
@@ -370,5 +371,10 @@ mod tests {
             other => panic!("expected FileQuarantined, got {other:?}"),
         }
         assert!(!src_path.exists(), "source file must be moved");
+
+        // Verify the store records the new status.
+        let after = store.file(&file_id).unwrap().expect("file row exists");
+        // Quarantined files round-trip with the new FileStatus::Quarantined variant.
+        assert_eq!(after.status, FileStatus::Quarantined);
     }
 }

@@ -155,9 +155,9 @@ pub trait FileStorage: Send + Sync {
     /// no `CHECK` constraint, so any string is accepted at the storage
     /// layer; callers are responsible for choosing a valid value.
     ///
-    /// Note: status values outside the [`crate::transition::FileStatus`]
-    /// enum will be read back as the default (`Active`) until the enum is
-    /// extended.
+    /// Pass [`crate::transition::FileStatus::as_str`] to keep the canonical
+    /// string in sync with the enum — values outside that enum will be read
+    /// back as the default (`Active`).
     fn set_file_status(&self, id: &Uuid, status: &str) -> Result<()>;
     /// Atomically perform the post-execution writes for a successfully
     /// executed plan: optionally rename the file's path, insert a transition

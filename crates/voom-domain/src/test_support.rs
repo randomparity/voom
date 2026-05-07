@@ -69,7 +69,9 @@ pub fn test_media_file() -> MediaFile {
 }
 
 fn matches_filter(file: &MediaFile, filters: &FileFilters) -> bool {
-    if !filters.include_missing && file.status == FileStatus::Missing {
+    // Mirrors the SQLite backend: when `include_missing` is false, only
+    // Active files are returned (excluding both Missing and Quarantined).
+    if !filters.include_missing && file.status != FileStatus::Active {
         return false;
     }
     if let Some(container) = filters.container {
