@@ -723,3 +723,59 @@ async fn test_list_transitions_file_not_found() {
     let resp = server.get(&format!("/api/files/{id}/transitions")).await;
     resp.assert_status_not_found();
 }
+
+// === Verify API Tests ===
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_verifications_empty() {
+    let server = make_server(InMemoryStore::new());
+    let resp = server.get("/api/verify").await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body, json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_verifications_filter_validation() {
+    let server = make_server(InMemoryStore::new());
+    let resp = server.get("/api/verify?mode=bogus").await;
+    resp.assert_status_bad_request();
+
+    let resp = server.get("/api/verify?outcome=bogus").await;
+    resp.assert_status_bad_request();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_verifications_accepts_valid_filters() {
+    let server = make_server(InMemoryStore::new());
+    let resp = server
+        .get("/api/verify?mode=hash&outcome=ok&limit=25")
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body, json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_get_file_verifications_empty() {
+    let server = make_server(InMemoryStore::new());
+    let resp = server.get(&format!("/api/verify/{}", Uuid::new_v4())).await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body, json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_integrity_summary_returns_json() {
+    let server = make_server(InMemoryStore::new());
+    let resp = server.get("/api/integrity-summary").await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    // InMemoryStore returns a default IntegritySummary -- all zeros.
+    assert_eq!(body["total_files"], 0);
+    assert_eq!(body["never_verified"], 0);
+    assert_eq!(body["stale"], 0);
+    assert_eq!(body["with_errors"], 0);
+    assert_eq!(body["with_warnings"], 0);
+    assert_eq!(body["hash_mismatches"], 0);
+}
