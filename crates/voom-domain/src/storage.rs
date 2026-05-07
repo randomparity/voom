@@ -525,6 +525,36 @@ pub trait PendingOpsStorage: Send + Sync {
     fn list_pending_ops(&self) -> Result<Vec<PendingOperation>>;
 }
 
+/// Verification record CRUD and aggregate queries.
+///
+/// # Errors
+/// Implementations return [`VoomError::Storage`] for any underlying database
+/// failure.
+pub trait VerificationStorage: Send + Sync {
+    /// Insert a new verification record.
+    fn insert_verification(&self, record: &crate::verification::VerificationRecord) -> Result<()>;
+
+    /// Query verification records with optional filters, newest first.
+    fn list_verifications(
+        &self,
+        filters: &crate::verification::VerificationFilters,
+    ) -> Result<Vec<crate::verification::VerificationRecord>>;
+
+    /// Most recent verification record for a file in a specific mode, if any.
+    fn latest_verification(
+        &self,
+        file_id: &str,
+        mode: crate::verification::VerificationMode,
+    ) -> Result<Option<crate::verification::VerificationRecord>>;
+
+    /// Aggregate integrity summary. `since` is the cutoff for "stale" — files
+    /// last verified before this timestamp are counted in `stale`.
+    fn integrity_summary(
+        &self,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::verification::IntegritySummary>;
+}
+
 /// Composed storage interface encompassing all sub-traits.
 ///
 /// All methods are synchronous (blocking) since rusqlite is synchronous.
