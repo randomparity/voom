@@ -776,6 +776,34 @@ impl PendingOpsStorage for InMemoryStore {
     }
 }
 
+impl crate::storage::VerificationStorage for InMemoryStore {
+    fn insert_verification(&self, _record: &crate::verification::VerificationRecord) -> Result<()> {
+        Ok(())
+    }
+
+    fn list_verifications(
+        &self,
+        _filters: &crate::verification::VerificationFilters,
+    ) -> Result<Vec<crate::verification::VerificationRecord>> {
+        Ok(Vec::new())
+    }
+
+    fn latest_verification(
+        &self,
+        _file_id: &str,
+        _mode: crate::verification::VerificationMode,
+    ) -> Result<Option<crate::verification::VerificationRecord>> {
+        Ok(None)
+    }
+
+    fn integrity_summary(
+        &self,
+        _since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::verification::IntegritySummary> {
+        Ok(crate::verification::IntegritySummary::default())
+    }
+}
+
 #[cfg(test)]
 mod oldest_at_tests {
     use super::*;

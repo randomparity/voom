@@ -83,6 +83,35 @@ pub struct VerificationRecord {
     pub details: Option<String>,
 }
 
+impl VerificationRecord {
+    /// Construct a new verification record. `id` should be a freshly-generated UUID.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: Uuid,
+        file_id: impl Into<String>,
+        verified_at: DateTime<Utc>,
+        mode: VerificationMode,
+        outcome: VerificationOutcome,
+        error_count: u32,
+        warning_count: u32,
+        content_hash: Option<String>,
+        details: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            file_id: file_id.into(),
+            verified_at,
+            mode,
+            outcome,
+            error_count,
+            warning_count,
+            content_hash,
+            details,
+        }
+    }
+}
+
 /// Filters for querying verifications.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default)]
@@ -104,6 +133,28 @@ pub struct IntegritySummary {
     pub with_errors: u64,
     pub with_warnings: u64,
     pub hash_mismatches: u64,
+}
+
+impl IntegritySummary {
+    /// Construct a summary from precomputed counts.
+    #[must_use]
+    pub fn new(
+        total_files: u64,
+        never_verified: u64,
+        stale: u64,
+        with_errors: u64,
+        with_warnings: u64,
+        hash_mismatches: u64,
+    ) -> Self {
+        Self {
+            total_files,
+            never_verified,
+            stale,
+            with_errors,
+            with_warnings,
+            hash_mismatches,
+        }
+    }
 }
 
 #[cfg(test)]

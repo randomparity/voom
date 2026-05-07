@@ -575,6 +575,7 @@ pub trait StorageTrait:
     + EventLogStorage
     + SnapshotStorage
     + PendingOpsStorage
+    + VerificationStorage
 {
 }
 
@@ -591,6 +592,7 @@ impl<T> StorageTrait for T where
         + EventLogStorage
         + SnapshotStorage
         + PendingOpsStorage
+        + VerificationStorage
 {
 }
 
