@@ -390,6 +390,17 @@ impl FileStorage for SqliteStore {
         Ok(())
     }
 
+    fn set_file_status(&self, id: &Uuid, status: &str) -> Result<()> {
+        let conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+        conn.execute(
+            "UPDATE files SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            params![status, now, id.to_string()],
+        )
+        .map_err(storage_err("failed to set file status"))?;
+        Ok(())
+    }
+
     fn record_post_execution(
         &self,
         new_path: Option<&Path>,

@@ -234,6 +234,16 @@ impl FileStorage for InMemoryStore {
         Ok(())
     }
 
+    fn set_file_status(&self, id: &Uuid, status: &str) -> Result<()> {
+        let mut files = self.files.lock();
+        if let Some(file) = files.get_mut(id) {
+            if let Some(parsed) = FileStatus::parse(status) {
+                file.status = parsed;
+            }
+        }
+        Ok(())
+    }
+
     /// In-memory stub. Unlike the SQLite implementation, this does NOT roll
     /// back partial mutations on error — the in-memory mutations have no
     /// fallible path. It also does NOT clear `bad_files` rows at the

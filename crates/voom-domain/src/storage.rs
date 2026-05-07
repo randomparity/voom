@@ -149,6 +149,16 @@ pub trait FileStorage: Send + Sync {
     ) -> Result<u32>;
     /// Update the expected hash for a file (set after a successful voom operation).
     fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()>;
+    /// Write a raw status string into the `files.status` column for the
+    /// given file id. Used by the verifier plugin when quarantining a file
+    /// to mark the row as `'quarantined'`. The schema's `status` column has
+    /// no `CHECK` constraint, so any string is accepted at the storage
+    /// layer; callers are responsible for choosing a valid value.
+    ///
+    /// Note: status values outside the [`crate::transition::FileStatus`]
+    /// enum will be read back as the default (`Active`) until the enum is
+    /// extended.
+    fn set_file_status(&self, id: &Uuid, status: &str) -> Result<()>;
     /// Atomically perform the post-execution writes for a successfully
     /// executed plan: optionally rename the file's path, insert a transition
     /// row, and optionally update the file's `expected_hash`. All writes
