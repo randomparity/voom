@@ -115,7 +115,7 @@ fn validate_on_error(value: &str, line: usize, col: usize, errors: &mut Vec<DslE
             line,
             col,
             format!(
-                "invalid on_error value \"{value}\", expected \"continue\", \"abort\", or \"skip\""
+                "invalid on_error value \"{value}\", expected \"continue\", \"abort\", \"skip\", or \"quarantine\""
             ),
         ));
     }

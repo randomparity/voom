@@ -235,6 +235,11 @@ fn evaluate_phase(
                     ctx.plan.skip_reason = Some(format!("Error (skipping phase): {msg}"));
                     break;
                 }
+                // TODO(Task 22): refine quarantine handling in evaluator.
+                ErrorStrategy::Quarantine => {
+                    ctx.plan.warnings.push(format!("Error (aborting): {msg}"));
+                    break;
+                }
             }
         }
     }
@@ -498,6 +503,8 @@ fn emit_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), 
         CompiledOperation::Rules { mode, rules } => {
             emit_rules(*mode, rules, ctx)?;
         }
+        // TODO(Task 22): emit a VerifyMedia planned action.
+        CompiledOperation::Verify { .. } => {}
     }
     Ok(())
 }
