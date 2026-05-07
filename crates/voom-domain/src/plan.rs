@@ -1080,6 +1080,86 @@ mod tests {
     }
 
     #[test]
+    fn test_operation_type_verify_media_roundtrip() {
+        assert_eq!(
+            OperationType::parse("verify_media"),
+            Some(OperationType::VerifyMedia)
+        );
+        assert_eq!(OperationType::VerifyMedia.as_str(), "verify_media");
+    }
+
+    #[test]
+    fn test_action_params_verify_media_serde_json_roundtrip() {
+        use crate::verification::VerificationMode;
+        let params = ActionParams::VerifyMedia(VerifyMediaParams {
+            mode: VerificationMode::Quick,
+        });
+        let json = serde_json::to_string(&params).unwrap();
+        let restored: ActionParams = serde_json::from_str(&json).unwrap();
+        match restored {
+            ActionParams::VerifyMedia(p) => {
+                assert_eq!(p.mode, VerificationMode::Quick);
+            }
+            other => panic!("expected VerifyMedia, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_action_params_verify_media_serde_msgpack_roundtrip() {
+        use crate::verification::VerificationMode;
+        let params = ActionParams::VerifyMedia(VerifyMediaParams {
+            mode: VerificationMode::Hash,
+        });
+        let bytes = rmp_serde::to_vec(&params).unwrap();
+        let restored: ActionParams = rmp_serde::from_slice(&bytes).unwrap();
+        match restored {
+            ActionParams::VerifyMedia(p) => {
+                assert_eq!(p.mode, VerificationMode::Hash);
+            }
+            other => panic!("expected VerifyMedia, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_operation_type_quarantine_roundtrip() {
+        assert_eq!(
+            OperationType::parse("quarantine"),
+            Some(OperationType::Quarantine)
+        );
+        assert_eq!(OperationType::Quarantine.as_str(), "quarantine");
+    }
+
+    #[test]
+    fn test_action_params_quarantine_serde_json_roundtrip() {
+        let params = ActionParams::Quarantine(QuarantineParams {
+            reason: "test".into(),
+        });
+        let json = serde_json::to_string(&params).unwrap();
+        let restored: ActionParams = serde_json::from_str(&json).unwrap();
+        match restored {
+            ActionParams::Quarantine(p) => {
+                assert_eq!(p.reason, "test");
+            }
+            other => panic!("expected Quarantine, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_action_params_quarantine_serde_msgpack_roundtrip() {
+        let params = ActionParams::Quarantine(QuarantineParams {
+            reason: "test".into(),
+        });
+        let bytes = rmp_serde::to_vec(&params).unwrap();
+        let restored: ActionParams = rmp_serde::from_slice(&bytes).unwrap();
+        match restored {
+            ActionParams::Quarantine(p) => {
+                assert_eq!(p.reason, "test");
+            }
+            other => panic!("expected Quarantine, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_phase_result_serde_with_temp_path() {
         let mut pr = PhaseResult::new("normalize", PhaseOutcome::Completed);
         pr.temp_path = Some("/media/movie.voom_tmp_abc.mkv".into());
