@@ -67,6 +67,7 @@ impl VerificationOutcome {
 }
 
 /// A single persisted verification result.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VerificationRecord {
     pub id: Uuid,
