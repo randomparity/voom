@@ -3651,6 +3651,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "voom-verifier"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tracing",
+ "uuid",
+ "voom-domain",
+ "voom-kernel",
+ "voom-process",
+]
+
+[[package]]
 name = "voom-web-server"
 version = "0.1.0"
 dependencies = [
