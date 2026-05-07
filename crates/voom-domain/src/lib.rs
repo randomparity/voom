@@ -23,6 +23,7 @@ pub mod temp_file;
 pub mod test_support;
 pub mod transition;
 pub mod utils;
+pub mod verification;
 
 pub use bad_file::{BadFile, BadFileSource};
 pub use capabilities::Capability;
@@ -49,4 +50,8 @@ pub use storage::{
 };
 pub use transition::{
     DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
+};
+pub use verification::{
+    IntegritySummary, VerificationFilters, VerificationMode, VerificationOutcome,
+    VerificationRecord,
 };
