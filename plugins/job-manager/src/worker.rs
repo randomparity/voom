@@ -75,12 +75,25 @@ fn num_cpus() -> usize {
         .unwrap_or(4)
 }
 
+/// Canonical plan-level hardware resource classification.
+///
+/// Classification is intentionally plan-level: the first matching hardware
+/// video transcode action determines the resource for the whole plan. Audio
+/// transcodes and unknown hardware values do not consume video encoder permits.
 pub struct PlanParallelResource;
 
 impl PlanParallelResource {
+    /// Return the plan-level hardware resource for the first matching video transcode.
+    ///
+    /// Only `TranscodeVideo` actions with known hardware encoder names classify
+    /// a plan. Software, `auto`, `none`, unknown values, and non-video actions
+    /// return `None`.
     #[must_use]
     pub fn from_plan(plan: &voom_domain::plan::Plan) -> Option<&'static str> {
         for action in &plan.actions {
+            if action.operation != voom_domain::plan::OperationType::TranscodeVideo {
+                continue;
+            }
             let voom_domain::plan::ActionParams::Transcode { settings, .. } = &action.parameters
             else {
                 continue;
@@ -100,16 +113,29 @@ impl PlanParallelResource {
     }
 }
 
+/// Plan-level concurrency limiter for resources announced by executor capabilities.
+///
+/// This bounds concurrent plan executions that use a classified hardware video
+/// encoder resource. It does not count individual tracks or exact encoder
+/// sessions within a plan.
 #[derive(Clone, Default)]
 pub struct PlanExecutionLimiter {
     semaphores: Arc<HashMap<String, Arc<Semaphore>>>,
 }
 
+/// RAII permit for a classified plan resource.
+///
+/// Dropping the permit releases the resource. Permits may be no-ops when the
+/// plan has no classified resource or no configured limit.
 pub struct PlanExecutionPermit {
     _permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl PlanExecutionLimiter {
+    /// Create a limiter from resource limits.
+    ///
+    /// Positive limits create semaphores. Zero limits are ignored, leaving that
+    /// resource unlimited.
     #[must_use]
     pub fn from_limits(limits: impl IntoIterator<Item = (String, usize)>) -> Self {
         let semaphores = limits
@@ -122,6 +148,11 @@ impl PlanExecutionLimiter {
         }
     }
 
+    /// Acquire a plan-level resource permit for a plan.
+    ///
+    /// This is a no-op for plans without a classified hardware video transcode
+    /// resource or with no configured limit for that resource. Otherwise, this
+    /// waits for capacity and holds it until the returned permit is dropped.
     pub async fn acquire_for_plan(&self, plan: &voom_domain::plan::Plan) -> PlanExecutionPermit {
         let Some(resource) = PlanParallelResource::from_plan(plan) else {
             return PlanExecutionPermit { _permit: None };
@@ -558,10 +589,17 @@ mod tests {
     }
 
     fn test_transcode_plan(hw: Option<&str>) -> voom_domain::plan::Plan {
+        test_transcode_plan_with_operation(hw, voom_domain::plan::OperationType::TranscodeVideo)
+    }
+
+    fn test_transcode_plan_with_operation(
+        hw: Option<&str>,
+        operation: voom_domain::plan::OperationType,
+    ) -> voom_domain::plan::Plan {
         let file = voom_domain::media::MediaFile::new(std::path::PathBuf::from("/test.mkv"));
         voom_domain::plan::Plan::new(file, "test-policy", "test-phase").with_action(
             voom_domain::plan::PlannedAction::track_op(
-                voom_domain::plan::OperationType::TranscodeVideo,
+                operation,
                 0,
                 voom_domain::plan::ActionParams::Transcode {
                     codec: "hevc".to_string(),
@@ -585,8 +623,42 @@ mod tests {
         assert_eq!(PlanParallelResource::from_plan(&plan), None);
     }
 
+    #[test]
+    fn test_plan_parallel_resource_classifies_known_video_hw() {
+        let cases = [
+            (Some("nvenc"), Some("hw:nvenc")),
+            (Some("qsv"), Some("hw:qsv")),
+            (Some("vaapi"), Some("hw:vaapi")),
+            (Some("videotoolbox"), Some("hw:videotoolbox")),
+            (Some("none"), None),
+            (Some("auto"), None),
+            (Some("mysteryhw"), None),
+            (None, None),
+        ];
+
+        for (hw, expected) in cases {
+            let plan = test_transcode_plan(hw);
+            assert_eq!(
+                PlanParallelResource::from_plan(&plan),
+                expected,
+                "hw={hw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_plan_parallel_resource_ignores_audio_transcode_hw() {
+        let plan = test_transcode_plan_with_operation(
+            Some("nvenc"),
+            voom_domain::plan::OperationType::TranscodeAudio,
+        );
+        assert_eq!(PlanParallelResource::from_plan(&plan), None);
+    }
+
     #[tokio::test]
     async fn test_plan_execution_limiter_blocks_above_limit() {
+        use std::time::Duration;
+
         let limiter = PlanExecutionLimiter::from_limits(vec![("hw:nvenc".to_string(), 2)]);
         let plan = test_transcode_plan(Some("nvenc"));
 
@@ -595,16 +667,25 @@ mod tests {
 
         let limiter_clone = limiter.clone();
         let plan_clone = plan.clone();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let third = tokio::spawn(async move {
             let _permit = limiter_clone.acquire_for_plan(&plan_clone).await;
+            let _ = entered_tx.send("entered");
             "entered"
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        assert!(!third.is_finished());
+        assert!(tokio::time::timeout(Duration::from_millis(20), entered_rx)
+            .await
+            .is_err());
 
         drop(first);
-        assert_eq!(third.await.unwrap(), "entered");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), third)
+                .await
+                .unwrap()
+                .unwrap(),
+            "entered"
+        );
         drop(second);
     }
 
