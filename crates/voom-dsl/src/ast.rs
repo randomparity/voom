@@ -262,4 +262,9 @@ pub enum Value {
     Bool(bool),
     Ident(String),
     List(Vec<Value>),
+    Object(Vec<(String, Value)>),
+    Call {
+        name: String,
+        args: Vec<(String, Value)>,
+    },
 }

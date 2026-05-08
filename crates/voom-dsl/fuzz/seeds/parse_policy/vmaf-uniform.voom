@@ -1,0 +1,10 @@
+policy "vmaf-uniform" {
+  phase transcode-video {
+    transcode video to hevc {
+      target_vmaf: 90
+      min_bitrate: "1500k"
+      max_bitrate: "6M"
+      sample_strategy: uniform(count: 8, duration: 5s)
+    }
+  }
+}

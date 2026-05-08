@@ -1,0 +1,13 @@
+policy "vmaf-guided" {
+  phase transcode-video {
+    transcode video to hevc {
+      target_vmaf: 93
+      sample_strategy: scenes(count: 4, duration: 3s)
+      fallback {
+        crf: 24
+        preset: medium
+      }
+      target_vmaf_when content.animation: 88
+    }
+  }
+}

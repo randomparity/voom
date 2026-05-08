@@ -278,6 +278,20 @@ fn example_transcode_hevc_parses() {
 }
 
 #[test]
+fn example_vmaf_guided_parses_and_validates() {
+    let input = include_str!("../../../docs/examples/vmaf-guided.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "vmaf-guided");
+    assert_eq!(ast.phases.len(), 1);
+    let result = voom_dsl::validate(&ast);
+    assert!(
+        result.is_ok(),
+        "validation errors: {:?}",
+        result.unwrap_err().errors
+    );
+}
+
+#[test]
 fn example_metadata_enrichment_parses() {
     let input = include_str!("../../../docs/examples/metadata-enrichment.voom");
     let ast = parse_policy(input).unwrap();

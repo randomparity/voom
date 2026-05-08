@@ -3,12 +3,13 @@
 //! These are the intermediate representation types produced by the DSL compiler
 //! and consumed by the policy evaluator and phase orchestrator plugins.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 pub use voom_domain::media::Container;
-pub use voom_domain::plan::TranscodeChannels;
+pub use voom_domain::plan::{SampleStrategy, TranscodeChannels, TranscodeFallback};
 
 /// A pre-compiled regex that supports `Clone`, `Debug`, `Serialize`, and `Deserialize`.
 ///
@@ -175,6 +176,9 @@ pub enum RunIfTrigger {
 
 /// A compiled operation within a phase.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// Keep compiled transcode settings inline so evaluator consumers can continue
+// pattern-matching the existing IR without allocation or API churn.
+#[allow(clippy::large_enum_variant)]
 pub enum CompiledOperation {
     SetContainer(Container),
     Keep {
@@ -275,6 +279,12 @@ pub struct CompiledTranscodeSettings {
     pub crf: Option<u32>,
     pub preset: Option<String>,
     pub bitrate: Option<String>,
+    pub target_vmaf: Option<u32>,
+    pub max_bitrate: Option<String>,
+    pub min_bitrate: Option<String>,
+    pub sample_strategy: Option<SampleStrategy>,
+    pub fallback: Option<TranscodeFallback>,
+    pub vmaf_overrides: Option<HashMap<String, u32>>,
     pub channels: Option<TranscodeChannels>,
     /// Hardware acceleration backend preference.
     /// Values: "auto", "nvenc", "qsv", "vaapi", "videotoolbox", "none".
@@ -312,6 +322,12 @@ impl CompiledTranscodeSettings {
             crf,
             preset,
             bitrate,
+            target_vmaf: None,
+            max_bitrate: None,
+            min_bitrate: None,
+            sample_strategy: None,
+            fallback: None,
+            vmaf_overrides: None,
             channels,
             hw: None,
             hw_fallback: None,
