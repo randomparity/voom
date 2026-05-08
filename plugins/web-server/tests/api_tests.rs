@@ -9,9 +9,7 @@ use uuid::Uuid;
 use voom_domain::job::{Job, JobType};
 use voom_domain::media::{Container, MediaFile};
 use voom_domain::test_support::InMemoryStore;
-use voom_domain::verification::{
-    VerificationMode, VerificationOutcome, VerificationRecord,
-};
+use voom_domain::verification::{VerificationMode, VerificationOutcome, VerificationRecord};
 
 fn make_test_file(name: &str) -> MediaFile {
     let mut file = MediaFile::new(format!("/media/{name}").into());
