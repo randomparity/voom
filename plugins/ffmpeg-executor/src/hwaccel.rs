@@ -21,6 +21,12 @@ pub struct HwAccelConfig {
     /// encoders in the list are used; missing ones fall back to software.
     /// `None` means no validation was performed (all are trusted).
     validated_encoders: Option<Vec<String>>,
+    /// HW decoders compiled into ffmpeg. Hardware decode is emitted only if
+    /// the source codec maps to an entry in this list.
+    hw_decoders: Vec<String>,
+    /// Enables opportunistic hardware decode. Defaults to true; config can
+    /// disable it for driver-specific failures.
+    hw_decode_enabled: bool,
     /// Target GPU/render device. NVIDIA: "0", "1", etc.
     /// VA-API/QSV: "/dev/dri/renderD128", etc.
     device: Option<String>,
@@ -33,6 +39,8 @@ impl HwAccelConfig {
         Self {
             backend: None,
             validated_encoders: None,
+            hw_decoders: Vec::new(),
+            hw_decode_enabled: true,
             device: None,
         }
     }
@@ -43,6 +51,8 @@ impl HwAccelConfig {
         Self {
             backend: Some(backend),
             validated_encoders: None,
+            hw_decoders: Vec::new(),
+            hw_decode_enabled: true,
             device: None,
         }
     }
@@ -65,6 +75,8 @@ impl HwAccelConfig {
         Self {
             backend: detect_backend_from_text(&text),
             validated_encoders: None,
+            hw_decoders: Vec::new(),
+            hw_decode_enabled: true,
             device: None,
         }
     }
@@ -76,6 +88,20 @@ impl HwAccelConfig {
     #[must_use]
     pub fn with_validated_encoders(mut self, encoders: Vec<String>) -> Self {
         self.validated_encoders = Some(encoders);
+        self
+    }
+
+    /// Set the list of HW decoders compiled into ffmpeg.
+    #[must_use]
+    pub fn with_hw_decoders(mut self, decoders: Vec<String>) -> Self {
+        self.hw_decoders = decoders;
+        self
+    }
+
+    /// Enable or disable opportunistic HW decode.
+    #[must_use]
+    pub fn with_hw_decode_enabled(mut self, enabled: bool) -> Self {
+        self.hw_decode_enabled = enabled;
         self
     }
 
@@ -181,6 +207,42 @@ impl HwAccelConfig {
         }
     }
 
+    /// Get `FFmpeg` input args for HW decoding when a matching decoder exists.
+    #[must_use]
+    pub fn decoder_input_args(&self, source_codec: &str) -> Vec<String> {
+        if !self.hw_decode_enabled {
+            return Vec::new();
+        }
+
+        let Some(backend) = self.backend else {
+            return Vec::new();
+        };
+        let Some(decoder) = hw_decoder_for_backend(backend, source_codec) else {
+            return Vec::new();
+        };
+        if !self
+            .hw_decoders
+            .iter()
+            .any(|candidate| candidate == &decoder)
+        {
+            return Vec::new();
+        }
+
+        let (hwaccel, surface) = match backend {
+            HwAccelBackend::Nvenc => ("cuda", "cuda"),
+            HwAccelBackend::Qsv => ("qsv", "qsv"),
+            HwAccelBackend::Vaapi => ("vaapi", "vaapi"),
+            HwAccelBackend::Videotoolbox => return Vec::new(),
+        };
+
+        vec![
+            "-hwaccel".to_string(),
+            hwaccel.to_string(),
+            "-hwaccel_output_format".to_string(),
+            surface.to_string(),
+        ]
+    }
+
     /// Get `FFmpeg` input args for HW acceleration (e.g., `-hwaccel cuda`).
     #[must_use]
     pub fn input_args(&self) -> Vec<String> {
@@ -212,17 +274,32 @@ fn hw_encoder_for_backend(backend: HwAccelBackend, codec: &str) -> Option<String
         HwAccelBackend::Videotoolbox => ("_videotoolbox", &["hevc", "h264"]),
     };
 
-    let canonical = match codec {
-        "h265" => "hevc",
-        "avc" => "h264",
-        other => other,
-    };
+    let canonical = canonical_video_codec(codec);
 
     if supported_codecs.contains(&canonical) {
         Some(format!("{canonical}{suffix}"))
     } else {
         None
     }
+}
+
+fn canonical_video_codec(codec: &str) -> &str {
+    match codec {
+        "h265" => "hevc",
+        "avc" => "h264",
+        "mpeg2video" => "mpeg2",
+        other => other,
+    }
+}
+
+fn hw_decoder_for_backend(backend: HwAccelBackend, codec: &str) -> Option<String> {
+    let suffix = match backend {
+        HwAccelBackend::Nvenc => "_cuvid",
+        HwAccelBackend::Qsv => "_qsv",
+        HwAccelBackend::Vaapi => "_vaapi",
+        HwAccelBackend::Videotoolbox => return None,
+    };
+    Some(format!("{}{suffix}", canonical_video_codec(codec)))
 }
 
 /// Collect all matching backends from lowercased hwaccel text, in
@@ -290,6 +367,8 @@ pub fn config_from_backend_name(name: &str) -> HwAccelConfig {
     HwAccelConfig {
         backend,
         validated_encoders: None,
+        hw_decoders: Vec::new(),
+        hw_decode_enabled: true,
         device: None,
     }
 }
@@ -352,6 +431,8 @@ pub fn config_from_backend_with_system(
     if let (Some(override_be), Some(sys)) = (config.backend, system) {
         if sys.backend == Some(override_be) {
             config.validated_encoders = sys.validated_encoders.clone();
+            config.hw_decoders = sys.hw_decoders.clone();
+            config.hw_decode_enabled = sys.hw_decode_enabled;
             config.device = sys.device.clone();
         }
     }
@@ -555,6 +636,78 @@ mod tests {
     fn test_has_hw_encoder_disabled() {
         let config = HwAccelConfig::new();
         assert!(!config.has_hw_encoder("h264"));
+    }
+
+    // decoder input args
+
+    #[test]
+    fn test_hw_decoder_input_args_nvenc_match() {
+        let config = HwAccelConfig::with_backend(HwAccelBackend::Nvenc)
+            .with_hw_decoders(vec!["h264_cuvid".into(), "hevc_cuvid".into()]);
+
+        assert_eq!(
+            config.decoder_input_args("h264"),
+            vec!["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+        );
+        assert_eq!(
+            config.decoder_input_args("h265"),
+            vec!["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+        );
+    }
+
+    #[test]
+    fn test_hw_decoder_input_args_missing_decoder_returns_empty() {
+        let config = HwAccelConfig::with_backend(HwAccelBackend::Nvenc)
+            .with_hw_decoders(vec!["hevc_cuvid".into()]);
+
+        assert!(config.decoder_input_args("h264").is_empty());
+    }
+
+    #[test]
+    fn test_hw_decoder_input_args_empty_decoder_list_returns_empty() {
+        let config =
+            HwAccelConfig::with_backend(HwAccelBackend::Nvenc).with_hw_decoders(Vec::new());
+
+        assert!(config.decoder_input_args("h264").is_empty());
+    }
+
+    #[test]
+    fn test_hw_decoder_input_args_qsv_and_vaapi_match_backend() {
+        let qsv = HwAccelConfig::with_backend(HwAccelBackend::Qsv)
+            .with_hw_decoders(vec!["h264_qsv".into()]);
+        let vaapi = HwAccelConfig::with_backend(HwAccelBackend::Vaapi)
+            .with_hw_decoders(vec!["h264_vaapi".into()]);
+
+        assert_eq!(
+            qsv.decoder_input_args("h264"),
+            vec!["-hwaccel", "qsv", "-hwaccel_output_format", "qsv"]
+        );
+        assert_eq!(
+            vaapi.decoder_input_args("h264"),
+            vec!["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"]
+        );
+    }
+
+    #[test]
+    fn test_hw_decoder_input_args_uses_probed_decoder_as_source_of_truth() {
+        let config = HwAccelConfig::with_backend(HwAccelBackend::Vaapi)
+            .with_hw_decoders(vec!["vc1_vaapi".into()]);
+
+        assert_eq!(
+            config.decoder_input_args("vc1"),
+            vec!["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"]
+        );
+    }
+
+    #[test]
+    fn test_hw_override_inherits_decoders_and_decode_flag() {
+        let system = HwAccelConfig::with_backend(HwAccelBackend::Nvenc)
+            .with_hw_decoders(vec!["h264_cuvid".into()])
+            .with_hw_decode_enabled(false);
+
+        let override_config = config_from_backend_with_system("nvenc", Some(&system));
+
+        assert!(override_config.decoder_input_args("h264").is_empty());
     }
 
     // ── config_from_backend_with_system ────────────────────────

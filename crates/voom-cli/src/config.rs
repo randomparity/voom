@@ -354,6 +354,10 @@ pub fn default_config_contents() -> String {
 # # Lower this to 2 on small GPUs or when CUDA OOM appears under load.
 # # Applies only when NVENC is active; 0 uses the default.
 # # nvenc_max_parallel = 4
+# # Opportunistically use hardware decode when a matching decoder was probed.
+# # Disable this if a GPU driver or source profile fails with hwaccel enabled.
+# # Defaults to true.
+# # hw_decode = false
 #
 # [plugin.tvdb-metadata]
 # api_key = "your-tvdb-api-key"

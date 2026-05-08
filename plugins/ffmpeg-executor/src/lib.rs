@@ -39,6 +39,8 @@ struct FfmpegExecutorConfig {
     gpu_device: Option<String>,
     #[serde(default)]
     nvenc_max_parallel: Option<usize>,
+    #[serde(default)]
+    hw_decode: Option<bool>,
 }
 
 const DEFAULT_NVENC_MAX_PARALLEL_PER_GPU: usize = 4;
@@ -613,7 +615,10 @@ impl Plugin for FfmpegExecutorPlugin {
             plugin_config.nvenc_max_parallel,
         );
 
-        self.hw_accel = hw_config.with_validated_encoders(validated_encoders);
+        self.hw_accel = hw_config
+            .with_validated_encoders(validated_encoders)
+            .with_hw_decoders(codecs.hw_decoders.clone())
+            .with_hw_decode_enabled(plugin_config.hw_decode.unwrap_or(true));
 
         let event = ExecutorCapabilitiesEvent::new("ffmpeg-executor", codecs, formats, hw_accels)
             .with_parallel_limits(parallel_limits);
@@ -1129,6 +1134,14 @@ mod tests {
         let config: FfmpegExecutorConfig = serde_json::from_value(json).unwrap();
         assert_eq!(config.hw_accel.as_deref(), Some("vaapi"));
         assert_eq!(config.gpu_device.as_deref(), Some("/dev/dri/renderD128"));
+    }
+
+    #[test]
+    fn test_ffmpeg_executor_config_hw_decode() {
+        let json = serde_json::json!({"hw_decode": false});
+        let config: FfmpegExecutorConfig = serde_json::from_value(json).unwrap();
+
+        assert_eq!(config.hw_decode, Some(false));
     }
 
     #[test]
