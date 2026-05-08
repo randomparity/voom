@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
@@ -218,18 +217,20 @@ fn parse_version(tool_name: &str, output: &str) -> String {
 
 /// Find the full path to a tool using `which`.
 fn find_tool_path(name: &str) -> Option<PathBuf> {
-    Command::new("which").arg(name).output().ok().and_then(|o| {
-        if o.status.success() {
-            let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if path.is_empty() {
-                None
+    voom_process::run_with_timeout("which", &[name], Duration::from_secs(10))
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if path.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(path))
+                }
             } else {
-                Some(PathBuf::from(path))
+                None
             }
-        } else {
-            None
-        }
-    })
+        })
 }
 
 #[cfg(test)]
