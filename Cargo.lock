@@ -3522,6 +3522,7 @@ dependencies = [
  "dirs",
  "fs2",
  "indicatif",
+ "insta",
  "parking_lot",
  "predicates",
  "rand 0.10.1",

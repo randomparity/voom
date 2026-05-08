@@ -328,8 +328,12 @@ pub enum JobsCommands {
 #[derive(clap::Args)]
 pub struct ReportArgs {
     /// Output format (auto-detected: table for TTY, json for pipe)
-    #[arg(short, long, default_value = "table")]
+    #[arg(short, long, default_value = "table", conflicts_with = "json")]
     pub format: OutputFormat,
+
+    /// Emit JSON output
+    #[arg(long)]
+    pub json: bool,
 
     /// Show full library statistics
     #[arg(long)]
@@ -374,6 +378,10 @@ pub struct ReportArgs {
     /// Show library integrity summary (counts of never-verified / stale / errors)
     #[arg(long)]
     pub integrity: bool,
+
+    /// Show VMAF-guided transcode aggregate summary
+    #[arg(long)]
+    pub vmaf: bool,
 
     /// Show errors from a processing session (default: most recent)
     #[arg(long)]

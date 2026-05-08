@@ -4,13 +4,15 @@ use std::io::Write as _;
 use anyhow::{Context, Result};
 use comfy_table::Cell;
 use console::style;
+use serde::Serialize;
 
 use crate::app;
 use crate::cli::{OutputFormat, ReportArgs};
 use crate::config;
 use crate::output;
 use voom_domain::stats::{LibrarySnapshot, SavingsReport, TimePeriod};
-use voom_domain::storage::PlanPhaseStat;
+use voom_domain::storage::{PlanPhaseStat, TranscodeOutcomeFilters};
+use voom_domain::transcode::TranscodeOutcome;
 use voom_domain::verification::IntegritySummary;
 use voom_report::{
     DatabaseStats, IssueReport, ReportPlugin, ReportRequest, ReportResult, ReportSection,
@@ -19,38 +21,55 @@ use voom_report::{
 pub fn run(args: &ReportArgs) -> Result<()> {
     let config = config::load_config()?;
     let store = app::open_store(&config)?;
+    let format = report_format(args);
 
     if args.errors {
-        return run_errors(&*store, args);
+        return run_errors(&*store, args, format);
     }
 
     if args.snapshot {
         let snapshot =
             ReportPlugin::capture_snapshot(&*store, voom_domain::stats::SnapshotTrigger::Manual)?;
-        format_snapshot(&snapshot, args.format);
+        format_snapshot(&snapshot, format);
         return Ok(());
     }
 
     if args.files {
-        return run_file_list(&*store, args.format);
+        return run_file_list(&*store, format);
+    }
+
+    if args.integrity && args.vmaf {
+        return run_integrity_and_vmaf(&*store, format);
     }
 
     if args.integrity {
-        return run_integrity(&*store, args.format);
+        return run_integrity(&*store, format);
+    }
+
+    if args.vmaf {
+        return run_vmaf(&*store, format);
     }
 
     let request = build_request(args)?;
     let result = ReportPlugin::query(&*store, &request)?;
 
     if is_summary_request(args) {
-        format_summary(&result, args.format)?;
+        format_summary(&result, format)?;
     } else {
-        format_result(&result, args)?;
-        if args.database && !args.format.is_machine() {
+        format_result(&result, format)?;
+        if args.database && !format.is_machine() {
             print_retention_footer(&*store);
         }
     }
     Ok(())
+}
+
+fn report_format(args: &ReportArgs) -> OutputFormat {
+    if args.json {
+        OutputFormat::Json
+    } else {
+        args.format
+    }
 }
 
 fn build_request(args: &ReportArgs) -> Result<ReportRequest> {
@@ -114,6 +133,7 @@ fn is_summary_request(args: &ReportArgs) -> bool {
         && !args.issues
         && !args.database
         && !args.errors
+        && !args.vmaf
         && args.history.is_none()
 }
 
@@ -222,8 +242,8 @@ fn write_summary_csv(snapshot: &LibrarySnapshot) -> Result<()> {
     Ok(())
 }
 
-fn format_result(result: &ReportResult, args: &ReportArgs) -> Result<()> {
-    match args.format {
+fn format_result(result: &ReportResult, format: OutputFormat) -> Result<()> {
+    match format {
         OutputFormat::Json => {
             println!(
                 "{}",
@@ -1170,6 +1190,34 @@ fn run_integrity(
     Ok(())
 }
 
+fn run_integrity_and_vmaf(
+    store: &dyn voom_domain::storage::StorageTrait,
+    format: OutputFormat,
+) -> Result<()> {
+    let since_cutoff = chrono::Utc::now() - chrono::Duration::days(INTEGRITY_STALE_DAYS);
+    let integrity = store
+        .integrity_summary(since_cutoff)
+        .context("failed to query integrity summary")?;
+    let vmaf = build_vmaf_summary(store).context("failed to query VMAF summary")?;
+
+    match format {
+        OutputFormat::Json => print_integrity_and_vmaf_json(&integrity, since_cutoff, &vmaf)?,
+        OutputFormat::Table => {
+            print_integrity_table(&integrity, since_cutoff);
+            print_vmaf_table(&vmaf);
+        }
+        OutputFormat::Plain => {
+            print_integrity_plain(&integrity);
+            print_vmaf_plain(&vmaf);
+        }
+        OutputFormat::Csv => {
+            print_integrity_csv(&integrity)?;
+            print_vmaf_csv(&vmaf)?;
+        }
+    }
+    Ok(())
+}
+
 fn print_integrity_table(summary: &IntegritySummary, since_cutoff: chrono::DateTime<chrono::Utc>) {
     println!(
         "{} (stale cutoff: {})",
@@ -1220,16 +1268,39 @@ fn print_integrity_json(
     summary: &IntegritySummary,
     since_cutoff: chrono::DateTime<chrono::Utc>,
 ) -> Result<()> {
-    let payload = serde_json::json!({
-        "stale_cutoff": since_cutoff.to_rfc3339(),
-        "stale_cutoff_days": INTEGRITY_STALE_DAYS,
-        "summary": summary,
-    });
+    let payload = integrity_json_value(summary, since_cutoff);
     println!(
         "{}",
         serde_json::to_string_pretty(&payload).context("serialize integrity summary")?
     );
     Ok(())
+}
+
+fn print_integrity_and_vmaf_json(
+    integrity: &IntegritySummary,
+    since_cutoff: chrono::DateTime<chrono::Utc>,
+    vmaf: &VmafSummary,
+) -> Result<()> {
+    let payload = serde_json::json!({
+        "integrity": integrity_json_value(integrity, since_cutoff),
+        "vmaf": vmaf,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&payload).context("serialize report summaries")?
+    );
+    Ok(())
+}
+
+fn integrity_json_value(
+    summary: &IntegritySummary,
+    since_cutoff: chrono::DateTime<chrono::Utc>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "stale_cutoff": since_cutoff.to_rfc3339(),
+        "stale_cutoff_days": INTEGRITY_STALE_DAYS,
+        "summary": summary,
+    })
 }
 
 fn print_integrity_csv(summary: &IntegritySummary) -> Result<()> {
@@ -1265,13 +1336,373 @@ fn print_integrity_csv(summary: &IntegritySummary) -> Result<()> {
     Ok(())
 }
 
+// ── VMAF summary ───────────────────────────────────────────
+
+const VMAF_BOTTOM_LIMIT: usize = 20;
+const VMAF_MISS_THRESHOLD: f64 = 1.0;
+
+#[derive(Debug, Serialize)]
+struct VmafSummary {
+    total_transcodes: usize,
+    average_target_vmaf: Option<f64>,
+    average_achieved_vmaf: Option<f64>,
+    average_iterations: Option<f64>,
+    missed_target_count: usize,
+    fallback_count: usize,
+    fallback_rate: Option<f64>,
+    bottom_files: Vec<VmafBottomFile>,
+}
+
+#[derive(Debug, Serialize)]
+struct VmafBottomFile {
+    file_id: String,
+    path: Option<String>,
+    target_vmaf: u32,
+    achieved_vmaf: f64,
+    deficit: f64,
+    iterations: u32,
+    fallback_used: bool,
+}
+
+fn run_vmaf(store: &dyn voom_domain::storage::StorageTrait, format: OutputFormat) -> Result<()> {
+    let summary = build_vmaf_summary(store).context("failed to query VMAF summary")?;
+    match format {
+        OutputFormat::Json => print_vmaf_json(&summary)?,
+        OutputFormat::Table => print_vmaf_table(&summary),
+        OutputFormat::Plain => print_vmaf_plain(&summary),
+        OutputFormat::Csv => print_vmaf_csv(&summary)?,
+    }
+    Ok(())
+}
+
+fn build_vmaf_summary(store: &dyn voom_domain::storage::StorageTrait) -> Result<VmafSummary> {
+    let filters = TranscodeOutcomeFilters::default();
+    let outcomes = store.list_transcode_outcomes(&filters)?;
+    let targeted: Vec<_> = outcomes
+        .into_iter()
+        .filter(|outcome| outcome.target_vmaf.is_some())
+        .collect();
+    if targeted.is_empty() {
+        return Ok(VmafSummary::empty());
+    }
+
+    let total_transcodes = targeted.len();
+    let fallback_count = targeted
+        .iter()
+        .filter(|outcome| outcome.fallback_used)
+        .count();
+    let bottom_files = build_vmaf_bottom_files(store, &targeted)?;
+    let missed_target_count = bottom_files
+        .iter()
+        .filter(|file| file.deficit > VMAF_MISS_THRESHOLD)
+        .count();
+    let achieved: Vec<f64> = targeted
+        .iter()
+        .filter_map(|outcome| outcome.achieved_vmaf.map(f64::from))
+        .collect();
+
+    Ok(VmafSummary {
+        total_transcodes,
+        average_target_vmaf: Some(round2(average(
+            targeted
+                .iter()
+                .filter_map(|outcome| outcome.target_vmaf.map(f64::from)),
+        ))),
+        average_achieved_vmaf: average_option(achieved.into_iter()),
+        average_iterations: Some(round2(average(
+            targeted.iter().map(|outcome| f64::from(outcome.iterations)),
+        ))),
+        missed_target_count,
+        fallback_count,
+        fallback_rate: Some(round4(fallback_count as f64 / total_transcodes as f64)),
+        bottom_files,
+    })
+}
+
+impl VmafSummary {
+    fn empty() -> Self {
+        Self {
+            total_transcodes: 0,
+            average_target_vmaf: None,
+            average_achieved_vmaf: None,
+            average_iterations: None,
+            missed_target_count: 0,
+            fallback_count: 0,
+            fallback_rate: None,
+            bottom_files: Vec::new(),
+        }
+    }
+}
+
+fn build_vmaf_bottom_files(
+    store: &dyn voom_domain::storage::StorageTrait,
+    outcomes: &[TranscodeOutcome],
+) -> Result<Vec<VmafBottomFile>> {
+    let mut files = Vec::new();
+    for outcome in outcomes {
+        let (Some(target), Some(achieved)) = (outcome.target_vmaf, outcome.achieved_vmaf) else {
+            continue;
+        };
+        let deficit = f64::from(target) - f64::from(achieved);
+        if deficit <= 0.0 {
+            continue;
+        }
+        files.push(VmafBottomFile {
+            file_id: outcome.file_id.clone(),
+            path: vmaf_file_path(store, &outcome.file_id)?,
+            target_vmaf: target,
+            achieved_vmaf: round2(f64::from(achieved)),
+            deficit: round2(deficit),
+            iterations: outcome.iterations,
+            fallback_used: outcome.fallback_used,
+        });
+    }
+    files.sort_by(compare_vmaf_bottom_files);
+    files.truncate(VMAF_BOTTOM_LIMIT);
+    Ok(files)
+}
+
+fn vmaf_file_path(
+    store: &dyn voom_domain::storage::StorageTrait,
+    file_id: &str,
+) -> Result<Option<String>> {
+    let Ok(uuid) = uuid::Uuid::parse_str(file_id) else {
+        return Ok(None);
+    };
+    Ok(store
+        .file(&uuid)?
+        .map(|file| file.path.display().to_string()))
+}
+
+fn compare_vmaf_bottom_files(a: &VmafBottomFile, b: &VmafBottomFile) -> std::cmp::Ordering {
+    b.deficit
+        .total_cmp(&a.deficit)
+        .then_with(|| a.path.cmp(&b.path))
+        .then_with(|| a.file_id.cmp(&b.file_id))
+}
+
+fn average(values: impl Iterator<Item = f64>) -> f64 {
+    let mut total = 0.0;
+    let mut count = 0usize;
+    for value in values {
+        total += value;
+        count += 1;
+    }
+    total / count as f64
+}
+
+fn average_option(values: impl Iterator<Item = f64>) -> Option<f64> {
+    let values: Vec<_> = values.collect();
+    if values.is_empty() {
+        None
+    } else {
+        Some(round2(average(values.into_iter())))
+    }
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+fn round4(value: f64) -> f64 {
+    (value * 10_000.0).round() / 10_000.0
+}
+
+fn format_optional_rate(value: Option<f64>) -> String {
+    value
+        .map(|rate| format!("{rate:.2}"))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn format_optional_score(value: Option<f64>) -> String {
+    value
+        .map(|score| format!("{score:.2}"))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn print_vmaf_table(summary: &VmafSummary) {
+    if summary.total_transcodes == 0 {
+        println!("no VMAF-guided transcodes recorded yet");
+        return;
+    }
+
+    println!("{}", style("VMAF-Guided Transcodes").bold().underlined());
+    println!();
+    let mut table = output::new_table();
+    table.set_header(vec!["Metric", "Value"]);
+    table.add_row(vec![
+        "Total transcodes",
+        &summary.total_transcodes.to_string(),
+    ]);
+    table.add_row(vec![
+        "Average target VMAF",
+        &format_optional_score(summary.average_target_vmaf),
+    ]);
+    table.add_row(vec![
+        "Average achieved VMAF",
+        &format_optional_score(summary.average_achieved_vmaf),
+    ]);
+    table.add_row(vec![
+        "Average iterations",
+        &format_optional_score(summary.average_iterations),
+    ]);
+    table.add_row(vec![
+        "Missed target",
+        &summary.missed_target_count.to_string(),
+    ]);
+    table.add_row(vec![
+        "Fallback rate",
+        &format_optional_rate(summary.fallback_rate),
+    ]);
+    println!("{table}");
+    print_vmaf_bottom_table(summary);
+}
+
+fn print_vmaf_bottom_table(summary: &VmafSummary) {
+    if summary.bottom_files.is_empty() {
+        return;
+    }
+    println!();
+    let mut table = output::new_table();
+    table.set_header(vec![
+        "Path",
+        "Target",
+        "Achieved",
+        "Deficit",
+        "Iterations",
+        "Fallback",
+    ]);
+    for file in &summary.bottom_files {
+        table.add_row(vec![
+            file.path.as_deref().unwrap_or(&file.file_id),
+            &file.target_vmaf.to_string(),
+            &format!("{:.2}", file.achieved_vmaf),
+            &format!("{:.2}", file.deficit),
+            &file.iterations.to_string(),
+            if file.fallback_used { "yes" } else { "no" },
+        ]);
+    }
+    println!("{table}");
+}
+
+fn print_vmaf_plain(summary: &VmafSummary) {
+    if summary.total_transcodes == 0 {
+        println!("no VMAF-guided transcodes recorded yet");
+        return;
+    }
+    println!("total_transcodes={}", summary.total_transcodes);
+    println!(
+        "average_target_vmaf={}",
+        format_optional_score(summary.average_target_vmaf)
+    );
+    println!(
+        "average_achieved_vmaf={}",
+        format_optional_score(summary.average_achieved_vmaf)
+    );
+    println!(
+        "average_iterations={}",
+        format_optional_score(summary.average_iterations)
+    );
+    println!("missed_target_count={}", summary.missed_target_count);
+    println!("fallback_count={}", summary.fallback_count);
+    println!(
+        "fallback_rate={}",
+        format_optional_rate(summary.fallback_rate)
+    );
+    for file in &summary.bottom_files {
+        println!(
+            "bottom_file\t{}\t{:.2}\t{}\t{:.2}\t{}",
+            file.path.as_deref().unwrap_or(&file.file_id),
+            file.deficit,
+            file.target_vmaf,
+            file.achieved_vmaf,
+            file.iterations
+        );
+    }
+}
+
+fn print_vmaf_json(summary: &VmafSummary) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(summary).context("serialize VMAF summary")?
+    );
+    Ok(())
+}
+
+fn print_vmaf_csv(summary: &VmafSummary) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out, "# vmaf_summary")?;
+    drop(out);
+
+    let stdout = std::io::stdout();
+    let mut wtr = csv::Writer::from_writer(stdout.lock());
+    wtr.write_record([
+        "total_transcodes",
+        "average_target_vmaf",
+        "average_achieved_vmaf",
+        "average_iterations",
+        "missed_target_count",
+        "fallback_count",
+        "fallback_rate",
+    ])?;
+    wtr.write_record([
+        summary.total_transcodes.to_string(),
+        format_optional_score(summary.average_target_vmaf),
+        format_optional_score(summary.average_achieved_vmaf),
+        format_optional_score(summary.average_iterations),
+        summary.missed_target_count.to_string(),
+        summary.fallback_count.to_string(),
+        format_optional_rate(summary.fallback_rate),
+    ])?;
+    wtr.flush()?;
+    print_vmaf_bottom_csv(summary)
+}
+
+fn print_vmaf_bottom_csv(summary: &VmafSummary) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out)?;
+    writeln!(out, "# vmaf_bottom_files")?;
+    drop(out);
+
+    let stdout = std::io::stdout();
+    let mut wtr = csv::Writer::from_writer(stdout.lock());
+    wtr.write_record([
+        "path",
+        "file_id",
+        "target_vmaf",
+        "achieved_vmaf",
+        "deficit",
+        "iterations",
+        "fallback_used",
+    ])?;
+    for file in &summary.bottom_files {
+        wtr.write_record([
+            file.path.clone().unwrap_or_default(),
+            file.file_id.clone(),
+            file.target_vmaf.to_string(),
+            format!("{:.2}", file.achieved_vmaf),
+            format!("{:.2}", file.deficit),
+            file.iterations.to_string(),
+            file.fallback_used.to_string(),
+        ])?;
+    }
+    wtr.flush()?;
+    Ok(())
+}
+
 // ── Error reporting ────────────────────────────────────────
 
 // This handler threads through multiple error-report modes (list sessions,
 // filter by session / plan / format) and relies on shared local state;
 // splitting it further would require threading every filter separately.
 #[allow(clippy::too_many_lines)]
-fn run_errors(store: &dyn voom_domain::storage::StorageTrait, args: &ReportArgs) -> Result<()> {
+fn run_errors(
+    store: &dyn voom_domain::storage::StorageTrait,
+    args: &ReportArgs,
+    format: OutputFormat,
+) -> Result<()> {
     use voom_domain::plan::ExecutionDetail;
 
     if args.list_sessions {
@@ -1280,7 +1711,7 @@ fn run_errors(store: &dyn voom_domain::storage::StorageTrait, args: &ReportArgs)
             eprintln!("{}", style("No sessions with errors found.").dim());
             return Ok(());
         }
-        if let OutputFormat::Json = args.format {
+        if let OutputFormat::Json = format {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&sessions).context("serialize sessions")?
@@ -1327,7 +1758,7 @@ fn run_errors(store: &dyn voom_domain::storage::StorageTrait, args: &ReportArgs)
         return Ok(());
     }
 
-    if let OutputFormat::Json = args.format {
+    if let OutputFormat::Json = format {
         println!(
             "{}",
             serde_json::to_string_pretty(&failures).context("serialize failures")?
@@ -1443,6 +1874,7 @@ mod tests {
     fn test_build_request_no_flags_gives_summary() {
         let args = ReportArgs {
             format: OutputFormat::Table,
+            json: false,
             library: false,
             plans: false,
             savings: false,
@@ -1454,6 +1886,7 @@ mod tests {
             snapshot: false,
             files: false,
             integrity: false,
+            vmaf: false,
             errors: false,
             session: None,
             list_sessions: false,
@@ -1467,6 +1900,7 @@ mod tests {
     fn test_build_request_all_flag() {
         let args = ReportArgs {
             format: OutputFormat::Table,
+            json: false,
             library: false,
             plans: false,
             savings: false,
@@ -1478,6 +1912,7 @@ mod tests {
             snapshot: false,
             files: false,
             integrity: false,
+            vmaf: false,
             errors: false,
             session: None,
             list_sessions: false,
@@ -1492,6 +1927,7 @@ mod tests {
     fn test_build_request_specific_sections() {
         let args = ReportArgs {
             format: OutputFormat::Table,
+            json: false,
             library: false,
             plans: true,
             savings: false,
@@ -1503,6 +1939,7 @@ mod tests {
             snapshot: false,
             files: false,
             integrity: false,
+            vmaf: false,
             errors: false,
             session: None,
             list_sessions: false,
@@ -1534,6 +1971,7 @@ mod tests {
     fn test_is_summary_request() {
         let default_args = ReportArgs {
             format: OutputFormat::Table,
+            json: false,
             library: false,
             plans: false,
             savings: false,
@@ -1545,6 +1983,7 @@ mod tests {
             snapshot: false,
             files: false,
             integrity: false,
+            vmaf: false,
             errors: false,
             session: None,
             list_sessions: false,

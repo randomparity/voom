@@ -4444,4 +4444,230 @@ mod test_verify {
             "expected never_verified=0 after a successful verify, got: {after_out}"
         );
     }
+
+    #[test]
+    fn vmaf_summary_reports_aggregate_metrics() {
+        let env = TestEnv::new();
+        seed_vmaf_outcomes(&env);
+
+        let output = env
+            .voom()
+            .args(["report", "--vmaf", "--format", "plain"])
+            .output()
+            .expect("run report --vmaf");
+        assert!(output.status.success());
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("total_transcodes=6"),
+            "expected target-vmaf transcode count, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("average_target_vmaf=92.50"),
+            "expected average target VMAF, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("average_achieved_vmaf=91.25"),
+            "expected average achieved VMAF, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("average_iterations=2.50"),
+            "expected average iterations, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("missed_target_count=3"),
+            "expected count of transcodes below target minus one, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("fallback_rate=0.33"),
+            "expected fallback rate, got: {stdout}"
+        );
+        assert!(
+            stdout.find("/media/movie-d.mkv").unwrap() < stdout.find("/media/movie-b.mkv").unwrap(),
+            "expected bottom files sorted by largest deficit first, got: {stdout}"
+        );
+    }
+
+    #[test]
+    fn vmaf_summary_empty_state_is_clean() {
+        let env = TestEnv::new();
+        env.voom().args(["db", "vacuum"]).assert().success();
+
+        env.voom()
+            .args(["report", "--vmaf"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "no VMAF-guided transcodes recorded yet",
+            ));
+    }
+
+    #[test]
+    fn vmaf_summary_csv_is_table_export_friendly() {
+        let env = TestEnv::new();
+        seed_vmaf_outcomes(&env);
+
+        let output = env
+            .voom()
+            .args(["report", "--vmaf", "--format", "csv"])
+            .output()
+            .expect("run report --vmaf --format csv");
+        assert!(output.status.success());
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("# vmaf_summary\n"),
+            "expected summary csv section, got: {stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "total_transcodes,average_target_vmaf,average_achieved_vmaf,average_iterations"
+            ),
+            "expected aggregate csv header, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("# vmaf_bottom_files\n"),
+            "expected bottom-files csv section, got: {stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "/media/movie-d.mkv,00000000-0000-0000-0000-00000000000d,95,89.50,5.50,4,true"
+            ),
+            "expected largest deficit row, got: {stdout}"
+        );
+    }
+
+    #[test]
+    fn vmaf_summary_json_is_stable() {
+        let env = TestEnv::new();
+        seed_vmaf_outcomes(&env);
+
+        let output = env
+            .voom()
+            .args(["report", "--vmaf", "--json"])
+            .output()
+            .expect("run report --vmaf --json");
+        assert!(output.status.success());
+        let json: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("parse report JSON");
+
+        insta::assert_json_snapshot!(json, @r###"
+        {
+          "average_achieved_vmaf": 91.25,
+          "average_iterations": 2.5,
+          "average_target_vmaf": 92.5,
+          "bottom_files": [
+            {
+              "achieved_vmaf": 89.5,
+              "deficit": 5.5,
+              "fallback_used": true,
+              "file_id": "00000000-0000-0000-0000-00000000000d",
+              "iterations": 4,
+              "path": "/media/movie-d.mkv",
+              "target_vmaf": 95
+            },
+            {
+              "achieved_vmaf": 91.5,
+              "deficit": 1.5,
+              "fallback_used": false,
+              "file_id": "00000000-0000-0000-0000-00000000000b",
+              "iterations": 3,
+              "path": "/media/movie-b.mkv",
+              "target_vmaf": 93
+            },
+            {
+              "achieved_vmaf": 88.8,
+              "deficit": 1.2,
+              "fallback_used": true,
+              "file_id": "00000000-0000-0000-0000-00000000000e",
+              "iterations": 3,
+              "path": "/media/movie-e.mkv",
+              "target_vmaf": 90
+            },
+            {
+              "achieved_vmaf": 93.5,
+              "deficit": 0.5,
+              "fallback_used": false,
+              "file_id": "00000000-0000-0000-0000-00000000000f",
+              "iterations": 2,
+              "path": "/media/movie-f.mkv",
+              "target_vmaf": 94
+            }
+          ],
+          "fallback_count": 2,
+          "fallback_rate": 0.3333,
+          "missed_target_count": 3,
+          "total_transcodes": 6
+        }
+        "###);
+    }
+
+    fn seed_vmaf_outcomes(env: &TestEnv) {
+        env.voom().args(["db", "vacuum"]).assert().success();
+        let conn = rusqlite::Connection::open(env.db_path()).expect("open db");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-08T00:00:00Z")
+            .expect("parse timestamp")
+            .with_timezone(&chrono::Utc);
+
+        for suffix in ["a", "b", "c", "d", "e", "f", "untargeted"] {
+            let file_id = vmaf_file_id(suffix);
+            let path = format!("/media/movie-{suffix}.mkv");
+            conn.execute(
+                "INSERT INTO files \
+                 (id, path, filename, size, content_hash, status, container, \
+                  tags, plugin_metadata, introspected_at, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, 1000, ?4, 'active', 'matroska', '{}', '{}', ?5, ?5, ?5)",
+                rusqlite::params![
+                    file_id,
+                    path,
+                    format!("movie-{suffix}.mkv"),
+                    format!("hash-{suffix}"),
+                    now.to_rfc3339(),
+                ],
+            )
+            .expect("insert file");
+        }
+
+        for (index, file_id, target, achieved, iterations, fallback) in [
+            (1, "a", Some(93), Some(93.2), 2, false),
+            (2, "b", Some(93), Some(91.5), 3, false),
+            (3, "c", Some(90), Some(91.0), 1, false),
+            (4, "d", Some(95), Some(89.5), 4, true),
+            (5, "e", Some(90), Some(88.8), 3, true),
+            (6, "f", Some(94), Some(93.5), 2, false),
+            (7, "untargeted", None, Some(96.0), 1, false),
+        ] {
+            conn.execute(
+                "INSERT INTO transcode_outcomes \
+                 (id, file_id, target_vmaf, achieved_vmaf, crf_used, bitrate_used, \
+                  iterations, sample_strategy, fallback_used, completed_at) \
+                 VALUES (?1, ?2, ?3, ?4, 22, NULL, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    format!("00000000-0000-0000-0000-00000000000{index}"),
+                    vmaf_file_id(file_id),
+                    target,
+                    achieved,
+                    iterations,
+                    r#"{"Scenes":{"count":3,"duration":"5s"}}"#,
+                    i64::from(fallback),
+                    (now + chrono::Duration::minutes(index)).to_rfc3339(),
+                ],
+            )
+            .expect("insert transcode outcome");
+        }
+    }
+
+    fn vmaf_file_id(suffix: &str) -> String {
+        match suffix {
+            "a" => "00000000-0000-0000-0000-00000000000a",
+            "b" => "00000000-0000-0000-0000-00000000000b",
+            "c" => "00000000-0000-0000-0000-00000000000c",
+            "d" => "00000000-0000-0000-0000-00000000000d",
+            "e" => "00000000-0000-0000-0000-00000000000e",
+            "f" => "00000000-0000-0000-0000-00000000000f",
+            "untargeted" => "00000000-0000-0000-0000-000000000010",
+            _ => panic!("unknown VMAF fixture suffix: {suffix}"),
+        }
+        .to_string()
+    }
 }
