@@ -8,7 +8,6 @@
 pub mod ffprobe;
 pub mod parser;
 
-use std::process::Command;
 use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
@@ -51,11 +50,7 @@ impl FfprobeIntrospectorPlugin {
 
     /// Probe whether the configured `ffprobe` binary is callable.
     fn detect_available(ffprobe_path: &str) -> bool {
-        Command::new(ffprobe_path)
-            .arg("-version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        voom_process::probe_tool_status(ffprobe_path, &["-version"], Duration::from_secs(10))
     }
 
     /// Set a custom path to the ffprobe binary.

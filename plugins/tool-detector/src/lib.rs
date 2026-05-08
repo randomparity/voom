@@ -1,8 +1,9 @@
 //! Tool detector plugin: discovers and caches external tool availability and versions.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::process::Command;
+use std::env;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
@@ -141,7 +142,7 @@ impl Plugin for ToolDetectorPlugin {
 
 /// Detect a tool by running it and parsing the version output.
 fn detect_tool(name: &str, args: &[&str]) -> Option<DetectedTool> {
-    let output = Command::new(name).args(args).output().ok()?;
+    let output = voom_process::run_with_timeout(name, args, Duration::from_secs(10)).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -215,20 +216,52 @@ fn parse_version(tool_name: &str, output: &str) -> String {
     }
 }
 
-/// Find the full path to a tool using `which`.
+/// Find the full path to a tool by scanning `PATH`.
 fn find_tool_path(name: &str) -> Option<PathBuf> {
-    Command::new("which").arg(name).output().ok().and_then(|o| {
-        if o.status.success() {
-            let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if path.is_empty() {
-                None
-            } else {
-                Some(PathBuf::from(path))
-            }
-        } else {
-            None
-        }
-    })
+    let paths = env::var_os("PATH")?;
+    find_tool_path_in_paths(name, env::split_paths(&paths))
+}
+
+fn find_tool_path_in_paths(
+    name: &str,
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    paths
+        .into_iter()
+        .flat_map(|path| candidate_paths(&path, name))
+        .find(|path| is_executable_file(path))
+}
+
+fn candidate_paths(path: &Path, name: &str) -> Vec<PathBuf> {
+    if cfg!(windows) && Path::new(name).extension().is_none() {
+        let extensions = env::var_os("PATHEXT")
+            .map(|value| {
+                env::split_paths(&value)
+                    .map(|ext| ext.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| vec![".COM".into(), ".EXE".into(), ".BAT".into(), ".CMD".into()]);
+
+        extensions
+            .into_iter()
+            .map(|ext| path.join(format!("{name}{ext}")))
+            .collect()
+    } else {
+        vec![path.join(name)]
+    }
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    path.metadata()
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 #[cfg(test)]
@@ -316,6 +349,30 @@ mod tests {
     #[test]
     fn test_parse_version_empty() {
         assert_eq!(parse_version("ffprobe", ""), "unknown");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn find_tool_path_in_paths_requires_executable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tool = dir.path().join("fake-tool");
+        std::fs::write(&tool, "#!/bin/sh\n").expect("write tool");
+
+        assert_eq!(
+            find_tool_path_in_paths("fake-tool", [dir.path().to_path_buf()]),
+            None
+        );
+
+        let mut perms = std::fs::metadata(&tool).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&tool, perms).expect("chmod");
+
+        assert_eq!(
+            find_tool_path_in_paths("fake-tool", [dir.path().to_path_buf()]),
+            Some(tool)
+        );
     }
 
     #[test]
