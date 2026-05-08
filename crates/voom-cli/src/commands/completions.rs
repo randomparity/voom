@@ -15,7 +15,9 @@ pub fn run(args: &CompletionsArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::cli::{Cli, CompletionsArgs};
+    use clap::CommandFactory;
+    use clap_complete::generate;
 
     #[test]
     fn test_generate_bash_completions_succeeds() {

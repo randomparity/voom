@@ -405,8 +405,8 @@ pub(crate) fn open_store_in(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::config::KNOWN_PLUGIN_NAMES;
+    use crate::app::{bootstrap_kernel_with_store, open_store};
+    use crate::config::{AppConfig, KNOWN_PLUGIN_NAMES};
 
     #[test]
     fn test_known_plugin_names_matches_bootstrap_registration() {

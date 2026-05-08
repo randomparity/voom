@@ -74,7 +74,7 @@ voom/
 │   └── voom-plugin-sdk/      # SDK crate for WASM plugin authors
 ├── plugins/                  # Native plugins (compiled into binary)
 │   ├── discovery/            # Filesystem walking (walkdir + rayon), content hashing (xxHash64)
-│   ├── ffprobe-introspector/ # ffprobe JSON parsing, codec/HDR/VFR detection (kernel-registered)
+│   ├── ffprobe-introspector/ # ffprobe JSON parsing, codec/HDR/VFR detection (direct-call)
 │   ├── tool-detector/        # PATH lookup, version parsing for external tools
 │   ├── sqlite-store/         # SQLite persistence (r2d2 pool, WAL mode)
 │   ├── policy-evaluator/     # Track filtering, condition evaluation, Plan generation (library)
@@ -126,7 +126,10 @@ pub trait Plugin: Send + Sync {
 
 Plugins that participate in event-driven coordination override `handles()` and `on_event()`. Library-only plugins (policy-evaluator, phase-orchestrator, web-server) are called directly by the CLI and are not registered with the kernel — they don't participate in event dispatch.
 
-The ffprobe-introspector is both kernel-registered (subscribes to `FileDiscovered` to enqueue introspection jobs) and called directly by the CLI (for deterministic progress reporting). The bus-tracer is a development tool that logs events to a file with configurable glob-pattern filtering.
+The ffprobe-introspector is registered so its availability and capabilities are visible through
+the kernel, but it does not subscribe to events. The CLI calls it directly for deterministic
+progress reporting and worker-pool concurrency. The bus-tracer is a development tool that logs
+events to a file with configurable glob-pattern filtering.
 
 ### `verifier` vs `health-checker`
 
@@ -253,7 +256,9 @@ There is no duplication of side effects. CLI commands never call storage methods
 | `scan` | `discovery.scan()`, `introspect_file()` | `FileDiscovered`, `FileIntrospected`, `FileIntrospectionFailed` |
 | `process` | `discovery.scan()`, `introspect_file()`, `evaluate()`, `orchestrate()` | `FileDiscovered`, `FileIntrospected`, `PlanExecuting`, `PlanCreated`, `PlanCompleted`/`PlanFailed` |
 
-Both commands dispatch `FileDiscovered` events so sqlite-store records files in the `discovered_files` staging table and ffprobe-introspector enqueues introspection jobs. Introspection is still driven directly by the CLI for deterministic progress reporting; the enqueued jobs exist for future daemon-mode use.
+Both commands dispatch `FileDiscovered` events so sqlite-store records files in the
+`discovered_files` staging table. Introspection is driven directly by the CLI for deterministic
+progress reporting and worker-pool concurrency.
 
 ## Data Flow
 
@@ -267,12 +272,12 @@ DSL Policy File (.voom)              Media Files on Disk
       ▼                              FileDiscovered events
   CompiledPolicy                       ┌────┴────┐
       │                                │         │
-      │                          Storage      Introspector
-      │                          Plugin       Plugin
-      │                         (staging)   (enqueue job)
+      │                          Storage
+      │                          Plugin
+      │                         (staging)
       │                                │
       │                         Introspection
-      │                        (ffprobe, direct)
+      │                        (ffprobe direct-call)
       │                                │
       │                        FileIntrospected events
       │                                │

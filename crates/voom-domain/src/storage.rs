@@ -533,8 +533,8 @@ pub trait PendingOpsStorage: Send + Sync {
 /// Verification record CRUD and aggregate queries.
 ///
 /// # Errors
-/// Implementations return [`VoomError::Storage`] for any underlying database
-/// failure.
+/// Implementations return [`crate::errors::VoomError::Storage`] for any
+/// underlying database failure.
 pub trait VerificationStorage: Send + Sync {
     /// Insert a new verification record.
     fn insert_verification(&self, record: &crate::verification::VerificationRecord) -> Result<()>;

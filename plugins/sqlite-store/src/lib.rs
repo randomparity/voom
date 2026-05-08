@@ -3,17 +3,17 @@
 pub mod schema;
 pub mod store;
 
+mod event_handlers;
+
 use std::sync::Arc;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
-use voom_domain::storage::{
-    BadFileStorage, EventLogRecord, EventLogStorage, FileStorage, HealthCheckRecord,
-    HealthCheckStorage, PendingOpsStorage, PlanStorage, PluginDataStorage,
-};
+use voom_domain::storage::{EventLogRecord, EventLogStorage};
 use voom_kernel::{Plugin, PluginContext};
 
+use crate::event_handlers::handle_domain_event;
 use crate::store::SqliteStore;
 
 /// The `SQLite` storage plugin. Persists media files, jobs, plans, and stats.
@@ -75,29 +75,8 @@ impl Plugin for SqliteStorePlugin {
             });
         };
 
-        match event {
-            Event::FileDiscovered(e) => handle_file_discovered(store, e)?,
-            Event::FileIntrospected(e) => handle_file_introspected(store, e)?,
-            Event::FileIntrospectionFailed(e) => handle_file_introspection_failed(store, e)?,
-            Event::PlanExecuting(e) => handle_plan_executing(store, e),
-            Event::PlanCreated(e) => handle_plan_created(store, e)?,
-            Event::PlanCompleted(e) => handle_plan_completed(store, e)?,
-            Event::PlanSkipped(e) => handle_plan_skipped(store, e)?,
-            Event::PlanFailed(e) => handle_plan_failed(store, e)?,
-            Event::MetadataEnriched(e) => handle_metadata_enriched(store, e)?,
-            Event::ToolDetected(e) => handle_tool_detected(store, e)?,
-            Event::ExecutorCapabilities(e) => handle_executor_capabilities(store, e)?,
-            Event::HealthStatus(e) => handle_health_status(store, e)?,
-            Event::SubtitleGenerated(e) => handle_subtitle_generated(store, e),
-            _ => {
-                tracing::trace!(
-                    event_type = event.event_type(),
-                    "no domain-specific handler"
-                );
-            }
-        }
-
-        log_event(store, event);
+        handle_domain_event(store, event)?;
+        log_event(store, event)?;
 
         Ok(None)
     }
@@ -125,224 +104,25 @@ impl Plugin for SqliteStorePlugin {
     }
 }
 
-fn handle_file_discovered(
-    store: &SqliteStore,
-    e: &voom_domain::events::FileDiscoveredEvent,
-) -> Result<()> {
-    let path_str = e.path.to_string_lossy();
-    store.upsert_discovered_file(&path_str, e.size, e.content_hash.as_deref())?;
-    tracing::info!(path = %e.path.display(), "stored discovered file");
-    Ok(())
-}
-
-fn handle_file_introspected(
-    store: &SqliteStore,
-    e: &voom_domain::events::FileIntrospectedEvent,
-) -> Result<()> {
-    store.upsert_file(&e.file)?;
-    store.delete_bad_file_by_path(&e.file.path)?;
-    tracing::info!(path = %e.file.path.display(), "stored introspected file");
-    Ok(())
-}
-
-fn handle_file_introspection_failed(
-    store: &SqliteStore,
-    e: &voom_domain::events::FileIntrospectionFailedEvent,
-) -> Result<()> {
-    let bad_file = voom_domain::bad_file::BadFile::new(
-        e.path.clone(),
-        e.size,
-        e.content_hash.clone(),
-        e.error.clone(),
-        e.error_source,
-    );
-    store.upsert_bad_file(&bad_file)?;
-    tracing::info!(path = %e.path.display(), error = %e.error, "stored bad file");
-    Ok(())
-}
-
-fn handle_plan_executing(store: &SqliteStore, e: &voom_domain::events::PlanExecutingEvent) {
-    let op = voom_domain::storage::PendingOperation {
-        id: e.plan_id,
-        file_path: e.path.clone(),
-        phase_name: e.phase_name.clone(),
-        started_at: chrono::Utc::now(),
-    };
-    if let Err(err) = store.insert_pending_op(&op) {
-        tracing::warn!(
-            error = %err,
-            plan_id = %e.plan_id,
-            "failed to insert pending operation"
-        );
-    }
-}
-
-// Plan is recorded with status='pending' here; PlanCompleted/Skipped/Failed
-// drive the subsequent status update via update_plan_status(). See
-// PRIORITY_STORAGE in crates/voom-cli/src/app.rs for the ordering rationale.
-fn handle_plan_created(
-    store: &SqliteStore,
-    e: &voom_domain::events::PlanCreatedEvent,
-) -> Result<()> {
-    let plan_id = store.save_plan(&e.plan)?;
-    tracing::info!(%plan_id, "stored plan");
-    Ok(())
-}
-
-fn handle_plan_completed(
-    store: &SqliteStore,
-    e: &voom_domain::events::PlanCompletedEvent,
-) -> Result<()> {
-    tracing::info!(path = %e.path.display(), phase = %e.phase_name, "plan completed");
-    store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Completed)?;
-    if let Err(err) = store.delete_pending_op(&e.plan_id) {
-        tracing::warn!(
-            error = %err,
-            plan_id = %e.plan_id,
-            "failed to delete pending operation on completion"
-        );
-    }
-    Ok(())
-}
-
-fn handle_plan_skipped(
-    store: &SqliteStore,
-    e: &voom_domain::events::PlanSkippedEvent,
-) -> Result<()> {
-    tracing::info!(
-        path = %e.path.display(),
-        phase = %e.phase_name,
-        reason = %e.skip_reason,
-        "plan skipped"
-    );
-    store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Skipped)?;
-    Ok(())
-}
-
-fn handle_plan_failed(store: &SqliteStore, e: &voom_domain::events::PlanFailedEvent) -> Result<()> {
-    tracing::info!(path = %e.path.display(), phase = %e.phase_name, error = %e.error, "plan failed");
-    store.update_plan_status(&e.plan_id, voom_domain::storage::PlanStatus::Failed)?;
-    store.update_plan_error(&e.plan_id, &e.error, e.execution_detail.as_ref())?;
-    if let Err(err) = store.delete_pending_op(&e.plan_id) {
-        tracing::warn!(
-            error = %err,
-            plan_id = %e.plan_id,
-            "failed to delete pending operation on failure"
-        );
-    }
-    Ok(())
-}
-
-fn handle_metadata_enriched(
-    store: &SqliteStore,
-    e: &voom_domain::events::MetadataEnrichedEvent,
-) -> Result<()> {
-    let key = format!("metadata:{}", e.path.display());
-    let value = serde_json::to_vec(&e.metadata).map_err(|err| voom_domain::VoomError::Storage {
+fn log_event(store: &SqliteStore, event: &Event) -> Result<()> {
+    let payload = serde_json::to_string(event).map_err(|err| voom_domain::VoomError::Storage {
         kind: voom_domain::errors::StorageErrorKind::Other,
-        message: format!("failed to serialize enriched metadata: {err}"),
+        message: format!("failed to serialize event log payload: {err}"),
     })?;
-    store.set_plugin_data(&e.source, &key, &value)?;
-    tracing::info!(
-        path = %e.path.display(),
-        source = %e.source,
-        "stored enriched metadata"
-    );
-    Ok(())
-}
-
-fn handle_tool_detected(
-    store: &SqliteStore,
-    e: &voom_domain::events::ToolDetectedEvent,
-) -> Result<()> {
-    let key = format!("tool:{}", e.tool_name);
-    let value = serde_json::json!({
-        "tool_name": e.tool_name,
-        "version": e.version,
-        "path": e.path,
-    });
-    let bytes = serde_json::to_vec(&value).map_err(|err| voom_domain::VoomError::Storage {
-        kind: voom_domain::errors::StorageErrorKind::Other,
-        message: format!("failed to serialize tool info: {err}"),
-    })?;
-    store.set_plugin_data("tool-detector", &key, &bytes)?;
-    tracing::info!(
-        tool = %e.tool_name,
-        version = %e.version,
-        "stored detected tool"
-    );
-    Ok(())
-}
-
-fn handle_executor_capabilities(
-    store: &SqliteStore,
-    e: &voom_domain::events::ExecutorCapabilitiesEvent,
-) -> Result<()> {
-    let key = format!("executor_capabilities:{}", e.plugin_name);
-    let bytes = serde_json::to_vec(e).map_err(|err| voom_domain::VoomError::Storage {
-        kind: voom_domain::errors::StorageErrorKind::Other,
-        message: format!("failed to serialize executor capabilities: {err}"),
-    })?;
-    store.set_plugin_data(&e.plugin_name, &key, &bytes)?;
-    tracing::info!(
-        plugin = %e.plugin_name,
-        codecs_decoders = e.codecs.decoders.len(),
-        codecs_encoders = e.codecs.encoders.len(),
-        formats = e.formats.len(),
-        hw_accels = e.hw_accels.len(),
-        "stored executor capabilities"
-    );
-    Ok(())
-}
-
-fn handle_health_status(
-    store: &SqliteStore,
-    e: &voom_domain::events::HealthStatusEvent,
-) -> Result<()> {
-    let record = HealthCheckRecord::new(&e.check_name, e.passed, e.details.clone());
-    store.insert_health_check(&record)?;
-    if e.passed {
-        tracing::info!(
-            check = %e.check_name,
-            "stored health check (passed)"
-        );
-    } else {
-        tracing::warn!(
-            check = %e.check_name,
-            details = ?e.details,
-            "stored health check (FAILED)"
-        );
-    }
-    Ok(())
-}
-
-fn handle_subtitle_generated(store: &SqliteStore, e: &voom_domain::events::SubtitleGeneratedEvent) {
-    if let Err(err) = store.upsert_subtitle(
-        &e.path.to_string_lossy(),
-        &e.subtitle_path.to_string_lossy(),
-        &e.language,
-        e.forced,
-        e.title.as_deref(),
-    ) {
-        tracing::warn!(error = %err, "failed to store subtitle record");
-    }
-}
-
-fn log_event(store: &SqliteStore, event: &Event) {
     let log_record = EventLogRecord::new(
         uuid::Uuid::new_v4(),
         event.event_type().to_string(),
-        serde_json::to_string(event).unwrap_or_default(),
+        payload,
         event.summary(),
     );
-    if let Err(e) = store.insert_event_log(&log_record) {
-        tracing::warn!(error = %e, "event log insert failed");
-    }
+    store.insert_event_log(&log_record)?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use voom_domain::PluginDataStorage;
 
     #[test]
     fn test_new_creates_plugin_with_store_capability() {
