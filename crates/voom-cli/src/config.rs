@@ -350,6 +350,10 @@ pub fn default_config_contents() -> String {
 # # GPU device for HW encoding. NVIDIA: "0", "1". VA-API/QSV: "/dev/dri/renderD128".
 # # Omit to use system default.
 # # gpu_device = "0"
+# # Maximum simultaneous NVENC encode sessions. Default: 4.
+# # Lower this to 2 on small GPUs or when CUDA OOM appears under load.
+# # Applies only when NVENC is active; 0 uses the default.
+# # nvenc_max_parallel = 4
 #
 # [plugin.tvdb-metadata]
 # api_key = "your-tvdb-api-key"

@@ -31,6 +31,16 @@ use voom_domain::utils::format::format_size;
 use voom_job_manager::progress::{CompositeReporter, ProgressReporter};
 use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 
+fn hw_resource_for_backend(backend: &str) -> Option<&'static str> {
+    match backend {
+        "nvenc" => Some("hw:nvenc"),
+        "qsv" => Some("hw:qsv"),
+        "vaapi" => Some("hw:vaapi"),
+        "videotoolbox" => Some("hw:videotoolbox"),
+        _ => None,
+    }
+}
+
 /// Run the process command.
 ///
 /// Uses the event-driven + direct-call pattern throughout:
@@ -74,6 +84,22 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
     let store_for_retention = store.clone();
     let kernel_for_retention = kernel.clone();
     let capabilities = Arc::new(collector.snapshot());
+    let limited_hw_resources = ["hw:nvenc", "hw:qsv", "hw:vaapi", "hw:videotoolbox"]
+        .into_iter()
+        .filter_map(|resource| {
+            capabilities
+                .parallel_limit(resource)
+                .map(|limit| (resource.to_string(), limit))
+        })
+        .collect::<Vec<_>>();
+    let default_hw_resource =
+        hw_resource_for_backend(capabilities.best_hwaccel()).map(str::to_string);
+    let plan_limiter = Arc::new(
+        voom_job_manager::worker::PlanExecutionLimiter::from_limits_with_default(
+            limited_hw_resources,
+            default_hw_resource,
+        ),
+    );
 
     let paths = resolve_paths(&args.paths)?;
 
@@ -223,6 +249,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
                     let token = token_for_workers.clone();
                     let ffprobe_path = ffprobe_path.clone();
                     let capabilities = capabilities.clone();
+                    let plan_limiter = plan_limiter.clone();
                     let counters = counters.clone();
                     async move {
                         let ctx = ProcessContext {
@@ -237,6 +264,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
                             token: &token,
                             ffprobe_path: ffprobe_path.as_deref(),
                             capabilities: &capabilities,
+                            plan_limiter,
                             counters: &counters,
                         };
                         process_single_file(job, &ctx).await
@@ -688,6 +716,7 @@ pub(super) struct ProcessContext<'a> {
     pub(super) token: &'a CancellationToken,
     pub(super) ffprobe_path: Option<&'a str>,
     pub(super) capabilities: &'a voom_domain::CapabilityMap,
+    pub(super) plan_limiter: Arc<voom_job_manager::worker::PlanExecutionLimiter>,
     pub(super) counters: &'a RunCounters,
 }
 
@@ -845,13 +874,26 @@ mod tests {
         EventResult, FileDiscoveredEvent, FileIntrospectedEvent, PlanCreatedEvent, PlanSkippedEvent,
     };
     use voom_domain::media::MediaFile;
-    use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
+    use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings};
 
     use super::pipeline::{
         apply_detected_languages, execute_single_plan, AUDIO_LANGUAGE_DETECTOR_PLUGIN,
     };
     use super::plan_outcome::PlanOutcome;
     use super::safeguards::{check_disk_space, check_duration_shrink, check_size_increase};
+
+    #[test]
+    fn test_hw_resource_for_backend() {
+        assert_eq!(hw_resource_for_backend("nvenc"), Some("hw:nvenc"));
+        assert_eq!(hw_resource_for_backend("qsv"), Some("hw:qsv"));
+        assert_eq!(hw_resource_for_backend("vaapi"), Some("hw:vaapi"));
+        assert_eq!(
+            hw_resource_for_backend("videotoolbox"),
+            Some("hw:videotoolbox")
+        );
+        assert_eq!(hw_resource_for_backend("none"), None);
+        assert_eq!(hw_resource_for_backend("unknown"), None);
+    }
 
     /// A test plugin that counts received plan lifecycle events.
     #[allow(clippy::struct_field_names)]
@@ -948,11 +990,30 @@ mod tests {
         plan
     }
 
+    pub(super) fn test_plan_with_transcode_hw(phase: &str, hw: &str) -> Plan {
+        test_plan_with_optional_transcode_hw(phase, Some(hw))
+    }
+
+    pub(super) fn test_plan_with_optional_transcode_hw(phase: &str, hw: Option<&str>) -> Plan {
+        let mut plan = test_plan(phase, false);
+        plan.actions = vec![PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default().with_hw(hw.map(str::to_string)),
+            },
+            "Transcode video",
+        )];
+        plan
+    }
+
     /// Bundle of long-lived test fixtures shared across `ProcessContext`
     /// construction sites. Owns the `TempDir` so the resolver's working path
     /// stays valid for the test's lifetime.
     pub(super) struct TestFixture {
         capabilities: voom_domain::CapabilityMap,
+        plan_limiter: Arc<voom_job_manager::worker::PlanExecutionLimiter>,
         counters: RunCounters,
         token: CancellationToken,
         resolver: PolicyResolver,
@@ -977,6 +1038,7 @@ mod tests {
             );
             Self {
                 capabilities: voom_domain::CapabilityMap::new(),
+                plan_limiter: Arc::new(voom_job_manager::worker::PlanExecutionLimiter::default()),
                 counters: RunCounters::new(),
                 token: CancellationToken::new(),
                 resolver,
@@ -1022,6 +1084,7 @@ mod tests {
                 token: &self.token,
                 ffprobe_path: None,
                 capabilities: &self.capabilities,
+                plan_limiter: self.plan_limiter.clone(),
                 counters: &self.counters,
             }
         }

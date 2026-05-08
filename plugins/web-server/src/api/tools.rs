@@ -43,6 +43,8 @@ pub struct ExecutorCapabilitiesResponse {
     pub codecs: CodecCapabilitiesDto,
     pub formats: Vec<String>,
     pub hw_accels: Vec<String>,
+    #[serde(default)]
+    pub parallel_limits: Vec<voom_domain::events::ExecutorParallelLimit>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -189,12 +191,17 @@ mod tests {
             },
             formats: vec!["matroska".into(), "mp4".into()],
             hw_accels: vec!["videotoolbox".into()],
+            parallel_limits: vec![voom_domain::events::ExecutorParallelLimit::new(
+                "hw:nvenc", 4,
+            )],
         };
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["plugin_name"], "ffmpeg-executor");
         assert_eq!(json["codecs"]["decoders"][0], "h264");
         assert_eq!(json["formats"][0], "matroska");
         assert_eq!(json["hw_accels"][0], "videotoolbox");
+        assert_eq!(json["parallel_limits"][0]["resource"], "hw:nvenc");
+        assert_eq!(json["parallel_limits"][0]["max_parallel"], 4);
     }
 
     #[test]
@@ -206,11 +213,16 @@ mod tests {
             voom_domain::events::CodecCapabilities::new(vec!["aac".into()], vec!["aac".into()]),
             vec!["mp4".into()],
             vec![],
-        );
+        )
+        .with_parallel_limits(vec![voom_domain::events::ExecutorParallelLimit::new(
+            "hw:nvenc", 4,
+        )]);
         let bytes = serde_json::to_vec(&domain_event).unwrap();
         let dto: ExecutorCapabilitiesResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(dto.plugin_name, "ffmpeg-executor");
         assert_eq!(dto.codecs.decoders, vec!["aac"]);
+        assert_eq!(dto.parallel_limits.len(), 1);
+        assert_eq!(dto.parallel_limits[0].resource, "hw:nvenc");
     }
 
     #[test]

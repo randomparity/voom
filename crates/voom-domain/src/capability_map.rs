@@ -62,6 +62,16 @@ impl CapabilityMap {
         self.executors.get(name)
     }
 
+    #[must_use]
+    pub fn parallel_limit(&self, resource: &str) -> Option<usize> {
+        self.executors
+            .values()
+            .flat_map(|event| &event.parallel_limits)
+            .filter(|limit| limit.resource == resource && limit.max_parallel > 0)
+            .map(|limit| limit.max_parallel)
+            .min()
+    }
+
     /// Deduplicated list of hardware acceleration backends across
     /// all executors, normalized to canonical names.
     #[must_use]
@@ -201,6 +211,36 @@ mod tests {
         let caps = map.executor_capabilities("ffmpeg-executor").unwrap();
         assert_eq!(caps.hw_accels, vec!["cuda"]);
         assert!(map.executor_capabilities("other").is_none());
+    }
+
+    #[test]
+    fn test_parallel_limit_lookup_uses_lowest_positive_limit() {
+        let mut map = CapabilityMap::new();
+        map.register(
+            ExecutorCapabilitiesEvent::new(
+                "exec-a",
+                CodecCapabilities::empty(),
+                vec![],
+                vec!["cuda".into()],
+            )
+            .with_parallel_limits(vec![crate::events::ExecutorParallelLimit::new(
+                "hw:nvenc", 4,
+            )]),
+        );
+        map.register(
+            ExecutorCapabilitiesEvent::new(
+                "exec-b",
+                CodecCapabilities::empty(),
+                vec![],
+                vec!["cuda".into()],
+            )
+            .with_parallel_limits(vec![crate::events::ExecutorParallelLimit::new(
+                "hw:nvenc", 2,
+            )]),
+        );
+
+        assert_eq!(map.parallel_limit("hw:nvenc"), Some(2));
+        assert_eq!(map.parallel_limit("hw:qsv"), None);
     }
 
     #[test]
