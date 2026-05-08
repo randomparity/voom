@@ -450,9 +450,10 @@ mod tests {
         )
         .expect("script succeeds");
 
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("...[truncated "));
-        assert!(stderr_tail(&output.stderr, 2).contains("...[truncated "));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "first\nsecond\n...[truncated 13 bytes]"
+        );
     }
 
     #[cfg(unix)]
