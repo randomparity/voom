@@ -8,6 +8,7 @@ pub mod executor;
 pub mod hwaccel;
 pub mod probe;
 pub mod progress;
+pub mod vmaf;
 
 use std::time::Duration;
 

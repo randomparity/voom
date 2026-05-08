@@ -17,6 +17,7 @@ voom-kernel = { workspace = true }
 voom-process = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
@@ -26,4 +27,3 @@ workspace = true
 [dev-dependencies]
 tempfile = { workspace = true }
 chrono = { workspace = true }
-serde_json = { workspace = true }
