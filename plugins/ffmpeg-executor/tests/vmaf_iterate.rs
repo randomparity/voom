@@ -85,6 +85,34 @@ fn iterate_to_target_converges_by_bisecting_crf() {
 }
 
 #[test]
+fn iterate_to_target_accepts_scores_within_two_points() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.mkv");
+    std::fs::write(&source, b"source").unwrap();
+    let probe = MockProbe::new(vec![(23, 93.1)]);
+
+    let result = iterate_to_target_with(
+        &source,
+        95,
+        BitrateBounds::default(),
+        &MockSampleExtractor,
+        5,
+        &probe,
+    )
+    .unwrap();
+
+    assert_eq!(
+        result,
+        IterationResult {
+            final_crf: 23,
+            final_bitrate: Some("5700k".to_string()),
+            achieved_vmaf: 93.1,
+            iterations: 1,
+        }
+    );
+}
+
+#[test]
 fn iterate_to_target_stops_with_libvmaf_unavailable() {
     struct UnavailableProbe;
 

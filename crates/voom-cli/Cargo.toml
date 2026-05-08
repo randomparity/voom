@@ -78,6 +78,7 @@ toml = { workspace = true }
 default = ["wasm"]
 wasm = ["voom-kernel/wasm"]
 functional = []
+integration = []
 
 [lints]
 workspace = true

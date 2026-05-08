@@ -490,7 +490,7 @@ fn compute_vmaf_with_environment(
     }
     let model_path = model_path(model, env)?;
     let log_path = std::env::temp_dir().join(format!("voom-vmaf-{}.json", uuid::Uuid::new_v4()));
-    let args = ffmpeg_vmaf_args(reference, distorted, &model_path, &log_path);
+    let args = ffmpeg_vmaf_args(reference, distorted, model_path.as_deref(), &log_path);
     let output = voom_process::run_with_timeout("ffmpeg", &args, FFMPEG_TIMEOUT);
     match output {
         Ok(output) if output.status.success() => {
@@ -568,13 +568,19 @@ fn model_dir_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-fn model_path(model: VmafModel, env: &VmafEnvironment) -> Result<PathBuf, VmafError> {
+fn model_path(model: VmafModel, env: &VmafEnvironment) -> Result<Option<PathBuf>, VmafError> {
     let Some(model_dir) = &env.model_dir else {
-        return Err(VmafError::ModelNotFound(model));
+        return if model == VmafModel::V061 {
+            Ok(None)
+        } else {
+            Err(VmafError::ModelNotFound(model))
+        };
     };
     let path = model_dir.join(model.file_name());
     if path.is_file() {
-        Ok(path)
+        Ok(Some(path))
+    } else if model == VmafModel::V061 {
+        Ok(None)
     } else {
         Err(VmafError::ModelNotFound(model))
     }
@@ -583,14 +589,18 @@ fn model_path(model: VmafModel, env: &VmafEnvironment) -> Result<PathBuf, VmafEr
 fn ffmpeg_vmaf_args(
     reference: &Path,
     distorted: &Path,
-    model_path: &Path,
+    model_path: Option<&Path>,
     log_path: &Path,
 ) -> Vec<String> {
-    let filter = format!(
-        "libvmaf=model=path={}:log_path={}:log_fmt=json",
-        model_path.display(),
-        log_path.display()
-    );
+    let filter = if let Some(model_path) = model_path {
+        format!(
+            "libvmaf=model=path={}:log_path={}:log_fmt=json",
+            model_path.display(),
+            log_path.display()
+        )
+    } else {
+        format!("libvmaf=log_path={}:log_fmt=json", log_path.display())
+    };
     vec![
         "-hide_banner".to_string(),
         "-i".to_string(),
@@ -660,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_model_returns_model_not_found() {
+    fn missing_default_model_uses_libvmaf_builtin_default() {
         let dir = tempfile::tempdir().unwrap();
         let env = VmafEnvironment {
             libvmaf_supported: true,
@@ -675,6 +685,25 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(err, VmafError::ModelNotFound(VmafModel::V061)));
+        assert!(matches!(err, VmafError::FfmpegFailed { .. }));
+    }
+
+    #[test]
+    fn missing_non_default_model_returns_model_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = VmafEnvironment {
+            libvmaf_supported: true,
+            model_dir: Some(dir.path().to_path_buf()),
+        };
+
+        let err = compute_vmaf_with_environment(
+            Path::new("reference.mkv"),
+            Path::new("distorted.mkv"),
+            VmafModel::V4k,
+            &env,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, VmafError::ModelNotFound(VmafModel::V4k)));
     }
 }

@@ -12,7 +12,7 @@ use crate::vmaf::{
 const DEFAULT_START_CRF: u32 = 23;
 const MIN_CRF: u32 = 0;
 const MAX_CRF: u32 = 51;
-const TARGET_TOLERANCE: f64 = 1.0;
+const TARGET_TOLERANCE: f64 = 2.0;
 const FFMPEG_TIMEOUT: Duration = Duration::from_secs(4 * 60 * 60);
 
 /// Optional hard bitrate ceilings for iterative sample encodes.

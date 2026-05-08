@@ -50,3 +50,30 @@ Several crates use [`proptest`](https://docs.rs/proptest) for property-based tes
 **Commit these files.** This matches proptest's own recommendation in the auto-generated header of each file and ensures every developer and every CI run benefits from previously-found shrunk failures. New crates that adopt proptest should commit their regressions file alongside the test once the first useful seed exists.
 
 Do not add `*.proptest-regressions` to `.gitignore`.
+
+## VMAF integration tests
+
+The live VMAF tests are gated behind the `voom-cli` `integration` feature so
+default `cargo test --workspace` runs stay fast and do not require libvmaf.
+
+Requirements:
+
+- `ffmpeg` on `PATH`
+- `ffmpeg -filters` lists `libvmaf`
+- `libx264` is available for generating the synthetic source corpus
+
+Run the E2E corpus test locally:
+
+```bash
+cargo test -p voom-cli --features integration --test vmaf_e2e
+```
+
+Regenerate the default synthetic corpus manually:
+
+```bash
+tests/vmaf_corpus/generate.sh tests/vmaf_corpus/generated
+```
+
+CI can run the same command in a separate job after installing an ffmpeg build
+with libvmaf support. Keep it out of the default test job because the corpus
+test performs live transcodes and VMAF measurements.

@@ -154,6 +154,9 @@ cargo build
 # Run tests (~800+)
 cargo test
 
+# Run live ffmpeg/libvmaf integration tests
+cargo test -p voom-cli --features integration --test vmaf_e2e
+
 # CLI help
 cargo run -- --help
 
