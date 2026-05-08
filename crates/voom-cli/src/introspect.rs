@@ -61,8 +61,18 @@ pub async fn introspect_file(
     content_hash: Option<String>,
     kernel: &std::sync::Arc<voom_kernel::Kernel>,
     ffprobe_path: Option<&str>,
+    animation_mode: voom_ffprobe_introspector::parser::AnimationDetectionMode,
 ) -> std::result::Result<voom_domain::media::MediaFile, VoomError> {
-    introspect_file_inner(path, file_size, content_hash, kernel, ffprobe_path, true).await
+    introspect_file_inner(
+        path,
+        file_size,
+        content_hash,
+        kernel,
+        ffprobe_path,
+        animation_mode,
+        true,
+    )
+    .await
 }
 
 /// Like [`introspect_file`] but skips the `FileIntrospected` event dispatch.
@@ -74,8 +84,18 @@ pub async fn introspect_file_no_dispatch(
     content_hash: Option<String>,
     kernel: &std::sync::Arc<voom_kernel::Kernel>,
     ffprobe_path: Option<&str>,
+    animation_mode: voom_ffprobe_introspector::parser::AnimationDetectionMode,
 ) -> std::result::Result<voom_domain::media::MediaFile, VoomError> {
-    introspect_file_inner(path, file_size, content_hash, kernel, ffprobe_path, false).await
+    introspect_file_inner(
+        path,
+        file_size,
+        content_hash,
+        kernel,
+        ffprobe_path,
+        animation_mode,
+        false,
+    )
+    .await
 }
 
 async fn introspect_file_inner(
@@ -84,12 +104,14 @@ async fn introspect_file_inner(
     content_hash: Option<String>,
     kernel: &std::sync::Arc<voom_kernel::Kernel>,
     ffprobe_path: Option<&str>,
+    animation_mode: voom_ffprobe_introspector::parser::AnimationDetectionMode,
     dispatch_event: bool,
 ) -> std::result::Result<voom_domain::media::MediaFile, VoomError> {
     let mut introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
     if let Some(fp) = ffprobe_path {
         introspector = introspector.with_ffprobe_path(fp);
     }
+    introspector = introspector.with_animation_detection_mode(animation_mode);
     let path_for_event = path.clone();
     let hash_for_event = content_hash.clone();
     let path_display = path.display().to_string();

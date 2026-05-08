@@ -119,6 +119,13 @@ impl MediaFile {
     }
 
     #[must_use]
+    pub fn has_animation_video(&self) -> bool {
+        self.tracks
+            .iter()
+            .any(|track| track.track_type.is_video() && track.is_animation == Some(true))
+    }
+
+    #[must_use]
     pub fn with_tracks(mut self, tracks: Vec<Track>) -> Self {
         self.tracks = tracks;
         self
@@ -168,6 +175,8 @@ pub struct Track {
     pub is_hdr: bool,
     pub hdr_format: Option<String>,
     pub pixel_format: Option<String>,
+    #[serde(default)]
+    pub is_animation: Option<bool>,
 }
 
 impl Default for Track {
@@ -191,6 +200,7 @@ impl Default for Track {
             is_hdr: false,
             hdr_format: None,
             pixel_format: None,
+            is_animation: None,
         }
     }
 }
@@ -619,6 +629,34 @@ mod tests {
         assert_eq!(mf.duration, 120.5);
         assert_eq!(mf.tracks.len(), 1);
         assert_eq!(mf.tags["title"], "Test Movie");
+    }
+
+    #[test]
+    fn test_track_deserializes_missing_animation_as_unknown() {
+        let json = r#"{
+            "index":0,
+            "track_type":"Video",
+            "codec":"h264",
+            "language":"und",
+            "title":"",
+            "is_default":false,
+            "is_forced":false,
+            "channels":null,
+            "channel_layout":null,
+            "sample_rate":null,
+            "bit_depth":null,
+            "width":1920,
+            "height":1080,
+            "frame_rate":23.976,
+            "is_vfr":false,
+            "is_hdr":false,
+            "hdr_format":null,
+            "pixel_format":"yuv420p"
+        }"#;
+
+        let track: Track = serde_json::from_str(json).unwrap();
+
+        assert_eq!(track.is_animation, None);
     }
 
     #[test]

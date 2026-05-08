@@ -19,6 +19,7 @@ use voom_kernel::{Plugin, PluginContext};
 pub struct FfprobeIntrospectorPlugin {
     ffprobe_path: String,
     timeout: Duration,
+    animation_detection: parser::AnimationDetectionMode,
     available: bool,
     capabilities: Vec<Capability>,
 }
@@ -29,6 +30,7 @@ impl FfprobeIntrospectorPlugin {
         Self {
             ffprobe_path: "ffprobe".into(),
             timeout: Duration::from_secs(60),
+            animation_detection: parser::AnimationDetectionMode::default(),
             available: false,
             capabilities: Self::default_capabilities(),
         }
@@ -65,6 +67,17 @@ impl FfprobeIntrospectorPlugin {
         &self.ffprobe_path
     }
 
+    #[must_use]
+    pub fn with_animation_detection_mode(mut self, mode: parser::AnimationDetectionMode) -> Self {
+        self.animation_detection = mode;
+        self
+    }
+
+    #[must_use]
+    pub fn animation_detection_mode(&self) -> parser::AnimationDetectionMode {
+        self.animation_detection
+    }
+
     /// Introspect a single file and return the event.
     pub fn introspect(
         &self,
@@ -73,7 +86,13 @@ impl FfprobeIntrospectorPlugin {
         content_hash: Option<&str>,
     ) -> Result<FileIntrospectedEvent> {
         let json = ffprobe::run_ffprobe(&self.ffprobe_path, path, self.timeout)?;
-        let file = parser::parse_ffprobe_output(&json, path, size, content_hash)?;
+        let file = parser::parse_ffprobe_output_with_animation_detection(
+            &json,
+            path,
+            size,
+            content_hash,
+            self.animation_detection,
+        )?;
         Ok(FileIntrospectedEvent::new(file))
     }
 }
@@ -108,6 +127,13 @@ impl Plugin for FfprobeIntrospectorPlugin {
             Ok(config) => {
                 if let Some(path) = config.get("ffprobe_path").and_then(|v| v.as_str()) {
                     self.ffprobe_path = path.to_string();
+                }
+                if let Some(mode) = config
+                    .get("detect_animation")
+                    .and_then(|v| v.as_str())
+                    .and_then(parser::AnimationDetectionMode::parse)
+                {
+                    self.animation_detection = mode;
                 }
             }
             Err(e) => {
@@ -147,6 +173,15 @@ mod tests {
     fn test_custom_ffprobe_path() {
         let plugin = FfprobeIntrospectorPlugin::new().with_ffprobe_path("/usr/local/bin/ffprobe");
         assert_eq!(plugin.ffprobe_path(), "/usr/local/bin/ffprobe");
+    }
+
+    #[test]
+    fn test_animation_detection_defaults_to_metadata_only() {
+        let plugin = FfprobeIntrospectorPlugin::new();
+        assert_eq!(
+            plugin.animation_detection_mode(),
+            parser::AnimationDetectionMode::MetadataOnly
+        );
     }
 
     #[test]
@@ -194,6 +229,18 @@ mod tests {
         let ctx = PluginContext::new(config, PathBuf::from("/tmp"));
         plugin.init(&ctx).unwrap();
         assert_eq!(plugin.ffprobe_path(), "/custom/ffprobe");
+    }
+
+    #[test]
+    fn test_init_reads_animation_detection_from_config() {
+        let mut plugin = FfprobeIntrospectorPlugin::new();
+        let config = serde_json::json!({"detect_animation": "heuristic"});
+        let ctx = PluginContext::new(config, PathBuf::from("/tmp"));
+        plugin.init(&ctx).unwrap();
+        assert_eq!(
+            plugin.animation_detection_mode(),
+            parser::AnimationDetectionMode::Heuristic
+        );
     }
 
     #[test]

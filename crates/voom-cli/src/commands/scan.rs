@@ -80,6 +80,7 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
             &needs_introspection,
             &kernel,
             config.ffprobe_path(),
+            config.animation_detection_mode(),
             &token,
             quiet,
         )
@@ -404,6 +405,7 @@ async fn run_introspection(
     events: &[&FileDiscoveredEvent],
     kernel: &Arc<voom_kernel::Kernel>,
     ffprobe_path: Option<&str>,
+    animation_mode: voom_ffprobe_introspector::parser::AnimationDetectionMode,
     token: &CancellationToken,
     quiet: bool,
 ) -> (u64, u64) {
@@ -427,6 +429,7 @@ async fn run_introspection(
             event.content_hash.clone(),
             kernel,
             ffprobe_path,
+            animation_mode,
         )
         .await
         {

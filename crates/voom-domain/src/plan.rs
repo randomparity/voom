@@ -506,6 +506,27 @@ impl From<ActionParamsCompat> for ActionParams {
 
 impl TranscodeSettings {
     #[must_use]
+    pub fn resolve_target_vmaf(&self, file: &MediaFile) -> Option<u32> {
+        let target = self.target_vmaf;
+        let animation_override = self
+            .vmaf_overrides
+            .as_ref()
+            .and_then(|overrides| overrides.get("animation"))
+            .copied();
+        let resolved = if file.has_animation_video() {
+            animation_override.or(target)
+        } else {
+            target
+        };
+        tracing::debug!(
+            target_used = ?resolved,
+            override_applied = resolved != target,
+            "vmaf target resolution"
+        );
+        resolved
+    }
+
+    #[must_use]
     pub fn with_crf(mut self, crf: Option<u32>) -> Self {
         self.crf = crf;
         self
@@ -983,7 +1004,7 @@ impl ActionResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::media::MediaFile;
+    use crate::media::{MediaFile, Track};
     use std::path::PathBuf;
 
     fn sample_plan() -> Plan {
@@ -1165,6 +1186,33 @@ mod tests {
         let msgpack = rmp_serde::to_vec(&settings).unwrap();
         let restored: TranscodeSettings = rmp_serde::from_slice(&msgpack).unwrap();
         assert_eq!(settings, restored);
+    }
+
+    #[test]
+    fn test_resolve_target_vmaf_uses_animation_override_for_animation_track() {
+        let settings = TranscodeSettings::default()
+            .with_target_vmaf(Some(93))
+            .with_vmaf_overrides(Some(HashMap::from([("animation".into(), 88)])));
+        let mut file = MediaFile::new(PathBuf::from("/test.mkv"));
+        let mut track = Track::new(0, TrackType::Video, "h264".into());
+        track.is_animation = Some(true);
+        file.tracks.push(track);
+
+        assert_eq!(settings.resolve_target_vmaf(&file), Some(88));
+    }
+
+    #[test]
+    fn test_resolve_target_vmaf_ignores_animation_override_when_unknown() {
+        let settings = TranscodeSettings::default()
+            .with_target_vmaf(Some(93))
+            .with_vmaf_overrides(Some(HashMap::from([("animation".into(), 88)])));
+        let file = MediaFile::new(PathBuf::from("/test.mkv")).with_tracks(vec![Track::new(
+            0,
+            TrackType::Video,
+            "h264".into(),
+        )]);
+
+        assert_eq!(settings.resolve_target_vmaf(&file), Some(93));
     }
 
     #[test]

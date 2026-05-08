@@ -170,6 +170,18 @@ impl AppConfig {
             .and_then(|t| t.get("ffprobe_path"))
             .and_then(|v| v.as_str())
     }
+
+    /// Returns configured animation detection mode for ffprobe introspection.
+    pub fn animation_detection_mode(
+        &self,
+    ) -> voom_ffprobe_introspector::parser::AnimationDetectionMode {
+        self.plugin
+            .get("ffprobe-introspector")
+            .and_then(|t| t.get("detect_animation"))
+            .and_then(|v| v.as_str())
+            .and_then(voom_ffprobe_introspector::parser::AnimationDetectionMode::parse)
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -342,6 +354,7 @@ pub fn default_config_contents() -> String {
 #
 # [plugin.ffprobe-introspector]
 # ffprobe_path = "/usr/local/bin/ffprobe"
+# detect_animation = "metadata-only"  # off | metadata-only | heuristic
 #
 # [plugin.ffmpeg-executor]
 # # Override detected HW accel backend. Values: nvenc, qsv, vaapi, videotoolbox, none.

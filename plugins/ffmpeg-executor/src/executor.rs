@@ -184,7 +184,7 @@ pub(crate) fn prepare_vmaf_transcodes_with_outcomes(
     let mut prepared = plan.clone();
     let mut outcomes = Vec::new();
     for action in &mut prepared.actions {
-        let stats = prepare_vmaf_action(&plan.file.path, action, runner);
+        let stats = prepare_vmaf_action(&plan.file, action, runner);
         if let Some(outcome) = transcode_outcome(&plan.file.id.to_string(), action, stats) {
             outcomes.push(outcome);
         }
@@ -201,21 +201,22 @@ fn prepare_vmaf_transcodes(plan: &Plan, runner: &dyn VmafRunner) -> Plan {
 }
 
 fn prepare_vmaf_action(
-    source: &std::path::Path,
+    file: &voom_domain::media::MediaFile,
     action: &mut PlannedAction,
     runner: &dyn VmafRunner,
 ) -> OutcomeStats {
     let ActionParams::Transcode { settings, .. } = &mut action.parameters else {
         return OutcomeStats::default();
     };
-    let Some(target_vmaf) = settings.target_vmaf else {
+    let Some(target_vmaf) = settings.resolve_target_vmaf(file) else {
         return OutcomeStats::default();
     };
+    settings.target_vmaf = Some(target_vmaf);
     let bounds = BitrateBounds {
         min_bitrate: settings.min_bitrate.clone(),
         max_bitrate: settings.max_bitrate.clone(),
     };
-    match runner.run(source, target_vmaf, bounds) {
+    match runner.run(&file.path, target_vmaf, bounds) {
         Ok(result) => {
             settings.crf = Some(result.final_crf);
             settings.bitrate = result.final_bitrate;
@@ -345,6 +346,7 @@ mod tests {
 
     struct FailingVmafRunner;
     struct SuccessfulVmafRunner;
+    struct AnimationOverrideVmafRunner;
 
     impl VmafRunner for FailingVmafRunner {
         fn run(
@@ -371,6 +373,23 @@ mod tests {
                 final_bitrate: Some("5200k".to_string()),
                 achieved_vmaf: 92.3,
                 iterations: 3,
+            })
+        }
+    }
+
+    impl VmafRunner for AnimationOverrideVmafRunner {
+        fn run(
+            &self,
+            _source: &Path,
+            target_vmaf: u32,
+            _bounds: BitrateBounds,
+        ) -> std::result::Result<IterationResult, IterationError> {
+            assert_eq!(target_vmaf, 88);
+            Ok(IterationResult {
+                final_crf: 20,
+                final_bitrate: None,
+                achieved_vmaf: 88.1,
+                iterations: 2,
             })
         }
     }
@@ -474,5 +493,25 @@ mod tests {
         assert_eq!(outcome.crf_used, Some(24));
         assert_eq!(outcome.iterations, 1);
         assert!(outcome.fallback_used);
+    }
+
+    #[test]
+    fn prepare_vmaf_transcodes_resolves_animation_override() {
+        let settings = TranscodeSettings::default()
+            .with_target_vmaf(Some(93))
+            .with_vmaf_overrides(Some(std::collections::HashMap::from([(
+                "animation".into(),
+                88,
+            )])));
+        let mut plan = video_plan(settings);
+        let Some(track) = plan.file.tracks.first_mut() else {
+            panic!("expected video track");
+        };
+        track.is_animation = Some(true);
+
+        let prepared = prepare_vmaf_transcodes_with_outcomes(&plan, &AnimationOverrideVmafRunner);
+
+        let outcome = &prepared.outcomes[0];
+        assert_eq!(outcome.target_vmaf, Some(88));
     }
 }

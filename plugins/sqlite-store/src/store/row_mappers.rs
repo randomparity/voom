@@ -192,6 +192,7 @@ pub(crate) fn row_to_track(row: &Row<'_>) -> rusqlite::Result<Track> {
     t.is_hdr = row.get::<_, i32>("is_hdr")? != 0;
     t.hdr_format = row.get("hdr_format")?;
     t.pixel_format = row.get("pixel_format")?;
+    t.is_animation = row.get::<_, Option<i32>>("is_animation")?.map(|v| v != 0);
     Ok(t)
 }
 

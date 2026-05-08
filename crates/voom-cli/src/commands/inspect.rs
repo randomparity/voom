@@ -75,6 +75,7 @@ pub fn run(args: &InspectArgs) -> Result<()> {
     if let Some(fp) = config.ffprobe_path() {
         introspector = introspector.with_ffprobe_path(fp);
     }
+    introspector = introspector.with_animation_detection_mode(config.animation_detection_mode());
     let size = std::fs::metadata(&path)?.len();
 
     let event = introspector

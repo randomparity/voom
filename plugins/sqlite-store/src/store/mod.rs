@@ -269,7 +269,7 @@ impl SqliteStore {
         for chunk in file_ids.chunks(500) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
             let sql = format!(
-                "SELECT file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format \
+                "SELECT file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, is_animation \
                  FROM tracks WHERE file_id IN ({}) ORDER BY file_id, stream_index",
                 placeholders.join(",")
             );
@@ -310,7 +310,7 @@ impl SqliteStore {
     ) -> Result<Vec<Track>> {
         let mut stmt = conn
             .prepare(
-                "SELECT stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format
+                "SELECT stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, is_animation
                  FROM tracks WHERE file_id = ?1 ORDER BY stream_index",
             )
             .map_err(storage_err("failed to prepare track query"))?;
@@ -351,8 +351,10 @@ mod tests {
         file.container = Container::Mkv;
         file.duration = 7200.0;
         file.bitrate = Some(8000);
+        let mut video = Track::new(0, TrackType::Video, "hevc".into());
+        video.is_animation = Some(true);
         file.tracks = vec![
-            Track::new(0, TrackType::Video, "hevc".into()),
+            video,
             {
                 let mut t = Track::new(1, TrackType::AudioMain, "aac".into());
                 t.language = "eng".into();
@@ -396,6 +398,8 @@ mod tests {
         store.upsert_file(&file).unwrap();
 
         let loaded = store.file(&file.id).unwrap().unwrap();
+        let video = &loaded.tracks[0];
+        assert_eq!(video.is_animation, Some(true));
         let audio = &loaded.tracks[1];
         assert_eq!(audio.codec, "aac");
         assert_eq!(audio.language, "eng");

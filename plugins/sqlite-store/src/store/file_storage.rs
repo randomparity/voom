@@ -94,8 +94,8 @@ impl FileStorage for SqliteStore {
         {
             let mut stmt = tx
                 .prepare(
-                    "INSERT INTO tracks (id, file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                    "INSERT INTO tracks (id, file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, is_animation)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
                 )
                 .map_err(storage_err("failed to prepare track insert"))?;
 
@@ -121,6 +121,7 @@ impl FileStorage for SqliteStore {
                     i64::from(track.is_hdr),
                     track.hdr_format,
                     track.pixel_format,
+                    track.is_animation.map(i64::from),
                 ])
                 .map_err(storage_err("failed to insert track"))?;
             }

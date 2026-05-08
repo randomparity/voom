@@ -76,6 +76,7 @@ pub(super) async fn process_single_file(
             payload.content_hash,
             &ctx.kernel,
             ctx.ffprobe_path,
+            ctx.animation_detection_mode,
         )
         .await
         .map_err(|e| format!("introspect {}: {e}", payload.path))?;
@@ -558,6 +559,7 @@ async fn reintrospect_file(
         hash.clone(),
         &kernel_clone,
         ffp.as_deref(),
+        ctx.animation_detection_mode,
     )
     .await
     {

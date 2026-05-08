@@ -237,6 +237,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         let token_for_workers = token.clone();
         let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
         let ffprobe_path = Arc::new(ffprobe_path);
+        let animation_detection_mode = config.animation_detection_mode();
         let counters_for_summary = counters.clone();
         let kernel_for_completion = kernel.clone();
         let _results = pool
@@ -263,6 +264,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
                             force_rescan,
                             token: &token,
                             ffprobe_path: ffprobe_path.as_deref(),
+                            animation_detection_mode,
                             capabilities: &capabilities,
                             plan_limiter,
                             counters: &counters,
@@ -715,6 +717,7 @@ pub(super) struct ProcessContext<'a> {
     pub(super) force_rescan: bool,
     pub(super) token: &'a CancellationToken,
     pub(super) ffprobe_path: Option<&'a str>,
+    pub(super) animation_detection_mode: voom_ffprobe_introspector::parser::AnimationDetectionMode,
     pub(super) capabilities: &'a voom_domain::CapabilityMap,
     pub(super) plan_limiter: Arc<voom_job_manager::worker::PlanExecutionLimiter>,
     pub(super) counters: &'a RunCounters,
@@ -1083,6 +1086,7 @@ mod tests {
                 force_rescan: false,
                 token: &self.token,
                 ffprobe_path: None,
+                animation_detection_mode: Default::default(),
                 capabilities: &self.capabilities,
                 plan_limiter: self.plan_limiter.clone(),
                 counters: &self.counters,

@@ -6,12 +6,50 @@ use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::utils::codecs::normalize_codec;
 use voom_domain::utils::language::normalize_language;
 
+/// Controls animation classification beyond explicit metadata tags.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AnimationDetectionMode {
+    Off,
+    #[default]
+    MetadataOnly,
+    Heuristic,
+}
+
+impl AnimationDetectionMode {
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "off" => Some(Self::Off),
+            "metadata-only" | "metadata_only" => Some(Self::MetadataOnly),
+            "heuristic" => Some(Self::Heuristic),
+            _ => None,
+        }
+    }
+}
+
 /// Parse ffprobe JSON output into a `MediaFile`.
 pub fn parse_ffprobe_output(
     json: &serde_json::Value,
     path: &Path,
     size: u64,
     content_hash: Option<&str>,
+) -> Result<MediaFile> {
+    parse_ffprobe_output_with_animation_detection(
+        json,
+        path,
+        size,
+        content_hash,
+        AnimationDetectionMode::MetadataOnly,
+    )
+}
+
+/// Parse ffprobe JSON output with the requested animation detection mode.
+pub fn parse_ffprobe_output_with_animation_detection(
+    json: &serde_json::Value,
+    path: &Path,
+    size: u64,
+    content_hash: Option<&str>,
+    animation_mode: AnimationDetectionMode,
 ) -> Result<MediaFile> {
     let container = path
         .extension()
@@ -29,7 +67,7 @@ pub fn parse_ffprobe_output(
         .and_then(|s| s.as_array())
         .unwrap_or(&empty_streams);
 
-    let tracks = parse_streams(streams);
+    let tracks = parse_streams(streams, animation_mode);
 
     let mut mf = MediaFile::new(path.to_path_buf());
     mf.size = size;
@@ -70,13 +108,16 @@ fn parse_format_tags(format: &serde_json::Value) -> HashMap<String, String> {
     tags
 }
 
-fn parse_streams(streams: &[serde_json::Value]) -> Vec<Track> {
+fn parse_streams(
+    streams: &[serde_json::Value],
+    animation_mode: AnimationDetectionMode,
+) -> Vec<Track> {
     streams
         .iter()
         .enumerate()
         .filter_map(|(idx, stream)| {
             let index = u32::try_from(idx).unwrap_or(u32::MAX);
-            parse_stream(index, stream)
+            parse_stream(index, stream, animation_mode)
         })
         .collect()
 }
@@ -118,7 +159,11 @@ fn is_likely_cover_art_stream(codec: &str, stream: &serde_json::Value) -> bool {
 }
 
 #[allow(clippy::too_many_lines)] // Single match over codec_type; splitting would scatter field logic.
-fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
+fn parse_stream(
+    index: u32,
+    stream: &serde_json::Value,
+    animation_mode: AnimationDetectionMode,
+) -> Option<Track> {
     let codec_type = stream.get("codec_type")?.as_str()?;
     let codec_name = stream
         .get("codec_name")
@@ -206,6 +251,7 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
             common.is_hdr = is_hdr;
             common.hdr_format = hdr_format;
             common.pixel_format = pixel_format;
+            common.is_animation = detect_animation(stream, animation_mode);
             Some(common)
         }
         "audio" => {
@@ -250,6 +296,78 @@ fn parse_stream(index: u32, stream: &serde_json::Value) -> Option<Track> {
             Some(common)
         }
         _ => None,
+    }
+}
+
+fn stream_tag<'a>(stream: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    stream
+        .get("tags")
+        .and_then(serde_json::Value::as_object)?
+        .iter()
+        .find(|(tag_key, _)| tag_key.eq_ignore_ascii_case(key))
+        .and_then(|(_, value)| value.as_str())
+}
+
+fn explicit_animation_tag(stream: &serde_json::Value) -> Option<bool> {
+    for key in ["genre", "content_type", "CONTENT_TYPE"] {
+        let Some(value) = stream_tag(stream, key) else {
+            continue;
+        };
+        let value = value.to_ascii_lowercase();
+        if value.contains("animation") || value.contains("anime") {
+            return Some(true);
+        }
+        if value.contains("live action") || value.contains("live-action") {
+            return Some(false);
+        }
+    }
+    None
+}
+
+fn detect_animation(
+    stream: &serde_json::Value,
+    animation_mode: AnimationDetectionMode,
+) -> Option<bool> {
+    if animation_mode == AnimationDetectionMode::Off {
+        return None;
+    }
+    explicit_animation_tag(stream).or_else(|| {
+        (animation_mode == AnimationDetectionMode::Heuristic)
+            .then(|| heuristic_animation(stream))
+            .flatten()
+    })
+}
+
+fn heuristic_animation(stream: &serde_json::Value) -> Option<bool> {
+    let color_space = stream
+        .get("color_space")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let pixel_format = stream
+        .get("pix_fmt")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let is_hdr = detect_hdr(stream).0 || color_space.contains("bt2020");
+    if is_hdr {
+        return Some(false);
+    }
+
+    let frames = stream
+        .get("nb_frames")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| s.parse::<f64>().ok());
+    let duration = stream
+        .get("duration")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| s.parse::<f64>().ok());
+    let has_dense_cuts =
+        matches!((frames, duration), (Some(f), Some(d)) if d > 0.0 && f / d >= 20.0);
+    let low_color_format = matches!(pixel_format, "pal8" | "rgb4" | "rgb8" | "bgr4" | "bgr8");
+
+    if low_color_format && (color_space.is_empty() || color_space == "bt709") && has_dense_cuts {
+        Some(true)
+    } else {
+        None
     }
 }
 
@@ -491,6 +609,94 @@ mod tests {
         assert!(track.is_hdr);
         assert_eq!(track.hdr_format.as_deref(), Some("HDR10"));
         assert_eq!(track.pixel_format.as_deref(), Some("yuv420p10le"));
+        assert_eq!(track.is_animation, None);
+    }
+
+    #[test]
+    fn test_parse_animation_from_genre_tag() {
+        let mut stream = video_stream();
+        stream["tags"]["genre"] = serde_json::Value::String("Animation".into());
+        let json = make_ffprobe_json(&[stream]);
+
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
+
+        assert_eq!(file.tracks[0].is_animation, Some(true));
+    }
+
+    #[test]
+    fn test_parse_animation_from_content_type_tag() {
+        let mut stream = video_stream();
+        stream["tags"]["CONTENT_TYPE"] = serde_json::Value::String("Animation".into());
+        let json = make_ffprobe_json(&[stream]);
+
+        let file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
+
+        assert_eq!(file.tracks[0].is_animation, Some(true));
+    }
+
+    #[test]
+    fn test_heuristic_animation_detection_is_opt_in() {
+        let stream = serde_json::json!({
+            "index": 0,
+            "codec_type": "video",
+            "codec_name": "h264",
+            "width": 1920,
+            "height": 1080,
+            "r_frame_rate": "24/1",
+            "avg_frame_rate": "24/1",
+            "pix_fmt": "pal8",
+            "color_space": "bt709",
+            "nb_frames": "1200",
+            "duration": "50.0",
+            "disposition": {"default": 1, "forced": 0, "attached_pic": 0, "comment": 0},
+            "tags": {}
+        });
+        let json = make_ffprobe_json(&[stream]);
+
+        let default_file = parse_ffprobe_output(&json, Path::new("/test.mkv"), 0, None).unwrap();
+        let heuristic_file = parse_ffprobe_output_with_animation_detection(
+            &json,
+            Path::new("/test.mkv"),
+            0,
+            None,
+            AnimationDetectionMode::Heuristic,
+        )
+        .unwrap();
+
+        assert_eq!(default_file.tracks[0].is_animation, None);
+        assert_eq!(heuristic_file.tracks[0].is_animation, Some(true));
+    }
+
+    #[test]
+    fn test_heuristic_marks_hdr_bt2020_as_live_action() {
+        let stream = serde_json::json!({
+            "index": 0,
+            "codec_type": "video",
+            "codec_name": "hevc",
+            "width": 3840,
+            "height": 2160,
+            "r_frame_rate": "24000/1001",
+            "avg_frame_rate": "24000/1001",
+            "pix_fmt": "yuv420p10le",
+            "color_space": "bt2020nc",
+            "color_transfer": "smpte2084",
+            "nb_frames": "143856",
+            "duration": "6000.0",
+            "disposition": {"default": 1, "forced": 0, "attached_pic": 0, "comment": 0},
+            "tags": {}
+        });
+        let json = make_ffprobe_json(&[stream]);
+
+        let file = parse_ffprobe_output_with_animation_detection(
+            &json,
+            Path::new("/test.mkv"),
+            0,
+            None,
+            AnimationDetectionMode::Heuristic,
+        )
+        .unwrap();
+
+        assert_eq!(file.tracks[0].is_animation, Some(false));
     }
 
     #[test]

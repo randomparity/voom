@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     is_hdr INTEGER NOT NULL DEFAULT 0,
     hdr_format TEXT,
     pixel_format TEXT,
+    is_animation INTEGER,
     UNIQUE(file_id, stream_index)
 );
 
@@ -290,6 +291,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     migrate_transitions_table(conn)?;
     migrate_plans_columns(conn, &has_column)?;
     migrate_files_columns(conn, &has_column)?;
+    migrate_tracks_columns(conn, &has_column)?;
     migrate_indexes_and_constraints(conn)?;
     migrate_processing_stats_into_transitions(conn, &has_column)?;
     migrate_metadata_snapshot_column(conn, &has_column)?;
@@ -297,6 +299,16 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     migrate_from_path_column(conn, &has_column)?;
     migrate_cover_art_track_types(conn)?;
 
+    Ok(())
+}
+
+fn migrate_tracks_columns(
+    conn: &Connection,
+    has_column: &dyn Fn(&str, &str) -> rusqlite::Result<bool>,
+) -> rusqlite::Result<()> {
+    if table_exists(conn, "tracks")? && !has_column("tracks", "is_animation")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN is_animation INTEGER;")?;
+    }
     Ok(())
 }
 
