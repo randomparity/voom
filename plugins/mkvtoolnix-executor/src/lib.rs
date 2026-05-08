@@ -5,7 +5,6 @@ pub mod propedit;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 
-use std::process::Command;
 use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
@@ -436,10 +435,9 @@ impl Plugin for MkvtoolnixExecutorPlugin {
     }
 
     fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
-        let available = Command::new("mkvmerge")
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success());
+        let available =
+            voom_process::run_with_timeout("mkvmerge", &["--version"], Duration::from_secs(10))
+                .is_ok_and(|o| o.status.success());
 
         self.available = available;
 
