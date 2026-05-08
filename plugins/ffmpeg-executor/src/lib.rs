@@ -37,6 +37,17 @@ struct FfmpegExecutorConfig {
     hw_accel: Option<String>,
     #[serde(default)]
     gpu_device: Option<String>,
+    #[serde(default)]
+    nvenc_max_parallel: Option<usize>,
+}
+
+const DEFAULT_NVENC_MAX_PARALLEL_PER_GPU: usize = 4;
+
+fn positive_or_default(value: Option<usize>, default: usize) -> usize {
+    match value {
+        Some(0) | None => default,
+        Some(value) => value,
+    }
 }
 
 pub(crate) fn plugin_err(message: impl Into<String>) -> VoomError {
@@ -577,9 +588,23 @@ impl Plugin for FfmpegExecutorPlugin {
             "validated HW encoders"
         );
 
+        let mut parallel_limits = Vec::new();
+        if hw_config.backend == Some(crate::hwaccel::HwAccelBackend::Nvenc)
+            && !validated_encoders.is_empty()
+        {
+            parallel_limits.push(voom_domain::events::ExecutorParallelLimit::new(
+                "hw:nvenc",
+                positive_or_default(
+                    plugin_config.nvenc_max_parallel,
+                    DEFAULT_NVENC_MAX_PARALLEL_PER_GPU,
+                ),
+            ));
+        }
+
         self.hw_accel = hw_config.with_validated_encoders(validated_encoders);
 
-        let event = ExecutorCapabilitiesEvent::new("ffmpeg-executor", codecs, formats, hw_accels);
+        let event = ExecutorCapabilitiesEvent::new("ffmpeg-executor", codecs, formats, hw_accels)
+            .with_parallel_limits(parallel_limits);
 
         Ok(vec![Event::ExecutorCapabilities(event)])
     }
@@ -1071,6 +1096,19 @@ mod tests {
         let config: FfmpegExecutorConfig = serde_json::from_value(json).unwrap();
         assert_eq!(config.gpu_device.as_deref(), Some("1"));
         assert!(config.hw_accel.is_none());
+    }
+
+    #[test]
+    fn test_ffmpeg_executor_config_nvenc_max_parallel() {
+        let json = serde_json::json!({
+            "hw_accel": "nvenc",
+            "gpu_device": "0",
+            "nvenc_max_parallel": 3
+        });
+        let config: FfmpegExecutorConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.hw_accel.as_deref(), Some("nvenc"));
+        assert_eq!(config.gpu_device.as_deref(), Some("0"));
+        assert_eq!(config.nvenc_max_parallel, Some(3));
     }
 
     #[test]
