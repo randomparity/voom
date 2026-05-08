@@ -14,6 +14,42 @@ use super::{format_datetime, storage_err, SqlQuery, SqliteStore};
 
 const SELECT_VERIFICATION: &str = "SELECT id, file_id, verified_at, mode, outcome, \
     error_count, warning_count, content_hash, details FROM verifications";
+const INTEGRITY_FILE_AGGREGATES_SQL: &str = "WITH latest AS ( \
+        SELECT file_id, MAX(verified_at) AS last_at \
+        FROM verifications \
+        GROUP BY file_id \
+    ) \
+    SELECT \
+        COUNT(*) AS total_files, \
+        COALESCE(SUM(CASE WHEN l.last_at IS NULL THEN 1 ELSE 0 END), 0) AS never_verified, \
+        COALESCE(SUM(CASE WHEN l.last_at < ?1 THEN 1 ELSE 0 END), 0) AS stale \
+    FROM files f \
+    LEFT JOIN latest l ON l.file_id = f.id \
+    WHERE f.status = 'active'";
+const INTEGRITY_OUTCOME_AGGREGATES_SQL: &str = "WITH latest AS ( \
+        SELECT v.file_id, v.outcome, \
+            ROW_NUMBER() OVER ( \
+                PARTITION BY v.file_id ORDER BY v.verified_at DESC, v.id DESC \
+            ) AS rn \
+        FROM verifications v \
+        JOIN files f ON f.id = v.file_id \
+        WHERE f.status = 'active' \
+    ) \
+    SELECT \
+        COALESCE(SUM(CASE WHEN outcome = 'error' THEN 1 ELSE 0 END), 0) AS with_errors, \
+        COALESCE(SUM(CASE WHEN outcome = 'warning' THEN 1 ELSE 0 END), 0) AS with_warnings \
+    FROM latest \
+    WHERE rn = 1";
+const INTEGRITY_HASH_MISMATCHES_SQL: &str = "SELECT COUNT(DISTINCT file_id) FROM ( \
+        SELECT file_id, content_hash, \
+            LAG(content_hash) OVER ( \
+                PARTITION BY file_id ORDER BY verified_at \
+            ) AS prev_hash, \
+            ROW_NUMBER() OVER ( \
+                PARTITION BY file_id ORDER BY verified_at DESC \
+            ) AS rn \
+        FROM verifications WHERE mode = 'hash' \
+    ) WHERE rn = 1 AND prev_hash IS NOT NULL AND prev_hash <> content_hash";
 
 impl VerificationStorage for SqliteStore {
     fn insert_verification(&self, record: &VerificationRecord) -> Result<()> {
@@ -101,83 +137,24 @@ impl VerificationStorage for SqliteStore {
     fn integrity_summary(&self, since: DateTime<Utc>) -> Result<IntegritySummary> {
         let conn = self.conn()?;
 
-        let total_files: i64 = conn
+        let (total_files, never_verified, stale): (i64, i64, i64) = conn
             .query_row(
-                "SELECT COUNT(*) FROM files WHERE status = 'active'",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(storage_err("failed to count files"))?;
-
-        let never_verified: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM files f \
-                 WHERE f.status = 'active' AND NOT EXISTS ( \
-                     SELECT 1 FROM verifications v WHERE v.file_id = f.id \
-                 )",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(storage_err("failed to count never-verified files"))?;
-
-        let stale: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM ( \
-                     SELECT f.id, MAX(v.verified_at) AS last_at \
-                     FROM files f \
-                     JOIN verifications v ON v.file_id = f.id \
-                     WHERE f.status = 'active' \
-                     GROUP BY f.id \
-                     HAVING last_at < ?1 \
-                 )",
+                INTEGRITY_FILE_AGGREGATES_SQL,
                 params![format_datetime(&since)],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
-            .map_err(storage_err("failed to count stale files"))?;
+            .map_err(storage_err("failed to compute file integrity aggregates"))?;
 
-        let with_errors: i64 = conn
-            .query_row(
-                "SELECT COUNT(DISTINCT file_id) FROM ( \
-                     SELECT file_id, outcome, \
-                         ROW_NUMBER() OVER ( \
-                             PARTITION BY file_id ORDER BY verified_at DESC, id DESC \
-                         ) AS rn \
-                     FROM verifications \
-                 ) WHERE rn = 1 AND outcome = 'error'",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(storage_err("failed to count files with errors"))?;
-
-        let with_warnings: i64 = conn
-            .query_row(
-                "SELECT COUNT(DISTINCT file_id) FROM ( \
-                     SELECT file_id, outcome, \
-                         ROW_NUMBER() OVER ( \
-                             PARTITION BY file_id ORDER BY verified_at DESC, id DESC \
-                         ) AS rn \
-                     FROM verifications \
-                 ) WHERE rn = 1 AND outcome = 'warning'",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(storage_err("failed to count files with warnings"))?;
+        let (with_errors, with_warnings): (i64, i64) = conn
+            .query_row(INTEGRITY_OUTCOME_AGGREGATES_SQL, [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .map_err(storage_err(
+                "failed to compute outcome integrity aggregates",
+            ))?;
 
         let hash_mismatches: i64 = conn
-            .query_row(
-                "SELECT COUNT(DISTINCT file_id) FROM ( \
-                     SELECT file_id, content_hash, \
-                         LAG(content_hash) OVER ( \
-                             PARTITION BY file_id ORDER BY verified_at \
-                         ) AS prev_hash, \
-                         ROW_NUMBER() OVER ( \
-                             PARTITION BY file_id ORDER BY verified_at DESC \
-                         ) AS rn \
-                     FROM verifications WHERE mode = 'hash' \
-                 ) WHERE rn = 1 AND prev_hash IS NOT NULL AND prev_hash <> content_hash",
-                [],
-                |r| r.get(0),
-            )
+            .query_row(INTEGRITY_HASH_MISMATCHES_SQL, [], |r| r.get(0))
             .map_err(storage_err("failed to count hash mismatches"))?;
 
         Ok(IntegritySummary::new(
@@ -199,17 +176,52 @@ mod tests {
     use uuid::Uuid;
     use voom_domain::media::{Container, MediaFile};
     use voom_domain::storage::FileStorage;
+    use voom_domain::test_support::InMemoryStore;
+    use voom_domain::transition::FileStatus;
     use voom_domain::verification::VerificationOutcome;
 
     fn store_with_file() -> (SqliteStore, String) {
         let store = SqliteStore::in_memory().expect("in-memory store");
-        let mut file = MediaFile::new(PathBuf::from("/media/test.mkv"));
+        let file = make_file("/media/test.mkv", FileStatus::Active);
+        let file_id = file.id.to_string();
+        store.upsert_file(&file).expect("insert file");
+        (store, file_id)
+    }
+
+    fn make_file(path: &str, status: FileStatus) -> MediaFile {
+        let mut file = MediaFile::new(PathBuf::from(path));
         file.size = 1;
         file.content_hash = Some("hash-stub".into());
         file.container = Container::Mkv;
         file.introspected_at = Utc::now();
+        file.status = status;
+        file
+    }
+
+    fn insert_file(store: &SqliteStore, path: &str, status: FileStatus) -> String {
+        let file = make_file(path, status);
+        let id = file.id.to_string();
         store.upsert_file(&file).expect("insert file");
-        (store, file.id.to_string())
+        id
+    }
+
+    fn verification(
+        file_id: &str,
+        verified_at: DateTime<Utc>,
+        mode: VerificationMode,
+        outcome: VerificationOutcome,
+    ) -> VerificationRecord {
+        VerificationRecord::new(
+            Uuid::new_v4(),
+            file_id.to_string(),
+            verified_at,
+            mode,
+            outcome,
+            u32::from(outcome == VerificationOutcome::Error),
+            u32::from(outcome == VerificationOutcome::Warning),
+            None,
+            None,
+        )
     }
 
     #[test]
@@ -285,6 +297,206 @@ mod tests {
         assert_eq!(summary.with_errors, 0);
         assert_eq!(summary.with_warnings, 0);
         assert_eq!(summary.hash_mismatches, 0);
+    }
+
+    #[test]
+    fn integrity_summary_empty_store_is_zeroed() {
+        let store = SqliteStore::in_memory().expect("in-memory store");
+        let summary = store
+            .integrity_summary(Utc::now() - chrono::Duration::days(30))
+            .expect("summary");
+        assert_eq!(summary, IntegritySummary::new(0, 0, 0, 0, 0, 0));
+    }
+
+    #[test]
+    fn integrity_summary_counts_mixed_active_states() {
+        let store = SqliteStore::in_memory().expect("in-memory store");
+        let cutoff = Utc::now() - chrono::Duration::days(7);
+        let stale_time = cutoff - chrono::Duration::seconds(1);
+        let fresh_time = cutoff + chrono::Duration::seconds(1);
+
+        insert_file(&store, "/media/never.mkv", FileStatus::Active);
+        let stale_id = insert_file(&store, "/media/stale.mkv", FileStatus::Active);
+        let error_id = insert_file(&store, "/media/error.mkv", FileStatus::Active);
+        let warning_id = insert_file(&store, "/media/warning.mkv", FileStatus::Active);
+        let missing_id = insert_file(&store, "/media/missing.mkv", FileStatus::Missing);
+
+        for record in [
+            verification(
+                &stale_id,
+                stale_time,
+                VerificationMode::Quick,
+                VerificationOutcome::Ok,
+            ),
+            verification(
+                &error_id,
+                fresh_time,
+                VerificationMode::Quick,
+                VerificationOutcome::Error,
+            ),
+            verification(
+                &warning_id,
+                fresh_time,
+                VerificationMode::Quick,
+                VerificationOutcome::Warning,
+            ),
+            verification(
+                &missing_id,
+                fresh_time,
+                VerificationMode::Quick,
+                VerificationOutcome::Error,
+            ),
+        ] {
+            store
+                .insert_verification(&record)
+                .expect("insert verification");
+        }
+
+        let summary = store.integrity_summary(cutoff).expect("summary");
+        assert_eq!(summary, IntegritySummary::new(4, 1, 1, 1, 1, 0));
+    }
+
+    #[test]
+    fn integrity_summary_latest_outcome_tie_uses_highest_id() {
+        let (store, file_id) = store_with_file();
+        let verified_at = Utc::now();
+        let low_id = Uuid::from_u128(1);
+        let high_id = Uuid::from_u128(2);
+
+        let older_by_id = VerificationRecord::new(
+            low_id,
+            file_id.clone(),
+            verified_at,
+            VerificationMode::Quick,
+            VerificationOutcome::Error,
+            1,
+            0,
+            None,
+            None,
+        );
+        let latest_by_id = VerificationRecord::new(
+            high_id,
+            file_id,
+            verified_at,
+            VerificationMode::Quick,
+            VerificationOutcome::Warning,
+            0,
+            1,
+            None,
+            None,
+        );
+        store
+            .insert_verification(&older_by_id)
+            .expect("insert older");
+        store
+            .insert_verification(&latest_by_id)
+            .expect("insert latest");
+
+        let summary = store
+            .integrity_summary(Utc::now() - chrono::Duration::days(30))
+            .expect("summary");
+        assert_eq!(summary.with_errors, 0);
+        assert_eq!(summary.with_warnings, 1);
+    }
+
+    #[test]
+    fn integrity_summary_matches_in_memory_store_for_mixed_fixture() {
+        let sqlite = SqliteStore::in_memory().expect("in-memory sqlite");
+        let memory = InMemoryStore::new();
+        let cutoff = Utc::now() - chrono::Duration::days(7);
+
+        let files = [
+            make_file("/media/never.mkv", FileStatus::Active),
+            make_file("/media/stale.mkv", FileStatus::Active),
+            make_file("/media/error.mkv", FileStatus::Active),
+            make_file("/media/warning.mkv", FileStatus::Active),
+            make_file("/media/missing.mkv", FileStatus::Missing),
+        ];
+        for file in &files {
+            sqlite.upsert_file(file).expect("sqlite insert file");
+            memory.upsert_file(file).expect("memory insert file");
+        }
+
+        let stale_time = cutoff - chrono::Duration::seconds(1);
+        let fresh_time = cutoff + chrono::Duration::seconds(1);
+        let records = [
+            verification(
+                &files[1].id.to_string(),
+                stale_time,
+                VerificationMode::Quick,
+                VerificationOutcome::Ok,
+            ),
+            verification(
+                &files[2].id.to_string(),
+                fresh_time,
+                VerificationMode::Quick,
+                VerificationOutcome::Error,
+            ),
+            verification(
+                &files[3].id.to_string(),
+                fresh_time,
+                VerificationMode::Quick,
+                VerificationOutcome::Warning,
+            ),
+            verification(
+                &files[4].id.to_string(),
+                fresh_time,
+                VerificationMode::Quick,
+                VerificationOutcome::Error,
+            ),
+        ];
+        for record in &records {
+            sqlite
+                .insert_verification(record)
+                .expect("sqlite insert verification");
+            memory
+                .insert_verification(record)
+                .expect("memory insert verification");
+        }
+
+        assert_eq!(
+            sqlite.integrity_summary(cutoff).expect("sqlite summary"),
+            memory.integrity_summary(cutoff).expect("memory summary")
+        );
+    }
+
+    #[test]
+    fn file_aggregate_query_returns_total_never_and_stale_counts() {
+        let store = SqliteStore::in_memory().expect("in-memory store");
+        let cutoff = Utc::now() - chrono::Duration::days(7);
+        insert_file(&store, "/media/never.mkv", FileStatus::Active);
+        let stale_id = insert_file(&store, "/media/stale.mkv", FileStatus::Active);
+        let fresh_id = insert_file(&store, "/media/fresh.mkv", FileStatus::Active);
+
+        for record in [
+            verification(
+                &stale_id,
+                cutoff - chrono::Duration::seconds(1),
+                VerificationMode::Quick,
+                VerificationOutcome::Ok,
+            ),
+            verification(
+                &fresh_id,
+                cutoff + chrono::Duration::seconds(1),
+                VerificationMode::Quick,
+                VerificationOutcome::Ok,
+            ),
+        ] {
+            store
+                .insert_verification(&record)
+                .expect("insert verification");
+        }
+
+        let counts: (i64, i64, i64) = store
+            .conn()
+            .expect("connection")
+            .query_row(
+                INTEGRITY_FILE_AGGREGATES_SQL,
+                params![format_datetime(&cutoff)],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("file aggregate counts");
+        assert_eq!(counts, (3, 1, 1));
     }
 
     #[test]
