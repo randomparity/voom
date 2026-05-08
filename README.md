@@ -185,8 +185,6 @@ cargo run -- serve
 | `jobs` | Manage the processing queue |
 | `backup` | List, restore, and clean up backups |
 | `env` | Environment diagnostics and history |
-| `health` | Hidden deprecated alias for `env` |
-| `doctor` | Hidden deprecated alias for `env check` |
 | `serve` | Start the web dashboard |
 | `events` | View and tail the event log |
 | `db` | Database maintenance (prune, vacuum, reset) |
@@ -196,6 +194,8 @@ cargo run -- serve
 | `plugin` | Manage native and WASM plugins |
 | `init` | Scaffold a starter policy and config |
 | `completions` | Generate shell completions (bash/zsh/fish) |
+
+`health` and `doctor` are hidden deprecated aliases for `env` compatibility.
 
 ## Architecture
 

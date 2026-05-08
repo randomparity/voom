@@ -1,5 +1,4 @@
-use anyhow::{bail, Result};
-use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
+use anyhow::Result;
 use console::style;
 use voom_domain::storage::HealthCheckFilters;
 use voom_ffmpeg_executor::hwaccel::{resolve_hw_config, HwAccelBackend};
@@ -10,6 +9,7 @@ use voom_ffmpeg_executor::probe::{
 
 use crate::app;
 use crate::cli::{EnvCommands, OutputFormat};
+use crate::commands::since::parse_absolute_since;
 use crate::config;
 use crate::output::sanitize_for_display;
 use crate::tools::print_tool_status;
@@ -417,7 +417,7 @@ fn history(
     limit: u32,
     format: OutputFormat,
 ) -> Result<()> {
-    let since_dt = since.map(|s| parse_datetime(&s)).transpose()?;
+    let since_dt = since.map(|s| parse_absolute_since(&s)).transpose()?;
 
     let mut filters = HealthCheckFilters::default();
     filters.check_name = check_name;
@@ -480,45 +480,12 @@ fn history(
     Ok(())
 }
 
-fn parse_datetime(s: &str) -> Result<chrono::DateTime<Utc>> {
-    // Try full datetime first: 2024-01-15T10:30:00
-    if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
-        return Ok(Utc.from_utc_datetime(&ndt));
-    }
-    // Try date only: 2024-01-15 (midnight UTC)
-    if let Ok(nd) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        let ndt = nd.and_hms_opt(0, 0, 0).expect("midnight is always valid");
-        return Ok(Utc.from_utc_datetime(&ndt));
-    }
-    bail!("invalid datetime '{s}': expected YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS");
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_tool_detector_creation() {
         let detector = voom_tool_detector::ToolDetectorPlugin::new();
         assert!(detector.tool("nonexistent-tool").is_none());
-    }
-
-    #[test]
-    fn test_parse_datetime_date_only() {
-        let dt = parse_datetime("2024-01-15").unwrap();
-        assert_eq!(dt.to_rfc3339(), "2024-01-15T00:00:00+00:00");
-    }
-
-    #[test]
-    fn test_parse_datetime_full() {
-        let dt = parse_datetime("2024-01-15T10:30:00").unwrap();
-        assert_eq!(dt.to_rfc3339(), "2024-01-15T10:30:00+00:00");
-    }
-
-    #[test]
-    fn test_parse_datetime_invalid() {
-        assert!(parse_datetime("not-a-date").is_err());
-        assert!(parse_datetime("2024/01/15").is_err());
     }
 }
 
