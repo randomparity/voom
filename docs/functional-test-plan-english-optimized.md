@@ -6,7 +6,7 @@ Manual test plan for `english-optimized.voom` and `english-optimized-background.
 
 - `ffmpeg`, `ffprobe`, `mkvmerge`, `mkvpropedit` on PATH
 - Test corpus generated: `python3 scripts/generate-test-corpus /tmp/voom-corpus --duration 2 --seed 42`
-- Working voom install: `cargo build && voom doctor`
+- Working voom install: `cargo build && voom env check`
 
 ## 1. Policy Validation
 

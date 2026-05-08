@@ -81,9 +81,9 @@ Full subtitle pipeline from filtering to AI-powered generation:
 - **Bulk metadata** -- clear defaults, set forced flags, assign languages across all subtitle tracks
 - **AI subtitle generation** (WASM plugins) -- Whisper-based transcription with automatic foreign-language segment detection, forced subtitle SRT output, and content-hash caching
 
-### Health Checks and Diagnostics
+### Environment Checks and Diagnostics
 
-`voom health check` (or `voom doctor`) validates your entire environment:
+`voom env check` validates your entire environment:
 
 - **External tools** -- detects ffmpeg, ffprobe, mkvmerge, mkvpropedit, mkvextract, mediainfo, HandBrakeCLI with version info
 - **GPU hardware** -- enumerates devices, validates each hardware encoder per-device, reports VRAM
@@ -92,7 +92,8 @@ Full subtitle pipeline from filtering to AI-powered generation:
 - **Plugins** -- lists all registered plugins and their status
 - **Filesystem** -- periodic writability probes with configurable intervals
 
-Health history is stored in SQLite for trend analysis via `voom health history`.
+Environment check history is stored in SQLite for trend analysis via
+`voom env history`.
 
 ### Web Dashboard
 
@@ -138,7 +139,7 @@ All reports output as `table`, `json`, or `plain`.
 
 Two-tier plugin model around a thin kernel with zero media knowledge:
 
-- **Native plugins** -- compiled into the binary (discovery, introspection, storage, executors, backup, job management, health checks, web UI)
+- **Native plugins** -- compiled into the binary (discovery, introspection, storage, executors, backup, job management, environment diagnostics, web UI)
 - **WASM plugins** -- sandboxed, language-agnostic extensions via wasmtime (Whisper transcription, subtitle generation, Radarr/Sonarr metadata, HandBrake executor, audio language detection)
 
 Plugins communicate exclusively through a priority-ordered event bus. Install
@@ -164,7 +165,7 @@ cargo run -- scan /path/to/videos
 cargo run -- process /path/to/videos --policy docs/examples/english-optimized.voom
 
 # Check your environment
-cargo run -- health check
+cargo run -- env check
 
 # Start the web UI
 cargo run -- serve
@@ -183,8 +184,9 @@ cargo run -- serve
 | `report` | Library analytics and issue reporting |
 | `jobs` | Manage the processing queue |
 | `backup` | List, restore, and clean up backups |
-| `health` | Environment diagnostics and history |
-| `doctor` | Hidden alias for `health check` (kept for compatibility) |
+| `env` | Environment diagnostics and history |
+| `health` | Hidden deprecated alias for `env` |
+| `doctor` | Hidden deprecated alias for `env check` |
 | `serve` | Start the web dashboard |
 | `events` | View and tail the event log |
 | `db` | Database maintenance (prune, vacuum, reset) |

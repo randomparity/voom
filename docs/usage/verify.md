@@ -1,6 +1,6 @@
 # `voom verify`
 
-Per-file media integrity verification. Distinct from `voom health check`,
+Per-file media integrity verification. Distinct from `voom env check`,
 which checks environment readiness.
 
 ## Modes

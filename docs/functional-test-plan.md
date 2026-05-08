@@ -122,11 +122,11 @@ status is printed (valid or error details).
 
 ---
 
-## 3. System Health (`voom health`)
+## 3. Environment Diagnostics (`voom env`)
 
-### 3.1 Health check
+### 3.1 Environment check
 
-1. Run `voom health check`
+1. Run `voom env check`
 
 **Expected output includes:**
 - Config file validity check (OK)
@@ -141,29 +141,22 @@ status is printed (valid or error details).
 ### 3.2 Missing tool detection
 
 1. Temporarily rename `ffprobe` out of PATH (e.g., `sudo mv /usr/bin/ffprobe /usr/bin/ffprobe.bak`)
-2. Run `voom health check`
+2. Run `voom env check`
 
 **Expected:** ffprobe check shows as failed/missing. Restore the tool after testing.
 
-### 3.3 Doctor alias
+### 3.3 Environment history (empty)
 
-1. Run `voom doctor`
+1. Run `voom env history`
 
-**Expected:** Identical output to `voom health check`. The `doctor` subcommand
-is an alias for `health check`.
+**Expected:** Empty table or message indicating no environment history entries found.
 
-### 3.4 Health history (empty)
+### 3.4 Environment history after checks
 
-1. Run `voom health history`
+1. Run `voom env check` two or three times
+2. Run `voom env history`
 
-**Expected:** Empty table or message indicating no health history entries found.
-
-### 3.5 Health history after checks
-
-1. Run `voom health check` two or three times
-2. Run `voom health history`
-
-**Expected:** Table listing past health check runs with timestamps and summary
+**Expected:** Table listing past environment check runs with timestamps and summary
 status (OK or issue count).
 
 ---
@@ -1292,11 +1285,11 @@ many backups were removed and space reclaimed.
 
 **Expected:** Additional info-level log messages appear.
 
-2. Run with `-vv`: `voom -vv health check`
+2. Run with `-vv`: `voom -vv env check`
 
 **Expected:** Debug-level log messages appear.
 
-3. Run with `-vvv`: `voom -vvv health check`
+3. Run with `-vvv`: `voom -vvv env check`
 
 **Expected:** Trace-level log messages appear.
 
@@ -1344,7 +1337,7 @@ modified (backup-manager validates available space before proceeding).
 This test validates a complete real-world workflow from start to finish.
 
 1. **Initialize:** `voom init`
-2. **Check health:** `voom health check` — all required tools OK
+2. **Check environment:** `voom env check` — all required tools OK
 3. **Scan library:** `voom scan /path/to/media --format table`
    - Verify file count matches expected number of media files
 4. **Inspect a file:** `voom inspect /path/to/media/sample.mkv`

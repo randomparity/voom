@@ -39,7 +39,7 @@ sudo dnf swap ffmpeg-free ffmpeg --allowerasing
 ffmpeg -decoders 2>/dev/null | grep -E 'hevc|h264|aac'
 
 # voom should detect the codecs
-voom health check
+voom env check
 ```
 
 ### Confirming HW encoder/decoder availability

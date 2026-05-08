@@ -378,13 +378,13 @@ voom verify report --since 30d --format json
 
 ---
 
-### `voom health`
+### `voom env`
 
-System health checks and history.
+Environment diagnostics and history.
 
-#### `voom health check`
+#### `voom env check`
 
-Run live system health checks. Verifies:
+Run live environment checks. Verifies:
 - External tool availability (ffprobe, ffmpeg, mkvpropedit, mkvmerge, mediainfo)
 - Tool versions
 - Configuration validity
@@ -392,15 +392,15 @@ Run live system health checks. Verifies:
 - Plugin status
 
 ```bash
-voom health check
+voom env check
 ```
 
-#### `voom health history`
+#### `voom env history`
 
-Show health check history from the database.
+Show environment check history from the database.
 
 ```
-voom health history [OPTIONS]
+voom env history [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -410,7 +410,8 @@ voom health history [OPTIONS]
 | `-n`, `--limit <N>` | `50` | Maximum number of records to display |
 | `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
 
-> **Note:** `voom doctor` is a hidden alias for `voom health check`.
+> **Compatibility:** `voom health ...` and `voom doctor` are hidden deprecated
+> aliases. Use `voom env ...` for new scripts.
 
 ---
 
