@@ -280,6 +280,7 @@ async fn process_single_file_execute(
         }
 
         // Execute this plan
+        let permit = ctx.plan_limiter.acquire_for_plan(&plan).await;
         let plan_clone = plan.clone();
         let file_clone = current_file.clone();
         let kernel_clone = ctx.kernel.clone();
@@ -289,6 +290,7 @@ async fn process_single_file_execute(
         })
         .await
         .map_err(|e| format!("plan execution join error: {e}"))?;
+        drop(permit);
         let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         match exec_outcome {
@@ -720,4 +722,145 @@ pub(super) fn execute_single_plan(
 ) -> PlanOutcome {
     let results = PlanDispatcher::new(kernel).begin(plan, file);
     PlanOutcome::from_event_result(&results, plan, file)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use voom_domain::capabilities::Capability;
+    use voom_domain::events::{Event, EventResult};
+    use voom_domain::media::{Container, MediaFile, Track, TrackType};
+
+    use super::super::tests as process_tests;
+    use super::*;
+
+    struct RecordingExecutor {
+        entered_tx: mpsc::Sender<()>,
+    }
+
+    impl voom_kernel::Plugin for RecordingExecutor {
+        fn name(&self) -> &'static str {
+            "recording-executor"
+        }
+
+        fn version(&self) -> &'static str {
+            "0.1.0"
+        }
+
+        fn capabilities(&self) -> &[Capability] {
+            &[]
+        }
+
+        fn handles(&self, event_type: &str) -> bool {
+            event_type == Event::PLAN_CREATED
+        }
+
+        fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
+            if let Event::PlanCreated(_) = event {
+                let _ = self.entered_tx.send(());
+                return Ok(Some(EventResult::plan_succeeded(self.name(), None)));
+            }
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_process_plan_limiter_serializes_nvenc_plans() {
+        let limiter = voom_job_manager::worker::PlanExecutionLimiter::from_limits(vec![(
+            "hw:nvenc".to_string(),
+            1,
+        )]);
+        let plan = process_tests::test_plan_with_transcode_hw("transcode-video", "nvenc");
+
+        let first = limiter.acquire_for_plan(&plan).await;
+        let limiter_clone = limiter.clone();
+        let plan_clone = plan.clone();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+
+        let waiting = tokio::spawn(async move {
+            let _permit = limiter_clone.acquire_for_plan(&plan_clone).await;
+            let _ = entered_tx.send(());
+            true
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), entered_rx)
+                .await
+                .is_err(),
+            "second nvenc plan must wait while the first permit is held"
+        );
+
+        drop(first);
+        assert!(tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("waiting plan should acquire permit after release")
+            .expect("waiting task should complete"));
+    }
+
+    #[tokio::test]
+    async fn process_pipeline_respects_plan_limiter() {
+        let policy = r#"policy "test" {
+                phase transcode-video {
+                    transcode video to hevc {
+                        hw: nvenc
+                    }
+                }
+            }"#;
+        let fixture = process_tests::TestFixture::with_policy(policy);
+        let limiter = Arc::new(voom_job_manager::worker::PlanExecutionLimiter::from_limits(
+            vec![("hw:nvenc".to_string(), 1)],
+        ));
+        let held = limiter
+            .acquire_for_plan(&process_tests::test_plan_with_transcode_hw(
+                "transcode-video",
+                "nvenc",
+            ))
+            .await;
+
+        let path = fixture.dir_path().join("movie.mkv");
+        std::fs::write(&path, vec![0u8; 1024]).unwrap();
+        let file = MediaFile::new(path.clone())
+            .with_container(Container::Mkv)
+            .with_tracks(vec![Track::new(0, TrackType::Video, "h264".into())]);
+        let compiled = voom_dsl::compile_policy(policy).unwrap();
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let mut kernel = voom_kernel::Kernel::new();
+        kernel
+            .register_plugin(Arc::new(RecordingExecutor { entered_tx }), 50)
+            .unwrap();
+        let ctx = ProcessContext {
+            plan_limiter: limiter,
+            ..fixture.make_ctx(
+                Arc::new(kernel),
+                Arc::new(voom_domain::test_support::InMemoryStore::new()),
+            )
+        };
+
+        let processing = process_single_file_execute(&file, &compiled, &ctx);
+        tokio::pin!(processing);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut processing)
+                .await
+                .is_err(),
+            "processing must wait for the plan limiter before executor dispatch"
+        );
+        assert!(
+            matches!(entered_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "executor must not receive PlanCreated while the nvenc permit is held"
+        );
+
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(1), &mut processing)
+            .await
+            .expect("processing should continue after the limiter permit is released")
+            .expect("processing should complete without execution errors");
+        entered_rx
+            .try_recv()
+            .expect("executor should receive PlanCreated after permit release");
+    }
 }
