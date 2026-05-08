@@ -86,10 +86,24 @@ impl PlanParallelResource {
     /// Return the plan-level hardware resource for the first matching video transcode.
     ///
     /// Only `TranscodeVideo` actions with known hardware encoder names classify
-    /// a plan. Software, `auto`, `none`, unknown values, and non-video actions
-    /// return `None`.
+    /// a plan. Software, `auto`, missing hardware, unknown values, and non-video
+    /// actions return `None`.
     #[must_use]
     pub fn from_plan(plan: &voom_domain::plan::Plan) -> Option<&'static str> {
+        Self::from_plan_with_default(plan, None)
+    }
+
+    /// Return the plan-level hardware resource, using `default_resource` for
+    /// video transcodes with `hw: auto` or no per-action hardware setting.
+    ///
+    /// This mirrors ffmpeg-executor's global hardware config: explicit backend
+    /// names win, `hw: none` stays software, and unspecified/`auto` plans use
+    /// the active executor-level hardware backend when one has a limit.
+    #[must_use]
+    pub fn from_plan_with_default<'a>(
+        plan: &voom_domain::plan::Plan,
+        default_resource: Option<&'a str>,
+    ) -> Option<&'a str> {
         for action in &plan.actions {
             if action.operation != voom_domain::plan::OperationType::TranscodeVideo {
                 continue;
@@ -98,14 +112,16 @@ impl PlanParallelResource {
             else {
                 continue;
             };
-            let Some(hw) = settings.hw.as_deref() else {
-                continue;
-            };
-            match hw {
-                "nvenc" => return Some("hw:nvenc"),
-                "qsv" => return Some("hw:qsv"),
-                "vaapi" => return Some("hw:vaapi"),
-                "videotoolbox" => return Some("hw:videotoolbox"),
+            match settings.hw.as_deref() {
+                Some("nvenc") => return Some("hw:nvenc"),
+                Some("qsv") => return Some("hw:qsv"),
+                Some("vaapi") => return Some("hw:vaapi"),
+                Some("videotoolbox") => return Some("hw:videotoolbox"),
+                Some("auto") | None => {
+                    if let Some(resource) = default_resource {
+                        return Some(resource);
+                    }
+                }
                 _ => {}
             }
         }
@@ -117,10 +133,13 @@ impl PlanParallelResource {
 ///
 /// This bounds concurrent plan executions that use a classified hardware video
 /// encoder resource. It does not count individual tracks or exact encoder
-/// sessions within a plan.
+/// sessions within a plan. The first positive resource limit is also used as
+/// the default active hardware resource for plans with `hw: auto` or no
+/// per-action hardware setting.
 #[derive(Clone, Default)]
 pub struct PlanExecutionLimiter {
     semaphores: Arc<HashMap<String, Arc<Semaphore>>>,
+    default_resource: Option<String>,
 }
 
 /// RAII permit for a classified plan resource.
@@ -135,16 +154,24 @@ impl PlanExecutionLimiter {
     /// Create a limiter from resource limits.
     ///
     /// Positive limits create semaphores. Zero limits are ignored, leaving that
-    /// resource unlimited.
+    /// resource unlimited. The first positive limit becomes the default
+    /// hardware resource used for `hw: auto` or missing per-action hardware.
     #[must_use]
     pub fn from_limits(limits: impl IntoIterator<Item = (String, usize)>) -> Self {
-        let semaphores = limits
-            .into_iter()
-            .filter(|(_, limit)| *limit > 0)
-            .map(|(resource, limit)| (resource, Arc::new(Semaphore::new(limit))))
-            .collect();
+        let mut semaphores = HashMap::new();
+        let mut default_resource = None;
+        for (resource, limit) in limits {
+            if limit == 0 {
+                continue;
+            }
+            if default_resource.is_none() {
+                default_resource = Some(resource.clone());
+            }
+            semaphores.insert(resource, Arc::new(Semaphore::new(limit)));
+        }
         Self {
             semaphores: Arc::new(semaphores),
+            default_resource,
         }
     }
 
@@ -154,7 +181,9 @@ impl PlanExecutionLimiter {
     /// resource or with no configured limit for that resource. Otherwise, this
     /// waits for capacity and holds it until the returned permit is dropped.
     pub async fn acquire_for_plan(&self, plan: &voom_domain::plan::Plan) -> PlanExecutionPermit {
-        let Some(resource) = PlanParallelResource::from_plan(plan) else {
+        let Some(resource) =
+            PlanParallelResource::from_plan_with_default(plan, self.default_resource.as_deref())
+        else {
             return PlanExecutionPermit { _permit: None };
         };
         let Some(semaphore) = self.semaphores.get(resource) else {
@@ -647,12 +676,67 @@ mod tests {
     }
 
     #[test]
+    fn test_plan_parallel_resource_uses_default_for_auto_and_missing_hw() {
+        for hw in [Some("auto"), None] {
+            let plan = test_transcode_plan(hw);
+            assert_eq!(
+                PlanParallelResource::from_plan_with_default(&plan, Some("hw:nvenc")),
+                Some("hw:nvenc"),
+                "hw={hw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_plan_parallel_resource_default_does_not_override_none() {
+        let plan = test_transcode_plan(Some("none"));
+        assert_eq!(
+            PlanParallelResource::from_plan_with_default(&plan, Some("hw:nvenc")),
+            None
+        );
+    }
+
+    #[test]
     fn test_plan_parallel_resource_ignores_audio_transcode_hw() {
         let plan = test_transcode_plan_with_operation(
             Some("nvenc"),
             voom_domain::plan::OperationType::TranscodeAudio,
         );
         assert_eq!(PlanParallelResource::from_plan(&plan), None);
+    }
+
+    #[tokio::test]
+    async fn test_plan_execution_limiter_blocks_missing_hw_on_default_resource() {
+        use std::time::Duration;
+
+        let limiter = PlanExecutionLimiter::from_limits(vec![("hw:nvenc".to_string(), 1)]);
+        let plan = test_transcode_plan(None);
+        let first = limiter.acquire_for_plan(&plan).await;
+
+        let limiter_clone = limiter.clone();
+        let plan_clone = plan.clone();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let third = tokio::spawn(async move {
+            let _permit = limiter_clone.acquire_for_plan(&plan_clone).await;
+            let _ = entered_tx.send(());
+            "entered"
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), entered_rx)
+                .await
+                .is_err(),
+            "missing per-action hw should wait on the default limited resource"
+        );
+
+        drop(first);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), third)
+                .await
+                .expect("task should enter after permit release")
+                .unwrap(),
+            "entered"
+        );
     }
 
     #[tokio::test]

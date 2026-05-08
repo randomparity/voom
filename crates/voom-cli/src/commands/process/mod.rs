@@ -961,13 +961,17 @@ mod tests {
     }
 
     pub(super) fn test_plan_with_transcode_hw(phase: &str, hw: &str) -> Plan {
+        test_plan_with_optional_transcode_hw(phase, Some(hw))
+    }
+
+    pub(super) fn test_plan_with_optional_transcode_hw(phase: &str, hw: Option<&str>) -> Plan {
         let mut plan = test_plan(phase, false);
         plan.actions = vec![PlannedAction::track_op(
             OperationType::TranscodeVideo,
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                settings: TranscodeSettings::default().with_hw(Some(hw.to_string())),
+                settings: TranscodeSettings::default().with_hw(hw.map(str::to_string)),
             },
             "Transcode video",
         )];

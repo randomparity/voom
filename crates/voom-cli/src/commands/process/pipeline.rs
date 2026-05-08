@@ -781,6 +781,14 @@ mod tests {
             }"#
     }
 
+    fn global_hw_policy() -> &'static str {
+        r#"policy "test" {
+                phase transcode-video {
+                    transcode video to hevc
+                }
+            }"#
+    }
+
     fn h264_file(path: std::path::PathBuf) -> MediaFile {
         MediaFile::new(path)
             .with_container(Container::Mkv)
@@ -837,6 +845,62 @@ mod tests {
         assert!(
             matches!(entered_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
             "executor must not receive PlanCreated while the nvenc permit is held"
+        );
+
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(1), &mut processing)
+            .await
+            .expect("processing should continue after the limiter permit is released")
+            .expect("processing should complete without execution errors");
+        entered_rx
+            .try_recv()
+            .expect("executor should receive PlanCreated after permit release");
+    }
+
+    #[tokio::test]
+    async fn process_pipeline_limits_transcode_without_per_action_hw() {
+        let policy = global_hw_policy();
+        let fixture = process_tests::TestFixture::with_policy(policy);
+        let limiter = Arc::new(voom_job_manager::worker::PlanExecutionLimiter::from_limits(
+            vec![("hw:nvenc".to_string(), 1)],
+        ));
+        let held = limiter
+            .acquire_for_plan(&process_tests::test_plan_with_optional_transcode_hw(
+                "transcode-video",
+                None,
+            ))
+            .await;
+
+        let path = fixture.dir_path().join("movie.mkv");
+        std::fs::write(&path, vec![0u8; 1024]).unwrap();
+        let file = h264_file(path);
+        let compiled = voom_dsl::compile_policy(policy).unwrap();
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let mut kernel = voom_kernel::Kernel::new();
+        kernel
+            .register_plugin(Arc::new(RecordingExecutor { entered_tx }), 50)
+            .unwrap();
+        let ctx = ProcessContext {
+            plan_limiter: limiter,
+            ..fixture.make_ctx(
+                Arc::new(kernel),
+                Arc::new(voom_domain::test_support::InMemoryStore::new()),
+            )
+        };
+
+        let processing = process_single_file_execute(&file, &compiled, &ctx);
+        tokio::pin!(processing);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut processing)
+                .await
+                .is_err(),
+            "global/default hw transcode should wait for the default limited resource"
+        );
+        assert!(
+            matches!(entered_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "executor must not receive PlanCreated while the default nvenc permit is held"
         );
 
         drop(held);
