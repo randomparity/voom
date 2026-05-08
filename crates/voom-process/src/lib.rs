@@ -12,6 +12,67 @@ use wait_timeout::ChildExt;
 
 use voom_domain::errors::{Result, VoomError};
 
+/// Default maximum bytes retained from each captured process stream.
+pub const DEFAULT_CAPTURE_LIMIT_BYTES: usize = 1024 * 1024;
+
+/// Per-stream subprocess output capture limits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CaptureConfig {
+    pub max_stdout_bytes: usize,
+    pub max_stderr_bytes: usize,
+}
+
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self {
+            max_stdout_bytes: DEFAULT_CAPTURE_LIMIT_BYTES,
+            max_stderr_bytes: DEFAULT_CAPTURE_LIMIT_BYTES,
+        }
+    }
+}
+
+fn append_truncation_marker(buf: &mut Vec<u8>, truncated_bytes: usize) {
+    if truncated_bytes == 0 {
+        return;
+    }
+    if !buf.is_empty() && !buf.ends_with(b"\n") {
+        buf.push(b'\n');
+    }
+    buf.extend_from_slice(format!("...[truncated {truncated_bytes} bytes]").as_bytes());
+}
+
+/// Read a stream to EOF while retaining at most `max_bytes` of original data.
+///
+/// The returned buffer includes a truncation marker when bytes were discarded.
+/// Prefer `run_with_timeout*` for subprocess execution; this helper exists for
+/// integrations that already own process lifecycle management.
+///
+/// # Errors
+/// Returns any I/O error produced while reading from `reader`.
+pub fn read_bounded<R>(reader: &mut R, max_bytes: usize) -> std::io::Result<Vec<u8>>
+where
+    R: Read,
+{
+    let mut output = Vec::with_capacity(max_bytes.min(8192));
+    let mut truncated_bytes = 0usize;
+    let mut chunk = [0u8; 8192];
+
+    loop {
+        let read = reader.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+
+        let remaining = max_bytes.saturating_sub(output.len());
+        let retained = remaining.min(read);
+        output.extend_from_slice(&chunk[..retained]);
+        truncated_bytes = truncated_bytes.saturating_add(read - retained);
+    }
+
+    append_truncation_marker(&mut output, truncated_bytes);
+    Ok(output)
+}
+
 /// Spawn reader threads for stdout and stderr pipes.
 ///
 /// Returns join handles that yield the collected bytes. Threads are
@@ -19,6 +80,7 @@ use voom_domain::errors::{Result, VoomError};
 /// avoiding deadlock when output exceeds the OS pipe buffer.
 fn spawn_pipe_readers(
     child: &mut std::process::Child,
+    capture: CaptureConfig,
 ) -> (
     std::thread::JoinHandle<Vec<u8>>,
     std::thread::JoinHandle<Vec<u8>>,
@@ -27,19 +89,17 @@ fn spawn_pipe_readers(
     let mut stderr = child.stderr.take().expect("stderr piped");
 
     let stdout_handle = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Err(e) = stdout.read_to_end(&mut buf) {
+        read_bounded(&mut stdout, capture.max_stdout_bytes).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "failed to read child stdout");
-        }
-        buf
+            Vec::new()
+        })
     });
 
     let stderr_handle = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Err(e) = stderr.read_to_end(&mut buf) {
+        read_bounded(&mut stderr, capture.max_stderr_bytes).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "failed to read child stderr");
-        }
-        buf
+            Vec::new()
+        })
     });
 
     (stdout_handle, stderr_handle)
@@ -70,7 +130,7 @@ pub fn run_with_timeout(
     args: &[impl AsRef<OsStr>],
     timeout: Duration,
 ) -> Result<Output> {
-    run_with_timeout_env(tool, args, timeout, &[])
+    run_with_timeout_env_config(tool, args, timeout, &[], CaptureConfig::default())
 }
 
 /// Run a subprocess with a timeout and extra environment variables.
@@ -83,6 +143,33 @@ pub fn run_with_timeout_env(
     timeout: Duration,
     env_vars: &[(&str, &str)],
 ) -> Result<Output> {
+    run_with_timeout_env_config(tool, args, timeout, env_vars, CaptureConfig::default())
+}
+
+/// Run a subprocess with a timeout and configured output capture limits.
+///
+/// # Errors
+/// Returns `VoomError::ToolExecution` if the process fails or times out.
+pub fn run_with_timeout_config(
+    tool: &str,
+    args: &[impl AsRef<OsStr>],
+    timeout: Duration,
+    capture: CaptureConfig,
+) -> Result<Output> {
+    run_with_timeout_env_config(tool, args, timeout, &[], capture)
+}
+
+/// Run a subprocess with a timeout, extra environment variables, and capture limits.
+///
+/// # Errors
+/// Returns `VoomError::ToolExecution` if the process fails or times out.
+pub fn run_with_timeout_env_config(
+    tool: &str,
+    args: &[impl AsRef<OsStr>],
+    timeout: Duration,
+    env_vars: &[(&str, &str)],
+    capture: CaptureConfig,
+) -> Result<Output> {
     let mut cmd = Command::new(tool);
     cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     for (key, val) in env_vars {
@@ -94,7 +181,7 @@ pub fn run_with_timeout_env(
     })?;
 
     // Spawn reader threads before waiting so pipes drain concurrently.
-    let (stdout_handle, stderr_handle) = spawn_pipe_readers(&mut child);
+    let (stdout_handle, stderr_handle) = spawn_pipe_readers(&mut child, capture);
 
     match child.wait_timeout(timeout) {
         Ok(Some(status)) => {
@@ -307,6 +394,74 @@ mod tests {
             stdout.contains("VOOM_TEST_VAR=hello_gpu"),
             "env output should contain the set var, got: {stdout}"
         );
+    }
+
+    #[test]
+    fn run_with_timeout_truncates_stdout_at_configured_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("stdout-flood.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('a' * 40)\nPY\n",
+        )
+        .expect("write script");
+        make_executable(&script);
+
+        let output = run_with_timeout_env_config(
+            script.to_str().expect("utf8 path"),
+            &[] as &[&str],
+            Duration::from_secs(5),
+            &[],
+            CaptureConfig {
+                max_stdout_bytes: 10,
+                max_stderr_bytes: DEFAULT_CAPTURE_LIMIT_BYTES,
+            },
+        )
+        .expect("script succeeds");
+
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "aaaaaaaaaa\n...[truncated 30 bytes]"
+        );
+        assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn run_with_timeout_truncates_stderr_at_configured_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("stderr-flood.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stderr.write('first\\nsecond\\nthird\\nfourth\\n')\nPY\n",
+        )
+        .expect("write script");
+        make_executable(&script);
+
+        let output = run_with_timeout_env_config(
+            script.to_str().expect("utf8 path"),
+            &[] as &[&str],
+            Duration::from_secs(5),
+            &[],
+            CaptureConfig {
+                max_stdout_bytes: DEFAULT_CAPTURE_LIMIT_BYTES,
+                max_stderr_bytes: 13,
+            },
+        )
+        .expect("script succeeds");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("...[truncated "));
+        assert!(stderr_tail(&output.stderr, 2).contains("...[truncated "));
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut perms = std::fs::metadata(path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).expect("chmod");
     }
 
     #[test]
