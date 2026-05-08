@@ -7,8 +7,8 @@ the operator uses to judge policy correctness.
 
 The harness is policy-agnostic: it does not parse `.voom` files and does not
 encode any expected outcomes. **Pipeline correctness** (build, scan, jobs reach
-a terminal state, no data loss, web endpoints up, no phase that produced 100%
-job failures) is gated by the harness; **semantic correctness** ("did the
+a terminal state, no data loss, web endpoints up, no failed plans in any phase)
+is gated by the harness; **semantic correctness** ("did the
 policy do what I wanted") is the operator's judgment from the diffs.
 
 ## Usage
