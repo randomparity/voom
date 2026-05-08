@@ -10,6 +10,8 @@
 //! template edits — they have no runtime branching to test.
 
 const DASHBOARD_HTML: &str = include_str!("../templates/dashboard.html");
+const FILE_DETAIL_HTML: &str = include_str!("../templates/file_detail.html");
+const INTEGRITY_HTML: &str = include_str!("../templates/integrity.html");
 const JOBS_HTML: &str = include_str!("../templates/jobs.html");
 const BASE_HTML: &str = include_str!("../templates/base.html");
 
@@ -39,6 +41,36 @@ fn dashboard_listens_for_plan_update_events() {
         "dashboard.html must register an htmx trigger on `voom:plan-update from:body` \
          so job counters refresh when Plan* lifecycle events arrive via the \
          web-sse-bridge (issue #138)"
+    );
+}
+
+#[test]
+fn dashboard_contains_integrity_widget() {
+    assert!(
+        DASHBOARD_HTML.contains("Library Integrity")
+            && DASHBOARD_HTML.contains("/api/integrity-summary")
+            && DASHBOARD_HTML.contains("/integrity"),
+        "dashboard.html must include a library integrity widget backed by \
+         /api/integrity-summary and linked to the integrity page (issue #247)"
+    );
+}
+
+#[test]
+fn file_detail_contains_verification_history() {
+    assert!(
+        FILE_DETAIL_HTML.contains("Verification History"),
+        "file_detail.html must render per-file verification history (issue #247)"
+    );
+}
+
+#[test]
+fn integrity_page_lists_failing_files() {
+    assert!(
+        INTEGRITY_HTML.contains("Latest Error Files")
+            && INTEGRITY_HTML.contains("Last Verified")
+            && INTEGRITY_HTML.contains("Hash Mismatch"),
+        "integrity.html must list latest failing files with sortable verification \
+         timing and distinct hash mismatch treatment (issue #247)"
     );
 }
 

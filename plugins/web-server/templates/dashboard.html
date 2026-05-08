@@ -31,6 +31,54 @@
     </a>
 </div>
 
+<div x-data="{
+        integrity: null,
+        error: null,
+        refresh() {
+            fetch('/api/integrity-summary')
+                .then(r => {
+                    if (!r.ok) throw new Error('request failed');
+                    return r.json();
+                })
+                .then(d => { this.integrity = d; this.error = null; })
+                .catch(() => { this.error = 'unavailable'; });
+        }
+    }"
+    x-init="refresh(); setInterval(() => refresh(), 30000)"
+    class="card mb-1">
+    <div class="card-header">
+        <h2>Library Integrity</h2>
+        <a href="/integrity" class="btn btn-secondary btn-sm">View Errors</a>
+    </div>
+    <template x-if="integrity">
+        <div class="card-grid" style="margin-bottom: 0;">
+            <div class="stat-card accent">
+                <div class="stat-value" x-text="integrity.total_files"></div>
+                <div class="stat-label">Total Files</div>
+            </div>
+            <div class="stat-card warning">
+                <div class="stat-value" x-text="integrity.never_verified"></div>
+                <div class="stat-label">Never Verified</div>
+            </div>
+            <div class="stat-card info">
+                <div class="stat-value" x-text="integrity.stale"></div>
+                <div class="stat-label">Stale</div>
+            </div>
+            <div class="stat-card danger">
+                <div class="stat-value" x-text="integrity.with_errors"></div>
+                <div class="stat-label">With Errors</div>
+            </div>
+            <div class="stat-card danger" style="border-top-color: #ff5d5d;">
+                <div class="stat-value" x-text="integrity.hash_mismatches"></div>
+                <div class="stat-label">Hash Mismatches</div>
+            </div>
+        </div>
+    </template>
+    <template x-if="error">
+        <p class="text-danger">Integrity summary unavailable.</p>
+    </template>
+</div>
+
 <div x-data="{ stats: null, refresh() { fetch('/api/stats/library').then(r => r.json()).then(d => this.stats = d) } }" x-init="refresh(); setInterval(() => refresh(), 10000)">
 <template x-if="stats">
 <div>

@@ -192,6 +192,9 @@
         .badge-info      { background: rgba(52,152,219,0.2); color: var(--info); }
         .badge-success   { background: rgba(46,204,113,0.15); color: var(--success); }
         .badge-danger    { background: rgba(231,76,60,0.15); color: var(--danger); }
+        .badge-ok        { background: rgba(46,204,113,0.15); color: var(--success); }
+        .badge-warning   { background: rgba(243,156,18,0.2); color: var(--warning); }
+        .badge-error     { background: rgba(231,76,60,0.15); color: var(--danger); }
 
         .badge-discovery { background: rgba(52,152,219,0.2); color: var(--info); }
         .badge-voom      { background: rgba(46,204,113,0.15); color: var(--success); }
@@ -371,6 +374,9 @@
             </a></li>
             <li><a href="/library" {% if current_page | default(value="") == "library" %}class="active"{% endif %}>
                 <span class="icon">&#9733;</span> Library
+            </a></li>
+            <li><a href="/integrity" {% if current_page | default(value="") == "integrity" %}class="active"{% endif %}>
+                <span class="icon">&#9888;</span> Integrity
             </a></li>
             <li><a href="/policies" {% if current_page | default(value="") == "policies" %}class="active"{% endif %}>
                 <span class="icon">&#9881;</span> Policies

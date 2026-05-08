@@ -3,6 +3,7 @@
 use serde::Serialize;
 use voom_domain::media::MediaFile;
 use voom_domain::utils::format::{format_duration, format_size};
+use voom_domain::verification::{VerificationMode, VerificationRecord};
 
 /// A template-friendly view of a `MediaFile` with computed display fields.
 #[derive(Debug, Serialize)]
@@ -102,6 +103,67 @@ pub fn transition_views(transitions: Vec<FileTransition>) -> Vec<TransitionView>
         .into_iter()
         .map(TransitionView::from_transition)
         .collect()
+}
+
+/// A template-friendly view of a verification record.
+#[derive(Debug, Serialize)]
+#[non_exhaustive]
+pub struct VerificationView {
+    /// Lowercase verification mode label.
+    pub mode_label: String,
+    /// Lowercase outcome label.
+    pub outcome_label: String,
+    /// True when the result is a hash verification failure.
+    pub is_hash_mismatch: bool,
+    /// All original `VerificationRecord` fields, flattened.
+    #[serde(flatten)]
+    pub verification: VerificationRecord,
+}
+
+impl VerificationView {
+    #[must_use]
+    pub fn from_verification(verification: VerificationRecord) -> Self {
+        let mode_label = verification.mode.as_str().to_string();
+        let outcome_label = verification.outcome.as_str().to_string();
+        let is_hash_mismatch =
+            verification.mode == VerificationMode::Hash && verification.error_count > 0;
+
+        Self {
+            mode_label,
+            outcome_label,
+            is_hash_mismatch,
+            verification,
+        }
+    }
+}
+
+/// Convert verification records into template views.
+#[must_use]
+pub fn verification_views(records: Vec<VerificationRecord>) -> Vec<VerificationView> {
+    records
+        .into_iter()
+        .map(VerificationView::from_verification)
+        .collect()
+}
+
+/// A failing file row for the integrity page.
+#[derive(Debug, Serialize)]
+#[non_exhaustive]
+pub struct IntegrityErrorView {
+    /// File metadata and computed display fields.
+    pub file: FileView,
+    /// Latest error verification for the file.
+    pub verification: VerificationView,
+}
+
+impl IntegrityErrorView {
+    #[must_use]
+    pub fn new(file: MediaFile, verification: VerificationRecord) -> Self {
+        Self {
+            file: FileView::from_media_file(file),
+            verification: VerificationView::from_verification(verification),
+        }
+    }
 }
 
 /// Format a size delta as a human-readable signed string.
