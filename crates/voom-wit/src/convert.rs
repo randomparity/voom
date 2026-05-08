@@ -401,12 +401,10 @@ mod tests {
                 e
             }),
             Event::PlanCreated(PlanCreatedEvent::new(plan)),
-            Event::ExecutorCapabilities(ExecutorCapabilitiesEvent::new(
-                "test",
-                CodecCapabilities::empty(),
-                vec![],
-                vec![],
-            )),
+            Event::ExecutorCapabilities(
+                ExecutorCapabilitiesEvent::new("test", CodecCapabilities::empty(), vec![], vec![])
+                    .with_parallel_limits(vec![ExecutorParallelLimit::new("hw:nvenc", 4)]),
+            ),
         ];
 
         for event in &events {
@@ -418,15 +416,18 @@ mod tests {
 
     #[test]
     fn test_executor_capabilities_event_roundtrip() {
-        let event = Event::ExecutorCapabilities(ExecutorCapabilitiesEvent::new(
-            "ffmpeg-executor",
-            CodecCapabilities::new(
-                vec!["h264".into(), "hevc".into(), "aac".into()],
-                vec!["libx264".into(), "libx265".into(), "aac".into()],
-            ),
-            vec!["matroska".into(), "mp4".into(), "avi".into()],
-            vec!["videotoolbox".into(), "cuda".into()],
-        ));
+        let event = Event::ExecutorCapabilities(
+            ExecutorCapabilitiesEvent::new(
+                "ffmpeg-executor",
+                CodecCapabilities::new(
+                    vec!["h264".into(), "hevc".into(), "aac".into()],
+                    vec!["libx264".into(), "libx265".into(), "aac".into()],
+                ),
+                vec!["matroska".into(), "mp4".into(), "avi".into()],
+                vec!["videotoolbox".into(), "cuda".into()],
+            )
+            .with_parallel_limits(vec![ExecutorParallelLimit::new("hw:nvenc", 4)]),
+        );
 
         let (event_type, payload) = event_to_wasm(&event).unwrap();
         assert_eq!(event_type, "executor.capabilities");

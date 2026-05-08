@@ -772,12 +772,31 @@ impl CodecCapabilities {
 }
 
 #[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutorParallelLimit {
+    pub resource: String,
+    pub max_parallel: usize,
+}
+
+impl ExecutorParallelLimit {
+    #[must_use]
+    pub fn new(resource: impl Into<String>, max_parallel: usize) -> Self {
+        Self {
+            resource: resource.into(),
+            max_parallel,
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutorCapabilitiesEvent {
     pub plugin_name: String,
     pub codecs: CodecCapabilities,
     pub formats: Vec<String>,
     pub hw_accels: Vec<String>,
+    #[serde(default)]
+    pub parallel_limits: Vec<ExecutorParallelLimit>,
 }
 
 impl ExecutorCapabilitiesEvent {
@@ -793,7 +812,14 @@ impl ExecutorCapabilitiesEvent {
             codecs,
             formats,
             hw_accels,
+            parallel_limits: vec![],
         }
+    }
+
+    #[must_use]
+    pub fn with_parallel_limits(mut self, limits: Vec<ExecutorParallelLimit>) -> Self {
+        self.parallel_limits = limits;
+        self
     }
 }
 
@@ -1257,6 +1283,29 @@ mod tests {
         let bytes = rmp_serde::to_vec(&event).unwrap();
         let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(deserialized.event_type(), "executor.capabilities");
+    }
+
+    #[test]
+    fn test_executor_capabilities_parallel_limits_serde_roundtrip() {
+        let event = Event::ExecutorCapabilities(
+            ExecutorCapabilitiesEvent::new(
+                "ffmpeg-executor",
+                CodecCapabilities::empty(),
+                vec![],
+                vec!["cuda".into()],
+            )
+            .with_parallel_limits(vec![ExecutorParallelLimit::new("hw:nvenc", 4)]),
+        );
+
+        let json = serde_json::to_string(&event).unwrap();
+        let restored: Event = serde_json::from_str(&json).unwrap();
+
+        let Event::ExecutorCapabilities(restored) = restored else {
+            panic!("expected executor capabilities");
+        };
+        assert_eq!(restored.parallel_limits.len(), 1);
+        assert_eq!(restored.parallel_limits[0].resource, "hw:nvenc");
+        assert_eq!(restored.parallel_limits[0].max_parallel, 4);
     }
 
     #[test]
