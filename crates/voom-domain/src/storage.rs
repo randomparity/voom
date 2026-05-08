@@ -10,6 +10,7 @@ use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::{Container, MediaFile, StoredFingerprint};
 use crate::plan::Plan;
 use crate::stats::{LibrarySnapshot, SavingsReport, SnapshotTrigger, TimePeriod};
+use crate::transcode::TranscodeOutcome;
 use crate::transition::{DiscoveredFile, FileTransition, ReconcileResult, TransitionSource};
 
 /// Row retention policy for time- or count-based pruning.
@@ -91,6 +92,14 @@ pub struct FileFilters {
     pub offset: Option<u32>,
     /// When `true`, include files with `Missing` status. Default: `false`.
     pub include_missing: bool,
+}
+
+/// Filters for querying persisted transcode outcomes.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct TranscodeOutcomeFilters {
+    pub file_id: Option<String>,
+    pub limit: Option<u32>,
 }
 
 // --- Focused sub-traits ---
@@ -567,6 +576,25 @@ pub trait VerificationStorage: Send + Sync {
     ) -> Result<crate::verification::IntegritySummary>;
 }
 
+/// Transcode outcome persistence.
+///
+/// # Errors
+/// Implementations return [`VoomError::Storage`](crate::errors::VoomError::Storage)
+/// for any underlying database failure.
+pub trait TranscodeOutcomeStorage: Send + Sync {
+    /// Insert a completed transcode outcome.
+    fn insert_transcode_outcome(&self, outcome: &TranscodeOutcome) -> Result<()>;
+
+    /// Query transcode outcomes newest first, breaking timestamp ties by ID.
+    fn list_transcode_outcomes(
+        &self,
+        filters: &TranscodeOutcomeFilters,
+    ) -> Result<Vec<TranscodeOutcome>>;
+
+    /// Most recent transcode outcome for a file, if any.
+    fn latest_outcome_for_file(&self, file_id: &str) -> Result<Option<TranscodeOutcome>>;
+}
+
 /// Composed storage interface encompassing all sub-traits.
 ///
 /// All methods are synchronous (blocking) since rusqlite is synchronous.
@@ -588,6 +616,7 @@ pub trait StorageTrait:
     + SnapshotStorage
     + PendingOpsStorage
     + VerificationStorage
+    + TranscodeOutcomeStorage
 {
 }
 
@@ -605,6 +634,7 @@ impl<T> StorageTrait for T where
         + SnapshotStorage
         + PendingOpsStorage
         + VerificationStorage
+        + TranscodeOutcomeStorage
 {
 }
 
