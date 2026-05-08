@@ -300,6 +300,40 @@ mod tests {
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
     }
 
+    #[cfg(unix)]
+    fn make_executable(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut perms = std::fs::metadata(path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).expect("chmod");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_tool_truncates_noisy_stdout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("host-stdout-flood.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('c' * 1200000)\nPY\n",
+        )
+        .expect("write script");
+        make_executable(&script);
+
+        let state = HostState::new("test".into())
+            .with_tools(vec![script.to_string_lossy().into_owned()])
+            .with_capabilities(HashSet::from(["execute:tool".to_string()]))
+            .with_paths(vec![dir.path().to_path_buf()]);
+
+        let output = state
+            .run_tool(script.to_str().expect("utf8 path"), &[], 5000)
+            .expect("tool output");
+
+        assert!(output.stdout.len() < 1_200_000);
+        assert!(String::from_utf8_lossy(&output.stdout).contains("...[truncated "));
+    }
+
     #[test]
     fn test_run_tool_timeout() {
         let state = HostState::new("test".into())

@@ -11,6 +11,8 @@ use wait_timeout::ChildExt;
 
 use super::{HostState, HttpResponse, ToolOutput, MAX_PLUGIN_DATA_VALUE_SIZE};
 
+const HOST_TOOL_CAPTURE_LIMIT_BYTES: usize = 1024 * 1024;
+
 /// Extract the host (domain) from a URL string.
 /// Supports `scheme://[user@]host[:port]/...` forms.
 fn extract_url_host(url: &str) -> Result<String, String> {
@@ -228,14 +230,12 @@ impl HostState {
         // deadlock when pipe buffers fill up.
         let stdout_handle = child.stdout.take().map(|mut out| {
             std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                std::io::Read::read_to_end(&mut out, &mut buf).map(|_| buf)
+                voom_process::read_bounded(&mut out, HOST_TOOL_CAPTURE_LIMIT_BYTES)
             })
         });
         let stderr_handle = child.stderr.take().map(|mut err| {
             std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                std::io::Read::read_to_end(&mut err, &mut buf).map(|_| buf)
+                voom_process::read_bounded(&mut err, HOST_TOOL_CAPTURE_LIMIT_BYTES)
             })
         });
 

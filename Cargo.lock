@@ -3545,6 +3545,7 @@ dependencies = [
  "ureq",
  "uuid",
  "voom-domain",
+ "voom-process",
  "voom-wit",
  "wait-timeout",
  "wasmtime",
