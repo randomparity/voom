@@ -180,6 +180,69 @@ fn resolve_due_targets(
     Ok(out)
 }
 
+/// Minimal input for a parallel quick-verify pass.
+pub(crate) struct QuickVerifyTarget {
+    pub file_id: String,
+    pub path: PathBuf,
+}
+
+/// Run quick-mode verification on `targets` in parallel using a rayon pool,
+/// persisting each record to `store`. Errors from individual files are
+/// logged via `tracing` and reported as `VerificationOutcome::Error` — the
+/// pass itself does not abort on per-file failures.
+pub(crate) fn run_quick_pass(
+    store: &Arc<dyn StorageTrait>,
+    verifier_cfg: &VerifierConfig,
+    targets: &[QuickVerifyTarget],
+    workers: usize,
+) -> Result<Vec<VerificationRecord>> {
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let workers = if workers == 0 {
+        std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(4)
+    } else {
+        workers
+    };
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .context("failed to build rayon pool")?;
+    let timeout = Duration::from_secs(verifier_cfg.quick_timeout_secs);
+    let ffprobe_path = verifier_cfg.ffprobe_path.clone();
+    let results: Vec<Result<VerificationRecord>> = pool.install(|| {
+        targets
+            .par_iter()
+            .map(|tgt| {
+                voom_verifier::quick::run_quick(&tgt.file_id, &tgt.path, &ffprobe_path, timeout)
+                    .map_err(anyhow::Error::from)
+            })
+            .collect()
+    });
+
+    let mut records = Vec::with_capacity(results.len());
+    for r in results {
+        match r {
+            Ok(rec) => {
+                if let Err(e) = store.insert_verification(&rec) {
+                    tracing::warn!(
+                        file_id = %rec.file_id,
+                        error = %e,
+                        "failed to persist verification record"
+                    );
+                }
+                records.push(rec);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "quick verify failed");
+            }
+        }
+    }
+    Ok(records)
+}
+
 fn run_one(
     store: &Arc<dyn StorageTrait>,
     verifier_cfg: &VerifierConfig,

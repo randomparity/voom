@@ -16,6 +16,11 @@ use indicatif::HumanDuration;
 use tokio_util::sync::CancellationToken;
 use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{Event, FileDiscoveredEvent, ScanCompleteEvent};
+use voom_domain::storage::StorageTrait;
+use voom_domain::verification::{VerificationMode, VerificationOutcome, VerificationRecord};
+use voom_verifier::VerifierConfig;
+
+use crate::commands::verify::{run_quick_pass, QuickVerifyTarget};
 
 /// Run the scan command.
 ///
@@ -95,6 +100,22 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
         }
 
         purge_stale_records(&*store, config.pruning.retention_days, quiet);
+
+        // Optional quick-verification pass after introspection. Discovery itself
+        // is not blocked by this — verifications run as a separate fan-out only
+        // once the discovery + introspection phases have completed.
+        let verifier_cfg = read_verifier_config(&config);
+        let should_verify = args.verify || verifier_cfg.verify_on_scan;
+        if should_verify {
+            run_verify_pass(
+                &store,
+                &verifier_cfg,
+                &all_events,
+                args.workers,
+                quiet,
+                &token,
+            );
+        }
 
         // Protected from cancelled runs by the early return above (line 91).
         // `ScanComplete` carries both files_discovered and files_introspected and
@@ -512,6 +533,169 @@ fn format_results(events: &[FileDiscoveredEvent]) -> Vec<(PathBuf, u64, Option<S
         .collect()
 }
 
+/// Read `[plugin.verifier]` from the loaded `AppConfig`, falling back to defaults.
+fn read_verifier_config(cfg: &crate::config::AppConfig) -> VerifierConfig {
+    cfg.plugin
+        .get("verifier")
+        .and_then(|t| serde_json::to_value(t).ok())
+        .and_then(|v| serde_json::from_value::<VerifierConfig>(v).ok())
+        .unwrap_or_default()
+}
+
+/// Build the freshness cutoff: skip files whose latest quick verification is
+/// newer than this timestamp. `0` means always re-verify.
+fn freshness_cutoff(days: u64) -> Option<chrono::DateTime<chrono::Utc>> {
+    if days == 0 {
+        return None;
+    }
+    let dur = chrono::Duration::days(i64::try_from(days).unwrap_or(i64::MAX));
+    Some(chrono::Utc::now() - dur)
+}
+
+/// Build verify targets from the discovery events: look up each file via
+/// `lookup`, drop any whose `latest_quick` timestamp is at or after the
+/// freshness cutoff. The two-closure signature keeps this unit-testable
+/// without a full storage mock.
+fn build_verify_targets<L, V>(
+    lookup: L,
+    latest_quick: V,
+    events: &[FileDiscoveredEvent],
+    cutoff: Option<chrono::DateTime<chrono::Utc>>,
+) -> (Vec<QuickVerifyTarget>, u64)
+where
+    L: Fn(&std::path::Path) -> Option<voom_domain::media::MediaFile>,
+    V: Fn(&str) -> Option<chrono::DateTime<chrono::Utc>>,
+{
+    let mut targets = Vec::new();
+    let mut skipped_fresh = 0u64;
+    for ev in events {
+        let Some(file) = lookup(&ev.path) else {
+            continue;
+        };
+        let file_id = file.id.to_string();
+        if let Some(cutoff_ts) = cutoff {
+            if let Some(when) = latest_quick(&file_id) {
+                if when >= cutoff_ts {
+                    skipped_fresh += 1;
+                    continue;
+                }
+            }
+        }
+        targets.push(QuickVerifyTarget {
+            file_id,
+            path: file.path.clone(),
+        });
+    }
+    (targets, skipped_fresh)
+}
+
+/// Run a quick-verification fan-out after scan completes. This is invoked
+/// only when `--verify` is set or `[plugin.verifier] verify_on_scan = true`.
+fn run_verify_pass(
+    store: &Arc<dyn StorageTrait>,
+    cfg: &VerifierConfig,
+    events: &[FileDiscoveredEvent],
+    workers: usize,
+    quiet: bool,
+    token: &CancellationToken,
+) {
+    if token.is_cancelled() {
+        return;
+    }
+    let cutoff = freshness_cutoff(cfg.verify_freshness_days);
+    let store_lookup = store.clone();
+    let store_latest = store.clone();
+    let (targets, skipped_fresh) = build_verify_targets(
+        |p| match store_lookup.file_by_path(p) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(path = %p.display(), error = %e, "file_by_path failed");
+                None
+            }
+        },
+        |file_id| match store_latest.latest_verification(file_id, VerificationMode::Quick) {
+            Ok(Some(rec)) => Some(rec.verified_at),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(
+                    file_id = %file_id,
+                    error = %e,
+                    "latest_verification failed; will re-verify"
+                );
+                None
+            }
+        },
+        events,
+        cutoff,
+    );
+
+    if targets.is_empty() {
+        if !quiet && skipped_fresh > 0 {
+            eprintln!(
+                "  {} verification (all {} files verified within last {} days)",
+                style("Skipped").dim(),
+                skipped_fresh,
+                cfg.verify_freshness_days,
+            );
+        }
+        return;
+    }
+
+    if !quiet {
+        eprintln!(
+            "  {} {} files (quick mode){}",
+            style("Verifying").dim(),
+            targets.len(),
+            if skipped_fresh > 0 {
+                format!(", {skipped_fresh} fresh skipped")
+            } else {
+                String::new()
+            },
+        );
+    }
+
+    let records = match run_quick_pass(store, cfg, &targets, workers) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "verify pass failed to run");
+            return;
+        }
+    };
+
+    if !quiet {
+        print_verify_summary(&records);
+    }
+}
+
+/// Print a one-line summary of a quick-verify pass.
+fn print_verify_summary(records: &[VerificationRecord]) {
+    let ok = records
+        .iter()
+        .filter(|r| r.outcome == VerificationOutcome::Ok)
+        .count();
+    let warn = records
+        .iter()
+        .filter(|r| r.outcome == VerificationOutcome::Warning)
+        .count();
+    let err = records
+        .iter()
+        .filter(|r| r.outcome == VerificationOutcome::Error)
+        .count();
+    let summary = format!("{ok} ok, {warn} warning, {err} error");
+    eprintln!(
+        "  {} {} ({})",
+        style("Verified").dim(),
+        records.len(),
+        if err > 0 {
+            style(summary).red().to_string()
+        } else if warn > 0 {
+            style(summary).yellow().to_string()
+        } else {
+            style(summary).green().to_string()
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -624,6 +808,132 @@ mod tests {
         }
 
         assert_eq!(recorder.discovered_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn freshness_cutoff_zero_returns_none() {
+        assert!(freshness_cutoff(0).is_none());
+    }
+
+    #[test]
+    fn freshness_cutoff_positive_returns_past_timestamp() {
+        let cutoff = freshness_cutoff(7).expect("cutoff for 7 days");
+        let now = chrono::Utc::now();
+        let delta = now - cutoff;
+        // ~7 days, allow generous slack for test scheduling
+        assert!(delta.num_hours() >= 24 * 7 - 1);
+        assert!(delta.num_hours() <= 24 * 7 + 1);
+    }
+
+    #[test]
+    fn build_verify_targets_collects_files_with_known_paths() {
+        let mut f1 = MediaFile::new(PathBuf::from("/m/a.mkv"));
+        f1.size = 100;
+        let mut f2 = MediaFile::new(PathBuf::from("/m/b.mkv"));
+        f2.size = 200;
+        let f1_clone = f1.clone();
+        let f2_clone = f2.clone();
+
+        let events = vec![
+            FileDiscoveredEvent::new(f1.path.clone(), 100, Some("h1".into())),
+            FileDiscoveredEvent::new(f2.path.clone(), 200, Some("h2".into())),
+        ];
+
+        let lookup = |p: &std::path::Path| {
+            if p == f1_clone.path {
+                Some(f1_clone.clone())
+            } else if p == f2_clone.path {
+                Some(f2_clone.clone())
+            } else {
+                None
+            }
+        };
+        let no_records = |_: &str| None;
+
+        let (targets, skipped) = build_verify_targets(lookup, no_records, &events, None);
+        assert_eq!(targets.len(), 2);
+        assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn build_verify_targets_skips_unknown_paths() {
+        let events = vec![FileDiscoveredEvent::new(
+            PathBuf::from("/m/never-introspected.mkv"),
+            100,
+            Some("h".into()),
+        )];
+        let (targets, skipped) = build_verify_targets(|_| None, |_: &str| None, &events, None);
+        assert!(targets.is_empty());
+        assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn build_verify_targets_skips_files_verified_within_freshness() {
+        let mut f = MediaFile::new(PathBuf::from("/m/fresh.mkv"));
+        f.size = 100;
+        let f_clone = f.clone();
+        let events = vec![FileDiscoveredEvent::new(
+            f.path.clone(),
+            100,
+            Some("h".into()),
+        )];
+
+        let lookup = |p: &std::path::Path| {
+            if p == f_clone.path {
+                Some(f_clone.clone())
+            } else {
+                None
+            }
+        };
+        // Verified 1 day ago — well inside a 7-day cutoff.
+        let recent = chrono::Utc::now() - chrono::Duration::days(1);
+        let latest = move |_: &str| Some(recent);
+
+        let cutoff = freshness_cutoff(7);
+        let (targets, skipped) = build_verify_targets(lookup, latest, &events, cutoff);
+        assert!(targets.is_empty());
+        assert_eq!(skipped, 1);
+    }
+
+    #[test]
+    fn build_verify_targets_includes_stale_records() {
+        let mut f = MediaFile::new(PathBuf::from("/m/stale.mkv"));
+        f.size = 100;
+        let f_clone = f.clone();
+        let events = vec![FileDiscoveredEvent::new(
+            f.path.clone(),
+            100,
+            Some("h".into()),
+        )];
+        let lookup = |p: &std::path::Path| {
+            if p == f_clone.path {
+                Some(f_clone.clone())
+            } else {
+                None
+            }
+        };
+        // Verified 30 days ago — past a 7-day cutoff.
+        let stale = chrono::Utc::now() - chrono::Duration::days(30);
+        let latest = move |_: &str| Some(stale);
+
+        let cutoff = freshness_cutoff(7);
+        let (targets, skipped) = build_verify_targets(lookup, latest, &events, cutoff);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn build_verify_targets_no_cutoff_includes_all_known() {
+        let mut f = MediaFile::new(PathBuf::from("/m/x.mkv"));
+        f.size = 100;
+        let f_clone = f.clone();
+        let events = vec![FileDiscoveredEvent::new(f.path.clone(), 100, None)];
+        let lookup = move |_: &std::path::Path| Some(f_clone.clone());
+        // Cutoff disabled → freshness check skipped entirely.
+        let latest = |_: &str| Some(chrono::Utc::now());
+        let (targets, skipped) = build_verify_targets(lookup, latest, &events, None);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(skipped, 0);
     }
 
     #[tokio::test]

@@ -27,6 +27,12 @@ pub struct VerifierConfig {
     /// backend is not advertised by `ffmpeg -hwaccels` on this host.
     /// Unrecognised values warn and use CPU.
     pub thorough_hw_accel: String,
+    /// Run a quick verification pass after `voom scan` completes.
+    /// CLI `--verify` overrides for a single run.
+    pub verify_on_scan: bool,
+    /// Skip files whose latest quick-verification is fresher than this many
+    /// days (idempotency for repeated scans). 0 means always re-verify.
+    pub verify_freshness_days: u64,
 }
 
 impl Default for VerifierConfig {
@@ -39,6 +45,8 @@ impl Default for VerifierConfig {
             ffprobe_path: "ffprobe".into(),
             ffmpeg_path: "ffmpeg".into(),
             thorough_hw_accel: "none".into(),
+            verify_on_scan: false,
+            verify_freshness_days: 7,
         }
     }
 }
