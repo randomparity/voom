@@ -76,6 +76,8 @@ EOF
     trap - EXIT
 }
 
+run_summary_failed_phase_test
+
 for scenario in "${fixtures[@]}"; do
     pre="tests/fixtures/${scenario}/pre"
     post="tests/fixtures/${scenario}/post"
@@ -116,8 +118,6 @@ for scenario in "${fixtures[@]}"; do
     rm -rf "${actual}"
     trap - EXIT
 done
-
-run_summary_failed_phase_test
 
 if ((fail)); then
     echo "TESTS FAILED" >&2

@@ -124,7 +124,7 @@ fi
         echo '```'
     else
         echo
-        echo "(jobs report not parseable per-phase)"
+        echo "(plans.tsv not available or not parseable per-phase)"
     fi
     echo
     echo "## Anomaly section"
