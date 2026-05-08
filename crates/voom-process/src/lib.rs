@@ -258,18 +258,38 @@ pub fn stderr_tail(bytes: &[u8], max_lines: usize) -> String {
 }
 
 /// Read all bytes from an optional tokio `ChildStdout`/`ChildStderr`.
-async fn read_child_pipe<R>(pipe: Option<R>) -> Vec<u8>
+async fn read_child_pipe<R>(pipe: Option<R>, max_bytes: usize) -> Vec<u8>
 where
     R: tokio::io::AsyncReadExt + Unpin,
 {
     let Some(mut pipe) = pipe else {
         return Vec::new();
     };
-    let mut buf = Vec::new();
-    if let Err(e) = pipe.read_to_end(&mut buf).await {
-        tracing::warn!(error = %e, "failed to read child pipe");
+
+    let mut output = Vec::with_capacity(max_bytes.min(8192));
+    let mut truncated_bytes = 0usize;
+    let mut chunk = [0u8; 8192];
+
+    loop {
+        let read = match pipe.read(&mut chunk).await {
+            Ok(read) => read,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read child pipe");
+                break;
+            }
+        };
+        if read == 0 {
+            break;
+        }
+
+        let remaining = max_bytes.saturating_sub(output.len());
+        let retained = remaining.min(read);
+        output.extend_from_slice(&chunk[..retained]);
+        truncated_bytes = truncated_bytes.saturating_add(read - retained);
     }
-    buf
+
+    append_truncation_marker(&mut output, truncated_bytes);
+    output
 }
 
 /// Async cancellable subprocess execution via `tokio::process`.
@@ -286,7 +306,7 @@ pub async fn run_cancellable(
     timeout: Duration,
     token: &tokio_util::sync::CancellationToken,
 ) -> Result<Output> {
-    run_cancellable_env(tool, args, timeout, &[], token).await
+    run_cancellable_env_config(tool, args, timeout, &[], token, CaptureConfig::default()).await
 }
 
 /// Async cancellable subprocess with extra environment variables.
@@ -298,6 +318,41 @@ pub async fn run_cancellable_env(
     timeout: Duration,
     env_vars: &[(&str, &str)],
     token: &tokio_util::sync::CancellationToken,
+) -> Result<Output> {
+    run_cancellable_env_config(
+        tool,
+        args,
+        timeout,
+        env_vars,
+        token,
+        CaptureConfig::default(),
+    )
+    .await
+}
+
+/// Async cancellable subprocess with configured output capture limits.
+///
+/// See [`run_cancellable`] for details.
+pub async fn run_cancellable_config(
+    tool: &str,
+    args: &[impl AsRef<OsStr>],
+    timeout: Duration,
+    token: &tokio_util::sync::CancellationToken,
+    capture: CaptureConfig,
+) -> Result<Output> {
+    run_cancellable_env_config(tool, args, timeout, &[], token, capture).await
+}
+
+/// Async cancellable subprocess with extra environment variables and capture limits.
+///
+/// See [`run_cancellable`] for details.
+pub async fn run_cancellable_env_config(
+    tool: &str,
+    args: &[impl AsRef<OsStr>],
+    timeout: Duration,
+    env_vars: &[(&str, &str)],
+    token: &tokio_util::sync::CancellationToken,
+    capture: CaptureConfig,
 ) -> Result<Output> {
     use tokio::process::Command as TokioCommand;
 
@@ -322,8 +377,8 @@ pub async fn run_cancellable_env(
     tokio::select! {
         result = async {
             let (stdout, stderr, status) = tokio::join!(
-                read_child_pipe(stdout_pipe),
-                read_child_pipe(stderr_pipe),
+                read_child_pipe(stdout_pipe, capture.max_stdout_bytes),
+                read_child_pipe(stderr_pipe, capture.max_stderr_bytes),
                 child.wait(),
             );
             (stdout, stderr, status)
@@ -486,6 +541,39 @@ mod tests {
             .expect("echo should succeed");
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hello");
+    }
+
+    #[tokio::test]
+    async fn run_cancellable_truncates_stdout_at_configured_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("async-stdout-flood.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('b' * 35)\nPY\n",
+        )
+        .expect("write script");
+        make_executable(&script);
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let output = run_cancellable_env_config(
+            script.to_str().expect("utf8 path"),
+            &[] as &[&str],
+            Duration::from_secs(5),
+            &[],
+            &token,
+            CaptureConfig {
+                max_stdout_bytes: 8,
+                max_stderr_bytes: DEFAULT_CAPTURE_LIMIT_BYTES,
+            },
+        )
+        .await
+        .expect("script succeeds");
+
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "bbbbbbbb\n...[truncated 27 bytes]"
+        );
     }
 
     #[tokio::test]
