@@ -22,6 +22,14 @@ pub struct CaptureConfig {
     pub max_stderr_bytes: usize,
 }
 
+/// Options for cancellable subprocess execution.
+#[derive(Clone, Copy, Debug)]
+pub struct CancellableOptions<'a> {
+    pub env_vars: &'a [(&'a str, &'a str)],
+    pub token: &'a tokio_util::sync::CancellationToken,
+    pub capture: CaptureConfig,
+}
+
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
@@ -306,7 +314,17 @@ pub async fn run_cancellable(
     timeout: Duration,
     token: &tokio_util::sync::CancellationToken,
 ) -> Result<Output> {
-    run_cancellable_env_config(tool, args, timeout, &[], token, CaptureConfig::default()).await
+    run_cancellable_env_config(
+        tool,
+        args,
+        timeout,
+        CancellableOptions {
+            env_vars: &[],
+            token,
+            capture: CaptureConfig::default(),
+        },
+    )
+    .await
 }
 
 /// Async cancellable subprocess with extra environment variables.
@@ -323,9 +341,11 @@ pub async fn run_cancellable_env(
         tool,
         args,
         timeout,
-        env_vars,
-        token,
-        CaptureConfig::default(),
+        CancellableOptions {
+            env_vars,
+            token,
+            capture: CaptureConfig::default(),
+        },
     )
     .await
 }
@@ -340,7 +360,17 @@ pub async fn run_cancellable_config(
     token: &tokio_util::sync::CancellationToken,
     capture: CaptureConfig,
 ) -> Result<Output> {
-    run_cancellable_env_config(tool, args, timeout, &[], token, capture).await
+    run_cancellable_env_config(
+        tool,
+        args,
+        timeout,
+        CancellableOptions {
+            env_vars: &[],
+            token,
+            capture,
+        },
+    )
+    .await
 }
 
 /// Async cancellable subprocess with extra environment variables and capture limits.
@@ -350,9 +380,7 @@ pub async fn run_cancellable_env_config(
     tool: &str,
     args: &[impl AsRef<OsStr>],
     timeout: Duration,
-    env_vars: &[(&str, &str)],
-    token: &tokio_util::sync::CancellationToken,
-    capture: CaptureConfig,
+    options: CancellableOptions<'_>,
 ) -> Result<Output> {
     use tokio::process::Command as TokioCommand;
 
@@ -361,7 +389,7 @@ pub async fn run_cancellable_env_config(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    for (key, val) in env_vars {
+    for (key, val) in options.env_vars {
         cmd.env(key, val);
     }
     let mut child = cmd.spawn().map_err(|e| VoomError::ToolExecution {
@@ -377,8 +405,8 @@ pub async fn run_cancellable_env_config(
     tokio::select! {
         result = async {
             let (stdout, stderr, status) = tokio::join!(
-                read_child_pipe(stdout_pipe, capture.max_stdout_bytes),
-                read_child_pipe(stderr_pipe, capture.max_stderr_bytes),
+                read_child_pipe(stdout_pipe, options.capture.max_stdout_bytes),
+                read_child_pipe(stderr_pipe, options.capture.max_stderr_bytes),
                 child.wait(),
             );
             (stdout, stderr, status)
@@ -400,7 +428,7 @@ pub async fn run_cancellable_env_config(
                 ),
             })
         }
-        () = token.cancelled() => {
+        () = options.token.cancelled() => {
             let _ = child.kill().await;
             Err(VoomError::ToolExecution {
                 tool: tool.into(),
@@ -559,11 +587,13 @@ mod tests {
             script.to_str().expect("utf8 path"),
             &[] as &[&str],
             Duration::from_secs(5),
-            &[],
-            &token,
-            CaptureConfig {
-                max_stdout_bytes: 8,
-                max_stderr_bytes: DEFAULT_CAPTURE_LIMIT_BYTES,
+            CancellableOptions {
+                env_vars: &[],
+                token: &token,
+                capture: CaptureConfig {
+                    max_stdout_bytes: 8,
+                    max_stderr_bytes: DEFAULT_CAPTURE_LIMIT_BYTES,
+                },
             },
         )
         .await
