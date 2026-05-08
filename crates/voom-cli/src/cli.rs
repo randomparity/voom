@@ -559,9 +559,49 @@ pub struct VerifyArgs {
     #[arg(short, long, default_value_t = 0)]
     pub workers: usize,
 
+    /// Hardware-accelerated decode backend for `--thorough` (default: none).
+    /// Falls back to CPU if the requested backend isn't advertised by
+    /// `ffmpeg -hwaccels`. Overrides `[plugin.verifier].thorough_hw_accel`.
+    #[arg(long, value_enum)]
+    pub hw_accel: Option<HwAccelArg>,
+
     /// Output format
     #[arg(short, long)]
     pub format: Option<OutputFormat>,
+}
+
+/// CLI surface for the `--hw-accel` flag. Decoupled from
+/// `voom_verifier::hwaccel::HwAccelMode` so the CLI doesn't pull
+/// the verifier types into its parser.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum HwAccelArg {
+    /// CPU decode.
+    None,
+    /// Auto-detect: pick the first probed backend (NVDEC > QSV > VAAPI > VideoToolbox).
+    Auto,
+    /// NVIDIA NVDEC (`-hwaccel cuda`).
+    Nvdec,
+    /// Linux VA-API (`-hwaccel vaapi`).
+    Vaapi,
+    /// Intel QuickSync Video (`-hwaccel qsv`).
+    Qsv,
+    /// macOS VideoToolbox (`-hwaccel videotoolbox`).
+    Videotoolbox,
+}
+
+impl HwAccelArg {
+    /// Canonical name accepted by the verifier's parser.
+    #[must_use]
+    pub fn as_canonical(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Auto => "auto",
+            Self::Nvdec => "nvdec",
+            Self::Vaapi => "vaapi",
+            Self::Qsv => "qsv",
+            Self::Videotoolbox => "videotoolbox",
+        }
+    }
 }
 
 #[derive(clap::Args)]

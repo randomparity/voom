@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod hash;
+pub mod hwaccel;
 pub mod quarantine;
 pub mod quick;
 pub mod thorough;
@@ -70,6 +71,27 @@ impl VerifierPlugin {
         &self.config
     }
 
+    /// Resolve `thorough_hw_accel` from config to a concrete decode backend.
+    ///
+    /// Returns `None` for CPU decode (default, unrecognised values, or
+    /// when the configured backend isn't advertised by the local ffmpeg).
+    fn resolve_thorough_hw_accel(&self) -> Option<hwaccel::HwAccelMode> {
+        let mode =
+            hwaccel::HwAccelMode::parse(&self.config.thorough_hw_accel).unwrap_or_else(|| {
+                tracing::warn!(
+                    value = self.config.thorough_hw_accel.as_str(),
+                    "unrecognised thorough_hw_accel value (valid: none, auto, nvdec, \
+                     vaapi, qsv, videotoolbox); falling back to CPU"
+                );
+                hwaccel::HwAccelMode::None
+            });
+        if matches!(mode, hwaccel::HwAccelMode::None) {
+            return None;
+        }
+        let probed = hwaccel::probe_hwaccels(&self.config.ffmpeg_path);
+        hwaccel::resolve(mode, &probed)
+    }
+
     fn handle_verify_plan(&self, plan: &Plan) -> Result<Option<EventResult>> {
         let Some(action) = plan.actions.first() else {
             return Ok(None);
@@ -99,7 +121,14 @@ impl VerifierPlugin {
                     self.config.thorough_timeout_multiplier,
                     self.config.thorough_timeout_floor_secs,
                 );
-                thorough::run_thorough(&file_id, &path, &self.config.ffmpeg_path, timeout)?
+                let hw_accel = self.resolve_thorough_hw_accel();
+                thorough::run_thorough(
+                    &file_id,
+                    &path,
+                    &self.config.ffmpeg_path,
+                    timeout,
+                    hw_accel,
+                )?
             }
             VerificationMode::Hash => {
                 let prior = store.latest_verification(&file_id, VerificationMode::Hash)?;
@@ -261,6 +290,22 @@ mod tests {
         assert_eq!(cfg.ffprobe_path, "ffprobe");
         assert_eq!(cfg.ffmpeg_path, "ffmpeg");
         assert!(cfg.quarantine_dir.is_none());
+        assert_eq!(cfg.thorough_hw_accel, "none");
+    }
+
+    #[test]
+    fn resolve_thorough_hw_accel_none_short_circuits() {
+        // Default config carries thorough_hw_accel = "none"; resolving
+        // must not invoke ffmpeg (which may be absent in the test env).
+        let p = VerifierPlugin::new();
+        assert!(p.resolve_thorough_hw_accel().is_none());
+    }
+
+    #[test]
+    fn resolve_thorough_hw_accel_invalid_falls_back_to_cpu() {
+        let mut p = VerifierPlugin::new();
+        p.config.thorough_hw_accel = "garbage".into();
+        assert!(p.resolve_thorough_hw_accel().is_none());
     }
 
     #[test]

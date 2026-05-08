@@ -16,10 +16,11 @@ use voom_domain::storage::{FileFilters, StorageTrait};
 use voom_domain::verification::{
     VerificationFilters, VerificationMode, VerificationOutcome, VerificationRecord,
 };
+use voom_verifier::hwaccel::{self as verifier_hwaccel, HwAccelMode};
 use voom_verifier::VerifierConfig;
 
 use crate::app;
-use crate::cli::{OutputFormat, VerifyArgs, VerifyCommands, VerifyReportArgs};
+use crate::cli::{HwAccelArg, OutputFormat, VerifyArgs, VerifyCommands, VerifyReportArgs};
 use crate::commands::since::parse_since;
 use crate::config::{self, AppConfig};
 
@@ -66,6 +67,7 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
 
     match mode {
         VerificationMode::Thorough => {
+            let hw_accel = resolve_thorough_hw_accel(&verifier_cfg, args.hw_accel);
             // Serial: ffmpeg saturates cores already.
             for tgt in &targets {
                 let timeout = compute_thorough_timeout(&verifier_cfg, tgt.duration);
@@ -74,6 +76,7 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
                     &tgt.path,
                     &verifier_cfg.ffmpeg_path,
                     timeout,
+                    hw_accel,
                 )?;
                 store.insert_verification(&rec)?;
                 print_record(&rec, &tgt.path);
@@ -206,6 +209,44 @@ fn compute_thorough_timeout(cfg: &VerifierConfig, duration: Option<f64>) -> Dura
         cfg.thorough_timeout_multiplier,
         cfg.thorough_timeout_floor_secs,
     )
+}
+
+/// Resolve the effective HW decode backend for `voom verify run --thorough`.
+///
+/// Precedence: explicit `--hw-accel` flag → `[plugin.verifier]
+/// thorough_hw_accel` config → `none`. Probes `ffmpeg -hwaccels` once and
+/// falls back to CPU when the requested backend is missing.
+fn resolve_thorough_hw_accel(
+    verifier_cfg: &VerifierConfig,
+    flag: Option<HwAccelArg>,
+) -> Option<HwAccelMode> {
+    let raw = flag
+        .map(|f| f.as_canonical().to_string())
+        .unwrap_or_else(|| verifier_cfg.thorough_hw_accel.clone());
+    let mode = HwAccelMode::parse(&raw).unwrap_or_else(|| {
+        eprintln!(
+            "warning: unrecognised hw-accel value '{raw}'; \
+             valid: none, auto, nvdec, vaapi, qsv, videotoolbox. Using CPU."
+        );
+        HwAccelMode::None
+    });
+    if matches!(mode, HwAccelMode::None) {
+        return None;
+    }
+    let probed = verifier_hwaccel::probe_hwaccels(&verifier_cfg.ffmpeg_path);
+    let resolved = verifier_hwaccel::resolve(mode, &probed);
+    match resolved {
+        Some(m) => {
+            eprintln!("Using hw-accel decode: {} (probed: {probed:?})", m.as_str());
+        }
+        None => {
+            eprintln!(
+                "Requested hw-accel '{raw}' not available on this ffmpeg \
+                 (probed: {probed:?}); falling back to CPU decode."
+            );
+        }
+    }
+    resolved
 }
 
 fn read_verifier_config(cfg: &AppConfig) -> VerifierConfig {

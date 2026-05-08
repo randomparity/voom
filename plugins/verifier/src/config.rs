@@ -21,6 +21,12 @@ pub struct VerifierConfig {
     pub ffprobe_path: String,
     /// Path to ffmpeg (defaults to "ffmpeg" on PATH).
     pub ffmpeg_path: String,
+    /// Hardware-accelerated decode mode for thorough verification.
+    /// Recognised: `none` (default — CPU), `auto`, `nvdec`, `vaapi`,
+    /// `qsv`, `videotoolbox`. Falls back to CPU if the requested
+    /// backend is not advertised by `ffmpeg -hwaccels` on this host.
+    /// Unrecognised values warn and use CPU.
+    pub thorough_hw_accel: String,
 }
 
 impl Default for VerifierConfig {
@@ -32,6 +38,7 @@ impl Default for VerifierConfig {
             quarantine_dir: None,
             ffprobe_path: "ffprobe".into(),
             ffmpeg_path: "ffmpeg".into(),
+            thorough_hw_accel: "none".into(),
         }
     }
 }
