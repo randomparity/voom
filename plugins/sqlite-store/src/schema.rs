@@ -222,6 +222,22 @@ CREATE INDEX IF NOT EXISTS idx_verifications_file ON verifications(file_id);
 CREATE INDEX IF NOT EXISTS idx_verifications_outcome ON verifications(outcome);
 CREATE INDEX IF NOT EXISTS idx_verifications_time ON verifications(verified_at);
 CREATE INDEX IF NOT EXISTS idx_verifications_file_verified_at ON verifications(file_id, verified_at);
+
+CREATE TABLE IF NOT EXISTS transcode_outcomes (
+    id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL REFERENCES files(id),
+    target_vmaf INTEGER,
+    achieved_vmaf REAL,
+    crf_used INTEGER,
+    bitrate_used TEXT,
+    iterations INTEGER NOT NULL,
+    sample_strategy TEXT NOT NULL,
+    fallback_used INTEGER NOT NULL,
+    completed_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_transcode_outcomes_file_completed
+    ON transcode_outcomes(file_id, completed_at DESC);
 ";
 
 /// Initialize the database schema.
@@ -257,6 +273,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "library_snapshots",
         "pending_operations",
         "verifications",
+        "transcode_outcomes",
     ];
     let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
         assert!(KNOWN_TABLES.contains(&table), "unknown table: {table}");
@@ -484,6 +501,25 @@ fn migrate_missing_tables(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if table_missing("transcode_outcomes")? {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS transcode_outcomes (
+                id TEXT PRIMARY KEY,
+                file_id TEXT NOT NULL REFERENCES files(id),
+                target_vmaf INTEGER,
+                achieved_vmaf REAL,
+                crf_used INTEGER,
+                bitrate_used TEXT,
+                iterations INTEGER NOT NULL,
+                sample_strategy TEXT NOT NULL,
+                fallback_used INTEGER NOT NULL,
+                completed_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_transcode_outcomes_file_completed
+                ON transcode_outcomes(file_id, completed_at DESC);",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -499,6 +535,15 @@ fn migrate_indexes_and_constraints(conn: &Connection) -> rusqlite::Result<()> {
 
     if table_exists(conn, "tracks")? && !has_index("idx_tracks_type")? {
         conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tracks_type ON tracks(track_type);")?;
+    }
+
+    if table_exists(conn, "transcode_outcomes")?
+        && !has_index("idx_transcode_outcomes_file_completed")?
+    {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_transcode_outcomes_file_completed
+                ON transcode_outcomes(file_id, completed_at DESC);",
+        )?;
     }
 
     if !has_index("idx_files_superseded_by")? {
@@ -771,6 +816,7 @@ mod tests {
         assert!(tables.contains(&"subtitles".to_string()));
         assert!(tables.contains(&"library_snapshots".to_string()));
         assert!(tables.contains(&"pending_operations".to_string()));
+        assert!(tables.contains(&"transcode_outcomes".to_string()));
     }
 
     #[test]
@@ -1037,5 +1083,30 @@ mod tests {
             )
             .unwrap();
         assert!(exists);
+    }
+
+    #[test]
+    fn transcode_outcomes_table_and_index_are_created() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master \
+                 WHERE type='table' AND name='transcode_outcomes'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let index_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master \
+                 WHERE type='index' AND name='idx_transcode_outcomes_file_completed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert!(table_exists);
+        assert!(index_exists);
     }
 }

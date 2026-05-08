@@ -26,8 +26,9 @@ use crate::storage::{
     BadFileFilters, BadFileStorage, FileFilters, FileStorage, FileTransitionStorage,
     HealthCheckFilters, HealthCheckRecord, HealthCheckStorage, JobFilters, JobStorage,
     MaintenanceStorage, PageStats, PendingOperation, PendingOpsStorage, PlanStorage, PlanSummary,
-    PluginDataStorage, SnapshotStorage,
+    PluginDataStorage, SnapshotStorage, TranscodeOutcomeFilters, TranscodeOutcomeStorage,
 };
+use crate::transcode::TranscodeOutcome;
 use crate::transition::{
     DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
 };
@@ -110,6 +111,7 @@ pub struct InMemoryStore {
     snapshots: Mutex<Vec<LibrarySnapshot>>,
     event_log: Mutex<Vec<crate::storage::EventLogRecord>>,
     pub pending_ops: Mutex<Vec<PendingOperation>>,
+    pub transcode_outcomes: Mutex<Vec<TranscodeOutcome>>,
     pub transitions: Mutex<Vec<FileTransition>>,
     pub verifications: Mutex<Vec<VerificationRecord>>,
     plugin_data: Mutex<HashMap<(String, String), Vec<u8>>>,
@@ -123,6 +125,7 @@ impl InMemoryStore {
             snapshots: Mutex::new(Vec::new()),
             event_log: Mutex::new(Vec::new()),
             pending_ops: Mutex::new(Vec::new()),
+            transcode_outcomes: Mutex::new(Vec::new()),
             transitions: Mutex::new(Vec::new()),
             verifications: Mutex::new(Vec::new()),
             plugin_data: Mutex::new(HashMap::new()),
@@ -150,6 +153,12 @@ impl InMemoryStore {
     /// Builder: seed the store with a verification record.
     pub fn with_verification(self, verification: VerificationRecord) -> Self {
         self.verifications.lock().push(verification);
+        self
+    }
+
+    /// Builder: seed the store with a transcode outcome.
+    pub fn with_transcode_outcome(self, outcome: TranscodeOutcome) -> Self {
+        self.transcode_outcomes.lock().push(outcome);
         self
     }
 }
@@ -1026,6 +1035,55 @@ mod oldest_at_tests {
     }
 }
 
+impl TranscodeOutcomeStorage for InMemoryStore {
+    fn insert_transcode_outcome(&self, outcome: &TranscodeOutcome) -> Result<()> {
+        self.transcode_outcomes.lock().push(outcome.clone());
+        Ok(())
+    }
+
+    fn list_transcode_outcomes(
+        &self,
+        filters: &TranscodeOutcomeFilters,
+    ) -> Result<Vec<TranscodeOutcome>> {
+        let mut outcomes: Vec<TranscodeOutcome> = self
+            .transcode_outcomes
+            .lock()
+            .iter()
+            .filter(|outcome| matches_transcode_outcome_filter(outcome, filters))
+            .cloned()
+            .collect();
+        outcomes.sort_by(|a, b| {
+            b.completed_at
+                .cmp(&a.completed_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        if let Some(limit) = filters.limit {
+            outcomes.truncate(limit as usize);
+        }
+        Ok(outcomes)
+    }
+
+    fn latest_outcome_for_file(&self, file_id: &str) -> Result<Option<TranscodeOutcome>> {
+        let filters = TranscodeOutcomeFilters {
+            file_id: Some(file_id.to_string()),
+            limit: Some(1),
+        };
+        Ok(self.list_transcode_outcomes(&filters)?.into_iter().next())
+    }
+}
+
+fn matches_transcode_outcome_filter(
+    outcome: &TranscodeOutcome,
+    filters: &TranscodeOutcomeFilters,
+) -> bool {
+    if let Some(file_id) = filters.file_id.as_ref() {
+        if outcome.file_id != *file_id {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod verification_storage_tests {
     use super::*;
@@ -1102,5 +1160,79 @@ mod verification_storage_tests {
             .expect("due files");
 
         assert!(due.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod transcode_outcome_storage_tests {
+    use super::*;
+    use crate::storage::{TranscodeOutcomeFilters, TranscodeOutcomeStorage};
+    use crate::transcode::TranscodeOutcome;
+
+    fn outcome(
+        id: u128,
+        file_id: &str,
+        completed_at: chrono::DateTime<chrono::Utc>,
+    ) -> TranscodeOutcome {
+        TranscodeOutcome {
+            id: Uuid::from_u128(id),
+            file_id: file_id.to_string(),
+            target_vmaf: Some(95),
+            achieved_vmaf: Some(94.8),
+            crf_used: Some(22),
+            bitrate_used: Some("3200k".to_string()),
+            iterations: 3,
+            sample_strategy: crate::plan::SampleStrategy::Uniform {
+                count: 5,
+                duration: "10s".to_string(),
+            },
+            fallback_used: false,
+            completed_at,
+        }
+    }
+
+    #[test]
+    fn list_transcode_outcomes_filters_file_newest_first_with_id_tiebreaker() {
+        let file_id = Uuid::new_v4().to_string();
+        let other_file_id = Uuid::new_v4().to_string();
+        let completed_at = chrono::Utc::now();
+        let store = InMemoryStore::new()
+            .with_transcode_outcome(outcome(1, &file_id, completed_at))
+            .with_transcode_outcome(outcome(3, &file_id, completed_at))
+            .with_transcode_outcome(outcome(
+                2,
+                &file_id,
+                completed_at - chrono::Duration::minutes(1),
+            ))
+            .with_transcode_outcome(outcome(4, &other_file_id, completed_at));
+
+        let listed = store
+            .list_transcode_outcomes(&TranscodeOutcomeFilters {
+                file_id: Some(file_id),
+                limit: None,
+            })
+            .expect("list outcomes");
+        let ids: Vec<_> = listed.iter().map(|record| record.id).collect();
+
+        assert_eq!(
+            ids,
+            vec![Uuid::from_u128(3), Uuid::from_u128(1), Uuid::from_u128(2)]
+        );
+    }
+
+    #[test]
+    fn latest_outcome_for_file_returns_newest_with_id_tiebreaker() {
+        let file_id = Uuid::new_v4().to_string();
+        let completed_at = chrono::Utc::now();
+        let store = InMemoryStore::new()
+            .with_transcode_outcome(outcome(1, &file_id, completed_at))
+            .with_transcode_outcome(outcome(2, &file_id, completed_at));
+
+        let latest = store
+            .latest_outcome_for_file(&file_id)
+            .expect("latest outcome")
+            .expect("some outcome");
+
+        assert_eq!(latest.id, Uuid::from_u128(2));
     }
 }

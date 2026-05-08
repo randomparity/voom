@@ -12,6 +12,7 @@ mod plugin_data_storage;
 mod row_mappers;
 mod snapshot_storage;
 mod subtitle_storage;
+mod transcode_outcome_storage;
 mod verification_storage;
 
 use std::collections::HashMap;
