@@ -37,12 +37,19 @@ def parse_frame_rate:
          catch null)
     end;
 
+def canonical_title:
+    (. // "") as $title |
+    if ($title | type) != "string" then ""
+    elif ($title | test("^\"(1\\.0|2\\.0|5\\.1|6\\.1|7\\.1)\"$")) then
+        ($title | sub("^\""; "") | sub("\"$"; ""))
+    else $title end;
+
 def map_video_stream:
     {
         index: .index,
         codec: (.codec_name // "unknown"),
         language: (.tags.language // "und"),
-        title: (.tags.title // ""),
+        title: (.tags.title | canonical_title),
         is_default: ((.disposition.default // 0) == 1),
         is_forced: ((.disposition.forced // 0) == 1),
         track_type: (.codec_type | codec_type_to_track_type),
@@ -64,7 +71,7 @@ def map_audio_stream:
         index: .index,
         codec: (.codec_name // "unknown"),
         language: (.tags.language // "und"),
-        title: (.tags.title // ""),
+        title: (.tags.title | canonical_title),
         is_default: ((.disposition.default // 0) == 1),
         is_forced: ((.disposition.forced // 0) == 1),
         channels: (.channels // null),
@@ -79,7 +86,7 @@ def map_subtitle_stream:
         index: .index,
         codec: (.codec_name // "unknown"),
         language: (.tags.language // "und"),
-        title: (.tags.title // ""),
+        title: (.tags.title | canonical_title),
         is_default: ((.disposition.default // 0) == 1),
         is_forced: ((.disposition.forced // 0) == 1),
         track_type: (.codec_type | codec_type_to_track_type)
@@ -90,7 +97,7 @@ def map_attachment_stream:
         index: .index,
         codec: (.codec_name // "unknown"),
         language: (.tags.language // "und"),
-        title: (.tags.title // ""),
+        title: (.tags.title | canonical_title),
         is_default: ((.disposition.default // 0) == 1),
         is_forced: ((.disposition.forced // 0) == 1),
         track_type: "attachment",

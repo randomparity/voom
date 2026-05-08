@@ -4,3 +4,5 @@ t-2	file-1	1	audio_main	ac3	eng		1	0	6	5.1	48000					0	0
 t-3	file-1	2	subtitle_main	subrip	eng		0	0								0	0		
 t-4	file-2	0	video	hevc	und		1	0					3840	2160	23.976	0	1	PQ	yuv420p10le
 t-5	file-2	1	audio_main	aac	eng		1	0	2	stereo	48000					0	0		
+t-6	file-3	0	video	h264	und		1	0					1920	1080	29.970029970029969	0	0		yuv420p
+t-7	file-3	1	audio_main	ac3	eng	2.0	1	0	2	stereo	48000					0	0

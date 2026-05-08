@@ -10,12 +10,12 @@ out_ndjson="${2:?output ndjson path required}"
 files_tsv="${tables_dir}/files.tsv"
 tracks_tsv="${tables_dir}/tracks.tsv"
 [[ -r "${files_tsv}" ]] || {
-    echo "missing ${files_tsv}" >&2
-    exit 1
+  echo "missing ${files_tsv}" >&2
+  exit 1
 }
 [[ -r "${tracks_tsv}" ]] || {
-    echo "missing ${tracks_tsv}" >&2
-    exit 1
+  echo "missing ${tracks_tsv}" >&2
+  exit 1
 }
 
 python3 - "${files_tsv}" "${tracks_tsv}" "${out_ndjson}" <<'PY'
@@ -29,6 +29,16 @@ def numeric(s, kind):
     if s == "" or s is None: return None
     try: return kind(s)
     except ValueError: return None
+
+def canonical_title(value):
+    if value is None:
+        return ""
+    text = value.strip()
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        inner = text[1:-1]
+        if inner in {"1.0", "2.0", "5.1", "6.1", "7.1"}:
+            return inner
+    return text
 
 with open(tracks_path, newline="") as f:
     reader = csv.DictReader(f, delimiter="\t")
@@ -46,7 +56,7 @@ def map_track(row):
         "index": int(row["stream_index"]),
         "codec": row["codec"],
         "language": row["language"] or "und",
-        "title": row["title"] or "",
+        "title": canonical_title(row["title"]),
         "is_default": truthy(row["is_default"]),
         "is_forced": truthy(row["is_forced"]),
         "track_type": tt,
