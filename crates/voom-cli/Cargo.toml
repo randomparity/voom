@@ -19,6 +19,7 @@ path = "src/main.rs"
 voom-domain.workspace = true
 voom-dsl.workspace = true
 voom-kernel.workspace = true
+voom-process.workspace = true
 voom-sqlite-store.workspace = true
 voom-discovery.workspace = true
 voom-ffprobe-introspector.workspace = true

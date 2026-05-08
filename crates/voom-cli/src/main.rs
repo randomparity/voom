@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
         }
         Commands::Doctor => {
             commands::env::warn_doctor_deprecated();
-            commands::env::check()
+            commands::env::check(cli::OutputFormat::Table)
         }
         Commands::Serve(args) => commands::serve::run(args, token).await,
         Commands::Db(sub) => commands::db::run(sub, global_yes).await,

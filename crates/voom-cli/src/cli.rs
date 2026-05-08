@@ -701,7 +701,14 @@ pub enum PlansCommands {
 #[derive(Subcommand)]
 pub enum EnvCommands {
     /// Run live environment checks
-    Check,
+    Check {
+        /// Output format
+        #[arg(short, long, default_value = "table", conflicts_with = "json")]
+        format: OutputFormat,
+        /// Emit JSON output
+        #[arg(long)]
+        json: bool,
+    },
     /// Show environment check history from the database
     History {
         /// Filter by check name
@@ -1570,13 +1577,46 @@ mod tests {
     #[test]
     fn test_env_check() {
         let cli = parse(&["voom", "env", "check"]);
-        assert!(matches!(cli.command, Commands::Env(EnvCommands::Check)));
+        match cli.command {
+            Commands::Env(EnvCommands::Check { format, json }) => {
+                assert!(matches!(format, OutputFormat::Table));
+                assert!(!json);
+            }
+            _ => panic!("expected Env Check"),
+        }
+    }
+
+    #[test]
+    fn test_env_check_json_format() {
+        let cli = parse(&["voom", "env", "check", "--format", "json"]);
+        match cli.command {
+            Commands::Env(EnvCommands::Check { format, json }) => {
+                assert!(matches!(format, OutputFormat::Json));
+                assert!(!json);
+            }
+            _ => panic!("expected Env Check"),
+        }
+    }
+
+    #[test]
+    fn test_env_check_json_alias() {
+        let cli = parse(&["voom", "env", "check", "--json"]);
+        match cli.command {
+            Commands::Env(EnvCommands::Check { format, json }) => {
+                assert!(matches!(format, OutputFormat::Table));
+                assert!(json);
+            }
+            _ => panic!("expected Env Check"),
+        }
     }
 
     #[test]
     fn test_health_check_hidden_alias_backward_compat() {
         let cli = parse(&["voom", "health", "check"]);
-        assert!(matches!(cli.command, Commands::Health(EnvCommands::Check)));
+        assert!(matches!(
+            cli.command,
+            Commands::Health(EnvCommands::Check { .. })
+        ));
     }
 
     #[test]
