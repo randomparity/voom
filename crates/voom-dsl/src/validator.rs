@@ -486,7 +486,7 @@ fn validate_operation(
             codec,
             settings,
         } => {
-            validate_transcode_operation(target, codec, settings, line, col, errors);
+            validate_transcode_operation(target, codec, settings, line, col, errors, warnings);
         }
         OperationNode::Synthesize { settings, .. } => {
             validate_synthesize_operation(settings, line, col, phase_names, errors, warnings);
@@ -592,6 +592,7 @@ fn validate_transcode_operation(
     line: usize,
     col: usize,
     errors: &mut Vec<DslError>,
+    warnings: &mut Vec<DslWarning>,
 ) {
     validate_track_target(target, line, col, errors);
     validate_codec(codec, line, col, errors);
@@ -603,6 +604,7 @@ fn validate_transcode_operation(
     validate_hw_settings(settings, line, col, errors);
     if target == "video" {
         validate_video_transcode_settings(settings, line, col, errors);
+        validate_vmaf_transcode_settings(settings, line, col, errors, warnings);
     } else {
         reject_video_only_keys(settings, target, line, col, errors);
     }
@@ -889,6 +891,11 @@ const KNOWN_TRANSCODE_KEYS: &[&str] = &[
     "crf",
     "preset",
     "bitrate",
+    "target_vmaf",
+    "max_bitrate",
+    "min_bitrate",
+    "sample_strategy",
+    "fallback",
     "channels",
     "hw",
     "hw_fallback",
@@ -911,6 +918,9 @@ fn validate_transcode_keys(
                 col,
                 format!("transcode setting key too long: \"{key}\""),
             ));
+            continue;
+        }
+        if key.starts_with("target_vmaf_when ") {
             continue;
         }
         validate_ident_against(
@@ -1102,7 +1112,17 @@ const VALID_SCALE_ALGORITHMS: &[&str] = &[
     "lanczos", "bicubic", "bilinear", "neighbor", "area", "spline", "sinc",
 ];
 
-const VIDEO_ONLY_KEYS: &[&str] = &["hdr_mode", "tune", "scale_algorithm", "max_resolution"];
+const VIDEO_ONLY_KEYS: &[&str] = &[
+    "hdr_mode",
+    "tune",
+    "scale_algorithm",
+    "max_resolution",
+    "target_vmaf",
+    "max_bitrate",
+    "min_bitrate",
+    "sample_strategy",
+    "fallback",
+];
 
 fn reject_video_only_keys(
     settings: &[(String, Value)],
@@ -1112,7 +1132,7 @@ fn reject_video_only_keys(
     errors: &mut Vec<DslError>,
 ) {
     for (key, _) in settings {
-        if VIDEO_ONLY_KEYS.contains(&key.as_str()) {
+        if VIDEO_ONLY_KEYS.contains(&key.as_str()) || key.starts_with("target_vmaf_when ") {
             errors.push(DslError::validation(
                 line,
                 col,
@@ -1187,6 +1207,226 @@ fn validate_video_transcode_settings(
     }
 }
 
+fn validate_vmaf_transcode_settings(
+    settings: &[(String, Value)],
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+    warnings: &mut Vec<DslWarning>,
+) {
+    let mut min_bitrate = None;
+    let mut max_bitrate = None;
+
+    for (key, val) in settings {
+        match key.as_str() {
+            "target_vmaf" => validate_vmaf_target(val, "target_vmaf", line, col, errors, warnings),
+            "min_bitrate" => min_bitrate = validate_bitrate_value(val, key, line, col, errors),
+            "max_bitrate" => max_bitrate = validate_bitrate_value(val, key, line, col, errors),
+            "sample_strategy" => validate_sample_strategy(val, line, col, errors),
+            "fallback" => validate_transcode_fallback(val, line, col, errors),
+            _ if key.starts_with("target_vmaf_when ") => {
+                validate_vmaf_override(key, val, line, col, errors, warnings);
+            }
+            _ => {}
+        }
+    }
+
+    if let (Some(min), Some(max)) = (min_bitrate, max_bitrate) {
+        if min > max {
+            errors.push(DslError::validation(
+                line,
+                col,
+                "min_bitrate must be less than or equal to max_bitrate".to_string(),
+            ));
+        }
+    }
+}
+
+fn validate_vmaf_target(
+    val: &Value,
+    key: &str,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+    warnings: &mut Vec<DslWarning>,
+) {
+    let Some(target) = numeric_u32(val) else {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!("{key} must be an integer from 60 to 100"),
+        ));
+        return;
+    };
+    if !(60..=100).contains(&target) {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!("{key} must be from 60 to 100"),
+        ));
+    } else if !(80..=99).contains(&target) {
+        warnings.push(DslWarning::new(
+            line,
+            col,
+            format!("{key} value {target} is outside the typical 80-99 range"),
+            None,
+        ));
+    }
+}
+
+fn validate_vmaf_override(
+    key: &str,
+    val: &Value,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+    warnings: &mut Vec<DslWarning>,
+) {
+    let Some(path) = key.strip_prefix("target_vmaf_when ") else {
+        return;
+    };
+    if !path.starts_with("content.") {
+        errors.push(DslError::validation(
+            line,
+            col,
+            "target_vmaf_when requires a content.<type> path".to_string(),
+        ));
+    }
+    validate_vmaf_target(val, "target_vmaf_when", line, col, errors, warnings);
+}
+
+fn validate_bitrate_value(
+    val: &Value,
+    key: &str,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) -> Option<u64> {
+    let raw = match val {
+        Value::String(s) | Value::Ident(s) | Value::Number(_, s) => s.as_str(),
+        _ => {
+            errors.push(DslError::validation(
+                line,
+                col,
+                format!("{key} must be a bitrate string such as \"8M\" or \"500k\""),
+            ));
+            return None;
+        }
+    };
+    parse_bitrate(raw).or_else(|| {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!("{key} has invalid bitrate \"{raw}\""),
+        ));
+        None
+    })
+}
+
+fn parse_bitrate(raw: &str) -> Option<u64> {
+    let split_at = raw
+        .char_indices()
+        .find(|(_, c)| !c.is_ascii_digit())
+        .map_or(raw.len(), |(idx, _)| idx);
+    let (digits, suffix) = raw.split_at(split_at);
+    let value = digits.parse::<u64>().ok()?;
+    let multiplier = match suffix {
+        "k" | "K" => 1_000,
+        "m" | "M" => 1_000_000,
+        "g" | "G" => 1_000_000_000,
+        "" => 1,
+        _ => return None,
+    };
+    value.checked_mul(multiplier)
+}
+
+fn validate_sample_strategy(val: &Value, line: usize, col: usize, errors: &mut Vec<DslError>) {
+    match val {
+        Value::Ident(name) if name == "full" => {}
+        Value::Call { name, args } if name == "scenes" || name == "uniform" => {
+            if numeric_arg(args, "count").is_none() {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    format!("{name} sample_strategy requires integer count"),
+                ));
+            }
+            if string_arg(args, "duration").is_none() {
+                errors.push(DslError::validation(
+                    line,
+                    col,
+                    format!("{name} sample_strategy requires duration"),
+                ));
+            }
+        }
+        _ => errors.push(DslError::validation(
+            line,
+            col,
+            "sample_strategy must be full, scenes(count: N, duration: Ts), or uniform(count: N, duration: Ts)"
+                .to_string(),
+        )),
+    }
+}
+
+fn validate_transcode_fallback(val: &Value, line: usize, col: usize, errors: &mut Vec<DslError>) {
+    let Value::Object(items) = val else {
+        errors.push(DslError::validation(
+            line,
+            col,
+            "fallback must be a nested block".to_string(),
+        ));
+        return;
+    };
+    match numeric_arg(items, "crf") {
+        Some(crf) if crf <= 51 => {}
+        Some(_) => errors.push(DslError::validation(
+            line,
+            col,
+            "fallback.crf must be from 0 to 51".to_string(),
+        )),
+        None => errors.push(DslError::validation(
+            line,
+            col,
+            "fallback requires crf".to_string(),
+        )),
+    }
+    if string_arg(items, "preset").is_none() {
+        errors.push(DslError::validation(
+            line,
+            col,
+            "fallback requires preset".to_string(),
+        ));
+    }
+}
+
+fn numeric_arg(items: &[(String, Value)], key: &str) -> Option<u32> {
+    items
+        .iter()
+        .find(|(item_key, _)| item_key == key)
+        .and_then(|(_, value)| numeric_u32(value))
+}
+
+fn string_arg<'a>(items: &'a [(String, Value)], key: &str) -> Option<&'a str> {
+    items
+        .iter()
+        .find(|(item_key, _)| item_key == key)
+        .and_then(|(_, value)| match value {
+            Value::String(s) | Value::Ident(s) | Value::Number(_, s) => Some(s.as_str()),
+            _ => None,
+        })
+}
+
+fn numeric_u32(value: &Value) -> Option<u32> {
+    match value {
+        Value::Number(n, _) if *n >= 0.0 && *n <= f64::from(u32::MAX) && n.fract() == 0.0 =>
+        {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Some(*n as u32)
+        }
+        _ => None,
+    }
+}
+
 fn validate_ident_setting(
     val: &Value,
     key: &str,
@@ -1212,6 +1452,8 @@ fn validate_ident_setting(
                     Value::Number(_, _) => "number",
                     Value::Bool(_) => "boolean",
                     Value::List(_) => "list",
+                    Value::Object(_) => "object",
+                    Value::Call { .. } => "call",
                     _ => "unknown",
                 }
             ),
@@ -1439,6 +1681,85 @@ mod tests {
         }"#;
         let ast = parse_policy(input).unwrap();
         assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_valid_vmaf_transcode_settings_pass() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    target_vmaf: 93
+                    min_bitrate: "2M"
+                    max_bitrate: "8M"
+                    sample_strategy: uniform(count: 8, duration: 5s)
+                    fallback {
+                        crf: 24
+                        preset: "medium"
+                    }
+                    target_vmaf_when content.animation: 88
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        assert!(validate(&ast).is_ok());
+    }
+
+    #[test]
+    fn test_invalid_vmaf_target_rejected() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    target_vmaf: 101
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+
+        assert!(err
+            .errors
+            .iter()
+            .any(|e| format!("{e}").contains("target_vmaf must be from 60 to 100")));
+    }
+
+    #[test]
+    fn test_invalid_vmaf_bitrate_order_rejected() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    min_bitrate: "8M"
+                    max_bitrate: "2M"
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+
+        assert!(err
+            .errors
+            .iter()
+            .any(|e| format!("{e}").contains("min_bitrate must be less")));
+    }
+
+    #[test]
+    fn test_invalid_vmaf_fallback_crf_rejected() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    fallback {
+                        crf: 52
+                        preset: medium
+                    }
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+
+        assert!(err
+            .errors
+            .iter()
+            .any(|e| format!("{e}").contains("fallback.crf must be from 0 to 51")));
     }
 
     #[test]

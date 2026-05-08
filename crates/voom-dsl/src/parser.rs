@@ -444,11 +444,24 @@ fn build_transcode(pair: Pair<'_, Rule>) -> OperationNode {
 
     if let Some(block_pair) = inner.next() {
         for child in block_pair.into_inner() {
-            if child.as_rule() == Rule::kv_pair {
-                let mut parts = child.into_inner();
-                let key = parts.next().unwrap().as_str().to_string();
-                let val = build_value(parts.next().unwrap());
-                settings.push((key, val));
+            match child.as_rule() {
+                Rule::transcode_kv_pair => {
+                    let mut parts = child.into_inner();
+                    let key = parts.next().unwrap().as_str().to_string();
+                    let val = build_transcode_value(parts.next().unwrap());
+                    settings.push((key, val));
+                }
+                Rule::transcode_fallback => {
+                    let val = Value::Object(build_object(child.into_inner()));
+                    settings.push(("fallback".to_string(), val));
+                }
+                Rule::transcode_vmaf_override => {
+                    let mut parts = child.into_inner();
+                    let path = parts.next().unwrap().as_str().to_string();
+                    let val = build_value(parts.next().unwrap());
+                    settings.push((format!("target_vmaf_when {path}"), val));
+                }
+                _ => {}
             }
         }
     }
@@ -458,6 +471,46 @@ fn build_transcode(pair: Pair<'_, Rule>) -> OperationNode {
         codec,
         settings,
     }
+}
+
+fn build_object(pairs: pest::iterators::Pairs<'_, Rule>) -> Vec<(String, Value)> {
+    let mut values = Vec::new();
+    for pair in pairs {
+        if pair.as_rule() != Rule::kv_pair {
+            continue;
+        }
+        let mut parts = pair.into_inner();
+        let key = parts.next().unwrap().as_str().to_string();
+        let val = build_value(parts.next().unwrap());
+        values.push((key, val));
+    }
+    values
+}
+
+fn build_transcode_value(pair: Pair<'_, Rule>) -> Value {
+    match pair.as_rule() {
+        Rule::transcode_value => build_transcode_value(pair.into_inner().next().unwrap()),
+        Rule::sample_strategy => build_sample_strategy(pair),
+        _ => build_value(pair),
+    }
+}
+
+fn build_sample_strategy(pair: Pair<'_, Rule>) -> Value {
+    if pair.as_str() == "full" {
+        return Value::Ident("full".to_string());
+    }
+    let mut parts = pair.into_inner();
+    let name = parts.next().unwrap().as_str().to_string();
+    let args = parts
+        .filter(|p| p.as_rule() == Rule::sample_strategy_arg)
+        .map(|arg| {
+            let mut arg_parts = arg.into_inner();
+            let key = arg_parts.next().unwrap().as_str().to_string();
+            let val = build_value(arg_parts.next().unwrap());
+            (key, val)
+        })
+        .collect();
+    Value::Call { name, args }
 }
 
 fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {
@@ -1170,6 +1223,36 @@ mod tests {
             }
             _ => panic!("expected Transcode"),
         }
+    }
+
+    #[test]
+    fn test_parse_transcode_vmaf_settings() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    target_vmaf: 93
+                    max_bitrate: "8M"
+                    min_bitrate: "2M"
+                    sample_strategy: scenes(count: 5, duration: 4s)
+                    fallback {
+                        crf: 24
+                        preset: "medium"
+                    }
+                    target_vmaf_when content.animation: 88
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let OperationNode::Transcode { settings, .. } = &ast.phases[0].operations[0].node else {
+            panic!("expected Transcode");
+        };
+
+        assert_eq!(settings.len(), 6);
+        assert!(settings.iter().any(|(key, _)| key == "target_vmaf"));
+        assert!(settings.iter().any(|(key, _)| key == "fallback"));
+        assert!(settings
+            .iter()
+            .any(|(key, _)| key == "target_vmaf_when content.animation"));
     }
 
     #[test]

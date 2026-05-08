@@ -237,9 +237,23 @@ fn format_transcode(
         let _ = writeln!(out, "transcode {target} to {codec} {{");
         for (key, val) in settings {
             indent(out, level + 1);
-            let _ = write!(out, "{key}: ");
-            format_value(val, out);
-            out.push('\n');
+            if key == "fallback" {
+                let _ = writeln!(out, "fallback {{");
+                if let Value::Object(items) = val {
+                    for (fallback_key, fallback_val) in items {
+                        indent(out, level + 2);
+                        let _ = write!(out, "{fallback_key}: ");
+                        format_value(fallback_val, out);
+                        out.push('\n');
+                    }
+                }
+                indent(out, level + 1);
+                out.push_str("}\n");
+            } else {
+                let _ = write!(out, "{key}: ");
+                format_value(val, out);
+                out.push('\n');
+            }
         }
         indent(out, level);
         out.push_str("}\n");
@@ -576,6 +590,29 @@ fn format_value(val: &Value, out: &mut String) {
                 format_value(item, out);
             }
             out.push(']');
+        }
+        Value::Object(items) => {
+            out.push_str("{ ");
+            for (i, (key, item)) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                let _ = write!(out, "{key}: ");
+                format_value(item, out);
+            }
+            out.push_str(" }");
+        }
+        Value::Call { name, args } => {
+            out.push_str(name);
+            out.push('(');
+            for (i, (key, item)) in args.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                let _ = write!(out, "{key}: ");
+                format_value(item, out);
+            }
+            out.push(')');
         }
     }
 }

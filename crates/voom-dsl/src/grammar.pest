@@ -53,7 +53,16 @@ default_item = { ("audio" | "subtitle") ~ ":" ~ ident }
 actions_op = { ("audio" | "subtitle" | "video") ~ "actions" ~ "{" ~ action_setting* ~ "}" }
 action_setting = { ident ~ ":" ~ value }
 
-transcode_op = { "transcode" ~ ("video" | "audio") ~ "to" ~ ident ~ block? }
+transcode_op = { "transcode" ~ ("video" | "audio") ~ "to" ~ ident ~ transcode_block? }
+transcode_block = { "{" ~ transcode_item* ~ "}" }
+transcode_item = _{ transcode_fallback | transcode_vmaf_override | transcode_kv_pair }
+transcode_kv_pair = { ident ~ ":" ~ transcode_value }
+transcode_value = { sample_strategy | value }
+sample_strategy = { sample_strategy_kind ~ "(" ~ sample_strategy_arg ~ ("," ~ sample_strategy_arg)* ~ ")" | "full" }
+sample_strategy_kind = { "scenes" | "uniform" }
+sample_strategy_arg = { ident ~ ":" ~ value }
+transcode_fallback = { "fallback" ~ "{" ~ kv_pair* ~ "}" }
+transcode_vmaf_override = { "target_vmaf_when" ~ field_access ~ ":" ~ number }
 
 verify_op   = { "verify" ~ verify_mode }
 verify_mode = { "quick" | "thorough" | "hash" }

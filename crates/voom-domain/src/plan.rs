@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
@@ -231,6 +232,33 @@ pub enum TranscodeChannels {
     Count(u32),
 }
 
+/// Sampling plan for VMAF-guided transcode scoring.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum SampleStrategy {
+    Scenes { count: u32, duration: String },
+    Uniform { count: u32, duration: String },
+    Full,
+}
+
+/// Fallback encode settings used when VMAF scoring is unavailable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct TranscodeFallback {
+    pub crf: u32,
+    pub preset: String,
+}
+
+impl TranscodeFallback {
+    #[must_use]
+    pub fn new(crf: u32, preset: impl Into<String>) -> Self {
+        Self {
+            crf,
+            preset: preset.into(),
+        }
+    }
+}
+
 impl TranscodeChannels {
     /// Resolve to a concrete channel count.
     /// Returns `None` for "preserve" or unrecognized named presets.
@@ -256,6 +284,12 @@ pub struct TranscodeSettings {
     pub crf: Option<u32>,
     pub preset: Option<String>,
     pub bitrate: Option<String>,
+    pub target_vmaf: Option<u32>,
+    pub max_bitrate: Option<String>,
+    pub min_bitrate: Option<String>,
+    pub sample_strategy: Option<SampleStrategy>,
+    pub fallback: Option<TranscodeFallback>,
+    pub vmaf_overrides: Option<HashMap<String, u32>>,
     pub channels: Option<TranscodeChannels>,
     /// Per-action HW acceleration preference (overrides system-wide detection).
     pub hw: Option<String>,
@@ -309,6 +343,18 @@ enum ActionParamsCompat {
         preset: Option<String>,
         #[serde(default)]
         bitrate: Option<String>,
+        #[serde(default)]
+        target_vmaf: Option<u32>,
+        #[serde(default)]
+        max_bitrate: Option<String>,
+        #[serde(default)]
+        min_bitrate: Option<String>,
+        #[serde(default)]
+        sample_strategy: Option<SampleStrategy>,
+        #[serde(default)]
+        fallback: Option<TranscodeFallback>,
+        #[serde(default)]
+        vmaf_overrides: Option<HashMap<String, u32>>,
         #[serde(default)]
         channels: Option<TranscodeChannels>,
         #[serde(default)]
@@ -373,6 +419,12 @@ impl From<ActionParamsCompat> for ActionParams {
                 crf,
                 preset,
                 bitrate,
+                target_vmaf,
+                max_bitrate,
+                min_bitrate,
+                sample_strategy,
+                fallback,
+                vmaf_overrides,
                 channels,
                 hw,
                 hw_fallback,
@@ -388,6 +440,12 @@ impl From<ActionParamsCompat> for ActionParams {
                         crf,
                         preset,
                         bitrate,
+                        target_vmaf,
+                        max_bitrate,
+                        min_bitrate,
+                        sample_strategy,
+                        fallback,
+                        vmaf_overrides,
                         channels,
                         hw,
                         hw_fallback,
@@ -466,6 +524,42 @@ impl TranscodeSettings {
     }
 
     #[must_use]
+    pub fn with_target_vmaf(mut self, target_vmaf: Option<u32>) -> Self {
+        self.target_vmaf = target_vmaf;
+        self
+    }
+
+    #[must_use]
+    pub fn with_max_bitrate(mut self, max_bitrate: Option<String>) -> Self {
+        self.max_bitrate = max_bitrate;
+        self
+    }
+
+    #[must_use]
+    pub fn with_min_bitrate(mut self, min_bitrate: Option<String>) -> Self {
+        self.min_bitrate = min_bitrate;
+        self
+    }
+
+    #[must_use]
+    pub fn with_sample_strategy(mut self, sample_strategy: Option<SampleStrategy>) -> Self {
+        self.sample_strategy = sample_strategy;
+        self
+    }
+
+    #[must_use]
+    pub fn with_fallback(mut self, fallback: Option<TranscodeFallback>) -> Self {
+        self.fallback = fallback;
+        self
+    }
+
+    #[must_use]
+    pub fn with_vmaf_overrides(mut self, vmaf_overrides: Option<HashMap<String, u32>>) -> Self {
+        self.vmaf_overrides = vmaf_overrides;
+        self
+    }
+
+    #[must_use]
     pub fn with_channels(mut self, channels: Option<TranscodeChannels>) -> Self {
         self.channels = channels;
         self
@@ -512,6 +606,9 @@ impl TranscodeSettings {
 /// Replaces the previous untyped `serde_json::Value` parameters field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", from = "ActionParamsCompat")]
+// Keep the public Transcode variant shape stable; boxing `settings` would
+// ripple into executor/plugin APIs for no runtime behavior change in this IR-only stage.
+#[allow(clippy::large_enum_variant)]
 pub enum ActionParams {
     /// No parameters needed (`SetDefault`, `ClearDefault`, `SetForced`, `ClearForced`).
     Empty,
@@ -1044,6 +1141,15 @@ mod tests {
             .with_crf(Some(23))
             .with_preset(Some("slow".into()))
             .with_bitrate(Some("5M".into()))
+            .with_target_vmaf(Some(93))
+            .with_max_bitrate(Some("8M".into()))
+            .with_min_bitrate(Some("2M".into()))
+            .with_sample_strategy(Some(SampleStrategy::Scenes {
+                count: 5,
+                duration: "4s".into(),
+            }))
+            .with_fallback(Some(TranscodeFallback::new(24, "medium")))
+            .with_vmaf_overrides(Some(HashMap::from([("animation".into(), 88)])))
             .with_channels(Some(TranscodeChannels::Count(6)))
             .with_hw(Some("nvenc".into()))
             .with_hw_fallback(Some(false))

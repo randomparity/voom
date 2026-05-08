@@ -1,0 +1,24 @@
+// VMAF-guided HEVC policy.
+//
+// This stage only demonstrates policy shape. Runtime VMAF targeting is added
+// by later executor work.
+
+policy "vmaf-guided" {
+  config {
+    on_error: abort
+  }
+
+  phase transcode-video {
+    transcode video to hevc {
+      target_vmaf: 93
+      min_bitrate: "2M"
+      max_bitrate: "8M"
+      sample_strategy: scenes(count: 6, duration: 4s)
+      fallback {
+        crf: 24
+        preset: "medium"
+      }
+      target_vmaf_when content.animation: 88
+    }
+  }
+}

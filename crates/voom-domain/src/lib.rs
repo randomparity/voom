@@ -34,7 +34,8 @@ pub use job::{DiscoveredFilePayload, Job, JobStatus, JobUpdate};
 pub use media::{Container, MediaFile, Track, TrackType};
 pub use plan::{
     ActionParams, ActionResult, OperationType, PhaseOutcome, PhaseOutput, PhaseResult, Plan,
-    PlannedAction, TranscodeChannels, TranscodeSettings, PHASE_OUTPUT_FIELDS,
+    PlannedAction, SampleStrategy, TranscodeChannels, TranscodeFallback, TranscodeSettings,
+    PHASE_OUTPUT_FIELDS,
 };
 pub use safeguard::{SafeguardKind, SafeguardViolation};
 pub use snapshot::MetadataSnapshot;

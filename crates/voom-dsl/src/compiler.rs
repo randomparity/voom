@@ -16,6 +16,7 @@ use crate::compiled::{
     CompiledTranscodeSettings, CompiledValueOrField, DefaultStrategy, ErrorStrategy, RulesMode,
     RunIfTrigger, SynthLanguage, SynthPosition, TrackTarget, TranscodeChannels,
 };
+use voom_domain::plan::{SampleStrategy, TranscodeFallback};
 use voom_domain::utils::codecs;
 
 use crate::ast::{
@@ -266,6 +267,21 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
         _ => None,
     };
 
+    let target_vmaf = match get("target_vmaf") {
+        Some(Value::Number(n, _)) => safe_u32(*n),
+        _ => None,
+    };
+
+    let max_bitrate = match get("max_bitrate") {
+        Some(Value::String(s) | Value::Ident(s) | Value::Number(_, s)) => Some(s.clone()),
+        _ => None,
+    };
+
+    let min_bitrate = match get("min_bitrate") {
+        Some(Value::String(s) | Value::Ident(s) | Value::Number(_, s)) => Some(s.clone()),
+        _ => None,
+    };
+
     let channels = match get("channels") {
         Some(Value::Number(n, _)) => safe_u32(*n).map(TranscodeChannels::Count),
         Some(Value::Ident(s) | Value::String(s)) => Some(TranscodeChannels::Named(s.clone())),
@@ -283,19 +299,98 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
         _ => None,
     };
 
-    let mut settings =
+    let vmaf_overrides = parse_vmaf_overrides(settings);
+
+    let mut compiled_settings =
         CompiledTranscodeSettings::new(preserve, crf, get_str("preset"), bitrate, channels);
-    settings.hw = get_str("hw");
-    settings.hw_fallback = hw_fallback;
-    settings.max_resolution = max_resolution;
-    settings.scale_algorithm = get_str("scale_algorithm");
-    settings.hdr_mode = get_str("hdr_mode");
-    settings.tune = get_str("tune");
+    compiled_settings.target_vmaf = target_vmaf;
+    compiled_settings.max_bitrate = max_bitrate;
+    compiled_settings.min_bitrate = min_bitrate;
+    compiled_settings.sample_strategy = parse_sample_strategy(get("sample_strategy"));
+    compiled_settings.fallback = parse_transcode_fallback(get("fallback"));
+    compiled_settings.vmaf_overrides = vmaf_overrides;
+    compiled_settings.hw = get_str("hw");
+    compiled_settings.hw_fallback = hw_fallback;
+    compiled_settings.max_resolution = max_resolution;
+    compiled_settings.scale_algorithm = get_str("scale_algorithm");
+    compiled_settings.hdr_mode = get_str("hdr_mode");
+    compiled_settings.tune = get_str("tune");
 
     CompiledOperation::Transcode {
         target: parse_track_target(target),
         codec: canonical,
-        settings,
+        settings: compiled_settings,
+    }
+}
+
+fn parse_sample_strategy(value: Option<&Value>) -> Option<SampleStrategy> {
+    match value {
+        Some(Value::Ident(name)) if name == "full" => Some(SampleStrategy::Full),
+        Some(Value::Call { name, args }) if name == "scenes" || name == "uniform" => {
+            let count = args
+                .iter()
+                .find(|(key, _)| key == "count")
+                .and_then(|(_, value)| match value {
+                    Value::Number(n, _) => safe_u32(*n),
+                    _ => None,
+                })?;
+            let duration = args.iter().find(|(key, _)| key == "duration").and_then(
+                |(_, value)| match value {
+                    Value::String(s) | Value::Ident(s) | Value::Number(_, s) => Some(s.clone()),
+                    _ => None,
+                },
+            )?;
+            if name == "scenes" {
+                Some(SampleStrategy::Scenes { count, duration })
+            } else {
+                Some(SampleStrategy::Uniform { count, duration })
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_transcode_fallback(value: Option<&Value>) -> Option<TranscodeFallback> {
+    let Some(Value::Object(items)) = value else {
+        return None;
+    };
+    let crf = items
+        .iter()
+        .find(|(key, _)| key == "crf")
+        .and_then(|(_, value)| match value {
+            Value::Number(n, _) => safe_u32(*n),
+            _ => None,
+        })?;
+    let preset =
+        items
+            .iter()
+            .find(|(key, _)| key == "preset")
+            .and_then(|(_, value)| match value {
+                Value::String(s) | Value::Ident(s) => Some(s.clone()),
+                _ => None,
+            })?;
+    Some(TranscodeFallback::new(crf, preset))
+}
+
+fn parse_vmaf_overrides(settings: &[(String, Value)]) -> Option<HashMap<String, u32>> {
+    let mut overrides = HashMap::new();
+    for (key, value) in settings {
+        let Some(path) = key.strip_prefix("target_vmaf_when ") else {
+            continue;
+        };
+        let Some(content_type) = path.strip_prefix("content.") else {
+            continue;
+        };
+        if let Value::Number(n, _) = value {
+            if let Some(target) = safe_u32(*n) {
+                overrides.insert(content_type.to_string(), target);
+            }
+        }
+    }
+    if overrides.is_empty() {
+        None
+    } else {
+        Some(overrides)
     }
 }
 
@@ -559,6 +654,26 @@ fn value_to_json(value: &Value) -> serde_json::Value {
         Value::List(items) => {
             let arr: Vec<serde_json::Value> = items.iter().map(value_to_json).collect();
             serde_json::Value::Array(arr)
+        }
+        Value::Object(items) => {
+            let map = items
+                .iter()
+                .map(|(key, value)| (key.clone(), value_to_json(value)))
+                .collect();
+            serde_json::Value::Object(map)
+        }
+        Value::Call { name, args } => {
+            let mut map = serde_json::Map::new();
+            map.insert("name".to_string(), serde_json::Value::String(name.clone()));
+            map.insert(
+                "args".to_string(),
+                serde_json::Value::Object(
+                    args.iter()
+                        .map(|(key, value)| (key.clone(), value_to_json(value)))
+                        .collect(),
+                ),
+            );
+            serde_json::Value::Object(map)
         }
     }
 }
@@ -1282,6 +1397,56 @@ mod tests {
     fn compile_transcode_bitrate_string() {
         let s = transcode_with("bitrate", Value::String("8M".into()));
         assert_eq!(s.bitrate, Some("8M".into()));
+    }
+
+    #[test]
+    fn compile_transcode_vmaf_settings() {
+        let settings = vec![
+            ("target_vmaf".to_string(), Value::Number(93.0, "93".into())),
+            ("min_bitrate".to_string(), Value::String("2M".into())),
+            ("max_bitrate".to_string(), Value::String("8M".into())),
+            (
+                "sample_strategy".to_string(),
+                Value::Call {
+                    name: "scenes".into(),
+                    args: vec![
+                        ("count".into(), Value::Number(5.0, "5".into())),
+                        ("duration".into(), Value::Number(4.0, "4s".into())),
+                    ],
+                },
+            ),
+            (
+                "fallback".to_string(),
+                Value::Object(vec![
+                    ("crf".into(), Value::Number(24.0, "24".into())),
+                    ("preset".into(), Value::String("medium".into())),
+                ]),
+            ),
+            (
+                "target_vmaf_when content.animation".to_string(),
+                Value::Number(88.0, "88".into()),
+            ),
+        ];
+        let CompiledOperation::Transcode { settings, .. } =
+            compile_transcode("video", "hevc", &settings)
+        else {
+            unreachable!("compile_transcode always returns Transcode")
+        };
+
+        assert_eq!(settings.target_vmaf, Some(93));
+        assert_eq!(settings.min_bitrate.as_deref(), Some("2M"));
+        assert_eq!(settings.max_bitrate.as_deref(), Some("8M"));
+        assert_eq!(
+            settings.sample_strategy,
+            Some(SampleStrategy::Scenes {
+                count: 5,
+                duration: "4s".into()
+            })
+        );
+        let fallback = settings.fallback.unwrap();
+        assert_eq!(fallback.crf, 24);
+        assert_eq!(fallback.preset, "medium");
+        assert_eq!(settings.vmaf_overrides.unwrap()["animation"], 88);
     }
 
     #[test]
