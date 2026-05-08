@@ -552,6 +552,13 @@ pub trait VerificationStorage: Send + Sync {
         mode: crate::verification::VerificationMode,
     ) -> Result<Option<crate::verification::VerificationRecord>>;
 
+    /// List active files whose latest verification is older than `cutoff`, or
+    /// which have never been verified.
+    fn list_files_due_for_verification(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::media::MediaFile>>;
+
     /// Aggregate integrity summary. `since` is the cutoff for "stale" — files
     /// last verified before this timestamp are counted in `stale`.
     fn integrity_summary(

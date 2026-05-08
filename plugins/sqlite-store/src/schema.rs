@@ -221,6 +221,7 @@ CREATE TABLE IF NOT EXISTS verifications (
 CREATE INDEX IF NOT EXISTS idx_verifications_file ON verifications(file_id);
 CREATE INDEX IF NOT EXISTS idx_verifications_outcome ON verifications(outcome);
 CREATE INDEX IF NOT EXISTS idx_verifications_time ON verifications(verified_at);
+CREATE INDEX IF NOT EXISTS idx_verifications_file_verified_at ON verifications(file_id, verified_at);
 ";
 
 /// Initialize the database schema.
@@ -477,7 +478,9 @@ fn migrate_missing_tables(conn: &Connection) -> rusqlite::Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_verifications_file ON verifications(file_id);
             CREATE INDEX IF NOT EXISTS idx_verifications_outcome ON verifications(outcome);
-            CREATE INDEX IF NOT EXISTS idx_verifications_time ON verifications(verified_at);",
+            CREATE INDEX IF NOT EXISTS idx_verifications_time ON verifications(verified_at);
+            CREATE INDEX IF NOT EXISTS idx_verifications_file_verified_at \
+                ON verifications(file_id, verified_at);",
         )?;
     }
 
@@ -560,6 +563,18 @@ fn migrate_indexes_and_constraints(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_transitions_created_at \
              ON file_transitions(created_at);",
+        )?;
+    }
+
+    let verifications_exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='verifications'",
+        [],
+        |row| row.get(0),
+    )?;
+    if verifications_exists && !has_index("idx_verifications_file_verified_at")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_verifications_file_verified_at \
+             ON verifications(file_id, verified_at);",
         )?;
     }
 
@@ -1007,5 +1022,20 @@ mod tests {
             count >= 3,
             "expected at least 3 indexes on verifications, got {count}"
         );
+    }
+
+    #[test]
+    fn verification_latest_lookup_index_is_created() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master \
+                 WHERE type='index' AND name='idx_verifications_file_verified_at'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(exists);
     }
 }

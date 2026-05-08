@@ -1,16 +1,18 @@
 //! `VerificationStorage` implementation backed by SQLite.
 
 use chrono::{DateTime, Utc};
-use rusqlite::params;
+use rusqlite::{params, Row};
 
 use voom_domain::errors::Result;
+use voom_domain::media::{Container, MediaFile};
 use voom_domain::storage::VerificationStorage;
+use voom_domain::transition::FileStatus;
 use voom_domain::verification::{
     IntegritySummary, VerificationFilters, VerificationMode, VerificationRecord,
 };
 
 use super::row_mappers::row_to_verification;
-use super::{format_datetime, storage_err, SqlQuery, SqliteStore};
+use super::{format_datetime, parse_datetime, storage_err, SqlQuery, SqliteStore};
 
 const SELECT_VERIFICATION: &str = "SELECT id, file_id, verified_at, mode, outcome, \
     error_count, warning_count, content_hash, details FROM verifications";
@@ -50,6 +52,41 @@ const INTEGRITY_HASH_MISMATCHES_SQL: &str = "SELECT COUNT(DISTINCT file_id) FROM
             ) AS rn \
         FROM verifications WHERE mode = 'hash' \
     ) WHERE rn = 1 AND prev_hash IS NOT NULL AND prev_hash <> content_hash";
+
+fn row_to_due_file(row: &Row<'_>) -> rusqlite::Result<MediaFile> {
+    let path: String = row.get("path")?;
+    let mut file = MediaFile::new(path.into());
+    let id: String = row.get("id")?;
+    file.id = super::parse_uuid(&id).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("invalid UUID in files: {id}: {e}").into(),
+        )
+    })?;
+    file.size = u64::try_from(row.get::<_, i64>("size")?.max(0)).unwrap_or(0);
+    file.content_hash = row
+        .get::<_, Option<String>>("content_hash")?
+        .filter(|value| !value.is_empty());
+    file.expected_hash = row.get("expected_hash")?;
+    let status: String = row.get("status")?;
+    file.status = FileStatus::parse(&status).unwrap_or_default();
+    let container: String = row.get("container")?;
+    file.container = Container::from_extension(&container);
+    file.duration = row.get::<_, Option<f64>>("duration")?.unwrap_or(0.0);
+    file.bitrate = row
+        .get::<_, Option<i32>>("bitrate")?
+        .and_then(|value| u32::try_from(value).ok());
+    let introspected_at: String = row.get("introspected_at")?;
+    file.introspected_at = parse_datetime(&introspected_at).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("corrupt datetime in files.introspected_at: {introspected_at}: {e}").into(),
+        )
+    })?;
+    Ok(file)
+}
 
 impl VerificationStorage for SqliteStore {
     fn insert_verification(&self, record: &VerificationRecord) -> Result<()> {
@@ -132,6 +169,36 @@ impl VerificationStorage for SqliteStore {
             )),
             None => Ok(None),
         }
+    }
+
+    fn list_files_due_for_verification(&self, cutoff: DateTime<Utc>) -> Result<Vec<MediaFile>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT f.id, f.path, f.size, f.content_hash, f.expected_hash, f.status, \
+                    f.container, f.duration, f.bitrate, f.tags, f.plugin_metadata, \
+                    f.introspected_at \
+                 FROM files f \
+                 LEFT JOIN ( \
+                     SELECT file_id, MAX(verified_at) AS latest \
+                     FROM verifications \
+                     GROUP BY file_id \
+                 ) v ON v.file_id = f.id \
+                 WHERE f.status = 'active' \
+                   AND f.path IS NOT NULL \
+                   AND (v.latest IS NULL OR v.latest < ?1) \
+                 ORDER BY f.id",
+            )
+            .map_err(storage_err(
+                "failed to prepare files due for verification query",
+            ))?;
+
+        let files = stmt
+            .query_map(params![format_datetime(&cutoff)], row_to_due_file)
+            .map_err(storage_err("failed to query files due for verification"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err("failed to read files due for verification"))?;
+        Ok(files)
     }
 
     fn integrity_summary(&self, since: DateTime<Utc>) -> Result<IntegritySummary> {
@@ -497,6 +564,77 @@ mod tests {
             )
             .expect("file aggregate counts");
         assert_eq!(counts, (3, 1, 1));
+    }
+
+    #[test]
+    fn list_files_due_for_verification_includes_never_verified_files() {
+        let (store, file_id) = store_with_file();
+
+        let due = store
+            .list_files_due_for_verification(Utc::now() - chrono::Duration::days(30))
+            .expect("due files");
+
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id.to_string(), file_id);
+    }
+
+    #[test]
+    fn list_files_due_for_verification_filters_by_latest_verification() {
+        let store = SqliteStore::in_memory().expect("in-memory store");
+        let cutoff = Utc::now() - chrono::Duration::days(30);
+        let mut stale_file = MediaFile::new(PathBuf::from("/media/stale.mkv"));
+        let mut fresh_file = MediaFile::new(PathBuf::from("/media/fresh.mkv"));
+        store.upsert_file(&stale_file).expect("insert stale file");
+        store.upsert_file(&fresh_file).expect("insert fresh file");
+
+        stale_file.content_hash = Some("stale".into());
+        fresh_file.content_hash = Some("fresh".into());
+        store
+            .insert_verification(&VerificationRecord::new(
+                Uuid::new_v4(),
+                stale_file.id.to_string(),
+                cutoff - chrono::Duration::seconds(1),
+                VerificationMode::Quick,
+                VerificationOutcome::Ok,
+                0,
+                0,
+                None,
+                None,
+            ))
+            .expect("insert stale verification");
+        store
+            .insert_verification(&VerificationRecord::new(
+                Uuid::new_v4(),
+                fresh_file.id.to_string(),
+                cutoff + chrono::Duration::seconds(1),
+                VerificationMode::Quick,
+                VerificationOutcome::Ok,
+                0,
+                0,
+                None,
+                None,
+            ))
+            .expect("insert fresh verification");
+
+        let due = store
+            .list_files_due_for_verification(cutoff)
+            .expect("due files");
+        let due_ids: Vec<_> = due.iter().map(|file| file.id).collect();
+
+        assert_eq!(due_ids, vec![stale_file.id]);
+    }
+
+    #[test]
+    fn list_files_due_for_verification_excludes_missing_files() {
+        let (store, file_id) = store_with_file();
+        let file_uuid = Uuid::parse_str(&file_id).expect("uuid");
+        store.mark_missing(&file_uuid).expect("mark missing");
+
+        let due = store
+            .list_files_due_for_verification(Utc::now())
+            .expect("due files");
+
+        assert!(due.is_empty());
     }
 
     #[test]

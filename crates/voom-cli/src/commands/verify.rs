@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use console::style;
 use rayon::prelude::*;
 
-use voom_domain::storage::{FileFilters, StorageTrait};
+use voom_domain::storage::StorageTrait;
 use voom_domain::verification::{
     VerificationFilters, VerificationMode, VerificationOutcome, VerificationRecord,
 };
@@ -158,26 +158,15 @@ fn resolve_due_targets(
         parse_since(&args.since).context("parsing --since")?
     };
 
-    let files = store.list_files(&FileFilters::default())?;
-    let mut out = Vec::new();
-    for f in files {
-        let mut latest_filters = VerificationFilters::default();
-        latest_filters.file_id = Some(f.id.to_string());
-        latest_filters.limit = Some(1);
-        let latest = store.list_verifications(&latest_filters)?;
-        let needs = match latest.first() {
-            Some(rec) => rec.verified_at < cutoff,
-            None => true,
-        };
-        if needs {
-            out.push(VerifyTarget {
-                file_id: f.id.to_string(),
-                path: f.path.clone(),
-                duration: Some(f.duration),
-            });
-        }
-    }
-    Ok(out)
+    Ok(store
+        .list_files_due_for_verification(cutoff)?
+        .into_iter()
+        .map(|f| VerifyTarget {
+            file_id: f.id.to_string(),
+            path: f.path,
+            duration: Some(f.duration),
+        })
+        .collect())
 }
 
 /// Minimal input for a parallel quick-verify pass.
@@ -404,4 +393,71 @@ fn run_report(args: VerifyReportArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use voom_domain::media::MediaFile;
+    use voom_domain::test_support::InMemoryStore;
+
+    fn verify_args() -> VerifyArgs {
+        VerifyArgs {
+            paths: Vec::new(),
+            thorough: false,
+            hash: false,
+            since: "30d".to_string(),
+            all: false,
+            workers: 0,
+            hw_accel: None,
+            format: None,
+        }
+    }
+
+    #[test]
+    fn resolve_due_targets_returns_never_verified_and_stale_files() {
+        let cutoff = Utc::now() - chrono::Duration::days(30);
+        let never_file = MediaFile::new(PathBuf::from("/media/never.mkv"));
+        let stale_file = MediaFile::new(PathBuf::from("/media/stale.mkv"));
+        let fresh_file = MediaFile::new(PathBuf::from("/media/fresh.mkv"));
+        let never_id = never_file.id.to_string();
+        let stale_id = stale_file.id.to_string();
+        let fresh_id = fresh_file.id.to_string();
+        let store: Arc<dyn StorageTrait> = Arc::new(
+            InMemoryStore::new()
+                .with_file(never_file)
+                .with_file(stale_file)
+                .with_file(fresh_file)
+                .with_verification(VerificationRecord::new(
+                    uuid::Uuid::new_v4(),
+                    stale_id.clone(),
+                    cutoff - chrono::Duration::days(1),
+                    VerificationMode::Quick,
+                    VerificationOutcome::Ok,
+                    0,
+                    0,
+                    None,
+                    None,
+                ))
+                .with_verification(VerificationRecord::new(
+                    uuid::Uuid::new_v4(),
+                    fresh_id,
+                    cutoff + chrono::Duration::days(1),
+                    VerificationMode::Quick,
+                    VerificationOutcome::Ok,
+                    0,
+                    0,
+                    None,
+                    None,
+                )),
+        );
+
+        let targets = resolve_due_targets(&store, &verify_args()).expect("resolve targets");
+        let mut target_ids: Vec<_> = targets.into_iter().map(|target| target.file_id).collect();
+        target_ids.sort();
+        let mut expected = vec![never_id, stale_id];
+        expected.sort();
+
+        assert_eq!(target_ids, expected);
+    }
 }

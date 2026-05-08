@@ -837,6 +837,33 @@ impl crate::storage::VerificationStorage for InMemoryStore {
         Ok(self.list_verifications(&filters)?.into_iter().next())
     }
 
+    fn list_files_due_for_verification(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<MediaFile>> {
+        let files = self.files.lock();
+        let verifications = self.verifications.lock();
+        let mut due: Vec<MediaFile> = files
+            .values()
+            .filter(|file| file.status == FileStatus::Active)
+            .filter(|file| {
+                let file_id = file.id.to_string();
+                verifications
+                    .iter()
+                    .filter(|record| record.file_id == file_id)
+                    .max_by(|a, b| {
+                        a.verified_at
+                            .cmp(&b.verified_at)
+                            .then_with(|| a.id.cmp(&b.id))
+                    })
+                    .is_none_or(|record| record.verified_at < cutoff)
+            })
+            .cloned()
+            .collect();
+        due.sort_by_key(|file| file.id);
+        Ok(due)
+    }
+
     fn integrity_summary(&self, since: chrono::DateTime<chrono::Utc>) -> Result<IntegritySummary> {
         let files = self.files.lock();
         let verifications = self.verifications.lock();
@@ -996,5 +1023,84 @@ mod oldest_at_tests {
                 .map(|t| t.timestamp_millis()),
             Some(a.created_at.timestamp_millis())
         );
+    }
+}
+
+#[cfg(test)]
+mod verification_storage_tests {
+    use super::*;
+    use crate::storage::{FileStorage, VerificationStorage};
+
+    fn media_file(path: &str) -> MediaFile {
+        MediaFile::new(PathBuf::from(path))
+    }
+
+    #[test]
+    fn list_files_due_for_verification_includes_never_verified_files() {
+        let file = media_file("/media/never.mkv");
+        let file_id = file.id;
+        let store = InMemoryStore::new().with_file(file);
+
+        let due = store
+            .list_files_due_for_verification(chrono::Utc::now())
+            .expect("due files");
+
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id, file_id);
+    }
+
+    #[test]
+    fn list_files_due_for_verification_filters_by_latest_verification() {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(30);
+        let stale_file = media_file("/media/stale.mkv");
+        let fresh_file = media_file("/media/fresh.mkv");
+        let stale_id = stale_file.id;
+        let fresh_id = fresh_file.id;
+        let store = InMemoryStore::new()
+            .with_file(stale_file)
+            .with_file(fresh_file)
+            .with_verification(VerificationRecord::new(
+                Uuid::new_v4(),
+                stale_id.to_string(),
+                cutoff - chrono::Duration::seconds(1),
+                VerificationMode::Quick,
+                VerificationOutcome::Ok,
+                0,
+                0,
+                None,
+                None,
+            ))
+            .with_verification(VerificationRecord::new(
+                Uuid::new_v4(),
+                fresh_id.to_string(),
+                cutoff + chrono::Duration::seconds(1),
+                VerificationMode::Quick,
+                VerificationOutcome::Ok,
+                0,
+                0,
+                None,
+                None,
+            ));
+
+        let due = store
+            .list_files_due_for_verification(cutoff)
+            .expect("due files");
+        let due_ids: Vec<_> = due.iter().map(|file| file.id).collect();
+
+        assert_eq!(due_ids, vec![stale_id]);
+    }
+
+    #[test]
+    fn list_files_due_for_verification_excludes_missing_files() {
+        let file = media_file("/media/missing.mkv");
+        let file_id = file.id;
+        let store = InMemoryStore::new().with_file(file);
+        store.mark_missing(&file_id).expect("mark missing");
+
+        let due = store
+            .list_files_due_for_verification(chrono::Utc::now())
+            .expect("due files");
+
+        assert!(due.is_empty());
     }
 }
