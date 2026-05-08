@@ -21,8 +21,8 @@ use voom_verifier::VerifierConfig;
 
 use crate::app;
 use crate::cli::{HwAccelArg, OutputFormat, VerifyArgs, VerifyCommands, VerifyReportArgs};
-use crate::commands::since::parse_since;
 use crate::config::{self, AppConfig};
+use voom_domain::utils::since::parse_since;
 
 /// Top-level dispatcher for `voom verify <subcommand>`.
 ///

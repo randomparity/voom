@@ -1761,6 +1761,18 @@ mod test_health {
                 "No environment check records found.",
             ));
     }
+
+    #[test]
+    fn health_history_accepts_relative_since() {
+        let env = TestEnv::new();
+        env.voom()
+            .args(["env", "history", "--since", "7d"])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains(
+                "No environment check records found.",
+            ));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

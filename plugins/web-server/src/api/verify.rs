@@ -4,6 +4,7 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::Deserialize;
 
+use voom_domain::utils::since::parse_since;
 use voom_domain::verification::{
     IntegritySummary, VerificationFilters, VerificationMode, VerificationOutcome,
     VerificationRecord,
@@ -24,6 +25,7 @@ const INTEGRITY_STALE_DAYS: i64 = 30;
 pub struct VerifyQueryParams {
     pub mode: Option<String>,
     pub outcome: Option<String>,
+    pub since: Option<String>,
     pub limit: Option<u32>,
 }
 
@@ -32,9 +34,8 @@ pub struct VerifyQueryParams {
 /// Query parameters:
 /// - `mode` -- one of `quick`, `thorough`, `hash`
 /// - `outcome` -- one of `ok`, `warning`, `error`
+/// - `since` -- `30d`, `4w`, `12h`, `YYYY-MM-DD`, or `YYYY-MM-DDTHH:MM:SS`
 /// - `limit` -- max records to return (default 100, capped at 10_000)
-///
-/// `since`-style filtering is not yet exposed via the web API; see issue #196.
 #[tracing::instrument(skip(state))]
 pub async fn list_verifications(
     State(state): State<AppState>,
@@ -60,10 +61,17 @@ pub async fn list_verifications(
     let limit = params
         .limit
         .map_or(DEFAULT_VERIFY_LIMIT, |l| l.min(MAX_VERIFY_LIMIT));
+    let since = params
+        .since
+        .as_deref()
+        .map(parse_since)
+        .transpose()
+        .map_err(|e| WebError::BadRequest(e.to_string()))?;
 
     let mut filters = VerificationFilters::default();
     filters.mode = mode;
     filters.outcome = outcome;
+    filters.since = since;
     filters.limit = Some(limit);
 
     let records = spawn_store_op(move || store.list_verifications(&filters)).await?;
@@ -107,15 +115,18 @@ mod tests {
         let params: VerifyQueryParams = serde_json::from_str("{}").unwrap();
         assert!(params.mode.is_none());
         assert!(params.outcome.is_none());
+        assert!(params.since.is_none());
         assert!(params.limit.is_none());
     }
 
     #[test]
     fn verify_query_params_deserialize_with_values() {
         let params: VerifyQueryParams =
-            serde_json::from_str(r#"{"mode":"hash","outcome":"ok","limit":50}"#).unwrap();
+            serde_json::from_str(r#"{"mode":"hash","outcome":"ok","since":"7d","limit":50}"#)
+                .unwrap();
         assert_eq!(params.mode.as_deref(), Some("hash"));
         assert_eq!(params.outcome.as_deref(), Some("ok"));
+        assert_eq!(params.since.as_deref(), Some("7d"));
         assert_eq!(params.limit, Some(50));
     }
 }

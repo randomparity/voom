@@ -1,36 +1,42 @@
-//! Parse `--since` arguments — relative durations or absolute datetimes.
+//! Parse `--since` arguments as relative durations or absolute datetimes.
 
-use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
+
+#[derive(Debug, thiserror::Error)]
+pub enum SinceParseError {
+    #[error("invalid --since '{0}': expected 30d, 4w, 12h, or YYYY-MM-DD")]
+    Invalid(String),
+    #[error("invalid datetime '{0}': expected YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS")]
+    InvalidAbsolute(String),
+}
 
 /// Parse `30d` / `4w` / `12h` / `2026-01-15` / `2026-01-15T10:30:00`
 /// into a UTC `DateTime`. Relative forms are subtracted from "now".
 ///
 /// # Errors
 /// Returns an error if the input doesn't match any supported format.
-pub fn parse_since(s: &str) -> Result<DateTime<Utc>> {
+pub fn parse_since(s: &str) -> Result<DateTime<Utc>, SinceParseError> {
     if let Some(dt) = parse_relative(s) {
         return Ok(dt);
     }
-    parse_absolute_since(s)
-        .map_err(|_| anyhow!("invalid --since '{s}': expected `30d`, `4w`, `12h`, or YYYY-MM-DD"))
+    parse_absolute_since(s).map_err(|_| SinceParseError::Invalid(s.to_string()))
 }
 
 /// Parse `2026-01-15` / `2026-01-15T10:30:00` into a UTC `DateTime`.
 ///
 /// # Errors
 /// Returns an error if the input is not an absolute date or datetime.
-pub fn parse_absolute_since(s: &str) -> Result<DateTime<Utc>> {
+pub fn parse_absolute_since(s: &str) -> Result<DateTime<Utc>, SinceParseError> {
     if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
         return Ok(Utc.from_utc_datetime(&ndt));
     }
     if let Ok(nd) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        let ndt = nd.and_hms_opt(0, 0, 0).expect("midnight is always valid");
+        let Some(ndt) = nd.and_hms_opt(0, 0, 0) else {
+            return Err(SinceParseError::InvalidAbsolute(s.to_string()));
+        };
         return Ok(Utc.from_utc_datetime(&ndt));
     }
-    Err(anyhow!(
-        "invalid datetime '{s}': expected YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS"
-    ))
+    Err(SinceParseError::InvalidAbsolute(s.to_string()))
 }
 
 fn parse_relative(s: &str) -> Option<DateTime<Utc>> {
@@ -96,6 +102,6 @@ mod tests {
     fn rejects_garbage() {
         assert!(parse_since("nonsense").is_err());
         assert!(parse_since("").is_err());
-        assert!(parse_since("d30").is_err()); // unit before number
+        assert!(parse_since("d30").is_err());
     }
 }

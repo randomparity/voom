@@ -9,10 +9,10 @@ use voom_ffmpeg_executor::probe::{
 
 use crate::app;
 use crate::cli::{EnvCommands, OutputFormat};
-use crate::commands::since::parse_absolute_since;
 use crate::config;
 use crate::output::sanitize_for_display;
 use crate::tools::print_tool_status;
+use voom_domain::utils::since::parse_since;
 
 mod retention_coverage {
     use chrono::{DateTime, Duration, Utc};
@@ -417,7 +417,7 @@ fn history(
     limit: u32,
     format: OutputFormat,
 ) -> Result<()> {
-    let since_dt = since.map(|s| parse_absolute_since(&s)).transpose()?;
+    let since_dt = since.map(|s| parse_since(&s)).transpose()?;
 
     let mut filters = HealthCheckFilters::default();
     filters.check_name = check_name;

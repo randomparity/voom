@@ -34,6 +34,24 @@ fn make_verification(file_id: Uuid, outcome: VerificationOutcome) -> Verificatio
     )
 }
 
+fn make_verification_at(
+    file_id: Uuid,
+    outcome: VerificationOutcome,
+    verified_at: chrono::DateTime<chrono::Utc>,
+) -> VerificationRecord {
+    VerificationRecord::new(
+        Uuid::new_v4(),
+        file_id.to_string(),
+        verified_at,
+        VerificationMode::Hash,
+        outcome,
+        u32::from(outcome == VerificationOutcome::Error),
+        0,
+        Some("abc123".into()),
+        Some("verification details".into()),
+    )
+}
+
 fn make_server(store: InMemoryStore) -> TestServer {
     make_server_with_auth(store, None)
 }
@@ -815,6 +833,41 @@ async fn test_list_verifications_accepts_valid_filters() {
     resp.assert_status_ok();
     let body: serde_json::Value = resp.json();
     assert_eq!(body, json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_verifications_filters_by_relative_since() {
+    let recent_id = Uuid::new_v4();
+    let old_id = Uuid::new_v4();
+    let store = InMemoryStore::new()
+        .with_verification(make_verification_at(
+            recent_id,
+            VerificationOutcome::Ok,
+            chrono::Utc::now() - chrono::Duration::days(2),
+        ))
+        .with_verification(make_verification_at(
+            old_id,
+            VerificationOutcome::Ok,
+            chrono::Utc::now() - chrono::Duration::days(10),
+        ));
+    let server = make_server(store);
+
+    let resp = server.get("/api/verify?since=7d").await;
+
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    let records = body.as_array().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["file_id"], recent_id.to_string());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_verifications_rejects_invalid_since() {
+    let server = make_server(InMemoryStore::new());
+
+    let resp = server.get("/api/verify?since=garbage").await;
+
+    resp.assert_status_bad_request();
 }
 
 #[tokio::test(flavor = "multi_thread")]
