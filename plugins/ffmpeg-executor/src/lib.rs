@@ -14,8 +14,8 @@ use std::time::Duration;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{
-    CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent, PlanCreatedEvent,
-    PlanExecutingEvent,
+    CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent, ExecutorParallelLimit,
+    PlanCreatedEvent, PlanExecutingEvent,
 };
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
@@ -24,7 +24,7 @@ use voom_domain::utils::language::is_valid_language;
 use voom_domain::utils::sanitize::validate_metadata_value;
 use voom_kernel::{Plugin, PluginContext};
 
-use crate::hwaccel::{resolve_hw_config, HwAccelConfig};
+use crate::hwaccel::{resolve_hw_config, HwAccelBackend, HwAccelConfig};
 use crate::probe::{
     enumerate_gpus, probe_capabilities, validate_hw_encoder, validate_hw_encoder_on_device,
     validate_hw_encoders_parallel, GpuDevice,
@@ -48,6 +48,25 @@ fn positive_or_default(value: Option<usize>, default: usize) -> usize {
         Some(0) | None => default,
         Some(value) => value,
     }
+}
+
+fn nvenc_parallel_limits(
+    backend: Option<HwAccelBackend>,
+    validated_encoders: &[String],
+    nvenc_max_parallel: Option<usize>,
+) -> Vec<ExecutorParallelLimit> {
+    if backend != Some(HwAccelBackend::Nvenc)
+        || !validated_encoders
+            .iter()
+            .any(|encoder| encoder.ends_with("_nvenc"))
+    {
+        return Vec::new();
+    }
+
+    vec![ExecutorParallelLimit::new(
+        "hw:nvenc",
+        positive_or_default(nvenc_max_parallel, DEFAULT_NVENC_MAX_PARALLEL_PER_GPU),
+    )]
 }
 
 pub(crate) fn plugin_err(message: impl Into<String>) -> VoomError {
@@ -588,18 +607,11 @@ impl Plugin for FfmpegExecutorPlugin {
             "validated HW encoders"
         );
 
-        let mut parallel_limits = Vec::new();
-        if hw_config.backend == Some(crate::hwaccel::HwAccelBackend::Nvenc)
-            && !validated_encoders.is_empty()
-        {
-            parallel_limits.push(voom_domain::events::ExecutorParallelLimit::new(
-                "hw:nvenc",
-                positive_or_default(
-                    plugin_config.nvenc_max_parallel,
-                    DEFAULT_NVENC_MAX_PARALLEL_PER_GPU,
-                ),
-            ));
-        }
+        let parallel_limits = nvenc_parallel_limits(
+            hw_config.backend,
+            &validated_encoders,
+            plugin_config.nvenc_max_parallel,
+        );
 
         self.hw_accel = hw_config.with_validated_encoders(validated_encoders);
 
@@ -1124,6 +1136,73 @@ mod tests {
         let config = FfmpegExecutorConfig::default();
         assert!(config.gpu_device.is_none());
         assert!(config.hw_accel.is_none());
+    }
+
+    #[test]
+    fn test_config_nvenc_parallel_limits_use_configured_capacity() {
+        let limits = nvenc_parallel_limits(
+            Some(crate::hwaccel::HwAccelBackend::Nvenc),
+            &["h264_nvenc".to_string()],
+            Some(3),
+        );
+
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].resource, "hw:nvenc");
+        assert_eq!(limits[0].max_parallel, 3);
+    }
+
+    #[test]
+    fn test_config_nvenc_parallel_limits_default_missing_capacity() {
+        let limits = nvenc_parallel_limits(
+            Some(crate::hwaccel::HwAccelBackend::Nvenc),
+            &["h264_nvenc".to_string()],
+            None,
+        );
+
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].max_parallel, DEFAULT_NVENC_MAX_PARALLEL_PER_GPU);
+    }
+
+    #[test]
+    fn test_config_nvenc_parallel_limits_default_zero_capacity() {
+        let limits = nvenc_parallel_limits(
+            Some(crate::hwaccel::HwAccelBackend::Nvenc),
+            &["h264_nvenc".to_string()],
+            Some(0),
+        );
+
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].max_parallel, DEFAULT_NVENC_MAX_PARALLEL_PER_GPU);
+    }
+
+    #[test]
+    fn test_config_nvenc_parallel_limits_skip_empty_encoders() {
+        let limits =
+            nvenc_parallel_limits(Some(crate::hwaccel::HwAccelBackend::Nvenc), &[], Some(3));
+
+        assert!(limits.is_empty());
+    }
+
+    #[test]
+    fn test_config_nvenc_parallel_limits_skip_non_nvenc_encoder() {
+        let limits = nvenc_parallel_limits(
+            Some(crate::hwaccel::HwAccelBackend::Nvenc),
+            &["h264_vaapi".to_string()],
+            Some(3),
+        );
+
+        assert!(limits.is_empty());
+    }
+
+    #[test]
+    fn test_config_nvenc_parallel_limits_skip_non_nvenc_backend() {
+        let limits = nvenc_parallel_limits(
+            Some(crate::hwaccel::HwAccelBackend::Vaapi),
+            &["h264_nvenc".to_string()],
+            Some(3),
+        );
+
+        assert!(limits.is_empty());
     }
 
     #[test]

@@ -352,6 +352,7 @@ pub fn default_config_contents() -> String {
 # # gpu_device = "0"
 # # Maximum simultaneous NVENC encode sessions. Default: 4.
 # # Lower this to 2 on small GPUs or when CUDA OOM appears under load.
+# # Applies only when NVENC is active; 0 uses the default.
 # # nvenc_max_parallel = 4
 #
 # [plugin.tvdb-metadata]
