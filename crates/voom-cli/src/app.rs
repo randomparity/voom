@@ -252,7 +252,7 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     // Executor — ffmpeg (transcode, non-MKV metadata, container conversion)
     register_if_enabled!(
         "ffmpeg-executor",
-        voom_ffmpeg_executor::FfmpegExecutorPlugin::new(),
+        voom_ffmpeg_executor::FfmpegExecutorPlugin::new().with_store(Arc::clone(&store)),
         PRIORITY_FFMPEG_EXECUTOR,
         "ffmpeg executor"
     );

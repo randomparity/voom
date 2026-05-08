@@ -9,7 +9,9 @@ pub mod hwaccel;
 pub mod probe;
 pub mod progress;
 pub mod vmaf;
+pub mod vmaf_iterate;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
@@ -20,6 +22,7 @@ use voom_domain::events::{
 };
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
+use voom_domain::storage::StorageTrait;
 use voom_domain::temp_file::temp_path;
 use voom_domain::utils::language::is_valid_language;
 use voom_domain::utils::sanitize::validate_metadata_value;
@@ -109,6 +112,7 @@ pub struct FfmpegExecutorPlugin {
     probed_codecs: Option<CodecCapabilities>,
     probed_formats: Option<Vec<String>>,
     probed_hw_accels: Option<Vec<String>>,
+    store: Option<Arc<dyn StorageTrait>>,
 }
 
 impl FfmpegExecutorPlugin {
@@ -125,6 +129,7 @@ impl FfmpegExecutorPlugin {
             probed_codecs: None,
             probed_formats: None,
             probed_hw_accels: None,
+            store: None,
         }
     }
 
@@ -140,6 +145,13 @@ impl FfmpegExecutorPlugin {
     #[must_use]
     pub fn with_hw_accel(mut self, hw_accel: HwAccelConfig) -> Self {
         self.hw_accel = hw_accel;
+        self
+    }
+
+    /// Create with a storage handle for persisting transcode outcomes.
+    #[must_use]
+    pub fn with_store(mut self, store: Arc<dyn StorageTrait>) -> Self {
+        self.store = Some(store);
         self
     }
 
@@ -314,7 +326,13 @@ impl FfmpegExecutorPlugin {
             return Ok(results);
         }
 
-        executor::execute_plan(plan, &self.hw_accel)
+        let execution = executor::execute_plan_with_outcomes(plan, &self.hw_accel)?;
+        if let Some(store) = &self.store {
+            for outcome in &execution.transcode_outcomes {
+                store.insert_transcode_outcome(outcome)?;
+            }
+        }
+        Ok(execution.action_results)
     }
 
     /// Execute a `MuxSubtitle` action by running ffmpeg.
