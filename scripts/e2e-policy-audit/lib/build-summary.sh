@@ -6,6 +6,7 @@ set -euo pipefail
 run="${1:?run dir required}"
 pre_count="${2:?pre file count required}"
 post_count="${3:?post file count required}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 verdict="PASS"
 hard_fails=()
@@ -64,46 +65,25 @@ if [[ -f "${statuses}" ]]; then
     done <"${statuses}"
 fi
 
-# Job stragglers + per-phase failure rate
+# Job stragglers
 jobs_report="${run}/reports/jobs.txt"
-failed_jobs=0
 if [[ -f "${jobs_report}" ]]; then
     if grep -Eqi '\b(running|pending)\b' "${jobs_report}"; then
         note_fail "jobs report contains non-terminal states (running/pending)"
     fi
-    failed_jobs=$(grep -Ec '\bfailed\b' "${jobs_report}" || true)
-    ((failed_jobs > 0)) && note_warn "${failed_jobs} job(s) reported as failed"
 fi
 
-# Per-phase 100%-failure check from db-export/jobs.tsv (header-driven column
-# lookup so the script doesn't break if column order changes). Phase is
-# extracted from the JSON payload column via jq.
+# Per-phase plan summary from db-export/plans.tsv.
 phase_summary="${run}/diffs/phase-summary.tsv"
-jobs_tsv="${run}/db-export/jobs.tsv"
-if [[ -f "${jobs_tsv}" ]]; then
-    awk -F'\t' '
-        NR==1 { for (i=1; i<=NF; i++) h[$i]=i; next }
-        {
-            payload = $h["payload"]; status = $h["status"]
-            print payload "\t" status
-        }
-    ' "${jobs_tsv}" |
-        while IFS=$'\t' read -r payload status; do
-            phase=$(printf '%s' "${payload}" | jq -r '.phase_name // .phase // "unknown"' 2>/dev/null || echo "unknown")
-            printf '%s\t%s\n' "${phase}" "${status}"
-        done |
-        awk -F'\t' '
-            { tot[$1]++; if ($2=="failed") fails[$1]++ }
-            END {
-                print "phase\ttotal\tfailed"
-                for (p in tot) printf "%s\t%d\t%d\n", p, tot[p], fails[p]+0
-            }
-        ' >"${phase_summary}"
+failed_plans="${run}/diffs/failed-plans.tsv"
+plans_tsv="${run}/db-export/plans.tsv"
+if [[ -f "${plans_tsv}" ]]; then
+    "${script_dir}/plan-phase-summary.py" "${plans_tsv}" "${phase_summary}" "${failed_plans}"
 
-    while IFS=$'\t' read -r p tot fail; do
-        [[ "${p}" == "phase" ]] && continue
-        if ((tot > 0 && fail == tot)); then
-            note_fail "phase ${p}: 100% (${fail}/${tot}) jobs failed"
+    while IFS=$'\t' read -r phase total _completed _skipped failed; do
+        [[ "${phase}" == "phase" ]] && continue
+        if ((failed > 0)); then
+            note_fail "phase ${phase}: ${failed}/${total} plans failed"
         fi
     done <"${phase_summary}"
 fi
@@ -136,7 +116,7 @@ fi
         for w in "${soft_warns[@]}"; do echo "- WARN: ${w}"; done
     fi
     echo
-    echo "## Per-phase job summary"
+    echo "## Per-phase plan summary"
     if [[ -s "${phase_summary}" ]]; then
         echo
         echo '```'
@@ -149,12 +129,14 @@ fi
     echo
     echo "## Anomaly section"
     echo
-    if [[ -f "${jobs_report}" ]]; then
-        echo "### Failed jobs (first 50)"
-        echo '```'
-        grep -E '\bfailed\b' "${jobs_report}" | head -50 || echo "(none)"
-        echo '```'
+    echo "### Failed plans (first 50)"
+    echo '```'
+    if [[ -f "${failed_plans}" ]] && [[ $(awk 'END {print NR}' "${failed_plans}") -gt 1 ]]; then
+        head -51 "${failed_plans}"
+    else
+        echo "(none)"
     fi
+    echo '```'
     echo
     echo "### Top 10 longest jobs"
     if [[ -f "${run}/db-export/jobs.tsv" ]]; then

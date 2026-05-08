@@ -1,0 +1,3 @@
+phase	total	completed	skipped	failed
+containerize	1	1	0	0
+transcode-video	3	1	1	1
