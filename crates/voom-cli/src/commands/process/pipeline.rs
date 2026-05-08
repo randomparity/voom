@@ -861,9 +861,12 @@ mod tests {
     async fn process_pipeline_limits_transcode_without_per_action_hw() {
         let policy = global_hw_policy();
         let fixture = process_tests::TestFixture::with_policy(policy);
-        let limiter = Arc::new(voom_job_manager::worker::PlanExecutionLimiter::from_limits(
-            vec![("hw:nvenc".to_string(), 1)],
-        ));
+        let limiter = Arc::new(
+            voom_job_manager::worker::PlanExecutionLimiter::from_limits_with_default(
+                vec![("hw:nvenc".to_string(), 1)],
+                Some("hw:nvenc".to_string()),
+            ),
+        );
         let held = limiter
             .acquire_for_plan(&process_tests::test_plan_with_optional_transcode_hw(
                 "transcode-video",

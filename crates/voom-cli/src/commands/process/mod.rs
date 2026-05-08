@@ -31,6 +31,16 @@ use voom_domain::utils::format::format_size;
 use voom_job_manager::progress::{CompositeReporter, ProgressReporter};
 use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 
+fn hw_resource_for_backend(backend: &str) -> Option<&'static str> {
+    match backend {
+        "nvenc" => Some("hw:nvenc"),
+        "qsv" => Some("hw:qsv"),
+        "vaapi" => Some("hw:vaapi"),
+        "videotoolbox" => Some("hw:videotoolbox"),
+        _ => None,
+    }
+}
+
 /// Run the process command.
 ///
 /// Uses the event-driven + direct-call pattern throughout:
@@ -74,15 +84,22 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
     let store_for_retention = store.clone();
     let kernel_for_retention = kernel.clone();
     let capabilities = Arc::new(collector.snapshot());
-    let plan_limiter = Arc::new(voom_job_manager::worker::PlanExecutionLimiter::from_limits(
-        ["hw:nvenc", "hw:qsv", "hw:vaapi", "hw:videotoolbox"]
-            .into_iter()
-            .filter_map(|resource| {
-                capabilities
-                    .parallel_limit(resource)
-                    .map(|limit| (resource.to_string(), limit))
-            }),
-    ));
+    let limited_hw_resources = ["hw:nvenc", "hw:qsv", "hw:vaapi", "hw:videotoolbox"]
+        .into_iter()
+        .filter_map(|resource| {
+            capabilities
+                .parallel_limit(resource)
+                .map(|limit| (resource.to_string(), limit))
+        })
+        .collect::<Vec<_>>();
+    let default_hw_resource =
+        hw_resource_for_backend(capabilities.best_hwaccel()).map(str::to_string);
+    let plan_limiter = Arc::new(
+        voom_job_manager::worker::PlanExecutionLimiter::from_limits_with_default(
+            limited_hw_resources,
+            default_hw_resource,
+        ),
+    );
 
     let paths = resolve_paths(&args.paths)?;
 
@@ -864,6 +881,19 @@ mod tests {
     };
     use super::plan_outcome::PlanOutcome;
     use super::safeguards::{check_disk_space, check_duration_shrink, check_size_increase};
+
+    #[test]
+    fn test_hw_resource_for_backend() {
+        assert_eq!(hw_resource_for_backend("nvenc"), Some("hw:nvenc"));
+        assert_eq!(hw_resource_for_backend("qsv"), Some("hw:qsv"));
+        assert_eq!(hw_resource_for_backend("vaapi"), Some("hw:vaapi"));
+        assert_eq!(
+            hw_resource_for_backend("videotoolbox"),
+            Some("hw:videotoolbox")
+        );
+        assert_eq!(hw_resource_for_backend("none"), None);
+        assert_eq!(hw_resource_for_backend("unknown"), None);
+    }
 
     /// A test plugin that counts received plan lifecycle events.
     #[allow(clippy::struct_field_names)]
