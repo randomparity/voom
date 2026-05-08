@@ -50,8 +50,7 @@ impl FfprobeIntrospectorPlugin {
 
     /// Probe whether the configured `ffprobe` binary is callable.
     fn detect_available(ffprobe_path: &str) -> bool {
-        voom_process::run_with_timeout(ffprobe_path, &["-version"], Duration::from_secs(10))
-            .is_ok_and(|o| o.status.success())
+        voom_process::probe_tool_status(ffprobe_path, &["-version"], Duration::from_secs(10))
     }
 
     /// Set a custom path to the ffprobe binary.

@@ -3547,7 +3547,6 @@ dependencies = [
  "voom-domain",
  "voom-process",
  "voom-wit",
- "wait-timeout",
  "wasmtime",
 ]
 

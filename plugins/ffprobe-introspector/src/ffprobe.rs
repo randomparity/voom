@@ -28,18 +28,7 @@ pub fn run_ffprobe(
     .chain(std::iter::once(file_arg))
     .collect();
 
-    let output =
-        voom_process::run_with_timeout(ffprobe_path, &args, timeout).map_err(|e| match &e {
-            VoomError::ToolExecution { message, .. }
-                if message.contains("No such file or directory")
-                    || message.contains("os error 2") =>
-            {
-                VoomError::ToolNotFound {
-                    tool: ffprobe_path.to_string(),
-                }
-            }
-            _ => e,
-        })?;
+    let output = voom_process::run_with_timeout(ffprobe_path, &args, timeout)?;
 
     if !output.status.success() {
         let stderr_text = String::from_utf8_lossy(&output.stderr);
@@ -66,18 +55,7 @@ pub fn run_ffprobe(
 /// Check if ffprobe is available and return its version.
 pub fn detect_ffprobe(ffprobe_path: &str) -> Result<String> {
     let output =
-        voom_process::run_with_timeout(ffprobe_path, &["-version"], Duration::from_secs(10))
-            .map_err(|e| match &e {
-                VoomError::ToolExecution { message, .. }
-                    if message.contains("No such file or directory")
-                        || message.contains("os error 2") =>
-                {
-                    VoomError::ToolNotFound {
-                        tool: ffprobe_path.to_string(),
-                    }
-                }
-                _ => e,
-            })?;
+        voom_process::run_with_timeout(ffprobe_path, &["-version"], Duration::from_secs(10))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     // First line is typically: "ffprobe version N.N.N ..."

@@ -4,7 +4,7 @@
 //! `FFmpeg` executor plugins.
 
 use std::ffi::OsStr;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
@@ -39,6 +39,34 @@ impl Default for CaptureConfig {
     }
 }
 
+struct BoundedCapture {
+    output: Vec<u8>,
+    truncated_bytes: usize,
+    max_bytes: usize,
+}
+
+impl BoundedCapture {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            output: Vec::with_capacity(max_bytes.min(8192)),
+            truncated_bytes: 0,
+            max_bytes,
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) {
+        let remaining = self.max_bytes.saturating_sub(self.output.len());
+        let retained = remaining.min(chunk.len());
+        self.output.extend_from_slice(&chunk[..retained]);
+        self.truncated_bytes = self.truncated_bytes.saturating_add(chunk.len() - retained);
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        append_truncation_marker(&mut self.output, self.truncated_bytes);
+        self.output
+    }
+}
+
 fn append_truncation_marker(buf: &mut Vec<u8>, truncated_bytes: usize) {
     if truncated_bytes == 0 {
         return;
@@ -61,8 +89,7 @@ pub fn read_bounded<R>(reader: &mut R, max_bytes: usize) -> std::io::Result<Vec<
 where
     R: Read,
 {
-    let mut output = Vec::with_capacity(max_bytes.min(8192));
-    let mut truncated_bytes = 0usize;
+    let mut capture = BoundedCapture::new(max_bytes);
     let mut chunk = [0u8; 8192];
 
     loop {
@@ -70,15 +97,23 @@ where
         if read == 0 {
             break;
         }
-
-        let remaining = max_bytes.saturating_sub(output.len());
-        let retained = remaining.min(read);
-        output.extend_from_slice(&chunk[..retained]);
-        truncated_bytes = truncated_bytes.saturating_add(read - retained);
+        capture.push(&chunk[..read]);
     }
 
-    append_truncation_marker(&mut output, truncated_bytes);
-    Ok(output)
+    Ok(capture.finish())
+}
+
+fn spawn_error(tool: &str, error: std::io::Error) -> VoomError {
+    if error.kind() == ErrorKind::NotFound {
+        VoomError::ToolNotFound {
+            tool: tool.to_string(),
+        }
+    } else {
+        VoomError::ToolExecution {
+            tool: tool.into(),
+            message: format!("failed to spawn {tool}: {error}"),
+        }
+    }
 }
 
 /// Spawn reader threads for stdout and stderr pipes.
@@ -183,10 +218,7 @@ pub fn run_with_timeout_env_config(
     for (key, val) in env_vars {
         cmd.env(key, val);
     }
-    let mut child = cmd.spawn().map_err(|e| VoomError::ToolExecution {
-        tool: tool.into(),
-        message: format!("failed to spawn {tool}: {e}"),
-    })?;
+    let mut child = cmd.spawn().map_err(|e| spawn_error(tool, e))?;
 
     // Spawn reader threads before waiting so pipes drain concurrently.
     let (stdout_handle, stderr_handle) = spawn_pipe_readers(&mut child, capture);
@@ -227,6 +259,23 @@ pub fn run_with_timeout_env_config(
             })
         }
     }
+}
+
+/// Run a subprocess and return whether it exits successfully before the timeout.
+#[must_use]
+pub fn probe_tool_status(tool: &str, args: &[impl AsRef<OsStr>], timeout: Duration) -> bool {
+    run_with_timeout(tool, args, timeout).is_ok_and(|o| o.status.success())
+}
+
+/// Run a subprocess with extra environment variables and return whether it succeeds.
+#[must_use]
+pub fn probe_tool_status_env(
+    tool: &str,
+    args: &[impl AsRef<OsStr>],
+    timeout: Duration,
+    env_vars: &[(&str, &str)],
+) -> bool {
+    run_with_timeout_env(tool, args, timeout, env_vars).is_ok_and(|o| o.status.success())
 }
 
 /// Format a tool invocation as a shell-reproducible command string.
@@ -274,8 +323,7 @@ where
         return Vec::new();
     };
 
-    let mut output = Vec::with_capacity(max_bytes.min(8192));
-    let mut truncated_bytes = 0usize;
+    let mut capture = BoundedCapture::new(max_bytes);
     let mut chunk = [0u8; 8192];
 
     loop {
@@ -289,15 +337,10 @@ where
         if read == 0 {
             break;
         }
-
-        let remaining = max_bytes.saturating_sub(output.len());
-        let retained = remaining.min(read);
-        output.extend_from_slice(&chunk[..retained]);
-        truncated_bytes = truncated_bytes.saturating_add(read - retained);
+        capture.push(&chunk[..read]);
     }
 
-    append_truncation_marker(&mut output, truncated_bytes);
-    output
+    capture.finish()
 }
 
 /// Async cancellable subprocess execution via `tokio::process`.
@@ -392,10 +435,7 @@ pub async fn run_cancellable_env_config(
     for (key, val) in options.env_vars {
         cmd.env(key, val);
     }
-    let mut child = cmd.spawn().map_err(|e| VoomError::ToolExecution {
-        tool: tool.into(),
-        message: format!("failed to spawn {tool}: {e}"),
-    })?;
+    let mut child = cmd.spawn().map_err(|e| spawn_error(tool, e))?;
 
     // Take pipes before waiting so they drain concurrently with the
     // child, avoiding deadlock when output exceeds the OS pipe buffer.
@@ -454,11 +494,10 @@ mod tests {
         let err =
             run_with_timeout("nonexistent_tool_xyz", &["-v"], Duration::from_secs(5)).unwrap_err();
         match &err {
-            VoomError::ToolExecution { tool, message } => {
+            VoomError::ToolNotFound { tool } => {
                 assert_eq!(tool, "nonexistent_tool_xyz");
-                assert!(message.contains("failed to spawn"));
             }
-            other => panic!("expected ToolExecution, got: {other}"),
+            other => panic!("expected ToolNotFound, got: {other}"),
         }
     }
 

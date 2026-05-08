@@ -436,8 +436,7 @@ impl Plugin for MkvtoolnixExecutorPlugin {
 
     fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
         let available =
-            voom_process::run_with_timeout("mkvmerge", &["--version"], Duration::from_secs(10))
-                .is_ok_and(|o| o.status.success());
+            voom_process::probe_tool_status("mkvmerge", &["--version"], Duration::from_secs(10));
 
         self.available = available;
 

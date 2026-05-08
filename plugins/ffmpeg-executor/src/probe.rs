@@ -168,9 +168,7 @@ pub fn probe_hw_capabilities(tool: &str) -> HwCapabilities {
 /// before `timeout`. Spawn errors, non-zero exits, and timeouts all yield
 /// `false`. Pass `&[]` for `env` when no extra variables are needed.
 fn probe_tool_status(tool: &str, args: &[&str], timeout: Duration, env: &[(&str, &str)]) -> bool {
-    voom_process::run_with_timeout_env(tool, args, timeout, env)
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    voom_process::probe_tool_status_env(tool, args, timeout, env)
 }
 
 /// Run `tool` with `args`, returning captured stdout only if it exits 0

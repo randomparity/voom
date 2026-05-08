@@ -24,13 +24,12 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 uuid = { workspace = true }
 ureq = { workspace = true, optional = true }
-wait-timeout = { workspace = true, optional = true }
 wasmtime = { workspace = true, optional = true }
 voom-process = { workspace = true, optional = true }
 
 [features]
 default = []
-wasm = ["dep:wasmtime", "dep:ureq", "dep:wait-timeout", "dep:voom-process"]
+wasm = ["dep:wasmtime", "dep:ureq", "dep:voom-process"]
 
 [lints]
 workspace = true

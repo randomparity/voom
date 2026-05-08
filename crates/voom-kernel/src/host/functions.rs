@@ -5,13 +5,9 @@
 
 use std::io::Read as _;
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
-use wait_timeout::ChildExt;
 
 use super::{HostState, HttpResponse, ToolOutput, MAX_PLUGIN_DATA_VALUE_SIZE};
-
-const HOST_TOOL_CAPTURE_LIMIT_BYTES: usize = 1024 * 1024;
 
 /// Extract the host (domain) from a URL string.
 /// Supports `scheme://[user@]host[:port]/...` forms.
@@ -40,6 +36,15 @@ fn extract_url_host(url: &str) -> Result<String, String> {
 /// Check whether a string looks like a filesystem path.
 fn looks_like_path(s: &str) -> bool {
     s.starts_with('/') || s.starts_with("./") || s.starts_with("../") || s.starts_with('~')
+}
+
+fn host_tool_error(tool: &str, timeout_ms: u64, error: &voom_domain::errors::VoomError) -> String {
+    if let voom_domain::errors::VoomError::ToolExecution { message, .. } = error {
+        if message.contains("timed out") {
+            return format!("tool '{tool}' timed out after {timeout_ms}ms");
+        }
+    }
+    error.to_string()
 }
 
 impl HostState {
@@ -219,46 +224,20 @@ impl HostState {
             ));
         }
 
-        let mut child = Command::new(tool)
-            .args(args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("failed to spawn tool '{tool}': {e}"))?;
-
-        // Read stdout/stderr on separate threads BEFORE waiting, to avoid
-        // deadlock when pipe buffers fill up.
-        let stdout_handle = child.stdout.take().map(|mut out| {
-            std::thread::spawn(move || {
-                voom_process::read_bounded(&mut out, HOST_TOOL_CAPTURE_LIMIT_BYTES)
-            })
-        });
-        let stderr_handle = child.stderr.take().map(|mut err| {
-            std::thread::spawn(move || {
-                voom_process::read_bounded(&mut err, HOST_TOOL_CAPTURE_LIMIT_BYTES)
-            })
-        });
-
         let timeout = Duration::from_millis(timeout_ms);
-        match child.wait_timeout(timeout) {
-            Ok(Some(status)) => {
-                let stdout = stdout_handle
-                    .map(|h| h.join().unwrap_or(Ok(Vec::new())))
-                    .unwrap_or(Ok(Vec::new()))
-                    .map_err(|e| format!("failed to read stdout: {e}"))?;
-                let stderr = stderr_handle
-                    .map(|h| h.join().unwrap_or(Ok(Vec::new())))
-                    .unwrap_or(Ok(Vec::new()))
-                    .map_err(|e| format!("failed to read stderr: {e}"))?;
-                Ok(ToolOutput::new(status.code().unwrap_or(-1), stdout, stderr))
-            }
-            Ok(None) => {
-                child.kill().ok();
-                child.wait().ok();
-                Err(format!("tool '{tool}' timed out after {timeout_ms}ms"))
-            }
-            Err(e) => Err(format!("error waiting for tool '{tool}': {e}")),
-        }
+        let output = voom_process::run_with_timeout_config(
+            tool,
+            args,
+            timeout,
+            voom_process::CaptureConfig::default(),
+        )
+        .map_err(|e| host_tool_error(tool, timeout_ms, &e))?;
+
+        Ok(ToolOutput::new(
+            output.status.code().unwrap_or(-1),
+            output.stdout,
+            output.stderr,
+        ))
     }
 
     /// Query transitions for a file by its UUID.
