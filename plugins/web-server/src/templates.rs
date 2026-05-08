@@ -4,17 +4,22 @@ use axum::extract::{Path, Query, State};
 use axum::response::Html;
 use axum::Extension;
 use serde::Deserialize;
+use std::collections::HashSet;
 
 use voom_domain::job::JobStatus;
 use voom_domain::storage::{FileFilters, JobFilters};
+use voom_domain::verification::{VerificationFilters, VerificationOutcome};
 
 use crate::api::files::FileFilterParams;
 use crate::errors::{spawn_store_op, WebError};
 use crate::middleware::CspNonce;
 use crate::state::AppState;
-use crate::views::{file_views, transition_views};
+use crate::views::{file_views, transition_views, verification_views, IntegrityErrorView};
 
 type HtmlResult = Result<Html<String>, WebError>;
+const FILE_VERIFICATION_LIMIT: u32 = 25;
+const INTEGRITY_SCAN_LIMIT: u32 = 10_000;
+const INTEGRITY_DISPLAY_LIMIT: usize = 500;
 
 fn render(
     templates: &tera::Tera,
@@ -47,6 +52,7 @@ pub async fn dashboard(
     .await?;
 
     let mut ctx = tera::Context::new();
+    ctx.insert("current_page", "dashboard");
     ctx.insert("recent_files", &file_views(files));
     ctx.insert("total_files", &total_files);
     for (status, count) in &job_counts {
@@ -82,6 +88,7 @@ pub async fn library(
     let files = spawn_store_op(move || store.list_files(&filters)).await?;
 
     let mut ctx = tera::Context::new();
+    ctx.insert("current_page", "library");
     ctx.insert("files", &file_views(files));
     ctx.insert("page", &page);
     ctx.insert("per_page", &per_page);
@@ -101,17 +108,23 @@ pub async fn file_detail(
 ) -> HtmlResult {
     let store = state.store.clone();
 
-    let (file, plans, transitions) = spawn_store_op(move || {
+    let file_id = id.to_string();
+    let (file, plans, transitions, verifications) = spawn_store_op(move || {
         let file = store.file(&id)?;
         let plans = store.plans_for_file(&id)?;
         let transitions = store.transitions_for_file(&id)?;
-        Ok((file, plans, transitions))
+        let mut filters = VerificationFilters::default();
+        filters.file_id = Some(file_id);
+        filters.limit = Some(FILE_VERIFICATION_LIMIT);
+        let verifications = store.list_verifications(&filters)?;
+        Ok((file, plans, transitions, verifications))
     })
     .await?;
 
     let file = file.ok_or_else(|| WebError::NotFound(format!("File {id} not found")))?;
 
     let mut ctx = tera::Context::new();
+    ctx.insert("current_page", "library");
     let tracks_json: Vec<serde_json::Value> = file
         .tracks
         .iter()
@@ -123,8 +136,60 @@ pub async fn file_detail(
     ctx.insert("plans", &plans);
     let transition_views_data = transition_views(transitions);
     ctx.insert("transitions", &transition_views_data);
+    let verification_views_data = verification_views(verifications);
+    ctx.insert("verifications", &verification_views_data);
 
     render(&state.templates, "file_detail.html", &mut ctx, &nonce)
+}
+
+/// GET /integrity -- Integrity failures
+pub async fn integrity(
+    State(state): State<AppState>,
+    Extension(nonce): Extension<CspNonce>,
+) -> HtmlResult {
+    let store = state.store.clone();
+
+    let failing_files = spawn_store_op(move || {
+        let mut filters = VerificationFilters::default();
+        filters.limit = Some(INTEGRITY_SCAN_LIMIT);
+        let records = store.list_verifications(&filters)?;
+        latest_error_files(&*store, records)
+    })
+    .await?;
+
+    let mut ctx = tera::Context::new();
+    ctx.insert("current_page", "integrity");
+    ctx.insert("failing_files", &failing_files);
+    ctx.insert("display_limit", &INTEGRITY_DISPLAY_LIMIT);
+
+    render(&state.templates, "integrity.html", &mut ctx, &nonce)
+}
+
+fn latest_error_files(
+    store: &dyn voom_domain::storage::StorageTrait,
+    records: Vec<voom_domain::verification::VerificationRecord>,
+) -> voom_domain::errors::Result<Vec<IntegrityErrorView>> {
+    let mut seen = HashSet::new();
+    let mut rows = Vec::new();
+
+    for record in records {
+        if !seen.insert(record.file_id.clone()) {
+            continue;
+        }
+        if record.outcome != VerificationOutcome::Error {
+            continue;
+        }
+        if let Ok(file_id) = uuid::Uuid::parse_str(&record.file_id) {
+            if let Some(file) = store.file(&file_id)? {
+                rows.push(IntegrityErrorView::new(file, record));
+            }
+        }
+        if rows.len() >= INTEGRITY_DISPLAY_LIMIT {
+            break;
+        }
+    }
+
+    Ok(rows)
 }
 
 /// GET /policies -- Policy list
@@ -133,6 +198,7 @@ pub async fn policies(
     Extension(nonce): Extension<CspNonce>,
 ) -> HtmlResult {
     let mut ctx = tera::Context::new();
+    ctx.insert("current_page", "policies");
     render(&state.templates, "policies.html", &mut ctx, &nonce)
 }
 
@@ -143,6 +209,7 @@ pub async fn policy_editor(
     Path(name): Path<String>,
 ) -> HtmlResult {
     let mut ctx = tera::Context::new();
+    ctx.insert("current_page", "policies");
     ctx.insert("policy_name", &name);
     render(&state.templates, "policy_editor.html", &mut ctx, &nonce)
 }
@@ -171,6 +238,7 @@ pub async fn jobs(
     .await?;
 
     let mut ctx = tera::Context::new();
+    ctx.insert("current_page", "jobs");
     ctx.insert("jobs", &jobs);
     ctx.insert("filter_status", &params.status.as_deref().unwrap_or(""));
     for (status, count) in &counts {
@@ -186,6 +254,7 @@ pub async fn plugins(
     Extension(nonce): Extension<CspNonce>,
 ) -> HtmlResult {
     let mut ctx = tera::Context::new();
+    ctx.insert("current_page", "plugins");
     render(&state.templates, "plugins.html", &mut ctx, &nonce)
 }
 
@@ -195,6 +264,7 @@ pub async fn settings(
     Extension(nonce): Extension<CspNonce>,
 ) -> HtmlResult {
     let mut ctx = tera::Context::new();
+    ctx.insert("current_page", "settings");
     render(&state.templates, "settings.html", &mut ctx, &nonce)
 }
 

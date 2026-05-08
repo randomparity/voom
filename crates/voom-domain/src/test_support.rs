@@ -31,6 +31,10 @@ use crate::storage::{
 use crate::transition::{
     DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
 };
+use crate::verification::{
+    IntegritySummary, VerificationFilters, VerificationMode, VerificationOutcome,
+    VerificationRecord,
+};
 
 /// Create a standard test `MediaFile` with video, two audio, and one subtitle track.
 ///
@@ -107,6 +111,7 @@ pub struct InMemoryStore {
     event_log: Mutex<Vec<crate::storage::EventLogRecord>>,
     pub pending_ops: Mutex<Vec<PendingOperation>>,
     pub transitions: Mutex<Vec<FileTransition>>,
+    pub verifications: Mutex<Vec<VerificationRecord>>,
     plugin_data: Mutex<HashMap<(String, String), Vec<u8>>>,
 }
 
@@ -119,6 +124,7 @@ impl InMemoryStore {
             event_log: Mutex::new(Vec::new()),
             pending_ops: Mutex::new(Vec::new()),
             transitions: Mutex::new(Vec::new()),
+            verifications: Mutex::new(Vec::new()),
             plugin_data: Mutex::new(HashMap::new()),
         }
     }
@@ -138,6 +144,12 @@ impl InMemoryStore {
     /// Builder: seed the store with a transition.
     pub fn with_transition(self, transition: FileTransition) -> Self {
         self.transitions.lock().push(transition);
+        self
+    }
+
+    /// Builder: seed the store with a verification record.
+    pub fn with_verification(self, verification: VerificationRecord) -> Self {
+        self.verifications.lock().push(verification);
         self
     }
 }
@@ -787,31 +799,139 @@ impl PendingOpsStorage for InMemoryStore {
 }
 
 impl crate::storage::VerificationStorage for InMemoryStore {
-    fn insert_verification(&self, _record: &crate::verification::VerificationRecord) -> Result<()> {
+    fn insert_verification(&self, record: &VerificationRecord) -> Result<()> {
+        self.verifications.lock().push(record.clone());
         Ok(())
     }
 
-    fn list_verifications(
-        &self,
-        _filters: &crate::verification::VerificationFilters,
-    ) -> Result<Vec<crate::verification::VerificationRecord>> {
-        Ok(Vec::new())
+    fn list_verifications(&self, filters: &VerificationFilters) -> Result<Vec<VerificationRecord>> {
+        let mut records: Vec<VerificationRecord> = self
+            .verifications
+            .lock()
+            .iter()
+            .filter(|r| matches_verification_filter(r, filters))
+            .cloned()
+            .collect();
+        records.sort_by(|a, b| {
+            b.verified_at
+                .cmp(&a.verified_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        if let Some(limit) = filters.limit {
+            records.truncate(limit as usize);
+        }
+        Ok(records)
     }
 
     fn latest_verification(
         &self,
-        _file_id: &str,
-        _mode: crate::verification::VerificationMode,
-    ) -> Result<Option<crate::verification::VerificationRecord>> {
-        Ok(None)
+        file_id: &str,
+        mode: VerificationMode,
+    ) -> Result<Option<VerificationRecord>> {
+        let filters = VerificationFilters {
+            file_id: Some(file_id.to_string()),
+            mode: Some(mode),
+            limit: Some(1),
+            ..Default::default()
+        };
+        Ok(self.list_verifications(&filters)?.into_iter().next())
     }
 
-    fn integrity_summary(
-        &self,
-        _since: chrono::DateTime<chrono::Utc>,
-    ) -> Result<crate::verification::IntegritySummary> {
-        Ok(crate::verification::IntegritySummary::default())
+    fn integrity_summary(&self, since: chrono::DateTime<chrono::Utc>) -> Result<IntegritySummary> {
+        let files = self.files.lock();
+        let verifications = self.verifications.lock();
+        let active_files: Vec<_> = files
+            .values()
+            .filter(|f| f.status == FileStatus::Active)
+            .collect();
+        let total_files = active_files.len() as u64;
+        let mut never_verified = 0;
+        let mut stale = 0;
+        let mut with_errors = 0;
+        let mut with_warnings = 0;
+        let mut hash_mismatches = 0;
+
+        for file in active_files {
+            let file_id = file.id.to_string();
+            let latest = verifications
+                .iter()
+                .filter(|r| r.file_id == file_id)
+                .max_by(|a, b| {
+                    a.verified_at
+                        .cmp(&b.verified_at)
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+            match latest {
+                Some(record) => {
+                    if record.verified_at < since {
+                        stale += 1;
+                    }
+                    if record.outcome == VerificationOutcome::Error {
+                        with_errors += 1;
+                    }
+                    if record.outcome == VerificationOutcome::Warning {
+                        with_warnings += 1;
+                    }
+                    if hash_changed_for_latest(&verifications, &file_id, record) {
+                        hash_mismatches += 1;
+                    }
+                }
+                None => never_verified += 1,
+            }
+        }
+
+        Ok(IntegritySummary::new(
+            total_files,
+            never_verified,
+            stale,
+            with_errors,
+            with_warnings,
+            hash_mismatches,
+        ))
     }
+}
+
+fn hash_changed_for_latest(
+    records: &[VerificationRecord],
+    file_id: &str,
+    latest: &VerificationRecord,
+) -> bool {
+    if latest.mode != VerificationMode::Hash {
+        return false;
+    }
+    records
+        .iter()
+        .filter(|r| r.file_id == file_id && r.mode == VerificationMode::Hash)
+        .filter(|r| r.verified_at < latest.verified_at)
+        .max_by_key(|r| r.verified_at)
+        .is_some_and(|previous| previous.content_hash != latest.content_hash)
+}
+
+fn matches_verification_filter(record: &VerificationRecord, filters: &VerificationFilters) -> bool {
+    if filters
+        .file_id
+        .as_ref()
+        .is_some_and(|id| record.file_id != *id)
+    {
+        return false;
+    }
+    if filters.mode.is_some_and(|mode| record.mode != mode) {
+        return false;
+    }
+    if filters
+        .outcome
+        .is_some_and(|outcome| record.outcome != outcome)
+    {
+        return false;
+    }
+    if filters
+        .since
+        .as_ref()
+        .is_some_and(|since| record.verified_at < *since)
+    {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]

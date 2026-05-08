@@ -9,6 +9,9 @@ use uuid::Uuid;
 use voom_domain::job::{Job, JobType};
 use voom_domain::media::{Container, MediaFile};
 use voom_domain::test_support::InMemoryStore;
+use voom_domain::verification::{
+    VerificationMode, VerificationOutcome, VerificationRecord,
+};
 
 fn make_test_file(name: &str) -> MediaFile {
     let mut file = MediaFile::new(format!("/media/{name}").into());
@@ -17,6 +20,20 @@ fn make_test_file(name: &str) -> MediaFile {
     file.content_hash = Some("abc123".into());
     file.duration = 3600.0;
     file
+}
+
+fn make_verification(file_id: Uuid, outcome: VerificationOutcome) -> VerificationRecord {
+    VerificationRecord::new(
+        Uuid::new_v4(),
+        file_id.to_string(),
+        chrono::Utc::now(),
+        VerificationMode::Hash,
+        outcome,
+        u32::from(outcome == VerificationOutcome::Error),
+        0,
+        Some("abc123".into()),
+        Some("verification details".into()),
+    )
 }
 
 fn make_server(store: InMemoryStore) -> TestServer {
@@ -271,6 +288,8 @@ async fn test_dashboard_page() {
     resp.assert_status_ok();
     let body = resp.text();
     assert!(body.contains("VOOM"));
+    assert!(body.contains("Library Integrity"));
+    assert!(body.contains("/integrity"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -306,6 +325,50 @@ async fn test_settings_page() {
     let server = make_server(InMemoryStore::new());
     let resp = server.get("/settings").await;
     resp.assert_status_ok();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_file_detail_page_shows_verification_history() {
+    let file = make_test_file("movie.mkv");
+    let id = file.id;
+    let record = make_verification(id, VerificationOutcome::Ok);
+    let store = InMemoryStore::new()
+        .with_file(file)
+        .with_verification(record);
+    let server = make_server(store);
+
+    let resp = server.get(&format!("/files/{id}")).await;
+    resp.assert_status_ok();
+    let body = resp.text();
+    assert!(body.contains("Verification History"));
+    assert!(body.contains("verification details"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_integrity_page_lists_latest_error_files() {
+    let healthy = make_test_file("healthy.mkv");
+    let failing = make_test_file("failing.mkv");
+    let failing_id = failing.id;
+    let store = InMemoryStore::new()
+        .with_file(healthy.clone())
+        .with_file(failing.clone())
+        .with_verification(make_verification(healthy.id, VerificationOutcome::Ok))
+        .with_verification(make_verification(failing_id, VerificationOutcome::Error));
+    let server = make_server(store);
+
+    let resp = server.get("/integrity").await;
+    resp.assert_status_ok();
+    let body = resp.text();
+    assert!(body.contains("Integrity"));
+    assert!(body.contains("failing.mkv"));
+    assert!(!body.contains("healthy.mkv"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_integrity_page_requires_auth_when_configured() {
+    let server = make_server_with_auth(InMemoryStore::new(), Some("secret-token".into()));
+    let resp = server.get("/integrity").await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 }
 
 // === Security Header Tests ===

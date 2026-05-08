@@ -191,6 +191,52 @@
 </div>
 {% endif %}
 
+<div class="card mb-1">
+    <div class="card-header">
+        <h2>Verification History</h2>
+    </div>
+    {% if verifications | default(value=[]) | length > 0 %}
+    <table>
+        <thead>
+            <tr>
+                <th>When</th>
+                <th>Mode</th>
+                <th>Outcome</th>
+                <th>Errors</th>
+                <th>Warnings</th>
+                <th>Hash</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for v in verifications %}
+            <tr>
+                <td><time class="text-secondary">{{ v.verified_at | default(value="--") }}</time></td>
+                <td><span class="badge badge-info">{{ v.mode_label }}</span></td>
+                <td>
+                    {% if v.is_hash_mismatch %}
+                    <span class="badge badge-danger">Hash Mismatch</span>
+                    {% else %}
+                    <span class="badge badge-{{ v.outcome_label }}">{{ v.outcome_label }}</span>
+                    {% endif %}
+                </td>
+                <td class="mono">{{ v.error_count | default(value=0) }}</td>
+                <td class="mono">{{ v.warning_count | default(value=0) }}</td>
+                <td class="mono text-secondary" title="{{ v.content_hash | default(value='') }}">
+                    {{ v.content_hash | default(value="--") | truncate(length=12, end="…") }}
+                </td>
+                <td>{{ v.details | default(value="--") }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">
+        <p>No verification runs recorded for this file.</p>
+    </div>
+    {% endif %}
+</div>
+
 {% if plans | default(value=[]) | length > 0 %}
 <div class="card">
     <div class="card-header">

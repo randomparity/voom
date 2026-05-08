@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block title %}Integrity — VOOM{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Integrity</h1>
+    <p>Files whose latest verification ended in an error</p>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>Latest Error Files</h2>
+        <span class="text-secondary" style="font-size: 0.85rem;">
+            Showing up to {{ display_limit | default(value=500) }}
+        </span>
+    </div>
+
+    {% if failing_files | default(value=[]) | length > 0 %}
+    <table>
+        <thead>
+            <tr>
+                <th>File</th>
+                <th>Last Verified</th>
+                <th>Mode</th>
+                <th>Outcome</th>
+                <th>Errors</th>
+                <th>Warnings</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in failing_files %}
+            <tr>
+                <td>
+                    <a href="/files/{{ row.file.id }}">
+                        {{ row.file.filename | default(value="unknown") }}
+                    </a>
+                    <div class="mono text-secondary">{{ row.file.path | default(value="") }}</div>
+                </td>
+                <td>
+                    <time class="text-secondary">
+                        {{ row.verification.verified_at | default(value="--") }}
+                    </time>
+                </td>
+                <td><span class="badge badge-info">{{ row.verification.mode_label }}</span></td>
+                <td>
+                    {% if row.verification.is_hash_mismatch %}
+                    <span class="badge badge-danger">Hash Mismatch</span>
+                    {% else %}
+                    <span class="badge badge-danger">{{ row.verification.outcome_label }}</span>
+                    {% endif %}
+                </td>
+                <td class="mono">{{ row.verification.error_count | default(value=0) }}</td>
+                <td class="mono">{{ row.verification.warning_count | default(value=0) }}</td>
+                <td>{{ row.verification.details | default(value="--") }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">
+        <p>No files currently have verification errors.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

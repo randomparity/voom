@@ -52,6 +52,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/", get(templates::dashboard))
         .route("/library", get(templates::library))
         .route("/files/:id", get(templates::file_detail))
+        .route("/integrity", get(templates::integrity))
         .route("/policies", get(templates::policies))
         .route("/policies/:name/edit", get(templates::policy_editor))
         .route("/jobs", get(templates::jobs))
