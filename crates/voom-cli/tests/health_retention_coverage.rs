@@ -1,4 +1,4 @@
-//! End-to-end check: `voom health check` exits 0 against a fresh data
+//! End-to-end check: `voom env check` exits 0 against a fresh data
 //! directory and reports the Retention coverage section. Issue #194.
 
 use assert_cmd::Command;
@@ -18,9 +18,9 @@ fn health_check_reports_retention_coverage_section() {
     let out = Command::cargo_bin("voom")
         .unwrap()
         .env("XDG_CONFIG_HOME", cfg_dir.path())
-        .args(["health", "check"])
+        .args(["env", "check"])
         .output()
-        .expect("run voom health check");
+        .expect("run voom env check");
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(

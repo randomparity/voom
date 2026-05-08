@@ -9,7 +9,7 @@ use voom_ffmpeg_executor::probe::{
 };
 
 use crate::app;
-use crate::cli::{HealthCommands, OutputFormat};
+use crate::cli::{EnvCommands, OutputFormat};
 use crate::config;
 use crate::output::sanitize_for_display;
 use crate::tools::print_tool_status;
@@ -61,11 +61,11 @@ mod retention_coverage {
     }
 }
 
-/// Dispatch health subcommands.
-pub fn run(cmd: HealthCommands) -> Result<()> {
+/// Dispatch environment diagnostic subcommands.
+pub fn run(cmd: EnvCommands) -> Result<()> {
     match cmd {
-        HealthCommands::Check => check(),
-        HealthCommands::History {
+        EnvCommands::Check => check(),
+        EnvCommands::History {
             check,
             since,
             limit,
@@ -74,7 +74,17 @@ pub fn run(cmd: HealthCommands) -> Result<()> {
     }
 }
 
-/// Run live system health checks (formerly `voom doctor`).
+/// Print a compatibility warning for the old `voom health ...` command group.
+pub fn warn_health_deprecated() {
+    eprintln!("warning: `voom health` is deprecated; use `voom env` instead");
+}
+
+/// Print a compatibility warning for the old `voom doctor` command.
+pub fn warn_doctor_deprecated() {
+    eprintln!("warning: `voom doctor` is deprecated; use `voom env check` instead");
+}
+
+/// Run live environment checks.
 ///
 /// Tool detection creates a standalone `ToolDetectorPlugin` instance rather
 /// than retrieving the kernel-registered one. This is intentional: doctor
@@ -86,7 +96,7 @@ pub fn run(cmd: HealthCommands) -> Result<()> {
 // all return `Result<()>`; the health check itself never propagates errors.
 #[allow(clippy::unnecessary_wraps)]
 pub fn check() -> Result<()> {
-    println!("{}", style("VOOM System Health Check").bold().underlined());
+    println!("{}", style("VOOM Environment Check").bold().underlined());
     println!();
 
     let mut issues = 0u32;
@@ -421,7 +431,7 @@ fn history(
     match format {
         OutputFormat::Table => {
             if records.is_empty() {
-                eprintln!("No health check records found.");
+                eprintln!("No environment check records found.");
                 return Ok(());
             }
             println!(

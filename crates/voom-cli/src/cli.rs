@@ -63,11 +63,15 @@ pub enum Commands {
     /// View event log
     Events(EventsArgs),
 
-    /// System health checks and history
+    /// Environment diagnostics and history
     #[command(subcommand)]
-    Health(HealthCommands),
+    Env(EnvCommands),
 
-    /// System health check (alias for `health check`)
+    /// Hidden alias for `env` during the `health` -> `env` transition.
+    #[command(subcommand, hide = true)]
+    Health(EnvCommands),
+
+    /// System environment check (alias for `env check`)
     #[command(hide = true)]
     Doctor,
 
@@ -647,13 +651,13 @@ pub enum PlansCommands {
     },
 }
 
-// === Health ===
+// === Env ===
 
 #[derive(Subcommand)]
-pub enum HealthCommands {
-    /// Run live system health checks
+pub enum EnvCommands {
+    /// Run live environment checks
     Check,
-    /// Show health check history from the database
+    /// Show environment check history from the database
     History {
         /// Filter by check name
         #[arg(long)]
@@ -1516,22 +1520,25 @@ mod tests {
         assert!(try_parse(&["voom", "completions", "nushell"]).is_err());
     }
 
-    // ── Health subcommands ────────────────────────────────────
+    // -- Env subcommands ----------------------------------------------------
 
     #[test]
-    fn test_health_check() {
-        let cli = parse(&["voom", "health", "check"]);
-        assert!(matches!(
-            cli.command,
-            Commands::Health(HealthCommands::Check)
-        ));
+    fn test_env_check() {
+        let cli = parse(&["voom", "env", "check"]);
+        assert!(matches!(cli.command, Commands::Env(EnvCommands::Check)));
     }
 
     #[test]
-    fn test_health_history_defaults() {
-        let cli = parse(&["voom", "health", "history"]);
+    fn test_health_check_hidden_alias_backward_compat() {
+        let cli = parse(&["voom", "health", "check"]);
+        assert!(matches!(cli.command, Commands::Health(EnvCommands::Check)));
+    }
+
+    #[test]
+    fn test_env_history_defaults() {
+        let cli = parse(&["voom", "env", "history"]);
         match cli.command {
-            Commands::Health(HealthCommands::History {
+            Commands::Env(EnvCommands::History {
                 check,
                 since,
                 limit,
@@ -1542,15 +1549,24 @@ mod tests {
                 assert_eq!(limit, 50);
                 assert!(matches!(format, OutputFormat::Table));
             }
-            _ => panic!("expected Health History"),
+            _ => panic!("expected Env History"),
         }
     }
 
     #[test]
-    fn test_health_history_all_flags() {
+    fn test_health_history_hidden_alias_backward_compat() {
+        let cli = parse(&["voom", "health", "history"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Health(EnvCommands::History { .. })
+        ));
+    }
+
+    #[test]
+    fn test_env_history_all_flags() {
         let cli = parse(&[
             "voom",
-            "health",
+            "env",
             "history",
             "--check",
             "data_dir_exists",
@@ -1562,7 +1578,7 @@ mod tests {
             "10",
         ]);
         match cli.command {
-            Commands::Health(HealthCommands::History {
+            Commands::Env(EnvCommands::History {
                 check,
                 since,
                 limit,
@@ -1573,7 +1589,7 @@ mod tests {
                 assert_eq!(limit, 10);
                 assert!(matches!(format, OutputFormat::Json));
             }
-            _ => panic!("expected Health History"),
+            _ => panic!("expected Env History"),
         }
     }
 
@@ -1581,6 +1597,16 @@ mod tests {
     fn test_doctor_alias_backward_compat() {
         let cli = parse(&["voom", "doctor"]);
         assert!(matches!(cli.command, Commands::Doctor));
+    }
+
+    #[test]
+    fn test_top_level_help_shows_env_not_health_or_doctor() {
+        use clap::CommandFactory;
+
+        let help = Cli::command().render_help().to_string();
+        assert!(help.contains("env"));
+        assert!(!help.contains("health"));
+        assert!(!help.contains("doctor"));
     }
 
     // ── No-arg subcommands ───────────────────────────────────
@@ -2002,7 +2028,7 @@ mod tests {
 
     #[test]
     fn test_verbose_after_subcommand() {
-        let cli = parse(&["voom", "health", "check", "-vv"]);
+        let cli = parse(&["voom", "env", "check", "-vv"]);
         assert_eq!(cli.verbose, 2);
     }
 }

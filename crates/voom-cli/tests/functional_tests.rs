@@ -1401,12 +1401,12 @@ mod test_workflow {
             .success()
             .stderr(predicate::str::contains("No plans found"));
 
-        // 8. Health check
+        // 8. Environment check
         env.voom()
-            .args(["health", "check"])
+            .args(["env", "check"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("VOOM System Health Check"));
+            .stdout(predicate::str::contains("VOOM Environment Check"));
 
         // 9. Tools list
         env.voom()
@@ -1721,16 +1721,21 @@ mod test_health {
     fn health_check_passes() {
         let env = TestEnv::new();
         env.voom()
-            .args(["health", "check"])
+            .args(["env", "check"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("VOOM System Health Check"));
+            .stdout(predicate::str::contains("VOOM Environment Check"));
     }
 
     #[test]
     fn health_check_replaces_doctor() {
         let env = TestEnv::new();
 
+        let env_check = env
+            .voom()
+            .args(["env", "check"])
+            .output()
+            .expect("run env check");
         let health = env
             .voom()
             .args(["health", "check"])
@@ -1738,19 +1743,26 @@ mod test_health {
             .expect("run health check");
         let doctor = env.voom().arg("doctor").output().expect("run doctor");
 
-        assert!(health.status.success());
+        assert!(env_check.status.success());
         assert!(doctor.status.success());
-        // Both commands report the same sections (plugin order is
+        assert!(health.status.success());
+        assert!(String::from_utf8_lossy(&health.stderr)
+            .contains("warning: `voom health` is deprecated; use `voom env` instead"));
+        assert!(String::from_utf8_lossy(&doctor.stderr)
+            .contains("warning: `voom doctor` is deprecated; use `voom env check` instead"));
+        // All commands report the same sections (plugin order is
         // non-deterministic so exact string comparison isn't reliable)
+        let e = String::from_utf8_lossy(&env_check.stdout);
         let h = String::from_utf8_lossy(&health.stdout);
         let d = String::from_utf8_lossy(&doctor.stdout);
         for section in [
-            "VOOM System Health Check",
+            "VOOM Environment Check",
             "Config file",
             "Database",
             "External tools",
             "Plugins",
         ] {
+            assert!(e.contains(section), "env missing: {section}");
             assert!(h.contains(section), "health missing: {section}");
             assert!(d.contains(section), "doctor missing: {section}");
         }
@@ -1760,10 +1772,12 @@ mod test_health {
     fn health_history_empty() {
         let env = TestEnv::new();
         env.voom()
-            .args(["health", "history"])
+            .args(["env", "history"])
             .assert()
             .success()
-            .stderr(predicate::str::contains("No health check records found"));
+            .stderr(predicate::str::contains(
+                "No environment check records found.",
+            ));
     }
 }
 

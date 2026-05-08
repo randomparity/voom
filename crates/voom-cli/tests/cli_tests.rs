@@ -106,7 +106,9 @@ fn test_doctor_help() {
         .args(["doctor", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("System health check"));
+        .stdout(predicate::str::contains(
+            "System environment check (alias for `env check`)",
+        ));
 }
 
 #[test]
@@ -286,7 +288,7 @@ fn test_doctor_runs_to_completion() {
         .arg("doctor")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Health Check"));
+        .stdout(predicate::str::contains("VOOM Environment Check"));
 }
 
 #[test]
