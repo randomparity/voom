@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
@@ -141,7 +142,7 @@ impl Plugin for ToolDetectorPlugin {
 
 /// Detect a tool by running it and parsing the version output.
 fn detect_tool(name: &str, args: &[&str]) -> Option<DetectedTool> {
-    let output = Command::new(name).args(args).output().ok()?;
+    let output = voom_process::run_with_timeout(name, args, Duration::from_secs(10)).ok()?;
     if !output.status.success() {
         return None;
     }

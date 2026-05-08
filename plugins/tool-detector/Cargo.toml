@@ -14,6 +14,7 @@ description = "Tool detection plugin for VOOM — finds and verifies external to
 [dependencies]
 voom-domain = { workspace = true }
 voom-kernel = { workspace = true }
+voom-process = { workspace = true }
 tracing = { workspace = true }
 
 [lints]

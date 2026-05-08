@@ -3651,6 +3651,7 @@ dependencies = [
  "tracing",
  "voom-domain",
  "voom-kernel",
+ "voom-process",
 ]
 
 [[package]]
