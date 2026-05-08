@@ -84,7 +84,7 @@ voom/
 │   ├── backup-manager/       # File backup/restore with disk space validation
 │   ├── job-manager/          # Priority queue, concurrent worker pool (tokio + Semaphore)
 │   ├── bus-tracer/           # Event bus tracer — configurable event logging for development
-│   ├── health-checker/       # Environment diagnostics and health checks
+│   ├── health-checker/       # Environment diagnostics
 │   ├── report/               # Library analytics and report queries
 │   ├── web-server/           # axum REST API + htmx/Alpine.js web UI + SSE (started by `serve`)
 │   └── web-sse-bridge/       # Bridges event bus → SSE stream (registered when `serve` runs)
@@ -132,7 +132,7 @@ The ffprobe-introspector is both kernel-registered (subscribes to `FileDiscovere
 
 Two distinct integrity concepts share similar names but check different things:
 
-- **`voom health check`** (plugin: `health-checker`) — environment readiness:
+- **`voom env check`** (plugin: `health-checker`) — environment readiness:
   ffmpeg / mkvtoolnix presence, GPU availability, data-directory writability,
   database connectivity. Run periodically by the serve loop.
 - **`voom verify`** (plugin: `verifier`) — per-file media integrity:
@@ -221,7 +221,7 @@ completed without announcing themselves on the bus.
 The shipped defaults satisfy this: `jobs.keep_last = 50_000` and
 `event_log.keep_last = 500_000`; `jobs.keep_for_days = 7` and
 `event_log.keep_for_days = 60`. Operators who tighten `event_log` in
-`config.toml` should keep the multiplier in mind — `voom health check`
+`config.toml` should keep the multiplier in mind — `voom env check`
 warns when the oldest event is newer than the oldest job (issue #194).
 
 ## CLI Dual-Dispatch Pattern

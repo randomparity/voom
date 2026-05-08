@@ -119,7 +119,7 @@ pub fn run() -> Result<()> {
     println!("  voom scan <path>              Scan a media directory");
     println!("  voom inspect <file>           Inspect a media file");
     println!("  voom policy validate <file>   Validate a policy");
-    println!("  voom doctor                   Run health checks");
+    println!("  voom env check                Run environment checks");
 
     Ok(())
 }

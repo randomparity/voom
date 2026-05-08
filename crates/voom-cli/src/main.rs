@@ -73,8 +73,15 @@ async fn main() -> Result<()> {
         Commands::Files(sub) => commands::files::run(sub, global_yes),
         Commands::Plans(sub) => commands::plans::run(sub),
         Commands::Events(args) => commands::events::run(args, token).await,
-        Commands::Health(sub) => commands::health::run(sub),
-        Commands::Doctor => commands::health::check(),
+        Commands::Env(sub) => commands::env::run(sub),
+        Commands::Health(sub) => {
+            commands::env::warn_health_deprecated();
+            commands::env::run(sub)
+        }
+        Commands::Doctor => {
+            commands::env::warn_doctor_deprecated();
+            commands::env::check()
+        }
         Commands::Serve(args) => commands::serve::run(args, token).await,
         Commands::Db(sub) => commands::db::run(sub, global_yes).await,
         Commands::Config(sub) => commands::config::run(sub),

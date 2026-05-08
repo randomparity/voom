@@ -383,7 +383,7 @@ retention_days = 30
 # produces ~7 event_log rows (file.discovered, file.introspected, three
 # plan.* events, job.started, job.completed). If event_log is pruned while
 # jobs are not, `voom events` and SSE history will undercount completed
-# work. `voom health check` reports when this invariant is violated.
+# work. `voom env check` reports when this invariant is violated.
 # See issue #194.
 [retention]
 # How often the periodic prune runs in `serve` mode (minutes).

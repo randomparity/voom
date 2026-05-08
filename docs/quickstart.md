@@ -33,7 +33,7 @@ The binary is at `target/release/voom`.
 voom init
 
 # Check that external tools are detected
-voom doctor
+voom env check
 ```
 
 This creates `~/.config/voom/config.toml` with default settings and a starter policy at `~/.config/voom/policies/default.voom`.

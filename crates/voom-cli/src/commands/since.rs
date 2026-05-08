@@ -12,6 +12,15 @@ pub fn parse_since(s: &str) -> Result<DateTime<Utc>> {
     if let Some(dt) = parse_relative(s) {
         return Ok(dt);
     }
+    parse_absolute_since(s)
+        .map_err(|_| anyhow!("invalid --since '{s}': expected `30d`, `4w`, `12h`, or YYYY-MM-DD"))
+}
+
+/// Parse `2026-01-15` / `2026-01-15T10:30:00` into a UTC `DateTime`.
+///
+/// # Errors
+/// Returns an error if the input is not an absolute date or datetime.
+pub fn parse_absolute_since(s: &str) -> Result<DateTime<Utc>> {
     if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
         return Ok(Utc.from_utc_datetime(&ndt));
     }
@@ -20,7 +29,7 @@ pub fn parse_since(s: &str) -> Result<DateTime<Utc>> {
         return Ok(Utc.from_utc_datetime(&ndt));
     }
     Err(anyhow!(
-        "invalid --since '{s}': expected `30d`, `4w`, `12h`, or YYYY-MM-DD"
+        "invalid datetime '{s}': expected YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS"
     ))
 }
 
@@ -76,6 +85,11 @@ mod tests {
     fn parses_absolute_datetime() {
         let dt = parse_since("2026-01-15T10:30:00").unwrap();
         assert_eq!(dt.to_rfc3339(), "2026-01-15T10:30:00+00:00");
+    }
+
+    #[test]
+    fn absolute_parser_rejects_relative_since() {
+        assert!(parse_absolute_since("30d").is_err());
     }
 
     #[test]

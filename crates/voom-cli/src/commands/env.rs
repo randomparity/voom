@@ -1,5 +1,4 @@
-use anyhow::{bail, Result};
-use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
+use anyhow::Result;
 use console::style;
 use voom_domain::storage::HealthCheckFilters;
 use voom_ffmpeg_executor::hwaccel::{resolve_hw_config, HwAccelBackend};
@@ -9,7 +8,8 @@ use voom_ffmpeg_executor::probe::{
 };
 
 use crate::app;
-use crate::cli::{HealthCommands, OutputFormat};
+use crate::cli::{EnvCommands, OutputFormat};
+use crate::commands::since::parse_absolute_since;
 use crate::config;
 use crate::output::sanitize_for_display;
 use crate::tools::print_tool_status;
@@ -61,11 +61,11 @@ mod retention_coverage {
     }
 }
 
-/// Dispatch health subcommands.
-pub fn run(cmd: HealthCommands) -> Result<()> {
+/// Dispatch environment diagnostic subcommands.
+pub fn run(cmd: EnvCommands) -> Result<()> {
     match cmd {
-        HealthCommands::Check => check(),
-        HealthCommands::History {
+        EnvCommands::Check => check(),
+        EnvCommands::History {
             check,
             since,
             limit,
@@ -74,7 +74,17 @@ pub fn run(cmd: HealthCommands) -> Result<()> {
     }
 }
 
-/// Run live system health checks (formerly `voom doctor`).
+/// Print a compatibility warning for the old `voom health ...` command group.
+pub fn warn_health_deprecated() {
+    eprintln!("warning: `voom health` is deprecated; use `voom env` instead");
+}
+
+/// Print a compatibility warning for the old `voom doctor` command.
+pub fn warn_doctor_deprecated() {
+    eprintln!("warning: `voom doctor` is deprecated; use `voom env check` instead");
+}
+
+/// Run live environment checks.
 ///
 /// Tool detection creates a standalone `ToolDetectorPlugin` instance rather
 /// than retrieving the kernel-registered one. This is intentional: doctor
@@ -86,7 +96,7 @@ pub fn run(cmd: HealthCommands) -> Result<()> {
 // all return `Result<()>`; the health check itself never propagates errors.
 #[allow(clippy::unnecessary_wraps)]
 pub fn check() -> Result<()> {
-    println!("{}", style("VOOM System Health Check").bold().underlined());
+    println!("{}", style("VOOM Environment Check").bold().underlined());
     println!();
 
     let mut issues = 0u32;
@@ -407,7 +417,7 @@ fn history(
     limit: u32,
     format: OutputFormat,
 ) -> Result<()> {
-    let since_dt = since.map(|s| parse_datetime(&s)).transpose()?;
+    let since_dt = since.map(|s| parse_absolute_since(&s)).transpose()?;
 
     let mut filters = HealthCheckFilters::default();
     filters.check_name = check_name;
@@ -421,7 +431,7 @@ fn history(
     match format {
         OutputFormat::Table => {
             if records.is_empty() {
-                eprintln!("No health check records found.");
+                eprintln!("No environment check records found.");
                 return Ok(());
             }
             println!(
@@ -470,45 +480,12 @@ fn history(
     Ok(())
 }
 
-fn parse_datetime(s: &str) -> Result<chrono::DateTime<Utc>> {
-    // Try full datetime first: 2024-01-15T10:30:00
-    if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
-        return Ok(Utc.from_utc_datetime(&ndt));
-    }
-    // Try date only: 2024-01-15 (midnight UTC)
-    if let Ok(nd) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        let ndt = nd.and_hms_opt(0, 0, 0).expect("midnight is always valid");
-        return Ok(Utc.from_utc_datetime(&ndt));
-    }
-    bail!("invalid datetime '{s}': expected YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS");
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_tool_detector_creation() {
         let detector = voom_tool_detector::ToolDetectorPlugin::new();
         assert!(detector.tool("nonexistent-tool").is_none());
-    }
-
-    #[test]
-    fn test_parse_datetime_date_only() {
-        let dt = parse_datetime("2024-01-15").unwrap();
-        assert_eq!(dt.to_rfc3339(), "2024-01-15T00:00:00+00:00");
-    }
-
-    #[test]
-    fn test_parse_datetime_full() {
-        let dt = parse_datetime("2024-01-15T10:30:00").unwrap();
-        assert_eq!(dt.to_rfc3339(), "2024-01-15T10:30:00+00:00");
-    }
-
-    #[test]
-    fn test_parse_datetime_invalid() {
-        assert!(parse_datetime("not-a-date").is_err());
-        assert!(parse_datetime("2024/01/15").is_err());
     }
 }
 
