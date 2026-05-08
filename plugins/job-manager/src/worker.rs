@@ -80,19 +80,9 @@ fn num_cpus() -> usize {
 /// Classification is intentionally plan-level: the first matching hardware
 /// video transcode action determines the resource for the whole plan. Audio
 /// transcodes and unknown hardware values do not consume video encoder permits.
-pub struct PlanParallelResource;
+struct PlanParallelResource;
 
 impl PlanParallelResource {
-    /// Return the plan-level hardware resource for the first matching video transcode.
-    ///
-    /// Only `TranscodeVideo` actions with known hardware encoder names classify
-    /// a plan. Software, `auto`, missing hardware, unknown values, and non-video
-    /// actions return `None`.
-    #[must_use]
-    pub fn from_plan(plan: &voom_domain::plan::Plan) -> Option<&'static str> {
-        Self::from_plan_with_default(plan, None)
-    }
-
     /// Return the plan-level hardware resource, using `default_resource` for
     /// video transcodes with `hw: auto` or no per-action hardware setting.
     ///
@@ -133,9 +123,9 @@ impl PlanParallelResource {
 ///
 /// This bounds concurrent plan executions that use a classified hardware video
 /// encoder resource. It does not count individual tracks or exact encoder
-/// sessions within a plan. The first positive resource limit is also used as
-/// the default active hardware resource for plans with `hw: auto` or no
-/// per-action hardware setting.
+/// sessions within a plan. Callers that need executor-level hardware limits to
+/// apply to plans with `hw: auto` or no per-action hardware should use
+/// [`PlanExecutionLimiter::from_limits_with_default`].
 #[derive(Clone, Default)]
 pub struct PlanExecutionLimiter {
     semaphores: Arc<HashMap<String, Arc<Semaphore>>>,
@@ -154,21 +144,33 @@ impl PlanExecutionLimiter {
     /// Create a limiter from resource limits.
     ///
     /// Positive limits create semaphores. Zero limits are ignored, leaving that
-    /// resource unlimited. The first positive limit becomes the default
-    /// hardware resource used for `hw: auto` or missing per-action hardware.
+    /// resource unlimited. Plans with `hw: auto` or missing per-action hardware
+    /// are not limited unless callers use
+    /// [`PlanExecutionLimiter::from_limits_with_default`].
     #[must_use]
     pub fn from_limits(limits: impl IntoIterator<Item = (String, usize)>) -> Self {
+        Self::from_limits_with_default(limits, None)
+    }
+
+    /// Create a limiter from resource limits and an explicit default resource.
+    ///
+    /// Positive limits create semaphores. Zero limits are ignored, leaving that
+    /// resource unlimited. `default_resource` is used for `hw: auto` or missing
+    /// per-action hardware only when it matches a positive configured limit.
+    #[must_use]
+    pub fn from_limits_with_default(
+        limits: impl IntoIterator<Item = (String, usize)>,
+        default_resource: Option<String>,
+    ) -> Self {
         let mut semaphores = HashMap::new();
-        let mut default_resource = None;
         for (resource, limit) in limits {
             if limit == 0 {
                 continue;
             }
-            if default_resource.is_none() {
-                default_resource = Some(resource.clone());
-            }
             semaphores.insert(resource, Arc::new(Semaphore::new(limit)));
         }
+        let default_resource =
+            default_resource.filter(|resource| semaphores.contains_key(resource));
         Self {
             semaphores: Arc::new(semaphores),
             default_resource,
@@ -643,13 +645,19 @@ mod tests {
     #[test]
     fn test_plan_parallel_resource_detects_nvenc_transcode() {
         let plan = test_transcode_plan(Some("nvenc"));
-        assert_eq!(PlanParallelResource::from_plan(&plan), Some("hw:nvenc"));
+        assert_eq!(
+            PlanParallelResource::from_plan_with_default(&plan, None),
+            Some("hw:nvenc")
+        );
     }
 
     #[test]
     fn test_plan_parallel_resource_ignores_software_transcode() {
         let plan = test_transcode_plan(None);
-        assert_eq!(PlanParallelResource::from_plan(&plan), None);
+        assert_eq!(
+            PlanParallelResource::from_plan_with_default(&plan, None),
+            None
+        );
     }
 
     #[test]
@@ -668,7 +676,7 @@ mod tests {
         for (hw, expected) in cases {
             let plan = test_transcode_plan(hw);
             assert_eq!(
-                PlanParallelResource::from_plan(&plan),
+                PlanParallelResource::from_plan_with_default(&plan, None),
                 expected,
                 "hw={hw:?}"
             );
@@ -702,14 +710,20 @@ mod tests {
             Some("nvenc"),
             voom_domain::plan::OperationType::TranscodeAudio,
         );
-        assert_eq!(PlanParallelResource::from_plan(&plan), None);
+        assert_eq!(
+            PlanParallelResource::from_plan_with_default(&plan, None),
+            None
+        );
     }
 
     #[tokio::test]
     async fn test_plan_execution_limiter_blocks_missing_hw_on_default_resource() {
         use std::time::Duration;
 
-        let limiter = PlanExecutionLimiter::from_limits(vec![("hw:nvenc".to_string(), 1)]);
+        let limiter = PlanExecutionLimiter::from_limits_with_default(
+            vec![("hw:nvenc".to_string(), 1)],
+            Some("hw:nvenc".to_string()),
+        );
         let plan = test_transcode_plan(None);
         let first = limiter.acquire_for_plan(&plan).await;
 
@@ -737,6 +751,32 @@ mod tests {
                 .unwrap(),
             "entered"
         );
+    }
+
+    #[tokio::test]
+    async fn test_plan_execution_limiter_does_not_default_without_explicit_resource() {
+        use std::time::Duration;
+
+        let limiter = PlanExecutionLimiter::from_limits(vec![("hw:nvenc".to_string(), 1)]);
+        let limited_plan = test_transcode_plan(Some("nvenc"));
+        let implicit_plan = test_transcode_plan(None);
+        let first = limiter.acquire_for_plan(&limited_plan).await;
+
+        let limiter_clone = limiter.clone();
+        let plan_clone = implicit_plan.clone();
+        let task = tokio::spawn(async move {
+            let _permit = limiter_clone.acquire_for_plan(&plan_clone).await;
+            "entered"
+        });
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .expect("implicit plan should not wait without explicit default")
+                .unwrap(),
+            "entered"
+        );
+        drop(first);
     }
 
     #[tokio::test]
