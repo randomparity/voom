@@ -530,7 +530,7 @@ pub enum VerifyCommands {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(clap::Args)]
 pub struct VerifyArgs {
-    /// Files or directories to verify. Empty = all files needing verification.
+    /// File paths to verify. Empty = all files needing verification.
     #[arg(num_args = 0..)]
     pub paths: Vec<PathBuf>,
 
