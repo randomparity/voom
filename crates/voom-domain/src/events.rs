@@ -1309,6 +1309,29 @@ mod tests {
     }
 
     #[test]
+    fn test_executor_capabilities_legacy_payload_defaults_parallel_limits() {
+        let json = r#"{
+            "ExecutorCapabilities": {
+                "plugin_name": "ffmpeg-executor",
+                "codecs": {
+                    "decoders": [],
+                    "encoders": [],
+                    "hw_decoders": [],
+                    "hw_encoders": []
+                },
+                "formats": [],
+                "hw_accels": ["cuda"]
+            }
+        }"#;
+
+        let restored: Event = serde_json::from_str(json).unwrap();
+        let Event::ExecutorCapabilities(restored) = restored else {
+            panic!("expected executor capabilities");
+        };
+        assert!(restored.parallel_limits.is_empty());
+    }
+
+    #[test]
     fn test_executor_capabilities_empty_codecs() {
         let caps = CodecCapabilities::empty();
         assert!(caps.decoders.is_empty());

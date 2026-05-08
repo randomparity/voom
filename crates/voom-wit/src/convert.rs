@@ -435,6 +435,13 @@ mod tests {
 
         let restored = event_from_wasm(&event_type, &payload).unwrap();
         assert_eq!(restored.event_type(), "executor.capabilities");
+
+        let Event::ExecutorCapabilities(restored) = restored else {
+            panic!("expected executor capabilities");
+        };
+        assert_eq!(restored.parallel_limits.len(), 1);
+        assert_eq!(restored.parallel_limits[0].resource, "hw:nvenc");
+        assert_eq!(restored.parallel_limits[0].max_parallel, 4);
     }
 
     #[test]
