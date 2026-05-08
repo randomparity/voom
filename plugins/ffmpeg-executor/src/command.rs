@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::media::{Container, MediaFile};
+use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::{ActionParams, OperationType, PlannedAction, TranscodeChannels};
 use voom_domain::utils::sanitize::{validate_metadata_key, validate_metadata_value};
 
@@ -326,6 +326,15 @@ fn collect_video_filters(settings: &voom_domain::plan::TranscodeSettings) -> Vec
     filters
 }
 
+fn requires_software_video_filters(settings: &voom_domain::plan::TranscodeSettings) -> bool {
+    let scales_video = settings
+        .max_resolution
+        .as_deref()
+        .and_then(parse_max_height)
+        .is_some();
+    scales_video || settings.hdr_mode.as_deref() == Some("tonemap")
+}
+
 fn apply_transcode_video(
     mut cmd: FfmpegCommand,
     action: &PlannedAction,
@@ -439,6 +448,49 @@ fn apply_synthesize_audio(cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegC
     )
 }
 
+fn source_video_track<'a>(file: &'a MediaFile, action: &PlannedAction) -> Option<&'a Track> {
+    let stream_index = action.track_index?;
+    file.tracks
+        .iter()
+        .find(|track| track.index == stream_index && track.track_type == TrackType::Video)
+}
+
+fn pixel_format_allows_direct_hw_decode(pixel_format: Option<&str>) -> bool {
+    let Some(format) = pixel_format else {
+        return true;
+    };
+    let lower = format.to_ascii_lowercase();
+    !lower.contains("alpha")
+        && !lower.contains("yuva")
+        && !lower.contains("rgba")
+        && !lower.contains("bgra")
+        && !lower.contains("gbr")
+        && !lower.contains("rgb")
+}
+
+fn action_allows_direct_hw_decode(
+    file: &MediaFile,
+    action: &PlannedAction,
+    hw_cfg: &HwAccelConfig,
+) -> Vec<String> {
+    let ActionParams::Transcode { codec, settings } = &action.parameters else {
+        return Vec::new();
+    };
+    if !hw_cfg.has_hw_encoder(codec) {
+        return Vec::new();
+    }
+    if requires_software_video_filters(settings) {
+        return Vec::new();
+    }
+    let Some(track) = source_video_track(file, action) else {
+        return Vec::new();
+    };
+    if !pixel_format_allows_direct_hw_decode(track.pixel_format.as_deref()) {
+        return Vec::new();
+    }
+    hw_cfg.decoder_input_args(&track.codec)
+}
+
 /// Build an `FFmpeg` command from a plan's actions.
 ///
 /// Groups all actions into a single `FFmpeg` invocation where possible.
@@ -450,20 +502,36 @@ pub fn build_ffmpeg_command(
 ) -> Result<Vec<String>> {
     let mut cmd = FfmpegCommand::new();
 
-    // NOTE: we intentionally do NOT emit `-hwaccel <backend>` input
-    // args.  That flag requests hardware-accelerated *decoding* (e.g.
-    // hevc_cuvid), which requires the matching cuvid/vaapi/qsv decoder
-    // to be compiled into ffmpeg.  When it's absent ffmpeg hard-fails
-    // instead of falling back to software decode.  HW *encoding* (e.g.
-    // av1_nvenc) works fine with software-decoded frames, so omitting
-    // the flag is safe and maximally compatible.
-
     // Inject device-targeting args (e.g. -vaapi_device, -qsv_device)
     // before the input file so ffmpeg opens the device first.
     if let Some(hw) = hw_accel {
         for arg in hw.device_args() {
             cmd = cmd.arg(&arg);
         }
+    }
+
+    // Hardware decode hard-fails if the matching decoder is missing, so
+    // only emit it after probing found a same-backend source decoder.
+    let mut hw_decode_args = Vec::new();
+    for action in actions {
+        if action.operation != OperationType::TranscodeVideo {
+            continue;
+        }
+        let ActionParams::Transcode { settings, .. } = &action.parameters else {
+            continue;
+        };
+        let mut owned_config: Option<HwAccelConfig> = None;
+        let Some(effective_hw) = resolve_effective_hw(settings, hw_accel, &mut owned_config) else {
+            continue;
+        };
+        hw_decode_args = action_allows_direct_hw_decode(file, action, effective_hw);
+        if !hw_decode_args.is_empty() {
+            break;
+        }
+    }
+
+    for arg in hw_decode_args {
+        cmd = cmd.arg(&arg);
     }
 
     cmd = cmd.input(&file.path);
@@ -609,6 +677,12 @@ mod tests {
             Track::new(1, TrackType::AudioMain, "mp3".into()),
         ];
         file
+    }
+
+    fn arg_index(args: &[String], needle: &str) -> usize {
+        args.iter()
+            .position(|arg| arg == needle)
+            .unwrap_or_else(|| panic!("{needle} not found in {args:?}"))
     }
 
     #[test]
@@ -985,6 +1059,146 @@ mod tests {
             "NVENC should not use -crf, got: {args:?}"
         );
         assert!(args.contains(&"23".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_uses_nvenc_hw_decode_when_decoder_available() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default().with_crf(Some(23)),
+            },
+            "Transcode with NVENC",
+        );
+        let output = Path::new("/tmp/output.mp4");
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Nvenc)
+            .with_validated_encoders(vec!["hevc_nvenc".into()])
+            .with_hw_decoders(vec!["h264_cuvid".into()]);
+
+        let args = build_ffmpeg_command(&file, &[&action], output, Some(&hw)).unwrap();
+
+        assert_eq!(args[arg_index(&args, "-hwaccel") + 1], "cuda");
+        assert_eq!(args[arg_index(&args, "-hwaccel_output_format") + 1], "cuda");
+        assert!(arg_index(&args, "-hwaccel") < arg_index(&args, "-i"));
+        assert!(args.contains(&"hevc_nvenc".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_skips_hw_decode_when_decoder_missing() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default(),
+            },
+            "Transcode with NVENC",
+        );
+        let output = Path::new("/tmp/output.mp4");
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Nvenc)
+            .with_validated_encoders(vec!["hevc_nvenc".into()])
+            .with_hw_decoders(vec!["hevc_cuvid".into()]);
+
+        let args = build_ffmpeg_command(&file, &[&action], output, Some(&hw)).unwrap();
+
+        assert!(!args.contains(&"-hwaccel".to_string()));
+        assert!(args.contains(&"hevc_nvenc".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_skips_hw_decode_when_encoder_falls_back_to_software() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "av1".into(),
+                settings: TranscodeSettings::default(),
+            },
+            "Transcode AV1",
+        );
+        let output = Path::new("/tmp/output.mkv");
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Nvenc)
+            .with_validated_encoders(vec!["h264_nvenc".into(), "hevc_nvenc".into()])
+            .with_hw_decoders(vec!["h264_cuvid".into()]);
+
+        let args = build_ffmpeg_command(&file, &[&action], output, Some(&hw)).unwrap();
+
+        assert!(!args.contains(&"-hwaccel".to_string()));
+        assert!(args.contains(&"libsvtav1".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_skips_hw_decode_when_filters_require_sw_frames() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default().with_max_resolution(Some("720p".into())),
+            },
+            "Scale and transcode",
+        );
+        let output = Path::new("/tmp/output.mp4");
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Nvenc)
+            .with_validated_encoders(vec!["hevc_nvenc".into()])
+            .with_hw_decoders(vec!["h264_cuvid".into()]);
+
+        let args = build_ffmpeg_command(&file, &[&action], output, Some(&hw)).unwrap();
+
+        assert!(!args.contains(&"-hwaccel".to_string()));
+        assert!(args.contains(&"-vf".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_allows_hw_decode_when_max_resolution_is_invalid() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default().with_max_resolution(Some("large".into())),
+            },
+            "Transcode with ignored max resolution",
+        );
+        let output = Path::new("/tmp/output.mp4");
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Nvenc)
+            .with_validated_encoders(vec!["hevc_nvenc".into()])
+            .with_hw_decoders(vec!["h264_cuvid".into()]);
+
+        let args = build_ffmpeg_command(&file, &[&action], output, Some(&hw)).unwrap();
+
+        assert_eq!(args[arg_index(&args, "-hwaccel") + 1], "cuda");
+        assert!(!args.contains(&"-vf".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_skips_hw_decode_for_hdr_tonemap() {
+        let file = sample_mp4_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default().with_hdr_mode(Some("tonemap".into())),
+            },
+            "Tonemap and transcode",
+        );
+        let output = Path::new("/tmp/output.mp4");
+        let hw = HwAccelConfig::with_backend(crate::hwaccel::HwAccelBackend::Nvenc)
+            .with_validated_encoders(vec!["hevc_nvenc".into()])
+            .with_hw_decoders(vec!["h264_cuvid".into()]);
+
+        let args = build_ffmpeg_command(&file, &[&action], output, Some(&hw)).unwrap();
+
+        assert!(!args.contains(&"-hwaccel".to_string()));
+        assert!(args.contains(&"-vf".to_string()));
     }
 
     #[test]
