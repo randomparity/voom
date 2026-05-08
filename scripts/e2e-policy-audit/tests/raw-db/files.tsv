@@ -1,3 +1,4 @@
 id	path	filename	size	content_hash	expected_hash	status	missing_since	superseded_by	container	duration	bitrate	tags	plugin_metadata	introspected_at	created_at	updated_at
 file-1	/lib/show1/S01E01.mkv	S01E01.mkv	1000000	abc123		active			mkv	2734.5	4500000	{}	{}	2026-05-05T10:00:00Z	2026-05-05T10:00:00Z	2026-05-05T10:00:00Z
 file-2	/lib/show1/S01E02.mp4	S01E02.mp4	900000	def456		active			mp4	2700.0	4200000	{}	{}	2026-05-05T10:00:00Z	2026-05-05T10:00:00Z	2026-05-05T10:00:00Z
+file-3	/lib/show1/S01E03.mkv	S01E03.mkv	800000	ghi789		active			mkv	1800.0	3000000	{}	{}	2026-05-05T10:00:00Z	2026-05-05T10:00:00Z	2026-05-05T10:00:00Z

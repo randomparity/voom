@@ -7,8 +7,8 @@ db_path="${1:?db path required}"
 out_dir="${2:?output dir required}"
 
 if [[ ! -r "${db_path}" ]]; then
-    echo "db-export: ${db_path} not readable" >&2
-    exit 1
+  echo "db-export: ${db_path} not readable" >&2
+  exit 1
 fi
 mkdir -p "${out_dir}"
 
@@ -18,8 +18,38 @@ sqlite3 "${db_path}" '.schema' >"${out_dir}/schema.sql"
 # per plugin, not useful for diffing.
 tables=(files tracks jobs plans file_transitions bad_files discovered_files)
 for t in "${tables[@]}"; do
-    out="${out_dir}/${t}.tsv"
-    sqlite3 -header -separator $'\t' "${db_path}" "SELECT * FROM ${t};" >"${out}"
+  out="${out_dir}/${t}.tsv"
+  if [[ "${t}" == "tracks" ]]; then
+    sqlite3 -header -separator $'\t' "${db_path}" "
+SELECT
+  id,
+  file_id,
+  stream_index,
+  track_type,
+  codec,
+  language,
+  title,
+  is_default,
+  is_forced,
+  channels,
+  channel_layout,
+  sample_rate,
+  bit_depth,
+  width,
+  height,
+  CASE
+    WHEN frame_rate IS NULL THEN NULL
+    ELSE printf('%!.17g', frame_rate)
+  END AS frame_rate,
+  is_vfr,
+  is_hdr,
+  hdr_format,
+  pixel_format
+FROM tracks;
+" >"${out}"
+    continue
+  fi
+  sqlite3 -header -separator $'\t' "${db_path}" "SELECT * FROM ${t};" >"${out}"
 done
 
 echo "db-export: wrote schema.sql + ${#tables[@]} tables to ${out_dir}"

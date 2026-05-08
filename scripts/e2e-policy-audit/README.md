@@ -75,6 +75,15 @@ do that, read `diffs/codec-pivot.md`, `diffs/tracks-pivot.md`, and the four
 `*.tsv` ndjson diffs — they describe what changed without prescribing what
 *should* have changed.
 
+## Canonical metadata comparison
+
+The `db-vs-ffprobe-*` diffs compare two canonical NDJSON views: VOOM's SQLite
+metadata export and a fresh `ffprobe` parse. The harness normalizes known
+serialization artifacts at those boundaries, including full-precision SQLite
+REAL rendering for frame rates and literal quote wrappers around common audio
+channel title labels such as `"2.0"` and `"5.1"`. Do not add these fields to
+`lib/ndjson-ignore.txt`; that hides real metadata regressions.
+
 ## Tests
 
 ```bash
