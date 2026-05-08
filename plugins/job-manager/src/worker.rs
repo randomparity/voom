@@ -1,5 +1,6 @@
 //! Worker pool for concurrent job processing using tokio tasks.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -72,6 +73,71 @@ fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(4)
+}
+
+pub struct PlanParallelResource;
+
+impl PlanParallelResource {
+    #[must_use]
+    pub fn from_plan(plan: &voom_domain::plan::Plan) -> Option<&'static str> {
+        for action in &plan.actions {
+            let voom_domain::plan::ActionParams::Transcode { settings, .. } = &action.parameters
+            else {
+                continue;
+            };
+            let Some(hw) = settings.hw.as_deref() else {
+                continue;
+            };
+            match hw {
+                "nvenc" => return Some("hw:nvenc"),
+                "qsv" => return Some("hw:qsv"),
+                "vaapi" => return Some("hw:vaapi"),
+                "videotoolbox" => return Some("hw:videotoolbox"),
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct PlanExecutionLimiter {
+    semaphores: Arc<HashMap<String, Arc<Semaphore>>>,
+}
+
+pub struct PlanExecutionPermit {
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl PlanExecutionLimiter {
+    #[must_use]
+    pub fn from_limits(limits: impl IntoIterator<Item = (String, usize)>) -> Self {
+        let semaphores = limits
+            .into_iter()
+            .filter(|(_, limit)| *limit > 0)
+            .map(|(resource, limit)| (resource, Arc::new(Semaphore::new(limit))))
+            .collect();
+        Self {
+            semaphores: Arc::new(semaphores),
+        }
+    }
+
+    pub async fn acquire_for_plan(&self, plan: &voom_domain::plan::Plan) -> PlanExecutionPermit {
+        let Some(resource) = PlanParallelResource::from_plan(plan) else {
+            return PlanExecutionPermit { _permit: None };
+        };
+        let Some(semaphore) = self.semaphores.get(resource) else {
+            return PlanExecutionPermit { _permit: None };
+        };
+        let permit = semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("plan execution semaphore closed");
+        PlanExecutionPermit {
+            _permit: Some(permit),
+        }
+    }
 }
 
 /// Outcome of a single job execution.
@@ -489,6 +555,57 @@ mod tests {
     fn test_queue() -> Arc<JobQueue> {
         let store = Arc::new(InMemoryStore::new());
         Arc::new(JobQueue::new(store))
+    }
+
+    fn test_transcode_plan(hw: Option<&str>) -> voom_domain::plan::Plan {
+        let file = voom_domain::media::MediaFile::new(std::path::PathBuf::from("/test.mkv"));
+        voom_domain::plan::Plan::new(file, "test-policy", "test-phase").with_action(
+            voom_domain::plan::PlannedAction::track_op(
+                voom_domain::plan::OperationType::TranscodeVideo,
+                0,
+                voom_domain::plan::ActionParams::Transcode {
+                    codec: "hevc".to_string(),
+                    settings: voom_domain::plan::TranscodeSettings::default()
+                        .with_hw(hw.map(str::to_string)),
+                },
+                "transcode video",
+            ),
+        )
+    }
+
+    #[test]
+    fn test_plan_parallel_resource_detects_nvenc_transcode() {
+        let plan = test_transcode_plan(Some("nvenc"));
+        assert_eq!(PlanParallelResource::from_plan(&plan), Some("hw:nvenc"));
+    }
+
+    #[test]
+    fn test_plan_parallel_resource_ignores_software_transcode() {
+        let plan = test_transcode_plan(None);
+        assert_eq!(PlanParallelResource::from_plan(&plan), None);
+    }
+
+    #[tokio::test]
+    async fn test_plan_execution_limiter_blocks_above_limit() {
+        let limiter = PlanExecutionLimiter::from_limits(vec![("hw:nvenc".to_string(), 2)]);
+        let plan = test_transcode_plan(Some("nvenc"));
+
+        let first = limiter.acquire_for_plan(&plan).await;
+        let second = limiter.acquire_for_plan(&plan).await;
+
+        let limiter_clone = limiter.clone();
+        let plan_clone = plan.clone();
+        let third = tokio::spawn(async move {
+            let _permit = limiter_clone.acquire_for_plan(&plan_clone).await;
+            "entered"
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!third.is_finished());
+
+        drop(first);
+        assert_eq!(third.await.unwrap(), "entered");
+        drop(second);
     }
 
     #[tokio::test]
