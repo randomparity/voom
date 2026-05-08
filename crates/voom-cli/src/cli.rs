@@ -128,6 +128,11 @@ pub struct ScanArgs {
     #[arg(long)]
     pub no_hash: bool,
 
+    /// Run a quick verification pass after introspection. Overrides
+    /// `[plugin.verifier] verify_on_scan` for this run.
+    #[arg(long)]
+    pub verify: bool,
+
     /// Output format (omit for summary only)
     #[arg(short, long)]
     pub format: Option<OutputFormat>,

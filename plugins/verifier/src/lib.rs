@@ -291,6 +291,8 @@ mod tests {
         assert_eq!(cfg.ffmpeg_path, "ffmpeg");
         assert!(cfg.quarantine_dir.is_none());
         assert_eq!(cfg.thorough_hw_accel, "none");
+        assert!(!cfg.verify_on_scan);
+        assert_eq!(cfg.verify_freshness_days, 7);
     }
 
     #[test]
