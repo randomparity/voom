@@ -305,6 +305,76 @@ voom report [OPTIONS]
 | `--all` | `false` | Show all report sections |
 | `--snapshot` | `false` | Capture and persist a new snapshot |
 | `--files` | `false` | List files in the library |
+| `--integrity` | `false` | Show aggregate verification and integrity counts |
+
+`voom report --integrity` reports aggregate counts for total files, never verified files,
+stale files using a 30-day cutoff, files with errors, files with warnings, and hash
+mismatches. The integrity summary supports `table`, `json`, `plain`, and `csv` formats
+through `--format`.
+
+---
+
+### `voom verify`
+
+Per-file media integrity verification.
+
+#### `voom verify run`
+
+Run verification on files. With no `PATHS`, verifies files that have never been verified
+or whose latest verification is older than `--since`. Quick mode is the default.
+`--thorough` and `--hash` conflict with each other.
+
+```
+voom verify run [PATHS]... [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `[PATHS]...` | due files | File paths to verify |
+| `--thorough` | `false` | Run a full ffmpeg decode pass |
+| `--hash` | `false` | Run sha256 bit-rot detection against prior hash verification |
+| `--since <SINCE>` | `30d` | Re-verify files older than `30d`, `4w`, `12h`, or `YYYY-MM-DD` |
+| `--all` | `false` | Re-verify all files regardless of latest verification time |
+| `-w`, `--workers <N>` | `0` (auto) | Number of parallel workers for quick and hash modes |
+| `-f`, `--format <FORMAT>` | *none* | Accepted; currently unused by `run` output |
+
+**Examples:**
+
+```bash
+voom verify run
+voom verify run /media/movies/film.mkv
+voom verify run --thorough
+voom verify run --hash
+voom verify run --since 7d
+voom verify run --all --workers 8
+```
+
+#### `voom verify report`
+
+Show verification records, optionally filtered by file, mode, outcome, or age.
+
+```
+voom verify report [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--file <FILE>` | *none* | Show records for one file |
+| `--mode <MODE>` | *none* | Filter by mode: `quick`, `thorough`, or `hash` |
+| `--outcome <OUTCOME>` | *none* | Filter by outcome: `ok`, `warning`, or `error` |
+| `--since <SINCE>` | *none* | Show records since `30d`, `4w`, `12h`, or `YYYY-MM-DD` |
+| `--limit <N>` | `100` | Maximum number of records to display |
+| `-f`, `--format <FORMAT>` | `table` | Output format; only `json` changes rendering today |
+
+**Examples:**
+
+```bash
+voom verify report
+voom verify report --outcome error
+voom verify report --mode hash --limit 25
+voom verify report --file /media/movies/film.mkv
+voom verify report --since 30d --format json
+```
 
 ---
 
@@ -804,6 +874,16 @@ When running `voom serve`, the following REST API is available:
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/health` | Get system health status |
+
+### Verification
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/verify` | List verification records; filterable by `mode`, `outcome`, and `limit` |
+| GET | `/api/verify/:file_id` | List verification records for one file |
+| GET | `/api/integrity-summary` | Aggregate integrity counts |
+
+`/api/integrity-summary` uses the same 30-day stale cutoff as `voom report --integrity`.
 
 ### Events
 
