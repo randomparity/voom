@@ -539,6 +539,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stderr_tail_keeps_truncation_marker_visible() {
+        let mut stderr = b"line1\nline2\nline3".to_vec();
+        append_truncation_marker(&mut stderr, 25);
+
+        let tail = stderr_tail(&stderr, 2);
+
+        assert_eq!(tail, "line3\n...[truncated 25 bytes]");
+    }
+
     #[cfg(unix)]
     fn make_executable(path: &std::path::Path) {
         use std::os::unix::fs::PermissionsExt;
