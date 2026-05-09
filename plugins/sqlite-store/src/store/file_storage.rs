@@ -58,8 +58,8 @@ impl FileStorage for SqliteStore {
         .map_err(storage_err("failed to delete old tracks"))?;
 
         tx.execute(
-            "INSERT INTO files (id, path, filename, size, content_hash, status, container, duration, bitrate, tags, plugin_metadata, introspected_at, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "INSERT INTO files (id, path, filename, size, content_hash, status, container, duration, bitrate, crop_left, crop_top, crop_right, crop_bottom, crop_detected_at, crop_settings_fingerprint, tags, plugin_metadata, introspected_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
              ON CONFLICT(path) DO UPDATE SET
                 filename = excluded.filename,
                 size = excluded.size,
@@ -68,6 +68,12 @@ impl FileStorage for SqliteStore {
                 container = excluded.container,
                 duration = excluded.duration,
                 bitrate = excluded.bitrate,
+                crop_left = excluded.crop_left,
+                crop_top = excluded.crop_top,
+                crop_right = excluded.crop_right,
+                crop_bottom = excluded.crop_bottom,
+                crop_detected_at = excluded.crop_detected_at,
+                crop_settings_fingerprint = excluded.crop_settings_fingerprint,
                 tags = excluded.tags,
                 plugin_metadata = excluded.plugin_metadata,
                 introspected_at = excluded.introspected_at,
@@ -82,6 +88,18 @@ impl FileStorage for SqliteStore {
                 file.container.as_str(),
                 file.duration,
                 file.bitrate.map(i64::from),
+                file.crop_detection.as_ref().map(|d| i64::from(d.rect.left)),
+                file.crop_detection.as_ref().map(|d| i64::from(d.rect.top)),
+                file.crop_detection.as_ref().map(|d| i64::from(d.rect.right)),
+                file.crop_detection
+                    .as_ref()
+                    .map(|d| i64::from(d.rect.bottom)),
+                file.crop_detection
+                    .as_ref()
+                    .map(|d| format_datetime(&d.detected_at)),
+                file.crop_detection
+                    .as_ref()
+                    .and_then(|d| d.settings_fingerprint.as_deref()),
                 tags_json,
                 meta_json,
                 format_datetime(&file.introspected_at),
@@ -135,7 +153,7 @@ impl FileStorage for SqliteStore {
         let conn = self.conn()?;
         let file_row: Option<FileRow> = conn
             .query_row(
-                "SELECT id, path, size, content_hash, expected_hash, status, container, duration, bitrate, tags, plugin_metadata, introspected_at FROM files WHERE id = ?1",
+                "SELECT id, path, size, content_hash, expected_hash, status, container, duration, bitrate, crop_left, crop_top, crop_right, crop_bottom, crop_detected_at, crop_settings_fingerprint, tags, plugin_metadata, introspected_at FROM files WHERE id = ?1",
                 params![id.to_string()],
                 row_to_file,
             )
@@ -156,7 +174,7 @@ impl FileStorage for SqliteStore {
         let path_str = path.to_string_lossy().to_string();
         let file_row: Option<FileRow> = conn
             .query_row(
-                "SELECT id, path, size, content_hash, expected_hash, status, container, duration, bitrate, tags, plugin_metadata, introspected_at FROM files WHERE path = ?1",
+                "SELECT id, path, size, content_hash, expected_hash, status, container, duration, bitrate, crop_left, crop_top, crop_right, crop_bottom, crop_detected_at, crop_settings_fingerprint, tags, plugin_metadata, introspected_at FROM files WHERE path = ?1",
                 params![path_str],
                 row_to_file,
             )
@@ -210,9 +228,9 @@ impl FileStorage for SqliteStore {
         // When filtering by codec/language, use a subquery to apply filters before
         // LIMIT/OFFSET, ensuring consistent pagination with count_files.
         let base = if has_track_filter {
-            "SELECT DISTINCT files.id, files.path, files.size, files.content_hash, files.expected_hash, files.status, files.container, files.duration, files.bitrate, files.tags, files.plugin_metadata, files.introspected_at FROM files INNER JOIN tracks ON tracks.file_id = files.id WHERE 1=1"
+            "SELECT DISTINCT files.id, files.path, files.size, files.content_hash, files.expected_hash, files.status, files.container, files.duration, files.bitrate, files.crop_left, files.crop_top, files.crop_right, files.crop_bottom, files.crop_detected_at, files.crop_settings_fingerprint, files.tags, files.plugin_metadata, files.introspected_at FROM files INNER JOIN tracks ON tracks.file_id = files.id WHERE 1=1"
         } else {
-            "SELECT id, path, size, content_hash, expected_hash, status, container, duration, bitrate, tags, plugin_metadata, introspected_at FROM files WHERE 1=1"
+            "SELECT id, path, size, content_hash, expected_hash, status, container, duration, bitrate, crop_left, crop_top, crop_right, crop_bottom, crop_detected_at, crop_settings_fingerprint, tags, plugin_metadata, introspected_at FROM files WHERE 1=1"
         };
         let mut q = SqlQuery::new(base);
 
@@ -470,7 +488,8 @@ impl FileStorage for SqliteStore {
         let file_row: Option<FileRow> = conn
             .query_row(
                 "SELECT id, path, size, content_hash, expected_hash, status, \
-                 container, duration, bitrate, tags, plugin_metadata, introspected_at \
+                 container, duration, bitrate, crop_left, crop_top, crop_right, crop_bottom, \
+                 crop_detected_at, crop_settings_fingerprint, tags, plugin_metadata, introspected_at \
                  FROM files WHERE superseded_by = ?1 LIMIT 1",
                 params![successor_id.to_string()],
                 row_to_file,
