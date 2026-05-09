@@ -863,6 +863,13 @@ const KNOWN_TRANSCODE_KEYS: &[&str] = &[
     "scale_algorithm",
     "hdr_mode",
     "tune",
+    "crop",
+    "crop_sample_duration",
+    "crop_sample_count",
+    "crop_threshold",
+    "crop_minimum",
+    "crop_preserve_bottom_pixels",
+    "crop_aspect_lock",
 ];
 
 fn validate_transcode_keys(
@@ -1069,7 +1076,19 @@ const VALID_SCALE_ALGORITHMS: &[&str] = &[
     "lanczos", "bicubic", "bilinear", "neighbor", "area", "spline", "sinc",
 ];
 
-const VIDEO_ONLY_KEYS: &[&str] = &["hdr_mode", "tune", "scale_algorithm", "max_resolution"];
+const VIDEO_ONLY_KEYS: &[&str] = &[
+    "hdr_mode",
+    "tune",
+    "scale_algorithm",
+    "max_resolution",
+    "crop",
+    "crop_sample_duration",
+    "crop_sample_count",
+    "crop_threshold",
+    "crop_minimum",
+    "crop_preserve_bottom_pixels",
+    "crop_aspect_lock",
+];
 
 fn reject_video_only_keys(
     settings: &[(String, Value)],
@@ -1116,42 +1135,161 @@ fn validate_video_transcode_settings(
                     errors,
                 );
             }
-            "max_resolution" => {
-                let res_str = match val {
-                    Value::Ident(s) | Value::String(s) => Some(s.as_str()),
-                    Value::Number(_, raw) => Some(raw.as_str()),
-                    _ => None,
-                };
-                match res_str {
-                    Some(s) => {
-                        let valid_resolutions =
-                            ["480p", "720p", "1080p", "1440p", "2160p", "4k", "8k"];
-                        if !valid_resolutions.contains(&s) {
-                            errors.push(DslError::validation(
-                                line,
-                                col,
-                                format!(
-                                    "invalid max_resolution \"{s}\", \
-                                     expected one of: {}",
-                                    valid_resolutions.join(", ")
-                                ),
-                            ));
-                        }
-                    }
-                    None => {
-                        errors.push(DslError::validation(
-                            line,
-                            col,
-                            "max_resolution must be a resolution value \
-                             (e.g. 1080p, 720p, 4k, 2160p)"
-                                .to_string(),
-                        ));
-                    }
-                }
+            "max_resolution" => validate_max_resolution(val, line, col, errors),
+            "crop" => validate_crop_mode(val, line, col, errors),
+            "crop_sample_duration" => {
+                validate_integer_setting(
+                    val,
+                    "crop_sample_duration",
+                    1,
+                    u32::MAX,
+                    line,
+                    col,
+                    errors,
+                );
             }
+            "crop_sample_count" => {
+                validate_integer_setting(val, "crop_sample_count", 1, u32::MAX, line, col, errors);
+            }
+            "crop_threshold" => {
+                validate_integer_setting(
+                    val,
+                    "crop_threshold",
+                    0,
+                    u32::from(u8::MAX),
+                    line,
+                    col,
+                    errors,
+                );
+            }
+            "crop_minimum" => {
+                validate_integer_setting(val, "crop_minimum", 0, u32::MAX, line, col, errors);
+            }
+            "crop_preserve_bottom_pixels" => {
+                validate_integer_setting(
+                    val,
+                    "crop_preserve_bottom_pixels",
+                    0,
+                    u32::MAX,
+                    line,
+                    col,
+                    errors,
+                );
+            }
+            "crop_aspect_lock" => validate_crop_aspect_lock(val, line, col, errors),
             _ => {}
         }
     }
+}
+
+fn validate_max_resolution(val: &Value, line: usize, col: usize, errors: &mut Vec<DslError>) {
+    let res_str = match val {
+        Value::Ident(s) | Value::String(s) => Some(s.as_str()),
+        Value::Number(_, raw) => Some(raw.as_str()),
+        _ => None,
+    };
+    let Some(resolution) = res_str else {
+        errors.push(DslError::validation(
+            line,
+            col,
+            "max_resolution must be a resolution value (e.g. 1080p, 720p, 4k, 2160p)".to_string(),
+        ));
+        return;
+    };
+
+    let valid_resolutions = ["480p", "720p", "1080p", "1440p", "2160p", "4k", "8k"];
+    if !valid_resolutions.contains(&resolution) {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!(
+                "invalid max_resolution \"{resolution}\", expected one of: {}",
+                valid_resolutions.join(", ")
+            ),
+        ));
+    }
+}
+
+fn validate_crop_mode(val: &Value, line: usize, col: usize, errors: &mut Vec<DslError>) {
+    match val {
+        Value::Ident(mode) | Value::String(mode) if mode == "auto" => {}
+        Value::Ident(mode) | Value::String(mode) => errors.push(DslError::validation(
+            line,
+            col,
+            format!("invalid crop value \"{mode}\", expected auto"),
+        )),
+        _ => errors.push(DslError::validation(
+            line,
+            col,
+            "crop must be the identifier auto".to_string(),
+        )),
+    }
+}
+
+fn validate_integer_setting(
+    val: &Value,
+    key: &str,
+    min: u32,
+    max: u32,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    let Value::Number(n, raw) = val else {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!("{key} must be an integer"),
+        ));
+        return;
+    };
+    if has_number_suffix(raw) || n.fract() != 0.0 || *n < f64::from(min) || *n > f64::from(max) {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!("{key} must be an integer from {min} to {max}"),
+        ));
+    }
+}
+
+fn validate_crop_aspect_lock(val: &Value, line: usize, col: usize, errors: &mut Vec<DslError>) {
+    let Value::List(items) = val else {
+        errors.push(DslError::validation(
+            line,
+            col,
+            "crop_aspect_lock must be a list of ratio strings".to_string(),
+        ));
+        return;
+    };
+
+    for item in items {
+        match item {
+            Value::String(ratio) | Value::Ident(ratio) if is_crop_ratio(ratio) => {}
+            Value::String(ratio) | Value::Ident(ratio) => errors.push(DslError::validation(
+                line,
+                col,
+                format!("invalid crop_aspect_lock ratio \"{ratio}\", expected WIDTH/HEIGHT"),
+            )),
+            _ => errors.push(DslError::validation(
+                line,
+                col,
+                "crop_aspect_lock entries must be ratio strings".to_string(),
+            )),
+        }
+    }
+}
+
+fn is_crop_ratio(value: &str) -> bool {
+    let Some((width, height)) = value.split_once('/') else {
+        return false;
+    };
+    let Ok(width) = width.parse::<u32>() else {
+        return false;
+    };
+    let Ok(height) = height.parse::<u32>() else {
+        return false;
+    };
+    width > 0 && height > 0
 }
 
 fn validate_ident_setting(
@@ -1797,6 +1935,13 @@ mod tests {
                     scale_algorithm: lanczos
                     hdr_mode: preserve
                     tune: film
+                    crop: auto
+                    crop_sample_duration: 60
+                    crop_sample_count: 3
+                    crop_threshold: 24
+                    crop_minimum: 4
+                    crop_preserve_bottom_pixels: 60
+                    crop_aspect_lock: ["16/9", "4/3"]
                 }
                 transcode audio to aac {
                     preserve: [truehd, dts_hd, flac]
@@ -1920,16 +2065,19 @@ mod tests {
 
     #[test]
     fn test_video_only_settings_all_rejected_on_audio() {
-        for key in &["hdr_mode", "tune", "scale_algorithm", "max_resolution"] {
-            let value = if *key == "max_resolution" {
-                "1080p"
-            } else if *key == "tune" {
-                "film"
-            } else if *key == "scale_algorithm" {
-                "lanczos"
-            } else {
-                "preserve"
-            };
+        for (key, value) in [
+            ("hdr_mode", "preserve"),
+            ("tune", "film"),
+            ("scale_algorithm", "lanczos"),
+            ("max_resolution", "1080p"),
+            ("crop", "auto"),
+            ("crop_sample_duration", "60"),
+            ("crop_sample_count", "3"),
+            ("crop_threshold", "24"),
+            ("crop_minimum", "4"),
+            ("crop_preserve_bottom_pixels", "60"),
+            ("crop_aspect_lock", r#"["16/9"]"#),
+        ] {
             let input = format!(
                 r#"policy "test" {{
                     phase tc {{
@@ -1989,6 +2137,77 @@ mod tests {
             "expected invalid max_resolution error, got: {:?}",
             err.errors
         );
+    }
+
+    #[test]
+    fn test_invalid_crop_mode() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    crop: manual
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("invalid crop value")),
+            "expected invalid crop mode error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_invalid_crop_numeric_settings() {
+        for (key, value) in [
+            ("crop_sample_duration", "0"),
+            ("crop_sample_count", "0"),
+            ("crop_threshold", "256"),
+            ("crop_minimum", "1.5"),
+            ("crop_preserve_bottom_pixels", "1.5"),
+        ] {
+            let input = format!(
+                r#"policy "test" {{
+                    phase tc {{
+                        transcode video to hevc {{
+                            crop: auto
+                            {key}: {value}
+                        }}
+                    }}
+                }}"#
+            );
+            let ast = parse_policy(&input).unwrap();
+            let err = validate(&ast).unwrap_err();
+            assert!(
+                err.errors
+                    .iter()
+                    .any(|e| format!("{e}").contains("must be an integer")),
+                "{key}={value} should be rejected, got: {:?}",
+                err.errors
+            );
+        }
+    }
+
+    #[test]
+    fn test_invalid_crop_aspect_lock() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    crop: auto
+                    crop_aspect_lock: ["16:9", "0/9"]
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        let errors = err
+            .errors
+            .iter()
+            .filter(|e| format!("{e}").contains("invalid crop_aspect_lock ratio"))
+            .count();
+        assert_eq!(errors, 2, "expected ratio errors, got: {:?}", err.errors);
     }
 
     #[test]
