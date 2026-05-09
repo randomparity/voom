@@ -30,8 +30,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event_or_log, load_plugin_config, serialize_event_or_log, ActionParams,
-    Capability, Event, HostFunctions, OnEventResult, OperationType, PluginInfoData,
+    deserialize_event_or_log, load_plugin_config, serialize_event_or_log, ActionParams, Capability,
+    Event, HostFunctions, OnEventResult, OperationType, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -39,10 +39,7 @@ pub fn get_info() -> PluginInfoData {
         "handbrake-executor",
         "0.1.0",
         vec![Capability::Execute {
-            operations: vec![
-                OperationType::TranscodeVideo,
-                OperationType::TranscodeAudio,
-            ],
+            operations: vec![OperationType::TranscodeVideo, OperationType::TranscodeAudio],
             formats: vec!["mkv".to_string(), "mp4".to_string()],
         }],
     )
@@ -111,21 +108,22 @@ pub fn on_event(
         .unwrap_or("mkv");
     let output_path = format!(
         "{}.handbrake.{output_ext}",
-        input_path.rsplit_once('.').map(|(base, _)| base).unwrap_or(&input_path)
+        input_path
+            .rsplit_once('.')
+            .map(|(base, _)| base)
+            .unwrap_or(&input_path)
     );
 
-    host.log("info", &format!(
-        "transcoding {} via HandBrake ({} action(s))",
-        plan.file.path.display(),
-        transcode_actions.len()
-    ));
-
-    let args = build_handbrake_args(
-        &input_path,
-        &output_path,
-        &transcode_actions,
-        &config,
+    host.log(
+        "info",
+        &format!(
+            "transcoding {} via HandBrake ({} action(s))",
+            plan.file.path.display(),
+            transcode_actions.len()
+        ),
     );
+
+    let args = build_handbrake_args(&input_path, &output_path, &transcode_actions, &config);
 
     let result = host.run_tool(
         handbrake_bin,
@@ -135,17 +133,19 @@ pub fn on_event(
 
     match result {
         Ok(output) if output.exit_code == 0 => {
-            host.log("info", &format!("HandBrake transcode complete: {output_path}"));
+            host.log(
+                "info",
+                &format!("HandBrake transcode complete: {output_path}"),
+            );
 
-            let completed_event = Event::PlanCompleted(
-                voom_plugin_sdk::domain::PlanCompletedEvent::new(
+            let completed_event =
+                Event::PlanCompleted(voom_plugin_sdk::domain::PlanCompletedEvent::new(
                     plan.id,
                     plan.file.path.clone(),
                     plan.phase_name.clone(),
                     transcode_actions.len(),
                     false,
-                ),
-            );
+                ));
             let produced_payload = serialize_event_or_log(&completed_event, host)?;
 
             let data = serde_json::json!({
@@ -154,28 +154,31 @@ pub fn on_event(
                 "actions_executed": transcode_actions.len(),
             });
 
-            Some(OnEventResult::new(
-                "handbrake-executor",
-                vec![(
-                    completed_event.event_type().to_string(),
-                    produced_payload,
-                )],
-                Some(serde_json::to_vec(&data).map_err(|e| {
+            let result_data = serde_json::to_vec(&data)
+                .map_err(|e| {
                     host.log("error", &format!("failed to serialize result data: {e}"));
-                }).ok()?),
+                })
+                .ok()?;
+
+            Some(OnEventResult::claimed_success(
+                "handbrake-executor",
+                vec![(completed_event.event_type().to_string(), produced_payload)],
+                Some(result_data),
             ))
         }
         Ok(output) => {
-            host.log("error", &format!(
+            let error = format!(
                 "HandBrake exited with code {}: {}",
                 output.exit_code,
                 String::from_utf8_lossy(&output.stderr)
-            ));
-            None
+            );
+            host.log("error", &error);
+            Some(OnEventResult::claimed_failure("handbrake-executor", error))
         }
         Err(e) => {
-            host.log("error", &format!("HandBrake execution failed: {e}"));
-            None
+            let error = format!("HandBrake execution failed: {e}");
+            host.log("error", &error);
+            Some(OnEventResult::claimed_failure("handbrake-executor", error))
         }
     }
 }
@@ -243,10 +246,7 @@ fn apply_video_args(
 }
 
 /// Append audio encoder arguments from a `TranscodeAudio` action.
-fn apply_audio_args(
-    args: &mut Vec<String>,
-    action: &voom_plugin_sdk::domain::PlannedAction,
-) {
+fn apply_audio_args(args: &mut Vec<String>, action: &voom_plugin_sdk::domain::PlannedAction) {
     let ActionParams::Transcode { codec, settings } = &action.parameters else {
         return;
     };
@@ -307,11 +307,15 @@ mod tests {
                 exit_code: 1,
             }
         }
-
     }
 
     impl HostFunctions for MockHost {
-        fn run_tool(&self, _tool: &str, _args: &[String], _timeout_ms: u64) -> Result<ToolOutput, String> {
+        fn run_tool(
+            &self,
+            _tool: &str,
+            _args: &[String],
+            _timeout_ms: u64,
+        ) -> Result<ToolOutput, String> {
             Ok(ToolOutput::new(
                 self.exit_code,
                 b"encoded 100%".to_vec(),
@@ -349,8 +353,7 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "x265".to_string(),
-                settings: TranscodeSettings::default()
-                    .with_crf(Some(22)),
+                settings: TranscodeSettings::default().with_crf(Some(22)),
             },
             "Transcode video to HEVC CRF 22",
         ))
@@ -359,8 +362,7 @@ mod tests {
             1,
             ActionParams::Transcode {
                 codec: "opus".to_string(),
-                settings: TranscodeSettings::default()
-                    .with_bitrate(Some("128k".into())),
+                settings: TranscodeSettings::default().with_bitrate(Some("128k".into())),
             },
             "Transcode audio to Opus 128k",
         ))
@@ -384,15 +386,15 @@ mod tests {
     fn test_on_event_transcode_success() {
         let host = MockHost::new();
         let plan = make_transcode_plan();
-        let event = Event::PlanCreated(
-            voom_plugin_sdk::domain::PlanCreatedEvent::new(plan),
-        );
+        let event = Event::PlanCreated(voom_plugin_sdk::domain::PlanCreatedEvent::new(plan));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("plan.created", &payload, &host);
         assert!(result.is_some());
         let result = result.unwrap();
         assert_eq!(result.plugin_name, "handbrake-executor");
+        assert!(result.claimed);
+        assert!(result.execution_error.is_none());
         assert_eq!(result.produced_events.len(), 1);
 
         let produced: Event = deserialize_event(&result.produced_events[0].1).unwrap();
@@ -407,13 +409,20 @@ mod tests {
     fn test_on_event_transcode_failure() {
         let host = MockHost::with_failure();
         let plan = make_transcode_plan();
-        let event = Event::PlanCreated(
-            voom_plugin_sdk::domain::PlanCreatedEvent::new(plan),
-        );
+        let event = Event::PlanCreated(voom_plugin_sdk::domain::PlanCreatedEvent::new(plan));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("plan.created", &payload, &host);
-        assert!(result.is_none());
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.plugin_name, "handbrake-executor");
+        assert!(result.claimed);
+        assert!(result.produced_events.is_empty());
+        assert!(result.data.is_none());
+        assert_eq!(
+            result.execution_error,
+            Some("HandBrake exited with code 1: encoding error".to_string())
+        );
     }
 
     #[test]
@@ -430,9 +439,7 @@ mod tests {
             ActionParams::Empty,
             "set default",
         ));
-        let event = Event::PlanCreated(
-            voom_plugin_sdk::domain::PlanCreatedEvent::new(plan),
-        );
+        let event = Event::PlanCreated(voom_plugin_sdk::domain::PlanCreatedEvent::new(plan));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("plan.created", &payload, &host);
@@ -453,8 +460,7 @@ mod tests {
             0,
             ActionParams::Transcode {
                 codec: "x265".to_string(),
-                settings: TranscodeSettings::default()
-                    .with_crf(Some(20)),
+                settings: TranscodeSettings::default().with_crf(Some(20)),
             },
             "transcode",
         );

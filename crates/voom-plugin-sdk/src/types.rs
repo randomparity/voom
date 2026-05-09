@@ -97,6 +97,7 @@ pub struct OnEventResult {
 }
 
 impl OnEventResult {
+    /// Create an observer/enrichment result that does not claim execution ownership.
     #[must_use]
     pub fn new(
         plugin_name: impl Into<String>,
@@ -111,6 +112,36 @@ impl OnEventResult {
             execution_error: None,
             execution_detail: None,
         }
+    }
+
+    /// Create a successful executor result that claims the plan lifecycle.
+    #[must_use]
+    pub fn claimed_success(
+        plugin_name: impl Into<String>,
+        produced_events: Vec<(String, Vec<u8>)>,
+        data: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            claimed: true,
+            ..Self::new(plugin_name, produced_events, data)
+        }
+    }
+
+    /// Create a failed executor result that claims the plan lifecycle.
+    #[must_use]
+    pub fn claimed_failure(plugin_name: impl Into<String>, error: impl Into<String>) -> Self {
+        Self {
+            claimed: true,
+            execution_error: Some(error.into()),
+            ..Self::new(plugin_name, Vec::new(), None)
+        }
+    }
+
+    /// Attach executor-specific detail bytes to a result.
+    #[must_use]
+    pub fn with_execution_detail(mut self, detail: impl Into<Vec<u8>>) -> Self {
+        self.execution_detail = Some(detail.into());
+        self
     }
 }
 
@@ -169,5 +200,51 @@ mod tests {
         assert_eq!(info.author, "VOOM Contributors");
         assert_eq!(info.license, "MIT");
         assert_eq!(info.homepage, "https://example.com");
+    }
+
+    #[test]
+    fn test_on_event_result_new_is_unclaimed() {
+        let result = OnEventResult::new("metadata-plugin", Vec::new(), None);
+
+        assert_eq!(result.plugin_name, "metadata-plugin");
+        assert!(!result.claimed);
+        assert!(result.execution_error.is_none());
+        assert!(result.execution_detail.is_none());
+    }
+
+    #[test]
+    fn test_on_event_result_claimed_success() {
+        let events = vec![("plan.completed".to_string(), vec![1, 2, 3])];
+        let data = Some(vec![4, 5, 6]);
+
+        let result = OnEventResult::claimed_success("executor", events.clone(), data.clone());
+
+        assert_eq!(result.plugin_name, "executor");
+        assert_eq!(result.produced_events, events);
+        assert_eq!(result.data, data);
+        assert!(result.claimed);
+        assert!(result.execution_error.is_none());
+    }
+
+    #[test]
+    fn test_on_event_result_claimed_failure() {
+        let result = OnEventResult::claimed_failure("executor", "tool exited with status 1");
+
+        assert_eq!(result.plugin_name, "executor");
+        assert!(result.claimed);
+        assert!(result.produced_events.is_empty());
+        assert!(result.data.is_none());
+        assert_eq!(
+            result.execution_error,
+            Some("tool exited with status 1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_on_event_result_execution_detail_builder() {
+        let result =
+            OnEventResult::claimed_failure("executor", "failed").with_execution_detail(vec![1, 2]);
+
+        assert_eq!(result.execution_detail, Some(vec![1, 2]));
     }
 }
