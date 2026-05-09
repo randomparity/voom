@@ -18,6 +18,7 @@ use voom_domain::utils::since::parse_since;
 
 mod retention_coverage {
     use chrono::{DateTime, Duration, Utc};
+    use voom_domain::errors::Result;
 
     /// Hard floor below which we treat a positive lag as noise: the two
     /// `MIN(created_at)` queries that feed `evaluate` are not atomic, and a
@@ -59,6 +60,46 @@ mod retention_coverage {
                     }
                 }
             }
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct QueryFailure {
+        pub query: &'static str,
+        pub error: String,
+    }
+
+    pub fn evaluate_query_results(
+        oldest_job: Result<Option<DateTime<Utc>>>,
+        oldest_event: Result<Option<DateTime<Utc>>>,
+    ) -> std::result::Result<CoverageStatus, Vec<QueryFailure>> {
+        let mut failures = Vec::new();
+
+        let oldest_job = match oldest_job {
+            Ok(value) => value,
+            Err(e) => {
+                failures.push(QueryFailure {
+                    query: "oldest_job_created_at",
+                    error: e.to_string(),
+                });
+                None
+            }
+        };
+        let oldest_event = match oldest_event {
+            Ok(value) => value,
+            Err(e) => {
+                failures.push(QueryFailure {
+                    query: "oldest_event_at",
+                    error: e.to_string(),
+                });
+                None
+            }
+        };
+
+        if failures.is_empty() {
+            Ok(evaluate(oldest_job, oldest_event))
+        } else {
+            Err(failures)
         }
     }
 }
@@ -178,15 +219,16 @@ pub fn check(format: OutputFormat) -> Result<()> {
         print!("  Retention coverage ... ");
     }
     if let Ok(app::BootstrapResult { store, .. }) = &kernel_result {
-        let oldest_job = store.oldest_job_created_at().ok().flatten();
-        let oldest_event = store.oldest_event_at().ok().flatten();
-        match retention_coverage::evaluate(oldest_job, oldest_event) {
-            retention_coverage::CoverageStatus::Ok => {
+        match retention_coverage::evaluate_query_results(
+            store.oldest_job_created_at(),
+            store.oldest_event_at(),
+        ) {
+            Ok(retention_coverage::CoverageStatus::Ok) => {
                 if print_human {
                     println!("{}", style("OK").green());
                 }
             }
-            retention_coverage::CoverageStatus::EventLogEmptyButJobsExist => {
+            Ok(retention_coverage::CoverageStatus::EventLogEmptyButJobsExist) => {
                 if print_human {
                     println!(
                         "{} jobs table is non-empty but event_log is empty — \
@@ -197,7 +239,7 @@ pub fn check(format: OutputFormat) -> Result<()> {
                 }
                 issues += 1;
             }
-            retention_coverage::CoverageStatus::AsymmetryDetected { gap_seconds } => {
+            Ok(retention_coverage::CoverageStatus::AsymmetryDetected { gap_seconds }) => {
                 let hours = gap_seconds / 3600;
                 let unit = if hours == 1 { "hour" } else { "hours" };
                 if print_human {
@@ -212,6 +254,20 @@ pub fn check(format: OutputFormat) -> Result<()> {
                     );
                 }
                 issues += 1;
+            }
+            Err(failures) => {
+                if print_human {
+                    println!(
+                        "{} failed to query retention coverage metadata:",
+                        style("ERROR").red()
+                    );
+                }
+                for failure in failures {
+                    if print_human {
+                        println!("    {}: {}", failure.query, failure.error);
+                    }
+                    issues += 1;
+                }
             }
         }
     } else if print_human {
@@ -783,8 +839,9 @@ mod tests {
 
 #[cfg(test)]
 mod retention_coverage_tests {
-    use super::retention_coverage::{evaluate, CoverageStatus};
+    use super::retention_coverage::{evaluate, evaluate_query_results, CoverageStatus};
     use chrono::{Duration, Utc};
+    use voom_domain::errors::{StorageErrorKind, VoomError};
 
     #[test]
     fn ok_when_no_jobs_and_no_events() {
@@ -850,5 +907,25 @@ mod retention_coverage_tests {
             }
             other => panic!("expected AsymmetryDetected, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn query_failures_are_reported_without_evaluation() {
+        let failed_job_query = Err(VoomError::Storage {
+            kind: StorageErrorKind::Other,
+            message: "job query failed".into(),
+        });
+        let failed_event_query = Err(VoomError::Storage {
+            kind: StorageErrorKind::Other,
+            message: "event query failed".into(),
+        });
+
+        let failures = evaluate_query_results(failed_job_query, failed_event_query).unwrap_err();
+
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0].query, "oldest_job_created_at");
+        assert!(failures[0].error.contains("job query failed"));
+        assert_eq!(failures[1].query, "oldest_event_at");
+        assert!(failures[1].error.contains("event query failed"));
     }
 }
