@@ -411,10 +411,16 @@ impl WorkerPool {
         let (result_tx, mut result_rx) = mpsc::channel::<JobResult>(job_ids.len().max(1));
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
 
-        for job_id in job_ids {
+        let mut unstarted_job_ids = Vec::new();
+        let mut job_iter = job_ids.into_iter();
+        while let Some(job_id) = job_iter.next() {
             let permit = tokio::select! {
                 p = semaphore.clone().acquire_owned() => p.expect("semaphore not closed"),
-                () = self.token.cancelled() => break,
+                () = self.token.cancelled() => {
+                    unstarted_job_ids.push(job_id);
+                    unstarted_job_ids.extend(job_iter);
+                    break;
+                },
             };
             let queue = self.queue.clone();
             let token = self.token.clone();
@@ -450,6 +456,8 @@ impl WorkerPool {
             handles.push(handle);
         }
 
+        cancel_unstarted_jobs(self.queue.clone(), unstarted_job_ids).await;
+
         drop(result_tx);
 
         while let Some(result) = result_rx.recv().await {
@@ -468,6 +476,30 @@ impl WorkerPool {
         );
 
         results
+    }
+}
+
+async fn cancel_unstarted_jobs(queue: Arc<JobQueue>, job_ids: Vec<Uuid>) {
+    if job_ids.is_empty() {
+        return;
+    }
+
+    let cancelled = job_ids.len();
+    if let Err(e) = tokio::task::spawn_blocking(move || {
+        for job_id in job_ids {
+            if let Err(e) = queue.cancel(&job_id) {
+                tracing::warn!(%job_id, error = %e, "failed to cancel unstarted job");
+            }
+        }
+    })
+    .await
+    {
+        tracing::error!(error = %e, "failed to cancel unstarted jobs");
+    } else {
+        tracing::debug!(
+            cancelled,
+            "cancelled unstarted jobs after batch cancellation"
+        );
     }
 }
 
@@ -969,6 +1001,62 @@ mod tests {
         .await;
 
         assert!(pool.failed_count() >= 1);
+    }
+
+    #[tokio::test]
+    async fn cancelled_batch_cancels_unstarted_jobs() {
+        use voom_domain::job::JobStatus;
+        use voom_domain::storage::JobFilters;
+
+        let queue = test_queue();
+        let token = CancellationToken::new();
+        let pool = WorkerPool::new(
+            queue.clone(),
+            WorkerPoolConfig {
+                max_workers: 1,
+                ..Default::default()
+            },
+            token.clone(),
+        );
+
+        let items: Vec<WorkItem> = (0..3)
+            .map(|i| WorkItem {
+                job_type: voom_domain::job::JobType::Custom(format!("task-{i}")),
+                priority: 100,
+                payload: None,
+            })
+            .collect();
+
+        let results = pool
+            .process_batch(
+                items,
+                move |_job| {
+                    let token = token.clone();
+                    async move {
+                        token.cancel();
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        Ok(None)
+                    }
+                },
+                JobErrorStrategy::Continue,
+                Arc::new(NoopReporter),
+            )
+            .await;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(pool.completed_count(), 1);
+
+        let jobs = queue.list_jobs(&JobFilters::default()).unwrap();
+        let cancelled = jobs
+            .iter()
+            .filter(|job| job.status == JobStatus::Cancelled)
+            .count();
+        let completed = jobs
+            .iter()
+            .filter(|job| job.status == JobStatus::Completed)
+            .count();
+        assert_eq!(completed, 1);
+        assert_eq!(cancelled, 2);
     }
 
     #[test]
