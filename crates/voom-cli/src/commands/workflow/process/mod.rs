@@ -1512,7 +1512,8 @@ mod tests {
             false,
             &ctx,
         )
-        .await;
+        .await
+        .expect("finalize successful plan");
 
         assert_eq!(
             store.count_files(&Default::default()).unwrap(),
@@ -1600,7 +1601,8 @@ mod tests {
             false,
             &ctx,
         )
-        .await;
+        .await
+        .expect("finalize successful plan");
 
         assert_eq!(
             new_file.path, mkv_path,
@@ -1691,7 +1693,8 @@ mod tests {
             false,
             &ctx,
         )
-        .await;
+        .await
+        .expect("finalize successful plan");
 
         assert_eq!(
             new_file.path, path,
@@ -1747,7 +1750,8 @@ mod tests {
             phase_name: "convert",
             plan_id: uuid::Uuid::new_v4(),
             recorder: &transition_recorder,
-        });
+        })
+        .expect("record transition");
 
         let by_new = store.transitions_for_path(&new_file.path).unwrap();
         assert_eq!(

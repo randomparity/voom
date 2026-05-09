@@ -4,6 +4,8 @@
 //! requiring callers to pass the whole process orchestration context.
 
 use super::context::TransitionRecorder;
+use voom_domain::errors::StorageErrorKind;
+use voom_domain::VoomError;
 
 /// Grouped arguments for `record_file_transition`.
 pub(super) struct FileTransitionContext<'a> {
@@ -20,11 +22,11 @@ pub(super) struct FileTransitionContext<'a> {
 }
 
 /// Record a file transition in the store if the content hash or path changed.
-pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
+pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) -> voom_domain::Result<()> {
     let hash_changed = tctx.new_file.content_hash != tctx.old_file.content_hash;
     let path_changed = tctx.old_file.path != tctx.new_file.path;
     if !hash_changed && !path_changed {
-        return;
+        return Ok(());
     }
 
     let mut transition = voom_domain::FileTransition::new(
@@ -61,16 +63,25 @@ pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
         .then_some(tctx.new_file.content_hash.as_deref())
         .flatten();
 
-    if let Err(e) =
-        tctx.recorder
-            .store
-            .record_post_execution(new_path, new_expected_hash, &transition)
-    {
-        tracing::warn!(
-            path = %tctx.old_file.path.display(),
-            error = %e,
-            "failed to record post-execution bundle"
-        );
+    tctx.recorder
+        .store
+        .record_post_execution(new_path, new_expected_hash, &transition)
+        .map_err(|error| transition_record_error(tctx, error))?;
+
+    Ok(())
+}
+
+fn transition_record_error(tctx: &FileTransitionContext<'_>, error: VoomError) -> VoomError {
+    let message = format!(
+        "failed to record post-execution transition for old file '{}': {error}",
+        tctx.old_file.path.display()
+    );
+    match error {
+        VoomError::Storage { kind, .. } => VoomError::Storage { kind, message },
+        _ => VoomError::Storage {
+            kind: StorageErrorKind::Other,
+            message,
+        },
     }
 }
 
@@ -112,7 +123,8 @@ mod tests {
             phase_name: "metadata",
             plan_id,
             recorder: &recorder,
-        });
+        })
+        .expect("record transition");
 
         assert!(store
             .transitions_for_file(&file.id)
@@ -145,7 +157,8 @@ mod tests {
             phase_name: "container",
             plan_id,
             recorder: &recorder,
-        });
+        })
+        .expect("record transition");
 
         let transitions = store
             .transitions_for_file(&old_file.id)

@@ -376,7 +376,8 @@ async fn execute_phase_plan(
             executor,
             phase_output,
         } => {
-            handle_phase_success(plan, state, phase_ctx, &executor, elapsed_ms, phase_output).await;
+            handle_phase_success(plan, state, phase_ctx, &executor, elapsed_ms, phase_output)
+                .await?;
         }
         PlanOutcome::Failed(failed) => {
             handle_phase_failure(failed, &plan, state, phase_ctx);
@@ -393,7 +394,7 @@ async fn handle_phase_success(
     executor: &str,
     elapsed_ms: u64,
     successful_phase_output: PhaseOutput,
-) {
+) -> std::result::Result<(), String> {
     if check_size_increase(&plan, &state.current_file, phase_ctx.safeguards) {
         state.outcomes.insert(
             plan.phase_name.clone(),
@@ -403,7 +404,7 @@ async fn handle_phase_success(
             plan.phase_name.clone(),
             phase_output(false, false, Some("safeguard_failed")),
         );
-        return;
+        return Ok(());
     }
     if check_duration_shrink(&plan, &state.current_file, phase_ctx.safeguards).await {
         state.outcomes.insert(
@@ -414,7 +415,7 @@ async fn handle_phase_success(
             plan.phase_name.clone(),
             phase_output(false, false, Some("safeguard_failed")),
         );
-        return;
+        return Ok(());
     }
 
     state.any_executed = true;
@@ -441,7 +442,9 @@ async fn handle_phase_success(
         phase_ctx.keep_backups,
         phase_ctx.process,
     )
-    .await;
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn handle_phase_failure(
@@ -519,7 +522,7 @@ pub(super) async fn finalize_successful_plan_execution(
     elapsed_ms: u64,
     keep_backups: bool,
     ctx: &ProcessContext<'_>,
-) -> voom_domain::media::MediaFile {
+) -> voom_domain::Result<voom_domain::media::MediaFile> {
     if keep_backups {
         ctx.counters
             .backup_bytes
@@ -572,7 +575,7 @@ pub(super) async fn finalize_successful_plan_execution(
         phase_name: &phase_name,
         plan_id,
         recorder: &transition_recorder,
-    });
+    })?;
 
     // Defense-in-depth: clear any `bad_files` row at the post-execution
     // path. The bundle in `record_post_execution` already does this for
@@ -590,7 +593,7 @@ pub(super) async fn finalize_successful_plan_execution(
         );
     }
 
-    new_file
+    Ok(new_file)
 }
 
 /// Check file hash for TOCTOU guard. Returns Some(json) if file should be skipped.
