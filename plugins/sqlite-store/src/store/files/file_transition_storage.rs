@@ -9,7 +9,10 @@ use voom_domain::stats::{ProcessingOutcome, SavingsBucket, SavingsReport, TimePe
 use voom_domain::storage::{FileTransitionStorage, PruneReport, RetentionPolicy};
 use voom_domain::transition::{FileTransition, TransitionSource};
 
-use crate::store::{format_datetime, storage_err, SqliteStore};
+use crate::store::{
+    checked_i64_to_u64, checked_optional_i64_to_u32, checked_optional_i64_to_u64, format_datetime,
+    storage_err, SqliteStore,
+};
 
 /// Insert a `FileTransition` into `file_transitions`. Accepts any
 /// `&rusqlite::Connection`, including one obtained via `Deref` from an
@@ -151,10 +154,10 @@ impl FileTransitionStorage for SqliteStore {
                     executor.filter(|s| !s.is_empty()),
                     phase.filter(|s| !s.is_empty()),
                     period_val.filter(|s| !s.is_empty()),
-                    cnt as u64,
+                    checked_i64_to_u64(cnt, "file_transitions.cnt")?,
                     saved,
-                    dur as u64,
-                    files as u64,
+                    checked_i64_to_u64(dur, "file_transitions.dur")?,
+                    checked_i64_to_u64(files, "file_transitions.files")?,
                 ))
             })
             .map_err(storage_err("failed to query savings by provenance"))?
@@ -301,7 +304,7 @@ impl FileTransitionStorage for SqliteStore {
                 Ok(voom_domain::storage::SessionSummary::new(
                     session_id,
                     started_at,
-                    count as u64,
+                    checked_i64_to_u64(count, "file_transitions.cnt")?,
                 ))
             })
             .map_err(storage_err("failed to query failure sessions"))?
@@ -461,28 +464,29 @@ fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition
         )
     })?;
 
-    let duration_ms: Option<i64> = row.get("duration_ms")?;
-    let actions_taken: Option<i64> = row.get("actions_taken")?;
-    let tracks_modified: Option<i64> = row.get("tracks_modified")?;
+    let from_size = checked_optional_i64_to_u64(from_size, "file_transitions.from_size")?;
+    let to_size = checked_i64_to_u64(to_size, "file_transitions.to_size")?;
+    let duration_ms =
+        checked_optional_i64_to_u64(row.get("duration_ms")?, "file_transitions.duration_ms")?;
+    let actions_taken =
+        checked_optional_i64_to_u32(row.get("actions_taken")?, "file_transitions.actions_taken")?;
+    let tracks_modified = checked_optional_i64_to_u32(
+        row.get("tracks_modified")?,
+        "file_transitions.tracks_modified",
+    )?;
     let outcome_str: Option<String> = row.get("outcome")?;
     let snapshot_json: Option<String> = row.get("metadata_snapshot")?;
 
-    let mut t = FileTransition::new(
-        file_id,
-        PathBuf::from(path_str),
-        to_hash,
-        to_size as u64,
-        source,
-    );
+    let mut t = FileTransition::new(file_id, PathBuf::from(path_str), to_hash, to_size, source);
     t.id = id;
     t.from_path = from_path_str.filter(|s| !s.is_empty()).map(PathBuf::from);
     t.from_hash = from_hash.filter(|s| !s.is_empty());
-    t.from_size = from_size.map(|v| v as u64);
+    t.from_size = from_size;
     t.source_detail = source_detail.filter(|s| !s.is_empty());
     t.plan_id = plan_id;
-    t.duration_ms = duration_ms.map(|v| v as u64);
-    t.actions_taken = actions_taken.map(|v| v as u32);
-    t.tracks_modified = tracks_modified.map(|v| v as u32);
+    t.duration_ms = duration_ms;
+    t.actions_taken = actions_taken;
+    t.tracks_modified = tracks_modified;
     t.outcome = outcome_str.and_then(|s| {
         ProcessingOutcome::parse(&s).or_else(|| {
             tracing::warn!(value = %s, "unknown ProcessingOutcome in file_transitions");
@@ -551,6 +555,34 @@ mod tests {
 
         let err = store.transitions_for_file(&file_id).unwrap_err();
         assert!(err.to_string().contains("unknown transition source"));
+    }
+
+    #[test]
+    fn transitions_reject_negative_numeric_fields() {
+        let store = test_store();
+        let file_id = Uuid::new_v4();
+        let transition = FileTransition::new(
+            file_id,
+            PathBuf::from("/media/source.mkv"),
+            "hash".into(),
+            10,
+            TransitionSource::Voom,
+        );
+        store.record_transition(&transition).unwrap();
+
+        let conn = store.conn().unwrap();
+        conn.execute(
+            "UPDATE file_transitions SET to_size = -1 WHERE id = ?1",
+            params![transition.id.to_string()],
+        )
+        .unwrap();
+
+        let err = store.transitions_for_file(&file_id).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("file_transitions.to_size"),
+            "error should mention corrupt column: {msg}"
+        );
     }
 
     #[test]

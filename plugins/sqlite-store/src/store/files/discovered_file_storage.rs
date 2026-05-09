@@ -6,7 +6,9 @@ use uuid::Uuid;
 
 use voom_domain::errors::Result;
 
-use crate::store::{format_datetime, parse_required_datetime, storage_err, SqliteStore};
+use crate::store::{
+    checked_i64_to_u64, format_datetime, parse_required_datetime, storage_err, SqliteStore,
+};
 
 /// Status of a discovered file in the staging pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,7 +142,7 @@ impl SqliteStore {
                 Ok(DiscoveredFile {
                     id,
                     path: row.get("path")?,
-                    size: row.get::<_, i64>("size")? as u64,
+                    size: checked_i64_to_u64(row.get("size")?, "discovered_files.size")?,
                     content_hash: {
                         let h: String = row.get("content_hash")?;
                         if h.is_empty() {
@@ -256,6 +258,27 @@ mod tests {
 
         let files = store.list_discovered_files(None).unwrap();
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn list_discovered_files_rejects_negative_size() {
+        let store = test_store();
+        store
+            .upsert_discovered_file("/media/test.mkv", 1024, Some("abc"))
+            .unwrap();
+        let conn = store.conn().unwrap();
+        conn.execute(
+            "UPDATE discovered_files SET size = -1 WHERE path = ?1",
+            params!["/media/test.mkv"],
+        )
+        .unwrap();
+
+        let err = store.list_discovered_files(None).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("discovered_files.size"),
+            "error should mention corrupt column: {msg}"
+        );
     }
 
     #[test]
