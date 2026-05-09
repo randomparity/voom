@@ -171,6 +171,26 @@ impl FfmpegCommand {
         self
     }
 
+    /// Set output color metadata for the encoded video stream.
+    #[must_use]
+    pub fn video_color_metadata(mut self, primaries: &str, transfer: &str, matrix: &str) -> Self {
+        self.args.push("-color_primaries".to_string());
+        self.args.push(primaries.to_string());
+        self.args.push("-color_trc".to_string());
+        self.args.push(transfer.to_string());
+        self.args.push("-colorspace".to_string());
+        self.args.push(matrix.to_string());
+        self
+    }
+
+    /// Add x265 encoder parameters.
+    #[must_use]
+    pub fn x265_params(mut self, params: &str) -> Self {
+        self.args.push("-x265-params".to_string());
+        self.args.push(params.to_string());
+        self
+    }
+
     /// Add an audio filter for a stream or for all audio streams.
     #[must_use]
     pub fn audio_filter(mut self, stream: Option<u32>, filter: &str) -> Self {
@@ -303,6 +323,10 @@ fn apply_tune(encoder: &str, mut cmd: FfmpegCommand, tune: &str) -> FfmpegComman
     cmd
 }
 
+fn encoder_supports_hdr(codec: &str) -> bool {
+    matches!(codec, "hevc" | "h265" | "av1" | "h264")
+}
+
 /// Parse a max-resolution spec into a pixel height.
 fn parse_max_height(spec: &str) -> Option<u32> {
     match spec.to_lowercase().as_str() {
@@ -357,16 +381,40 @@ fn collect_video_filters(file: &MediaFile, action: &PlannedAction) -> Vec<String
         }
     }
 
-    if settings.hdr_mode.as_deref() == Some("tonemap") {
-        filters.push(
-            "zscale=t=linear:npl=100,format=gbrpf32le,\
-             zscale=p=bt709,tonemap=hable:desat=0,\
-             zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
-                .to_string(),
-        );
+    let explicit_tonemap = settings.hdr_mode.as_deref() == Some("tonemap");
+    let source_is_hdr = source_video_track(file, action).is_some_and(|t| t.is_hdr);
+    if should_tonemap(settings) && (explicit_tonemap || source_is_hdr) {
+        let algorithm = settings.tonemap.as_deref().unwrap_or("bt2390");
+        filters.push(tone_map_filter(algorithm));
     }
 
     filters
+}
+
+fn should_tonemap(settings: &voom_domain::plan::TranscodeSettings) -> bool {
+    settings.hdr_mode.as_deref() == Some("tonemap")
+        || settings.preserve_hdr == Some(false)
+        || settings.tonemap.is_some()
+}
+
+fn should_preserve_hdr(
+    source_track: &Track,
+    settings: &voom_domain::plan::TranscodeSettings,
+) -> bool {
+    source_track.is_hdr && !should_tonemap(settings) && settings.preserve_hdr.unwrap_or(true)
+}
+
+fn tone_map_filter(algorithm: &str) -> String {
+    let algorithm = if algorithm == "bt2390" {
+        "bt2390"
+    } else {
+        algorithm
+    };
+    format!(
+        "zscale=t=linear:npl=100,format=gbrpf32le,\
+         zscale=p=bt709,tonemap=tonemap={algorithm}:desat=0,\
+         zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+    )
 }
 
 fn crop_filter(
@@ -405,7 +453,80 @@ fn requires_software_video_filters(settings: &voom_domain::plan::TranscodeSettin
         .as_deref()
         .and_then(parse_max_height)
         .is_some();
-    scales_video || settings.hdr_mode.as_deref() == Some("tonemap") || settings.crop.is_some()
+    scales_video || should_tonemap(settings) || settings.crop.is_some()
+}
+
+fn hdr_color_primaries(track: &Track) -> &str {
+    track.color_primaries.as_deref().unwrap_or("bt2020")
+}
+
+fn hdr_color_transfer(track: &Track) -> &str {
+    track.color_transfer.as_deref().unwrap_or("smpte2084")
+}
+
+fn hdr_color_matrix(track: &Track) -> &str {
+    track.color_matrix.as_deref().unwrap_or("bt2020nc")
+}
+
+fn x265_hdr_params(track: &Track) -> String {
+    let mut params = vec![
+        format!("colorprim={}", hdr_color_primaries(track)),
+        format!("transfer={}", hdr_color_transfer(track)),
+        format!("colormatrix={}", hdr_color_matrix(track)),
+    ];
+    if let Some(master_display) = &track.master_display {
+        params.push(format!("master-display={master_display}"));
+    }
+    if let (Some(max_cll), Some(max_fall)) = (track.max_cll, track.max_fall) {
+        params.push(format!("max-cll={max_cll},{max_fall}"));
+    }
+    params.join(":")
+}
+
+fn apply_hdr_preservation(
+    mut cmd: FfmpegCommand,
+    encoder: &str,
+    codec: &str,
+    source_track: &Track,
+) -> Result<FfmpegCommand> {
+    if !encoder_supports_hdr(codec) {
+        return Err(VoomError::ToolExecution {
+            tool: "ffmpeg".into(),
+            message: format!(
+                "cannot preserve {} HDR metadata while transcoding to {codec}; \
+                 choose hevc or av1, or set preserve_hdr: false to tone-map to SDR",
+                source_track.hdr_format.as_deref().unwrap_or("source")
+            ),
+        });
+    }
+
+    cmd = cmd.video_color_metadata(
+        hdr_color_primaries(source_track),
+        hdr_color_transfer(source_track),
+        hdr_color_matrix(source_track),
+    );
+
+    if codec == "hevc" || encoder.contains("265") || encoder.contains("hevc") {
+        cmd = cmd.arg("-pix_fmt");
+        let pix_fmt = if encoder.ends_with("_vaapi")
+            || encoder.ends_with("_qsv")
+            || encoder.ends_with("_nvenc")
+        {
+            "p010le"
+        } else {
+            "yuv420p10le"
+        };
+        cmd = cmd.arg(pix_fmt);
+        if encoder == "libx265" {
+            cmd = cmd.x265_params(&x265_hdr_params(source_track));
+        }
+    }
+
+    Ok(cmd)
+}
+
+fn apply_sdr_color_metadata(cmd: FfmpegCommand) -> FfmpegCommand {
+    cmd.video_color_metadata("bt709", "bt709", "bt709")
 }
 
 fn apply_transcode_video(
@@ -471,6 +592,14 @@ fn apply_transcode_video(
 
     if let Some(ref brate) = settings.bitrate {
         cmd = cmd.arg("-b:v").arg(brate);
+    }
+
+    if let Some(source_track) = source_video_track(file, action) {
+        if should_preserve_hdr(source_track, settings) {
+            cmd = apply_hdr_preservation(cmd, &encoder, codec, source_track)?;
+        } else if source_track.is_hdr && should_tonemap(settings) {
+            cmd = apply_sdr_color_metadata(cmd);
+        }
     }
 
     let filters = collect_video_filters(file, action);
@@ -746,6 +875,23 @@ mod tests {
         file
     }
 
+    fn sample_hdr10_file() -> MediaFile {
+        let mut file = sample_mp4_file();
+        let video = &mut file.tracks[0];
+        video.codec = "hevc".into();
+        video.is_hdr = true;
+        video.hdr_format = Some("HDR10".into());
+        video.pixel_format = Some("yuv420p10le".into());
+        video.color_primaries = Some("bt2020".into());
+        video.color_transfer = Some("smpte2084".into());
+        video.color_matrix = Some("bt2020nc".into());
+        video.max_cll = Some(1000);
+        video.max_fall = Some(400);
+        video.master_display =
+            Some("G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)".into());
+        file
+    }
+
     fn sample_avi_file() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/media/video.avi"));
         file.container = Container::Avi;
@@ -814,6 +960,59 @@ mod tests {
         assert!(args.contains(&"23".to_string()));
         assert!(args.contains(&"-preset".to_string()));
         assert!(args.contains(&"medium".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_preserves_hdr10_metadata_by_default() {
+        let file = sample_hdr10_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default().with_crf(Some(23)),
+            },
+            "Transcode HDR10 video to HEVC",
+        );
+        let output = Path::new("/tmp/output.mkv");
+
+        let args = build_ffmpeg_command(&file, &[&action], output, None).unwrap();
+
+        assert_eq!(args[arg_index(&args, "-color_primaries") + 1], "bt2020");
+        assert_eq!(args[arg_index(&args, "-color_trc") + 1], "smpte2084");
+        assert_eq!(args[arg_index(&args, "-colorspace") + 1], "bt2020nc");
+        assert_eq!(args[arg_index(&args, "-pix_fmt") + 1], "yuv420p10le");
+        let x265 = &args[arg_index(&args, "-x265-params") + 1];
+        assert!(x265.contains("colorprim=bt2020"));
+        assert!(x265.contains("transfer=smpte2084"));
+        assert!(x265.contains("max-cll=1000,400"));
+    }
+
+    #[test]
+    fn test_build_command_tonemaps_hdr_to_sdr_when_preserve_disabled() {
+        let file = sample_hdr10_file();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default()
+                    .with_preserve_hdr(Some(false))
+                    .with_tonemap(Some("hable".into())),
+            },
+            "Tone-map HDR video to SDR",
+        );
+        let output = Path::new("/tmp/output.mkv");
+
+        let args = build_ffmpeg_command(&file, &[&action], output, None).unwrap();
+
+        assert_eq!(args[arg_index(&args, "-color_primaries") + 1], "bt709");
+        assert_eq!(args[arg_index(&args, "-color_trc") + 1], "bt709");
+        assert_eq!(args[arg_index(&args, "-colorspace") + 1], "bt709");
+        let filter = &args[arg_index(&args, "-vf") + 1];
+        assert!(filter.contains("tonemap=tonemap=hable"));
+        assert!(filter.ends_with("format=yuv420p"));
+        assert!(!args.contains(&"-x265-params".to_string()));
     }
 
     #[test]
@@ -1940,7 +2139,7 @@ mod tests {
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
         let filter = &args[vf_pos + 1];
         assert!(
-            filter.contains("tonemap=hable"),
+            filter.contains("tonemap=bt2390"),
             "should have tonemap filter: {filter}"
         );
         assert!(
@@ -1977,7 +2176,7 @@ mod tests {
             "should have scale filter: {filter}"
         );
         assert!(
-            filter.contains("tonemap=hable"),
+            filter.contains("tonemap=bt2390"),
             "should have tonemap filter: {filter}"
         );
     }

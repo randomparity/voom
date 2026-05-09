@@ -338,6 +338,13 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
     compiled_settings.max_resolution = max_resolution;
     compiled_settings.scale_algorithm = get_str("scale_algorithm");
     compiled_settings.hdr_mode = get_str("hdr_mode");
+    compiled_settings.preserve_hdr = match get("preserve_hdr") {
+        Some(Value::Bool(value)) => Some(*value),
+        _ => None,
+    };
+    compiled_settings.tonemap = get_str("tonemap");
+    compiled_settings.hdr_color_metadata = get_str("hdr_color_metadata");
+    compiled_settings.dolby_vision = get_str("dolby_vision");
     compiled_settings.tune = get_str("tune");
     compiled_settings.crop = compile_crop_settings(get, &get_str).map(Box::new);
     compiled_settings.loudness = get("normalize")

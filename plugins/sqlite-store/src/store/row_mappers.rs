@@ -288,6 +288,19 @@ pub(crate) fn row_to_track(row: &Row<'_>) -> rusqlite::Result<Track> {
     t.is_hdr = row.get::<_, i32>("is_hdr")? != 0;
     t.hdr_format = row.get("hdr_format")?;
     t.pixel_format = row.get("pixel_format")?;
+    t.color_primaries = row.get("color_primaries")?;
+    t.color_transfer = row.get("color_transfer")?;
+    t.color_matrix = row.get("color_matrix")?;
+    t.max_cll = checked_optional_i32_to_u32(row.get("max_cll")?, "tracks.max_cll")?;
+    t.max_fall = checked_optional_i32_to_u32(row.get("max_fall")?, "tracks.max_fall")?;
+    t.master_display = row.get("master_display")?;
+    t.dolby_vision_profile = row
+        .get::<_, Option<i32>>("dolby_vision_profile")?
+        .map(|value| {
+            u8::try_from(value)
+                .map_err(|e| numeric_conversion_failure("tracks.dolby_vision_profile", e))
+        })
+        .transpose()?;
     t.is_animation = row.get::<_, Option<i32>>("is_animation")?.map(|v| v != 0);
     Ok(t)
 }

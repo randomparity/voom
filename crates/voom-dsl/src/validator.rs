@@ -905,6 +905,10 @@ const KNOWN_TRANSCODE_KEYS: &[&str] = &[
     "max_resolution",
     "scale_algorithm",
     "hdr_mode",
+    "preserve_hdr",
+    "tonemap",
+    "hdr_color_metadata",
+    "dolby_vision",
     "tune",
     "crop",
     "crop_sample_duration",
@@ -1109,6 +1113,9 @@ fn validate_hw_settings(
 }
 
 const VALID_HDR_MODES: &[&str] = &["preserve", "tonemap"];
+const VALID_TONEMAP_ALGORITHMS: &[&str] = &["bt2390", "hable", "mobius", "reinhard", "clip"];
+const VALID_HDR_COLOR_METADATA: &[&str] = &["copy"];
+const VALID_DOLBY_VISION_MODES: &[&str] = &["copy_rpu"];
 const VALID_TUNE_VALUES: &[&str] = &[
     "film",
     "animation",
@@ -1125,6 +1132,10 @@ const VALID_SCALE_ALGORITHMS: &[&str] = &[
 
 const VIDEO_ONLY_KEYS: &[&str] = &[
     "hdr_mode",
+    "preserve_hdr",
+    "tonemap",
+    "hdr_color_metadata",
+    "dolby_vision",
     "tune",
     "scale_algorithm",
     "max_resolution",
@@ -1176,6 +1187,30 @@ fn validate_video_transcode_settings(
         match key.as_str() {
             "hdr_mode" => {
                 validate_ident_setting(val, "hdr_mode", VALID_HDR_MODES, line, col, errors);
+            }
+            "preserve_hdr" => validate_bool_setting(val, "preserve_hdr", line, col, errors),
+            "tonemap" => {
+                validate_ident_setting(val, "tonemap", VALID_TONEMAP_ALGORITHMS, line, col, errors);
+            }
+            "hdr_color_metadata" => {
+                validate_ident_setting(
+                    val,
+                    "hdr_color_metadata",
+                    VALID_HDR_COLOR_METADATA,
+                    line,
+                    col,
+                    errors,
+                );
+            }
+            "dolby_vision" => {
+                validate_ident_setting(
+                    val,
+                    "dolby_vision",
+                    VALID_DOLBY_VISION_MODES,
+                    line,
+                    col,
+                    errors,
+                );
             }
             "tune" => {
                 validate_ident_setting(val, "tune", VALID_TUNE_VALUES, line, col, errors);
@@ -1620,6 +1655,22 @@ fn validate_ident_setting(
                     _ => "unknown",
                 }
             ),
+        ));
+    }
+}
+
+fn validate_bool_setting(
+    val: &Value,
+    key: &str,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    if !matches!(val, Value::Bool(_)) {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!("{key} requires a boolean value"),
         ));
     }
 }

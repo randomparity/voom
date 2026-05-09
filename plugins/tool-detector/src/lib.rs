@@ -30,6 +30,8 @@ const KNOWN_TOOLS: &[(&str, &[&str])] = &[
     ("HandBrakeCLI", &["--version"]),
     ("nvidia-smi", &["--version"]),
     ("vainfo", &["--version"]),
+    ("hdr10plus_tool", &["--version"]),
+    ("dovi_tool", &["--version"]),
 ];
 
 /// Tool detector plugin: finds external tools (ffprobe, ffmpeg, mkvtoolnix) on PATH.
@@ -212,6 +214,18 @@ fn parse_version(tool_name: &str, output: &str) -> String {
                 .map_or("unknown", str::trim)
                 .to_string()
         }
+        "hdr10plus_tool" | "dovi_tool" => first_line
+            .split_whitespace()
+            .find(|token| {
+                token
+                    .trim_start_matches('v')
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_digit())
+            })
+            .unwrap_or("unknown")
+            .trim_start_matches('v')
+            .to_string(),
         _ => first_line.to_string(),
     }
 }
@@ -319,6 +333,15 @@ mod tests {
     fn test_parse_version_mkvmerge() {
         let output = "mkvmerge v82.0 ('I'm The President') 64-bit";
         assert_eq!(parse_version("mkvmerge", output), "82.0");
+    }
+
+    #[test]
+    fn test_parse_version_hdr_tools() {
+        assert_eq!(
+            parse_version("hdr10plus_tool", "hdr10plus_tool 1.6.0"),
+            "1.6.0"
+        );
+        assert_eq!(parse_version("dovi_tool", "dovi_tool 2.1.0"), "2.1.0");
     }
 
     #[test]

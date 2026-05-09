@@ -21,6 +21,8 @@ pub fn print_tool_status(detector: &voom_tool_detector::ToolDetectorPlugin) -> T
         "HandBrakeCLI",
         "nvidia-smi",
         "vainfo",
+        "hdr10plus_tool",
+        "dovi_tool",
     ];
 
     let mut missing_required = 0u32;

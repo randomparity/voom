@@ -53,6 +53,13 @@ CREATE TABLE IF NOT EXISTS tracks (
     is_hdr INTEGER NOT NULL DEFAULT 0,
     hdr_format TEXT,
     pixel_format TEXT,
+    color_primaries TEXT,
+    color_transfer TEXT,
+    color_matrix TEXT,
+    max_cll INTEGER,
+    max_fall INTEGER,
+    master_display TEXT,
+    dolby_vision_profile INTEGER,
     is_animation INTEGER,
     UNIQUE(file_id, stream_index)
 );
@@ -330,6 +337,27 @@ fn migrate_tracks_columns(
     }
     if table_exists(conn, "tracks")? && !has_column("tracks", "loudness_measured_at")? {
         conn.execute_batch("ALTER TABLE tracks ADD COLUMN loudness_measured_at TEXT;")?;
+    }
+    if table_exists(conn, "tracks")? && !has_column("tracks", "color_primaries")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN color_primaries TEXT;")?;
+    }
+    if table_exists(conn, "tracks")? && !has_column("tracks", "color_transfer")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN color_transfer TEXT;")?;
+    }
+    if table_exists(conn, "tracks")? && !has_column("tracks", "color_matrix")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN color_matrix TEXT;")?;
+    }
+    if table_exists(conn, "tracks")? && !has_column("tracks", "max_cll")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN max_cll INTEGER;")?;
+    }
+    if table_exists(conn, "tracks")? && !has_column("tracks", "max_fall")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN max_fall INTEGER;")?;
+    }
+    if table_exists(conn, "tracks")? && !has_column("tracks", "master_display")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN master_display TEXT;")?;
+    }
+    if table_exists(conn, "tracks")? && !has_column("tracks", "dolby_vision_profile")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN dolby_vision_profile INTEGER;")?;
     }
     Ok(())
 }

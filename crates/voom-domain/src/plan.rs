@@ -390,6 +390,14 @@ pub struct TranscodeSettings {
     pub scale_algorithm: Option<String>,
     /// HDR handling mode (e.g. "preserve", "tonemap").
     pub hdr_mode: Option<String>,
+    /// Preserve HDR metadata when transcoding HDR sources.
+    pub preserve_hdr: Option<bool>,
+    /// SDR tone-mapping algorithm (e.g. "bt2390", "hable").
+    pub tonemap: Option<String>,
+    /// HDR static color metadata handling (currently "copy").
+    pub hdr_color_metadata: Option<String>,
+    /// Dolby Vision metadata handling (currently "copy_rpu").
+    pub dolby_vision: Option<String>,
     /// Encoder tuning hint (e.g. "film", "animation").
     pub tune: Option<String>,
     /// Automatic crop settings for black-bar removal.
@@ -605,6 +613,14 @@ enum ActionParamsCompat {
         #[serde(default)]
         hdr_mode: Option<String>,
         #[serde(default)]
+        preserve_hdr: Option<bool>,
+        #[serde(default)]
+        tonemap: Option<String>,
+        #[serde(default)]
+        hdr_color_metadata: Option<String>,
+        #[serde(default)]
+        dolby_vision: Option<String>,
+        #[serde(default)]
         tune: Option<String>,
         #[serde(default)]
         crop: Option<CropSettings>,
@@ -674,6 +690,10 @@ impl From<ActionParamsCompat> for ActionParams {
                 max_resolution,
                 scale_algorithm,
                 hdr_mode,
+                preserve_hdr,
+                tonemap,
+                hdr_color_metadata,
+                dolby_vision,
                 tune,
                 crop,
                 loudness,
@@ -697,6 +717,10 @@ impl From<ActionParamsCompat> for ActionParams {
                         max_resolution,
                         scale_algorithm,
                         hdr_mode,
+                        preserve_hdr,
+                        tonemap,
+                        hdr_color_metadata,
+                        dolby_vision,
                         tune,
                         crop,
                         loudness,
@@ -862,6 +886,30 @@ impl TranscodeSettings {
     #[must_use]
     pub fn with_hdr_mode(mut self, hdr_mode: Option<String>) -> Self {
         self.hdr_mode = hdr_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_preserve_hdr(mut self, preserve_hdr: Option<bool>) -> Self {
+        self.preserve_hdr = preserve_hdr;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tonemap(mut self, tonemap: Option<String>) -> Self {
+        self.tonemap = tonemap;
+        self
+    }
+
+    #[must_use]
+    pub fn with_hdr_color_metadata(mut self, hdr_color_metadata: Option<String>) -> Self {
+        self.hdr_color_metadata = hdr_color_metadata;
+        self
+    }
+
+    #[must_use]
+    pub fn with_dolby_vision(mut self, dolby_vision: Option<String>) -> Self {
+        self.dolby_vision = dolby_vision;
         self
     }
 

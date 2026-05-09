@@ -272,6 +272,9 @@ transcode video to hevc {
   max_resolution: 1080p      // downscale if above this resolution
   scale_algorithm: lanczos   // scaling algorithm
   hdr_mode: preserve         // HDR handling: preserve | tonemap
+  preserve_hdr: true         // default true for detected HDR sources
+  tonemap: bt2390            // bt2390 | hable | mobius | reinhard | clip
+  hdr_color_metadata: copy   // copy HDR10 static color metadata
   tune: film                 // encoder tuning: film | animation | grain | ...
   hw: auto                   // hardware acceleration: auto | nvenc | qsv | vaapi | none
   hw_fallback: true          // fall back to software if HW fails
@@ -284,8 +287,17 @@ detected crop rectangle on the file record, and reuses the cached result on
 later runs. Crop values are stored as pixels removed from the left, top, right,
 and bottom edges.
 
+HDR preservation is enabled by default for detected HDR sources. Set
+`preserve_hdr: false`, `hdr_mode: tonemap`, or `tonemap: <algorithm>` to
+tone-map HDR to SDR BT.709 output. See [HDR Transcoding](hdr-transcoding.md)
+for examples and verification commands.
+
 | Setting | Type | Description |
 |---------|------|-------------|
+| `preserve_hdr` | boolean | Preserve detected HDR metadata when transcoding HDR sources. Default: `true` for HDR sources. |
+| `tonemap` | identifier | Tone-map HDR to SDR with `bt2390`, `hable`, `mobius`, `reinhard`, or `clip`. |
+| `hdr_color_metadata` | identifier | Copy HDR10 static color metadata. The only supported value is `copy`. |
+| `dolby_vision` | identifier | Reserved for Dolby Vision RPU handling. The supported value is `copy_rpu`. |
 | `crop` | identifier | Enable automatic crop detection. The only supported value is `auto`. |
 | `crop_sample_duration` | integer | Seconds to inspect per sample. Default: `60`. |
 | `crop_sample_count` | integer | Number of samples across the file. Default: `3`. |

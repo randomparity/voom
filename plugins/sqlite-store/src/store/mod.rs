@@ -270,7 +270,7 @@ impl SqliteStore {
         for chunk in file_ids.chunks(500) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
             let sql = format!(
-                "SELECT file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, loudness_integrated_lufs, loudness_true_peak_db, loudness_range_lu, loudness_measured_at, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, is_animation \
+                "SELECT file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, loudness_integrated_lufs, loudness_true_peak_db, loudness_range_lu, loudness_measured_at, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, color_primaries, color_transfer, color_matrix, max_cll, max_fall, master_display, dolby_vision_profile, is_animation \
                  FROM tracks WHERE file_id IN ({}) ORDER BY file_id, stream_index",
                 placeholders.join(",")
             );
@@ -311,7 +311,7 @@ impl SqliteStore {
     ) -> Result<Vec<Track>> {
         let mut stmt = conn
             .prepare(
-                "SELECT stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, loudness_integrated_lufs, loudness_true_peak_db, loudness_range_lu, loudness_measured_at, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, is_animation
+                "SELECT stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, loudness_integrated_lufs, loudness_true_peak_db, loudness_range_lu, loudness_measured_at, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, color_primaries, color_transfer, color_matrix, max_cll, max_fall, master_display, dolby_vision_profile, is_animation
                  FROM tracks WHERE file_id = ?1 ORDER BY stream_index",
             )
             .map_err(storage_err("failed to prepare track query"))?;
@@ -354,6 +354,14 @@ mod tests {
         file.bitrate = Some(8000);
         let mut video = Track::new(0, TrackType::Video, "hevc".into());
         video.is_animation = Some(true);
+        video.is_hdr = true;
+        video.hdr_format = Some("HDR10".into());
+        video.color_primaries = Some("bt2020".into());
+        video.color_transfer = Some("smpte2084".into());
+        video.color_matrix = Some("bt2020nc".into());
+        video.max_cll = Some(1000);
+        video.max_fall = Some(400);
+        video.master_display = Some("G(1,2)B(3,4)R(5,6)WP(7,8)L(100,1)".into());
         file.tracks = vec![
             video,
             {
@@ -401,6 +409,16 @@ mod tests {
         let loaded = store.file(&file.id).unwrap().unwrap();
         let video = &loaded.tracks[0];
         assert_eq!(video.is_animation, Some(true));
+        assert_eq!(video.hdr_format.as_deref(), Some("HDR10"));
+        assert_eq!(video.color_primaries.as_deref(), Some("bt2020"));
+        assert_eq!(video.color_transfer.as_deref(), Some("smpte2084"));
+        assert_eq!(video.color_matrix.as_deref(), Some("bt2020nc"));
+        assert_eq!(video.max_cll, Some(1000));
+        assert_eq!(video.max_fall, Some(400));
+        assert_eq!(
+            video.master_display.as_deref(),
+            Some("G(1,2)B(3,4)R(5,6)WP(7,8)L(100,1)")
+        );
         let audio = &loaded.tracks[1];
         assert_eq!(audio.codec, "aac");
         assert_eq!(audio.language, "eng");

@@ -238,6 +238,7 @@ fn parse_stream(
             let frame_rate = parse_frame_rate(stream);
             let is_vfr = detect_vfr(stream);
             let (is_hdr, hdr_format) = detect_hdr(stream);
+            let hdr_metadata = parse_hdr_metadata(stream);
             let pixel_format = stream
                 .get("pix_fmt")
                 .and_then(|p| p.as_str())
@@ -251,6 +252,13 @@ fn parse_stream(
             common.is_hdr = is_hdr;
             common.hdr_format = hdr_format;
             common.pixel_format = pixel_format;
+            common.color_primaries = hdr_metadata.color_primaries;
+            common.color_transfer = hdr_metadata.color_transfer;
+            common.color_matrix = hdr_metadata.color_matrix;
+            common.max_cll = hdr_metadata.max_cll;
+            common.max_fall = hdr_metadata.max_fall;
+            common.master_display = hdr_metadata.master_display;
+            common.dolby_vision_profile = hdr_metadata.dolby_vision_profile;
             common.is_animation = detect_animation(stream, animation_mode);
             Some(common)
         }
@@ -402,10 +410,140 @@ fn parse_fraction(s: Option<&str>) -> Option<f64> {
     s.parse().ok()
 }
 
+#[derive(Debug, Default)]
+struct HdrMetadata {
+    color_primaries: Option<String>,
+    color_transfer: Option<String>,
+    color_matrix: Option<String>,
+    max_cll: Option<u32>,
+    max_fall: Option<u32>,
+    master_display: Option<String>,
+    dolby_vision_profile: Option<u8>,
+}
+
+fn parse_hdr_metadata(stream: &serde_json::Value) -> HdrMetadata {
+    let mut metadata = HdrMetadata {
+        color_primaries: stream_string(stream, "color_primaries"),
+        color_transfer: stream_string(stream, "color_transfer"),
+        color_matrix: stream_string(stream, "color_space"),
+        ..HdrMetadata::default()
+    };
+
+    for sd in side_data_list(stream) {
+        let side_type = side_data_type(sd);
+        if side_type.contains("Content light level") {
+            metadata.max_cll = side_data_u32(sd, &["max_content", "max_cll"]);
+            metadata.max_fall = side_data_u32(sd, &["max_average", "max_fall"]);
+        } else if side_type.contains("Mastering display") {
+            metadata.master_display = format_master_display(sd);
+        } else if is_dolby_vision_side_data(side_type) {
+            metadata.dolby_vision_profile = side_data_u8(sd, &["dv_profile", "profile"]);
+        }
+    }
+
+    metadata
+}
+
+fn stream_string(stream: &serde_json::Value, key: &str) -> Option<String> {
+    stream
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty() && *value != "unknown")
+        .map(std::string::ToString::to_string)
+}
+
+fn side_data_list(stream: &serde_json::Value) -> &[serde_json::Value] {
+    stream
+        .get("side_data_list")
+        .and_then(serde_json::Value::as_array)
+        .map_or(&[], Vec::as_slice)
+}
+
+fn side_data_type(side_data: &serde_json::Value) -> &str {
+    side_data
+        .get("side_data_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+}
+
+fn side_data_u32(side_data: &serde_json::Value, keys: &[&str]) -> Option<u32> {
+    keys.iter().find_map(|key| {
+        side_data
+            .get(*key)
+            .and_then(json_u64_or_str)
+            .and_then(|value| u32::try_from(value).ok())
+    })
+}
+
+fn side_data_u8(side_data: &serde_json::Value, keys: &[&str]) -> Option<u8> {
+    side_data_u32(side_data, keys).and_then(|value| u8::try_from(value).ok())
+}
+
+fn json_u64_or_str(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|s| s.parse::<u64>().ok()))
+}
+
+fn format_master_display(side_data: &serde_json::Value) -> Option<String> {
+    let red = side_data.get("red_x").zip(side_data.get("red_y"));
+    let green = side_data.get("green_x").zip(side_data.get("green_y"));
+    let blue = side_data.get("blue_x").zip(side_data.get("blue_y"));
+    let white = side_data
+        .get("white_point_x")
+        .zip(side_data.get("white_point_y"));
+    let min_luminance = side_data.get("min_luminance");
+    let max_luminance = side_data.get("max_luminance");
+    match (red, green, blue, white, min_luminance, max_luminance) {
+        (Some((rx, ry)), Some((gx, gy)), Some((bx, by)), Some((wx, wy)), Some(min), Some(max)) => {
+            Some(format!(
+                "G({},{})B({},{})R({},{})WP({},{})L({},{})",
+                hdr_coord(gx)?,
+                hdr_coord(gy)?,
+                hdr_coord(bx)?,
+                hdr_coord(by)?,
+                hdr_coord(rx)?,
+                hdr_coord(ry)?,
+                hdr_coord(wx)?,
+                hdr_coord(wy)?,
+                hdr_luminance(max)?,
+                hdr_luminance(min)?,
+            ))
+        }
+        _ => side_data
+            .get("master_display")
+            .and_then(serde_json::Value::as_str)
+            .map(std::string::ToString::to_string),
+    }
+}
+
+fn hdr_coord(value: &serde_json::Value) -> Option<String> {
+    json_u64_or_str(value)
+        .map(|v| v.to_string())
+        .or_else(|| value.as_str().map(normalize_hdr_ratio))
+}
+
+fn hdr_luminance(value: &serde_json::Value) -> Option<String> {
+    json_u64_or_str(value)
+        .map(|v| v.to_string())
+        .or_else(|| value.as_str().map(normalize_hdr_ratio))
+}
+
+fn normalize_hdr_ratio(value: &str) -> String {
+    value.split('/').next().unwrap_or(value).to_string()
+}
+
+fn is_dolby_vision_side_data(side_type: &str) -> bool {
+    side_type.contains("DOVI") || side_type.contains("Dolby Vision")
+}
+
 fn detect_hdr(stream: &serde_json::Value) -> (bool, Option<String>) {
-    // Check color transfer characteristics
     let color_transfer = stream
         .get("color_transfer")
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let color_primaries = stream
+        .get("color_primaries")
         .and_then(|c| c.as_str())
         .unwrap_or("");
 
@@ -413,23 +551,18 @@ fn detect_hdr(stream: &serde_json::Value) -> (bool, Option<String>) {
         color_transfer,
         "smpte2084" | "arib-std-b67" | "smpte428" | "bt2020-10" | "bt2020-12"
     );
-
-    // Check side data for HDR metadata (single pass)
-    let empty_side_data = Vec::new();
-    let side_data = stream
-        .get("side_data_list")
-        .and_then(|s| s.as_array())
-        .unwrap_or(&empty_side_data);
+    let is_hdr10_color = color_transfer == "smpte2084" && color_primaries == "bt2020";
 
     let mut has_hdr_side_data = false;
     let mut has_dovi = false;
-    for sd in side_data {
-        let side_type = sd
-            .get("side_data_type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("");
-        if side_type.contains("DOVI") || side_type.contains("Dolby Vision") {
+    let mut has_hdr10plus = false;
+    for sd in side_data_list(stream) {
+        let side_type = side_data_type(sd);
+        if is_dolby_vision_side_data(side_type) {
             has_dovi = true;
+            has_hdr_side_data = true;
+        } else if side_type.contains("HDR10+") || side_type.contains("Dynamic HDR") {
+            has_hdr10plus = true;
             has_hdr_side_data = true;
         } else if side_type.contains("Mastering display")
             || side_type.contains("Content light level")
@@ -441,8 +574,14 @@ fn detect_hdr(stream: &serde_json::Value) -> (bool, Option<String>) {
     let is_hdr = is_hdr_transfer || has_hdr_side_data;
 
     let hdr_format = if has_dovi {
-        Some("Dolby Vision".to_string())
-    } else if color_transfer == "smpte2084" {
+        let profile = parse_hdr_metadata(stream).dolby_vision_profile;
+        Some(profile.map_or_else(
+            || "Dolby Vision".to_string(),
+            |p| format!("Dolby Vision Profile {p}"),
+        ))
+    } else if has_hdr10plus {
+        Some("HDR10+".to_string())
+    } else if is_hdr10_color || color_transfer == "smpte2084" {
         Some("HDR10".to_string())
     } else if color_transfer == "arib-std-b67" {
         Some("HLG".to_string())
@@ -528,11 +667,30 @@ mod tests {
             "r_frame_rate": "24000/1001",
             "avg_frame_rate": "24000/1001",
             "pix_fmt": "yuv420p10le",
+            "color_primaries": "bt2020",
+            "color_space": "bt2020nc",
             "color_transfer": "smpte2084",
             "disposition": {"default": 1, "forced": 0, "attached_pic": 0, "comment": 0},
             "tags": {"language": "und"},
             "side_data_list": [
-                {"side_data_type": "Mastering display metadata"}
+                {
+                    "side_data_type": "Mastering display metadata",
+                    "red_x": "35400",
+                    "red_y": "14600",
+                    "green_x": "8500",
+                    "green_y": "39850",
+                    "blue_x": "6550",
+                    "blue_y": "2300",
+                    "white_point_x": "15635",
+                    "white_point_y": "16450",
+                    "max_luminance": "10000000",
+                    "min_luminance": "1"
+                },
+                {
+                    "side_data_type": "Content light level metadata",
+                    "max_content": 1000,
+                    "max_average": 400
+                }
             ]
         })
     }
@@ -609,6 +767,15 @@ mod tests {
         assert!(track.is_hdr);
         assert_eq!(track.hdr_format.as_deref(), Some("HDR10"));
         assert_eq!(track.pixel_format.as_deref(), Some("yuv420p10le"));
+        assert_eq!(track.color_primaries.as_deref(), Some("bt2020"));
+        assert_eq!(track.color_transfer.as_deref(), Some("smpte2084"));
+        assert_eq!(track.color_matrix.as_deref(), Some("bt2020nc"));
+        assert_eq!(track.max_cll, Some(1000));
+        assert_eq!(track.max_fall, Some(400));
+        assert!(track
+            .master_display
+            .as_deref()
+            .is_some_and(|value| value.contains("G(8500,39850)")));
         assert_eq!(track.is_animation, None);
     }
 

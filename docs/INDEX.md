@@ -6,6 +6,7 @@
 | [architecture.md](architecture.md) | System architecture overview |
 | [cli-reference.md](cli-reference.md) | Complete CLI command and REST API reference |
 | [dsl-reference.md](dsl-reference.md) | DSL language reference for `.voom` policy files |
+| [hdr-transcoding.md](hdr-transcoding.md) | HDR preservation and SDR tone-mapping guide |
 | [loudness-normalization.md](loudness-normalization.md) | EBU R128 / LUFS audio normalization policies and reporting |
 | [quickstart.md](quickstart.md) | Getting started guide |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Local development, coverage, and CI workflow notes |

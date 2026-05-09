@@ -311,6 +311,18 @@ pub struct CompiledTranscodeSettings {
     /// HDR handling mode (e.g. "preserve", "tonemap").
     #[serde(default)]
     pub hdr_mode: Option<String>,
+    /// Preserve HDR metadata when transcoding HDR sources.
+    #[serde(default)]
+    pub preserve_hdr: Option<bool>,
+    /// SDR tone-mapping algorithm (e.g. "bt2390", "hable").
+    #[serde(default)]
+    pub tonemap: Option<String>,
+    /// HDR static color metadata handling (currently "copy").
+    #[serde(default)]
+    pub hdr_color_metadata: Option<String>,
+    /// Dolby Vision metadata handling (currently "copy_rpu").
+    #[serde(default)]
+    pub dolby_vision: Option<String>,
     /// Encoder tuning hint (e.g. "film", "animation", "grain").
     #[serde(default)]
     pub tune: Option<String>,
@@ -348,6 +360,10 @@ impl CompiledTranscodeSettings {
             max_resolution: None,
             scale_algorithm: None,
             hdr_mode: None,
+            preserve_hdr: None,
+            tonemap: None,
+            hdr_color_metadata: None,
+            dolby_vision: None,
             tune: None,
             crop: None,
             loudness: None,
