@@ -11,10 +11,12 @@ use crate::config;
 use crate::output;
 use voom_domain::stats::{LibrarySnapshot, SavingsReport, TimePeriod};
 use voom_domain::storage::PlanPhaseStat;
-use voom_domain::verification::IntegritySummary;
 use voom_report::{
     DatabaseStats, IssueReport, ReportPlugin, ReportRequest, ReportResult, ReportSection,
 };
+
+mod file_list;
+mod integrity;
 
 pub fn run(args: &ReportArgs) -> Result<()> {
     let config = config::load_config()?;
@@ -32,11 +34,11 @@ pub fn run(args: &ReportArgs) -> Result<()> {
     }
 
     if args.files {
-        return run_file_list(&*store, args.format);
+        return file_list::run(&*store, args.format);
     }
 
     if args.integrity {
-        return run_integrity(&*store, args.format);
+        return integrity::run(&*store, args.format);
     }
 
     let request = build_request(args)?;
@@ -1018,253 +1020,6 @@ fn write_database_csv(db: &DatabaseStats) -> Result<()> {
     Ok(())
 }
 
-// ── File list ───────────────────────────────────────────────
-
-fn run_file_list(
-    store: &dyn voom_domain::storage::StorageTrait,
-    format: OutputFormat,
-) -> Result<()> {
-    let files = store
-        .list_files(&voom_domain::storage::FileFilters::default())
-        .context("failed to list files from database")?;
-
-    if files.is_empty() {
-        if format.is_machine() {
-            if matches!(format, OutputFormat::Json) {
-                println!("[]");
-            }
-            return Ok(());
-        }
-        eprintln!(
-            "{}",
-            style("No files in database. Run 'voom scan' first.").yellow()
-        );
-        return Ok(());
-    }
-
-    match format {
-        OutputFormat::Json => print_file_list_json(&files),
-        OutputFormat::Table => print_file_list_table(&files),
-        OutputFormat::Plain => {
-            for file in &files {
-                println!("{}", file.path.display());
-            }
-        }
-        OutputFormat::Csv => print_file_list_csv(&files)?,
-    }
-
-    Ok(())
-}
-
-fn print_file_list_json(files: &[voom_domain::MediaFile]) {
-    let report = serde_json::json!({
-        "total_files": files.len(),
-        "total_size": files.iter().map(|f| f.size).sum::<u64>(),
-        "containers": container_counts(files),
-        "codecs": codec_counts(files),
-    });
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&report).expect("report is serializable")
-    );
-}
-
-fn print_file_list_table(files: &[voom_domain::MediaFile]) {
-    println!("{}", style("Library Report").bold().underlined());
-    println!();
-
-    let total_size: u64 = files.iter().map(|f| f.size).sum();
-    let total_duration: f64 = files.iter().map(|f| f.duration).sum();
-
-    println!(
-        "  {} files, {}, {}",
-        style(files.len()).bold(),
-        style(voom_domain::utils::format::format_size(total_size)).cyan(),
-        style(voom_domain::utils::format::format_duration(total_duration)).dim(),
-    );
-    println!();
-
-    println!("{}", style("Containers:").bold());
-    let containers = container_counts(files);
-    let mut table = output::new_table();
-    table.set_header(vec!["Container", "Count"]);
-    for (container, count) in &containers {
-        table.add_row(vec![Cell::new(container), Cell::new(count)]);
-    }
-    println!("{table}");
-    println!();
-
-    println!("{}", style("Codecs:").bold());
-    let codecs = codec_counts(files);
-    let mut table = output::new_table();
-    table.set_header(vec!["Codec", "Count"]);
-    for (codec, count) in &codecs {
-        table.add_row(vec![Cell::new(codec), Cell::new(count)]);
-    }
-    println!("{table}");
-}
-
-fn print_file_list_csv(files: &[voom_domain::MediaFile]) -> Result<()> {
-    let stdout = std::io::stdout();
-    let mut wtr = csv::Writer::from_writer(stdout.lock());
-    wtr.write_record(["path", "size", "duration", "container", "codec"])?;
-    for f in files {
-        let primary_codec = f.tracks.first().map_or("", |t| t.codec.as_str());
-        wtr.write_record([
-            &f.path.display().to_string(),
-            &f.size.to_string(),
-            &format!("{:.1}", f.duration),
-            f.container.as_str(),
-            primary_codec,
-        ])?;
-    }
-    wtr.flush()?;
-    Ok(())
-}
-
-fn count_by<T, I, F>(items: &[T], key_fn: F) -> Vec<(String, usize)>
-where
-    F: Fn(&T) -> I,
-    I: IntoIterator<Item = String>,
-{
-    let mut counts = std::collections::HashMap::new();
-    for item in items {
-        for key in key_fn(item) {
-            *counts.entry(key).or_insert(0usize) += 1;
-        }
-    }
-    let mut sorted: Vec<_> = counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
-    sorted
-}
-
-fn container_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
-    count_by(files, |f| std::iter::once(f.container.as_str().to_string()))
-}
-
-fn codec_counts(files: &[voom_domain::MediaFile]) -> Vec<(String, usize)> {
-    count_by(files, |f| {
-        f.tracks.iter().map(|t| t.codec.clone()).collect::<Vec<_>>()
-    })
-}
-
-// ── Integrity summary ──────────────────────────────────────
-
-const INTEGRITY_STALE_DAYS: i64 = 30;
-
-fn run_integrity(
-    store: &dyn voom_domain::storage::StorageTrait,
-    format: OutputFormat,
-) -> Result<()> {
-    let since_cutoff = chrono::Utc::now() - chrono::Duration::days(INTEGRITY_STALE_DAYS);
-    let summary = store
-        .integrity_summary(since_cutoff)
-        .context("failed to query integrity summary")?;
-
-    match format {
-        OutputFormat::Json => print_integrity_json(&summary, since_cutoff)?,
-        OutputFormat::Table => print_integrity_table(&summary, since_cutoff),
-        OutputFormat::Plain => print_integrity_plain(&summary),
-        OutputFormat::Csv => print_integrity_csv(&summary)?,
-    }
-    Ok(())
-}
-
-fn print_integrity_table(summary: &IntegritySummary, since_cutoff: chrono::DateTime<chrono::Utc>) {
-    println!(
-        "{} (stale cutoff: {})",
-        style("Library Integrity").bold().underlined(),
-        since_cutoff.format("%Y-%m-%d"),
-    );
-    println!();
-    let mut table = output::new_table();
-    table.set_header(vec!["Metric", "Count"]);
-    table.add_row(vec![
-        Cell::new("Total files"),
-        Cell::new(summary.total_files),
-    ]);
-    table.add_row(vec![
-        Cell::new("Never verified"),
-        Cell::new(summary.never_verified),
-    ]);
-    table.add_row(vec![
-        Cell::new(format!("Stale (> {INTEGRITY_STALE_DAYS}d)")),
-        Cell::new(summary.stale),
-    ]);
-    table.add_row(vec![
-        Cell::new("With errors"),
-        Cell::new(summary.with_errors),
-    ]);
-    table.add_row(vec![
-        Cell::new("With warnings"),
-        Cell::new(summary.with_warnings),
-    ]);
-    table.add_row(vec![
-        Cell::new("Hash mismatches"),
-        Cell::new(summary.hash_mismatches),
-    ]);
-    println!("{table}");
-    println!();
-}
-
-fn print_integrity_plain(summary: &IntegritySummary) {
-    println!("total_files={}", summary.total_files);
-    println!("never_verified={}", summary.never_verified);
-    println!("stale={}", summary.stale);
-    println!("with_errors={}", summary.with_errors);
-    println!("with_warnings={}", summary.with_warnings);
-    println!("hash_mismatches={}", summary.hash_mismatches);
-}
-
-fn print_integrity_json(
-    summary: &IntegritySummary,
-    since_cutoff: chrono::DateTime<chrono::Utc>,
-) -> Result<()> {
-    let payload = serde_json::json!({
-        "stale_cutoff": since_cutoff.to_rfc3339(),
-        "stale_cutoff_days": INTEGRITY_STALE_DAYS,
-        "summary": summary,
-    });
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&payload).context("serialize integrity summary")?
-    );
-    Ok(())
-}
-
-fn print_integrity_csv(summary: &IntegritySummary) -> Result<()> {
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    writeln!(out, "# integrity")?;
-    drop(out);
-
-    let stdout = std::io::stdout();
-    let mut wtr = csv::Writer::from_writer(stdout.lock());
-    wtr.write_record([
-        "total_files",
-        "never_verified",
-        "stale",
-        "with_errors",
-        "with_warnings",
-        "hash_mismatches",
-    ])?;
-    wtr.write_record([
-        summary.total_files.to_string(),
-        summary.never_verified.to_string(),
-        summary.stale.to_string(),
-        summary.with_errors.to_string(),
-        summary.with_warnings.to_string(),
-        summary.hash_mismatches.to_string(),
-    ])?;
-    wtr.flush()?;
-
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    writeln!(out)?;
-    drop(out);
-    Ok(())
-}
-
 // ── Error reporting ────────────────────────────────────────
 
 // This handler threads through multiple error-report modes (list sessions,
@@ -1392,52 +1147,6 @@ fn run_errors(store: &dyn voom_domain::storage::StorageTrait, args: &ReportArgs)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use voom_domain::media::{MediaFile, Track, TrackType};
-
-    fn make_track(codec: &str) -> Track {
-        Track::new(0, TrackType::Video, codec.to_string())
-    }
-
-    fn make_file(codecs: &[&str]) -> MediaFile {
-        MediaFile::new(PathBuf::from("/test.mkv"))
-            .with_tracks(codecs.iter().map(|c| make_track(c)).collect())
-    }
-
-    #[test]
-    fn test_codec_counts_empty_files() {
-        let result = codec_counts(&[]);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_codec_counts_single_file() {
-        let files = vec![make_file(&["hevc", "aac", "aac"])];
-        let counts = codec_counts(&files);
-        assert_eq!(counts[0], ("aac".to_string(), 2));
-        assert_eq!(counts[1], ("hevc".to_string(), 1));
-    }
-
-    #[test]
-    fn test_codec_counts_multiple_files() {
-        let files = vec![
-            make_file(&["hevc", "aac"]),
-            make_file(&["hevc", "opus", "srt"]),
-            make_file(&["avc", "aac"]),
-        ];
-        let counts = codec_counts(&files);
-        assert_eq!(counts[0].1, 2);
-        assert_eq!(counts[1].1, 2);
-    }
-
-    #[test]
-    fn test_codec_counts_sorted_descending() {
-        let files = vec![make_file(&["a", "b", "b", "b", "c", "c"])];
-        let counts = codec_counts(&files);
-        assert_eq!(counts[0], ("b".to_string(), 3));
-        assert_eq!(counts[1], ("c".to_string(), 2));
-        assert_eq!(counts[2], ("a".to_string(), 1));
-    }
 
     #[test]
     fn test_build_request_no_flags_gives_summary() {
@@ -1512,22 +1221,6 @@ mod tests {
         assert!(req.includes(ReportSection::History));
         assert!(!req.includes(ReportSection::Library));
         assert_eq!(req.history_limit, Some(10));
-    }
-
-    #[test]
-    fn test_run_integrity_on_empty_store() {
-        use voom_domain::test_support::InMemoryStore;
-        let store = InMemoryStore::new();
-        // All formats must succeed against an empty store; integrity_summary
-        // returns the default (all zeros) so no rows are missing.
-        for format in [
-            OutputFormat::Table,
-            OutputFormat::Plain,
-            OutputFormat::Json,
-            OutputFormat::Csv,
-        ] {
-            run_integrity(&store, format).expect("integrity summary on empty store");
-        }
     }
 
     #[test]
