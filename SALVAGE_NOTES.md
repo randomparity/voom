@@ -6,3 +6,4 @@ def5cb8 Propagate host list entry errors -- skipped: current main lacks the affe
 5e59cc6 Future-proof public domain DTOs -- skipped: broad conflicts across process, WIT conversion, ffmpeg, sqlite, and event handlers; not salvageable as a focused PR slice.
 841499d Use named domain constructor inputs -- skipped: depends on branch SQLite module layout and touches broad verifier/storage constructor shapes.
 108cfe4 Type audio language detector metadata -- skipped: conflicts in process command/pipeline and introduces process helper module; process-structural salvage deferred.
+dd31729 Use WASM event result boundary record -- skipped: depends on branch-only split WASM loader module; manual reimplementation candidate on current loader.
