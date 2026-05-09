@@ -4,6 +4,7 @@
 //! and metadata operations on non-MKV files (or any file requiring transcode).
 
 pub mod command;
+pub mod cropdetect;
 pub mod executor;
 pub mod hwaccel;
 pub mod probe;
