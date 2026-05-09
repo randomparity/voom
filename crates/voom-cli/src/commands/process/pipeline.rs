@@ -732,6 +732,8 @@ pub(super) fn execute_single_plan(
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::mpsc;
     use std::sync::Arc;
     use std::time::Duration;
@@ -808,14 +810,50 @@ mod tests {
             .await
     }
 
+    fn observe_limiter_acquires(
+        limiter: voom_job_manager::worker::PlanExecutionLimiter,
+    ) -> (
+        voom_job_manager::worker::PlanExecutionLimiter,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) {
+        let (wait_tx, wait_rx) = tokio::sync::mpsc::unbounded_channel();
+        let limiter = limiter.with_acquire_observer(move |resource| {
+            let _ = wait_tx.send(resource.to_string());
+        });
+        (limiter, wait_rx)
+    }
+
+    async fn wait_for_limiter_acquire(
+        wait_rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+        resource: &str,
+        processing: Pin<
+            &mut impl Future<Output = std::result::Result<Option<serde_json::Value>, String>>,
+        >,
+    ) {
+        let acquired = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::select! {
+                acquired = wait_rx.recv() => acquired
+                    .expect("plan limiter acquire observer should still be connected"),
+                result = processing => {
+                    panic!("processing finished before reaching the plan limiter: {result:?}");
+                }
+            }
+        })
+        .await
+        .expect("processing should reach the plan limiter acquire point");
+        assert_eq!(acquired, resource);
+    }
+
     #[tokio::test]
     async fn process_pipeline_respects_plan_limiter() {
         let policy = nvenc_policy();
         let fixture = process_tests::TestFixture::with_policy(policy);
-        let limiter = Arc::new(voom_job_manager::worker::PlanExecutionLimiter::from_limits(
-            vec![("hw:nvenc".to_string(), 1)],
-        ));
+        let limiter = voom_job_manager::worker::PlanExecutionLimiter::from_limits(vec![(
+            "hw:nvenc".to_string(),
+            1,
+        )]);
         let held = held_nvenc_permit(&limiter).await;
+        let (limiter, mut wait_rx) = observe_limiter_acquires(limiter);
 
         let path = fixture.dir_path().join("movie.mkv");
         std::fs::write(&path, vec![0u8; 1024]).unwrap();
@@ -828,7 +866,7 @@ mod tests {
             .register_plugin(Arc::new(RecordingExecutor { entered_tx }), 50)
             .unwrap();
         let ctx = ProcessContext {
-            plan_limiter: limiter,
+            plan_limiter: Arc::new(limiter),
             ..fixture.make_ctx(
                 Arc::new(kernel),
                 Arc::new(voom_domain::test_support::InMemoryStore::new()),
@@ -838,12 +876,7 @@ mod tests {
         let processing = process_single_file_execute(&file, &compiled, &ctx);
         tokio::pin!(processing);
 
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), &mut processing)
-                .await
-                .is_err(),
-            "processing must wait for the plan limiter before executor dispatch"
-        );
+        wait_for_limiter_acquire(&mut wait_rx, "hw:nvenc", processing.as_mut()).await;
         assert!(
             matches!(entered_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
             "executor must not receive PlanCreated while the nvenc permit is held"
@@ -863,11 +896,9 @@ mod tests {
     async fn process_pipeline_limits_transcode_without_per_action_hw() {
         let policy = global_hw_policy();
         let fixture = process_tests::TestFixture::with_policy(policy);
-        let limiter = Arc::new(
-            voom_job_manager::worker::PlanExecutionLimiter::from_limits_with_default(
-                vec![("hw:nvenc".to_string(), 1)],
-                Some("hw:nvenc".to_string()),
-            ),
+        let limiter = voom_job_manager::worker::PlanExecutionLimiter::from_limits_with_default(
+            vec![("hw:nvenc".to_string(), 1)],
+            Some("hw:nvenc".to_string()),
         );
         let held = limiter
             .acquire_for_plan(&process_tests::test_plan_with_optional_transcode_hw(
@@ -875,6 +906,7 @@ mod tests {
                 None,
             ))
             .await;
+        let (limiter, mut wait_rx) = observe_limiter_acquires(limiter);
 
         let path = fixture.dir_path().join("movie.mkv");
         std::fs::write(&path, vec![0u8; 1024]).unwrap();
@@ -887,7 +919,7 @@ mod tests {
             .register_plugin(Arc::new(RecordingExecutor { entered_tx }), 50)
             .unwrap();
         let ctx = ProcessContext {
-            plan_limiter: limiter,
+            plan_limiter: Arc::new(limiter),
             ..fixture.make_ctx(
                 Arc::new(kernel),
                 Arc::new(voom_domain::test_support::InMemoryStore::new()),
@@ -897,12 +929,7 @@ mod tests {
         let processing = process_single_file_execute(&file, &compiled, &ctx);
         tokio::pin!(processing);
 
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), &mut processing)
-                .await
-                .is_err(),
-            "global/default hw transcode should wait for the default limited resource"
-        );
+        wait_for_limiter_acquire(&mut wait_rx, "hw:nvenc", processing.as_mut()).await;
         assert!(
             matches!(entered_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
             "executor must not receive PlanCreated while the default nvenc permit is held"
@@ -922,10 +949,12 @@ mod tests {
     async fn process_pipeline_cancellation_stops_waiting_for_plan_limiter() {
         let policy = nvenc_policy();
         let fixture = process_tests::TestFixture::with_policy(policy);
-        let limiter = Arc::new(voom_job_manager::worker::PlanExecutionLimiter::from_limits(
-            vec![("hw:nvenc".to_string(), 1)],
-        ));
+        let limiter = voom_job_manager::worker::PlanExecutionLimiter::from_limits(vec![(
+            "hw:nvenc".to_string(),
+            1,
+        )]);
         let held = held_nvenc_permit(&limiter).await;
+        let (limiter, mut wait_rx) = observe_limiter_acquires(limiter);
 
         let path = fixture.dir_path().join("movie.mkv");
         std::fs::write(&path, vec![0u8; 1024]).unwrap();
@@ -938,7 +967,7 @@ mod tests {
             .register_plugin(Arc::new(RecordingExecutor { entered_tx }), 50)
             .unwrap();
         let ctx = ProcessContext {
-            plan_limiter: limiter,
+            plan_limiter: Arc::new(limiter),
             ..fixture.make_ctx(
                 Arc::new(kernel),
                 Arc::new(voom_domain::test_support::InMemoryStore::new()),
@@ -948,12 +977,7 @@ mod tests {
         let processing = process_single_file_execute(&file, &compiled, &ctx);
         tokio::pin!(processing);
 
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), &mut processing)
-                .await
-                .is_err(),
-            "processing must wait for the plan limiter before cancellation"
-        );
+        wait_for_limiter_acquire(&mut wait_rx, "hw:nvenc", processing.as_mut()).await;
         assert!(
             matches!(entered_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
             "executor must not receive PlanCreated while the nvenc permit is held"
