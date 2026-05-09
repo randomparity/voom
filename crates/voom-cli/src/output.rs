@@ -5,7 +5,7 @@ use std::path::Path;
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, ContentArrangement, Table};
 use console::style;
-use voom_domain::media::{CropDetection, MediaFile, Track};
+use voom_domain::media::{CropRect, MediaFile, Track};
 use voom_domain::transition::{FileTransition, TransitionSource};
 use voom_domain::utils::format;
 
@@ -176,7 +176,7 @@ pub fn format_file_info(file: &MediaFile, tracks_only: bool) {
             table.add_row(vec!["Bitrate", &format!("{} kbps", br / 1000)]);
         }
         if let Some(crop_detection) = &file.crop_detection {
-            table.add_row(vec!["Auto crop", &format_crop_detection(crop_detection)]);
+            table.add_row(vec!["Auto crop", &format_crop_rect(crop_detection.rect)]);
         }
         table.add_row(vec!["Hash", file.content_hash.as_deref().unwrap_or("—")]);
         table.add_row(vec!["ID", &file.id.to_string()]);
@@ -356,8 +356,7 @@ fn track_details(track: &Track) -> String {
     parts.join(", ")
 }
 
-fn format_crop_detection(crop_detection: &CropDetection) -> String {
-    let rect = crop_detection.rect;
+fn format_crop_rect(rect: CropRect) -> String {
     format!(
         "left={} top={} right={} bottom={}",
         rect.left, rect.top, rect.right, rect.bottom
@@ -552,14 +551,9 @@ mod tests {
     }
 
     #[test]
-    fn format_crop_detection_shows_edge_pixels() {
-        let detection = CropDetection::new(
-            voom_domain::media::CropRect::new(2, 132, 4, 130),
-            chrono::Utc::now(),
-        );
-
+    fn format_crop_rect_shows_edge_pixels() {
         assert_eq!(
-            format_crop_detection(&detection),
+            format_crop_rect(CropRect::new(2, 132, 4, 130)),
             "left=2 top=132 right=4 bottom=130"
         );
     }
