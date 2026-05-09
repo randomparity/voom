@@ -3443,6 +3443,47 @@ mod test_lifecycle_advanced {
     // ───────────────────────────────────────────────────────────────────
 
     #[test]
+    fn corpus_generator_includes_black_bar_fixtures() {
+        require_tool!("ffprobe");
+
+        let corpus = corpus_dir();
+        for filename in ["letterbox-h264.mkv", "pillarbox-h264.mkv"] {
+            let path = corpus.join(filename);
+            assert!(
+                path.exists(),
+                "expected black-bar fixture at {}",
+                path.display()
+            );
+
+            let output = std::process::Command::new("ffprobe")
+                .args([
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=width,height",
+                    "-of",
+                    "csv=p=0",
+                ])
+                .arg(&path)
+                .output()
+                .expect("run ffprobe");
+            assert!(
+                output.status.success(),
+                "ffprobe failed for {}: {}",
+                path.display(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout).trim(),
+                "1920,1080",
+                "{filename} should preserve the padded output dimensions"
+            );
+        }
+    }
+
+    #[test]
     fn end_to_end_scaled_corpus_with_corruption() {
         require_tool!("ffprobe");
         let env = TestEnv::new();
