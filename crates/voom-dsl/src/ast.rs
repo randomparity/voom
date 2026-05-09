@@ -158,6 +158,7 @@ pub enum OperationNode {
     Keep {
         target: String,
         filter: Option<FilterNode>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         normalize: Option<NormalizeSetting>,
     },
     Remove {
