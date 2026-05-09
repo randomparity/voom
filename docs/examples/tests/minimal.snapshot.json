@@ -17,6 +17,7 @@
       "bitrate": null,
       "container": "Mp4",
       "content_hash": null,
+      "crop_detection": null,
       "duration": 120.0,
       "expected_hash": null,
       "id": null,
