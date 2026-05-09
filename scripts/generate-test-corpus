@@ -367,8 +367,8 @@ def build_random_specs(count, seed, duration_range):
         audio = []
         for j in range(num_audio):
             codec = file_rng.choice(audio_codecs)
-            # flac doesn't support 6-channel in simple mode; limit to stereo
-            if codec == "flac":
+            # flac/mp3 don't support this generator's 6-channel settings.
+            if codec in {"flac", "mp3"}:
                 ch = file_rng.choice([1, 2])
             else:
                 ch = file_rng.choice(audio_channels)
