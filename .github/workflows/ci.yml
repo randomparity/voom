@@ -39,6 +39,7 @@ jobs:
       - run: cargo build --workspace
       - run: cargo test --workspace
       - run: cargo test -p voom-cli --features functional -- --test-threads=4 test_init test_doctor test_policy test_config test_status test_jobs test_plugin test_verify
+      - run: cargo test -p voom-cli --features functional -- --test-threads=4 test_process crash_recovery normal_backup_not_treated_as_orphan
 
   test-wasm:
     name: Test (WASM feature)
