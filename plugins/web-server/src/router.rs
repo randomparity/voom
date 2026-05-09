@@ -1,10 +1,12 @@
 //! Axum router construction.
 
-use axum::http::{header, StatusCode};
+use axum::extract::State;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use axum::Router;
+use axum::{Json, Router};
+use serde::Deserialize;
 use tower::limit::ConcurrencyLimitLayer;
 
 use crate::api;
@@ -89,10 +91,47 @@ pub fn build_router(state: AppState) -> Router {
         .layer(RateLimitLayer::new());
 
     Router::new()
+        .route("/auth/session", post(create_session))
         .merge(authenticated_routes)
         .layer(RequestIdLayer)
         .layer(SecurityHeadersLayer)
         .with_state(state)
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthSessionRequest {
+    token: String,
+}
+
+async fn create_session(
+    State(state): State<AppState>,
+    Json(request): Json<AuthSessionRequest>,
+) -> impl IntoResponse {
+    if !state.is_token_authorized(&request.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({"error": "Unauthorized"})),
+        )
+            .into_response();
+    }
+
+    let cookie = format!(
+        "voom_session={}; HttpOnly; SameSite=Lax; Path=/",
+        request.token
+    );
+    match HeaderValue::from_str(&cookie) {
+        Ok(value) => (
+            StatusCode::NO_CONTENT,
+            [(header::SET_COOKIE, value)],
+            axum::Json(serde_json::json!({})),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": "Invalid auth token for cookie"})),
+        )
+            .into_response(),
+    }
 }
 
 async fn static_htmx() -> impl IntoResponse {

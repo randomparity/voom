@@ -377,6 +377,48 @@ async fn test_auth_returns_200_with_correct_token() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_auth_session_sets_browser_cookie() {
+    let server = make_server_with_auth(InMemoryStore::new(), Some("secret-token".into()));
+    let resp = server
+        .post("/auth/session")
+        .json(&json!({"token": "secret-token"}))
+        .await;
+    resp.assert_status_success();
+    let cookie = resp
+        .headers()
+        .get(axum::http::header::SET_COOKIE)
+        .expect("session cookie header")
+        .to_str()
+        .expect("cookie header text");
+    assert!(cookie.contains("voom_session=secret-token"));
+    assert!(cookie.contains("HttpOnly"));
+    assert!(cookie.contains("SameSite=Lax"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_auth_session_rejects_wrong_token() {
+    let server = make_server_with_auth(InMemoryStore::new(), Some("secret-token".into()));
+    let resp = server
+        .post("/auth/session")
+        .json(&json!({"token": "wrong-token"}))
+        .await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_auth_accepts_browser_session_cookie() {
+    let server = make_server_with_auth(InMemoryStore::new(), Some("secret-token".into()));
+    let resp = server
+        .get("/api/files")
+        .add_header(
+            axum::http::header::COOKIE,
+            axum::http::HeaderValue::from_static("voom_session=secret-token"),
+        )
+        .await;
+    resp.assert_status_ok();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_auth_passthrough_when_no_token_configured() {
     let server = make_server_with_auth(InMemoryStore::new(), None);
     let resp = server.get("/api/files").await;

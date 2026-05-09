@@ -139,7 +139,7 @@ where
     }
 }
 
-/// Axum middleware that enforces Bearer token authentication on API routes.
+/// Axum middleware that enforces bearer or browser-session authentication.
 /// If `AppState` has no `auth_token` configured, all requests pass through.
 pub async fn auth_middleware(
     State(state): State<AppState>,
@@ -150,12 +150,16 @@ pub async fn auth_middleware(
         .headers()
         .get("Authorization")
         .and_then(|v| v.to_str().ok());
+    let cookie_header = request
+        .headers()
+        .get("Cookie")
+        .and_then(|v| v.to_str().ok());
 
-    if !state.is_authorized(auth_header) {
+    if !state.is_authorized(auth_header, cookie_header) {
         tracing::warn!(
             uri = %request.uri(),
             method = %request.method(),
-            "authentication failed: invalid or missing bearer token"
+            "authentication failed: invalid or missing credentials"
         );
         return (
             StatusCode::UNAUTHORIZED,

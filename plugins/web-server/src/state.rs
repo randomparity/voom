@@ -126,21 +126,46 @@ impl AppState {
         self.auth_token.is_some()
     }
 
-    /// Validate an Authorization header value against the configured auth token.
-    /// Returns true if no auth is configured (allow all) or if the Bearer token matches.
+    /// Validate request credentials against the configured auth token.
+    /// Returns true if no auth is configured, the Bearer token matches, or the
+    /// browser session cookie matches.
     /// Uses constant-time comparison to prevent timing side-channel attacks.
     #[must_use]
-    pub fn is_authorized(&self, header: Option<&str>) -> bool {
-        use subtle::ConstantTimeEq;
+    pub fn is_authorized(&self, authorization: Option<&str>, cookie: Option<&str>) -> bool {
         match &self.auth_token {
             None => true, // no auth configured, allow all
-            Some(token) => header.is_some_and(|h| {
-                h.strip_prefix("Bearer ").is_some_and(|t| {
-                    t.len() == token.len() && bool::from(t.as_bytes().ct_eq(token.as_bytes()))
-                })
-            }),
+            Some(token) => {
+                let bearer = authorization
+                    .and_then(|h| h.strip_prefix("Bearer "))
+                    .is_some_and(|t| constant_time_token_eq(t, token));
+                let session = cookie
+                    .and_then(session_cookie_value)
+                    .is_some_and(|t| constant_time_token_eq(t, token));
+                bearer || session
+            }
         }
     }
+
+    /// Validate a raw token value for browser session creation.
+    #[must_use]
+    pub fn is_token_authorized(&self, candidate: &str) -> bool {
+        match &self.auth_token {
+            None => true,
+            Some(token) => constant_time_token_eq(candidate, token),
+        }
+    }
+}
+
+fn constant_time_token_eq(candidate: &str, token: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    candidate.len() == token.len() && bool::from(candidate.as_bytes().ct_eq(token.as_bytes()))
+}
+
+fn session_cookie_value(header: &str) -> Option<&str> {
+    header
+        .split(';')
+        .filter_map(|part| part.trim().split_once('='))
+        .find_map(|(name, value)| (name == "voom_session").then_some(value))
 }
 
 /// Create an `AppState` with an in-memory store for testing.
@@ -188,32 +213,39 @@ mod tests {
     #[test]
     fn test_is_authorized_no_token_configured_allows_all() {
         let state = make_state(None);
-        assert!(state.is_authorized(None));
-        assert!(state.is_authorized(Some("Bearer anything")));
-        assert!(state.is_authorized(Some("garbage")));
+        assert!(state.is_authorized(None, None));
+        assert!(state.is_authorized(Some("Bearer anything"), None));
+        assert!(state.is_authorized(Some("garbage"), None));
     }
 
     #[test]
     fn test_is_authorized_with_token_requires_bearer_prefix() {
         let state = make_state(Some("secret123".into()));
-        assert!(state.is_authorized(Some("Bearer secret123")));
-        assert!(!state.is_authorized(Some("secret123")));
-        assert!(!state.is_authorized(Some("bearer secret123")));
-        assert!(!state.is_authorized(Some("Token secret123")));
+        assert!(state.is_authorized(Some("Bearer secret123"), None));
+        assert!(!state.is_authorized(Some("secret123"), None));
+        assert!(!state.is_authorized(Some("bearer secret123"), None));
+        assert!(!state.is_authorized(Some("Token secret123"), None));
+    }
+
+    #[test]
+    fn test_is_authorized_with_token_accepts_session_cookie() {
+        let state = make_state(Some("secret123".into()));
+        assert!(state.is_authorized(None, Some("theme=dark; voom_session=secret123")));
+        assert!(!state.is_authorized(None, Some("theme=dark; voom_session=wrong")));
     }
 
     #[test]
     fn test_is_authorized_with_token_rejects_none() {
         let state = make_state(Some("secret123".into()));
-        assert!(!state.is_authorized(None));
+        assert!(!state.is_authorized(None, None));
     }
 
     #[test]
     fn test_is_authorized_with_token_rejects_wrong_token() {
         let state = make_state(Some("secret123".into()));
-        assert!(!state.is_authorized(Some("Bearer wrong")));
-        assert!(!state.is_authorized(Some("Bearer secret1234")));
-        assert!(!state.is_authorized(Some("Bearer ")));
+        assert!(!state.is_authorized(Some("Bearer wrong"), None));
+        assert!(!state.is_authorized(Some("Bearer secret1234"), None));
+        assert!(!state.is_authorized(Some("Bearer "), None));
     }
 
     #[test]
