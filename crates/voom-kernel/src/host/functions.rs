@@ -48,6 +48,59 @@ fn host_tool_error(tool: &str, timeout_ms: u64, error: &voom_domain::errors::Voo
 }
 
 impl HostState {
+    /// Return true when the manifest granted a capability with this kind.
+    #[must_use]
+    pub fn has_capability_kind(&self, kind: &str) -> bool {
+        self.allowed_capabilities.iter().any(|capability| {
+            capability == kind
+                || capability
+                    .strip_prefix(kind)
+                    .is_some_and(|rest| rest.starts_with([':', '/']))
+        })
+    }
+
+    /// Require a manifest capability kind before exposing a host operation.
+    ///
+    /// # Errors
+    /// Returns an error when the plugin manifest did not grant `kind`.
+    pub fn require_capability_kind(&self, kind: &str, operation: &str) -> Result<(), String> {
+        if self.has_capability_kind(kind) {
+            return Ok(());
+        }
+        Err(format!(
+            "plugin '{}' lacks '{kind}' capability required for {operation}",
+            self.plugin_name
+        ))
+    }
+
+    /// Require at least one capability kind that is allowed to touch files.
+    ///
+    /// # Errors
+    /// Returns an error when the plugin manifest did not grant any
+    /// filesystem-capable kind.
+    pub fn require_filesystem_capability(&self, operation: &str) -> Result<(), String> {
+        const FILESYSTEM_KINDS: &[&str] = &[
+            "backup",
+            "discover",
+            "execute",
+            "generate_subtitle",
+            "introspect",
+            "synthesize",
+            "transcribe",
+            "verify",
+        ];
+        if FILESYSTEM_KINDS
+            .iter()
+            .any(|kind| self.has_capability_kind(kind))
+        {
+            return Ok(());
+        }
+        Err(format!(
+            "plugin '{}' lacks a filesystem capability required for {operation}",
+            self.plugin_name
+        ))
+    }
+
     /// Log a message at the given level.
     pub fn log(&self, level: &str, message: &str) {
         match level {
@@ -203,19 +256,7 @@ impl HostState {
             }
         }
 
-        // Security check: verify plugin has execute capability (empty = deny all,
-        // consistent with allowed_tools).
-        if self.allowed_capabilities.is_empty()
-            || !self
-                .allowed_capabilities
-                .iter()
-                .any(|c| c.starts_with("execute"))
-        {
-            return Err(format!(
-                "plugin '{}' lacks 'execute' capability required for tool execution",
-                self.plugin_name
-            ));
-        }
+        self.require_capability_kind("execute", "tool execution")?;
 
         let timeout = Duration::from_millis(timeout_ms);
         let output = voom_process::run_with_timeout_options(
@@ -441,6 +482,44 @@ mod tests {
         // Empty allowed_paths = deny all (matches allowed_tools semantics)
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not within allowed"));
+    }
+
+    #[test]
+    fn capability_kind_accepts_exact_and_scoped_values() {
+        let mut state = HostState::new("test".into());
+        state.allowed_capabilities = [
+            "execute".to_string(),
+            "enrich_metadata:tvdb".to_string(),
+            "store/plugin-data".to_string(),
+        ]
+        .into_iter()
+        .collect();
+
+        assert!(state.has_capability_kind("execute"));
+        assert!(state.has_capability_kind("enrich_metadata"));
+        assert!(state.has_capability_kind("store"));
+        assert!(!state.has_capability_kind("serve_http"));
+    }
+
+    #[test]
+    fn require_capability_kind_reports_missing_kind() {
+        let state = HostState::new("test-plugin".into());
+
+        let error = state
+            .require_capability_kind("serve_http", "HTTP GET")
+            .unwrap_err();
+
+        assert!(error.contains("test-plugin"));
+        assert!(error.contains("serve_http"));
+        assert!(error.contains("HTTP GET"));
+    }
+
+    #[test]
+    fn require_filesystem_capability_accepts_file_oriented_kinds() {
+        let mut state = HostState::new("test-plugin".into());
+        state.allowed_capabilities = ["generate_subtitle".to_string()].into_iter().collect();
+
+        assert!(state.require_filesystem_capability("file writing").is_ok());
     }
 
     #[test]

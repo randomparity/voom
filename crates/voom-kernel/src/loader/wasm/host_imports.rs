@@ -41,7 +41,10 @@ fn register_transition_funcs(instance: &mut HostLinkerInstance<'_>) -> Result<()
                 let uuid = uuid::Uuid::parse_str(&file_id)
                     .map_err(|e| format!("invalid file ID '{file_id}': {e}"));
                 let result = match uuid {
-                    Ok(id) => ctx.data().get_file_transitions(&id),
+                    Ok(id) => ctx
+                        .data()
+                        .require_capability_kind("store", "transition history access")
+                        .and_then(|_| ctx.data().get_file_transitions(&id)),
                     Err(e) => Err(e),
                 };
                 Ok((result,))
@@ -55,7 +58,11 @@ fn register_transition_funcs(instance: &mut HostLinkerInstance<'_>) -> Result<()
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (path,): (String,)|
              -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
-                Ok((ctx.data().get_path_transitions(&path),))
+                let result = ctx
+                    .data()
+                    .require_capability_kind("store", "transition history access")
+                    .and_then(|_| ctx.data().get_path_transitions(&path));
+                Ok((result,))
             },
         )
         .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
@@ -78,7 +85,13 @@ fn register_plugin_data_funcs(instance: &mut HostLinkerInstance<'_>) -> Result<(
         .func_wrap(
             "set-plugin-data",
             |mut ctx: wasmtime::StoreContextMut<'_, HostState>, (key, value): (String, Vec<u8>)| {
-                let result = ctx.data_mut().set_plugin_data(&key, &value);
+                let result = match ctx
+                    .data()
+                    .require_capability_kind("store", "plugin data mutation")
+                {
+                    Ok(()) => ctx.data_mut().set_plugin_data(&key, &value),
+                    Err(error) => Err(error),
+                };
                 Ok((result.map_err(|e| e.to_string()),))
             },
         )
@@ -116,7 +129,10 @@ fn register_http_funcs(instance: &mut HostLinkerInstance<'_>) -> Result<(), Wasm
             "http-get",
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (url, headers): (String, Vec<(String, String)>)| {
-                let result = ctx.data().http_get(&url, &headers);
+                let result = ctx
+                    .data()
+                    .require_capability_kind("serve_http", "HTTP GET")
+                    .and_then(|_| ctx.data().http_get(&url, &headers));
                 let wit_result: super::super::WitHttpResult = match result {
                     Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
                     Err(e) => Err(e),
@@ -131,7 +147,10 @@ fn register_http_funcs(instance: &mut HostLinkerInstance<'_>) -> Result<(), Wasm
             "http-post",
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (url, headers, body): (String, Vec<(String, String)>, Vec<u8>)| {
-                let result = ctx.data().http_post(&url, &headers, &body);
+                let result = ctx
+                    .data()
+                    .require_capability_kind("serve_http", "HTTP POST")
+                    .and_then(|_| ctx.data().http_post(&url, &headers, &body));
                 let wit_result: super::super::WitHttpResult = match result {
                     Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
                     Err(e) => Err(e),
@@ -157,7 +176,11 @@ fn register_write_file(instance: &mut HostLinkerInstance<'_>) -> Result<(), Wasm
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (path, content): (String, Vec<u8>)|
              -> Result<(Result<(), String>,), wasmtime::Error> {
-                Ok((ctx.data().write_file(&path, &content),))
+                let result = ctx
+                    .data()
+                    .require_filesystem_capability("file writing")
+                    .and_then(|_| ctx.data().write_file(&path, &content));
+                Ok((result,))
             },
         )
         .map_err(|e| WasmLoadError::Linker(e.to_string()))
@@ -170,6 +193,12 @@ fn register_read_file_metadata(instance: &mut HostLinkerInstance<'_>) -> Result<
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (path,): (String,)|
              -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
+                if let Err(error) = ctx
+                    .data()
+                    .require_filesystem_capability("file metadata reads")
+                {
+                    return Ok((Err(error),));
+                }
                 if ctx.data().allowed_paths.is_empty() {
                     return Ok((Err(format!(
                         "path '{path}' is not within allowed directories"
@@ -225,6 +254,12 @@ fn register_list_files(instance: &mut HostLinkerInstance<'_>) -> Result<(), Wasm
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (dir, pattern): (String, String)|
              -> Result<(Result<Vec<String>, String>,), wasmtime::Error> {
+                if let Err(error) = ctx
+                    .data()
+                    .require_filesystem_capability("directory listing")
+                {
+                    return Ok((Err(error),));
+                }
                 if ctx.data().allowed_paths.is_empty() {
                     return Ok((Err(format!(
                         "directory '{dir}' is not within allowed directories"
