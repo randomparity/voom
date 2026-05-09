@@ -9,7 +9,7 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Web server plugin for VOOM — REST API and web dashboard"
+description = "Web server library for VOOM — REST API and web dashboard"
 
 [dependencies]
 voom-domain.workspace = true

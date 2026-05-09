@@ -9,12 +9,11 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Phase orchestration plugin for VOOM — sequences policy phases with dependency resolution"
+description = "Phase orchestration library for VOOM — sequences policy phases with dependency resolution"
 
 [dependencies]
 voom-domain = { workspace = true }
 voom-dsl = { workspace = true }
-tracing = { workspace = true }
 
 [lints]
 workspace = true

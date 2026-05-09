@@ -243,13 +243,50 @@ impl HostState {
     /// Query transitions for a file by its UUID.
     /// Returns MessagePack-serialized `Vec<FileTransition>`.
     pub fn get_file_transitions(&self, file_id: &uuid::Uuid) -> Result<Vec<u8>, String> {
+        if self.allowed_paths.is_empty() {
+            return Err(format!(
+                "file transitions are not within allowed directories for plugin '{}' \
+                 (no paths configured)",
+                self.plugin_name
+            ));
+        }
         let store = self.transition_store.as_ref().ok_or_else(|| {
             "file transition history not available \
                  (no transition store configured)"
                 .to_string()
         })?;
         let transitions = store.transitions_for_file(file_id)?;
+        self.check_transitions_allowed(&transitions)?;
         rmp_serde::to_vec(&transitions).map_err(|e| format!("failed to serialize transitions: {e}"))
+    }
+
+    fn check_transitions_allowed(
+        &self,
+        transitions: &[voom_domain::transition::FileTransition],
+    ) -> Result<(), String> {
+        for transition in transitions {
+            self.check_transition_path_allowed(&transition.path)?;
+            if let Some(from_path) = &transition.from_path {
+                self.check_transition_path_allowed(from_path)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn check_transition_path_allowed(&self, path: &Path) -> Result<(), String> {
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let allowed = self
+            .allowed_paths
+            .iter()
+            .any(|allowed_dir| canonical.starts_with(allowed_dir));
+        if !allowed {
+            return Err(format!(
+                "transition path '{}' is not within allowed directories for plugin '{}'",
+                path.display(),
+                self.plugin_name
+            ));
+        }
+        Ok(())
     }
 
     /// Query transitions for a file by its filesystem path.
@@ -446,7 +483,7 @@ mod tests {
 
     #[test]
     fn test_get_file_transitions_no_store() {
-        let state = HostState::new("test".into());
+        let state = HostState::new("test".into()).with_paths(vec![std::path::PathBuf::from("/")]);
         let result = state.get_file_transitions(&uuid::Uuid::new_v4());
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not available"));
@@ -469,7 +506,9 @@ mod tests {
         );
         store.record_transition(&t).unwrap();
 
-        let state = HostState::new("test".into()).with_transition_store(store);
+        let state = HostState::new("test".into())
+            .with_transition_store(store)
+            .with_paths(vec![PathBuf::from("/movies")]);
 
         let bytes = state.get_file_transitions(&file_id).unwrap();
         let transitions: Vec<FileTransition> = rmp_serde::from_slice(&bytes).expect("deserialize");
@@ -551,11 +590,53 @@ mod tests {
         .with_metadata_snapshot(snap.clone());
         store.record_transition(&t).unwrap();
 
-        let state = HostState::new("test".into()).with_transition_store(store);
+        let state = HostState::new("test".into())
+            .with_transition_store(store)
+            .with_paths(vec![PathBuf::from("/movies")]);
         let bytes = state.get_file_transitions(&file_id).unwrap();
         let transitions: Vec<FileTransition> = rmp_serde::from_slice(&bytes).expect("deserialize");
         assert_eq!(transitions.len(), 1);
         assert_eq!(transitions[0].metadata_snapshot, Some(snap));
+    }
+
+    #[test]
+    fn test_get_file_transitions_denied_by_empty_paths() {
+        use crate::host::InMemoryTransitionStore;
+
+        let store = Arc::new(InMemoryTransitionStore::new());
+        let state = HostState::new("test".into()).with_transition_store(store);
+
+        let result = state.get_file_transitions(&uuid::Uuid::new_v4());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no paths configured"));
+    }
+
+    #[test]
+    fn test_get_file_transitions_blocked_by_allowed_paths() {
+        use crate::host::InMemoryTransitionStore;
+        use std::path::PathBuf;
+        use voom_domain::transition::{FileTransition, TransitionSource};
+
+        let store = Arc::new(InMemoryTransitionStore::new());
+        let file_id = uuid::Uuid::new_v4();
+        let t = FileTransition::new(
+            file_id,
+            PathBuf::from("/private/test.mkv"),
+            "hash123".into(),
+            2000,
+            TransitionSource::Discovery,
+        );
+        store.record_transition(&t).unwrap();
+
+        let state = HostState::new("test".into())
+            .with_transition_store(store)
+            .with_paths(vec![PathBuf::from("/movies")]);
+
+        let result = state.get_file_transitions(&file_id);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("not within allowed directories"));
     }
 
     #[test]

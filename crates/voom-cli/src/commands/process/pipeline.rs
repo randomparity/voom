@@ -17,10 +17,11 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 
 use anyhow::Context;
 use voom_domain::events::PlanFailedEvent;
-use voom_domain::plan::OperationType;
 
+use super::context::{record_phase_stat, PhaseOutcomeKind, ProcessContext};
 use super::dispatch::PlanDispatcher;
 use super::plan_outcome::PlanOutcome;
+use super::post_execution_path::resolve_post_execution_path;
 use super::safeguards::{
     annotate_disk_space_violations, check_disk_space, check_duration_shrink, check_size_increase,
     collect_safeguard_violations, dispatch_safeguard_violations, SafeguardContext,
@@ -29,8 +30,6 @@ use super::transitions::{
     record_failure_transition, record_file_transition, FailureTransitionContext,
     FileTransitionContext, TransitionRecorder,
 };
-use super::{record_phase_stat, PhaseOutcomeKind, ProcessContext};
-
 use crate::introspect::DiscoveredFilePayload;
 
 pub(super) const AUDIO_LANGUAGE_DETECTOR_PLUGIN: &str = "audio-language-detector";
@@ -213,166 +212,227 @@ async fn process_single_file_execute(
     ctx: &ProcessContext<'_>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let file_path_str = file.path.display().to_string();
-    let keep_backups = compiled.config.keep_backups;
 
     // Verify file hasn't changed since introspection (TOCTOU guard)
     if let Some(skip_json) = check_file_hash(file).await {
         return Ok(Some(skip_json));
     }
 
-    let mut current_file = file.clone();
-    let mut phase_outcomes: HashMap<String, voom_policy_evaluator::EvaluationOutcome> =
-        HashMap::new();
-    let mut any_executed = false;
-    let mut modified_counted = false;
-    let mut plans_evaluated: usize = 0;
     let safeguards = SafeguardContext::from_process(ctx);
+    let phase_ctx = PhaseExecutionContext {
+        compiled,
+        keep_backups: compiled.config.keep_backups,
+        safeguards: &safeguards,
+        process: ctx,
+    };
+    let mut state = PhaseExecutionState::new(file.clone());
 
     for phase_name in &compiled.phase_order {
         if ctx.token.is_cancelled() {
             break;
         }
 
-        let Some(plan) = voom_policy_evaluator::evaluate_single_phase_with_hints(
-            phase_name,
-            compiled,
-            &current_file,
-            &phase_outcomes,
-            ctx.capabilities,
-        ) else {
-            continue;
-        };
-        let plan = plan.with_session_id(ctx.counters.session_id);
-
-        plans_evaluated += 1;
-
-        dispatch_safeguard_violations(&plan, &current_file, ctx.kernel.as_ref());
-
-        // Handle skipped plans
-        if let Some(reason) = &plan.skip_reason {
-            phase_outcomes.insert(
-                phase_name.clone(),
-                voom_policy_evaluator::EvaluationOutcome::Skipped,
-            );
-            dispatch_skipped_plan(&plan, &current_file, reason, ctx);
-            continue;
-        }
-
-        // Empty plans need no execution
-        if plan.is_empty() {
-            phase_outcomes.insert(
-                phase_name.clone(),
-                voom_policy_evaluator::EvaluationOutcome::Executed { modified: false },
-            );
-            continue;
-        }
-
-        // Pre-execution safeguard: check disk space
-        // Note: check_disk_space dispatches only PlanFailed (not
-        // PlanCreated, which would trigger executors) and records
-        // PhaseOutcomeKind::Failed for stats. This insert updates
-        // the dependency-resolution map to block downstream run_if gates.
-        if check_disk_space(&plan, &current_file, &safeguards) {
-            phase_outcomes.insert(
-                phase_name.clone(),
-                voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
-            );
-            continue;
-        }
-
-        // Execute this plan
-        let permit = tokio::select! {
-            biased;
-            () = ctx.token.cancelled() => break,
-            permit = ctx.plan_limiter.acquire_for_plan(&plan) => permit,
-        };
-        let plan_clone = plan.clone();
-        let file_clone = current_file.clone();
-        let kernel_clone = ctx.kernel.clone();
-        let start = std::time::Instant::now();
-        let exec_outcome = tokio::task::spawn_blocking(move || {
-            execute_single_plan(&plan_clone, &file_clone, &kernel_clone)
-        })
-        .await
-        .map_err(|e| format!("plan execution join error: {e}"))?;
-        drop(permit);
-        let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-        match exec_outcome {
-            PlanOutcome::Success { executor } => {
-                // Post-execution safeguard: check size increase
-                // Note: check_size_increase dispatches PlanFailed (PlanCreated was
-                // already dispatched by execute_single_plan) and records
-                // PhaseOutcomeKind::Failed for stats. This insert updates the
-                // dependency-resolution map.
-                if check_size_increase(&plan, &current_file, &safeguards) {
-                    phase_outcomes.insert(
-                        phase_name.clone(),
-                        voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
-                    );
-                    continue;
-                }
-                // Post-execution safeguard: check duration shrinkage.
-                // Mirrors check_size_increase: dispatches PlanFailed
-                // (PlanCreated was already dispatched by execute_single_plan)
-                // and records PhaseOutcomeKind::Failed for stats.
-                if check_duration_shrink(&plan, &current_file, &safeguards).await {
-                    phase_outcomes.insert(
-                        phase_name.clone(),
-                        voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
-                    );
-                    continue;
-                }
-                any_executed = true;
-                if !modified_counted {
-                    ctx.counters
-                        .modified_count
-                        .fetch_add(1, AtomicOrdering::Relaxed);
-                    modified_counted = true;
-                }
-                phase_outcomes.insert(
-                    phase_name.clone(),
-                    voom_policy_evaluator::EvaluationOutcome::Executed { modified: true },
-                );
-                current_file = handle_plan_success(
-                    plan,
-                    &current_file,
-                    &executor,
-                    elapsed_ms,
-                    keep_backups,
-                    ctx,
-                )
-                .await;
-            }
-            PlanOutcome::Failed(failed) => {
-                let executor = failed.plugin_name.clone().unwrap_or_default();
-                let error_msg = failed.error.clone();
-                dispatch_plan_failure(failed, &plan.phase_name, ctx);
-                record_failure_transition(&FailureTransitionContext {
-                    file: &current_file,
-                    plan: &plan,
-                    executor: &executor,
-                    error_message: Some(&error_msg),
-                    recorder: &TransitionRecorder {
-                        store: ctx.store.as_ref(),
-                        session_id: ctx.counters.session_id,
-                    },
-                });
-                phase_outcomes.insert(
-                    plan.phase_name.clone(),
-                    voom_policy_evaluator::EvaluationOutcome::ExecutionFailed,
-                );
-                // Downstream phases still evaluate; run_if gates block
-                // them via ExecutionFailed in phase_outcomes.
-            }
+        if run_phase_iteration(phase_name, &mut state, &phase_ctx).await? == PhaseLoopControl::Stop
+        {
+            break;
         }
     }
 
     Ok(Some(serde_json::json!({
         "path": file_path_str,
-        "needs_execution": any_executed,
-        "plans_evaluated": plans_evaluated,
+        "needs_execution": state.any_executed,
+        "plans_evaluated": state.plans_evaluated,
     })))
+}
+
+struct PhaseExecutionState {
+    current_file: voom_domain::media::MediaFile,
+    outcomes: HashMap<String, voom_policy_evaluator::EvaluationOutcome>,
+    any_executed: bool,
+    modified_counted: bool,
+    plans_evaluated: usize,
+}
+
+impl PhaseExecutionState {
+    fn new(current_file: voom_domain::media::MediaFile) -> Self {
+        Self {
+            current_file,
+            outcomes: HashMap::new(),
+            any_executed: false,
+            modified_counted: false,
+            plans_evaluated: 0,
+        }
+    }
+}
+
+struct PhaseExecutionContext<'a> {
+    compiled: &'a voom_dsl::CompiledPolicy,
+    keep_backups: bool,
+    safeguards: &'a SafeguardContext<'a>,
+    process: &'a ProcessContext<'a>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PhaseLoopControl {
+    Continue,
+    Stop,
+}
+
+async fn run_phase_iteration(
+    phase_name: &str,
+    state: &mut PhaseExecutionState,
+    phase_ctx: &PhaseExecutionContext<'_>,
+) -> std::result::Result<PhaseLoopControl, String> {
+    let Some(plan) = voom_policy_evaluator::evaluate_single_phase_with_hints(
+        phase_name,
+        phase_ctx.compiled,
+        &state.current_file,
+        &state.outcomes,
+        phase_ctx.process.capabilities,
+    ) else {
+        return Ok(PhaseLoopControl::Continue);
+    };
+    let plan = plan.with_session_id(phase_ctx.process.counters.session_id);
+
+    state.plans_evaluated += 1;
+
+    dispatch_safeguard_violations(
+        &plan,
+        &state.current_file,
+        phase_ctx.process.kernel.as_ref(),
+    );
+
+    if let Some(reason) = &plan.skip_reason {
+        state.outcomes.insert(
+            phase_name.to_string(),
+            voom_policy_evaluator::EvaluationOutcome::Skipped,
+        );
+        dispatch_skipped_plan(&plan, &state.current_file, reason, phase_ctx.process);
+        return Ok(PhaseLoopControl::Continue);
+    }
+
+    if plan.is_empty() {
+        state.outcomes.insert(
+            phase_name.to_string(),
+            voom_policy_evaluator::EvaluationOutcome::Executed { modified: false },
+        );
+        return Ok(PhaseLoopControl::Continue);
+    }
+
+    if check_disk_space(&plan, &state.current_file, phase_ctx.safeguards) {
+        state.outcomes.insert(
+            phase_name.to_string(),
+            voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
+        );
+        return Ok(PhaseLoopControl::Continue);
+    }
+
+    execute_phase_plan(plan, state, phase_ctx).await
+}
+
+async fn execute_phase_plan(
+    plan: voom_domain::plan::Plan,
+    state: &mut PhaseExecutionState,
+    phase_ctx: &PhaseExecutionContext<'_>,
+) -> std::result::Result<PhaseLoopControl, String> {
+    let permit = tokio::select! {
+        biased;
+        () = phase_ctx.process.token.cancelled() => return Ok(PhaseLoopControl::Stop),
+        permit = phase_ctx.process.plan_limiter.acquire_for_plan(&plan) => permit,
+    };
+    let plan_clone = plan.clone();
+    let file_clone = state.current_file.clone();
+    let kernel_clone = phase_ctx.process.kernel.clone();
+    let start = std::time::Instant::now();
+    let exec_outcome = tokio::task::spawn_blocking(move || {
+        execute_single_plan(&plan_clone, &file_clone, &kernel_clone)
+    })
+    .await
+    .map_err(|e| format!("plan execution join error: {e}"))?;
+    drop(permit);
+    let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    match exec_outcome {
+        PlanOutcome::Success { executor } => {
+            handle_phase_success(plan, state, phase_ctx, &executor, elapsed_ms).await;
+        }
+        PlanOutcome::Failed(failed) => {
+            handle_phase_failure(failed, &plan, state, phase_ctx);
+        }
+    }
+
+    Ok(PhaseLoopControl::Continue)
+}
+
+async fn handle_phase_success(
+    plan: voom_domain::plan::Plan,
+    state: &mut PhaseExecutionState,
+    phase_ctx: &PhaseExecutionContext<'_>,
+    executor: &str,
+    elapsed_ms: u64,
+) {
+    if check_size_increase(&plan, &state.current_file, phase_ctx.safeguards) {
+        state.outcomes.insert(
+            plan.phase_name.clone(),
+            voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
+        );
+        return;
+    }
+    if check_duration_shrink(&plan, &state.current_file, phase_ctx.safeguards).await {
+        state.outcomes.insert(
+            plan.phase_name.clone(),
+            voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
+        );
+        return;
+    }
+
+    state.any_executed = true;
+    if !state.modified_counted {
+        phase_ctx
+            .process
+            .counters
+            .modified_count
+            .fetch_add(1, AtomicOrdering::Relaxed);
+        state.modified_counted = true;
+    }
+    state.outcomes.insert(
+        plan.phase_name.clone(),
+        voom_policy_evaluator::EvaluationOutcome::Executed { modified: true },
+    );
+    state.current_file = handle_plan_success(
+        plan,
+        &state.current_file,
+        executor,
+        elapsed_ms,
+        phase_ctx.keep_backups,
+        phase_ctx.process,
+    )
+    .await;
+}
+
+fn handle_phase_failure(
+    failed: PlanFailedEvent,
+    plan: &voom_domain::plan::Plan,
+    state: &mut PhaseExecutionState,
+    phase_ctx: &PhaseExecutionContext<'_>,
+) {
+    let executor = failed.plugin_name.clone().unwrap_or_default();
+    let error_msg = failed.error.clone();
+    dispatch_plan_failure(failed, &plan.phase_name, phase_ctx.process);
+    record_failure_transition(&FailureTransitionContext {
+        file: &state.current_file,
+        plan,
+        executor: &executor,
+        error_message: Some(&error_msg),
+        recorder: &TransitionRecorder {
+            store: phase_ctx.process.store.as_ref(),
+            session_id: phase_ctx.process.counters.session_id,
+        },
+    });
+    state.outcomes.insert(
+        plan.phase_name.clone(),
+        voom_policy_evaluator::EvaluationOutcome::ExecutionFailed,
+    );
 }
 
 /// Dispatch events for a skipped plan: `PlanCreated` then `PlanSkipped`.
@@ -679,44 +739,6 @@ fn orchestrate_plans(
     let plans =
         voom_policy_evaluator::evaluate_with_capabilities(compiled, file, capabilities).plans;
     voom_phase_orchestrator::orchestrate(plans)
-}
-
-/// Determine the file path after plan execution.
-///
-/// If a `ConvertContainer` action changed the container, the file extension
-/// will have changed on disk (e.g. `.mp4` → `.mkv`). Derive the new path
-/// from the plan actions; fall back to the original path if unchanged.
-pub(super) fn resolve_post_execution_path(
-    file: &voom_domain::media::MediaFile,
-    plans: &[voom_domain::plan::Plan],
-) -> std::path::PathBuf {
-    if let Some(container) = find_last_container_action(plans) {
-        let new_path = file.path.with_extension(container.as_str());
-        if new_path.exists() {
-            return new_path;
-        }
-    }
-    file.path.clone()
-}
-
-/// Search plans (last to first) for the most recent `ConvertContainer` action.
-fn find_last_container_action(
-    plans: &[voom_domain::plan::Plan],
-) -> Option<voom_domain::media::Container> {
-    for plan in plans.iter().rev() {
-        if plan.is_skipped() || plan.is_empty() {
-            continue;
-        }
-        for action in &plan.actions {
-            if action.operation == OperationType::ConvertContainer {
-                if let voom_domain::plan::ActionParams::Container { container } = &action.parameters
-                {
-                    return Some(*container);
-                }
-            }
-        }
-    }
-    None
 }
 
 /// Dispatch `PlanExecuting` + `PlanCreated` for a single plan.

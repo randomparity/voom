@@ -9,16 +9,13 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Policy evaluation plugin for VOOM — applies compiled policies to media files"
+description = "Policy evaluation library for VOOM — applies compiled policies to media files"
 
 [dependencies]
 voom-domain = { workspace = true }
 voom-dsl = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-chrono = { workspace = true }
-uuid = { workspace = true }
 
 [lints]
 workspace = true

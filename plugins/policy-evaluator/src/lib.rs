@@ -1,8 +1,9 @@
-//! Policy Evaluator Plugin.
+//! Policy evaluation library.
 //!
 //! Evaluates compiled policies against introspected media files to produce
-//! [`Plan`](voom_domain::plan::Plan) structs describing the operations needed. Pure logic plugin with
-//! no external dependencies.
+//! [`Plan`](voom_domain::plan::Plan) structs describing the operations needed.
+//! This crate is called directly by the CLI and does not implement
+//! `voom_kernel::Plugin`.
 
 pub mod condition;
 pub mod container_compat;

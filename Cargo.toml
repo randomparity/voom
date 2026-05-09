@@ -77,7 +77,16 @@ voom-capability-collector = { path = "plugins/capability-collector" }
 voom-report = { path = "plugins/report" }
 
 # Async
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = [
+    "io-util",
+    "macros",
+    "net",
+    "process",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+] }
 tokio-util = "0.7"
 tokio-stream = { version = "0.1", features = ["sync"] }
 

@@ -2954,7 +2954,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
@@ -3333,7 +3332,6 @@ name = "voom-backup-manager"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "serde",
  "serde_json",
  "tempfile",
  "tracing",
@@ -3569,7 +3567,6 @@ name = "voom-phase-orchestrator"
 version = "0.1.0"
 dependencies = [
  "insta",
- "tracing",
  "voom-domain",
  "voom-dsl",
  "voom-policy-evaluator",
@@ -3590,13 +3587,10 @@ dependencies = [
 name = "voom-policy-evaluator"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "insta",
  "proptest",
- "serde",
  "serde_json",
  "tracing",
- "uuid",
  "voom-domain",
  "voom-dsl",
 ]

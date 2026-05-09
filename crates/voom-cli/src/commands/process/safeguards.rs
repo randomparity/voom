@@ -14,10 +14,10 @@
 use voom_domain::events::{Event, PlanFailedEvent};
 use voom_domain::utils::format::format_size;
 
+use super::context::{record_phase_stat, PhaseOutcomeKind, PhaseStatsMap, ProcessContext};
 use super::dispatch::{dispatch_and_log, PlanDispatcher};
-use super::pipeline::resolve_post_execution_path;
+use super::post_execution_path::resolve_post_execution_path;
 use super::transitions::{record_failure_transition, FailureTransitionContext, TransitionRecorder};
-use super::{record_phase_stat, PhaseOutcomeKind, PhaseStatsMap, ProcessContext};
 
 /// Dependencies needed by execution safeguards.
 pub(super) struct SafeguardContext<'a> {

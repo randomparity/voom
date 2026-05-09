@@ -448,6 +448,60 @@ fn apply_synthesize_audio(cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegC
     )
 }
 
+fn apply_disposition_action(mut cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegCommand {
+    let Some(stream) = action.track_index else {
+        return cmd;
+    };
+    let disposition = match action.operation {
+        OperationType::SetDefault => "default",
+        OperationType::ClearDefault | OperationType::ClearForced => "0",
+        OperationType::SetForced => "forced",
+        _ => return cmd,
+    };
+    cmd = cmd.disposition(stream, disposition);
+    cmd
+}
+
+fn apply_metadata_action(mut cmd: FfmpegCommand, action: &PlannedAction) -> Result<FfmpegCommand> {
+    match &action.parameters {
+        ActionParams::Title { title } if action.operation == OperationType::SetTitle => {
+            if let Some(stream) = action.track_index {
+                validate_metadata_value(title)?;
+                cmd = cmd.metadata(Some(stream), "title", title);
+            }
+        }
+        ActionParams::Language { language } if action.operation == OperationType::SetLanguage => {
+            if let Some(stream) = action.track_index {
+                validate_metadata_value(language)?;
+                cmd = cmd.metadata(Some(stream), "language", language);
+            }
+        }
+        ActionParams::SetTag { tag, value }
+            if action.operation == OperationType::SetContainerTag =>
+        {
+            validate_metadata_key(tag)?;
+            validate_metadata_value(value)?;
+            cmd = cmd.metadata(None, tag, value);
+        }
+        ActionParams::ClearTags { tags }
+            if action.operation == OperationType::ClearContainerTags =>
+        {
+            for tag in tags {
+                validate_metadata_key(tag)?;
+                cmd = cmd.clear_metadata(tag);
+            }
+        }
+        ActionParams::DeleteTag { tag }
+            if action.operation == OperationType::DeleteContainerTag =>
+        {
+            validate_metadata_key(tag)?;
+            cmd = cmd.clear_metadata(tag);
+        }
+        _ => {}
+    }
+    Ok(cmd)
+}
+
 fn source_video_track<'a>(file: &'a MediaFile, action: &PlannedAction) -> Option<&'a Track> {
     let stream_index = action.track_index?;
     file.tracks
@@ -555,59 +609,18 @@ pub fn build_ffmpeg_command(
             OperationType::SynthesizeAudio => {
                 cmd = apply_synthesize_audio(cmd, action);
             }
-            OperationType::SetDefault => {
-                if let Some(stream) = action.track_index {
-                    cmd = cmd.disposition(stream, "default");
-                }
+            OperationType::SetDefault
+            | OperationType::ClearDefault
+            | OperationType::ClearForced
+            | OperationType::SetForced => {
+                cmd = apply_disposition_action(cmd, action);
             }
-            // Both clear operations use disposition "0" — ffmpeg clears all
-            // disposition flags on the stream when set to 0.
-            OperationType::ClearDefault | OperationType::ClearForced => {
-                if let Some(stream) = action.track_index {
-                    cmd = cmd.disposition(stream, "0");
-                }
-            }
-            OperationType::SetForced => {
-                if let Some(stream) = action.track_index {
-                    cmd = cmd.disposition(stream, "forced");
-                }
-            }
-            OperationType::SetTitle => {
-                if let Some(stream) = action.track_index {
-                    if let ActionParams::Title { title } = &action.parameters {
-                        validate_metadata_value(title)?;
-                        cmd = cmd.metadata(Some(stream), "title", title);
-                    }
-                }
-            }
-            OperationType::SetLanguage => {
-                if let Some(stream) = action.track_index {
-                    if let ActionParams::Language { language } = &action.parameters {
-                        validate_metadata_value(language)?;
-                        cmd = cmd.metadata(Some(stream), "language", language);
-                    }
-                }
-            }
-            OperationType::SetContainerTag => {
-                if let ActionParams::SetTag { tag, value } = &action.parameters {
-                    validate_metadata_key(tag)?;
-                    validate_metadata_value(value)?;
-                    cmd = cmd.metadata(None, tag, value);
-                }
-            }
-            OperationType::ClearContainerTags => {
-                if let ActionParams::ClearTags { tags } = &action.parameters {
-                    for tag in tags {
-                        validate_metadata_key(tag)?;
-                        cmd = cmd.clear_metadata(tag);
-                    }
-                }
-            }
-            OperationType::DeleteContainerTag => {
-                if let ActionParams::DeleteTag { tag } = &action.parameters {
-                    validate_metadata_key(tag)?;
-                    cmd = cmd.clear_metadata(tag);
-                }
+            OperationType::SetTitle
+            | OperationType::SetLanguage
+            | OperationType::SetContainerTag
+            | OperationType::ClearContainerTags
+            | OperationType::DeleteContainerTag => {
+                cmd = apply_metadata_action(cmd, action)?;
             }
             _ => {
                 // Other operations (RemoveTrack, ReorderTracks, etc.) not handled by ffmpeg

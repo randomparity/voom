@@ -1,9 +1,10 @@
-//! Phase Orchestrator Plugin.
+//! Phase orchestration library.
 //!
 //! Produces an [`OrchestrationResult`] from pre-evaluated plans: determines
 //! phase outcomes based on `skip_when`, `run_if`, and `depends_on` results,
 //! and provides dry-run formatting. Does not call executors — the CLI's
-//! `process` command handles actual execution and re-introspection.
+//! `process` command handles actual execution and re-introspection. This crate
+//! is called directly and does not implement `voom_kernel::Plugin`.
 
 use voom_domain::plan::{PhaseOutcome, PhaseResult, Plan};
 use voom_dsl::compiled::{CompiledPolicy, ErrorStrategy};
