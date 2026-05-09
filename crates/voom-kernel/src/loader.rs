@@ -49,6 +49,39 @@ pub mod wasm {
         })
     }
 
+    pub(super) struct ManifestMetadata {
+        pub(super) version: String,
+        pub(super) description: String,
+        pub(super) author: String,
+        pub(super) license: String,
+        pub(super) homepage: String,
+        pub(super) capabilities: Vec<Capability>,
+        pub(super) handled_events: Vec<String>,
+    }
+
+    pub(super) fn manifest_metadata(manifest: Option<&PluginManifest>) -> ManifestMetadata {
+        match manifest {
+            Some(manifest) => ManifestMetadata {
+                version: manifest.version.clone(),
+                description: manifest.description.clone(),
+                author: manifest.author.clone(),
+                license: manifest.license.clone(),
+                homepage: manifest.homepage.clone(),
+                capabilities: manifest.capabilities.clone(),
+                handled_events: manifest.handles_events.clone(),
+            },
+            None => ManifestMetadata {
+                version: "0.0.0".to_string(),
+                description: String::new(),
+                author: String::new(),
+                license: String::new(),
+                homepage: String::new(),
+                capabilities: Vec::new(),
+                handled_events: Vec::new(),
+            },
+        }
+    }
+
     /// Loads WASM component plugins from `.wasm` files.
     ///
     /// The loader compiles WASM components and instantiates them with host
@@ -203,37 +236,17 @@ pub mod wasm {
             store.limiter(|s| &mut s.store_limits);
             store.set_epoch_deadline(store.data().wasm_limits.epoch_deadline_ticks);
 
-            let (version, description, author, license, homepage, capabilities, handled_events) =
-                match manifest.as_ref() {
-                    Some(m) => (
-                        m.version.clone(),
-                        m.description.clone(),
-                        m.author.clone(),
-                        m.license.clone(),
-                        m.homepage.clone(),
-                        m.capabilities.clone(),
-                        m.handles_events.clone(),
-                    ),
-                    None => (
-                        "0.0.0".to_string(),
-                        String::new(),
-                        String::new(),
-                        String::new(),
-                        String::new(),
-                        vec![],
-                        vec![],
-                    ),
-                };
+            let metadata = manifest_metadata(manifest.as_ref());
 
             Ok(Arc::new(WasmPlugin {
                 name: plugin_name,
-                version,
-                description,
-                author,
-                license,
-                homepage,
-                capabilities,
-                handled_events,
+                version: metadata.version,
+                description: metadata.description,
+                author: metadata.author,
+                license: metadata.license,
+                homepage: metadata.homepage,
+                capabilities: metadata.capabilities,
+                handled_events: metadata.handled_events,
                 inner: Mutex::new(WasmPluginInner {
                     store,
                     component,
@@ -320,32 +333,9 @@ pub mod wasm {
                         return None;
                     }
 
-                    let mut host_state = plugin_configs.get(&plugin_name).map(|table| {
-                        let config_value = match serde_json::to_value(table) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                tracing::warn!(plugin = %plugin_name, error = %e,
-                                    "failed to convert plugin config to JSON; using empty config");
-                                serde_json::json!({})
-                            }
-                        };
-                        let mut state =
-                            HostState::new(plugin_name.clone()).with_initial_config(config_value);
-
-                        // Allow config to specify allowed_paths for filesystem access.
-                        if let Some(paths) = table.get("allowed_paths") {
-                            if let Some(arr) = paths.as_array() {
-                                let paths: Vec<std::path::PathBuf> = arr
-                                    .iter()
-                                    .filter_map(|v| v.as_str())
-                                    .map(super::expand_tilde)
-                                    .collect();
-                                state = state.with_paths(paths);
-                            }
-                        }
-
-                        state
-                    });
+                    let mut host_state = plugin_configs
+                        .get(&plugin_name)
+                        .map(|table| host_state_from_config(&plugin_name, table));
 
                     // Wire storage-backed stores into every plugin when available.
                     if let Some(ref s) = storage {
@@ -774,6 +764,29 @@ pub mod wasm {
         }
     }
 
+    pub(super) fn host_state_from_config(plugin_name: &str, table: &toml::Table) -> HostState {
+        let config_value = match serde_json::to_value(table) {
+            Ok(value) => value,
+            Err(e) => {
+                tracing::warn!(plugin = %plugin_name, error = %e,
+                    "failed to convert plugin config to JSON; using empty config");
+                serde_json::json!({})
+            }
+        };
+        let mut state = HostState::new(plugin_name.to_string()).with_initial_config(config_value);
+
+        if let Some(paths) = table.get("allowed_paths").and_then(toml::Value::as_array) {
+            let paths = paths
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .map(super::expand_tilde)
+                .collect();
+            state = state.with_paths(paths);
+        }
+
+        state
+    }
+
     /// Register host function imports in the linker.
     ///
     /// These are the functions that WASM plugins can call back into the host.
@@ -819,13 +832,7 @@ pub mod wasm {
                 |ctx: wasmtime::StoreContextMut<'_, HostState>,
                  (file_id,): (String,)|
                  -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
-                    let uuid = uuid::Uuid::parse_str(&file_id)
-                        .map_err(|e| format!("invalid file ID '{file_id}': {e}"));
-                    let result = match uuid {
-                        Ok(id) => ctx.data().get_file_transitions(&id),
-                        Err(e) => Err(e),
-                    };
-                    Ok((result,))
+                    Ok((get_file_transitions(ctx.data(), &file_id),))
                 },
             )
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
@@ -842,6 +849,15 @@ pub mod wasm {
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
         Ok(())
+    }
+
+    pub(super) fn get_file_transitions(
+        state: &HostState,
+        file_id: &str,
+    ) -> Result<Vec<u8>, String> {
+        let file_id = uuid::Uuid::parse_str(file_id)
+            .map_err(|e| format!("invalid file ID '{file_id}': {e}"))?;
+        state.get_file_transitions(&file_id)
     }
 
     fn register_plugin_data_funcs(
@@ -1620,6 +1636,70 @@ Evaluate = {}
             assert!(files
                 .unwrap_err()
                 .contains("not within allowed directories"));
+        }
+
+        #[test]
+        fn read_metadata_rejects_missing_path_before_metadata_lookup() {
+            use crate::host::HostState;
+
+            let allowed_dir = tempfile::tempdir().unwrap();
+            let allowed_dir = std::fs::canonicalize(allowed_dir.path()).unwrap();
+            let state = HostState::new("test-plugin".into()).with_paths(vec![allowed_dir.clone()]);
+            let missing_path = allowed_dir.join("missing.mov");
+
+            let error = read_file_metadata(&state, &missing_path.to_string_lossy()).unwrap_err();
+
+            assert!(
+                error.contains("cannot resolve path"),
+                "unexpected missing path error: {error}"
+            );
+        }
+
+        #[test]
+        fn get_file_transitions_rejects_malformed_uuid() {
+            use crate::host::HostState;
+
+            let state = HostState::new("test-plugin".into());
+            let error = get_file_transitions(&state, "not-a-uuid").unwrap_err();
+
+            assert!(error.contains("invalid file ID 'not-a-uuid'"));
+        }
+
+        #[test]
+        fn host_state_from_config_seeds_config_and_allowed_paths() {
+            let dir = tempfile::tempdir().unwrap();
+            let config: toml::Table = toml::from_str(&format!(
+                r#"
+allowed_paths = ["{}"]
+quality = "preview"
+"#,
+                dir.path().display()
+            ))
+            .expect("valid config TOML");
+
+            let state = host_state_from_config("test-plugin", &config);
+
+            assert_eq!(state.plugin_name, "test-plugin");
+            assert_eq!(state.allowed_paths, vec![dir.path().to_path_buf()]);
+            let config_bytes = state
+                .plugin_data
+                .get("config")
+                .expect("config should be seeded");
+            let config_value: serde_json::Value = serde_json::from_slice(config_bytes).unwrap();
+            assert_eq!(config_value["quality"], "preview");
+        }
+
+        #[test]
+        fn manifest_metadata_defaults_when_manifest_missing() {
+            let metadata = manifest_metadata(None);
+
+            assert_eq!(metadata.version, "0.0.0");
+            assert!(metadata.description.is_empty());
+            assert!(metadata.author.is_empty());
+            assert!(metadata.license.is_empty());
+            assert!(metadata.homepage.is_empty());
+            assert!(metadata.capabilities.is_empty());
+            assert!(metadata.handled_events.is_empty());
         }
 
         /// Verify that a manifest with explicit `allowed_paths = []` clears
