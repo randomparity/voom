@@ -138,7 +138,7 @@ fmt-check:
     cargo fmt --all -- --check
 
 # Run the full CI check locally (fmt + clippy + tests)
-ci: fmt-check lint test test-wasm
+ci: fmt-check lint test test-wasm functional-test-quick
 
 # Run cargo-deny dependency audit
 deny:
