@@ -188,15 +188,7 @@ pub mod wasm {
             let mut state = host_state.unwrap_or_else(|| HostState::new(plugin_name.clone()));
 
             if let Some(ref manifest) = manifest {
-                state.allowed_capabilities = manifest
-                    .capabilities
-                    .iter()
-                    .map(|c| c.kind().to_string())
-                    .collect();
-                state.allowed_http_domains = manifest.allowed_domains.clone();
-                if let Some(ref paths) = manifest.allowed_paths {
-                    state.allowed_paths = paths.iter().map(|p| super::expand_tilde(p)).collect();
-                }
+                apply_manifest_permissions(&mut state, manifest);
             }
 
             let limits = wasmtime::StoreLimitsBuilder::new()
@@ -770,6 +762,18 @@ pub mod wasm {
         })
     }
 
+    pub(super) fn apply_manifest_permissions(state: &mut HostState, manifest: &PluginManifest) {
+        state.allowed_capabilities = manifest
+            .capabilities
+            .iter()
+            .map(|c| c.kind().to_string())
+            .collect();
+        state.allowed_http_domains = manifest.allowed_domains.clone();
+        if let Some(ref paths) = manifest.allowed_paths {
+            state.allowed_paths = paths.iter().map(|p| super::expand_tilde(p)).collect();
+        }
+    }
+
     /// Register host function imports in the linker.
     ///
     /// These are the functions that WASM plugins can call back into the host.
@@ -949,49 +953,7 @@ pub mod wasm {
                 |ctx: wasmtime::StoreContextMut<'_, HostState>,
                  (path,): (String,)|
                  -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
-                    if ctx.data().allowed_paths.is_empty() {
-                        return Ok((Err(format!(
-                            "path '{path}' is not within allowed directories"
-                        )),));
-                    }
-
-                    let file_path = std::path::Path::new(&path);
-                    let canonical = match std::fs::canonicalize(file_path) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            return Ok((Err(format!("cannot resolve path '{path}': {e}")),));
-                        }
-                    };
-                    let allowed = ctx
-                        .data()
-                        .allowed_paths
-                        .iter()
-                        .any(|p| canonical.starts_with(p));
-                    if !allowed {
-                        return Ok((Err(format!(
-                            "path '{path}' is not within allowed directories"
-                        )),));
-                    }
-
-                    match std::fs::metadata(file_path) {
-                        Ok(meta) => {
-                            let info = serde_json::json!({
-                                "size": meta.len(),
-                                "is_file": meta.is_file(),
-                                "is_dir": meta.is_dir(),
-                                "readonly": meta.permissions().readonly(),
-                                "modified": meta.modified().ok().map(|t| {
-                                    t.duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs()
-                                }),
-                            });
-                            let bytes = rmp_serde::to_vec(&info)
-                                .map_err(|e| format!("failed to serialize metadata: {e}"));
-                            Ok((bytes,))
-                        }
-                        Err(e) => Ok((Err(format!("failed to read metadata for '{path}': {e}")),)),
-                    }
+                    Ok((read_file_metadata(ctx.data(), &path),))
                 },
             )
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
@@ -1002,45 +964,76 @@ pub mod wasm {
                 |ctx: wasmtime::StoreContextMut<'_, HostState>,
                  (dir, pattern): (String, String)|
                  -> Result<(Result<Vec<String>, String>,), wasmtime::Error> {
-                    if ctx.data().allowed_paths.is_empty() {
-                        return Ok((Err(format!(
-                            "directory '{dir}' is not within \
-                             allowed directories"
-                        )),));
-                    }
-
-                    let dir_path = std::path::Path::new(&dir);
-                    let canonical = match std::fs::canonicalize(dir_path) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            return Ok((Err(format!("cannot resolve path '{dir}': {e}")),));
-                        }
-                    };
-                    let allowed = ctx
-                        .data()
-                        .allowed_paths
-                        .iter()
-                        .any(|p| canonical.starts_with(p));
-                    if !allowed {
-                        return Ok((Err(format!(
-                            "directory '{dir}' is not within \
-                             allowed directories"
-                        )),));
-                    }
-
-                    match std::fs::read_dir(dir_path) {
-                        Ok(entries) => Ok((collect_listed_file_names(
-                            entries.map(|entry| entry.map(|entry| entry.file_name())),
-                            &pattern,
-                            &dir,
-                        ),)),
-                        Err(e) => Ok((Err(format!("failed to list directory '{dir}': {e}")),)),
-                    }
+                    Ok((list_files(ctx.data(), &dir, &pattern),))
                 },
             )
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
         Ok(())
+    }
+
+    pub(super) fn read_file_metadata(state: &HostState, path: &str) -> Result<Vec<u8>, String> {
+        let file_path = allowed_filesystem_path(state, path, "path")?;
+        match std::fs::metadata(&file_path) {
+            Ok(meta) => {
+                let info = serde_json::json!({
+                    "size": meta.len(),
+                    "is_file": meta.is_file(),
+                    "is_dir": meta.is_dir(),
+                    "readonly": meta.permissions().readonly(),
+                    "modified": meta.modified().ok().map(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs()
+                    }),
+                });
+                rmp_serde::to_vec(&info).map_err(|e| format!("failed to serialize metadata: {e}"))
+            }
+            Err(e) => Err(format!("failed to read metadata for '{path}': {e}")),
+        }
+    }
+
+    pub(super) fn list_files(
+        state: &HostState,
+        dir: &str,
+        pattern: &str,
+    ) -> Result<Vec<String>, String> {
+        let dir_path = allowed_filesystem_path(state, dir, "directory")?;
+        match std::fs::read_dir(&dir_path) {
+            Ok(entries) => collect_listed_file_names(
+                entries.map(|entry| entry.map(|entry| entry.file_name())),
+                pattern,
+                dir,
+            ),
+            Err(e) => Err(format!("failed to list directory '{dir}': {e}")),
+        }
+    }
+
+    fn allowed_filesystem_path(
+        state: &HostState,
+        path: &str,
+        subject: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        if state.allowed_paths.is_empty() {
+            return Err(format!(
+                "{subject} '{path}' is not within allowed directories"
+            ));
+        }
+
+        let candidate = std::path::Path::new(path);
+        let canonical = std::fs::canonicalize(candidate)
+            .map_err(|e| format!("cannot resolve path '{path}': {e}"))?;
+        let allowed = state
+            .allowed_paths
+            .iter()
+            .any(|allowed_path| canonical.starts_with(allowed_path));
+        if !allowed {
+            return Err(format!(
+                "{subject} '{path}' is not within allowed directories"
+            ));
+        }
+
+        Ok(canonical)
     }
 
     pub(crate) fn collect_listed_file_names<I, E>(
@@ -1565,6 +1558,70 @@ Evaluate = {}
             );
         }
 
+        #[test]
+        fn read_metadata_and_list_files_deny_empty_allowed_paths() {
+            use crate::host::HostState;
+
+            let dir = tempfile::tempdir().unwrap();
+            let file_path = dir.path().join("movie.mkv");
+            std::fs::write(&file_path, b"media").unwrap();
+
+            let state = HostState::new("test-plugin".into());
+            let metadata = read_file_metadata(&state, &file_path.to_string_lossy());
+            assert!(metadata
+                .unwrap_err()
+                .contains("not within allowed directories"));
+
+            let files = list_files(&state, &dir.path().to_string_lossy(), "");
+            assert!(files
+                .unwrap_err()
+                .contains("not within allowed directories"));
+        }
+
+        #[test]
+        fn read_metadata_and_list_files_allow_canonical_path() {
+            use crate::host::HostState;
+
+            let dir = tempfile::tempdir().unwrap();
+            let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
+            let file_path = canonical_dir.join("movie.mkv");
+            let ignored_file_path = canonical_dir.join("notes.txt");
+            std::fs::write(&file_path, b"media").unwrap();
+            std::fs::write(&ignored_file_path, b"notes").unwrap();
+
+            let state = HostState::new("test-plugin".into()).with_paths(vec![canonical_dir]);
+            let metadata = read_file_metadata(&state, &file_path.to_string_lossy()).unwrap();
+            let metadata: serde_json::Value = rmp_serde::from_slice(&metadata).unwrap();
+            assert_eq!(metadata["size"], 5);
+            assert_eq!(metadata["is_file"], true);
+
+            let files = list_files(&state, &dir.path().to_string_lossy(), ".mkv").unwrap();
+            assert_eq!(files, vec!["movie.mkv"]);
+        }
+
+        #[test]
+        fn read_metadata_and_list_files_reject_outside_configured_path() {
+            use crate::host::HostState;
+
+            let allowed_dir = tempfile::tempdir().unwrap();
+            let blocked_dir = tempfile::tempdir().unwrap();
+            let blocked_file = blocked_dir.path().join("movie.mkv");
+            std::fs::write(&blocked_file, b"media").unwrap();
+
+            let allowed_dir = std::fs::canonicalize(allowed_dir.path()).unwrap();
+            let state = HostState::new("test-plugin".into()).with_paths(vec![allowed_dir]);
+
+            let metadata = read_file_metadata(&state, &blocked_file.to_string_lossy());
+            assert!(metadata
+                .unwrap_err()
+                .contains("not within allowed directories"));
+
+            let files = list_files(&state, &blocked_dir.path().to_string_lossy(), "");
+            assert!(files
+                .unwrap_err()
+                .contains("not within allowed directories"));
+        }
+
         /// Verify that a manifest with explicit `allowed_paths = []` clears
         /// any config-provided paths, enforcing deny-all filesystem access.
         #[test]
@@ -1592,13 +1649,7 @@ allowed_paths = []
                 "explicit empty array should deserialize to Some([])"
             );
 
-            // Apply the same logic as load_with_manifest.
-            if let Some(ref paths) = manifest.allowed_paths {
-                state.allowed_paths = paths
-                    .iter()
-                    .map(|p| super::super::expand_tilde(p))
-                    .collect();
-            }
+            apply_manifest_permissions(&mut state, &manifest);
 
             assert!(
                 state.allowed_paths.is_empty(),
@@ -1631,18 +1682,42 @@ handles_events = []
                 "omitted field should deserialize to None"
             );
 
-            if let Some(ref paths) = manifest.allowed_paths {
-                state.allowed_paths = paths
-                    .iter()
-                    .map(|p| super::super::expand_tilde(p))
-                    .collect();
-            }
+            apply_manifest_permissions(&mut state, &manifest);
 
             assert_eq!(
                 state.allowed_paths.len(),
                 1,
                 "omitted allowed_paths must preserve config-provided paths"
             );
+        }
+
+        #[test]
+        fn test_manifest_allowed_paths_override_configured_paths() {
+            use crate::host::HostState;
+            use crate::manifest::PluginManifest;
+
+            let config_dir = tempfile::tempdir().unwrap();
+            let manifest_dir = tempfile::tempdir().unwrap();
+            let config_dir = std::fs::canonicalize(config_dir.path()).unwrap();
+            let manifest_dir = std::fs::canonicalize(manifest_dir.path()).unwrap();
+            let mut state = HostState::new("test-plugin".into()).with_paths(vec![config_dir]);
+
+            let manifest: PluginManifest = toml::from_str(&format!(
+                r#"
+name = "test-plugin"
+version = "1.0.0"
+description = "test"
+capabilities = []
+handles_events = []
+allowed_paths = ["{}"]
+"#,
+                manifest_dir.display()
+            ))
+            .expect("valid manifest TOML");
+
+            apply_manifest_permissions(&mut state, &manifest);
+
+            assert_eq!(state.allowed_paths, vec![manifest_dir]);
         }
 
         #[test]
