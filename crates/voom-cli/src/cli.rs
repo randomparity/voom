@@ -248,6 +248,21 @@ pub enum PolicyCommands {
         /// Second policy file
         b: PathBuf,
     },
+    /// Run JSON policy test suites
+    Test {
+        /// Test suite files or directories containing *.test.json suites
+        #[arg(default_value = ".", num_args = 0..)]
+        paths: Vec<PathBuf>,
+        /// Policy file to apply to every test suite
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        /// Update snapshot expectations (not available until snapshot mode lands)
+        #[arg(long)]
+        update: bool,
+        /// Emit machine-readable JSON output
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 // === Plugin ===
@@ -1165,6 +1180,60 @@ mod tests {
     fn test_policy_diff_requires_two_files() {
         assert!(try_parse(&["voom", "policy", "diff"]).is_err());
         assert!(try_parse(&["voom", "policy", "diff", "a.voom"]).is_err());
+    }
+
+    #[test]
+    fn test_policy_test_defaults_to_current_directory() {
+        let cli = parse(&["voom", "policy", "test"]);
+        match cli.command {
+            Commands::Policy(PolicyCommands::Test {
+                paths,
+                policy,
+                update,
+                json,
+            }) => {
+                assert_eq!(paths, vec![PathBuf::from(".")]);
+                assert_eq!(policy, None);
+                assert!(!update);
+                assert!(!json);
+            }
+            _ => panic!("expected Policy Test"),
+        }
+    }
+
+    #[test]
+    fn test_policy_test_parses_paths_and_flags() {
+        let cli = parse(&[
+            "voom",
+            "policy",
+            "test",
+            "docs/examples/tests",
+            "other.test.json",
+            "--policy",
+            "override.voom",
+            "--update",
+            "--json",
+        ]);
+        match cli.command {
+            Commands::Policy(PolicyCommands::Test {
+                paths,
+                policy,
+                update,
+                json,
+            }) => {
+                assert_eq!(
+                    paths,
+                    vec![
+                        PathBuf::from("docs/examples/tests"),
+                        PathBuf::from("other.test.json"),
+                    ]
+                );
+                assert_eq!(policy, Some(PathBuf::from("override.voom")));
+                assert!(update);
+                assert!(json);
+            }
+            _ => panic!("expected Policy Test"),
+        }
     }
 
     // ── Plugin subcommands ───────────────────────────────────

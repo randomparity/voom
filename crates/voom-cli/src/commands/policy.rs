@@ -1,6 +1,10 @@
-use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
+
+use anyhow::{bail, Context, Result};
 use console::style;
+use serde::Serialize;
 use serde_json::Value;
+use voom_policy_testing::{CapabilityFixture, Fixture, TestSuite};
 
 use crate::cli::PolicyCommands;
 
@@ -11,6 +15,12 @@ pub fn run(cmd: PolicyCommands) -> Result<()> {
         PolicyCommands::Show { file } => show(&file),
         PolicyCommands::Format { file } => format(&file),
         PolicyCommands::Diff { a, b } => diff(&a, &b),
+        PolicyCommands::Test {
+            paths,
+            policy,
+            update,
+            json,
+        } => test(&paths, policy.as_deref(), update, json),
     }
 }
 
@@ -239,6 +249,211 @@ fn diff(a: &std::path::Path, b: &std::path::Path) -> Result<()> {
     print_diff_lines(&lines);
 
     Ok(())
+}
+
+fn test(paths: &[PathBuf], policy_override: Option<&Path>, update: bool, json: bool) -> Result<()> {
+    if update {
+        bail!("--update requires snapshot assertions, which are not available yet");
+    }
+
+    let suites = discover_test_suites(paths)?;
+    if suites.is_empty() {
+        bail!("no *.test.json files found");
+    }
+
+    let mut cases = Vec::new();
+    for suite_path in suites {
+        run_test_suite(&suite_path, policy_override, &mut cases)?;
+    }
+
+    let output = TestOutput::from_cases(cases);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        print_human_test_output(&output);
+    }
+    if output.summary.failed > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn discover_test_suites(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut suites = Vec::new();
+    for path in paths {
+        if path.is_file() {
+            suites.push(path.clone());
+            continue;
+        }
+        if path.is_dir() {
+            collect_test_suites(path, &mut suites)?;
+            continue;
+        }
+        bail!("test path does not exist: {}", path.display());
+    }
+    suites.sort();
+    Ok(suites)
+}
+
+fn collect_test_suites(dir: &Path, suites: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in
+        std::fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_test_suites(&path, suites)?;
+        } else if is_test_suite_file(&path) {
+            suites.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn is_test_suite_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".test.json"))
+}
+
+fn run_test_suite(
+    suite_path: &Path,
+    policy_override: Option<&Path>,
+    results: &mut Vec<TestCaseOutput>,
+) -> Result<()> {
+    let suite = TestSuite::load(suite_path)?;
+    let suite_dir = suite_path.parent().unwrap_or_else(|| Path::new("."));
+    let policy_path = policy_override
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| resolve_relative(suite_dir, &suite.policy));
+    let source = std::fs::read_to_string(&policy_path)
+        .with_context(|| format!("failed to read policy {}", policy_path.display()))?;
+    let policy = voom_dsl::compile_policy(&source)
+        .with_context(|| format!("failed to compile policy {}", policy_path.display()))?;
+
+    for case in &suite.cases {
+        let fixture_path = resolve_relative(suite_dir, &case.fixture);
+        let fixture = Fixture::load(&fixture_path)?;
+        let capabilities = capabilities_for_case(case.capabilities.as_ref(), &fixture);
+        let evaluation = voom_policy_evaluator::evaluate_with_capabilities(
+            &policy,
+            &fixture.to_media_file(),
+            &capabilities,
+        );
+        let failures = case
+            .expect
+            .check(&evaluation.plans)
+            .err()
+            .map_or_else(Vec::new, |failure| vec![failure.to_string()]);
+        results.push(TestCaseOutput {
+            name: case.name.clone(),
+            policy: policy_path.display().to_string(),
+            fixture: fixture_path.display().to_string(),
+            status: if failures.is_empty() {
+                TestStatus::Pass
+            } else {
+                TestStatus::Fail
+            },
+            failures,
+        });
+    }
+    Ok(())
+}
+
+fn resolve_relative(base: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
+}
+
+fn capabilities_for_case(
+    case: Option<&CapabilityFixture>,
+    fixture: &Fixture,
+) -> voom_domain::capability_map::CapabilityMap {
+    case.map_or_else(
+        || fixture.capabilities_or_default(),
+        CapabilityFixture::to_capability_map,
+    )
+}
+
+fn print_human_test_output(output: &TestOutput) {
+    for case in &output.cases {
+        match case.status {
+            TestStatus::Pass => {
+                println!(
+                    "{} {} ({})",
+                    style("OK").green(),
+                    case.name,
+                    style(&case.fixture).dim()
+                );
+            }
+            TestStatus::Fail => {
+                println!(
+                    "{} {} ({})",
+                    style("FAIL").red(),
+                    case.name,
+                    style(&case.fixture).dim()
+                );
+                for failure in &case.failures {
+                    println!("  {failure}");
+                }
+            }
+        }
+    }
+    println!(
+        "{} passed, {} failed, {} total",
+        output.summary.passed, output.summary.failed, output.summary.total
+    );
+}
+
+#[derive(Debug, Serialize)]
+struct TestOutput {
+    cases: Vec<TestCaseOutput>,
+    summary: TestSummary,
+}
+
+impl TestOutput {
+    fn from_cases(cases: Vec<TestCaseOutput>) -> Self {
+        let passed = cases
+            .iter()
+            .filter(|case| case.status == TestStatus::Pass)
+            .count();
+        let failed = cases.len() - passed;
+        let total = cases.len();
+        Self {
+            cases,
+            summary: TestSummary {
+                passed,
+                failed,
+                total,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct TestCaseOutput {
+    name: String,
+    policy: String,
+    fixture: String,
+    status: TestStatus,
+    failures: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct TestSummary {
+    passed: usize,
+    failed: usize,
+    total: usize,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum TestStatus {
+    Pass,
+    Fail,
 }
 
 enum DiffLine {

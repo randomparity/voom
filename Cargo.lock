@@ -3551,6 +3551,7 @@ dependencies = [
  "voom-mkvtoolnix-executor",
  "voom-phase-orchestrator",
  "voom-policy-evaluator",
+ "voom-policy-testing",
  "voom-process",
  "voom-report",
  "voom-sqlite-store",

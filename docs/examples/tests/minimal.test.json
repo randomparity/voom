@@ -1,0 +1,13 @@
+{
+  "policy": "../minimal.voom",
+  "cases": [
+    {
+      "name": "containerizes mp4",
+      "fixture": "movie-mp4.json",
+      "expect": {
+        "phases_run": ["containerize"],
+        "no_warnings": true
+      }
+    }
+  ]
+}

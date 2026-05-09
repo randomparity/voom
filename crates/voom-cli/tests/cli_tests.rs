@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use serde_json::Value;
 
 fn voom() -> Command {
     let mut cmd = Command::cargo_bin("voom").unwrap();
@@ -12,6 +13,71 @@ fn voom() -> Command {
         .keep();
     cmd.env("XDG_CONFIG_HOME", &scratch);
     cmd
+}
+
+fn write_policy_test_suite(dir: &std::path::Path, expected_phase: &str) -> std::path::PathBuf {
+    let policy_path = dir.join("minimal.voom");
+    let fixture_path = dir.join("movie.json");
+    let suite_path = dir.join("minimal.test.json");
+
+    std::fs::write(
+        &policy_path,
+        r#"policy "minimal" {
+  phase containerize {
+    container mkv
+  }
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &fixture_path,
+        r#"{
+  "path": "/media/movie.mp4",
+  "container": "Mp4",
+  "duration": 120.0,
+  "size": 99,
+  "tracks": [{
+    "index": 0,
+    "track_type": "Video",
+    "codec": "h264",
+    "language": "und",
+    "title": "",
+    "is_default": true,
+    "is_forced": false,
+    "channels": null,
+    "channel_layout": null,
+    "sample_rate": null,
+    "bit_depth": null,
+    "width": 1920,
+    "height": 1080,
+    "frame_rate": 23.976,
+    "is_vfr": false,
+    "is_hdr": false,
+    "hdr_format": null,
+    "pixel_format": null
+  }]
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &suite_path,
+        format!(
+            r#"{{
+  "policy": "minimal.voom",
+  "cases": [{{
+    "name": "containerizes mp4",
+    "fixture": "movie.json",
+    "expect": {{"phases_run": ["{expected_phase}"]}}
+  }}]
+}}
+"#
+        ),
+    )
+    .unwrap();
+
+    suite_path
 }
 
 // === Basic CLI structure ===
@@ -245,6 +311,58 @@ fn test_policy_format_roundtrip() {
         .args(["policy", "validate", tmp.path().to_str().unwrap()])
         .assert()
         .success();
+}
+
+#[test]
+fn test_policy_test_runs_matching_suite() {
+    let tmp = tempfile::tempdir().unwrap();
+    let suite = write_policy_test_suite(tmp.path(), "containerize");
+
+    voom()
+        .args(["policy", "test", suite.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("OK containerizes mp4"))
+        .stdout(predicate::str::contains("1 passed, 0 failed, 1 total"));
+}
+
+#[test]
+fn test_policy_test_json_reports_failures_and_exits_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let suite = write_policy_test_suite(tmp.path(), "missing");
+
+    let output = voom()
+        .args(["policy", "test", "--json", suite.to_str().unwrap()])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["summary"]["passed"], 0);
+    assert_eq!(json["summary"]["failed"], 1);
+    assert_eq!(json["summary"]["total"], 1);
+    assert_eq!(json["cases"][0]["name"], "containerizes mp4");
+    assert_eq!(json["cases"][0]["status"], "fail");
+    assert!(json["cases"][0]["failures"][0]
+        .as_str()
+        .unwrap()
+        .contains("missing"));
+}
+
+#[test]
+fn test_policy_test_update_without_snapshots_is_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let suite = write_policy_test_suite(tmp.path(), "containerize");
+
+    voom()
+        .args(["policy", "test", "--update", suite.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--update requires snapshot assertions, which are not available yet",
+        ));
 }
 
 // === Error cases ===
