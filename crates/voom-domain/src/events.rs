@@ -954,25 +954,26 @@ pub struct VerifyCompletedEvent {
     pub verification_id: Uuid,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct VerifyCompletedDetails {
+    pub mode: crate::verification::VerificationMode,
+    pub outcome: crate::verification::VerificationOutcome,
+    pub error_count: u32,
+    pub warning_count: u32,
+    pub verification_id: Uuid,
+}
+
 impl VerifyCompletedEvent {
     #[must_use]
-    pub fn new(
-        file_id: impl Into<String>,
-        path: PathBuf,
-        mode: crate::verification::VerificationMode,
-        outcome: crate::verification::VerificationOutcome,
-        error_count: u32,
-        warning_count: u32,
-        verification_id: Uuid,
-    ) -> Self {
+    pub fn new(file_id: impl Into<String>, path: PathBuf, details: VerifyCompletedDetails) -> Self {
         Self {
             file_id: file_id.into(),
             path,
-            mode,
-            outcome,
-            error_count,
-            warning_count,
-            verification_id,
+            mode: details.mode,
+            outcome: details.outcome,
+            error_count: details.error_count,
+            warning_count: details.warning_count,
+            verification_id: details.verification_id,
         }
     }
 }
@@ -1445,11 +1446,13 @@ mod verify_event_tests {
         let ev = Event::VerifyCompleted(VerifyCompletedEvent::new(
             "file-id",
             PathBuf::from("/m/x.mkv"),
-            VerificationMode::Thorough,
-            VerificationOutcome::Error,
-            3,
-            1,
-            Uuid::nil(),
+            VerifyCompletedDetails {
+                mode: VerificationMode::Thorough,
+                outcome: VerificationOutcome::Error,
+                error_count: 3,
+                warning_count: 1,
+                verification_id: Uuid::nil(),
+            },
         ));
         let s = ev.summary();
         assert!(s.contains("path=/m/x.mkv"));
@@ -1480,11 +1483,13 @@ mod verify_event_tests {
         let ev = VerifyCompletedEvent::new(
             "f",
             PathBuf::from("/x.mkv"),
-            VerificationMode::Hash,
-            VerificationOutcome::Ok,
-            0,
-            0,
-            Uuid::nil(),
+            VerifyCompletedDetails {
+                mode: VerificationMode::Hash,
+                outcome: VerificationOutcome::Ok,
+                error_count: 0,
+                warning_count: 0,
+                verification_id: Uuid::nil(),
+            },
         );
         let json = serde_json::to_string(&ev).unwrap();
         let back: VerifyCompletedEvent = serde_json::from_str(&json).unwrap();
