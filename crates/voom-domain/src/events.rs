@@ -511,10 +511,15 @@ impl PlanCreatedEvent {
 
 #[must_use]
 pub fn plan_begin_events(plan: Plan) -> Vec<Event> {
+    plan_begin_events_for_path(plan.file.path.clone(), plan)
+}
+
+#[must_use]
+pub fn plan_begin_events_for_path(path: PathBuf, plan: Plan) -> Vec<Event> {
     vec![
         Event::PlanExecuting(PlanExecutingEvent::new(
             plan.id,
-            plan.file.path.clone(),
+            path,
             plan.phase_name.clone(),
             plan.actions.len(),
         )),

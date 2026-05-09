@@ -31,7 +31,7 @@
 //! pairing is handled in one place.
 
 use voom_domain::events::{
-    Event, EventResult, PlanCompletedEvent, PlanCreatedEvent, PlanExecutingEvent, PlanFailedEvent,
+    plan_begin_events_for_path, Event, EventResult, PlanCompletedEvent, PlanFailedEvent,
     PlanSkippedEvent,
 };
 use voom_domain::storage::PlanStorage;
@@ -95,19 +95,14 @@ impl<'a> PlanDispatcher<'a> {
         plan: &voom_domain::plan::Plan,
         file: &voom_domain::media::MediaFile,
     ) -> Vec<EventResult> {
-        dispatch_and_log(
-            self.kernel,
-            Event::PlanExecuting(PlanExecutingEvent::new(
-                plan.id,
-                file.path.clone(),
-                plan.phase_name.clone(),
-                plan.actions.len(),
-            )),
-        );
-        dispatch_and_log(
-            self.kernel,
-            Event::PlanCreated(PlanCreatedEvent::new(plan.clone())),
-        )
+        let mut plan_created_results = Vec::new();
+        for event in plan_begin_events_for_path(file.path.clone(), plan.clone()) {
+            let results = dispatch_and_log(self.kernel, event.clone());
+            if matches!(event, Event::PlanCreated(_)) {
+                plan_created_results = results;
+            }
+        }
+        plan_created_results
     }
 
     /// Dispatch `PlanCompleted` after a successful execution.
