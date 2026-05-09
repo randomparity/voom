@@ -71,53 +71,80 @@ pub fn on_event(
         return None;
     }
 
+    let cache_key = resolve_transcript_cache_key(file);
+    if let Some(result) = cached_transcript_result(file, &cache_key, host) {
+        return Some(result);
+    }
+
+    let config = match load_transcriber_config(host) {
+        Ok(config) => config,
+        Err(()) => return None,
+    };
+
+    let audio_path = extract_audio(file, &cache_key, host)?;
+    let (whisper_bin, whisper_args) = build_whisper_args(&audio_path, config.as_ref());
+    let transcript = run_whisper(&whisper_bin, &whisper_args, &audio_path, host)?;
+    cache_transcript(&cache_key, &transcript, host);
+
+    build_result(file, &transcript, host)
+}
+
+fn resolve_transcript_cache_key(file: &MediaFile) -> String {
     let path_hash_owned = format!(
         "{:x}",
         xxhash_rust::xxh3::xxh3_64(file.path.to_string_lossy().as_bytes())
     );
     let hash_str = file.content_hash.as_deref().unwrap_or(&path_hash_owned);
-    let cache_key = format!("transcript:{hash_str}");
-    match host.get_plugin_data(&cache_key) {
+    format!("transcript:{hash_str}")
+}
+
+fn cached_transcript_result(
+    file: &MediaFile,
+    cache_key: &str,
+    host: &dyn HostFunctions,
+) -> Option<OnEventResult> {
+    match host.get_plugin_data(cache_key) {
         Ok(Some(cached)) => {
             host.log("debug", "using cached transcript");
-            return build_result(file, &cached, host);
+            build_result(file, &cached, host)
         }
-        Ok(None) => {}
-        Err(e) => host.log("error", &format!("failed to read transcript cache: {e}")),
-    }
-
-    let config: Option<WhisperConfig> = match load_plugin_config(|key| host.get_plugin_data(key)) {
-        Ok(config) => config,
+        Ok(None) => None,
         Err(e) => {
-            host.log("error", &format!("failed to load plugin config: {e}"));
-            return None;
+            host.log("error", &format!("failed to read transcript cache: {e}"));
+            None
         }
-    };
+    }
+}
 
+fn load_transcriber_config(host: &dyn HostFunctions) -> Result<Option<WhisperConfig>, ()> {
+    load_plugin_config(|key| host.get_plugin_data(key)).map_err(|e| {
+        host.log("error", &format!("failed to load plugin config: {e}"));
+    })
+}
+
+fn extract_audio(file: &MediaFile, cache_key: &str, host: &dyn HostFunctions) -> Option<String> {
     let file_path = file.path.to_string_lossy().to_string();
+    let hash_str = cache_key.strip_prefix("transcript:").unwrap_or(cache_key);
     let audio_path = format!("/tmp/voom-whisper-{hash_str}.wav");
-    let extract_result = host.run_tool(
-        "ffmpeg",
-        &[
-            "-i".to_string(),
-            file_path.clone(),
-            "-vn".to_string(),
-            "-ac".to_string(),
-            "1".to_string(),
-            "-ar".to_string(),
-            "16000".to_string(),
-            "-f".to_string(),
-            "wav".to_string(),
-            "-y".to_string(),
-            audio_path.clone(),
-        ],
-        300_000, // 5 minute timeout for extraction
-    );
+    let args = vec![
+        "-i".to_string(),
+        file_path,
+        "-vn".to_string(),
+        "-ac".to_string(),
+        "1".to_string(),
+        "-ar".to_string(),
+        "16000".to_string(),
+        "-f".to_string(),
+        "wav".to_string(),
+        "-y".to_string(),
+        audio_path.clone(),
+    ];
+    let extract_result = host.run_tool("ffmpeg", &args, 300_000);
 
-    let _extract_output = match extract_result {
+    match extract_result {
         Err(e) => {
             host.log("error", &format!("ffmpeg audio extraction failed: {e}"));
-            return None;
+            None
         }
         Ok(o) if o.exit_code != 0 => {
             host.log(
@@ -128,21 +155,22 @@ pub fn on_event(
                     String::from_utf8_lossy(&o.stderr)
                 ),
             );
-            return None;
+            None
         }
-        Ok(o) => o,
-    };
+        Ok(_) => Some(audio_path),
+    }
+}
 
-    let cfg = config.as_ref();
-    let whisper_bin = cfg
+fn build_whisper_args(audio_path: &str, config: Option<&WhisperConfig>) -> (String, Vec<String>) {
+    let whisper_bin = config
         .map(|c| c.whisper_binary.as_str())
         .unwrap_or("whisper-cli");
-    let model = cfg.map(|c| c.model.as_str()).unwrap_or("base");
-    let language = cfg.and_then(|c| c.language.as_deref());
+    let model = config.map(|c| c.model.as_str()).unwrap_or("base");
+    let language = config.and_then(|c| c.language.as_deref());
 
-    let per_segment = cfg.is_some_and(|c| c.per_segment_language);
+    let per_segment = config.is_some_and(|c| c.per_segment_language);
     let mut whisper_args = vec![
-        audio_path.clone(),
+        audio_path.to_string(),
         "--model".to_string(),
         model.to_string(),
         "--output-format".to_string(),
@@ -155,14 +183,23 @@ pub fn on_event(
         }
     }
 
-    let whisper_result = host.run_tool(whisper_bin, &whisper_args, 600_000); // 10 min timeout
+    (whisper_bin.to_string(), whisper_args)
+}
 
-    let _ = host.run_tool("rm", &[audio_path], 5_000);
+fn run_whisper(
+    whisper_bin: &str,
+    whisper_args: &[String],
+    audio_path: &str,
+    host: &dyn HostFunctions,
+) -> Option<Vec<u8>> {
+    let whisper_result = host.run_tool(whisper_bin, whisper_args, 600_000); // 10 min timeout
 
-    let whisper_output = match whisper_result {
+    let _ = host.run_tool("rm", &[audio_path.to_string()], 5_000);
+
+    match whisper_result {
         Err(e) => {
             host.log("error", &format!("whisper failed: {e}"));
-            return None;
+            None
         }
         Ok(o) if o.exit_code != 0 => {
             host.log(
@@ -173,14 +210,14 @@ pub fn on_event(
                     String::from_utf8_lossy(&o.stderr)
                 ),
             );
-            return None;
+            None
         }
-        Ok(o) => o,
-    };
+        Ok(o) => Some(o.stdout),
+    }
+}
 
-    let _ = host.set_plugin_data(&cache_key, &whisper_output.stdout);
-
-    build_result(file, &whisper_output.stdout, host)
+fn cache_transcript(cache_key: &str, transcript: &[u8], host: &dyn HostFunctions) {
+    let _ = host.set_plugin_data(cache_key, transcript);
 }
 
 /// Returns true when the transcript contains segments in more than one language.
@@ -256,10 +293,19 @@ mod tests {
     use std::path::PathBuf;
     use voom_plugin_sdk::*;
 
+    #[derive(Debug, Clone)]
+    struct ToolCall {
+        tool: String,
+        args: Vec<String>,
+        timeout_ms: u64,
+    }
+
     struct MockHost {
         config: Option<WhisperConfig>,
         tool_results: HashMap<String, ToolOutput>,
         cached: std::cell::RefCell<HashMap<String, Vec<u8>>>,
+        logs: std::cell::RefCell<Vec<(String, String)>>,
+        tool_calls: std::cell::RefCell<Vec<ToolCall>>,
     }
 
     impl MockHost {
@@ -288,6 +334,8 @@ mod tests {
                 config: None,
                 tool_results,
                 cached: std::cell::RefCell::new(HashMap::new()),
+                logs: std::cell::RefCell::new(Vec::new()),
+                tool_calls: std::cell::RefCell::new(Vec::new()),
             }
         }
 
@@ -302,6 +350,17 @@ mod tests {
             host
         }
 
+        fn with_language_config() -> Self {
+            let mut host = Self::new();
+            host.config = Some(WhisperConfig {
+                whisper_binary: "whisper-cli".to_string(),
+                model: "large".to_string(),
+                language: Some("en".to_string()),
+                per_segment_language: false,
+            });
+            host
+        }
+
         fn with_failing_ffmpeg() -> Self {
             let mut host = Self::new();
             host.tool_results.insert(
@@ -310,15 +369,65 @@ mod tests {
             );
             host
         }
+
+        fn with_missing_ffmpeg() -> Self {
+            let mut host = Self::new();
+            host.tool_results.remove("ffmpeg");
+            host
+        }
+
+        fn with_failing_whisper() -> Self {
+            let mut host = Self::new();
+            host.tool_results.insert(
+                "whisper-cli".to_string(),
+                ToolOutput::new(1, vec![], b"whisper failed".to_vec()),
+            );
+            host
+        }
+
+        fn with_missing_whisper() -> Self {
+            let mut host = Self::new();
+            host.tool_results.remove("whisper-cli");
+            host
+        }
+
+        fn tool_names(&self) -> Vec<String> {
+            self.tool_calls
+                .borrow()
+                .iter()
+                .map(|call| call.tool.clone())
+                .collect()
+        }
+
+        fn whisper_args(&self) -> Vec<String> {
+            self.tool_calls
+                .borrow()
+                .iter()
+                .find(|call| call.tool == "whisper-cli")
+                .map(|call| call.args.clone())
+                .unwrap_or_default()
+        }
+
+        fn has_log(&self, level: &str, text: &str) -> bool {
+            self.logs
+                .borrow()
+                .iter()
+                .any(|(log_level, message)| log_level == level && message.contains(text))
+        }
     }
 
     impl HostFunctions for MockHost {
         fn run_tool(
             &self,
             tool: &str,
-            _args: &[String],
-            _timeout_ms: u64,
+            args: &[String],
+            timeout_ms: u64,
         ) -> Result<ToolOutput, String> {
+            self.tool_calls.borrow_mut().push(ToolCall {
+                tool: tool.to_string(),
+                args: args.to_vec(),
+                timeout_ms,
+            });
             self.tool_results
                 .get(tool)
                 .map(|o| ToolOutput::new(o.exit_code, o.stdout.clone(), o.stderr.clone()))
@@ -341,7 +450,11 @@ mod tests {
             Ok(())
         }
 
-        fn log(&self, _level: &str, _message: &str) {}
+        fn log(&self, level: &str, message: &str) {
+            self.logs
+                .borrow_mut()
+                .push((level.to_string(), message.to_string()));
+        }
     }
 
     fn make_audio_file() -> MediaFile {
@@ -406,6 +519,8 @@ mod tests {
 
         let result = on_event("file.introspected", &payload, &host);
         assert!(result.is_none());
+        assert!(host.has_log("debug", "skipping /media/test.mkv: no audio tracks"));
+        assert!(host.tool_names().is_empty());
     }
 
     #[test]
@@ -417,6 +532,19 @@ mod tests {
 
         let result = on_event("file.introspected", &payload, &host);
         assert!(result.is_none());
+        assert!(host.has_log("error", "ffmpeg exited with code 1"));
+    }
+
+    #[test]
+    fn test_on_event_ffmpeg_error() {
+        let host = MockHost::with_missing_ffmpeg();
+        let file = make_audio_file();
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
+        let payload = serialize_event(&event).unwrap();
+
+        let result = on_event("file.introspected", &payload, &host);
+        assert!(result.is_none());
+        assert!(host.has_log("error", "ffmpeg audio extraction failed"));
     }
 
     #[test]
@@ -445,6 +573,8 @@ mod tests {
             }
             _ => panic!("expected MetadataEnriched"),
         }
+        assert!(host.tool_names().is_empty());
+        assert!(host.has_log("debug", "using cached transcript"));
     }
 
     #[test]
@@ -452,6 +582,49 @@ mod tests {
         let host = MockHost::new();
         let result = on_event("plan.created", &[], &host);
         assert!(result.is_none());
+        assert!(host.logs.borrow().is_empty());
+        assert!(host.tool_names().is_empty());
+    }
+
+    #[test]
+    fn test_on_event_ignores_non_file_event_payload() {
+        let host = MockHost::new();
+        let event = Event::MetadataEnriched(MetadataEnrichedEvent::new(
+            PathBuf::from("/media/movies/test.mkv"),
+            "test".to_string(),
+            serde_json::json!({}),
+        ));
+        let payload = serialize_event(&event).unwrap();
+
+        let result = on_event("file.introspected", &payload, &host);
+        assert!(result.is_none());
+        assert!(host.tool_names().is_empty());
+    }
+
+    #[test]
+    fn test_on_event_whisper_error_runs_cleanup() {
+        let host = MockHost::with_missing_whisper();
+        let file = make_audio_file();
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
+        let payload = serialize_event(&event).unwrap();
+
+        let result = on_event("file.introspected", &payload, &host);
+        assert!(result.is_none());
+        assert!(host.has_log("error", "whisper failed"));
+        assert_eq!(host.tool_names(), vec!["ffmpeg", "whisper-cli", "rm"]);
+    }
+
+    #[test]
+    fn test_on_event_whisper_nonzero_runs_cleanup() {
+        let host = MockHost::with_failing_whisper();
+        let file = make_audio_file();
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
+        let payload = serialize_event(&event).unwrap();
+
+        let result = on_event("file.introspected", &payload, &host);
+        assert!(result.is_none());
+        assert!(host.has_log("error", "whisper exited with code 1"));
+        assert_eq!(host.tool_names(), vec!["ffmpeg", "whisper-cli", "rm"]);
     }
 
     #[test]
@@ -517,15 +690,41 @@ mod tests {
 
     #[test]
     fn test_per_segment_language_omits_language_flag() {
-        // We can't directly inspect args passed to run_tool with the current mock,
-        // but we can verify the config round-trips correctly and the function
-        // succeeds with per_segment_language enabled
         let host = MockHost::with_per_segment_config();
         let file = make_audio_file();
         let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
         let result = on_event("file.introspected", &payload, &host);
         assert!(result.is_some());
+        assert!(!host.whisper_args().contains(&"--language".to_string()));
+    }
+
+    #[test]
+    fn test_default_language_config_includes_language_flag() {
+        let host = MockHost::with_language_config();
+        let file = make_audio_file();
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
+        let payload = serialize_event(&event).unwrap();
+        let result = on_event("file.introspected", &payload, &host);
+        assert!(result.is_some());
+
+        let args = host.whisper_args();
+        assert!(args.windows(2).any(|pair| pair == ["--language", "en"]));
+    }
+
+    #[test]
+    fn test_success_uses_expected_tool_timeouts() {
+        let host = MockHost::new();
+        let file = make_audio_file();
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
+        let payload = serialize_event(&event).unwrap();
+        let result = on_event("file.introspected", &payload, &host);
+        assert!(result.is_some());
+
+        let calls = host.tool_calls.borrow();
+        assert_eq!(calls[0].timeout_ms, 300_000);
+        assert_eq!(calls[1].timeout_ms, 600_000);
+        assert_eq!(calls[2].timeout_ms, 5_000);
     }
 
     #[test]
