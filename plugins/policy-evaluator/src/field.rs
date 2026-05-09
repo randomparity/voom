@@ -104,13 +104,18 @@ pub(crate) fn resolve_system_field(
     }
     let caps = ctx.capabilities?;
     match path[0].as_str() {
-        "hwaccel" => Some(serde_json::Value::String(caps.best_hwaccel().to_string())),
-        "has_hwaccel" => Some(serde_json::json!(caps.best_hwaccel() != "none")),
+        "hwaccel" => Some(serde_json::Value::String(
+            caps.default_parallel_resource()
+                .and_then(|resource| resource.strip_prefix("hw:"))
+                .unwrap_or("none")
+                .to_string(),
+        )),
+        "has_hwaccel" => Some(serde_json::json!(!caps.hw_accels().is_empty())),
         "hwaccels" => {
             let accels: Vec<serde_json::Value> = caps
                 .hw_accels()
                 .into_iter()
-                .map(|s| serde_json::Value::String(s.to_string()))
+                .map(serde_json::Value::String)
                 .collect();
             Some(serde_json::Value::Array(accels))
         }

@@ -67,13 +67,8 @@ impl HwAccelConfig {
     /// avoiding a redundant `ffmpeg -hwaccels` subprocess.
     #[must_use]
     pub fn from_probed(hw_accels: &[String]) -> Self {
-        let text: String = hw_accels
-            .iter()
-            .map(|s| s.to_ascii_lowercase())
-            .collect::<Vec<_>>()
-            .join(" ");
         Self {
-            backend: detect_backend_from_text(&text),
+            backend: detect_backend_from_probed(hw_accels, verify_backend),
             validated_encoders: None,
             hw_decoders: Vec::new(),
             hw_decode_enabled: true,
@@ -341,10 +336,16 @@ fn detect_backend_with_verifier(
         .find(|b| verifier(*b))
 }
 
-/// Match lowercased hwaccel text to a backend, verifying hardware
-/// is actually present before committing.
-fn detect_backend_from_text(text: &str) -> Option<HwAccelBackend> {
-    detect_backend_with_verifier(text, verify_backend)
+fn detect_backend_from_probed(
+    hw_accels: &[String],
+    verifier: fn(HwAccelBackend) -> bool,
+) -> Option<HwAccelBackend> {
+    let text = hw_accels
+        .iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    detect_backend_with_verifier(&text, verifier)
 }
 
 impl Default for HwAccelConfig {
@@ -804,6 +805,55 @@ mod tests {
         }
         let result = detect_backend_with_verifier("cuda vaapi qsv", reject_all);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_from_probed_cuda_and_nvdec_map_to_nvenc() {
+        fn accept_all(_: HwAccelBackend) -> bool {
+            true
+        }
+
+        let cuda = detect_backend_from_probed(&["cuda".to_string()], accept_all);
+        let nvdec = detect_backend_from_probed(&["nvdec".to_string()], accept_all);
+
+        assert_eq!(cuda, Some(HwAccelBackend::Nvenc));
+        assert_eq!(nvdec, Some(HwAccelBackend::Nvenc));
+    }
+
+    #[test]
+    fn test_from_probed_qsv_beats_vaapi_without_nvenc() {
+        fn accept_all(_: HwAccelBackend) -> bool {
+            true
+        }
+
+        let result =
+            detect_backend_from_probed(&["vaapi".to_string(), "qsv".to_string()], accept_all);
+
+        assert_eq!(result, Some(HwAccelBackend::Qsv));
+    }
+
+    #[test]
+    fn test_from_probed_unknown_names_produce_no_backend() {
+        fn accept_all(_: HwAccelBackend) -> bool {
+            true
+        }
+
+        let result =
+            detect_backend_from_probed(&["vulkan".to_string(), "opencl".to_string()], accept_all);
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_from_probed_uppercase_input_still_matches() {
+        fn accept_all(_: HwAccelBackend) -> bool {
+            true
+        }
+
+        let result =
+            detect_backend_from_probed(&["CUDA".to_string(), "VAAPI".to_string()], accept_all);
+
+        assert_eq!(result, Some(HwAccelBackend::Nvenc));
     }
 
     // ── resolve_hw_config ─────────────────────────────────────────

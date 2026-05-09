@@ -71,6 +71,16 @@ fn nvenc_parallel_limits(
     )]
 }
 
+fn parallel_resource_for_backend(backend: Option<HwAccelBackend>) -> Option<&'static str> {
+    match backend {
+        Some(HwAccelBackend::Nvenc) => Some("hw:nvenc"),
+        Some(HwAccelBackend::Qsv) => Some("hw:qsv"),
+        Some(HwAccelBackend::Vaapi) => Some("hw:vaapi"),
+        Some(HwAccelBackend::Videotoolbox) => Some("hw:videotoolbox"),
+        None => None,
+    }
+}
+
 pub(crate) fn plugin_err(message: impl Into<String>) -> VoomError {
     VoomError::plugin("ffmpeg-executor", message)
 }
@@ -615,13 +625,19 @@ impl Plugin for FfmpegExecutorPlugin {
             plugin_config.nvenc_max_parallel,
         );
 
+        let default_parallel_resource = parallel_resource_for_backend(hw_config.backend);
+
         self.hw_accel = hw_config
             .with_validated_encoders(validated_encoders)
             .with_hw_decoders(codecs.hw_decoders.clone())
             .with_hw_decode_enabled(plugin_config.hw_decode.unwrap_or(true));
 
-        let event = ExecutorCapabilitiesEvent::new("ffmpeg-executor", codecs, formats, hw_accels)
-            .with_parallel_limits(parallel_limits);
+        let mut event =
+            ExecutorCapabilitiesEvent::new("ffmpeg-executor", codecs, formats, hw_accels)
+                .with_parallel_limits(parallel_limits);
+        if let Some(resource) = default_parallel_resource {
+            event = event.with_default_parallel_resource(resource);
+        }
 
         Ok(vec![Event::ExecutorCapabilities(event)])
     }

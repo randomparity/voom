@@ -399,12 +399,10 @@ pub fn format_executor_capabilities(
 ) {
     if let Some(caps) = capabilities.executor_capabilities(name) {
         if !caps.hw_accels.is_empty() {
-            let best = capabilities.best_hwaccel();
             println!("{}", style("Hardware Acceleration:").bold());
             println!(
-                "  {} {} ({})",
-                style("Backend:").bold(),
-                style(best).green(),
+                "  {} {}",
+                style("Backends:").bold(),
                 caps.hw_accels.join(", ")
             );
         }

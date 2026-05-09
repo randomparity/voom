@@ -797,6 +797,8 @@ pub struct ExecutorCapabilitiesEvent {
     pub hw_accels: Vec<String>,
     #[serde(default)]
     pub parallel_limits: Vec<ExecutorParallelLimit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_parallel_resource: Option<String>,
 }
 
 impl ExecutorCapabilitiesEvent {
@@ -813,12 +815,19 @@ impl ExecutorCapabilitiesEvent {
             formats,
             hw_accels,
             parallel_limits: vec![],
+            default_parallel_resource: None,
         }
     }
 
     #[must_use]
     pub fn with_parallel_limits(mut self, limits: Vec<ExecutorParallelLimit>) -> Self {
         self.parallel_limits = limits;
+        self
+    }
+
+    #[must_use]
+    pub fn with_default_parallel_resource(mut self, resource: impl Into<String>) -> Self {
+        self.default_parallel_resource = Some(resource.into());
         self
     }
 }
@@ -1356,6 +1365,7 @@ mod tests {
         assert_eq!(restored.parallel_limits.len(), 1);
         assert_eq!(restored.parallel_limits[0].resource, "hw:nvenc");
         assert_eq!(restored.parallel_limits[0].max_parallel, 4);
+        assert_eq!(restored.default_parallel_resource, None);
     }
 
     #[test]
@@ -1379,6 +1389,31 @@ mod tests {
             panic!("expected executor capabilities");
         };
         assert!(restored.parallel_limits.is_empty());
+        assert_eq!(restored.default_parallel_resource, None);
+    }
+
+    #[test]
+    fn test_executor_capabilities_default_parallel_resource_roundtrip() {
+        let event = Event::ExecutorCapabilities(
+            ExecutorCapabilitiesEvent::new(
+                "ffmpeg-executor",
+                CodecCapabilities::empty(),
+                vec![],
+                vec!["cuda".into()],
+            )
+            .with_default_parallel_resource("hw:nvenc"),
+        );
+
+        let json = serde_json::to_string(&event).unwrap();
+        let restored: Event = serde_json::from_str(&json).unwrap();
+
+        let Event::ExecutorCapabilities(restored) = restored else {
+            panic!("expected executor capabilities");
+        };
+        assert_eq!(
+            restored.default_parallel_resource.as_deref(),
+            Some("hw:nvenc")
+        );
     }
 
     #[test]

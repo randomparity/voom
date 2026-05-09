@@ -393,12 +393,15 @@ mod tests {
 
         let file = test_file();
         let mut map = CapabilityMap::new();
-        map.register(ExecutorCapabilitiesEvent::new(
-            "ffmpeg",
-            CodecCapabilities::empty(),
-            vec![],
-            vec!["cuda".into(), "vaapi".into()],
-        ));
+        map.register(
+            ExecutorCapabilitiesEvent::new(
+                "ffmpeg",
+                CodecCapabilities::empty(),
+                vec![],
+                vec!["cuda".into(), "vaapi".into()],
+            )
+            .with_default_parallel_resource("hw:nvenc"),
+        );
         let ctx = EvalContext::with_capabilities(Some(&map));
 
         // system.hwaccel == "nvenc"
