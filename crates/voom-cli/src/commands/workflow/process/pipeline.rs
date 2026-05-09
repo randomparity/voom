@@ -137,47 +137,8 @@ fn process_single_file_dry_run(
             .fetch_add(1, AtomicOrdering::Relaxed);
     }
 
-    for plan in &result.plans {
-        if plan.is_skipped() {
-            let reason = plan
-                .skip_reason
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string());
-            record_phase_stat(
-                &ctx.counters.phase_stats,
-                &plan.phase_name,
-                PhaseOutcomeKind::Skipped(reason),
-            );
-        } else if !plan.is_empty() {
-            record_phase_stat(
-                &ctx.counters.phase_stats,
-                &plan.phase_name,
-                PhaseOutcomeKind::Completed,
-            );
-        }
-    }
-
-    if ctx.plan_only {
-        let plans_json: Vec<serde_json::Value> = result
-            .plans
-            .iter()
-            .filter(|p| !p.is_empty() && !p.is_skipped())
-            .filter_map(|p| {
-                serde_json::to_value(p)
-                    .inspect_err(|e| {
-                        tracing::warn!(
-                            phase = %p.phase_name,
-                            error = %e,
-                            "failed to serialize plan for plan-only output"
-                        );
-                    })
-                    .ok()
-            })
-            .collect();
-        if !plans_json.is_empty() {
-            ctx.counters.plan_collector.lock().extend(plans_json);
-        }
-    }
+    record_dry_run_phase_stats(&result, ctx);
+    collect_plan_only_output(&result, ctx);
 
     let plan_summaries: Vec<serde_json::Value> = result
         .plans
@@ -200,6 +161,61 @@ fn process_single_file_dry_run(
         "needs_execution": needs_exec,
         "plans": plan_summaries,
     })))
+}
+
+fn record_dry_run_phase_stats(
+    result: &voom_phase_orchestrator::OrchestrationResult,
+    ctx: &ProcessContext<'_>,
+) {
+    for plan in &result.plans {
+        if plan.is_skipped() {
+            let reason = plan
+                .skip_reason
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            record_phase_stat(
+                &ctx.counters.phase_stats,
+                &plan.phase_name,
+                PhaseOutcomeKind::Skipped(reason),
+            );
+        } else if !plan.is_empty() {
+            record_phase_stat(
+                &ctx.counters.phase_stats,
+                &plan.phase_name,
+                PhaseOutcomeKind::Completed,
+            );
+        }
+    }
+}
+
+fn collect_plan_only_output(
+    result: &voom_phase_orchestrator::OrchestrationResult,
+    ctx: &ProcessContext<'_>,
+) {
+    if !ctx.plan_only {
+        return;
+    }
+
+    let plans_json: Vec<serde_json::Value> = result
+        .plans
+        .iter()
+        .filter(|p| !p.is_empty() && !p.is_skipped())
+        .filter_map(|p| {
+            serde_json::to_value(p)
+                .inspect_err(|e| {
+                    tracing::warn!(
+                        phase = %p.phase_name,
+                        error = %e,
+                        "failed to serialize plan for plan-only output"
+                    );
+                })
+                .ok()
+        })
+        .collect();
+
+    if !plans_json.is_empty() {
+        ctx.counters.plan_collector.lock().extend(plans_json);
+    }
 }
 
 /// Real execution: evaluate → execute → re-introspect per phase.
@@ -285,20 +301,7 @@ async fn run_phase_iteration(
     state: &mut PhaseExecutionState,
     phase_ctx: &PhaseExecutionContext<'_>,
 ) -> std::result::Result<PhaseLoopControl, String> {
-    let Some(plan) = ({
-        let phase_output_lookup =
-            |name: &str| -> Option<PhaseOutput> { state.phase_outputs.get(name).cloned() };
-        voom_policy_evaluator::evaluator::evaluate_single_phase_with_evaluation_context(
-            phase_name,
-            phase_ctx.compiled,
-            &state.current_file,
-            voom_policy_evaluator::SinglePhaseEvaluationContext {
-                phase_outcomes: &state.outcomes,
-                capabilities: Some(phase_ctx.process.capabilities),
-                phase_output_lookup: Some(&phase_output_lookup),
-            },
-        )
-    }) else {
+    let Some(plan) = evaluate_phase_plan(phase_name, state, phase_ctx) else {
         return Ok(PhaseLoopControl::Continue);
     };
     let plan = plan.with_session_id(phase_ctx.process.counters.session_id);
@@ -312,43 +315,79 @@ async fn run_phase_iteration(
     );
 
     if let Some(reason) = &plan.skip_reason {
-        state.outcomes.insert(
-            phase_name.to_string(),
-            voom_policy_evaluator::EvaluationOutcome::Skipped,
-        );
-        state.phase_outputs.insert(
-            phase_name.to_string(),
-            phase_output(false, false, Some("skipped")),
-        );
-        dispatch_skipped_plan(&plan, &state.current_file, reason, phase_ctx.process);
+        record_skipped_phase(&plan, state, phase_ctx, reason);
         return Ok(PhaseLoopControl::Continue);
     }
 
     if plan.is_empty() {
-        state.outcomes.insert(
-            phase_name.to_string(),
-            voom_policy_evaluator::EvaluationOutcome::Executed { modified: false },
-        );
-        state.phase_outputs.insert(
-            phase_name.to_string(),
-            phase_output(true, false, Some("unchanged")),
-        );
+        record_empty_phase(phase_name, state);
         return Ok(PhaseLoopControl::Continue);
     }
 
     if check_disk_space(&plan, &state.current_file, phase_ctx.safeguards) {
-        state.outcomes.insert(
-            phase_name.to_string(),
-            voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
-        );
-        state.phase_outputs.insert(
-            phase_name.to_string(),
-            phase_output(false, false, Some("safeguard_failed")),
-        );
+        record_safeguard_failed_phase(phase_name, state);
         return Ok(PhaseLoopControl::Continue);
     }
 
     execute_phase_plan(plan, state, phase_ctx).await
+}
+
+fn evaluate_phase_plan(
+    phase_name: &str,
+    state: &PhaseExecutionState,
+    phase_ctx: &PhaseExecutionContext<'_>,
+) -> Option<voom_domain::plan::Plan> {
+    let phase_output_lookup =
+        |name: &str| -> Option<PhaseOutput> { state.phase_outputs.get(name).cloned() };
+    voom_policy_evaluator::evaluator::evaluate_single_phase_with_evaluation_context(
+        phase_name,
+        phase_ctx.compiled,
+        &state.current_file,
+        voom_policy_evaluator::SinglePhaseEvaluationContext {
+            phase_outcomes: &state.outcomes,
+            capabilities: Some(phase_ctx.process.capabilities),
+            phase_output_lookup: Some(&phase_output_lookup),
+        },
+    )
+}
+
+fn record_skipped_phase(
+    plan: &voom_domain::plan::Plan,
+    state: &mut PhaseExecutionState,
+    phase_ctx: &PhaseExecutionContext<'_>,
+    reason: &str,
+) {
+    state.outcomes.insert(
+        plan.phase_name.clone(),
+        voom_policy_evaluator::EvaluationOutcome::Skipped,
+    );
+    state.phase_outputs.insert(
+        plan.phase_name.clone(),
+        phase_output(false, false, Some("skipped")),
+    );
+    dispatch_skipped_plan(plan, &state.current_file, reason, phase_ctx.process);
+}
+
+fn record_empty_phase(phase_name: &str, state: &mut PhaseExecutionState) {
+    state.outcomes.insert(
+        phase_name.to_string(),
+        voom_policy_evaluator::EvaluationOutcome::Executed { modified: false },
+    );
+    state.phase_outputs.insert(
+        phase_name.to_string(),
+        phase_output(true, false, Some("unchanged")),
+    );
+}
+
+fn record_safeguard_failed_phase(phase_name: &str, state: &mut PhaseExecutionState) {
+    state.outcomes.insert(
+        phase_name.to_string(),
+        voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
+    );
+    state.phase_outputs.insert(
+        phase_name.to_string(),
+        phase_output(false, false, Some("safeguard_failed")),
+    );
 }
 
 async fn execute_phase_plan(
