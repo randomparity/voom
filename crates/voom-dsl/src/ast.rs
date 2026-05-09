@@ -4,6 +4,7 @@
 //! The parser converts pest's CST (concrete syntax tree) into these typed AST nodes.
 
 use serde::Serialize;
+use std::fmt;
 
 /// Source location span for error reporting.
 #[non_exhaustive]
@@ -43,7 +44,7 @@ pub struct PolicyAst {
 pub struct ConfigNode {
     pub audio_languages: Vec<String>,
     pub subtitle_languages: Vec<String>,
-    pub on_error: Option<String>,
+    pub on_error: Option<ErrorStrategyNode>,
     pub commentary_patterns: Vec<String>,
     pub keep_backups: Option<bool>,
     pub span: Span,
@@ -57,9 +58,81 @@ pub struct PhaseNode {
     pub skip_when: Option<ConditionNode>,
     pub depends_on: Vec<String>,
     pub run_if: Option<RunIfNode>,
-    pub on_error: Option<String>,
+    pub on_error: Option<ErrorStrategyNode>,
     pub operations: Vec<SpannedOperation>,
     pub span: Span,
+}
+
+/// AST-level `on_error` strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorStrategyNode {
+    Continue,
+    Skip,
+    Abort,
+    Quarantine,
+}
+
+impl ErrorStrategyNode {
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "continue" => Some(Self::Continue),
+            "skip" => Some(Self::Skip),
+            "abort" => Some(Self::Abort),
+            "quarantine" => Some(Self::Quarantine),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Continue => "continue",
+            Self::Skip => "skip",
+            Self::Abort => "abort",
+            Self::Quarantine => "quarantine",
+        }
+    }
+}
+
+impl fmt::Display for ErrorStrategyNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// AST-level `run_if` trigger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunIfTriggerNode {
+    Modified,
+    Completed,
+}
+
+impl RunIfTriggerNode {
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "modified" => Some(Self::Modified),
+            "completed" => Some(Self::Completed),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Modified => "modified",
+            Self::Completed => "completed",
+        }
+    }
+}
+
+impl fmt::Display for RunIfTriggerNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Phase dependency trigger.
@@ -67,7 +140,7 @@ pub struct PhaseNode {
 #[derive(Debug, Clone, Serialize)]
 pub struct RunIfNode {
     pub phase: String,
-    pub trigger: String, // "modified" or "completed"
+    pub trigger: RunIfTriggerNode,
 }
 
 /// An operation wrapped with its source span for precise error reporting.

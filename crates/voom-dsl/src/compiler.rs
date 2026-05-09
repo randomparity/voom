@@ -20,8 +20,9 @@ use voom_domain::plan::{SampleStrategy, TranscodeFallback};
 use voom_domain::utils::codecs;
 
 use crate::ast::{
-    ActionNode, CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode,
-    PolicyAst, SynthSetting, Value, ValueOrField, VerifyMode, WhenNode,
+    ActionNode, CompareOp, ConditionNode, ConfigNode, ErrorStrategyNode, FilterNode, OperationNode,
+    PhaseNode, PolicyAst, RunIfTriggerNode, SynthSetting, Value, ValueOrField, VerifyMode,
+    WhenNode,
 };
 use crate::errors::DslError;
 
@@ -61,8 +62,7 @@ fn compile_config(config: Option<&ConfigNode>) -> CompiledConfig {
             c.audio_languages.clone(),
             c.subtitle_languages.clone(),
             c.on_error
-                .as_deref()
-                .and_then(parse_error_strategy)
+                .map(compile_error_strategy)
                 .unwrap_or(ErrorStrategy::Abort),
             c.commentary_patterns.clone(),
             c.keep_backups.unwrap_or(false),
@@ -72,7 +72,8 @@ fn compile_config(config: Option<&ConfigNode>) -> CompiledConfig {
 }
 
 /// Parse an error strategy string. Returns `None` for unrecognized values.
-/// Used by both the compiler (to convert) and validator (to check validity).
+/// Used by compiler unit tests that cover each public DSL token.
+#[cfg(test)]
 pub(crate) fn parse_error_strategy(value: &str) -> Option<ErrorStrategy> {
     match value {
         "continue" => Some(ErrorStrategy::Continue),
@@ -102,16 +103,10 @@ fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslErr
         .map(compile_condition)
         .transpose()?;
 
-    let run_if = phase.run_if.as_ref().map(|r| {
-        let trigger = match r.trigger.as_str() {
-            "modified" => RunIfTrigger::Modified,
-            "completed" => RunIfTrigger::Completed,
-            other => {
-                unreachable!("grammar restricts run_if_trigger to modified|completed, got: {other}")
-            }
-        };
-        CompiledRunIf::new(r.phase.clone(), trigger)
-    });
+    let run_if = phase
+        .run_if
+        .as_ref()
+        .map(|r| CompiledRunIf::new(r.phase.clone(), compile_run_if_trigger(r.trigger)));
 
     let operations: Vec<CompiledOperation> = phase
         .operations
@@ -126,11 +121,26 @@ fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslErr
         run_if,
         on_error: phase
             .on_error
-            .as_deref()
-            .and_then(parse_error_strategy)
+            .map(compile_error_strategy)
             .unwrap_or(ErrorStrategy::Abort),
         operations,
     })
+}
+
+fn compile_error_strategy(strategy: ErrorStrategyNode) -> ErrorStrategy {
+    match strategy {
+        ErrorStrategyNode::Continue => ErrorStrategy::Continue,
+        ErrorStrategyNode::Skip => ErrorStrategy::Skip,
+        ErrorStrategyNode::Abort => ErrorStrategy::Abort,
+        ErrorStrategyNode::Quarantine => ErrorStrategy::Quarantine,
+    }
+}
+
+fn compile_run_if_trigger(trigger: RunIfTriggerNode) -> RunIfTrigger {
+    match trigger {
+        RunIfTriggerNode::Modified => RunIfTrigger::Modified,
+        RunIfTriggerNode::Completed => RunIfTrigger::Completed,
+    }
 }
 
 fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperation, DslError> {

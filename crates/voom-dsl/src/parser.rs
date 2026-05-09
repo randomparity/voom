@@ -13,9 +13,9 @@ use pest::Parser;
 use pest_derive::Parser;
 
 use crate::ast::{
-    ActionNode, CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode,
-    PolicyAst, RuleNode, RunIfNode, Span, SpannedOperation, SynthSetting, TrackQueryNode,
-    TrackRefNode, Value, ValueOrField, VerifyMode, WhenNode,
+    ActionNode, CompareOp, ConditionNode, ConfigNode, ErrorStrategyNode, FilterNode, OperationNode,
+    PhaseNode, PolicyAst, RuleNode, RunIfNode, RunIfTriggerNode, Span, SpannedOperation,
+    SynthSetting, TrackQueryNode, TrackRefNode, Value, ValueOrField, VerifyMode, WhenNode,
 };
 use crate::errors::{DslError, Result};
 
@@ -157,7 +157,7 @@ fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
                     .into_inner()
                     .find(|p| p.as_rule() == Rule::ident)
                     .unwrap();
-                on_error = Some(ident_pair.as_str().to_string());
+                on_error = Some(parse_on_error_token(ident_pair)?);
             }
             "commentary_patterns" => {
                 let list_pair = item
@@ -237,16 +237,16 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
                 let trigger = inner
                     .find(|p| p.as_rule() == Rule::run_if_trigger)
                     .unwrap()
-                    .as_str()
-                    .to_string();
+                    .as_str();
+                let trigger = RunIfTriggerNode::from_token(trigger)
+                    .expect("grammar restricts run_if_trigger to modified|completed");
                 run_if = Some(RunIfNode {
                     phase: phase_name,
                     trigger,
                 });
             }
             Rule::on_error => {
-                let ident = child.into_inner().next().unwrap();
-                on_error = Some(ident.as_str().to_string());
+                on_error = Some(build_on_error(child)?);
             }
             Rule::container_op => {
                 let span = span_from_pair(&child);
@@ -365,6 +365,23 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
     })
 }
 
+fn build_on_error(pair: Pair<'_, Rule>) -> Result<ErrorStrategyNode> {
+    parse_on_error_token(pair.into_inner().next().unwrap())
+}
+
+fn parse_on_error_token(pair: Pair<'_, Rule>) -> Result<ErrorStrategyNode> {
+    let token = pair.as_str();
+    ErrorStrategyNode::from_token(token).ok_or_else(|| {
+        let (line, col) = pair.as_span().start_pos().line_col();
+        DslError::build(
+            line,
+            col,
+            format!(
+                "invalid on_error value \"{token}\", expected \"continue\", \"abort\", \"skip\", or \"quarantine\""
+            ),
+        )
+    })
+}
 /// Extract the target and optional filter from a `keep_op` or `remove_op` pair.
 fn build_keep_remove_parts(pair: Pair<'_, Rule>) -> Result<(String, Option<FilterNode>)> {
     let mut inner = pair.into_inner();
@@ -1175,7 +1192,7 @@ mod tests {
         let config = ast.config.unwrap();
         assert_eq!(config.audio_languages, vec!["eng", "und"]);
         assert_eq!(config.subtitle_languages, vec!["eng"]);
-        assert_eq!(config.on_error.unwrap(), "continue");
+        assert_eq!(config.on_error.unwrap().as_str(), "continue");
         assert_eq!(config.commentary_patterns, vec!["commentary", "director"]);
     }
 
@@ -1760,7 +1777,12 @@ mod tests {
             }
         }"#;
         let ast = parse_policy(input).expect("parse");
-        assert_eq!(ast.phases[0].on_error.as_deref(), Some("quarantine"));
+        assert_eq!(
+            ast.phases[0]
+                .on_error
+                .map(crate::ast::ErrorStrategyNode::as_str),
+            Some("quarantine")
+        );
     }
 
     #[test]
