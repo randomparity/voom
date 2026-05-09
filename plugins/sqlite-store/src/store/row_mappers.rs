@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
+use rusqlite::types::Type;
 use rusqlite::Row;
 use uuid::Uuid;
 
@@ -48,6 +49,47 @@ pub(crate) fn parse_optional_datetime(
     .transpose()
 }
 
+pub(crate) fn checked_i64_to_u64(value: i64, field: &str) -> rusqlite::Result<u64> {
+    u64::try_from(value).map_err(|e| numeric_conversion_failure(field, e))
+}
+
+pub(crate) fn checked_optional_i64_to_u64(
+    value: Option<i64>,
+    field: &str,
+) -> rusqlite::Result<Option<u64>> {
+    value.map(|v| checked_i64_to_u64(v, field)).transpose()
+}
+
+pub(crate) fn checked_i64_to_u32(value: i64, field: &str) -> rusqlite::Result<u32> {
+    u32::try_from(value).map_err(|e| numeric_conversion_failure(field, e))
+}
+
+pub(crate) fn checked_optional_i64_to_u32(
+    value: Option<i64>,
+    field: &str,
+) -> rusqlite::Result<Option<u32>> {
+    value.map(|v| checked_i64_to_u32(v, field)).transpose()
+}
+
+fn checked_i32_to_u32(value: i32, field: &str) -> rusqlite::Result<u32> {
+    u32::try_from(value).map_err(|e| numeric_conversion_failure(field, e))
+}
+
+fn checked_optional_i32_to_u32(value: Option<i32>, field: &str) -> rusqlite::Result<Option<u32>> {
+    value.map(|v| checked_i32_to_u32(v, field)).transpose()
+}
+
+fn numeric_conversion_failure(
+    field: &str,
+    error: impl std::error::Error + Send + Sync + 'static,
+) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        Type::Integer,
+        format!("invalid numeric value in {field}: {error}").into(),
+    )
+}
+
 /// Parse an optional JSON string, returning an error for corrupt values.
 fn parse_optional_json(
     s: Option<String>,
@@ -66,16 +108,19 @@ fn parse_optional_json(
 }
 
 pub(crate) fn row_to_file(row: &Row<'_>) -> rusqlite::Result<FileRow> {
+    let size = checked_i64_to_u64(row.get("size")?, "files.size")?;
+    let bitrate = checked_optional_i32_to_u32(row.get("bitrate")?, "files.bitrate")?;
+
     Ok(FileRow {
         id: row.get("id")?,
         path: row.get::<_, Option<String>>("path")?.unwrap_or_default(),
-        size: row.get("size")?,
+        size,
         content_hash: row.get("content_hash")?,
         expected_hash: row.get("expected_hash")?,
         status: row.get("status")?,
         container: row.get("container")?,
         duration: row.get("duration")?,
-        bitrate: row.get("bitrate")?,
+        bitrate,
         tags: row.get("tags")?,
         plugin_metadata: row.get("plugin_metadata")?,
         introspected_at: row.get("introspected_at")?,
@@ -85,13 +130,13 @@ pub(crate) fn row_to_file(row: &Row<'_>) -> rusqlite::Result<FileRow> {
 pub(crate) struct FileRow {
     pub(crate) id: String,
     path: String,
-    size: i64,
+    size: u64,
     content_hash: String,
     expected_hash: Option<String>,
     status: String,
     container: String,
     duration: Option<f64>,
-    bitrate: Option<i32>,
+    bitrate: Option<u32>,
     tags: Option<String>,
     plugin_metadata: Option<String>,
     introspected_at: String,
@@ -120,7 +165,7 @@ impl FileRow {
 
         let mut mf = MediaFile::new(PathBuf::from(&self.path));
         mf.id = parse_uuid(&self.id)?;
-        mf.size = self.size as u64;
+        mf.size = self.size;
         mf.content_hash = if self.content_hash.is_empty() {
             None
         } else {
@@ -128,7 +173,7 @@ impl FileRow {
         };
         mf.container = Container::from_extension(&self.container);
         mf.duration = self.duration.unwrap_or(0.0);
-        mf.bitrate = self.bitrate.and_then(|b| u32::try_from(b).ok());
+        mf.bitrate = self.bitrate;
         mf.tracks = tracks;
         mf.tags = tags;
         mf.plugin_metadata = plugin_metadata;
@@ -167,31 +212,24 @@ pub(crate) fn row_to_track(row: &Row<'_>) -> rusqlite::Result<Track> {
             format!("unknown track type: {track_type_str}").into(),
         )
     })?;
-    let mut t = Track::new(
-        u32::try_from(row.get::<_, i32>("stream_index")?).unwrap_or(0),
-        track_type,
-        row.get("codec")?,
-    );
+    let stream_index = checked_i32_to_u32(row.get("stream_index")?, "tracks.stream_index")?;
+    let channels = checked_optional_i32_to_u32(row.get("channels")?, "tracks.channels")?;
+    let sample_rate = checked_optional_i32_to_u32(row.get("sample_rate")?, "tracks.sample_rate")?;
+    let bit_depth = checked_optional_i32_to_u32(row.get("bit_depth")?, "tracks.bit_depth")?;
+    let width = checked_optional_i32_to_u32(row.get("width")?, "tracks.width")?;
+    let height = checked_optional_i32_to_u32(row.get("height")?, "tracks.height")?;
+
+    let mut t = Track::new(stream_index, track_type, row.get("codec")?);
     t.language = row.get("language")?;
     t.title = row.get("title")?;
     t.is_default = row.get::<_, i32>("is_default")? != 0;
     t.is_forced = row.get::<_, i32>("is_forced")? != 0;
-    t.channels = row
-        .get::<_, Option<i32>>("channels")?
-        .and_then(|v| u32::try_from(v).ok());
+    t.channels = channels;
     t.channel_layout = row.get("channel_layout")?;
-    t.sample_rate = row
-        .get::<_, Option<i32>>("sample_rate")?
-        .and_then(|v| u32::try_from(v).ok());
-    t.bit_depth = row
-        .get::<_, Option<i32>>("bit_depth")?
-        .and_then(|v| u32::try_from(v).ok());
-    t.width = row
-        .get::<_, Option<i32>>("width")?
-        .and_then(|v| u32::try_from(v).ok());
-    t.height = row
-        .get::<_, Option<i32>>("height")?
-        .and_then(|v| u32::try_from(v).ok());
+    t.sample_rate = sample_rate;
+    t.bit_depth = bit_depth;
+    t.width = width;
+    t.height = height;
     t.frame_rate = row.get("frame_rate")?;
     t.is_vfr = row.get::<_, i32>("is_vfr")? != 0;
     t.is_hdr = row.get::<_, i32>("is_hdr")? != 0;
@@ -249,19 +287,13 @@ pub(crate) fn row_to_bad_file(row: &Row<'_>) -> rusqlite::Result<BadFile> {
     })?;
     let mut bf = BadFile::new(
         PathBuf::from(path_str),
-        row.get::<_, i64>("size")? as u64,
+        checked_i64_to_u64(row.get("size")?, "bad_files.size")?,
         row.get("content_hash")?,
         row.get("error")?,
         error_source,
     );
     bf.id = row_uuid(&id_str, "bad_files")?;
-    bf.attempt_count = u32::try_from(row.get::<_, i64>("attempt_count")?).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Integer,
-            format!("invalid attempt_count in bad_files: {e}").into(),
-        )
-    })?;
+    bf.attempt_count = checked_i64_to_u32(row.get("attempt_count")?, "bad_files.attempt_count")?;
     bf.first_seen_at = parse_required_datetime(first_seen_str, "bad_files.first_seen_at")?;
     bf.last_seen_at = parse_required_datetime(last_seen_str, "bad_files.last_seen_at")?;
     Ok(bf)
@@ -289,8 +321,9 @@ pub(crate) fn row_to_verification(row: &Row<'_>) -> rusqlite::Result<Verificatio
             format!("unknown verification outcome: {outcome_str}").into(),
         )
     })?;
-    let error_count = u32::try_from(row.get::<_, i64>("error_count")?.max(0)).unwrap_or(0);
-    let warning_count = u32::try_from(row.get::<_, i64>("warning_count")?.max(0)).unwrap_or(0);
+    let error_count = checked_i64_to_u32(row.get("error_count")?, "verifications.error_count")?;
+    let warning_count =
+        checked_i64_to_u32(row.get("warning_count")?, "verifications.warning_count")?;
     Ok(VerificationRecord::new(
         id,
         file_id,
@@ -369,6 +402,31 @@ mod tests {
         let err = parse_optional_json(Some("not json{".into()), "test.field").unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("test.field"));
+    }
+
+    #[test]
+    fn checked_i64_to_u64_accepts_non_negative_values() {
+        assert_eq!(checked_i64_to_u64(42, "files.size").unwrap(), 42);
+    }
+
+    #[test]
+    fn checked_i64_to_u64_rejects_negative_values_with_column_context() {
+        let err = checked_i64_to_u64(-1, "files.size").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("files.size"),
+            "error should mention column: {msg}"
+        );
+    }
+
+    #[test]
+    fn checked_i64_to_u32_rejects_overflow_with_column_context() {
+        let err = checked_i64_to_u32(i64::from(u32::MAX) + 1, "tracks.stream_index").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("tracks.stream_index"),
+            "error should mention column: {msg}"
+        );
     }
 
     #[test]
