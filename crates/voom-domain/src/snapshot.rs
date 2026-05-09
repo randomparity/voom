@@ -21,7 +21,7 @@ pub struct MetadataSnapshot {
     /// Resolution of the first video track, e.g. `"3840x2160"`.
     pub resolution: Option<String>,
     /// Cached crop rectangle, expressed as pixels removed from each source edge.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crop: Option<CropRect>,
     pub duration_secs: f64,
 }
@@ -201,6 +201,23 @@ mod tests {
         let restored = MetadataSnapshot::from_json(&json).expect("deserialization should succeed");
 
         assert_eq!(snap, restored);
+    }
+
+    #[test]
+    fn snapshot_json_omits_missing_crop() {
+        let file = MediaFile::new(PathBuf::from("/movies/test.mkv"))
+            .with_container(Container::Mkv)
+            .with_duration(5400.0)
+            .with_tracks(vec![video_track(0, "h264", 1920, 1080)]);
+
+        let json = MetadataSnapshot::from_media_file(&file)
+            .to_json()
+            .expect("serialization should succeed");
+
+        assert!(
+            !json.contains("crop"),
+            "missing crop should not be serialized: {json}"
+        );
     }
 
     #[test]

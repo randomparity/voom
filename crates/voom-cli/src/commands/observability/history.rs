@@ -195,7 +195,6 @@ mod tests {
             "subtitle_tracks": subtitle,
             "codecs": [],
             "resolution": resolution,
-            "crop": null,
             "duration_secs": 0.0,
         }))
         .expect("valid snapshot JSON")
