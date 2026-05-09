@@ -1076,11 +1076,7 @@ const VALID_SCALE_ALGORITHMS: &[&str] = &[
     "lanczos", "bicubic", "bilinear", "neighbor", "area", "spline", "sinc",
 ];
 
-const VIDEO_ONLY_KEYS: &[&str] = &[
-    "hdr_mode",
-    "tune",
-    "scale_algorithm",
-    "max_resolution",
+const CROP_KEYS: &[&str] = &[
     "crop",
     "crop_sample_duration",
     "crop_sample_count",
@@ -1090,6 +1086,8 @@ const VIDEO_ONLY_KEYS: &[&str] = &[
     "crop_aspect_lock",
 ];
 
+const VIDEO_ONLY_KEYS: &[&str] = &["hdr_mode", "tune", "scale_algorithm", "max_resolution"];
+
 fn reject_video_only_keys(
     settings: &[(String, Value)],
     target: &str,
@@ -1098,7 +1096,7 @@ fn reject_video_only_keys(
     errors: &mut Vec<DslError>,
 ) {
     for (key, _) in settings {
-        if VIDEO_ONLY_KEYS.contains(&key.as_str()) {
+        if VIDEO_ONLY_KEYS.contains(&key.as_str()) || CROP_KEYS.contains(&key.as_str()) {
             errors.push(DslError::validation(
                 line,
                 col,
@@ -1118,7 +1116,12 @@ fn validate_video_transcode_settings(
     errors: &mut Vec<DslError>,
 ) {
     for (key, val) in settings {
-        match key.as_str() {
+        let key = key.as_str();
+        if let Some((min, max)) = crop_integer_bounds(key) {
+            validate_integer_setting(val, key, min, max, line, col, errors);
+            continue;
+        }
+        match key {
             "hdr_mode" => {
                 validate_ident_setting(val, "hdr_mode", VALID_HDR_MODES, line, col, errors);
             }
@@ -1137,45 +1140,6 @@ fn validate_video_transcode_settings(
             }
             "max_resolution" => validate_max_resolution(val, line, col, errors),
             "crop" => validate_crop_mode(val, line, col, errors),
-            "crop_sample_duration" => {
-                validate_integer_setting(
-                    val,
-                    "crop_sample_duration",
-                    1,
-                    u32::MAX,
-                    line,
-                    col,
-                    errors,
-                );
-            }
-            "crop_sample_count" => {
-                validate_integer_setting(val, "crop_sample_count", 1, u32::MAX, line, col, errors);
-            }
-            "crop_threshold" => {
-                validate_integer_setting(
-                    val,
-                    "crop_threshold",
-                    0,
-                    u32::from(u8::MAX),
-                    line,
-                    col,
-                    errors,
-                );
-            }
-            "crop_minimum" => {
-                validate_integer_setting(val, "crop_minimum", 0, u32::MAX, line, col, errors);
-            }
-            "crop_preserve_bottom_pixels" => {
-                validate_integer_setting(
-                    val,
-                    "crop_preserve_bottom_pixels",
-                    0,
-                    u32::MAX,
-                    line,
-                    col,
-                    errors,
-                );
-            }
             "crop_aspect_lock" => validate_crop_aspect_lock(val, line, col, errors),
             _ => {}
         }
@@ -1207,6 +1171,15 @@ fn validate_max_resolution(val: &Value, line: usize, col: usize, errors: &mut Ve
                 valid_resolutions.join(", ")
             ),
         ));
+    }
+}
+
+fn crop_integer_bounds(key: &str) -> Option<(u32, u32)> {
+    match key {
+        "crop_sample_duration" | "crop_sample_count" => Some((1, u32::MAX)),
+        "crop_threshold" => Some((0, u32::from(u8::MAX))),
+        "crop_minimum" | "crop_preserve_bottom_pixels" => Some((0, u32::MAX)),
+        _ => None,
     }
 }
 
@@ -1280,16 +1253,12 @@ fn validate_crop_aspect_lock(val: &Value, line: usize, col: usize, errors: &mut 
 }
 
 fn is_crop_ratio(value: &str) -> bool {
-    let Some((width, height)) = value.split_once('/') else {
-        return false;
-    };
-    let Ok(width) = width.parse::<u32>() else {
-        return false;
-    };
-    let Ok(height) = height.parse::<u32>() else {
-        return false;
-    };
-    width > 0 && height > 0
+    value.split_once('/').is_some_and(|(width, height)| {
+        matches!(
+            (width.parse::<u32>(), height.parse::<u32>()),
+            (Ok(width), Ok(height)) if width > 0 && height > 0
+        )
+    })
 }
 
 fn validate_ident_setting(
