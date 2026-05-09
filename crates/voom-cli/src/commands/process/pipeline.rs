@@ -13,11 +13,14 @@
 //! through [`super::transitions`].
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 use anyhow::Context;
 use voom_domain::events::PlanFailedEvent;
-use voom_domain::plan::OperationType;
+use voom_domain::media::{CropDetection, MediaFile, TrackType};
+use voom_domain::plan::{ActionParams, CropSettings, OperationType, Plan};
+use voom_ffmpeg_executor::cropdetect::CropDetectSource;
 
 use super::audio_language::apply_detected_languages;
 use super::dispatch::PlanDispatcher;
@@ -241,7 +244,7 @@ async fn process_single_file_execute(
         ) else {
             continue;
         };
-        let plan = plan.with_session_id(ctx.counters.session_id);
+        let mut plan = plan.with_session_id(ctx.counters.session_id);
 
         plans_evaluated += 1;
 
@@ -266,6 +269,32 @@ async fn process_single_file_execute(
             continue;
         }
 
+        let mut permit = None;
+        if plan_requires_auto_crop(&plan) {
+            let acquired = tokio::select! {
+                biased;
+                () = ctx.token.cancelled() => break,
+                permit = ctx.plan_limiter.acquire_for_plan(&plan) => permit,
+            };
+            if let Err(error) = apply_auto_crop_detection(&mut plan, &mut current_file, ctx).await {
+                let mut failed = PlanFailedEvent::new(
+                    plan.id,
+                    current_file.path.clone(),
+                    plan.phase_name.clone(),
+                    error,
+                );
+                failed.plugin_name = Some("ffmpeg-executor".to_string());
+                dispatch_plan_failure(failed, &plan.phase_name, ctx);
+                phase_outcomes.insert(
+                    phase_name.clone(),
+                    voom_policy_evaluator::EvaluationOutcome::ExecutionFailed,
+                );
+                drop(acquired);
+                continue;
+            }
+            permit = Some(acquired);
+        }
+
         // Pre-execution safeguard: check disk space
         // Note: check_disk_space dispatches only PlanFailed (not
         // PlanCreated, which would trigger executors) and records
@@ -280,10 +309,15 @@ async fn process_single_file_execute(
         }
 
         // Execute this plan
-        let permit = tokio::select! {
-            biased;
-            () = ctx.token.cancelled() => break,
-            permit = ctx.plan_limiter.acquire_for_plan(&plan) => permit,
+        let permit = match permit {
+            Some(permit) => permit,
+            None => {
+                tokio::select! {
+                    biased;
+                    () = ctx.token.cancelled() => break,
+                    permit = ctx.plan_limiter.acquire_for_plan(&plan) => permit,
+                }
+            }
         };
         let plan_clone = plan.clone();
         let file_clone = current_file.clone();
@@ -674,6 +708,112 @@ pub(super) fn execute_single_plan(
     PlanOutcome::from_event_result(&results, plan, file)
 }
 
+type CropDetector =
+    fn(&str, &Path, CropDetectSource, &CropSettings) -> voom_domain::Result<Option<CropDetection>>;
+
+struct CropDetectRequest {
+    settings: CropSettings,
+    source: CropDetectSource,
+}
+
+async fn apply_auto_crop_detection(
+    plan: &mut Plan,
+    current_file: &mut MediaFile,
+    ctx: &ProcessContext<'_>,
+) -> Result<(), String> {
+    apply_auto_crop_detection_with_detector(
+        plan,
+        current_file,
+        ctx,
+        voom_ffmpeg_executor::cropdetect::detect_crop,
+    )
+    .await
+}
+
+async fn apply_auto_crop_detection_with_detector(
+    plan: &mut Plan,
+    current_file: &mut MediaFile,
+    ctx: &ProcessContext<'_>,
+    detector: CropDetector,
+) -> Result<(), String> {
+    let Some(request) = cropdetect_request_for_plan(plan, current_file) else {
+        return Ok(());
+    };
+    let settings_fingerprint = crop_settings_fingerprint(&request.settings)?;
+    if current_file
+        .crop_detection
+        .as_ref()
+        .and_then(|detection| detection.settings_fingerprint.as_deref())
+        == Some(settings_fingerprint.as_str())
+    {
+        plan.file = current_file.clone();
+        return Ok(());
+    }
+
+    let ffmpeg_path = "ffmpeg".to_string();
+    let source_path = current_file.path.clone();
+    let settings = request.settings;
+    let source = request.source;
+    let detection = tokio::task::spawn_blocking(move || {
+        detector(&ffmpeg_path, &source_path, source, &settings)
+    })
+    .await
+    .map_err(|e| format!("crop detection join error: {e}"))?
+    .map_err(|e| format!("crop detection failed: {e}"))?
+    .map(|detection| detection.with_settings_fingerprint(settings_fingerprint));
+
+    let changed = current_file.crop_detection != detection;
+    if changed {
+        let mut updated_file = current_file.clone();
+        updated_file.crop_detection = detection;
+        ctx.store
+            .upsert_file(&updated_file)
+            .map_err(|e| format!("failed to persist crop detection: {e}"))?;
+        *current_file = updated_file;
+        plan.file = current_file.clone();
+    }
+    Ok(())
+}
+
+fn plan_requires_auto_crop(plan: &Plan) -> bool {
+    plan.actions.iter().any(|action| {
+        action.operation == OperationType::TranscodeVideo
+            && matches!(
+                &action.parameters,
+                ActionParams::Transcode { settings, .. } if settings.crop.is_some()
+            )
+    })
+}
+
+fn cropdetect_request_for_plan(plan: &Plan, file: &MediaFile) -> Option<CropDetectRequest> {
+    let action = plan.actions.iter().find(|action| {
+        action.operation == OperationType::TranscodeVideo
+            && matches!(
+                &action.parameters,
+                ActionParams::Transcode { settings, .. } if settings.crop.is_some()
+            )
+    })?;
+    let ActionParams::Transcode { settings, .. } = &action.parameters else {
+        return None;
+    };
+    let crop_settings = settings.crop.clone()?;
+    let track_index = action.track_index?;
+    let track = file
+        .tracks
+        .iter()
+        .find(|track| track.index == track_index && track.track_type == TrackType::Video)?;
+    let width = track.width?;
+    let height = track.height?;
+    Some(CropDetectRequest {
+        settings: crop_settings,
+        source: CropDetectSource::new(width, height, file.duration),
+    })
+}
+
+fn crop_settings_fingerprint(settings: &CropSettings) -> Result<String, String> {
+    serde_json::to_string(settings).map_err(|e| format!("failed to fingerprint crop settings: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::future::Future;
@@ -683,8 +823,11 @@ mod tests {
     use std::time::Duration;
 
     use voom_domain::capabilities::Capability;
+    use voom_domain::errors::VoomError;
     use voom_domain::events::{Event, EventResult};
-    use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    use voom_domain::media::{Container, CropDetection, CropRect, MediaFile, Track, TrackType};
+    use voom_domain::plan::{CropSettings, PlannedAction, TranscodeSettings};
+    use voom_domain::storage::FileStorage;
 
     use super::super::tests as process_tests;
     use super::*;
@@ -738,9 +881,51 @@ mod tests {
     }
 
     fn h264_file(path: std::path::PathBuf) -> MediaFile {
-        MediaFile::new(path)
+        let mut file = MediaFile::new(path)
             .with_container(Container::Mkv)
-            .with_tracks(vec![Track::new(0, TrackType::Video, "h264".into())])
+            .with_tracks(vec![Track::new(0, TrackType::Video, "h264".into())]);
+        file.duration = 120.0;
+        file.tracks[0].width = Some(1920);
+        file.tracks[0].height = Some(1080);
+        file
+    }
+
+    fn crop_plan(file: MediaFile, settings: CropSettings) -> Plan {
+        let mut plan = Plan::new(file, "test-policy", "transcode-video");
+        plan.actions = vec![PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default().with_crop(Some(settings)),
+            },
+            "Transcode video with crop",
+        )];
+        plan
+    }
+
+    fn crop_detector_ok(
+        _ffmpeg_path: &str,
+        _source_path: &Path,
+        _source: CropDetectSource,
+        _settings: &CropSettings,
+    ) -> voom_domain::Result<Option<CropDetection>> {
+        Ok(Some(CropDetection::new(
+            CropRect::new(0, 132, 0, 132),
+            chrono::Utc::now(),
+        )))
+    }
+
+    fn crop_detector_fails(
+        _ffmpeg_path: &str,
+        _source_path: &Path,
+        _source: CropDetectSource,
+        _settings: &CropSettings,
+    ) -> voom_domain::Result<Option<CropDetection>> {
+        Err(VoomError::ToolExecution {
+            tool: "ffmpeg".to_string(),
+            message: "synthetic cropdetect failure".to_string(),
+        })
     }
 
     async fn held_nvenc_permit(
@@ -771,6 +956,90 @@ mod tests {
             matches!(entered_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
             "{message}"
         );
+    }
+
+    #[tokio::test]
+    async fn auto_crop_detection_persists_and_updates_plan_file() {
+        let fixture = process_tests::TestFixture::with_policy(global_hw_policy());
+        let store = Arc::new(voom_domain::test_support::InMemoryStore::new());
+        let ctx = fixture.make_ctx(Arc::new(voom_kernel::Kernel::new()), store.clone());
+        let path = fixture.dir_path().join("movie.mkv");
+        let mut file = h264_file(path);
+        let mut plan = crop_plan(file.clone(), CropSettings::auto());
+
+        apply_auto_crop_detection_with_detector(&mut plan, &mut file, &ctx, crop_detector_ok)
+            .await
+            .unwrap();
+
+        let detection = file.crop_detection.as_ref().expect("crop detection");
+        assert_eq!(detection.rect, CropRect::new(0, 132, 0, 132));
+        assert!(detection.settings_fingerprint.is_some());
+        assert_eq!(
+            plan.file.crop_detection.as_ref().map(|d| d.rect),
+            Some(CropRect::new(0, 132, 0, 132))
+        );
+        let stored = store.file(&file.id).unwrap().expect("stored file");
+        assert_eq!(
+            stored.crop_detection.as_ref().map(|d| d.rect),
+            Some(CropRect::new(0, 132, 0, 132))
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_crop_detection_reuses_matching_cached_fingerprint() {
+        let fixture = process_tests::TestFixture::with_policy(global_hw_policy());
+        let ctx = fixture.make_default_ctx();
+        let path = fixture.dir_path().join("movie.mkv");
+        let settings = CropSettings::auto();
+        let fingerprint = crop_settings_fingerprint(&settings).unwrap();
+        let mut file = h264_file(path);
+        file.crop_detection = Some(
+            CropDetection::new(CropRect::new(0, 120, 0, 120), chrono::Utc::now())
+                .with_settings_fingerprint(fingerprint),
+        );
+        let mut plan = crop_plan(file.clone(), settings);
+
+        apply_auto_crop_detection_with_detector(&mut plan, &mut file, &ctx, crop_detector_fails)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            file.crop_detection.as_ref().map(|d| d.rect),
+            Some(CropRect::new(0, 120, 0, 120))
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_crop_detection_failure_leaves_file_unmodified() {
+        let fixture = process_tests::TestFixture::with_policy(global_hw_policy());
+        let ctx = fixture.make_default_ctx();
+        let path = fixture.dir_path().join("movie.mkv");
+        let mut file = h264_file(path);
+        let mut plan = crop_plan(file.clone(), CropSettings::auto());
+
+        let err = apply_auto_crop_detection_with_detector(
+            &mut plan,
+            &mut file,
+            &ctx,
+            crop_detector_fails,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.contains("crop detection failed"));
+        assert!(file.crop_detection.is_none());
+        assert!(plan.file.crop_detection.is_none());
+    }
+
+    #[test]
+    fn plan_requires_auto_crop_only_for_crop_enabled_transcode() {
+        let path = std::path::PathBuf::from("/tmp/movie.mkv");
+        let file = h264_file(path);
+        let crop = crop_plan(file.clone(), CropSettings::auto());
+        let plain = process_tests::test_plan_with_optional_transcode_hw("transcode-video", None);
+
+        assert!(plan_requires_auto_crop(&crop));
+        assert!(!plan_requires_auto_crop(&plain));
     }
 
     #[tokio::test]

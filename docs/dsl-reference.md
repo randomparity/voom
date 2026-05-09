@@ -275,6 +275,37 @@ transcode video to hevc {
   tune: film                 // encoder tuning: film | animation | grain | ...
   hw: auto                   // hardware acceleration: auto | nvenc | qsv | vaapi | none
   hw_fallback: true          // fall back to software if HW fails
+  crop: auto                 // detect and remove black bars before encoding
+}
+```
+
+Auto-crop runs FFmpeg's `cropdetect` filter before the transcode, caches the
+detected crop rectangle on the file record, and reuses the cached result on
+later runs. Crop values are stored as pixels removed from the left, top, right,
+and bottom edges.
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| `crop` | identifier | Enable automatic crop detection. The only supported value is `auto`. |
+| `crop_sample_duration` | integer | Seconds to inspect per sample. Default: `60`. |
+| `crop_sample_count` | integer | Number of samples across the file. Default: `3`. |
+| `crop_threshold` | integer | FFmpeg cropdetect luma threshold, `0`-`255`. Default: `24`. |
+| `crop_minimum` | integer | Ignore edge crops smaller than this many pixels. Default: `4`. |
+| `crop_preserve_bottom_pixels` | integer | Reduce the detected bottom crop by this many pixels, useful for subtitles or captions near the lower edge. Default: `0`. |
+| `crop_aspect_lock` | list | Optional ratio strings such as `["16/9", "4/3"]`; VOOM expands the crop to the closest reachable ratio without cropping deeper. |
+
+Example:
+
+```
+transcode video to hevc {
+  crf: 20
+  crop: auto
+  crop_sample_duration: 60
+  crop_sample_count: 3
+  crop_threshold: 24
+  crop_minimum: 4
+  crop_preserve_bottom_pixels: 60
+  crop_aspect_lock: ["16/9", "4/3"]
 }
 ```
 

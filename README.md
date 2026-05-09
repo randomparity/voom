@@ -73,6 +73,9 @@ Set `hw: auto` in any `transcode` block and VOOM picks the best available
 backend. `hw_fallback: true` drops to software encoding if hardware fails at
 runtime. Per-device validation ensures only working encoders are selected.
 
+Video transcodes can also use `crop: auto` to detect black bars with FFmpeg,
+cache the result, and apply the crop during encoding.
+
 ### Subtitle Intelligence
 
 Full subtitle pipeline from filtering to AI-powered generation:

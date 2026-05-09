@@ -15,6 +15,12 @@ CREATE TABLE IF NOT EXISTS files (
     container TEXT NOT NULL,
     duration REAL,
     bitrate INTEGER,
+    crop_left INTEGER,
+    crop_top INTEGER,
+    crop_right INTEGER,
+    crop_bottom INTEGER,
+    crop_detected_at TEXT,
+    crop_settings_fingerprint TEXT,
     tags TEXT,
     plugin_metadata TEXT,
     introspected_at TEXT NOT NULL,
@@ -353,6 +359,24 @@ fn migrate_files_columns(
     }
     if !has_column("files", "superseded_by")? {
         conn.execute_batch("ALTER TABLE files ADD COLUMN superseded_by TEXT")?;
+    }
+    if !has_column("files", "crop_left")? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN crop_left INTEGER")?;
+    }
+    if !has_column("files", "crop_top")? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN crop_top INTEGER")?;
+    }
+    if !has_column("files", "crop_right")? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN crop_right INTEGER")?;
+    }
+    if !has_column("files", "crop_bottom")? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN crop_bottom INTEGER")?;
+    }
+    if !has_column("files", "crop_detected_at")? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN crop_detected_at TEXT")?;
+    }
+    if !has_column("files", "crop_settings_fingerprint")? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN crop_settings_fingerprint TEXT")?;
     }
     Ok(())
 }

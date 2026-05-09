@@ -9,7 +9,7 @@ use uuid::Uuid;
 use voom_domain::bad_file::{BadFile, BadFileSource};
 use voom_domain::errors::{Result, StorageErrorKind, VoomError};
 use voom_domain::job::{Job, JobStatus};
-use voom_domain::media::{Container, MediaFile, Track, TrackType};
+use voom_domain::media::{Container, CropDetection, CropRect, MediaFile, Track, TrackType};
 use voom_domain::transition::FileStatus;
 use voom_domain::verification::{
     VerificationMode, VerificationOutcome, VerificationRecord, VerificationRecordInput,
@@ -123,6 +123,12 @@ pub(crate) fn row_to_file(row: &Row<'_>) -> rusqlite::Result<FileRow> {
         container: row.get("container")?,
         duration: row.get("duration")?,
         bitrate,
+        crop_left: row.get("crop_left")?,
+        crop_top: row.get("crop_top")?,
+        crop_right: row.get("crop_right")?,
+        crop_bottom: row.get("crop_bottom")?,
+        crop_detected_at: row.get("crop_detected_at")?,
+        crop_settings_fingerprint: row.get("crop_settings_fingerprint")?,
         tags: row.get("tags")?,
         plugin_metadata: row.get("plugin_metadata")?,
         introspected_at: row.get("introspected_at")?,
@@ -139,6 +145,12 @@ pub(crate) struct FileRow {
     container: String,
     duration: Option<f64>,
     bitrate: Option<u32>,
+    crop_left: Option<i64>,
+    crop_top: Option<i64>,
+    crop_right: Option<i64>,
+    crop_bottom: Option<i64>,
+    crop_detected_at: Option<String>,
+    crop_settings_fingerprint: Option<String>,
     tags: Option<String>,
     plugin_metadata: Option<String>,
     introspected_at: String,
@@ -176,6 +188,7 @@ impl FileRow {
         mf.container = Container::from_extension(&self.container);
         mf.duration = self.duration.unwrap_or(0.0);
         mf.bitrate = self.bitrate;
+        mf.crop_detection = self.crop_detection()?;
         mf.tracks = tracks;
         mf.tags = tags;
         mf.plugin_metadata = plugin_metadata;
@@ -183,6 +196,39 @@ impl FileRow {
         mf.expected_hash = self.expected_hash.clone();
         mf.status = parse_file_status(&self.status)?;
         Ok(mf)
+    }
+}
+
+impl FileRow {
+    fn crop_detection(&self) -> Result<Option<CropDetection>> {
+        let Some(detected_at) = &self.crop_detected_at else {
+            return Ok(None);
+        };
+        let Some(left) = self.crop_left else {
+            return Ok(None);
+        };
+        let Some(top) = self.crop_top else {
+            return Ok(None);
+        };
+        let Some(right) = self.crop_right else {
+            return Ok(None);
+        };
+        let Some(bottom) = self.crop_bottom else {
+            return Ok(None);
+        };
+        let rect = CropRect::new(
+            u32::try_from(left).map_err(other_storage_err("invalid files.crop_left"))?,
+            u32::try_from(top).map_err(other_storage_err("invalid files.crop_top"))?,
+            u32::try_from(right).map_err(other_storage_err("invalid files.crop_right"))?,
+            u32::try_from(bottom).map_err(other_storage_err("invalid files.crop_bottom"))?,
+        );
+        let detected_at = parse_datetime(detected_at)?;
+        let detection = CropDetection::new(rect, detected_at);
+        let detection = match &self.crop_settings_fingerprint {
+            Some(fingerprint) => detection.with_settings_fingerprint(fingerprint.clone()),
+            None => detection,
+        };
+        Ok(Some(detection))
     }
 }
 

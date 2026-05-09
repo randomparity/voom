@@ -870,6 +870,13 @@ const KNOWN_TRANSCODE_KEYS: &[&str] = &[
     "scale_algorithm",
     "hdr_mode",
     "tune",
+    "crop",
+    "crop_sample_duration",
+    "crop_sample_count",
+    "crop_threshold",
+    "crop_minimum",
+    "crop_preserve_bottom_pixels",
+    "crop_aspect_lock",
 ];
 
 fn validate_transcode_keys(
@@ -1089,6 +1096,13 @@ const VIDEO_ONLY_KEYS: &[&str] = &[
     "min_bitrate",
     "sample_strategy",
     "fallback",
+    "crop",
+    "crop_sample_duration",
+    "crop_sample_count",
+    "crop_threshold",
+    "crop_minimum",
+    "crop_preserve_bottom_pixels",
+    "crop_aspect_lock",
 ];
 
 fn reject_video_only_keys(
@@ -1118,6 +1132,9 @@ fn validate_video_transcode_settings(
     col: usize,
     errors: &mut Vec<DslError>,
 ) {
+    let crop_enabled = settings.iter().any(|(key, val)| {
+        key == "crop" && matches!(val, Value::Ident(mode) | Value::String(mode) if mode == "auto")
+    });
     for (key, val) in settings {
         match key.as_str() {
             "hdr_mode" => {
@@ -1169,9 +1186,151 @@ fn validate_video_transcode_settings(
                     }
                 }
             }
+            "crop" => validate_crop_mode(val, line, col, errors),
+            "crop_sample_duration" | "crop_sample_count" => {
+                validate_crop_enabled(crop_enabled, key, line, col, errors);
+                validate_crop_positive_integer(val, key, line, col, errors);
+            }
+            "crop_threshold" => {
+                validate_crop_enabled(crop_enabled, key, line, col, errors);
+                validate_crop_integer_bounds(val, key, 0, 255, line, col, errors);
+            }
+            "crop_minimum" | "crop_preserve_bottom_pixels" => {
+                validate_crop_enabled(crop_enabled, key, line, col, errors);
+                validate_crop_integer_bounds(val, key, 0, u32::MAX, line, col, errors);
+            }
+            "crop_aspect_lock" => {
+                validate_crop_enabled(crop_enabled, key, line, col, errors);
+                validate_crop_aspect_lock(val, line, col, errors);
+            }
             _ => {}
         }
     }
+}
+
+fn validate_crop_enabled(
+    crop_enabled: bool,
+    key: &str,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    if !crop_enabled {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!("{key} has no effect without crop: auto"),
+        ));
+    }
+}
+
+fn validate_crop_mode(val: &Value, line: usize, col: usize, errors: &mut Vec<DslError>) {
+    match val {
+        Value::Ident(mode) | Value::String(mode) if mode == "auto" => {}
+        _ => errors.push(DslError::validation(
+            line,
+            col,
+            "crop must be auto".to_string(),
+        )),
+    }
+}
+
+fn validate_crop_positive_integer(
+    val: &Value,
+    key: &str,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    let Some(value) = numeric_u32(val) else {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!("{key} must be a positive integer"),
+        ));
+        return;
+    };
+    if value == 0 {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!("{key} must be greater than 0"),
+        ));
+    }
+}
+
+fn validate_crop_integer_bounds(
+    val: &Value,
+    key: &str,
+    min: u32,
+    max: u32,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    let Some(value) = numeric_u32(val) else {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!("{key} must be an integer"),
+        ));
+        return;
+    };
+    if value < min || value > max {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!("{key} must be from {min} to {max}"),
+        ));
+    }
+}
+
+fn validate_crop_aspect_lock(val: &Value, line: usize, col: usize, errors: &mut Vec<DslError>) {
+    let Value::List(items) = val else {
+        errors.push(DslError::validation(
+            line,
+            col,
+            "crop_aspect_lock must be a list of ratios like [16/9, 4/3]".to_string(),
+        ));
+        return;
+    };
+    for item in items {
+        let Some(ratio) = value_string(item) else {
+            errors.push(DslError::validation(
+                line,
+                col,
+                "crop_aspect_lock entries must be ratios like 16/9".to_string(),
+            ));
+            continue;
+        };
+        if !is_crop_ratio(ratio) {
+            errors.push(DslError::validation(
+                line,
+                col,
+                format!("invalid crop_aspect_lock ratio \"{ratio}\", expected WIDTH/HEIGHT"),
+            ));
+        }
+    }
+}
+
+fn value_string(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(s) | Value::Ident(s) | Value::Number(_, s) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+fn is_crop_ratio(value: &str) -> bool {
+    let Some((width, height)) = value.split_once('/') else {
+        return false;
+    };
+    let Ok(width) = width.parse::<u32>() else {
+        return false;
+    };
+    let Ok(height) = height.parse::<u32>() else {
+        return false;
+    };
+    width > 0 && height > 0
 }
 
 fn validate_vmaf_transcode_settings(
@@ -2061,6 +2220,86 @@ mod tests {
             }
             _ => panic!("expected validation error"),
         }
+    }
+
+    #[test]
+    fn test_transcode_crop_settings_validate() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    crop: auto
+                    crop_sample_duration: 30
+                    crop_sample_count: 4
+                    crop_threshold: 18
+                    crop_minimum: 6
+                    crop_preserve_bottom_pixels: 40
+                    crop_aspect_lock: ["16/9", "4/3"]
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        validate(&ast).unwrap();
+    }
+
+    #[test]
+    fn test_transcode_crop_rejected_for_audio() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode audio to aac {
+                    crop: auto
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("crop is only valid for video transcodes")),
+            "expected video-only crop error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_transcode_crop_invalid_aspect_lock() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    crop: auto
+                    crop_aspect_lock: ["16x9"]
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("invalid crop_aspect_lock ratio")),
+            "expected aspect lock error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_transcode_crop_tuning_requires_crop_auto() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    crop_threshold: 18
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("crop_threshold has no effect without crop: auto")),
+            "expected crop tuning no-op error, got: {:?}",
+            err.errors
+        );
     }
 
     #[test]
