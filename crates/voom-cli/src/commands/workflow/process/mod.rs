@@ -1731,7 +1731,7 @@ mod tests {
         let fixture =
             TestFixture::with_policy(r#"policy "test" { phase convert { container mkv } }"#);
         let ctx = fixture.make_ctx(kernel, store.clone());
-        let transition_recorder = super::transitions::TransitionRecorder {
+        let transition_recorder = super::context::TransitionRecorder {
             store: store.as_ref(),
             session_id: ctx.counters.session_id,
         };

@@ -84,11 +84,77 @@ pub(super) struct ProcessContext<'a> {
     pub(super) counters: &'a RunCounters,
 }
 
+/// Dependencies needed to persist file transitions.
+pub(super) struct TransitionRecorder<'a> {
+    pub(super) store: &'a dyn voom_domain::storage::StorageTrait,
+    pub(super) session_id: uuid::Uuid,
+}
+
+/// Grouped arguments for `record_failure_transition`.
+///
+/// The `executor` should be the executor plugin name, or an empty string when
+/// no executor was involved (e.g. safeguard abort).
+pub(super) struct FailureTransitionContext<'a> {
+    pub(super) file: &'a voom_domain::media::MediaFile,
+    pub(super) plan: &'a voom_domain::plan::Plan,
+    pub(super) executor: &'a str,
+    pub(super) error_message: Option<&'a str>,
+    pub(super) recorder: &'a TransitionRecorder<'a>,
+}
+
+/// Record a failure transition in the store for a plan that did not succeed.
+///
+/// The file is unchanged on failure, so `to_size = from_size` and `to_hash =
+/// from_hash`.
+///
+/// Dual-write: `file_transitions.error_message` is used for session-based
+/// queries (`voom report errors`), while `plans.result` stores the structured
+/// `ExecutionDetail` JSON for plan-based queries with full subprocess output.
+pub(super) fn record_failure_transition(fctx: &FailureTransitionContext<'_>) {
+    let file = fctx.file;
+    let to_hash = file.content_hash.clone().unwrap_or_default();
+    let mut transition = voom_domain::FileTransition::new(
+        file.id,
+        file.path.clone(),
+        to_hash,
+        file.size,
+        voom_domain::TransitionSource::Voom,
+    )
+    .with_from(file.content_hash.clone(), Some(file.size))
+    .with_detail(fctx.executor)
+    .with_plan_id(fctx.plan.id)
+    .with_processing(
+        0,
+        0,
+        0,
+        voom_domain::ProcessingOutcome::Failure,
+        &fctx.plan.policy_name,
+        &fctx.plan.phase_name,
+    )
+    .with_session_id(fctx.recorder.session_id);
+
+    if let Some(msg) = fctx.error_message {
+        transition = transition.with_error_message(msg);
+    }
+
+    if let Err(e) = fctx.recorder.store.record_transition(&transition) {
+        tracing::warn!(
+            path = %fctx.file.path.display(),
+            error = %e,
+            "failed to record failure transition"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
 
     use super::*;
+    use voom_domain::media::MediaFile;
+    use voom_domain::plan::Plan;
+    use voom_domain::storage::FileTransitionStorage;
+    use voom_domain::test_support::InMemoryStore;
 
     #[test]
     fn record_phase_stat_accumulates_outcomes_by_phase() {
@@ -139,5 +205,35 @@ mod tests {
         assert_eq!(counters.modified_count.load(Ordering::Relaxed), 1);
         assert_eq!(counters.backup_bytes.load(Ordering::Relaxed), 42);
         assert_eq!(counters.plan_collector.lock().len(), 1);
+    }
+
+    #[test]
+    fn record_failure_transition_persists_error_message() {
+        let store = InMemoryStore::new();
+        let mut file = MediaFile::new(std::path::PathBuf::from("/movies/example.mkv"));
+        file.content_hash = Some("hash-a".to_string());
+        file.size = 100;
+        let plan = Plan::new(file.clone(), "policy", "verify");
+        let recorder = TransitionRecorder {
+            store: &store,
+            session_id: uuid::Uuid::new_v4(),
+        };
+
+        record_failure_transition(&FailureTransitionContext {
+            file: &file,
+            plan: &plan,
+            executor: "verifier",
+            error_message: Some("verification failed"),
+            recorder: &recorder,
+        });
+
+        let transitions = store
+            .transitions_for_file(&file.id)
+            .expect("transitions query");
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(
+            transitions[0].error_message.as_deref(),
+            Some("verification failed")
+        );
     }
 }

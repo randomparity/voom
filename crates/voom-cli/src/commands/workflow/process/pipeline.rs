@@ -20,7 +20,10 @@ use voom_domain::events::PlanFailedEvent;
 use voom_domain::plan::PhaseOutput;
 
 use super::audio_language::apply_detected_languages;
-use super::context::{record_phase_stat, PhaseOutcomeKind, ProcessContext};
+use super::context::{
+    record_failure_transition, record_phase_stat, FailureTransitionContext, PhaseOutcomeKind,
+    ProcessContext, TransitionRecorder,
+};
 use super::dispatch::PlanDispatcher;
 use super::plan_outcome::PlanOutcome;
 use super::post_execution_path::resolve_post_execution_path;
@@ -28,10 +31,7 @@ use super::safeguards::{
     annotate_disk_space_violations, check_disk_space, check_duration_shrink, check_size_increase,
     collect_safeguard_violations, dispatch_safeguard_violations, SafeguardContext,
 };
-use super::transitions::{
-    record_failure_transition, record_file_transition, FailureTransitionContext,
-    FileTransitionContext, TransitionRecorder,
-};
+use super::transitions::{record_file_transition, FileTransitionContext};
 use crate::introspect::DiscoveredFilePayload;
 
 /// Extract and deserialize the job payload from a process job.
