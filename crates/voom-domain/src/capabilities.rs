@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::plan::OperationType;
+use crate::{plan::OperationType, verification::VerificationMode};
 
 /// Describes what a plugin can do. The kernel uses these for capability-based routing.
 #[non_exhaustive]
@@ -33,7 +33,7 @@ pub enum Capability {
     GenerateSubtitle,
     HealthCheck,
     Verify {
-        modes: Vec<crate::verification::VerificationMode>,
+        modes: Vec<VerificationMode>,
     },
 }
 

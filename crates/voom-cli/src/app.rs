@@ -145,13 +145,7 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
                 .expect("store is Some after successful init");
 
             let plugin_arc: Arc<dyn voom_kernel::Plugin> = Arc::new(plugin);
-            kernel.register_plugin(plugin_arc, PRIORITY_STORAGE)?;
-
-            // Dispatch init events after registration so bus subscribers can
-            // see them (e.g. health status events from other init'd plugins).
-            for event in init_events {
-                kernel.dispatch(event);
-            }
+            kernel.register_initialized_plugin(plugin_arc, PRIORITY_STORAGE, init_events)?;
 
             handle
         };
@@ -287,36 +281,30 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
         let init_events = verifier_plugin
             .init(&ctx)
             .context("Failed to initialize verifier plugin")?;
-        kernel.register_plugin(
+        kernel.register_initialized_plugin(
             Arc::new(verifier_plugin) as Arc<dyn voom_kernel::Plugin>,
             PRIORITY_VERIFIER,
+            init_events,
         )?;
-        for event in init_events {
-            kernel.dispatch(event);
-        }
     }
 
     #[cfg(feature = "wasm")]
     load_wasm_plugins(&mut kernel, config, disabled, store.clone())?;
 
     // Report plugin — registered for event subscription (ScanComplete, IntrospectComplete).
-    // Store is injected at construction. We use the manual path (register_plugin)
-    // rather than init_and_register because the caller does not need an Arc handle
-    // for downstream use; but init() is still called explicitly so a future
-    // non-no-op init body would run.
+    // Store is injected at construction, so the plugin is initialized before
+    // registration and handed back to the kernel with its init events.
     if !disabled.iter().any(|d| d == "report") {
         let mut report_plugin = voom_report::ReportPlugin::new(Arc::clone(&store));
         let ctx = voom_kernel::PluginContext::new(plugin_json("report"), data_dir.clone());
         let init_events = report_plugin
             .init(&ctx)
             .context("Failed to initialize report plugin")?;
-        kernel.register_plugin(
+        kernel.register_initialized_plugin(
             Arc::new(report_plugin) as Arc<dyn voom_kernel::Plugin>,
             PRIORITY_REPORT,
+            init_events,
         )?;
-        for event in init_events {
-            kernel.dispatch(event);
-        }
     }
 
     Ok(BootstrapResult {

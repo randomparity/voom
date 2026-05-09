@@ -229,6 +229,20 @@ impl Kernel {
         Ok(())
     }
 
+    /// Register an already-initialized plugin and dispatch the events returned by `init()`.
+    ///
+    /// Use this when the caller must inspect a concrete plugin after initialization
+    /// before moving it into an [`Arc`], such as extracting a storage handle.
+    pub fn register_initialized_plugin(
+        &mut self,
+        plugin: Arc<dyn Plugin>,
+        priority: i32,
+        init_events: Vec<Event>,
+    ) -> Result<()> {
+        let name = plugin.name().to_string();
+        self.finish_registration(plugin, priority, &name, init_events)
+    }
+
     /// Initialize a plugin via `init()`, then register it with the given priority.
     ///
     /// This is the safe-by-default path that ensures every plugin is initialized
@@ -296,10 +310,8 @@ impl Kernel {
         Ok(arc)
     }
 
-    /// Shared tail of both init-and-register paths: insert into the registry,
-    /// subscribe on the bus, and dispatch init events. Kept separate from the
-    /// init step so each caller can preserve the `Arc::get_mut` refcount-1
-    /// invariant on its own `Arc`.
+    /// Shared tail of plugin registration paths: insert into the registry,
+    /// subscribe on the bus, and dispatch init events.
     fn finish_registration(
         &mut self,
         plugin: Arc<dyn Plugin>,
@@ -610,6 +622,28 @@ mod tests {
         let captured = received.lock();
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0], "test-tool");
+    }
+
+    #[test]
+    fn test_register_initialized_plugin_dispatches_init_events() {
+        let received = Arc::new(Mutex::new(Vec::<String>::new()));
+
+        let mut kernel = Kernel::new();
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+
+        let capture = Arc::new(EventCapture {
+            received: received.clone(),
+        });
+        kernel.register_plugin(capture, 10).unwrap();
+
+        let mut emitter = InitEventEmitter;
+        let init_events = emitter.init(&ctx).unwrap();
+        kernel
+            .register_initialized_plugin(Arc::new(emitter), 20, init_events)
+            .unwrap();
+
+        let captured = received.lock();
+        assert_eq!(captured.as_slice(), ["test-tool"]);
     }
 
     #[test]
