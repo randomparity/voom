@@ -3,7 +3,7 @@
 // Transcodes video to HEVC and audio to AAC, with synthesized
 // compatibility stereo track. Demonstrates:
 // - skip when with field access (video.codec)
-// - Transcode video with full settings (crf, preset, hw accel, resolution)
+// - Transcode video with full settings (crf, preset, hw accel, resolution, auto-crop)
 // - Transcode audio with codec preservation
 // - synthesize with all settings (codec, channels, source, bitrate,
 //   skip_if_exists, create_if, title, language, position)
@@ -37,6 +37,13 @@ policy "transcode-hevc" {
       hw_fallback: true
       hdr_mode: preserve
       tune: film
+      crop: auto
+      crop_sample_duration: 60
+      crop_sample_count: 3
+      crop_threshold: 24
+      crop_minimum: 4
+      crop_preserve_bottom_pixels: 60
+      crop_aspect_lock: ["16/9", "4/3"]
     }
   }
 
