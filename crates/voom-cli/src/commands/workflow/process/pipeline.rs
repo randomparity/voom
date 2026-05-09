@@ -342,22 +342,18 @@ async fn apply_auto_crop_detection(
     if state.current_file.crop_detection.is_some() {
         return Ok(());
     }
-    let Some(settings) = crop_settings_for_plan(plan) else {
-        return Ok(());
-    };
-    let Some(source) = crop_source_for_plan(plan, &state.current_file) else {
-        tracing::warn!(
-            path = %state.current_file.path.display(),
-            phase = %plan.phase_name,
-            "crop auto requested but source dimensions are unavailable"
-        );
+    let Some(request) = cropdetect_request_for_plan(plan, &state.current_file) else {
         return Ok(());
     };
 
     let path = state.current_file.path.clone();
-    let settings = settings.clone();
     let detected = tokio::task::spawn_blocking(move || {
-        voom_ffmpeg_executor::cropdetect::detect_crop("ffmpeg", &path, source, &settings)
+        voom_ffmpeg_executor::cropdetect::detect_crop(
+            "ffmpeg",
+            &path,
+            request.source,
+            &request.settings,
+        )
     })
     .await
     .map_err(|e| format!("cropdetect join error: {e}"))?
@@ -375,7 +371,15 @@ async fn apply_auto_crop_detection(
     Ok(())
 }
 
-fn crop_settings_for_plan(plan: &Plan) -> Option<&voom_domain::CropSettings> {
+struct CropDetectRequest {
+    settings: voom_domain::CropSettings,
+    source: voom_ffmpeg_executor::cropdetect::CropDetectSource,
+}
+
+fn cropdetect_request_for_plan(
+    plan: &Plan,
+    file: &voom_domain::media::MediaFile,
+) -> Option<CropDetectRequest> {
     plan.actions.iter().find_map(|action| {
         if action.operation != OperationType::TranscodeVideo {
             return None;
@@ -383,33 +387,21 @@ fn crop_settings_for_plan(plan: &Plan) -> Option<&voom_domain::CropSettings> {
         let ActionParams::Transcode { settings, .. } = &action.parameters else {
             return None;
         };
-        settings.crop.as_ref()
+        let crop = settings.crop.as_ref()?;
+        let track_index = action.track_index?;
+        let track = file
+            .tracks
+            .iter()
+            .find(|track| track.index == track_index)?;
+        Some(CropDetectRequest {
+            settings: crop.clone(),
+            source: voom_ffmpeg_executor::cropdetect::CropDetectSource::new(
+                track.width?,
+                track.height?,
+                file.duration,
+            ),
+        })
     })
-}
-
-fn crop_source_for_plan(
-    plan: &Plan,
-    file: &voom_domain::media::MediaFile,
-) -> Option<voom_ffmpeg_executor::cropdetect::CropDetectSource> {
-    let track_index = plan.actions.iter().find_map(|action| {
-        if action.operation != OperationType::TranscodeVideo {
-            return None;
-        }
-        let ActionParams::Transcode { settings, .. } = &action.parameters else {
-            return None;
-        };
-        settings.crop.as_ref()?;
-        action.track_index
-    })?;
-    let track = file
-        .tracks
-        .iter()
-        .find(|track| track.index == track_index)?;
-    Some(voom_ffmpeg_executor::cropdetect::CropDetectSource::new(
-        track.width?,
-        track.height?,
-        file.duration,
-    ))
 }
 
 fn evaluate_phase_plan(
@@ -1022,10 +1014,10 @@ mod tests {
         file.tracks[0].height = Some(1080);
         let plan = crop_plan(file.clone());
 
-        let source = crop_source_for_plan(&plan, &file).expect("crop source");
+        let request = cropdetect_request_for_plan(&plan, &file).expect("cropdetect request");
 
         assert_eq!(
-            source,
+            request.source,
             voom_ffmpeg_executor::cropdetect::CropDetectSource::new(1920, 1080, 120.0)
         );
     }
@@ -1043,8 +1035,7 @@ mod tests {
             "transcode without crop",
         ));
 
-        assert!(crop_settings_for_plan(&plan).is_none());
-        assert!(crop_source_for_plan(&plan, &plan.file).is_none());
+        assert!(cropdetect_request_for_plan(&plan, &plan.file).is_none());
     }
 
     async fn held_nvenc_permit(
