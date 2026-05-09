@@ -1,38 +1,10 @@
 mod core;
+mod files;
+mod history;
+mod jobs;
+mod plans;
 mod row_mappers;
 mod sql;
-
-#[path = "files/bad_file_storage.rs"]
-mod bad_file_storage;
-#[path = "files/discovered_file_storage.rs"]
-mod discovered_file_storage;
-#[path = "files/file_storage.rs"]
-mod file_storage;
-#[path = "files/file_transition_storage.rs"]
-mod file_transition_storage;
-#[path = "files/subtitle_storage.rs"]
-mod subtitle_storage;
-#[path = "files/verification_storage.rs"]
-mod verification_storage;
-
-#[path = "history/event_log_storage.rs"]
-mod event_log_storage;
-#[path = "history/health_check_storage.rs"]
-mod health_check_storage;
-#[path = "history/maintenance_storage.rs"]
-mod maintenance_storage;
-#[path = "history/snapshot_storage.rs"]
-mod snapshot_storage;
-
-#[path = "jobs/job_storage.rs"]
-mod job_storage;
-#[path = "jobs/pending_ops_storage.rs"]
-mod pending_ops_storage;
-
-#[path = "plans/plan_storage.rs"]
-mod plan_storage;
-#[path = "plans/plugin_data_storage.rs"]
-mod plugin_data_storage;
 
 use std::collections::HashMap;
 
