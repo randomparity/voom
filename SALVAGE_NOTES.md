@@ -7,3 +7,4 @@ def5cb8 Propagate host list entry errors -- skipped: current main lacks the affe
 841499d Use named domain constructor inputs -- skipped: depends on branch SQLite module layout and touches broad verifier/storage constructor shapes.
 108cfe4 Type audio language detector metadata -- skipped: conflicts in process command/pipeline and introduces process helper module; process-structural salvage deferred.
 dd31729 Use WASM event result boundary record -- skipped: depends on branch-only split WASM loader module; manual reimplementation candidate on current loader.
+a8de351 Test WASM permission configuration -- skipped: depends on branch-only split WASM loader files (`loader/wasm/host_imports.rs`, `loader/wasm/host_state_config.rs`) deleted on current main.
