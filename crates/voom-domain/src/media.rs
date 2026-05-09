@@ -237,6 +237,20 @@ pub struct Track {
     pub hdr_format: Option<String>,
     pub pixel_format: Option<String>,
     #[serde(default)]
+    pub color_primaries: Option<String>,
+    #[serde(default)]
+    pub color_transfer: Option<String>,
+    #[serde(default)]
+    pub color_matrix: Option<String>,
+    #[serde(default)]
+    pub max_cll: Option<u32>,
+    #[serde(default)]
+    pub max_fall: Option<u32>,
+    #[serde(default)]
+    pub master_display: Option<String>,
+    #[serde(default)]
+    pub dolby_vision_profile: Option<u8>,
+    #[serde(default)]
     pub is_animation: Option<bool>,
 }
 
@@ -265,6 +279,13 @@ impl Default for Track {
             is_hdr: false,
             hdr_format: None,
             pixel_format: None,
+            color_primaries: None,
+            color_transfer: None,
+            color_matrix: None,
+            max_cll: None,
+            max_fall: None,
+            master_display: None,
+            dolby_vision_profile: None,
             is_animation: None,
         }
     }
