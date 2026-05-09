@@ -38,7 +38,7 @@ voom-report.workspace = true
 voom-verifier.workspace = true
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "=4.5.60", features = ["derive"] }
 clap_complete = "4"
 
 # Output formatting

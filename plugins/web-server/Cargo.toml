@@ -17,8 +17,8 @@ voom-dsl.workspace = true
 voom-report.workspace = true
 
 # Web framework
-axum = { version = "0.7", features = ["tokio", "json"] }
-tower = { version = "0.5", features = ["util", "limit", "timeout"] }
+axum = { version = "=0.7.9", features = ["tokio", "json"] }
+tower = { version = "=0.5.3", features = ["util", "limit", "timeout"] }
 
 # Templates
 tera = "1"
