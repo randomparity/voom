@@ -133,3 +133,123 @@ pub(super) fn record_failure_transition(fctx: &FailureTransitionContext<'_>) {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use voom_domain::media::MediaFile;
+    use voom_domain::plan::Plan;
+    use voom_domain::storage::FileTransitionStorage;
+    use voom_domain::test_support::InMemoryStore;
+
+    use super::*;
+
+    fn media_file(path: &str, hash: &str) -> MediaFile {
+        let mut file = MediaFile::new(PathBuf::from(path));
+        file.content_hash = Some(hash.to_string());
+        file.size = 100;
+        file
+    }
+
+    #[test]
+    fn record_file_transition_skips_when_path_and_hash_are_unchanged() {
+        let store = InMemoryStore::new();
+        let file = media_file("/movies/example.mkv", "hash-a");
+        let recorder = TransitionRecorder {
+            store: &store,
+            session_id: uuid::Uuid::new_v4(),
+        };
+        let plan_id = uuid::Uuid::new_v4();
+
+        record_file_transition(&FileTransitionContext {
+            old_file: &file,
+            new_file: &file,
+            executor: "ffmpeg-executor",
+            elapsed_ms: 10,
+            actions_taken: 1,
+            tracks_modified: 1,
+            policy_name: "policy",
+            phase_name: "metadata",
+            plan_id,
+            recorder: &recorder,
+        });
+
+        assert!(store
+            .transitions_for_file(&file.id)
+            .expect("transitions query")
+            .is_empty());
+    }
+
+    #[test]
+    fn record_file_transition_persists_path_and_processing_metadata() {
+        let store = InMemoryStore::new();
+        let old_file = media_file("/movies/example.mp4", "hash-a");
+        let mut new_file = old_file.clone();
+        new_file.path = PathBuf::from("/movies/example.mkv");
+        new_file.content_hash = Some("hash-b".to_string());
+        new_file.size = 120;
+        let recorder = TransitionRecorder {
+            store: &store,
+            session_id: uuid::Uuid::new_v4(),
+        };
+        let plan_id = uuid::Uuid::new_v4();
+
+        record_file_transition(&FileTransitionContext {
+            old_file: &old_file,
+            new_file: &new_file,
+            executor: "ffmpeg-executor",
+            elapsed_ms: 25,
+            actions_taken: 2,
+            tracks_modified: 1,
+            policy_name: "policy",
+            phase_name: "container",
+            plan_id,
+            recorder: &recorder,
+        });
+
+        let transitions = store
+            .transitions_for_file(&old_file.id)
+            .expect("transitions query");
+        assert_eq!(transitions.len(), 1);
+        let transition = &transitions[0];
+        assert_eq!(transition.path, new_file.path);
+        assert_eq!(
+            transition.from_path.as_deref(),
+            Some(old_file.path.as_path())
+        );
+        assert_eq!(transition.plan_id, Some(plan_id));
+        assert_eq!(transition.source_detail.as_deref(), Some("ffmpeg-executor"));
+        assert_eq!(transition.duration_ms, Some(25));
+        assert_eq!(transition.actions_taken, Some(2));
+        assert_eq!(transition.tracks_modified, Some(1));
+    }
+
+    #[test]
+    fn record_failure_transition_persists_error_message() {
+        let store = InMemoryStore::new();
+        let file = media_file("/movies/example.mkv", "hash-a");
+        let plan = Plan::new(file.clone(), "policy", "metadata");
+        let recorder = TransitionRecorder {
+            store: &store,
+            session_id: uuid::Uuid::new_v4(),
+        };
+
+        record_failure_transition(&FailureTransitionContext {
+            file: &file,
+            plan: &plan,
+            executor: "ffmpeg-executor",
+            error_message: Some("bad codec"),
+            recorder: &recorder,
+        });
+
+        let transitions = store
+            .transitions_for_file(&file.id)
+            .expect("transitions query");
+        assert_eq!(transitions.len(), 1);
+        let transition = &transitions[0];
+        assert_eq!(transition.error_message.as_deref(), Some("bad codec"));
+        assert_eq!(transition.source_detail.as_deref(), Some("ffmpeg-executor"));
+        assert_eq!(transition.plan_id, Some(plan.id));
+    }
+}

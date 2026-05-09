@@ -285,10 +285,10 @@ DSL Policy File (.voom)              Media Files on Disk
       │                           (persist file)
       │                                │
       ▼                                ▼
-  Phase Orchestrator ──── sequences phases, checks skip/run_if
+  Policy Evaluator ───── matches tracks, evaluates conditions
       │
       ▼
-  Policy Evaluator ───── matches tracks, evaluates conditions
+  Phase Orchestrator ──── sequences phase plans, checks skip/run_if
       │
       ▼
   Plan (serializable, inspectable, approvable)

@@ -75,3 +75,67 @@ impl PlanOutcome {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use voom_domain::events::EventResult;
+    use voom_domain::media::MediaFile;
+    use voom_domain::plan::Plan;
+
+    use super::*;
+
+    fn plan_and_file() -> (Plan, MediaFile) {
+        let file = MediaFile::new(PathBuf::from("/movies/example.mkv"));
+        let plan = Plan::new(file.clone(), "policy", "metadata");
+        (plan, file)
+    }
+
+    #[test]
+    fn claimed_success_preserves_executor_name() {
+        let (plan, file) = plan_and_file();
+        let results = [EventResult::plan_succeeded("ffmpeg-executor", None)];
+
+        let outcome = PlanOutcome::from_event_result(&results, &plan, &file);
+
+        match outcome {
+            PlanOutcome::Success { executor } => assert_eq!(executor, "ffmpeg-executor"),
+            PlanOutcome::Failed(_) => panic!("expected success outcome"),
+        }
+    }
+
+    #[test]
+    fn claimed_failure_preserves_executor_and_error() {
+        let (plan, file) = plan_and_file();
+        let results = [EventResult::plan_failed("ffmpeg-executor", "bad codec")];
+
+        let outcome = PlanOutcome::from_event_result(&results, &plan, &file);
+
+        match outcome {
+            PlanOutcome::Failed(failed) => {
+                assert_eq!(failed.plugin_name.as_deref(), Some("ffmpeg-executor"));
+                assert_eq!(failed.error, "bad codec");
+                assert_eq!(failed.path, file.path);
+                assert_eq!(failed.phase_name, plan.phase_name);
+            }
+            PlanOutcome::Success { .. } => panic!("expected failure outcome"),
+        }
+    }
+
+    #[test]
+    fn unclaimed_result_reports_no_executor() {
+        let (plan, file) = plan_and_file();
+        let results = [EventResult::new("observer")];
+
+        let outcome = PlanOutcome::from_event_result(&results, &plan, &file);
+
+        match outcome {
+            PlanOutcome::Failed(failed) => {
+                assert_eq!(failed.plugin_name, None);
+                assert_eq!(failed.error, "no executor available for plan");
+            }
+            PlanOutcome::Success { .. } => panic!("expected failure outcome"),
+        }
+    }
+}

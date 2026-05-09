@@ -15,7 +15,10 @@ use voom_dsl::compiled::{CompiledPolicy, ErrorStrategy};
 pub struct OrchestrationResult {
     /// Plans produced for each phase (in execution order).
     pub plans: Vec<Plan>,
-    /// Results for each executed phase.
+    /// Computed outcome for each planned phase.
+    ///
+    /// `Pending` means the phase has actions that still need execution;
+    /// `Skipped` and `Completed` can be decided before execution.
     pub phase_results: Vec<PhaseResult>,
     /// Whether any phase modified the file.
     pub file_modified: bool,

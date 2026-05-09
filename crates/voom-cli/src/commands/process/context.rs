@@ -83,3 +83,61 @@ pub(super) struct ProcessContext<'a> {
     pub(super) plan_limiter: Arc<voom_job_manager::worker::PlanExecutionLimiter>,
     pub(super) counters: &'a RunCounters,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+
+    #[test]
+    fn record_phase_stat_accumulates_outcomes_by_phase() {
+        let counters = RunCounters::new();
+
+        record_phase_stat(
+            &counters.phase_stats,
+            "metadata",
+            PhaseOutcomeKind::Completed,
+        );
+        record_phase_stat(
+            &counters.phase_stats,
+            "metadata",
+            PhaseOutcomeKind::Skipped("already tagged".to_string()),
+        );
+        record_phase_stat(
+            &counters.phase_stats,
+            "metadata",
+            PhaseOutcomeKind::Skipped("already tagged".to_string()),
+        );
+        record_phase_stat(&counters.phase_stats, "verify", PhaseOutcomeKind::Failed);
+
+        let stats = counters.phase_stats.lock();
+        let metadata = stats.get("metadata").expect("metadata phase is recorded");
+        assert_eq!(metadata.completed, 1);
+        assert_eq!(metadata.skipped, 2);
+        assert_eq!(metadata.failed, 0);
+        assert_eq!(metadata.skip_reasons["already tagged"], 2);
+
+        let verify = stats.get("verify").expect("verify phase is recorded");
+        assert_eq!(verify.completed, 0);
+        assert_eq!(verify.skipped, 0);
+        assert_eq!(verify.failed, 1);
+    }
+
+    #[test]
+    fn run_counters_start_empty_and_share_state_when_cloned() {
+        let counters = RunCounters::new();
+        let cloned = counters.clone();
+
+        cloned.modified_count.fetch_add(1, Ordering::Relaxed);
+        cloned.backup_bytes.fetch_add(42, Ordering::Relaxed);
+        cloned
+            .plan_collector
+            .lock()
+            .push(serde_json::json!({"phase": "metadata"}));
+
+        assert_eq!(counters.modified_count.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.backup_bytes.load(Ordering::Relaxed), 42);
+        assert_eq!(counters.plan_collector.lock().len(), 1);
+    }
+}

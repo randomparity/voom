@@ -399,7 +399,7 @@ async fn handle_phase_success(
         plan.phase_name.clone(),
         voom_policy_evaluator::EvaluationOutcome::Executed { modified: true },
     );
-    state.current_file = handle_plan_success(
+    state.current_file = finalize_successful_plan_execution(
         plan,
         &state.current_file,
         executor,
@@ -464,7 +464,7 @@ fn dispatch_plan_failure(failed: PlanFailedEvent, phase_name: &str, ctx: &Proces
 
 /// Handle a successfully executed plan: dispatch completion, re-introspect,
 /// and record the file transition.
-pub(super) async fn handle_plan_success(
+pub(super) async fn finalize_successful_plan_execution(
     plan: voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
     executor: &str,

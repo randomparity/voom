@@ -1408,7 +1408,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_plan_success_preserves_lineage_on_container_conversion() {
+    async fn finalize_successful_plan_execution_preserves_lineage_on_container_conversion() {
         use voom_domain::media::{Container, MediaFile};
         use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 
@@ -1443,8 +1443,15 @@ mod tests {
         let kernel = Arc::new(voom_kernel::Kernel::new());
         let ctx = fixture.make_ctx(kernel, store.clone());
 
-        let _ =
-            pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx).await;
+        let _ = pipeline::finalize_successful_plan_execution(
+            plan,
+            &file,
+            "mkvtoolnix-executor",
+            0,
+            false,
+            &ctx,
+        )
+        .await;
 
         assert_eq!(
             store.count_files(&Default::default()).unwrap(),
@@ -1469,7 +1476,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_plan_success_clears_orphan_bad_files_row_at_post_execution_path() {
+    async fn finalize_successful_plan_execution_clears_orphan_bad_files_row_at_post_execution_path()
+    {
         use voom_domain::bad_file::{BadFile, BadFileSource};
         use voom_domain::media::{Container, MediaFile};
         use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
@@ -1512,7 +1520,7 @@ mod tests {
         store.upsert_bad_file(&orphan).unwrap();
         assert!(
             store.bad_file_by_path(&mkv_path).unwrap().is_some(),
-            "precondition: orphan bad_files row must exist before handle_plan_success"
+            "precondition: orphan bad_files row must exist before finalize_successful_plan_execution"
         );
 
         let kernel = Arc::new(voom_kernel::Kernel::new());
@@ -1523,29 +1531,36 @@ mod tests {
             ..fixture.make_ctx(kernel, store.clone())
         };
 
-        let new_file =
-            pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx).await;
+        let new_file = pipeline::finalize_successful_plan_execution(
+            plan,
+            &file,
+            "mkvtoolnix-executor",
+            0,
+            false,
+            &ctx,
+        )
+        .await;
 
         assert_eq!(
             new_file.path, mkv_path,
-            "handle_plan_success must return a MediaFile reflecting the post-execution path"
+            "finalize_successful_plan_execution must return a MediaFile reflecting the post-execution path"
         );
         assert!(
             store.bad_file_by_path(&mkv_path).unwrap().is_none(),
-            "handle_plan_success must clear orphan bad_files row at post-execution path"
+            "finalize_successful_plan_execution must clear orphan bad_files row at post-execution path"
         );
     }
 
     #[tokio::test]
-    async fn handle_plan_success_clears_bad_files_row_when_plan_is_no_op_and_reintrospection_fails()
-    {
+    async fn finalize_successful_plan_execution_clears_bad_files_row_when_plan_is_no_op_and_reintrospection_fails(
+    ) {
         // Issue #180: when a plan executes "successfully" but produces no
         // observable change (same path AND same hash), `record_file_transition`
         // short-circuits (hash_changed=false, path_changed=false) before the
         // bundled `record_post_execution` call can clear any `bad_files` row.
         //
         // This test simulates the orphan row that exists at the start of
-        // `handle_plan_success` (e.g. left by a previous failed scan or a
+        // `finalize_successful_plan_execution` (e.g. left by a previous failed scan or a
         // re-introspection failure in a concurrent job) and verifies it is
         // cleared even when the plan produces no observable change.
         use voom_domain::bad_file::{BadFile, BadFileSource};
@@ -1598,7 +1613,7 @@ mod tests {
         store.upsert_bad_file(&orphan).unwrap();
         assert!(
             store.bad_file_by_path(&path).unwrap().is_some(),
-            "precondition: orphan bad_files row must exist before handle_plan_success"
+            "precondition: orphan bad_files row must exist before finalize_successful_plan_execution"
         );
 
         let kernel = Arc::new(voom_kernel::Kernel::new());
@@ -1607,8 +1622,15 @@ mod tests {
             ..fixture.make_ctx(kernel, store.clone())
         };
 
-        let new_file =
-            pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx).await;
+        let new_file = pipeline::finalize_successful_plan_execution(
+            plan,
+            &file,
+            "mkvtoolnix-executor",
+            0,
+            false,
+            &ctx,
+        )
+        .await;
 
         assert_eq!(
             new_file.path, path,
@@ -1621,7 +1643,7 @@ mod tests {
         );
         assert!(
             store.bad_file_by_path(&path).unwrap().is_none(),
-            "handle_plan_success must not leave an orphan bad_files row when the plan produces no observable change"
+            "finalize_successful_plan_execution must not leave an orphan bad_files row when the plan produces no observable change"
         );
     }
 
