@@ -177,13 +177,16 @@ mod tests {
     fn test_plugin_data_in_memory() {
         let mut state = HostState::new("test".into());
 
-        assert!(state.get_plugin_data("key1").is_none());
+        assert!(state.get_plugin_data("key1").unwrap().is_none());
 
         state.set_plugin_data("key1", b"hello world").unwrap();
-        assert_eq!(state.get_plugin_data("key1").unwrap(), b"hello world");
+        assert_eq!(
+            state.get_plugin_data("key1").unwrap().unwrap(),
+            b"hello world"
+        );
 
         state.set_plugin_data("key1", b"updated").unwrap();
-        assert_eq!(state.get_plugin_data("key1").unwrap(), b"updated");
+        assert_eq!(state.get_plugin_data("key1").unwrap().unwrap(), b"updated");
     }
 
     #[test]
@@ -192,7 +195,7 @@ mod tests {
         let mut state = HostState::new("test".into()).with_storage(store.clone());
 
         state.set_plugin_data("key1", b"value1").unwrap();
-        assert_eq!(state.get_plugin_data("key1").unwrap(), b"value1");
+        assert_eq!(state.get_plugin_data("key1").unwrap().unwrap(), b"value1");
 
         // Verify data is in the shared store.
         assert_eq!(store.get("test", "key1").unwrap().unwrap(), b"value1");
@@ -449,6 +452,7 @@ mod tests {
         let state = HostState::new("test".into()).with_initial_config(config.clone());
         let data = state
             .get_plugin_data("config")
+            .unwrap()
             .expect("config should be seeded");
         let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(loaded, config);
@@ -457,13 +461,13 @@ mod tests {
     #[test]
     fn test_with_initial_config_empty_does_not_seed() {
         let state = HostState::new("test".into()).with_initial_config(serde_json::json!({}));
-        assert!(state.get_plugin_data("config").is_none());
+        assert!(state.get_plugin_data("config").unwrap().is_none());
     }
 
     #[test]
     fn test_with_initial_config_null_does_not_seed() {
         let state = HostState::new("test".into()).with_initial_config(serde_json::Value::Null);
-        assert!(state.get_plugin_data("config").is_none());
+        assert!(state.get_plugin_data("config").unwrap().is_none());
     }
 
     #[test]
@@ -478,6 +482,7 @@ mod tests {
         // get_plugin_data should fall through to in-memory seeded config.
         let data = state
             .get_plugin_data("config")
+            .unwrap()
             .expect("seeded config should be accessible with storage attached");
         let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(loaded, config);
@@ -498,7 +503,7 @@ mod tests {
         state.set_plugin_data("config", &override_bytes).unwrap();
 
         // Should get the storage value, not the seeded one.
-        let data = state.get_plugin_data("config").unwrap();
+        let data = state.get_plugin_data("config").unwrap().unwrap();
         let loaded: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(loaded, override_config);
     }

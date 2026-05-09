@@ -70,25 +70,18 @@ impl HostState {
     /// default that the plugin can override by calling `set_plugin_data` (which
     /// writes to persistent storage). Once overridden, the storage value takes
     /// precedence on all subsequent reads.
-    #[must_use]
-    pub fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
+    pub fn get_plugin_data(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
         if let Some(storage) = &self.storage {
-            // Check persistent storage first, fall back to in-memory (seeded config).
             match storage.get(&self.plugin_name, key) {
-                Ok(Some(data)) => Some(data),
-                Ok(None) => self.plugin_data.get(key).cloned(),
-                Err(e) => {
-                    tracing::warn!(
-                        plugin = %self.plugin_name,
-                        key = %key,
-                        error = %e,
-                        "storage error in get_plugin_data, falling back to in-memory"
-                    );
-                    self.plugin_data.get(key).cloned()
-                }
+                Ok(Some(data)) => Ok(Some(data)),
+                Ok(None) => Ok(self.plugin_data.get(key).cloned()),
+                Err(e) => Err(format!(
+                    "failed to read plugin data for plugin '{}' key '{}': {e}",
+                    self.plugin_name, key
+                )),
             }
         } else {
-            self.plugin_data.get(key).cloned()
+            Ok(self.plugin_data.get(key).cloned())
         }
     }
 
@@ -918,7 +911,7 @@ mod tests {
             .plugin_data
             .insert("seeded".into(), b"in-mem".to_vec());
 
-        let got = state.get_plugin_data("seeded");
+        let got = state.get_plugin_data("seeded").unwrap();
         assert_eq!(got.as_deref(), Some(b"in-mem".as_ref()));
     }
 
@@ -936,7 +929,38 @@ mod tests {
             .plugin_data
             .insert("key".into(), b"from-memory".to_vec());
 
-        let got = state.get_plugin_data("key");
+        let got = state.get_plugin_data("key").unwrap();
         assert_eq!(got.as_deref(), Some(b"from-storage".as_ref()));
+    }
+
+    #[test]
+    fn test_get_plugin_data_storage_error_does_not_fall_back() {
+        use crate::host::WasmPluginStore;
+
+        struct FailingStore;
+
+        impl WasmPluginStore for FailingStore {
+            fn get(&self, plugin_name: &str, key: &str) -> Result<Option<Vec<u8>>, String> {
+                Err(format!("{plugin_name}:{key}: backend unavailable"))
+            }
+
+            fn set(&self, _plugin_name: &str, _key: &str, _value: &[u8]) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn delete(&self, _plugin_name: &str, _key: &str) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let mut state =
+            HostState::new("failing-plugin".into()).with_storage(Arc::new(FailingStore));
+        state
+            .plugin_data
+            .insert("config".into(), b"{\"seeded\":true}".to_vec());
+
+        let err = state.get_plugin_data("config").unwrap_err();
+        assert!(err.contains("failed to read plugin data"));
+        assert!(err.contains("backend unavailable"));
     }
 }
