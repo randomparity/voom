@@ -153,13 +153,13 @@ mod tests {
         let produced = Event::VerifyCompleted(VerifyCompletedEvent::new(
             plan.file.id.to_string(),
             plan.file.path.clone(),
-            VerifyCompletedDetails {
-                mode: VerificationMode::Quick,
-                outcome: VerificationOutcome::Warning,
-                error_count: 1,
-                warning_count: 2,
-                verification_id: uuid::Uuid::new_v4(),
-            },
+            VerifyCompletedDetails::new(
+                VerificationMode::Quick,
+                VerificationOutcome::Warning,
+                1,
+                2,
+                uuid::Uuid::new_v4(),
+            ),
         ));
         let mut result = EventResult::plan_succeeded("ffmpeg-executor", None);
         result.produced_events = vec![produced];

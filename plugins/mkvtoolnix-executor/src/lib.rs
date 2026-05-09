@@ -321,13 +321,12 @@ impl MkvtoolnixExecutorPlugin {
                 })?;
                 // Defuse guard — temp file was successfully renamed
                 scopeguard::ScopeGuard::into_inner(_guard);
-                let detail = voom_domain::plan::ExecutionDetail {
-                    command: command_str,
-                    exit_code: o.status.code(),
-                    // exit code 1 = mkvmerge warnings; capture stderr for diagnostics
-                    stderr_tail: voom_process::stderr_tail(&o.stderr, 20),
+                let detail = voom_domain::plan::ExecutionDetail::new(
+                    command_str,
+                    o.status.code(),
+                    voom_process::stderr_tail(&o.stderr, 20),
                     duration_ms,
-                };
+                );
                 Ok(vec![ActionResult::success(
                     action.operation,
                     &action.description,
@@ -347,12 +346,12 @@ impl MkvtoolnixExecutorPlugin {
                     display_tail,
                     command_str
                 );
-                let detail = voom_domain::plan::ExecutionDetail {
-                    command: command_str,
-                    exit_code: o.status.code(),
-                    stderr_tail: tail,
+                let detail = voom_domain::plan::ExecutionDetail::new(
+                    command_str,
+                    o.status.code(),
+                    tail,
                     duration_ms,
-                };
+                );
                 Ok(vec![ActionResult::failure(
                     action.operation,
                     &action.description,

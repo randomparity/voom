@@ -433,12 +433,12 @@ mod tests {
         let plan = Plan::new(file.clone(), "p", "ph");
         store.save_plan(&plan).unwrap();
 
-        let detail = ExecutionDetail {
-            command: "ffmpeg -i in.mkv out.mkv".into(),
-            exit_code: Some(1),
-            stderr_tail: "codec not supported".into(),
-            duration_ms: 1_234,
-        };
+        let detail = ExecutionDetail::new(
+            "ffmpeg -i in.mkv out.mkv",
+            Some(1),
+            "codec not supported",
+            1_234,
+        );
         store
             .update_plan_error(&plan.id, "transcode failed", Some(&detail))
             .unwrap();

@@ -72,12 +72,12 @@ fn handle_file_introspection_failed(
 }
 
 fn handle_plan_executing(store: &SqliteStore, e: &voom_domain::events::PlanExecutingEvent) {
-    let op = voom_domain::storage::PendingOperation {
-        id: e.plan_id,
-        file_path: e.path.clone(),
-        phase_name: e.phase_name.clone(),
-        started_at: chrono::Utc::now(),
-    };
+    let op = voom_domain::storage::PendingOperation::new(
+        e.plan_id,
+        e.path.clone(),
+        e.phase_name.clone(),
+        chrono::Utc::now(),
+    );
     if let Err(err) = store.insert_pending_op(&op) {
         tracing::warn!(
             error = %err,

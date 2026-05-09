@@ -61,12 +61,12 @@ impl voom_domain::storage::PendingOpsStorage for SqliteStore {
             let started_at = started_at_str.parse().map_err(other_storage_err(&format!(
                 "corrupt datetime in pending_operations: {started_at_str}"
             )))?;
-            result.push(PendingOperation {
+            result.push(PendingOperation::new(
                 id,
-                file_path: std::path::PathBuf::from(file_path),
+                std::path::PathBuf::from(file_path),
                 phase_name,
                 started_at,
-            });
+            ));
         }
         Ok(result)
     }
@@ -85,12 +85,12 @@ mod tests {
     }
 
     fn sample_op() -> PendingOperation {
-        PendingOperation {
-            id: Uuid::new_v4(),
-            file_path: std::path::PathBuf::from("/media/movies/test.mkv"),
-            phase_name: "normalize".to_string(),
-            started_at: Utc::now(),
-        }
+        PendingOperation::new(
+            Uuid::new_v4(),
+            std::path::PathBuf::from("/media/movies/test.mkv"),
+            "normalize",
+            Utc::now(),
+        )
     }
 
     #[test]
@@ -140,12 +140,12 @@ mod tests {
         store.insert_pending_op(&op).unwrap();
 
         // Insert with same id but different phase_name — should replace
-        let updated = PendingOperation {
-            id: op.id,
-            file_path: std::path::PathBuf::from("/media/movies/test.mkv"),
-            phase_name: "transcode".to_string(),
-            started_at: op.started_at,
-        };
+        let updated = PendingOperation::new(
+            op.id,
+            std::path::PathBuf::from("/media/movies/test.mkv"),
+            "transcode".to_string(),
+            op.started_at,
+        );
         store.insert_pending_op(&updated).unwrap();
 
         let ops = store.list_pending_ops().unwrap();
@@ -164,18 +164,18 @@ mod tests {
             .unwrap()
             .with_timezone(&chrono::Utc);
 
-        let op2 = PendingOperation {
-            id: Uuid::new_v4(),
-            file_path: std::path::PathBuf::from("/media/b.mkv"),
-            phase_name: "normalize".to_string(),
-            started_at: t2,
-        };
-        let op1 = PendingOperation {
-            id: Uuid::new_v4(),
-            file_path: std::path::PathBuf::from("/media/a.mkv"),
-            phase_name: "normalize".to_string(),
-            started_at: t1,
-        };
+        let op2 = PendingOperation::new(
+            Uuid::new_v4(),
+            std::path::PathBuf::from("/media/b.mkv"),
+            "normalize".to_string(),
+            t2,
+        );
+        let op1 = PendingOperation::new(
+            Uuid::new_v4(),
+            std::path::PathBuf::from("/media/a.mkv"),
+            "normalize".to_string(),
+            t1,
+        );
 
         // Insert in reverse order
         store.insert_pending_op(&op2).unwrap();
@@ -190,18 +190,18 @@ mod tests {
     #[test]
     fn test_multiple_pending_ops_different_files() {
         let store = test_store();
-        let op1 = PendingOperation {
-            id: Uuid::new_v4(),
-            file_path: std::path::PathBuf::from("/media/movies/a.mkv"),
-            phase_name: "normalize".to_string(),
-            started_at: Utc::now(),
-        };
-        let op2 = PendingOperation {
-            id: Uuid::new_v4(),
-            file_path: std::path::PathBuf::from("/media/movies/b.mkv"),
-            phase_name: "transcode".to_string(),
-            started_at: Utc::now(),
-        };
+        let op1 = PendingOperation::new(
+            Uuid::new_v4(),
+            std::path::PathBuf::from("/media/movies/a.mkv"),
+            "normalize".to_string(),
+            Utc::now(),
+        );
+        let op2 = PendingOperation::new(
+            Uuid::new_v4(),
+            std::path::PathBuf::from("/media/movies/b.mkv"),
+            "transcode".to_string(),
+            Utc::now(),
+        );
 
         store.insert_pending_op(&op1).unwrap();
         store.insert_pending_op(&op2).unwrap();

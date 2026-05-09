@@ -604,10 +604,7 @@ mod tests {
         let store = SqliteStore::in_memory().unwrap();
         insert_test_job(&store, voom_domain::job::JobStatus::Pending, None);
         insert_test_job(&store, voom_domain::job::JobStatus::Running, None);
-        let policy = RetentionPolicy {
-            max_age: Some(chrono::Duration::seconds(0)),
-            keep_last: None,
-        };
+        let policy = RetentionPolicy::new(Some(chrono::Duration::seconds(0)), None);
         let report = store.prune_old_jobs(policy).unwrap();
         assert_eq!(
             report.deleted, 0,
@@ -630,10 +627,7 @@ mod tests {
             voom_domain::job::JobStatus::Completed,
             Some(now - chrono::Duration::hours(1)),
         );
-        let policy = RetentionPolicy {
-            max_age: Some(chrono::Duration::days(7)),
-            keep_last: None,
-        };
+        let policy = RetentionPolicy::new(Some(chrono::Duration::days(7)), None);
         let report = store.prune_old_jobs(policy).unwrap();
         assert_eq!(report.deleted, 1);
         assert_eq!(report.kept, 1);
@@ -650,10 +644,7 @@ mod tests {
                 Some(now - chrono::Duration::minutes(i)),
             );
         }
-        let policy = RetentionPolicy {
-            max_age: None,
-            keep_last: Some(2),
-        };
+        let policy = RetentionPolicy::new(None, Some(2));
         let report = store.prune_old_jobs(policy).unwrap();
         assert_eq!(report.deleted, 3);
         assert_eq!(report.kept, 2);
@@ -671,10 +662,10 @@ mod tests {
                 Some(now - chrono::Duration::days(days)),
             );
         }
-        let policy = RetentionPolicy {
-            max_age: Some(chrono::Duration::days(4)), // deletes 10d, 5d
-            keep_last: Some(3),                       // would also delete the 4th-newest (5d)
-        };
+        let policy = RetentionPolicy::new(
+            Some(chrono::Duration::days(4)), // deletes 10d, 5d
+            Some(3),                         // would also delete the 4th-newest (5d)
+        );
         let report = store.prune_old_jobs(policy).unwrap();
         // OR semantics: 10d (too old), 5d (too old AND beyond rank 3), nothing else qualifies
         assert_eq!(report.deleted, 2);
@@ -687,10 +678,7 @@ mod tests {
         // A failed job with no completed_at — falls back to created_at (defaults to now in Job::new)
         insert_test_job(&store, voom_domain::job::JobStatus::Failed, None);
         // Make policy aggressively short so created_at (≈now) is NOT older
-        let policy = RetentionPolicy {
-            max_age: Some(chrono::Duration::days(1)),
-            keep_last: None,
-        };
+        let policy = RetentionPolicy::new(Some(chrono::Duration::days(1)), None);
         let report = store.prune_old_jobs(policy).unwrap();
         assert_eq!(
             report.deleted, 0,
@@ -701,10 +689,7 @@ mod tests {
     #[test]
     fn prune_old_jobs_empty_table_is_noop() {
         let store = SqliteStore::in_memory().unwrap();
-        let policy = RetentionPolicy {
-            max_age: Some(chrono::Duration::days(1)),
-            keep_last: Some(10),
-        };
+        let policy = RetentionPolicy::new(Some(chrono::Duration::days(1)), Some(10));
         let report = store.prune_old_jobs(policy).unwrap();
         assert_eq!(report.deleted, 0);
         assert_eq!(report.kept, 0);
@@ -736,10 +721,7 @@ mod tests {
                 Some(now - chrono::Duration::days(days)),
             );
         }
-        let policy = RetentionPolicy {
-            max_age: Some(chrono::Duration::days(4)),
-            keep_last: Some(3),
-        };
+        let policy = RetentionPolicy::new(Some(chrono::Duration::days(4)), Some(3));
         let count_report = store.count_old_jobs(policy).unwrap();
         // Same data still in store (count is non-destructive): verify by counting
         let total_before: u64 = store

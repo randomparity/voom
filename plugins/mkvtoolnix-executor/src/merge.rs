@@ -78,13 +78,12 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
             let _ = fs::remove_file(path);
         }
 
-        let detail = ExecutionDetail {
-            command: command_str,
-            exit_code: output.status.code(),
-            // exit code 1 = mkvmerge warnings; capture stderr for diagnostics
-            stderr_tail: voom_process::stderr_tail(&output.stderr, 20),
+        let detail = ExecutionDetail::new(
+            command_str,
+            output.status.code(),
+            voom_process::stderr_tail(&output.stderr, 20),
             duration_ms,
-        };
+        );
         Ok(actions
             .iter()
             .map(|a| {
@@ -105,12 +104,7 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
             "mkvmerge exited with status {}:\n{}\ncmd: {}",
             output.status, tail, command_str
         );
-        let detail = ExecutionDetail {
-            command: command_str,
-            exit_code: output.status.code(),
-            stderr_tail: tail,
-            duration_ms,
-        };
+        let detail = ExecutionDetail::new(command_str, output.status.code(), tail, duration_ms);
         Ok(vec![ActionResult::failure(
             actions[0].operation,
             &actions[0].description,

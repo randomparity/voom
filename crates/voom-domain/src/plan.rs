@@ -824,6 +824,7 @@ pub enum PhaseOutcome {
 
 /// Captured subprocess output from an executor invocation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ExecutionDetail {
     /// Shell-quoted command line.
     pub command: String,
@@ -834,6 +835,23 @@ pub struct ExecutionDetail {
     pub stderr_tail: String,
     /// Wall-clock execution time in milliseconds.
     pub duration_ms: u64,
+}
+
+impl ExecutionDetail {
+    #[must_use]
+    pub fn new(
+        command: impl Into<String>,
+        exit_code: Option<i32>,
+        stderr_tail: impl Into<String>,
+        duration_ms: u64,
+    ) -> Self {
+        Self {
+            command: command.into(),
+            exit_code,
+            stderr_tail: stderr_tail.into(),
+            duration_ms,
+        }
+    }
 }
 
 /// The result of executing a single action within a phase.

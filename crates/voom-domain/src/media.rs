@@ -16,6 +16,7 @@ use crate::transition::FileStatus;
 /// not grown or shrunk and its `mtime` is no later than `last_seen`, the
 /// stored `content_hash` is reused instead of re-reading the file.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct StoredFingerprint {
     /// File size in bytes at the time the hash was computed.
     pub size: u64,
@@ -24,6 +25,17 @@ pub struct StoredFingerprint {
     /// Timestamp after which a newer `mtime` on disk means the content may
     /// have changed. Typically `MediaFile::introspected_at`.
     pub last_seen: DateTime<Utc>,
+}
+
+impl StoredFingerprint {
+    #[must_use]
+    pub fn new(size: u64, content_hash: impl Into<String>, last_seen: DateTime<Utc>) -> Self {
+        Self {
+            size,
+            content_hash: content_hash.into(),
+            last_seen,
+        }
+    }
 }
 
 /// A media file with full introspection metadata.

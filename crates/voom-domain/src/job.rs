@@ -210,8 +210,20 @@ mod tests {
 
 /// Shared payload for jobs keyed on a discovered file (introspection, processing).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct DiscoveredFilePayload {
     pub path: String,
     pub size: u64,
     pub content_hash: Option<String>,
+}
+
+impl DiscoveredFilePayload {
+    #[must_use]
+    pub fn new(path: impl Into<String>, size: u64, content_hash: Option<String>) -> Self {
+        Self {
+            path: path.into(),
+            size,
+            content_hash,
+        }
+    }
 }

@@ -70,12 +70,7 @@ pub fn execute_plan(plan: &Plan, hw_accel: &HwAccelConfig) -> Result<Vec<ActionR
                 "ffmpeg execution complete"
             );
 
-            let detail = ExecutionDetail {
-                command: command_str,
-                exit_code: Some(0),
-                stderr_tail: String::new(),
-                duration_ms,
-            };
+            let detail = ExecutionDetail::new(command_str, Some(0), String::new(), duration_ms);
             Ok(actions
                 .iter()
                 .map(|a| {
@@ -100,12 +95,7 @@ pub fn execute_plan(plan: &Plan, hw_accel: &HwAccelConfig) -> Result<Vec<ActionR
                 "ffmpeg exited with {}:\n{}\ncmd: {}",
                 output.status, display_tail, command_str
             );
-            let detail = ExecutionDetail {
-                command: command_str,
-                exit_code: output.status.code(),
-                stderr_tail: tail,
-                duration_ms,
-            };
+            let detail = ExecutionDetail::new(command_str, output.status.code(), tail, duration_ms);
             Ok(vec![ActionResult::failure(
                 actions[0].operation,
                 &actions[0].description,

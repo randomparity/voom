@@ -377,10 +377,7 @@ mod tests {
         let now = chrono::Utc::now();
         insert_at(&store, now - chrono::Duration::days(60));
         insert_at(&store, now - chrono::Duration::hours(1));
-        let policy = RetentionPolicy {
-            max_age: Some(chrono::Duration::days(30)),
-            keep_last: None,
-        };
+        let policy = RetentionPolicy::new(Some(chrono::Duration::days(30)), None);
         let report = store.prune_old_event_log(policy).unwrap();
         assert_eq!(report.deleted, 1);
         assert_eq!(report.kept, 1);
@@ -393,10 +390,7 @@ mod tests {
         for i in 0..5i64 {
             insert_at(&store, now - chrono::Duration::seconds(i));
         }
-        let policy = RetentionPolicy {
-            max_age: None,
-            keep_last: Some(2),
-        };
+        let policy = RetentionPolicy::new(None, Some(2));
         let report = store.prune_old_event_log(policy).unwrap();
         assert_eq!(report.deleted, 3);
         assert_eq!(report.kept, 2);
@@ -405,10 +399,7 @@ mod tests {
     #[test]
     fn prune_old_event_log_empty_is_noop() {
         let store = test_store();
-        let policy = RetentionPolicy {
-            max_age: Some(chrono::Duration::days(1)),
-            keep_last: Some(10),
-        };
+        let policy = RetentionPolicy::new(Some(chrono::Duration::days(1)), Some(10));
         let report = store.prune_old_event_log(policy).unwrap();
         assert_eq!(report.deleted, 0);
         assert_eq!(report.kept, 0);
@@ -471,10 +462,7 @@ mod tests {
         for days in [10i64, 5, 3, 1, 0] {
             insert_at(&store, now - chrono::Duration::days(days));
         }
-        let policy = RetentionPolicy {
-            max_age: Some(chrono::Duration::days(4)),
-            keep_last: Some(3),
-        };
+        let policy = RetentionPolicy::new(Some(chrono::Duration::days(4)), Some(3));
         let count_report = store.count_old_event_log(policy).unwrap();
         // Verify non-destructive: all 5 rows still present
         let total_before: u64 = store

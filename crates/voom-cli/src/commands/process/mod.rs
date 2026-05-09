@@ -725,11 +725,11 @@ fn build_work_items(
             voom_job_manager::worker::WorkItem::new(
                 voom_domain::job::JobType::Process,
                 priority,
-                Some(DiscoveredFilePayload {
-                    path: evt.path.to_string_lossy().into_owned(),
-                    size: evt.size,
-                    content_hash: evt.content_hash.clone(),
-                }),
+                Some(DiscoveredFilePayload::new(
+                    evt.path.to_string_lossy().into_owned(),
+                    evt.size,
+                    evt.content_hash.clone(),
+                )),
             )
         })
         .collect()

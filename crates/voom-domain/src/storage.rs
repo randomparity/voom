@@ -23,6 +23,7 @@ use crate::transition::{DiscoveredFile, FileTransition, ReconcileResult, Transit
 /// rank (newest first) exceeds `keep_last`. If both fields are `None`,
 /// the policy is disabled and the implementing trait method must be a no-op.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct RetentionPolicy {
     /// Delete rows older than this. `None` means no age bound.
     pub max_age: Option<chrono::Duration>,
@@ -31,6 +32,11 @@ pub struct RetentionPolicy {
 }
 
 impl RetentionPolicy {
+    #[must_use]
+    pub fn new(max_age: Option<chrono::Duration>, keep_last: Option<u64>) -> Self {
+        Self { max_age, keep_last }
+    }
+
     /// Returns true when no bounds are configured. Trait implementations must
     /// short-circuit and return `PruneReport { deleted: 0, kept: <count> }`
     /// without executing a `DELETE` when this is true.
@@ -297,6 +303,7 @@ pub trait FileTransitionStorage: Send + Sync {
 
 /// A failed transition with plan result details for error reporting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct FailedTransition {
     pub path: PathBuf,
     pub phase_name: Option<String>,
@@ -307,12 +314,45 @@ pub struct FailedTransition {
     pub plan_result: Option<String>,
 }
 
+impl FailedTransition {
+    #[must_use]
+    pub fn new(
+        path: PathBuf,
+        phase_name: Option<String>,
+        error_message: Option<String>,
+        session_id: Option<Uuid>,
+        created_at: DateTime<Utc>,
+        plan_result: Option<String>,
+    ) -> Self {
+        Self {
+            path,
+            phase_name,
+            error_message,
+            session_id,
+            created_at,
+            plan_result,
+        }
+    }
+}
+
 /// Summary of a processing session with failure counts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SessionSummary {
     pub session_id: Uuid,
     pub started_at: DateTime<Utc>,
     pub failure_count: u64,
+}
+
+impl SessionSummary {
+    #[must_use]
+    pub fn new(session_id: Uuid, started_at: DateTime<Utc>, failure_count: u64) -> Self {
+        Self {
+            session_id,
+            started_at,
+            failure_count,
+        }
+    }
 }
 
 /// Plugin key-value data storage.
@@ -518,11 +558,29 @@ pub trait MaintenanceStorage: Send + Sync {
 
 /// A record of an in-flight plan execution, used for crash recovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct PendingOperation {
     pub id: Uuid,
     pub file_path: PathBuf,
     pub phase_name: String,
     pub started_at: DateTime<Utc>,
+}
+
+impl PendingOperation {
+    #[must_use]
+    pub fn new(
+        id: Uuid,
+        file_path: PathBuf,
+        phase_name: impl Into<String>,
+        started_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            id,
+            file_path,
+            phase_name: phase_name.into(),
+            started_at,
+        }
+    }
 }
 
 /// Pending operation tracking for crash recovery.

@@ -190,11 +190,11 @@ mod tests {
 
         // Fingerprint "last seen" is in the future so the on-disk mtime is
         // guaranteed to be earlier.
-        let stored = StoredFingerprint {
-            size: file_size,
-            content_hash: cached_hash.clone(),
-            last_seen: Utc::now() + chrono::Duration::hours(1),
-        };
+        let stored = StoredFingerprint::new(
+            file_size,
+            cached_hash.clone(),
+            Utc::now() + chrono::Duration::hours(1),
+        );
 
         let reused = Arc::new(AtomicUsize::new(0));
         let reused_clone = reused.clone();
@@ -235,11 +235,11 @@ mod tests {
         let file_path = dir.path().join("video.mkv");
         std::fs::write(&file_path, b"fake mkv data").unwrap();
 
-        let stored = StoredFingerprint {
-            size: 9_999_999, // deliberately wrong
-            content_hash: "stale-hash".to_string(),
-            last_seen: Utc::now() + chrono::Duration::hours(1),
-        };
+        let stored = StoredFingerprint::new(
+            9_999_999, // deliberately wrong
+            "stale-hash",
+            Utc::now() + chrono::Duration::hours(1),
+        );
 
         let reused = Arc::new(AtomicUsize::new(0));
         let reused_clone = reused.clone();
@@ -275,11 +275,11 @@ mod tests {
         std::fs::write(&file_path, b"fake mkv data").unwrap();
         let file_size = std::fs::metadata(&file_path).unwrap().len();
 
-        let stored = StoredFingerprint {
-            size: file_size,
-            content_hash: "stale-hash".to_string(),
-            last_seen: Utc::now() - chrono::Duration::days(365),
-        };
+        let stored = StoredFingerprint::new(
+            file_size,
+            "stale-hash".to_string(),
+            Utc::now() - chrono::Duration::days(365),
+        );
 
         let reused = Arc::new(AtomicUsize::new(0));
         let reused_clone = reused.clone();

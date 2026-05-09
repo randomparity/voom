@@ -195,11 +195,7 @@ impl FileStorage for SqliteStore {
         let last_seen = parse_datetime(&introspected_at)?;
         let size =
             u64::try_from(size).map_err(other_storage_err("file size does not fit in u64"))?;
-        Ok(Some(StoredFingerprint {
-            size,
-            content_hash,
-            last_seen,
-        }))
+        Ok(Some(StoredFingerprint::new(size, content_hash, last_seen)))
     }
 
     fn list_files(&self, filters: &FileFilters) -> Result<Vec<MediaFile>> {

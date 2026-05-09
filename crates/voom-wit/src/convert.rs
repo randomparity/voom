@@ -556,12 +556,12 @@ mod tests {
 
     #[test]
     fn test_event_result_roundtrip_preserves_execution_lifecycle_fields() {
-        let detail = voom_domain::plan::ExecutionDetail {
-            command: "handbrake --input movie.mkv".to_string(),
-            exit_code: Some(0),
-            stderr_tail: String::new(),
-            duration_ms: 25,
-        };
+        let detail = voom_domain::plan::ExecutionDetail::new(
+            "handbrake --input movie.mkv",
+            Some(0),
+            String::new(),
+            25,
+        );
         let mut result = EventResult::plan_succeeded("executor", None);
         result.execution_detail = Some(detail.clone());
 

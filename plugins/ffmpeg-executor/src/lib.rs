@@ -370,12 +370,12 @@ impl FfmpegExecutorPlugin {
                     let _ = std::fs::remove_file(&temp_path);
                     plugin_err(format!("failed to rename temp file: {e}"))
                 })?;
-                let detail = voom_domain::plan::ExecutionDetail {
-                    command: command_str,
-                    exit_code: Some(0),
-                    stderr_tail: String::new(),
+                let detail = voom_domain::plan::ExecutionDetail::new(
+                    command_str,
+                    Some(0),
+                    String::new(),
                     duration_ms,
-                };
+                );
                 Ok(vec![voom_domain::plan::ActionResult::success(
                     action.operation,
                     &action.description,
@@ -396,12 +396,12 @@ impl FfmpegExecutorPlugin {
                     display_tail,
                     command_str
                 );
-                let detail = voom_domain::plan::ExecutionDetail {
-                    command: command_str,
-                    exit_code: o.status.code(),
-                    stderr_tail: tail,
+                let detail = voom_domain::plan::ExecutionDetail::new(
+                    command_str,
+                    o.status.code(),
+                    tail,
                     duration_ms,
-                };
+                );
                 Ok(vec![voom_domain::plan::ActionResult::failure(
                     action.operation,
                     &action.description,

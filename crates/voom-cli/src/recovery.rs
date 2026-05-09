@@ -658,12 +658,12 @@ mod tests {
         original_path: &std::path::Path,
     ) {
         use voom_domain::storage::{PendingOperation, PendingOpsStorage};
-        let op = PendingOperation {
-            id: uuid::Uuid::new_v4(),
-            file_path: original_path.to_path_buf(),
-            phase_name: "test".into(),
-            started_at: chrono::Utc::now(),
-        };
+        let op = PendingOperation::new(
+            uuid::Uuid::new_v4(),
+            original_path.to_path_buf(),
+            "test".into(),
+            chrono::Utc::now(),
+        );
         store.insert_pending_op(&op).unwrap();
     }
 

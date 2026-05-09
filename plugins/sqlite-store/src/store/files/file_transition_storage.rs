@@ -234,14 +234,14 @@ impl FileTransitionStorage for SqliteStore {
                     )
                 })?;
 
-                Ok(voom_domain::storage::FailedTransition {
-                    path: PathBuf::from(path_str),
+                Ok(voom_domain::storage::FailedTransition::new(
+                    PathBuf::from(path_str),
                     phase_name,
                     error_message,
                     session_id,
                     created_at,
                     plan_result,
-                })
+                ))
             })
             .map_err(storage_err("failed to query failed transitions"))?
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -298,11 +298,11 @@ impl FileTransitionStorage for SqliteStore {
                         format!("corrupt datetime: {e}").into(),
                     )
                 })?;
-                Ok(voom_domain::storage::SessionSummary {
+                Ok(voom_domain::storage::SessionSummary::new(
                     session_id,
                     started_at,
-                    failure_count: count as u64,
-                })
+                    count as u64,
+                ))
             })
             .map_err(storage_err("failed to query failure sessions"))?
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -761,10 +761,7 @@ mod retention_tests {
             let t = make_transition(file_id, now - chrono::Duration::days(days));
             store.record_transition(&t).unwrap();
         }
-        let policy = RetentionPolicy {
-            max_age: Some(chrono::Duration::days(30)),
-            keep_last: None,
-        };
+        let policy = RetentionPolicy::new(Some(chrono::Duration::days(30)), None);
         let report = store.prune_old_file_transitions(policy).unwrap();
         // Most recent (1d) is preserved; the other two (100d, 50d) are eligible
         // and both exceed the 30d cutoff, so both deleted.
@@ -779,10 +776,7 @@ mod retention_tests {
         let file_id = uuid::Uuid::new_v4();
         let t = make_transition(file_id, chrono::Utc::now() - chrono::Duration::days(365));
         store.record_transition(&t).unwrap();
-        let policy = RetentionPolicy {
-            max_age: Some(chrono::Duration::days(1)),
-            keep_last: None,
-        };
+        let policy = RetentionPolicy::new(Some(chrono::Duration::days(1)), None);
         let report = store.prune_old_file_transitions(policy).unwrap();
         assert_eq!(report.deleted, 0, "the only row for a file is always kept");
         assert_eq!(store.transitions_for_file(&file_id).unwrap().len(), 1);
@@ -816,10 +810,7 @@ mod retention_tests {
                 .record_transition(&make_transition(uuid::Uuid::new_v4(), chrono::Utc::now()))
                 .unwrap();
         }
-        let policy = RetentionPolicy {
-            max_age: None,
-            keep_last: Some(0),
-        };
+        let policy = RetentionPolicy::new(None, Some(0));
         let report = store.prune_old_file_transitions(policy).unwrap();
         assert_eq!(report.deleted, 0, "all rows are most-recent-per-file");
     }
@@ -827,10 +818,7 @@ mod retention_tests {
     #[test]
     fn prune_old_file_transitions_empty_is_noop() {
         let store = test_store();
-        let policy = RetentionPolicy {
-            max_age: Some(chrono::Duration::days(1)),
-            keep_last: Some(10),
-        };
+        let policy = RetentionPolicy::new(Some(chrono::Duration::days(1)), Some(10));
         let report = store.prune_old_file_transitions(policy).unwrap();
         assert_eq!(report.deleted, 0);
         assert_eq!(report.kept, 0);
@@ -846,10 +834,7 @@ mod retention_tests {
             let t = make_transition(file_id, now - chrono::Duration::days(days));
             store.record_transition(&t).unwrap();
         }
-        let policy = RetentionPolicy {
-            max_age: Some(chrono::Duration::days(4)),
-            keep_last: Some(3),
-        };
+        let policy = RetentionPolicy::new(Some(chrono::Duration::days(4)), Some(3));
         let count_report = store.count_old_file_transitions(policy).unwrap();
         // Verify non-destructive: all 5 rows still present
         let total_before: u64 = store

@@ -830,13 +830,13 @@ mod tests {
             let event = Event::VerifyCompleted(VerifyCompletedEvent::new(
                 created.plan.file.id.to_string(),
                 created.plan.file.path.clone(),
-                VerifyCompletedDetails {
-                    mode: VerificationMode::Quick,
-                    outcome: VerificationOutcome::Ok,
-                    error_count: 0,
-                    warning_count: 0,
-                    verification_id: uuid::Uuid::new_v4(),
-                },
+                VerifyCompletedDetails::new(
+                    VerificationMode::Quick,
+                    VerificationOutcome::Ok,
+                    0,
+                    0,
+                    uuid::Uuid::new_v4(),
+                ),
             ));
             let mut result = EventResult::new(self.name());
             result.claimed = true;
