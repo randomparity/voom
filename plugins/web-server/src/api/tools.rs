@@ -16,6 +16,8 @@ const KNOWN_TOOLS: &[&str] = &[
     "mkvextract",
     "mediainfo",
     "HandBrakeCLI",
+    "hdr10plus_tool",
+    "dovi_tool",
 ];
 
 /// Known executor plugin names that emit capability events.
@@ -126,7 +128,9 @@ mod tests {
         assert!(KNOWN_TOOLS.contains(&"mkvextract"));
         assert!(KNOWN_TOOLS.contains(&"mediainfo"));
         assert!(KNOWN_TOOLS.contains(&"HandBrakeCLI"));
-        assert_eq!(KNOWN_TOOLS.len(), 7);
+        assert!(KNOWN_TOOLS.contains(&"hdr10plus_tool"));
+        assert!(KNOWN_TOOLS.contains(&"dovi_tool"));
+        assert_eq!(KNOWN_TOOLS.len(), 9);
     }
 
     #[test]

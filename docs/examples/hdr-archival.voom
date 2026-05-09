@@ -1,0 +1,18 @@
+policy "hdr-archival" {
+  phase normalize-container {
+    container mkv
+  }
+
+  phase preserve-hdr {
+    depends_on: [normalize-container]
+
+    transcode video to hevc {
+      crf: 18
+      preset: slow
+      preserve_hdr: true
+      hdr_color_metadata: copy
+      hw: auto
+      hw_fallback: true
+    }
+  }
+}

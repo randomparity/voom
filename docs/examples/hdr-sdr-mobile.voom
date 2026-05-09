@@ -1,0 +1,17 @@
+policy "hdr-sdr-mobile" {
+  phase mobile-sdr {
+    transcode video to hevc {
+      max_resolution: 1080p
+      scale_algorithm: lanczos
+      crf: 24
+      preset: medium
+      preserve_hdr: false
+      tonemap: bt2390
+    }
+
+    transcode audio to aac {
+      bitrate: 160k
+      channels: stereo
+    }
+  }
+}

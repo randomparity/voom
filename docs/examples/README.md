@@ -22,6 +22,16 @@ HEVC transcoding pipeline with hardware acceleration. `skip when` with field acc
 
 **Plugins used:** ffmpeg-executor, mkvtoolnix-executor, backup-manager
 
+### [hdr-archival.voom](hdr-archival.voom)
+HDR archival transcode policy. Preserves detected HDR10 metadata while encoding HEVC output and demonstrates optional hardware acceleration.
+
+**Plugins used:** ffmpeg-executor, mkvtoolnix-executor, backup-manager
+
+### [hdr-sdr-mobile.voom](hdr-sdr-mobile.voom)
+Mobile-oriented SDR derivative policy. Tone-maps HDR sources to BT.709 SDR output, downscales video, and creates stereo AAC audio.
+
+**Plugins used:** ffmpeg-executor, backup-manager
+
 ### [metadata-enrichment.voom](metadata-enrichment.voom)
 External metadata enrichment using WASM plugin data. `field exists` conditions, `set_language` with field access, `set_tag` with field and literal values, `rules first` mode, `skip` action, `is_original`/`is_dubbed` predicates, all comparison operators.
 
@@ -56,7 +66,8 @@ Comprehensive reference exercising **every DSL construct**. Not intended for pro
 | `order tracks` | movie-library, anime, strict, full |
 | `defaults` | movie-library, anime, strict, full |
 | `actions` (video/audio/subtitle) | movie-library, anime, strict, full |
-| `transcode` (video/audio) | transcode, full |
+| `transcode` (video/audio) | transcode, hdr-archival, hdr-sdr-mobile, full |
+| `preserve_hdr` / `tonemap` | hdr-archival, hdr-sdr-mobile |
 | `crop: auto` | transcode |
 | `synthesize` | transcode, full |
 | `when` / `else` | anime, metadata, full |

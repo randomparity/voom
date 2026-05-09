@@ -278,6 +278,24 @@ fn example_transcode_hevc_parses() {
 }
 
 #[test]
+fn example_hdr_archival_parses_and_validates() {
+    let input = include_str!("../../../docs/examples/hdr-archival.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "hdr-archival");
+    assert_eq!(ast.phases.len(), 2);
+    voom_dsl::validate(&ast).unwrap();
+}
+
+#[test]
+fn example_hdr_sdr_mobile_parses_and_validates() {
+    let input = include_str!("../../../docs/examples/hdr-sdr-mobile.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "hdr-sdr-mobile");
+    assert_eq!(ast.phases.len(), 1);
+    voom_dsl::validate(&ast).unwrap();
+}
+
+#[test]
 fn example_vmaf_guided_parses_and_validates() {
     let input = include_str!("../../../docs/examples/vmaf-guided.voom");
     let ast = parse_policy(input).unwrap();
