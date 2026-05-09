@@ -219,7 +219,7 @@ impl FileStorage for SqliteStore {
 
         if !filters.include_missing {
             let clause = format!(" AND {col_prefix}status = {{}}");
-            q.parameterized_clause(&clause, "active".to_string());
+            q.parameterized_clause(&clause, FileStatus::Active.as_str().to_string());
         }
         if let Some(container) = filters.container {
             let clause = format!(" AND {col_prefix}container = {{}}");
@@ -276,7 +276,10 @@ impl FileStorage for SqliteStore {
         let mut q = SqlQuery::new(base);
 
         if !filters.include_missing {
-            q.parameterized_clause(" AND files.status = {}", "active".to_string());
+            q.parameterized_clause(
+                " AND files.status = {}",
+                FileStatus::Active.as_str().to_string(),
+            );
         }
         if let Some(container) = filters.container {
             q.parameterized_clause(" AND files.container = {}", container.as_str().to_string());
@@ -305,8 +308,13 @@ impl FileStorage for SqliteStore {
         let conn = self.conn()?;
         let now = format_datetime(&Utc::now());
         conn.execute(
-            "UPDATE files SET status = 'missing', missing_since = ?1 WHERE id = ?2 AND status = 'active'",
-            params![now, id.to_string()],
+            "UPDATE files SET status = ?1, missing_since = ?2 WHERE id = ?3 AND status = ?4",
+            params![
+                FileStatus::Missing.as_str(),
+                now,
+                id.to_string(),
+                FileStatus::Active.as_str()
+            ],
         )
         .map_err(storage_err("failed to mark file missing"))?;
         Ok(())
@@ -318,8 +326,14 @@ impl FileStorage for SqliteStore {
         let path_str = new_path.to_string_lossy().to_string();
         let filename = filename_string(new_path);
         conn.execute(
-            "UPDATE files SET status = 'active', missing_since = NULL, path = ?1, filename = ?2, updated_at = ?3 WHERE id = ?4",
-            params![path_str, filename, now, id.to_string()],
+            "UPDATE files SET status = ?1, missing_since = NULL, path = ?2, filename = ?3, updated_at = ?4 WHERE id = ?5",
+            params![
+                FileStatus::Active.as_str(),
+                path_str,
+                filename,
+                now,
+                id.to_string()
+            ],
         )
         .map_err(storage_err("failed to reactivate file"))?;
         Ok(())
@@ -342,14 +356,14 @@ impl FileStorage for SqliteStore {
         let conn = self.conn()?;
         let cutoff = format_datetime(&older_than);
         conn.execute(
-            "DELETE FROM file_transitions WHERE file_id IN (SELECT id FROM files WHERE status = 'missing' AND missing_since < ?1)",
-            params![cutoff],
+            "DELETE FROM file_transitions WHERE file_id IN (SELECT id FROM files WHERE status = ?1 AND missing_since < ?2)",
+            params![FileStatus::Missing.as_str(), cutoff],
         )
         .map_err(storage_err("failed to purge transitions for missing files"))?;
         let deleted = conn
             .execute(
                 "DELETE FROM files WHERE status = 'missing' AND missing_since < ?1",
-                params![cutoff],
+                params![FileStatus::Missing.as_str(), cutoff],
             )
             .map_err(storage_err("failed to purge missing files"))?;
         Ok(deleted as u64)
@@ -903,6 +917,26 @@ mod tests {
         file.content_hash = Some("abc123".to_string());
         file.expected_hash = Some("abc123".to_string());
         file
+    }
+
+    #[test]
+    fn list_files_rejects_unknown_file_status() {
+        let store = test_store();
+        let file = active_file("/media/bad-status.mkv");
+        let file_id = file.id;
+        store.upsert_file(&file).unwrap();
+
+        let conn = store.conn().unwrap();
+        conn.execute(
+            "UPDATE files SET status = ?1 WHERE id = ?2",
+            params!["mystery", file_id.to_string()],
+        )
+        .unwrap();
+
+        let mut filters = voom_domain::storage::FileFilters::default();
+        filters.include_missing = true;
+        let err = store.list_files(&filters).unwrap_err();
+        assert!(err.to_string().contains("unknown file status"));
     }
 
     #[test]

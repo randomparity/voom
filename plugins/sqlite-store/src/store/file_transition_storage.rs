@@ -441,7 +441,13 @@ fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition
 
     let id = parse_uuid_for_row(&id_str, "file_transitions.id")?;
     let file_id = parse_uuid_for_row(&file_id_str, "file_transitions.file_id")?;
-    let source = TransitionSource::parse(&source_str).unwrap_or_default();
+    let source = TransitionSource::parse(&source_str).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("unknown transition source in file_transitions.source: {source_str}").into(),
+        )
+    })?;
     let plan_id = plan_id_str
         .filter(|s| !s.is_empty())
         .map(|s| parse_uuid_for_row(&s, "file_transitions.plan_id"))
@@ -517,9 +523,34 @@ mod tests {
     use voom_domain::transition::{FileTransition, TransitionSource};
 
     use crate::store::SqliteStore;
+    use rusqlite::params;
 
     fn test_store() -> SqliteStore {
         SqliteStore::in_memory().unwrap()
+    }
+
+    #[test]
+    fn transitions_reject_unknown_source() {
+        let store = test_store();
+        let file_id = Uuid::new_v4();
+        let transition = FileTransition::new(
+            file_id,
+            PathBuf::from("/media/source.mkv"),
+            "hash".into(),
+            10,
+            TransitionSource::Voom,
+        );
+        store.record_transition(&transition).unwrap();
+
+        let conn = store.conn().unwrap();
+        conn.execute(
+            "UPDATE file_transitions SET source = ?1 WHERE id = ?2",
+            params!["mystery", transition.id.to_string()],
+        )
+        .unwrap();
+
+        let err = store.transitions_for_file(&file_id).unwrap_err();
+        assert!(err.to_string().contains("unknown transition source"));
     }
 
     #[test]

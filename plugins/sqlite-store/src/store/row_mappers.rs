@@ -6,7 +6,7 @@ use rusqlite::Row;
 use uuid::Uuid;
 
 use voom_domain::bad_file::{BadFile, BadFileSource};
-use voom_domain::errors::Result;
+use voom_domain::errors::{Result, StorageErrorKind, VoomError};
 use voom_domain::job::{Job, JobStatus};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::transition::FileStatus;
@@ -72,9 +72,7 @@ pub(crate) fn row_to_file(row: &Row<'_>) -> rusqlite::Result<FileRow> {
         size: row.get("size")?,
         content_hash: row.get("content_hash")?,
         expected_hash: row.get("expected_hash")?,
-        status: row
-            .get::<_, Option<String>>("status")?
-            .unwrap_or_else(|| "active".to_string()),
+        status: row.get("status")?,
         container: row.get("container")?,
         duration: row.get("duration")?,
         bitrate: row.get("bitrate")?,
@@ -136,9 +134,16 @@ impl FileRow {
         mf.plugin_metadata = plugin_metadata;
         mf.introspected_at = parse_datetime(&self.introspected_at)?;
         mf.expected_hash = self.expected_hash.clone();
-        mf.status = FileStatus::parse(&self.status).unwrap_or_default();
+        mf.status = parse_file_status(&self.status)?;
         Ok(mf)
     }
+}
+
+fn parse_file_status(value: &str) -> Result<FileStatus> {
+    FileStatus::parse(value).ok_or_else(|| VoomError::Storage {
+        kind: StorageErrorKind::Other,
+        message: format!("unknown file status in files.status: {value}"),
+    })
 }
 
 /// Parse a UUID string from a database row, returning a rusqlite
