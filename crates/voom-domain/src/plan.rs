@@ -180,12 +180,35 @@ impl PlannedAction {
         parameters: ActionParams,
         description: impl Into<String>,
     ) -> Self {
-        Self {
+        Self::try_file_op(operation, parameters, description)
+            .unwrap_or_else(|error| panic!("invalid planned action: {error}"))
+    }
+
+    /// Try to create a planned action for a file-level operation.
+    ///
+    /// # Errors
+    /// Returns an error when `operation` and `parameters` describe different action kinds.
+    pub fn try_file_op(
+        operation: OperationType,
+        parameters: ActionParams,
+        description: impl Into<String>,
+    ) -> Result<Self, String> {
+        Self::new_checked(operation, None, parameters, description)
+    }
+
+    fn new_checked(
+        operation: OperationType,
+        track_index: Option<u32>,
+        parameters: ActionParams,
+        description: impl Into<String>,
+    ) -> Result<Self, String> {
+        validate_action_params(operation, &parameters)?;
+        Ok(Self {
             operation,
-            track_index: None,
+            track_index,
             parameters,
             description: description.into(),
-        }
+        })
     }
 
     /// Create a planned action targeting a specific track.
@@ -213,11 +236,77 @@ impl PlannedAction {
         parameters: ActionParams,
         description: impl Into<String>,
     ) -> Self {
-        Self {
-            operation,
-            track_index: Some(track_index),
-            parameters,
-            description: description.into(),
+        Self::try_track_op(operation, track_index, parameters, description)
+            .unwrap_or_else(|error| panic!("invalid planned action: {error}"))
+    }
+
+    /// Try to create a planned action targeting a specific track.
+    ///
+    /// # Errors
+    /// Returns an error when `operation` and `parameters` describe different action kinds.
+    pub fn try_track_op(
+        operation: OperationType,
+        track_index: u32,
+        parameters: ActionParams,
+        description: impl Into<String>,
+    ) -> Result<Self, String> {
+        Self::new_checked(operation, Some(track_index), parameters, description)
+    }
+}
+
+fn validate_action_params(
+    operation: OperationType,
+    parameters: &ActionParams,
+) -> Result<(), String> {
+    match (operation, parameters) {
+        (
+            OperationType::SetDefault
+            | OperationType::ClearDefault
+            | OperationType::SetForced
+            | OperationType::ClearForced,
+            ActionParams::Empty,
+        )
+        | (OperationType::ConvertContainer, ActionParams::Container { .. })
+        | (OperationType::RemoveTrack, ActionParams::RemoveTrack { .. })
+        | (OperationType::ReorderTracks, ActionParams::ReorderTracks { .. })
+        | (OperationType::SetLanguage, ActionParams::Language { .. })
+        | (OperationType::SetTitle, ActionParams::Title { .. })
+        | (
+            OperationType::TranscodeVideo | OperationType::TranscodeAudio,
+            ActionParams::Transcode { .. },
+        )
+        | (OperationType::SynthesizeAudio, ActionParams::Synthesize { .. })
+        | (OperationType::SetContainerTag, ActionParams::SetTag { .. })
+        | (OperationType::ClearContainerTags, ActionParams::ClearTags { .. })
+        | (OperationType::DeleteContainerTag, ActionParams::DeleteTag { .. })
+        | (OperationType::MuxSubtitle, ActionParams::MuxSubtitle { .. })
+        | (OperationType::VerifyMedia, ActionParams::VerifyMedia(_))
+        | (OperationType::Quarantine, ActionParams::Quarantine(_)) => Ok(()),
+        _ => Err(format!(
+            "operation {} cannot use {} parameters",
+            operation.as_str(),
+            parameters.kind()
+        )),
+    }
+}
+
+impl ActionParams {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Container { .. } => "container",
+            Self::RemoveTrack { .. } => "remove_track",
+            Self::ReorderTracks { .. } => "reorder_tracks",
+            Self::Language { .. } => "language",
+            Self::Title { .. } => "title",
+            Self::Transcode { .. } => "transcode",
+            Self::Synthesize { .. } => "synthesize",
+            Self::SetTag { .. } => "set_tag",
+            Self::ClearTags { .. } => "clear_tags",
+            Self::DeleteTag { .. } => "delete_tag",
+            Self::MuxSubtitle { .. } => "mux_subtitle",
+            Self::VerifyMedia(_) => "verify_media",
+            Self::Quarantine(_) => "quarantine",
         }
     }
 }
@@ -1093,6 +1182,45 @@ mod tests {
         assert!(plan.is_skipped());
         assert_eq!(plan.skip_reason.as_deref(), Some("no changes needed"));
         assert!(plan.actions.is_empty());
+    }
+
+    #[test]
+    fn planned_action_try_constructors_accept_matching_params() {
+        let file_action = PlannedAction::try_file_op(
+            OperationType::ConvertContainer,
+            ActionParams::Container {
+                container: Container::Mkv,
+            },
+            "convert",
+        )
+        .expect("valid file action");
+        assert_eq!(file_action.track_index, None);
+
+        let track_action = PlannedAction::try_track_op(
+            OperationType::SetLanguage,
+            1,
+            ActionParams::Language {
+                language: "eng".into(),
+            },
+            "language",
+        )
+        .expect("valid track action");
+        assert_eq!(track_action.track_index, Some(1));
+    }
+
+    #[test]
+    fn planned_action_try_constructors_reject_mismatched_params() {
+        let error = PlannedAction::try_file_op(
+            OperationType::ConvertContainer,
+            ActionParams::Language {
+                language: "eng".into(),
+            },
+            "bad",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("convert_container"));
+        assert!(error.contains("language"));
     }
 
     #[test]
