@@ -1,0 +1,20 @@
+policy "loudness-normalization" {
+  phase normalize-audio {
+    keep audio where lang == eng and not commentary {
+      normalize: ebu_r128 {
+        target_lufs: -23
+        true_peak_db: -1.0
+        lra_max: 18
+      }
+    }
+
+    synthesize "Mobile AAC Stereo" {
+      codec: aac
+      channels: stereo
+      source: prefer(lang == eng and not commentary)
+      bitrate: "192k"
+      normalize: mobile
+      skip_if_exists { codec == aac and channels == 2 }
+    }
+  }
+}

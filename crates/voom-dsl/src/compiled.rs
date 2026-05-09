@@ -9,7 +9,10 @@ use std::fmt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 pub use voom_domain::media::Container;
-pub use voom_domain::plan::{CropSettings, SampleStrategy, TranscodeChannels, TranscodeFallback};
+pub use voom_domain::plan::{
+    CropSettings, LoudnessNormalization, LoudnessPreset, SampleStrategy, TranscodeChannels,
+    TranscodeFallback,
+};
 
 /// A pre-compiled regex that supports `Clone`, `Debug`, `Serialize`, and `Deserialize`.
 ///
@@ -200,6 +203,11 @@ pub enum CompiledOperation {
         codec: String,
         settings: CompiledTranscodeSettings,
     },
+    NormalizeAudio {
+        target: TrackTarget,
+        filter: Option<CompiledFilter>,
+        settings: LoudnessNormalization,
+    },
     Synthesize(Box<CompiledSynthesize>),
     ClearTags,
     SetTag {
@@ -309,6 +317,9 @@ pub struct CompiledTranscodeSettings {
     /// Automatic or explicit crop settings.
     #[serde(default)]
     pub crop: Option<Box<CropSettings>>,
+    /// Optional audio loudness normalization applied during the transcode.
+    #[serde(default)]
+    pub loudness: Option<LoudnessNormalization>,
 }
 
 impl CompiledTranscodeSettings {
@@ -339,6 +350,7 @@ impl CompiledTranscodeSettings {
             hdr_mode: None,
             tune: None,
             crop: None,
+            loudness: None,
         }
     }
 }
@@ -367,6 +379,7 @@ pub struct CompiledSynthesize {
     pub title: Option<String>,
     pub language: Option<SynthLanguage>,
     pub position: Option<SynthPosition>,
+    pub loudness: Option<LoudnessNormalization>,
 }
 
 impl CompiledSynthesize {
@@ -383,6 +396,7 @@ impl CompiledSynthesize {
             title: None,
             language: None,
             position: None,
+            loudness: None,
         }
     }
 }

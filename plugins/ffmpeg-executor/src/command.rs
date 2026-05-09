@@ -4,7 +4,9 @@ use std::path::Path;
 
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
-use voom_domain::plan::{ActionParams, OperationType, PlannedAction, TranscodeChannels};
+use voom_domain::plan::{
+    ActionParams, LoudnessNormalization, OperationType, PlannedAction, TranscodeChannels,
+};
 use voom_domain::utils::sanitize::{validate_metadata_key, validate_metadata_value};
 
 use crate::hwaccel::{self, HwAccelConfig};
@@ -169,6 +171,15 @@ impl FfmpegCommand {
         self
     }
 
+    /// Add an audio filter for a stream or for all audio streams.
+    #[must_use]
+    pub fn audio_filter(mut self, stream: Option<u32>, filter: &str) -> Self {
+        let flag = stream.map_or_else(|| "-af".to_string(), |idx| format!("-filter:a:{idx}"));
+        self.args.push(flag);
+        self.args.push(filter.to_string());
+        self
+    }
+
     /// Add a raw argument.
     #[must_use]
     pub fn arg(mut self, arg: &str) -> Self {
@@ -195,6 +206,7 @@ fn apply_audio_codec_args(
     encoder: &str,
     bitrate: Option<&str>,
     channels: Option<u32>,
+    loudness: Option<&LoudnessNormalization>,
 ) -> FfmpegCommand {
     if let Some(stream) = stream {
         cmd = cmd.audio_codec_for_track(stream, encoder);
@@ -210,7 +222,31 @@ fn apply_audio_codec_args(
         cmd = cmd.arg("-ac").arg(&ch.to_string());
     }
 
+    if let Some(settings) = loudness {
+        cmd = cmd.audio_filter(stream, &loudnorm_filter(settings));
+    }
+
     cmd
+}
+
+fn loudnorm_filter(settings: &LoudnessNormalization) -> String {
+    let lra = settings.lra_max.unwrap_or(99.0);
+    let base = format!(
+        "loudnorm=I={:.1}:TP={:.1}:LRA={:.1}",
+        settings.target_lufs, settings.true_peak_db, lra
+    );
+    let Some(measured) = &settings.measured else {
+        return base;
+    };
+    format!(
+        "{base}:measured_I={:.2}:measured_TP={:.2}:measured_LRA={:.2}:\
+         measured_thresh={:.2}:offset={:.2}:linear=true:print_format=summary",
+        measured.input_i,
+        measured.input_tp,
+        measured.input_lra,
+        measured.input_thresh,
+        measured.target_offset
+    )
 }
 
 /// Emit the correct quality parameter for the chosen encoder.
@@ -461,6 +497,7 @@ fn apply_transcode_audio(cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegCo
         &encoder,
         settings.bitrate.as_deref(),
         resolved,
+        settings.loudness.as_ref(),
     )
 }
 
@@ -469,6 +506,7 @@ fn apply_synthesize_audio(cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegC
         codec,
         bitrate,
         channels,
+        loudness,
         ..
     } = &action.parameters
     else {
@@ -483,6 +521,7 @@ fn apply_synthesize_audio(cmd: FfmpegCommand, action: &PlannedAction) -> FfmpegC
         &encoder,
         bitrate.as_deref(),
         *channels,
+        loudness.as_ref(),
     )
 }
 

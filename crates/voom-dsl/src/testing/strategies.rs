@@ -455,8 +455,11 @@ pub fn operation_strategy() -> impl Strategy<Value = OperationNode> {
         Just(OperationNode::Container("mp4".to_string())),
     ];
 
-    let keep = target_and_filter_strategy()
-        .prop_map(|(target, filter)| OperationNode::Keep { target, filter });
+    let keep = target_and_filter_strategy().prop_map(|(target, filter)| OperationNode::Keep {
+        target,
+        filter,
+        normalize: None,
+    });
     let remove = target_and_filter_strategy()
         .prop_map(|(target, filter)| OperationNode::Remove { target, filter });
 

@@ -45,6 +45,7 @@ fn transcode_settings_from(s: &CompiledTranscodeSettings) -> TranscodeSettings {
         .with_hdr_mode(s.hdr_mode.clone())
         .with_tune(s.tune.clone())
         .with_crop(s.crop.as_deref().cloned())
+        .with_loudness(s.loudness.clone())
 }
 
 /// Result of evaluating a full policy against a file.
@@ -549,6 +550,14 @@ fn emit_operation(op: &CompiledOperation, ctx: &mut PhaseContext) -> Result<(), 
         } => {
             emit_transcode(*target, codec, settings, ctx);
         }
+        CompiledOperation::NormalizeAudio {
+            target,
+            filter,
+            settings,
+        } => {
+            emit_keep(*target, filter.as_ref(), ctx);
+            emit_normalize_audio(*target, filter.as_ref(), settings, ctx);
+        }
         CompiledOperation::Synthesize(synth) => {
             emit_synthesize(synth, ctx);
         }
@@ -612,6 +621,45 @@ fn emit_remove_track(track: &Track, target: TrackTarget, reason: &str, ctx: &mut
             track.language
         ),
     ));
+}
+
+fn emit_normalize_audio(
+    target: TrackTarget,
+    filter: Option<&CompiledFilter>,
+    settings: &voom_domain::plan::LoudnessNormalization,
+    ctx: &mut PhaseContext,
+) {
+    if target != TrackTarget::Audio {
+        tracing::warn!(target = ?target, "loudness normalization only supports audio tracks");
+        return;
+    }
+
+    for track in tracks_for_target(ctx.file, target) {
+        let should_normalize = match filter {
+            Some(f) => track_matches_with_context(track, f, ctx.file, ctx.eval_ctx),
+            None => true,
+        };
+        if !should_normalize {
+            continue;
+        }
+        if let Some(lufs) = track.loudness_integrated_lufs {
+            if settings.is_within_target(lufs) {
+                continue;
+            }
+        }
+        ctx.plan.actions.push(PlannedAction::track_op(
+            OperationType::TranscodeAudio,
+            track.index,
+            ActionParams::Transcode {
+                codec: track.codec.clone(),
+                settings: TranscodeSettings::default().with_loudness(Some(settings.clone())),
+            },
+            format!(
+                "Normalize audio track {} to {:.1} LUFS",
+                track.index, settings.target_lufs
+            ),
+        ));
+    }
 }
 
 fn emit_keep(target: TrackTarget, filter: Option<&CompiledFilter>, ctx: &mut PhaseContext) {
@@ -968,6 +1016,7 @@ fn emit_synthesize(synth: &CompiledSynthesize, ctx: &mut PhaseContext) {
         title: synth.title.clone(),
         position,
         source_track: source_index,
+        loudness: synth.loudness.clone(),
     };
     let desc = format!("Synthesize audio: {}", synth.name);
     ctx.plan.actions.push(match source_index {

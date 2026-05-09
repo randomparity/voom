@@ -306,11 +306,16 @@ voom report [OPTIONS]
 | `--snapshot` | `false` | Capture and persist a new snapshot |
 | `--files` | `false` | List files in the library |
 | `--integrity` | `false` | Show aggregate verification and integrity counts |
+| `--loudness` | `false` | Show aggregate audio LUFS and true-peak measurements |
 
 `voom report --integrity` reports aggregate counts for total files, never verified files,
 stale files using a 30-day cutoff, files with errors, files with warnings, and hash
 mismatches. The integrity summary supports `table`, `json`, `plain`, and `csv` formats
 through `--format`.
+
+`voom report --loudness` reports measured audio tracks, average integrated LUFS,
+average true peak, and files outside the -23 LUFS broadcast target by more than
+0.5 LUFS. Use it after running a policy with `normalize`.
 
 ---
 

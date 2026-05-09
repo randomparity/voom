@@ -193,6 +193,22 @@ def build_manifest():
             "special": [],
         },
         {
+            "stem": "loudness-quiet-dialogue",
+            "ext": "mkv",
+            "video": {"codec": "libx264", "size": "1280x720", "fps": 24},
+            "audio": [{"codec": "aac", "channels": 2, "volume": 0.12, "lang": "eng"}],
+            "subs": [],
+            "special": ["loudness"],
+        },
+        {
+            "stem": "loudness-hot-mix",
+            "ext": "mkv",
+            "video": {"codec": "libx264", "size": "1280x720", "fps": 24},
+            "audio": [{"codec": "aac", "channels": 2, "volume": 1.8, "lang": "eng"}],
+            "subs": [],
+            "special": ["loudness"],
+        },
+        {
             "stem": "letterbox-h264",
             "ext": "mkv",
             "video": {
@@ -710,8 +726,11 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
 
     # Audio inputs (one sine per audio track)
     for i, audio in enumerate(audios):
+        audio_filter = f"sine=frequency={440 + i * 110}:duration={duration}:sample_rate=48000"
+        if "volume" in audio:
+            audio_filter += f",volume={audio['volume']}"
         cmd += ["-f", "lavfi", "-i",
-                f"sine=frequency={440 + i * 110}:duration={duration}:sample_rate=48000"]
+                audio_filter]
 
     # Subtitle inputs
     sub_files = []

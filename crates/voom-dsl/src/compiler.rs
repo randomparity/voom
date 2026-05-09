@@ -13,16 +13,17 @@ use crate::compiled::{
     ClearActionsSettings, CompiledAction, CompiledCompareOp, CompiledCondition,
     CompiledConditional, CompiledConfig, CompiledDefault, CompiledFilter, CompiledOperation,
     CompiledPhase, CompiledPolicy, CompiledRegex, CompiledRule, CompiledRunIf, CompiledSynthesize,
-    CompiledTranscodeSettings, CompiledValueOrField, DefaultStrategy, ErrorStrategy, RulesMode,
-    RunIfTrigger, SynthLanguage, SynthPosition, TrackTarget, TranscodeChannels,
+    CompiledTranscodeSettings, CompiledValueOrField, DefaultStrategy, ErrorStrategy,
+    LoudnessNormalization, LoudnessPreset, RulesMode, RunIfTrigger, SynthLanguage, SynthPosition,
+    TrackTarget, TranscodeChannels,
 };
 use voom_domain::plan::{CropSettings, SampleStrategy, TranscodeFallback};
 use voom_domain::utils::codecs;
 
 use crate::ast::{
-    ActionNode, CompareOp, ConditionNode, ConfigNode, ErrorStrategyNode, FilterNode, OperationNode,
-    PhaseNode, PolicyAst, RunIfTriggerNode, SynthSetting, Value, ValueOrField, VerifyMode,
-    WhenNode,
+    ActionNode, CompareOp, ConditionNode, ConfigNode, ErrorStrategyNode, FilterNode,
+    NormalizeSetting, OperationNode, PhaseNode, PolicyAst, RunIfTriggerNode, SynthSetting, Value,
+    ValueOrField, VerifyMode, WhenNode,
 };
 use crate::errors::DslError;
 
@@ -155,10 +156,23 @@ fn compile_operation(op: &OperationNode) -> std::result::Result<CompiledOperatio
             }
             Ok(CompiledOperation::SetContainer(container))
         }
-        OperationNode::Keep { target, filter } => Ok(CompiledOperation::Keep {
-            target: parse_track_target(target),
-            filter: filter.as_ref().map(compile_filter).transpose()?,
-        }),
+        OperationNode::Keep {
+            target,
+            filter,
+            normalize,
+        } => {
+            let target = parse_track_target(target);
+            let filter = filter.as_ref().map(compile_filter).transpose()?;
+            if let Some(normalize) = normalize {
+                Ok(CompiledOperation::NormalizeAudio {
+                    target,
+                    filter,
+                    settings: compile_normalize(normalize)?,
+                })
+            } else {
+                Ok(CompiledOperation::Keep { target, filter })
+            }
+        }
         OperationNode::Remove { target, filter } => Ok(CompiledOperation::Remove {
             target: parse_track_target(target),
             filter: filter.as_ref().map(compile_filter).transpose()?,
@@ -326,6 +340,9 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
     compiled_settings.hdr_mode = get_str("hdr_mode");
     compiled_settings.tune = get_str("tune");
     compiled_settings.crop = compile_crop_settings(get, &get_str).map(Box::new);
+    compiled_settings.loudness = get("normalize")
+        .and_then(value_to_normalize)
+        .or_else(|| get_str("normalize").and_then(|name| normalize_from_preset(&name)));
 
     CompiledOperation::Transcode {
         target: parse_track_target(target),
@@ -453,6 +470,7 @@ fn compile_synthesize(
     let mut title = None;
     let mut language = None;
     let mut position = None;
+    let mut loudness = None;
 
     for setting in settings {
         match setting {
@@ -488,6 +506,7 @@ fn compile_synthesize(
                     _ => SynthPosition::Named(format!("{v:?}")),
                 });
             }
+            SynthSetting::Normalize(setting) => loudness = Some(compile_normalize(setting)?),
         }
     }
 
@@ -501,7 +520,41 @@ fn compile_synthesize(
     synth.title = title;
     synth.language = language;
     synth.position = position;
+    synth.loudness = loudness;
     Ok(synth)
+}
+
+fn value_to_normalize(value: &Value) -> Option<LoudnessNormalization> {
+    match value {
+        Value::Ident(name) | Value::String(name) => normalize_from_preset(name),
+        _ => None,
+    }
+}
+
+fn normalize_from_preset(name: &str) -> Option<LoudnessNormalization> {
+    LoudnessPreset::parse(name).map(LoudnessPreset::defaults)
+}
+
+fn compile_normalize(
+    setting: &NormalizeSetting,
+) -> std::result::Result<LoudnessNormalization, DslError> {
+    let Some(preset) = LoudnessPreset::parse(&setting.preset) else {
+        return Err(DslError::compile(format!(
+            "unknown loudness preset '{}'",
+            setting.preset
+        )));
+    };
+    let mut loudness = preset.defaults();
+    for (key, value) in &setting.settings {
+        match (key.as_str(), value) {
+            ("target_lufs", Value::Number(n, _)) => loudness.target_lufs = *n,
+            ("true_peak_db", Value::Number(n, _)) => loudness.true_peak_db = *n,
+            ("lra_max", Value::Number(n, _)) => loudness.lra_max = Some(*n),
+            ("tolerance_lufs", Value::Number(n, _)) => loudness.tolerance_lufs = *n,
+            _ => {}
+        }
+    }
+    Ok(loudness)
 }
 
 fn compile_conditional(when: &WhenNode) -> std::result::Result<CompiledConditional, DslError> {
@@ -1567,5 +1620,30 @@ mod tests {
     fn compile_transcode_max_resolution_number_raw() {
         let s = transcode_with("max_resolution", Value::Number(1080.0, "1080".into()));
         assert_eq!(s.max_resolution, Some("1080".into()));
+    }
+
+    #[test]
+    fn compile_keep_audio_loudness_normalize() {
+        let policy = crate::compile_policy(
+            r#"policy "loudness" {
+                phase audio {
+                    keep audio where lang == eng {
+                        normalize: ebu_r128 {
+                            target_lufs: -23
+                            true_peak_db: -1.0
+                            lra_max: 18
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let CompiledOperation::NormalizeAudio { settings, .. } = &policy.phases[0].operations[0]
+        else {
+            panic!("expected NormalizeAudio operation");
+        };
+        assert_eq!(settings.target_lufs, -23.0);
+        assert_eq!(settings.true_peak_db, -1.0);
+        assert_eq!(settings.lra_max, Some(18.0));
     }
 }

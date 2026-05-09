@@ -317,7 +317,7 @@ fn validate_phase(
         );
 
         match &spanned_op.node {
-            OperationNode::Keep { target, filter } => {
+            OperationNode::Keep { target, filter, .. } => {
                 kept_targets.push((target.as_str(), filter.is_some()));
             }
             OperationNode::Remove { target, filter } => {
@@ -442,7 +442,7 @@ fn validate_operation(
                 ));
             }
         }
-        OperationNode::Keep { target, filter } | OperationNode::Remove { target, filter } => {
+        OperationNode::Keep { target, filter, .. } | OperationNode::Remove { target, filter } => {
             validate_track_target(target, line, col, errors);
             if let Some(f) = filter {
                 validate_filter(f, line, col, phase_names, errors, warnings);
@@ -606,7 +606,43 @@ fn validate_synthesize_operation(
             SynthSetting::Position(v) => {
                 validate_synth_position(v, line, col, errors);
             }
+            SynthSetting::Normalize(setting) => {
+                validate_normalize_setting(setting, line, col, errors);
+            }
             SynthSetting::Bitrate(_) | SynthSetting::Title(_) | SynthSetting::CreateIf(_) => {}
+        }
+    }
+}
+
+fn validate_normalize_setting(
+    setting: &crate::ast::NormalizeSetting,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    if voom_domain::plan::LoudnessPreset::parse(&setting.preset).is_none() {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!("unknown loudness preset \"{}\"", setting.preset),
+        ));
+    }
+    for (key, value) in &setting.settings {
+        match key.as_str() {
+            "target_lufs" | "true_peak_db" | "lra_max" | "tolerance_lufs" => {
+                if !matches!(value, Value::Number(_, _)) {
+                    errors.push(DslError::validation(
+                        line,
+                        col,
+                        format!("{key} must be a number"),
+                    ));
+                }
+            }
+            _ => errors.push(DslError::validation(
+                line,
+                col,
+                format!("unknown normalize setting \"{key}\""),
+            )),
         }
     }
 }
@@ -835,7 +871,7 @@ fn has_number_suffix(raw: &str) -> bool {
 fn validate_number_suffix(raw: &str, line: usize, col: usize, errors: &mut Vec<DslError>) {
     let suffix: String = raw
         .chars()
-        .skip_while(|c| c.is_ascii_digit() || *c == '.')
+        .skip_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
         .collect();
     if suffix.is_empty() {
         return;
@@ -877,6 +913,7 @@ const KNOWN_TRANSCODE_KEYS: &[&str] = &[
     "crop_minimum",
     "crop_preserve_bottom_pixels",
     "crop_aspect_lock",
+    "normalize",
 ];
 
 fn validate_transcode_keys(

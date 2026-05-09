@@ -193,6 +193,43 @@
         </div>
     </div>
 
+    <div class="card" x-data="{
+            loudness: null,
+            refresh() {
+                fetch('/api/stats/loudness')
+                    .then(r => r.json())
+                    .then(d => this.loudness = d);
+            },
+            x(point, index) {
+                const count = Math.max((this.loudness?.points?.length || 1) - 1, 1);
+                return 4 + (index / count * 92);
+            },
+            y(point) {
+                const min = -35;
+                const max = -8;
+                const clamped = Math.max(min, Math.min(max, point.integrated_lufs));
+                return 8 + ((max - clamped) / (max - min) * 76);
+            }
+        }" x-init="refresh(); setInterval(() => refresh(), 30000)">
+        <div class="card-header">
+            <h2>Loudness Distribution</h2>
+            <span class="text-secondary" style="font-size: 0.85rem;" x-text="(loudness?.measured_tracks || 0) + ' measured tracks'"></span>
+        </div>
+        <div style="position: relative; height: 180px; border-left: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--bg-primary);">
+            <div style="position: absolute; left: 0; right: 0; top: 52%; border-top: 1px dashed var(--highlight);"></div>
+            <template x-for="(point, index) in (loudness?.points || []).slice(0, 120)" :key="point.path + point.track_index">
+                <div :title="point.path + ' track ' + point.track_index + ': ' + point.integrated_lufs.toFixed(1) + ' LUFS'"
+                     style="position: absolute; width: 7px; height: 7px; border-radius: 50%; background: var(--highlight); transform: translate(-3px, -3px);"
+                     :style="'left: ' + x(point, index) + '%; top: ' + y(point) + '%;'"></div>
+            </template>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-secondary);">
+            <span>-35 LUFS</span>
+            <span>target -23 LUFS</span>
+            <span>-8 LUFS</span>
+        </div>
+    </div>
+
 </div>
 </template>
 </div>

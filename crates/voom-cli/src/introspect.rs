@@ -255,8 +255,15 @@ mod tests {
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
     use voom_domain::storage::StorageTrait;
 
-    fn store() -> Arc<dyn StorageTrait> {
+    fn memory_store() -> Arc<dyn StorageTrait> {
         Arc::new(voom_sqlite_store::store::SqliteStore::in_memory().expect("in-memory store"))
+    }
+
+    fn file_store() -> (tempfile::TempDir, Arc<dyn StorageTrait>) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("voom.db");
+        let store = voom_sqlite_store::store::SqliteStore::open(&db_path).expect("sqlite store");
+        (dir, Arc::new(store))
     }
 
     fn introspected_file(path: &str, size: u64, hash: Option<&str>) -> MediaFile {
@@ -271,7 +278,7 @@ mod tests {
 
     #[tokio::test]
     async fn load_stored_file_returns_row() {
-        let store = store();
+        let (_dir, store) = file_store();
         store
             .upsert_file(&introspected_file("/media/x.mkv", 1024, Some("abc")))
             .unwrap();
@@ -285,7 +292,7 @@ mod tests {
     #[tokio::test]
     async fn load_stored_file_returns_none_for_unknown_path() {
         assert!(
-            load_stored_file(store(), PathBuf::from("/media/missing.mkv"))
+            load_stored_file(memory_store(), PathBuf::from("/media/missing.mkv"))
                 .await
                 .is_none()
         );

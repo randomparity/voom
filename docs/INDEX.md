@@ -6,6 +6,7 @@
 | [architecture.md](architecture.md) | System architecture overview |
 | [cli-reference.md](cli-reference.md) | Complete CLI command and REST API reference |
 | [dsl-reference.md](dsl-reference.md) | DSL language reference for `.voom` policy files |
+| [loudness-normalization.md](loudness-normalization.md) | EBU R128 / LUFS audio normalization policies and reporting |
 | [quickstart.md](quickstart.md) | Getting started guide |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Local development, coverage, and CI workflow notes |
 | [mutation-testing-baseline.md](mutation-testing-baseline.md) | Initial cargo-mutants baseline counts and triage guidance for logic-dense crates |

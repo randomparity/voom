@@ -148,6 +148,7 @@ mod tests {
                 title: None,
                 position: None,
                 source_track: None,
+                loudness: None,
             },
             OperationType::SetDefault
             | OperationType::ClearDefault

@@ -158,6 +158,8 @@ pub enum OperationNode {
     Keep {
         target: String,
         filter: Option<FilterNode>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        normalize: Option<NormalizeSetting>,
     },
     Remove {
         target: String,
@@ -215,6 +217,14 @@ pub enum SynthSetting {
     Title(String),
     Language(String),
     Position(Value),
+    Normalize(NormalizeSetting),
+}
+
+/// Audio loudness normalization setting.
+#[derive(Debug, Clone, Serialize)]
+pub struct NormalizeSetting {
+    pub preset: String,
+    pub settings: Vec<(String, Value)>,
 }
 
 /// A when/else conditional block.
