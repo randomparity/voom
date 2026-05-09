@@ -80,46 +80,6 @@ pub fn evaluate(policy: &CompiledPolicy, file: &MediaFile) -> EvaluationResult {
     evaluate_with_evaluation_context(policy, file, EvaluationContext::default())
 }
 
-/// Evaluate a compiled policy with optional system capabilities context.
-#[must_use]
-pub fn evaluate_with_context(
-    policy: &CompiledPolicy,
-    file: &MediaFile,
-    capabilities: Option<&CapabilityMap>,
-) -> EvaluationResult {
-    evaluate_with_evaluation_context(
-        policy,
-        file,
-        EvaluationContext {
-            capabilities,
-            phase_output_lookup: None,
-        },
-    )
-}
-
-/// Evaluate a compiled policy with optional system capabilities and a
-/// closure-based lookup that resolves cross-phase field access
-/// (e.g. `verify.outcome`) against persisted phase outputs.
-///
-/// The lookup is `None` by default; callers (CLI, phase orchestrator)
-/// populate it from persisted state before evaluating downstream phases.
-#[must_use]
-pub fn evaluate_with_phase_outputs<'a>(
-    policy: &CompiledPolicy,
-    file: &MediaFile,
-    capabilities: Option<&'a CapabilityMap>,
-    phase_output_lookup: Option<&'a PhaseOutputLookup<'a>>,
-) -> EvaluationResult {
-    evaluate_with_evaluation_context(
-        policy,
-        file,
-        EvaluationContext {
-            capabilities,
-            phase_output_lookup,
-        },
-    )
-}
-
 /// Evaluate a compiled policy with an explicit evaluation context.
 #[must_use]
 pub fn evaluate_with_evaluation_context<'a>(
@@ -151,6 +111,10 @@ pub fn evaluate_with_evaluation_context<'a>(
 
         phase_outcomes.insert(phase_name.clone(), outcome);
         plans.push(plan);
+    }
+
+    if let Some(capabilities) = context.capabilities {
+        apply_capability_hints(&mut plans, capabilities);
     }
 
     EvaluationResult { plans }
@@ -245,13 +209,11 @@ pub fn evaluate_single_phase_with_evaluation_context<'a>(
         capabilities: context.capabilities,
         phase_output_lookup: context.phase_output_lookup,
     };
-    Some(evaluate_phase(
-        phase,
-        policy,
-        file,
-        context.phase_outcomes,
-        &eval_ctx,
-    ))
+    let mut plan = evaluate_phase(phase, policy, file, context.phase_outcomes, &eval_ctx);
+    if let Some(capabilities) = context.capabilities {
+        apply_capability_hints(std::slice::from_mut(&mut plan), capabilities);
+    }
+    Some(plan)
 }
 
 /// Check whether a phase should be skipped based on `skip_when`, `run_if`,
@@ -1278,7 +1240,7 @@ fn check_action_capabilities<'a>(
     }
 }
 
-pub fn apply_capability_hints(plans: &mut [Plan], capabilities: &CapabilityMap) {
+fn apply_capability_hints(plans: &mut [Plan], capabilities: &CapabilityMap) {
     if capabilities.is_empty() {
         return;
     }
@@ -1375,6 +1337,21 @@ mod tests {
             },
         ];
         file
+    }
+
+    fn evaluate_with_caps(
+        policy: &CompiledPolicy,
+        file: &MediaFile,
+        capabilities: &CapabilityMap,
+    ) -> EvaluationResult {
+        evaluate_with_evaluation_context(
+            policy,
+            file,
+            EvaluationContext {
+                capabilities: Some(capabilities),
+                phase_output_lookup: None,
+            },
+        )
     }
 
     fn test_policy(source: &str) -> CompiledPolicy {
@@ -2524,9 +2501,8 @@ mod tests {
                     phase tc { transcode audio to opus {} }
                 }"#,
             );
-            let mut result = evaluate(&policy, &file);
             let caps = ffmpeg_capabilities();
-            apply_capability_hints(&mut result.plans, &caps);
+            let result = evaluate_with_caps(&policy, &file, &caps);
 
             assert!(
                 result.plans[0].warnings.iter().any(|w| w.contains("opus")),
@@ -2544,9 +2520,8 @@ mod tests {
                     phase tc { transcode video to hevc { crf: 20 } }
                 }"#,
             );
-            let mut result = evaluate(&policy, &file);
             let caps = ffmpeg_capabilities();
-            apply_capability_hints(&mut result.plans, &caps);
+            let result = evaluate_with_caps(&policy, &file, &caps);
 
             assert!(
                 !result.plans[0]
@@ -2572,9 +2547,8 @@ mod tests {
                 Track::new(1, TrackType::AudioMain, "opus".into()),
             ];
             let policy = test_policy(r#"policy "test" { phase init { container webm } }"#);
-            let mut result = evaluate(&policy, &file);
             let caps = limited_ffmpeg_capabilities();
-            apply_capability_hints(&mut result.plans, &caps);
+            let result = evaluate_with_caps(&policy, &file, &caps);
 
             assert!(
                 result.plans[0]
@@ -2599,9 +2573,8 @@ mod tests {
                     }
                 }"#,
             );
-            let mut result = evaluate(&policy, &file);
             let caps = ffmpeg_capabilities();
-            apply_capability_hints(&mut result.plans, &caps);
+            let result = evaluate_with_caps(&policy, &file, &caps);
 
             assert!(
                 result.plans[0].warnings.iter().any(|w| w.contains("opus")),
@@ -2619,12 +2592,12 @@ mod tests {
                     phase a { container mkv }
                 }"#,
             );
-            let mut result = evaluate(&policy, &file);
+            let result = evaluate(&policy, &file);
             assert!(result.plans[0].is_empty());
 
             // Use an empty capability map — would cause warnings if validation ran
             let caps = CapabilityMap::new();
-            apply_capability_hints(&mut result.plans, &caps);
+            let result = evaluate_with_caps(&policy, &file, &caps);
             assert!(result.plans[0].warnings.is_empty());
         }
 
@@ -2634,11 +2607,11 @@ mod tests {
             file.tracks[0] = Track::new(0, TrackType::Video, "h264".into());
             let policy =
                 test_policy(r#"policy "test" { phase tc { transcode video to hevc {} } }"#);
-            let mut result = evaluate(&policy, &file);
+            let result = evaluate(&policy, &file);
             assert!(!result.plans[0].is_empty());
 
             let caps = CapabilityMap::new();
-            apply_capability_hints(&mut result.plans, &caps);
+            let result = evaluate_with_caps(&policy, &file, &caps);
 
             assert!(
                 !result.plans[0]
@@ -2658,9 +2631,8 @@ mod tests {
                     phase tc { transcode video to hevc { crf: 20 } }
                 }"#,
             );
-            let mut result = evaluate(&policy, &file);
             let caps = ffmpeg_capabilities();
-            apply_capability_hints(&mut result.plans, &caps);
+            let result = evaluate_with_caps(&policy, &file, &caps);
 
             assert_eq!(
                 result.plans[0].executor_hint.as_deref(),
@@ -2678,9 +2650,8 @@ mod tests {
             // File is already MKV so no convert action, but verify the mapping
             // works by converting an MP4 file
             file.container = Container::Mp4;
-            let mut result2 = evaluate(&policy, &file);
             let caps = ffmpeg_capabilities();
-            apply_capability_hints(&mut result2.plans, &caps);
+            let result2 = evaluate_with_caps(&policy, &file, &caps);
             // ffmpeg_capabilities includes "matroska", and Container::Mkv
             // maps to "matroska" via ffmpeg_format_name(), so no warning
             assert!(
@@ -2704,8 +2675,6 @@ mod tests {
                     phase tc { transcode video to hevc { crf: 20 } }
                 }"#,
             );
-            let mut result = evaluate(&policy, &file);
-
             let mut caps = CapabilityMap::new();
             caps.register(ExecutorCapabilitiesEvent::new(
                 "executor-a",
@@ -2719,7 +2688,7 @@ mod tests {
                 vec![],
                 vec![],
             ));
-            apply_capability_hints(&mut result.plans, &caps);
+            let result = evaluate_with_caps(&policy, &file, &caps);
 
             assert!(
                 result.plans[0].executor_hint.is_none(),
@@ -2777,7 +2746,7 @@ mod tests {
                 }"#,
             );
             let caps = caps_without_gpu();
-            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            let result = evaluate_with_caps(&policy, &file, &caps);
             assert!(
                 result.plans[0].is_skipped(),
                 "Should skip when nvenc unavailable and hw_fallback is false"
@@ -2805,7 +2774,7 @@ mod tests {
                 }"#,
             );
             let caps = caps_without_gpu();
-            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            let result = evaluate_with_caps(&policy, &file, &caps);
             assert!(
                 !result.plans[0].is_skipped(),
                 "Should fall through to software when hw_fallback is true"
@@ -2828,7 +2797,7 @@ mod tests {
                 }"#,
             );
             let caps = caps_without_gpu();
-            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            let result = evaluate_with_caps(&policy, &file, &caps);
             assert!(
                 !result.plans[0].is_skipped(),
                 "Default hw_fallback (None) should allow software fallback"
@@ -2851,7 +2820,7 @@ mod tests {
                 }"#,
             );
             let caps = caps_with_nvenc();
-            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            let result = evaluate_with_caps(&policy, &file, &caps);
             assert!(
                 !result.plans[0].is_skipped(),
                 "Should run normally when nvenc is available"
@@ -2879,7 +2848,7 @@ mod tests {
                 }"#,
             );
             let caps = caps_without_gpu();
-            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            let result = evaluate_with_caps(&policy, &file, &caps);
             assert!(result.plans[0].is_skipped(), "tc should be skipped");
             assert!(
                 !result.plans[1].is_skipped(),
@@ -2903,7 +2872,7 @@ mod tests {
                 }"#,
             );
             let caps = caps_without_gpu();
-            let result = evaluate_with_context(&policy, &file, Some(&caps));
+            let result = evaluate_with_caps(&policy, &file, &caps);
             let action = &result.plans[0].actions[0];
             match &action.parameters {
                 ActionParams::Transcode { settings, .. } => {
@@ -3349,7 +3318,14 @@ mod tests {
                     .with_error_count(1)
             })
         };
-        let result = evaluate_with_phase_outputs(&policy, &file, None, Some(&lookup));
+        let result = evaluate_with_evaluation_context(
+            &policy,
+            &file,
+            EvaluationContext {
+                capabilities: None,
+                phase_output_lookup: Some(&lookup),
+            },
+        );
 
         let backup_plan = result
             .plans
@@ -3386,7 +3362,14 @@ mod tests {
         let lookup = |name: &str| -> Option<PhaseOutput> {
             (name == "verify").then(|| PhaseOutput::new().with_completed(true).with_outcome("ok"))
         };
-        let result = evaluate_with_phase_outputs(&policy, &file, None, Some(&lookup));
+        let result = evaluate_with_evaluation_context(
+            &policy,
+            &file,
+            EvaluationContext {
+                capabilities: None,
+                phase_output_lookup: Some(&lookup),
+            },
+        );
 
         let backup_plan = result
             .plans
@@ -3419,7 +3402,7 @@ mod tests {
         .expect("policy must compile");
 
         let file = MediaFile::new(PathBuf::from("/m/x.mkv"));
-        let result = evaluate_with_phase_outputs(&policy, &file, None, None);
+        let result = evaluate_with_evaluation_context(&policy, &file, EvaluationContext::default());
 
         let backup_plan = result
             .plans

@@ -314,10 +314,14 @@ fn end_to_end_loads_fixture_compiles_minimal_policy_and_asserts_phase() {
     let fixture = Fixture::load(&fixture_path).unwrap();
     let policy =
         voom_dsl::compile_policy(include_str!("../../../docs/examples/minimal.voom")).unwrap();
-    let result = voom_policy_evaluator::evaluate_with_capabilities(
+    let capabilities = all_capabilities();
+    let result = voom_policy_evaluator::evaluate_with_evaluation_context(
         &policy,
         &fixture.to_media_file(),
-        &all_capabilities(),
+        voom_policy_evaluator::EvaluationContext {
+            capabilities: Some(&capabilities),
+            phase_output_lookup: None,
+        },
     );
 
     assert!(assert_phases_run(&result.plans, &["containerize".to_string()]).is_ok());

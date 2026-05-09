@@ -288,7 +288,7 @@ async fn run_phase_iteration(
     let Some(plan) = ({
         let phase_output_lookup =
             |name: &str| -> Option<PhaseOutput> { state.phase_outputs.get(name).cloned() };
-        voom_policy_evaluator::evaluate_single_phase_with_hints_and_evaluation_context(
+        voom_policy_evaluator::evaluator::evaluate_single_phase_with_evaluation_context(
             phase_name,
             phase_ctx.compiled,
             &state.current_file,
@@ -297,7 +297,6 @@ async fn run_phase_iteration(
                 capabilities: Some(phase_ctx.process.capabilities),
                 phase_output_lookup: Some(&phase_output_lookup),
             },
-            phase_ctx.process.capabilities,
         )
     }) else {
         return Ok(PhaseLoopControl::Continue);
@@ -733,8 +732,15 @@ fn orchestrate_plans(
     file: &voom_domain::media::MediaFile,
     capabilities: &voom_domain::CapabilityMap,
 ) -> voom_phase_orchestrator::OrchestrationResult {
-    let plans =
-        voom_policy_evaluator::evaluate_with_capabilities(compiled, file, capabilities).plans;
+    let plans = voom_policy_evaluator::evaluate_with_evaluation_context(
+        compiled,
+        file,
+        voom_policy_evaluator::EvaluationContext {
+            capabilities: Some(capabilities),
+            phase_output_lookup: None,
+        },
+    )
+    .plans;
     voom_phase_orchestrator::orchestrate(plans)
 }
 
