@@ -5,10 +5,11 @@ since Python's urllib/socket are unavailable in the WASM sandbox.
 """
 
 import json
+from collections.abc import Sequence
+from typing import Any, Protocol, TypeAlias
 
 from tvdb_metadata.types import (
     JsonObject,
-    TvdbAuthResponse,
     TvdbEpisodeRecord,
     TvdbMetadataResult,
     TvdbSearchResult,
@@ -29,6 +30,23 @@ except ImportError:
 _host = None
 
 TVDB_API_BASE = "https://api4.thetvdb.com/v4"
+HeaderPairs: TypeAlias = Sequence[tuple[str, str]]
+PluginData: TypeAlias = bytes | list[int]
+
+
+class HostResponse(Protocol):
+    status: int
+    body: PluginData
+
+
+class ClientHost(Protocol):
+    def http_get(self, url: str, headers: HeaderPairs) -> HostResponse: ...
+
+    def http_post(self, url: str, headers: HeaderPairs, body: bytes) -> HostResponse: ...
+
+    def get_plugin_data(self, key: str) -> PluginData | None: ...
+
+    def set_plugin_data(self, key: str, value: bytes) -> None: ...
 
 
 class TvdbError(Exception):
@@ -38,13 +56,13 @@ class TvdbError(Exception):
 class TvdbClient:
     """TVDB API v4 client that uses host functions for HTTP and storage."""
 
-    def __init__(self, api_key: str, host_funcs):
+    def __init__(self, api_key: str, host_funcs: ClientHost):
         self.api_key = api_key
         self._host = host_funcs
         self._token: str | None = None
 
     @classmethod
-    def from_config(cls, host_funcs) -> "TvdbClient | None":
+    def from_config(cls, host_funcs: ClientHost) -> "TvdbClient | None":
         """Create a client from stored plugin config.
 
         Config is stored as JSON bytes via get_plugin_data("config"):
@@ -58,6 +76,8 @@ class TvdbClient:
         except (json.JSONDecodeError, TypeError):
             return None
         api_key = config.get("api_key")
+        if not isinstance(api_key, str):
+            return None
         if not api_key:
             return None
         return cls(api_key=api_key, host_funcs=host_funcs)
@@ -88,9 +108,8 @@ class TvdbClient:
         if resp.status != 200:
             raise TvdbError(f"TVDB auth failed with status {resp.status}")
 
-        result: TvdbAuthResponse = json.loads(bytes(resp.body))
-        token = result.get("data", {}).get("token")
-        if not token:
+        token = _auth_token_from_response(json.loads(bytes(resp.body)))
+        if token is None:
             raise TvdbError("No token in TVDB auth response")
 
         self._token = token
@@ -143,10 +162,7 @@ class TvdbClient:
         # Query API
         encoded_name = _url_quote(name, safe="")
         result = self._api_get(f"/search?query={encoded_name}&type=series")
-        series_list = result.get("data", [])
-        if not isinstance(series_list, list):
-            series_list = []
-        series_list = [r for r in series_list if isinstance(r, dict)]
+        series_list = _search_results_from_response(result)
 
         # Cache results
         cache_data = json.dumps({"results": series_list})
@@ -163,8 +179,7 @@ class TvdbClient:
             token_data = json.loads(bytes(cached))
         except (json.JSONDecodeError, TypeError):
             return None
-        token = token_data.get("token")
-        return token if token else None
+        return _token_from_cache(token_data)
 
     def _load_cached_search_results(self, cache_key: str) -> list[TvdbSearchResult] | None:
         """Return cached search results, or None if the cache is absent/invalid."""
@@ -178,7 +193,7 @@ class TvdbClient:
             return None
         if not isinstance(results, list):
             return None
-        return [r for r in results if isinstance(r, dict)]
+        return _normalize_search_results(results)
 
     def get_episodes(self, series_id: int, season: int) -> list[TvdbEpisodeRecord]:
         """Get episodes for a series/season.
@@ -194,7 +209,7 @@ class TvdbClient:
         episodes = data.get("episodes", [])
         if not isinstance(episodes, list):
             return []
-        return [e for e in episodes if isinstance(e, dict)]
+        return _normalize_episode_records(episodes)
 
     def lookup(self, series_name: str, season: int, episode: int,
                year: int | None = None) -> TvdbMetadataResult | None:
@@ -269,3 +284,78 @@ class TvdbClient:
 
         # Fall back to first result
         return results[0]
+
+
+def _auth_token_from_response(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    data = value.get("data")
+    if not isinstance(data, dict):
+        return None
+    token = data.get("token")
+    return token if isinstance(token, str) and token else None
+
+
+def _token_from_cache(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    token = value.get("token")
+    return token if isinstance(token, str) and token else None
+
+
+def _search_results_from_response(value: JsonObject) -> list[TvdbSearchResult]:
+    data = value.get("data", [])
+    if not isinstance(data, list):
+        return []
+    return _normalize_search_results(data)
+
+
+def _normalize_search_results(items: list[Any]) -> list[TvdbSearchResult]:
+    results: list[TvdbSearchResult] = []
+    for item in items:
+        result = _normalize_search_result(item)
+        if result:
+            results.append(result)
+    return results
+
+
+def _normalize_search_result(value: Any) -> TvdbSearchResult | None:
+    if not isinstance(value, dict):
+        return None
+    result: TvdbSearchResult = {}
+    for key in ("id", "tvdb_id", "year"):
+        typed_value = value.get(key)
+        if isinstance(typed_value, (int, str)):
+            result[key] = typed_value
+    for key in ("name", "originalLanguage"):
+        typed_value = value.get(key)
+        if isinstance(typed_value, str):
+            result[key] = typed_value
+    return result or None
+
+
+def _normalize_episode_records(items: list[Any]) -> list[TvdbEpisodeRecord]:
+    episodes: list[TvdbEpisodeRecord] = []
+    for item in items:
+        episode = _normalize_episode_record(item)
+        if episode:
+            episodes.append(episode)
+    return episodes
+
+
+def _normalize_episode_record(value: Any) -> TvdbEpisodeRecord | None:
+    if not isinstance(value, dict):
+        return None
+    episode: TvdbEpisodeRecord = {}
+    typed_id = value.get("id")
+    if isinstance(typed_id, (int, str)):
+        episode["id"] = typed_id
+    for key in ("name", "overview", "aired"):
+        typed_value = value.get(key)
+        if isinstance(typed_value, str):
+            episode[key] = typed_value
+    for key in ("number", "episodeNumber"):
+        typed_value = value.get(key)
+        if isinstance(typed_value, int):
+            episode[key] = typed_value
+    return episode or None
