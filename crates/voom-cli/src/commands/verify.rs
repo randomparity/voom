@@ -106,7 +106,7 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
         .iter()
         .any(|r| r.outcome == VerificationOutcome::Error);
     if any_errors {
-        std::process::exit(1);
+        bail!("verification completed with errors");
     }
     Ok(())
 }
