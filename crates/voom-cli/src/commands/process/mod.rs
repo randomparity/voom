@@ -1361,8 +1361,9 @@ mod tests {
         let kernel = Arc::new(voom_kernel::Kernel::new());
         let ctx = fixture.make_ctx(kernel, store.clone());
 
-        let _ =
-            pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx).await;
+        let _ = pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx)
+            .await
+            .expect("finalize successful plan");
 
         assert_eq!(
             store.count_files(&Default::default()).unwrap(),
@@ -1384,6 +1385,62 @@ mod tests {
                 .is_none(),
             "the original .mp4 path must no longer resolve to a row",
         );
+    }
+
+    #[tokio::test]
+    async fn handle_plan_success_reports_transition_record_failure_with_context() {
+        use voom_domain::media::{Container, MediaFile};
+        use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
+
+        let fixture =
+            TestFixture::with_policy(r#"policy "test" { phase convert { container mkv } }"#);
+        let mp4_path = fixture.dir_path().join("movie.mp4");
+        let mkv_path = fixture.dir_path().join("movie.mkv");
+        std::fs::write(&mkv_path, vec![0u8; 1024]).unwrap();
+
+        let mut file = MediaFile::new(mp4_path.clone());
+        file.container = Container::Mp4;
+        file.size = 1024;
+        file.content_hash = Some("oldhash".to_string());
+
+        let mut plan = Plan::new(file.clone(), "containerize", "convert");
+        let plan_id = plan.id;
+        plan.actions = vec![PlannedAction::file_op(
+            OperationType::ConvertContainer,
+            ActionParams::Container {
+                container: Container::Mkv,
+            },
+            "Convert to mkv",
+        )];
+
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_sqlite_store::store::SqliteStore::in_memory().unwrap());
+        store.upsert_file(&file).unwrap();
+        let mut conflicting_file = MediaFile::new(mkv_path);
+        conflicting_file.container = Container::Mkv;
+        conflicting_file.size = 512;
+        conflicting_file.content_hash = Some("conflict".to_string());
+        store.upsert_file(&conflicting_file).unwrap();
+
+        let kernel = Arc::new(voom_kernel::Kernel::new());
+        let ctx = ProcessContext {
+            ffprobe_path: Some("/nonexistent/ffprobe"),
+            ..fixture.make_ctx(kernel, store)
+        };
+
+        let error =
+            pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx)
+                .await
+                .expect_err(
+                    "conflicting post-execution path should make transition recording fail",
+                );
+        let message = error.to_string();
+
+        assert!(message.contains("failed to record post-execution transition"));
+        assert!(message.contains(&mp4_path.display().to_string()));
+        assert!(message.contains("phase 'convert'"));
+        assert!(message.contains(&plan_id.to_string()));
+        assert!(message.contains("storage error:"));
     }
 
     #[tokio::test]
@@ -1442,7 +1499,9 @@ mod tests {
         };
 
         let new_file =
-            pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx).await;
+            pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx)
+                .await
+                .expect("finalize successful plan");
 
         assert_eq!(
             new_file.path, mkv_path,
@@ -1526,7 +1585,9 @@ mod tests {
         };
 
         let new_file =
-            pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx).await;
+            pipeline::handle_plan_success(plan, &file, "mkvtoolnix-executor", 0, false, &ctx)
+                .await
+                .expect("finalize successful plan");
 
         assert_eq!(
             new_file.path, path,
@@ -1578,7 +1639,8 @@ mod tests {
             phase_name: "convert",
             plan_id: uuid::Uuid::new_v4(),
             ctx: &ctx,
-        });
+        })
+        .expect("record transition");
 
         let by_new = store.transitions_for_path(&new_file.path).unwrap();
         assert_eq!(

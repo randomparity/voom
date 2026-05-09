@@ -40,13 +40,21 @@ fn record_safeguard_failure(
         &plan.phase_name,
         PhaseOutcomeKind::Failed,
     );
-    record_failure_transition(&FailureTransitionContext {
+    if let Err(error) = record_failure_transition(&FailureTransitionContext {
         file,
         plan,
         executor: "",
         error_message: Some(message),
         ctx,
-    });
+    }) {
+        tracing::warn!(
+            path = %file.path.display(),
+            phase = %plan.phase_name,
+            plan_id = %plan.id,
+            error = %error,
+            "failed to record safeguard failure transition"
+        );
+    }
 }
 
 /// Check if the output file grew larger than the original.
