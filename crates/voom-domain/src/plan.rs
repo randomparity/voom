@@ -392,6 +392,34 @@ pub struct TranscodeSettings {
     pub hdr_mode: Option<String>,
     /// Encoder tuning hint (e.g. "film", "animation").
     pub tune: Option<String>,
+    /// Automatic crop settings for black-bar removal.
+    pub crop: Option<CropSettings>,
+}
+
+/// Automatic black-bar crop detection settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CropSettings {
+    pub sample_duration_secs: Option<u32>,
+    pub sample_count: Option<u32>,
+    pub threshold: Option<u8>,
+    pub minimum_crop: Option<u32>,
+    pub preserve_bottom_pixels: Option<u32>,
+    pub aspect_lock: Vec<String>,
+}
+
+impl CropSettings {
+    #[must_use]
+    pub fn auto() -> Self {
+        Self {
+            sample_duration_secs: None,
+            sample_count: None,
+            threshold: None,
+            minimum_crop: None,
+            preserve_bottom_pixels: None,
+            aspect_lock: Vec::new(),
+        }
+    }
 }
 
 /// Deserialization helper for [`ActionParams`] that lifts legacy flat
@@ -458,6 +486,8 @@ enum ActionParamsCompat {
         hdr_mode: Option<String>,
         #[serde(default)]
         tune: Option<String>,
+        #[serde(default)]
+        crop: Option<CropSettings>,
     },
     Synthesize {
         name: String,
@@ -521,6 +551,7 @@ impl From<ActionParamsCompat> for ActionParams {
                 scale_algorithm,
                 hdr_mode,
                 tune,
+                crop,
             } => {
                 // If the nested `settings` object has values, use it.
                 // Otherwise, lift the legacy flat fields.
@@ -542,6 +573,7 @@ impl From<ActionParamsCompat> for ActionParams {
                         scale_algorithm,
                         hdr_mode,
                         tune,
+                        crop,
                         ..Default::default()
                     }
                 } else {
@@ -708,6 +740,12 @@ impl TranscodeSettings {
     #[must_use]
     pub fn with_tune(mut self, tune: Option<String>) -> Self {
         self.tune = tune;
+        self
+    }
+
+    #[must_use]
+    pub fn with_crop(mut self, crop: Option<CropSettings>) -> Self {
+        self.crop = crop;
         self
     }
 }
