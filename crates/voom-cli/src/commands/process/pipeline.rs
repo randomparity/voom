@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 use anyhow::Context;
-use voom_domain::events::{Event, PlanFailedEvent};
-use voom_domain::plan::{OperationType, PhaseOutput};
+use voom_domain::events::PlanFailedEvent;
+use voom_domain::plan::PhaseOutput;
 
 use super::audio_language::apply_detected_languages;
 use super::context::{record_phase_stat, PhaseOutcomeKind, ProcessContext};
@@ -374,17 +374,9 @@ async fn execute_phase_plan(
     match exec_outcome {
         PlanOutcome::Success {
             executor,
-            produced_events,
+            phase_output,
         } => {
-            handle_phase_success(
-                plan,
-                state,
-                phase_ctx,
-                &executor,
-                elapsed_ms,
-                &produced_events,
-            )
-            .await;
+            handle_phase_success(plan, state, phase_ctx, &executor, elapsed_ms, phase_output).await;
         }
         PlanOutcome::Failed(failed) => {
             handle_phase_failure(failed, &plan, state, phase_ctx);
@@ -400,7 +392,7 @@ async fn handle_phase_success(
     phase_ctx: &PhaseExecutionContext<'_>,
     executor: &str,
     elapsed_ms: u64,
-    produced_events: &[Event],
+    successful_phase_output: PhaseOutput,
 ) {
     if check_size_increase(&plan, &state.current_file, phase_ctx.safeguards) {
         state.outcomes.insert(
@@ -438,10 +430,9 @@ async fn handle_phase_success(
         plan.phase_name.clone(),
         voom_policy_evaluator::EvaluationOutcome::Executed { modified: true },
     );
-    state.phase_outputs.insert(
-        plan.phase_name.clone(),
-        phase_output_from_success(&plan, produced_events),
-    );
+    state
+        .phase_outputs
+        .insert(plan.phase_name.clone(), successful_phase_output);
     state.current_file = finalize_successful_plan_execution(
         plan,
         &state.current_file,
@@ -490,32 +481,6 @@ fn phase_output(completed: bool, modified: bool, outcome: Option<&str>) -> Phase
         Some(outcome) => output.with_outcome(outcome),
         None => output,
     }
-}
-
-fn phase_output_from_success(
-    plan: &voom_domain::plan::Plan,
-    produced_events: &[Event],
-) -> PhaseOutput {
-    let mut output = phase_output(true, phase_modifies_file(plan), None);
-    for event in produced_events {
-        let Event::VerifyCompleted(verify) = event else {
-            continue;
-        };
-        if verify.file_id != plan.file.id.to_string() {
-            continue;
-        }
-        output = output
-            .with_outcome(verify.outcome.as_str())
-            .with_error_count(verify.error_count)
-            .with_warning_count(verify.warning_count);
-    }
-    output
-}
-
-fn phase_modifies_file(plan: &voom_domain::plan::Plan) -> bool {
-    plan.actions
-        .iter()
-        .any(|action| action.operation != OperationType::VerifyMedia)
 }
 
 /// Dispatch events for a skipped plan: `PlanCreated` then `PlanSkipped`.
