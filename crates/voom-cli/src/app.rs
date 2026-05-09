@@ -4,7 +4,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use voom_kernel::{Kernel, Plugin};
+use voom_domain::errors::VoomError;
+use voom_kernel::Kernel;
 
 use voom_capability_collector::CapabilityCollectorPlugin;
 
@@ -125,30 +126,28 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     // Initialized manually (not via the macro) so we can capture the store
     // handle and return it to callers, keeping all CLI commands and the event
     // bus on the same connection pool.
-    let store: Arc<dyn voom_domain::storage::StorageTrait> =
-        if disabled.iter().any(|d| d == "sqlite-store") {
-            // sqlite-store disabled: open a standalone pool so callers always
-            // get a usable handle.  No plugin is registered, so events will
-            // not be persisted, but read-only CLI commands still work.
-            open_store_in(data_dir).context("Failed to open storage")?
-        } else {
-            let mut plugin = voom_sqlite_store::SqliteStorePlugin::new();
-            let ctx =
-                voom_kernel::PluginContext::new(plugin_json("sqlite-store"), data_dir.clone());
-            let init_events = plugin.init(&ctx).context("Failed to initialize storage")?;
-
-            // Capture the store handle before moving the plugin into an Arc.
-            // `plugin.store()` is always Some after a successful init().
-            let handle = plugin
-                .store()
-                .map(|s| Arc::clone(s) as Arc<dyn voom_domain::storage::StorageTrait>)
-                .expect("store is Some after successful init");
-
-            let plugin_arc: Arc<dyn voom_kernel::Plugin> = Arc::new(plugin);
-            kernel.register_initialized_plugin(plugin_arc, PRIORITY_STORAGE, init_events)?;
-
-            handle
-        };
+    let store: Arc<dyn voom_domain::storage::StorageTrait> = if disabled
+        .iter()
+        .any(|d| d == "sqlite-store")
+    {
+        // sqlite-store disabled: open a standalone pool so callers always
+        // get a usable handle.  No plugin is registered, so events will
+        // not be persisted, but read-only CLI commands still work.
+        open_store_in(data_dir).context("Failed to open storage")?
+    } else {
+        let plugin = voom_sqlite_store::SqliteStorePlugin::new();
+        let ctx = voom_kernel::PluginContext::new(plugin_json("sqlite-store"), data_dir.clone());
+        kernel
+            .init_and_register_with(plugin, PRIORITY_STORAGE, &ctx, |plugin| {
+                plugin
+                    .store()
+                    .map(|s| Arc::clone(s) as Arc<dyn voom_domain::storage::StorageTrait>)
+                    .ok_or_else(|| {
+                        VoomError::plugin("sqlite-store", "init completed without a store handle")
+                    })
+            })
+            .context("Failed to initialize storage")?
+    };
 
     // Create a shared job queue for plugins that need to enqueue work.
     let job_queue = Arc::new(voom_job_manager::queue::JobQueue::new(store.clone()));
@@ -276,16 +275,11 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     // Verifier — media integrity (quick / thorough / hash modes). Store is
     // injected at construction; mirrors the ReportPlugin manual-init pattern.
     if !disabled.iter().any(|d| d == "verifier") {
-        let mut verifier_plugin = voom_verifier::VerifierPlugin::with_store(Arc::clone(&store));
+        let verifier_plugin = voom_verifier::VerifierPlugin::with_store(Arc::clone(&store));
         let ctx = voom_kernel::PluginContext::new(plugin_json("verifier"), data_dir.clone());
-        let init_events = verifier_plugin
-            .init(&ctx)
+        kernel
+            .init_and_register_with(verifier_plugin, PRIORITY_VERIFIER, &ctx, |_| Ok(()))
             .context("Failed to initialize verifier plugin")?;
-        kernel.register_initialized_plugin(
-            Arc::new(verifier_plugin) as Arc<dyn voom_kernel::Plugin>,
-            PRIORITY_VERIFIER,
-            init_events,
-        )?;
     }
 
     #[cfg(feature = "wasm")]
@@ -295,16 +289,11 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     // Store is injected at construction, so the plugin is initialized before
     // registration and handed back to the kernel with its init events.
     if !disabled.iter().any(|d| d == "report") {
-        let mut report_plugin = voom_report::ReportPlugin::new(Arc::clone(&store));
+        let report_plugin = voom_report::ReportPlugin::new(Arc::clone(&store));
         let ctx = voom_kernel::PluginContext::new(plugin_json("report"), data_dir.clone());
-        let init_events = report_plugin
-            .init(&ctx)
+        kernel
+            .init_and_register_with(report_plugin, PRIORITY_REPORT, &ctx, |_| Ok(()))
             .context("Failed to initialize report plugin")?;
-        kernel.register_initialized_plugin(
-            Arc::new(report_plugin) as Arc<dyn voom_kernel::Plugin>,
-            PRIORITY_REPORT,
-            init_events,
-        )?;
     }
 
     Ok(BootstrapResult {

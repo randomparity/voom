@@ -229,18 +229,44 @@ impl Kernel {
         Ok(())
     }
 
-    /// Register an already-initialized plugin and dispatch the events returned by `init()`.
+    /// Initialize a plugin, extract a caller-owned value, register it, and dispatch init events.
     ///
     /// Use this when the caller must inspect a concrete plugin after initialization
-    /// before moving it into an [`Arc`], such as extracting a storage handle.
-    pub fn register_initialized_plugin(
+    /// before registration, such as extracting a storage handle.
+    pub fn init_and_register_with<P, T, F>(
         &mut self,
-        plugin: Arc<dyn Plugin>,
+        plugin: P,
         priority: i32,
-        init_events: Vec<Event>,
-    ) -> Result<()> {
-        let name = plugin.name().to_string();
-        self.finish_registration(plugin, priority, &name, init_events)
+        ctx: &PluginContext,
+        extract: F,
+    ) -> Result<T>
+    where
+        P: Plugin + 'static,
+        F: FnOnce(&P) -> Result<T>,
+    {
+        let mut arc: Arc<P> = Arc::new(plugin);
+        let name = arc.name().to_string();
+        if self.registry.contains(&name) {
+            return Err(voom_domain::errors::VoomError::plugin(
+                name,
+                "a plugin with this name is already registered",
+            ));
+        }
+        let (init_events, extracted) = {
+            let plugin_mut = Arc::get_mut(&mut arc).ok_or_else(|| {
+                voom_domain::errors::VoomError::plugin(
+                    name.clone(),
+                    "internal error: Arc refcount > 1 before init (kernel-constructed Arc should be unique)",
+                )
+            })?;
+            let init_events = plugin_mut.init(ctx).map_err(|e| {
+                voom_domain::errors::VoomError::plugin(name.clone(), format!("init failed: {e}"))
+            })?;
+            let extracted = extract(plugin_mut)?;
+            (init_events, extracted)
+        };
+        self.finish_registration(arc.clone(), priority, &name, init_events)?;
+        Ok(extracted)
     }
 
     /// Initialize a plugin via `init()`, then register it with the given priority.
@@ -625,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn test_register_initialized_plugin_dispatches_init_events() {
+    fn test_init_and_register_with_extracts_and_dispatches_init_events() {
         let received = Arc::new(Mutex::new(Vec::<String>::new()));
 
         let mut kernel = Kernel::new();
@@ -636,12 +662,13 @@ mod tests {
         });
         kernel.register_plugin(capture, 10).unwrap();
 
-        let mut emitter = InitEventEmitter;
-        let init_events = emitter.init(&ctx).unwrap();
-        kernel
-            .register_initialized_plugin(Arc::new(emitter), 20, init_events)
+        let extracted_name = kernel
+            .init_and_register_with(InitEventEmitter, 20, &ctx, |plugin| {
+                Ok(plugin.name().to_string())
+            })
             .unwrap();
 
+        assert_eq!(extracted_name, "init-emitter");
         let captured = received.lock();
         assert_eq!(captured.as_slice(), ["test-tool"]);
     }
