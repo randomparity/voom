@@ -181,4 +181,39 @@ handles_events = []
             "omitted allowed_paths must preserve config-provided paths"
         );
     }
+
+    #[test]
+    fn host_state_from_config_seeds_config_and_allowed_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config: toml::Table = toml::from_str(&format!(
+            r#"
+allowed_paths = ["{}"]
+quality = "preview"
+"#,
+            dir.path().display()
+        ))
+        .expect("valid config TOML");
+
+        let state = host_state_from_config("test-plugin", &config);
+
+        assert_eq!(state.plugin_name, "test-plugin");
+        assert_eq!(state.allowed_paths, vec![dir.path().to_path_buf()]);
+        let config_bytes = state
+            .plugin_data
+            .get("config")
+            .expect("config should be seeded");
+        let config_value: serde_json::Value =
+            serde_json::from_slice(config_bytes).expect("valid config JSON");
+        assert_eq!(config_value["quality"], "preview");
+    }
+
+    #[test]
+    fn manifest_metadata_defaults_when_manifest_missing() {
+        let metadata = manifest_metadata(None);
+
+        assert_eq!(metadata.version, "0.0.0");
+        assert!(metadata.description.is_empty());
+        assert!(metadata.capabilities.is_empty());
+        assert!(metadata.handled_events.is_empty());
+    }
 }

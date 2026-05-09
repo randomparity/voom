@@ -367,6 +367,37 @@ mod tests {
     }
 
     #[test]
+    fn read_metadata_and_list_files_reject_outside_or_missing_paths() {
+        let allowed_dir = tempfile::tempdir().expect("allowed tempdir");
+        let outside_dir = tempfile::tempdir().expect("outside tempdir");
+        let outside_file = outside_dir.path().join("outside.mov");
+        std::fs::write(&outside_file, b"outside").expect("write outside file");
+        let state = state_with_paths(vec![canonical(allowed_dir.path())]);
+
+        let outside_error =
+            read_file_metadata(&state, outside_file.to_str().expect("utf-8 path")).unwrap_err();
+        assert!(
+            outside_error.contains("not within allowed directories"),
+            "unexpected outside path error: {outside_error}"
+        );
+
+        let missing_path = allowed_dir.path().join("missing.mov");
+        let missing_error =
+            read_file_metadata(&state, missing_path.to_str().expect("utf-8 path")).unwrap_err();
+        assert!(
+            missing_error.contains("cannot resolve path"),
+            "unexpected missing path error: {missing_error}"
+        );
+
+        let outside_list_error =
+            list_files(&state, outside_dir.path().to_str().expect("utf-8 path"), "").unwrap_err();
+        assert!(
+            outside_list_error.contains("not within allowed directories"),
+            "unexpected outside list error: {outside_list_error}"
+        );
+    }
+
+    #[test]
     fn manifest_allowed_paths_override_configured_paths() {
         let config_dir = tempfile::tempdir().expect("config tempdir");
         let manifest_dir = tempfile::tempdir().expect("manifest tempdir");
