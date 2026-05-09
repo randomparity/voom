@@ -5,6 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use similar::TextDiff;
 use thiserror::Error;
 use voom_domain::capability_map::CapabilityMap;
 use voom_domain::events::{CodecCapabilities, ExecutorCapabilitiesEvent};
@@ -132,7 +134,10 @@ impl TestSuite {
 pub struct TestCase {
     pub name: String,
     pub fixture: PathBuf,
+    #[serde(default)]
     pub expect: Assertions,
+    #[serde(default)]
+    pub snapshot: Option<PathBuf>,
     #[serde(default)]
     pub capabilities: Option<CapabilityFixture>,
 }
@@ -203,6 +208,34 @@ pub enum PolicyTestError {
     },
 }
 
+/// Result of comparing a plan snapshot file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotOutcome {
+    Matched,
+    Updated,
+}
+
+/// Errors returned while rendering or comparing plan snapshots.
+#[derive(Debug, Error)]
+pub enum SnapshotFailure {
+    #[error("failed to serialize plans for snapshot: {source}")]
+    Serialize { source: serde_json::Error },
+    #[error("failed to read snapshot {path}: {source}")]
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to write snapshot {path}: {source}")]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("snapshot does not exist: {path}; rerun with --update to create it")]
+    Missing { path: PathBuf },
+    #[error("snapshot mismatch for {path}\n{diff}")]
+    Mismatch { path: PathBuf, diff: String },
+}
+
 /// A single failed policy assertion.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 #[error("{message}")]
@@ -216,6 +249,124 @@ impl AssertionFailure {
         Self {
             message: message.into(),
         }
+    }
+}
+
+/// Convert plans to canonical JSON for stable snapshot files.
+///
+/// # Errors
+///
+/// Returns an error when the plan list cannot be serialized to JSON.
+pub fn canonicalize_plans_for_snapshot(plans: &[Plan]) -> Result<Value, SnapshotFailure> {
+    let mut value =
+        serde_json::to_value(plans).map_err(|source| SnapshotFailure::Serialize { source })?;
+    scrub_nondeterministic_fields(&mut value);
+    Ok(value)
+}
+
+/// Render plans as canonical pretty JSON with a trailing newline.
+///
+/// # Errors
+///
+/// Returns an error when the plan list cannot be serialized to JSON.
+pub fn snapshot_json(plans: &[Plan]) -> Result<String, SnapshotFailure> {
+    let value = canonicalize_plans_for_snapshot(plans)?;
+    let mut json = serde_json::to_string_pretty(&value)
+        .map_err(|source| SnapshotFailure::Serialize { source })?;
+    json.push('\n');
+    Ok(json)
+}
+
+/// Compare evaluated plans with a snapshot file, or update that file in place.
+///
+/// # Errors
+///
+/// Returns an error when snapshots cannot be read or written, or when the
+/// existing snapshot differs and `update` is false.
+pub fn assert_snapshot_file(
+    plans: &[Plan],
+    snapshot: &Path,
+    update: bool,
+) -> Result<SnapshotOutcome, SnapshotFailure> {
+    let actual = snapshot_json(plans)?;
+    if update {
+        write_snapshot(snapshot, &actual)?;
+        return Ok(SnapshotOutcome::Updated);
+    }
+    let expected = read_snapshot(snapshot)?;
+    if expected == actual {
+        return Ok(SnapshotOutcome::Matched);
+    }
+    Err(SnapshotFailure::Mismatch {
+        path: snapshot.to_path_buf(),
+        diff: snapshot_diff(&expected, &actual),
+    })
+}
+
+fn write_snapshot(snapshot: &Path, contents: &str) -> Result<(), SnapshotFailure> {
+    if let Some(parent) = snapshot.parent() {
+        fs::create_dir_all(parent).map_err(|source| SnapshotFailure::Write {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    fs::write(snapshot, contents).map_err(|source| SnapshotFailure::Write {
+        path: snapshot.to_path_buf(),
+        source,
+    })
+}
+
+fn read_snapshot(snapshot: &Path) -> Result<String, SnapshotFailure> {
+    fs::read_to_string(snapshot).map_err(|source| {
+        if source.kind() == std::io::ErrorKind::NotFound {
+            SnapshotFailure::Missing {
+                path: snapshot.to_path_buf(),
+            }
+        } else {
+            SnapshotFailure::Read {
+                path: snapshot.to_path_buf(),
+                source,
+            }
+        }
+    })
+}
+
+fn snapshot_diff(expected: &str, actual: &str) -> String {
+    TextDiff::from_lines(expected, actual)
+        .unified_diff()
+        .header("expected", "actual")
+        .to_string()
+}
+
+fn scrub_nondeterministic_fields(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                scrub_nondeterministic_fields(item);
+            }
+        }
+        Value::Object(fields) => {
+            for (key, child) in fields {
+                if is_nondeterministic_key(key) {
+                    *child = canonical_value_for_key(key);
+                } else {
+                    scrub_nondeterministic_fields(child);
+                }
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn is_nondeterministic_key(key: &str) -> bool {
+    key == "id" || key == "session_id" || key.ends_with("_at") || key.ends_with("_timestamp")
+}
+
+fn canonical_value_for_key(key: &str) -> Value {
+    if key.ends_with("_at") || key.ends_with("_timestamp") {
+        Value::String("1970-01-01T00:00:00Z".to_string())
+    } else {
+        Value::Null
     }
 }
 

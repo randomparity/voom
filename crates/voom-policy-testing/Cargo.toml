@@ -10,10 +10,13 @@ repository.workspace = true
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+similar.workspace = true
 thiserror.workspace = true
 voom-domain.workspace = true
 voom-dsl.workspace = true
 voom-policy-evaluator.workspace = true
+insta.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+uuid.workspace = true

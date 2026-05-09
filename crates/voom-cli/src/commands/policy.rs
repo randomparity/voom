@@ -4,7 +4,9 @@ use anyhow::{bail, Context, Result};
 use console::style;
 use serde::Serialize;
 use serde_json::Value;
-use voom_policy_testing::{CapabilityFixture, Fixture, TestSuite};
+use voom_policy_testing::{
+    assert_snapshot_file, CapabilityFixture, Fixture, SnapshotOutcome, TestSuite,
+};
 
 use crate::cli::PolicyCommands;
 
@@ -252,21 +254,20 @@ fn diff(a: &std::path::Path, b: &std::path::Path) -> Result<()> {
 }
 
 fn test(paths: &[PathBuf], policy_override: Option<&Path>, update: bool, json: bool) -> Result<()> {
-    if update {
-        bail!("--update requires snapshot assertions, which are not available yet");
-    }
-
     let suites = discover_test_suites(paths)?;
     if suites.is_empty() {
         bail!("no *.test.json files found");
     }
 
     let mut cases = Vec::new();
+    let mut snapshots_updated = 0;
     for suite_path in suites {
-        run_test_suite(&suite_path, policy_override, &mut cases)?;
+        run_test_suite(&suite_path, policy_override, update, &mut cases).map(|updated| {
+            snapshots_updated += updated;
+        })?;
     }
 
-    let output = TestOutput::from_cases(cases);
+    let output = TestOutput::from_cases(cases, snapshots_updated);
     if json {
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
@@ -319,8 +320,9 @@ fn is_test_suite_file(path: &Path) -> bool {
 fn run_test_suite(
     suite_path: &Path,
     policy_override: Option<&Path>,
+    update: bool,
     results: &mut Vec<TestCaseOutput>,
-) -> Result<()> {
+) -> Result<usize> {
     let suite = TestSuite::load(suite_path)?;
     let suite_dir = suite_path.parent().unwrap_or_else(|| Path::new("."));
     let policy_path = policy_override
@@ -331,6 +333,7 @@ fn run_test_suite(
     let policy = voom_dsl::compile_policy(&source)
         .with_context(|| format!("failed to compile policy {}", policy_path.display()))?;
 
+    let mut snapshots_updated = 0;
     for case in &suite.cases {
         let fixture_path = resolve_relative(suite_dir, &case.fixture);
         let fixture = Fixture::load(&fixture_path)?;
@@ -340,11 +343,21 @@ fn run_test_suite(
             &fixture.to_media_file(),
             &capabilities,
         );
-        let failures = case
+        let mut failures = case
             .expect
             .check(&evaluation.plans)
             .err()
             .map_or_else(Vec::new, |failure| vec![failure.to_string()]);
+        if let Some(snapshot) = &case.snapshot {
+            let snapshot_path = resolve_relative(suite_dir, snapshot);
+            match assert_snapshot_file(&evaluation.plans, &snapshot_path, update) {
+                Ok(SnapshotOutcome::Updated) => {
+                    snapshots_updated += 1;
+                }
+                Ok(SnapshotOutcome::Matched) => {}
+                Err(failure) => failures.push(failure.to_string()),
+            }
+        }
         results.push(TestCaseOutput {
             name: case.name.clone(),
             policy: policy_path.display().to_string(),
@@ -357,7 +370,7 @@ fn run_test_suite(
             failures,
         });
     }
-    Ok(())
+    Ok(snapshots_updated)
 }
 
 fn resolve_relative(base: &Path, path: &Path) -> PathBuf {
@@ -406,6 +419,11 @@ fn print_human_test_output(output: &TestOutput) {
         "{} passed, {} failed, {} total",
         output.summary.passed, output.summary.failed, output.summary.total
     );
+    match output.summary.snapshots_updated {
+        0 => println!("no snapshots regenerated"),
+        1 => println!("updated 1 snapshot"),
+        count => println!("updated {count} snapshots"),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -415,7 +433,7 @@ struct TestOutput {
 }
 
 impl TestOutput {
-    fn from_cases(cases: Vec<TestCaseOutput>) -> Self {
+    fn from_cases(cases: Vec<TestCaseOutput>, snapshots_updated: usize) -> Self {
         let passed = cases
             .iter()
             .filter(|case| case.status == TestStatus::Pass)
@@ -428,6 +446,7 @@ impl TestOutput {
                 passed,
                 failed,
                 total,
+                snapshots_updated,
             },
         }
     }
@@ -447,6 +466,7 @@ struct TestSummary {
     passed: usize,
     failed: usize,
     total: usize,
+    snapshots_updated: usize,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]

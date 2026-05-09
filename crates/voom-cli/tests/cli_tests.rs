@@ -80,6 +80,25 @@ fn write_policy_test_suite(dir: &std::path::Path, expected_phase: &str) -> std::
     suite_path
 }
 
+fn write_policy_snapshot_suite(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let suite_path = write_policy_test_suite(dir, "containerize");
+    let snapshot_path = dir.join("minimal.snapshot.json");
+    let suite = format!(
+        r#"{{
+  "policy": "minimal.voom",
+  "cases": [{{
+    "name": "containerizes mp4",
+    "fixture": "movie.json",
+    "snapshot": "{}"
+  }}]
+}}
+"#,
+        snapshot_path.file_name().unwrap().to_string_lossy()
+    );
+    std::fs::write(&suite_path, suite).unwrap();
+    (suite_path, snapshot_path)
+}
+
 // === Basic CLI structure ===
 
 #[test]
@@ -352,16 +371,53 @@ fn test_policy_test_json_reports_failures_and_exits_one() {
 }
 
 #[test]
-fn test_policy_test_update_without_snapshots_is_error() {
+fn test_policy_test_update_without_snapshots_reports_no_regeneration() {
     let tmp = tempfile::tempdir().unwrap();
     let suite = write_policy_test_suite(tmp.path(), "containerize");
 
     voom()
         .args(["policy", "test", "--update", suite.to_str().unwrap()])
         .assert()
+        .success()
+        .stdout(predicate::str::contains("no snapshots regenerated"));
+}
+
+#[test]
+fn test_policy_test_update_regenerates_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (suite, snapshot) = write_policy_snapshot_suite(tmp.path());
+
+    voom()
+        .args(["policy", "test", "--update", suite.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("updated 1 snapshot"));
+
+    let first = std::fs::read_to_string(&snapshot).unwrap();
+
+    voom()
+        .args(["policy", "test", "--update", suite.to_str().unwrap()])
+        .assert()
+        .success();
+
+    assert_eq!(first, std::fs::read_to_string(&snapshot).unwrap());
+}
+
+#[test]
+fn test_policy_test_snapshot_diff_is_readable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (suite, snapshot) = write_policy_snapshot_suite(tmp.path());
+    std::fs::write(&snapshot, "[\n  {\"phase_name\": \"wrong\"}\n]\n").unwrap();
+
+    voom()
+        .args(["policy", "test", suite.to_str().unwrap()])
+        .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "--update requires snapshot assertions, which are not available yet",
+        .stdout(predicate::str::contains("--- expected"))
+        .stdout(predicate::str::contains("+++ actual"))
+        .stdout(predicate::str::contains("-  {\"phase_name\": \"wrong\"}"))
+        .stdout(predicate::str::contains(
+            "+    \"phase_name\": \"containerize\"",
         ));
 }
 

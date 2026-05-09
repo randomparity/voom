@@ -98,6 +98,7 @@ parking_lot = "0.12"
 
 # Text matching
 regex = "1"
+similar = "3.1.0"
 
 # Errors
 thiserror = "2"

@@ -4,6 +4,7 @@
     {
       "name": "containerizes mp4",
       "fixture": "movie-mp4.json",
+      "snapshot": "minimal.snapshot.json",
       "expect": {
         "phases_run": ["containerize"],
         "no_warnings": true

@@ -6,8 +6,9 @@ use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
 use voom_policy_testing::{
     all_capabilities, assert_audio_tracks_kept, assert_audio_tracks_synthesized,
-    assert_no_warnings, assert_phases_run, assert_phases_skipped, assert_subtitle_tracks_kept,
-    assert_video_codec, Assertions, Fixture, TestCase, TestSuite,
+    assert_no_warnings, assert_phases_run, assert_phases_skipped, assert_snapshot_file,
+    assert_subtitle_tracks_kept, assert_video_codec, canonicalize_plans_for_snapshot,
+    snapshot_json, Assertions, Fixture, SnapshotOutcome, TestCase, TestSuite,
 };
 
 fn track(index: u32, track_type: TrackType, codec: &str) -> Track {
@@ -103,6 +104,71 @@ fn test_suite_deserializes_flat_assertions() {
     );
     assert_eq!(case.expect.video_codec, Some("hevc".to_string()));
     assert!(case.expect.no_warnings.unwrap());
+}
+
+#[test]
+fn test_suite_deserializes_optional_snapshot_without_expectations() {
+    let json = r#"{
+        "policy": "docs/examples/minimal.voom",
+        "cases": [{
+            "name": "minimal",
+            "fixture": "fixtures/movie.json",
+            "snapshot": "snapshots/minimal.json"
+        }]
+    }"#;
+
+    let suite: TestSuite = serde_json::from_str(json).unwrap();
+    let case: &TestCase = &suite.cases[0];
+
+    assert_eq!(case.snapshot, Some(PathBuf::from("snapshots/minimal.json")));
+    assert!(case.expect.phases_run.is_none());
+}
+
+#[test]
+fn canonical_snapshot_json_scrubs_nondeterministic_plan_fields() {
+    let mut first = plan("containerize", vec![]);
+    let mut second = plan("containerize", vec![]);
+    first.session_id = Some(uuid::Uuid::new_v4());
+    second.session_id = Some(uuid::Uuid::new_v4());
+
+    let first = canonicalize_plans_for_snapshot(&[first]).unwrap();
+    let second = canonicalize_plans_for_snapshot(&[second]).unwrap();
+
+    assert_eq!(first, second);
+    assert_eq!(first[0]["id"], serde_json::Value::Null);
+    assert_eq!(first[0]["session_id"], serde_json::Value::Null);
+    assert_eq!(first[0]["evaluated_at"], "1970-01-01T00:00:00Z");
+}
+
+#[test]
+fn snapshot_update_writes_canonical_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let snapshot = dir.path().join("plans.json");
+    let plans = vec![plan("containerize", vec![])];
+
+    let outcome = assert_snapshot_file(&plans, &snapshot, true).unwrap();
+
+    assert_eq!(outcome, SnapshotOutcome::Updated);
+    assert_eq!(
+        fs::read_to_string(&snapshot).unwrap(),
+        snapshot_json(&plans).unwrap()
+    );
+}
+
+#[test]
+fn snapshot_mismatch_reports_readable_diff() {
+    let dir = tempfile::tempdir().unwrap();
+    let snapshot = dir.path().join("plans.json");
+    fs::write(&snapshot, "[\n  {\"phase_name\": \"wrong\"}\n]\n").unwrap();
+
+    let failure = assert_snapshot_file(&[plan("containerize", vec![])], &snapshot, false)
+        .expect_err("snapshot should not match");
+
+    let message = failure.to_string();
+    assert!(message.contains("--- expected"));
+    assert!(message.contains("+++ actual"));
+    assert!(message.contains("-  {\"phase_name\": \"wrong\"}"));
+    assert!(message.contains("+    \"phase_name\": \"containerize\""));
 }
 
 #[test]
