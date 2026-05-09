@@ -41,10 +41,7 @@ fn register_transition_funcs(instance: &mut HostLinkerInstance<'_>) -> Result<()
                 let uuid = uuid::Uuid::parse_str(&file_id)
                     .map_err(|e| format!("invalid file ID '{file_id}': {e}"));
                 let result = match uuid {
-                    Ok(id) => ctx
-                        .data()
-                        .require_capability_kind("store", "transition history access")
-                        .and_then(|_| ctx.data().get_file_transitions(&id)),
+                    Ok(id) => ctx.data().get_file_transitions(&id),
                     Err(e) => Err(e),
                 };
                 Ok((result,))
@@ -58,10 +55,7 @@ fn register_transition_funcs(instance: &mut HostLinkerInstance<'_>) -> Result<()
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (path,): (String,)|
              -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
-                let result = ctx
-                    .data()
-                    .require_capability_kind("store", "transition history access")
-                    .and_then(|_| ctx.data().get_path_transitions(&path));
+                let result = ctx.data().get_path_transitions(&path);
                 Ok((result,))
             },
         )
@@ -85,13 +79,7 @@ fn register_plugin_data_funcs(instance: &mut HostLinkerInstance<'_>) -> Result<(
         .func_wrap(
             "set-plugin-data",
             |mut ctx: wasmtime::StoreContextMut<'_, HostState>, (key, value): (String, Vec<u8>)| {
-                let result = match ctx
-                    .data()
-                    .require_capability_kind("store", "plugin data mutation")
-                {
-                    Ok(()) => ctx.data_mut().set_plugin_data(&key, &value),
-                    Err(error) => Err(error),
-                };
+                let result = ctx.data_mut().set_plugin_data(&key, &value);
                 Ok((result.map_err(|e| e.to_string()),))
             },
         )
@@ -129,10 +117,7 @@ fn register_http_funcs(instance: &mut HostLinkerInstance<'_>) -> Result<(), Wasm
             "http-get",
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (url, headers): (String, Vec<(String, String)>)| {
-                let result = ctx
-                    .data()
-                    .require_capability_kind("serve_http", "HTTP GET")
-                    .and_then(|_| ctx.data().http_get(&url, &headers));
+                let result = ctx.data().http_get(&url, &headers);
                 let wit_result: super::super::WitHttpResult = match result {
                     Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
                     Err(e) => Err(e),
@@ -147,10 +132,7 @@ fn register_http_funcs(instance: &mut HostLinkerInstance<'_>) -> Result<(), Wasm
             "http-post",
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (url, headers, body): (String, Vec<(String, String)>, Vec<u8>)| {
-                let result = ctx
-                    .data()
-                    .require_capability_kind("serve_http", "HTTP POST")
-                    .and_then(|_| ctx.data().http_post(&url, &headers, &body));
+                let result = ctx.data().http_post(&url, &headers, &body);
                 let wit_result: super::super::WitHttpResult = match result {
                     Ok(resp) => Ok((resp.status, resp.headers, resp.body)),
                     Err(e) => Err(e),
@@ -176,10 +158,7 @@ fn register_write_file(instance: &mut HostLinkerInstance<'_>) -> Result<(), Wasm
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (path, content): (String, Vec<u8>)|
              -> Result<(Result<(), String>,), wasmtime::Error> {
-                let result = ctx
-                    .data()
-                    .require_filesystem_capability("file writing")
-                    .and_then(|_| ctx.data().write_file(&path, &content));
+                let result = ctx.data().write_file(&path, &content);
                 Ok((result,))
             },
         )
@@ -193,40 +172,10 @@ fn register_read_file_metadata(instance: &mut HostLinkerInstance<'_>) -> Result<
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (path,): (String,)|
              -> Result<(Result<Vec<u8>, String>,), wasmtime::Error> {
-                Ok((read_file_metadata(ctx.data(), &path),))
+                Ok((ctx.data().read_file_metadata(&path),))
             },
         )
         .map_err(|e| WasmLoadError::Linker(e.to_string()))
-}
-
-fn read_file_metadata(state: &HostState, path: &str) -> Result<Vec<u8>, String> {
-    state.require_filesystem_capability("file metadata reads")?;
-    if state.allowed_paths.is_empty() {
-        return Err(format!("path '{path}' is not within allowed directories"));
-    }
-
-    let file_path = std::path::Path::new(path);
-    let canonical = std::fs::canonicalize(file_path)
-        .map_err(|e| format!("cannot resolve path '{path}': {e}"))?;
-    let allowed = state.allowed_paths.iter().any(|p| canonical.starts_with(p));
-    if !allowed {
-        return Err(format!("path '{path}' is not within allowed directories"));
-    }
-
-    let meta = std::fs::metadata(file_path)
-        .map_err(|e| format!("failed to read metadata for '{path}': {e}"))?;
-    let info = serde_json::json!({
-        "size": meta.len(),
-        "is_file": meta.is_file(),
-        "is_dir": meta.is_dir(),
-        "readonly": meta.permissions().readonly(),
-        "modified": meta.modified().ok().map(|t| {
-            t.duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-        }),
-    });
-    rmp_serde::to_vec(&info).map_err(|e| format!("failed to serialize metadata: {e}"))
 }
 
 fn register_list_files(instance: &mut HostLinkerInstance<'_>) -> Result<(), WasmLoadError> {
@@ -236,38 +185,10 @@ fn register_list_files(instance: &mut HostLinkerInstance<'_>) -> Result<(), Wasm
             |ctx: wasmtime::StoreContextMut<'_, HostState>,
              (dir, pattern): (String, String)|
              -> Result<(Result<Vec<String>, String>,), wasmtime::Error> {
-                Ok((list_files(ctx.data(), &dir, &pattern),))
+                Ok((ctx.data().list_files(&dir, &pattern),))
             },
         )
         .map_err(|e| WasmLoadError::Linker(e.to_string()))
-}
-
-fn list_files(state: &HostState, dir: &str, pattern: &str) -> Result<Vec<String>, String> {
-    state.require_filesystem_capability("directory listing")?;
-    if state.allowed_paths.is_empty() {
-        return Err(format!(
-            "directory '{dir}' is not within allowed directories"
-        ));
-    }
-
-    let dir_path = std::path::Path::new(dir);
-    let canonical =
-        std::fs::canonicalize(dir_path).map_err(|e| format!("cannot resolve path '{dir}': {e}"))?;
-    let allowed = state.allowed_paths.iter().any(|p| canonical.starts_with(p));
-    if !allowed {
-        return Err(format!(
-            "directory '{dir}' is not within allowed directories"
-        ));
-    }
-
-    let entries = std::fs::read_dir(dir_path)
-        .map_err(|e| format!("failed to list directory '{dir}': {e}"))?;
-    let files = entries
-        .filter_map(Result::ok)
-        .filter(|entry| pattern.is_empty() || entry.file_name().to_string_lossy().contains(pattern))
-        .map(|entry| entry.file_name().to_string_lossy().to_string())
-        .collect();
-    Ok(files)
 }
 
 fn register_host_instance(
@@ -335,13 +256,13 @@ mod tests {
     fn read_metadata_and_list_files_deny_empty_allowed_paths() {
         let state = state_with_paths(Vec::new());
 
-        let metadata_error = read_file_metadata(&state, "/tmp/missing").unwrap_err();
+        let metadata_error = state.read_file_metadata("/tmp/missing").unwrap_err();
         assert!(
             metadata_error.contains("not within allowed directories"),
             "unexpected metadata error: {metadata_error}"
         );
 
-        let list_error = list_files(&state, "/tmp", "").unwrap_err();
+        let list_error = state.list_files("/tmp", "").unwrap_err();
         assert!(
             list_error.contains("not within allowed directories"),
             "unexpected list error: {list_error}"
@@ -355,13 +276,15 @@ mod tests {
         std::fs::write(&file_path, b"video").expect("write test file");
         let state = state_with_paths(vec![canonical(dir.path())]);
 
-        let bytes =
-            read_file_metadata(&state, file_path.to_str().expect("utf-8 path")).expect("metadata");
+        let bytes = state
+            .read_file_metadata(file_path.to_str().expect("utf-8 path"))
+            .expect("metadata");
         let metadata: serde_json::Value = rmp_serde::from_slice(&bytes).expect("metadata json");
         assert_eq!(metadata["size"], 5);
         assert_eq!(metadata["is_file"], true);
 
-        let files = list_files(&state, dir.path().to_str().expect("utf-8 path"), "clip")
+        let files = state
+            .list_files(dir.path().to_str().expect("utf-8 path"), "clip")
             .expect("list files");
         assert_eq!(files, vec!["clip.mov"]);
     }
@@ -374,23 +297,26 @@ mod tests {
         std::fs::write(&outside_file, b"outside").expect("write outside file");
         let state = state_with_paths(vec![canonical(allowed_dir.path())]);
 
-        let outside_error =
-            read_file_metadata(&state, outside_file.to_str().expect("utf-8 path")).unwrap_err();
+        let outside_error = state
+            .read_file_metadata(outside_file.to_str().expect("utf-8 path"))
+            .unwrap_err();
         assert!(
             outside_error.contains("not within allowed directories"),
             "unexpected outside path error: {outside_error}"
         );
 
         let missing_path = allowed_dir.path().join("missing.mov");
-        let missing_error =
-            read_file_metadata(&state, missing_path.to_str().expect("utf-8 path")).unwrap_err();
+        let missing_error = state
+            .read_file_metadata(missing_path.to_str().expect("utf-8 path"))
+            .unwrap_err();
         assert!(
             missing_error.contains("cannot resolve path"),
             "unexpected missing path error: {missing_error}"
         );
 
-        let outside_list_error =
-            list_files(&state, outside_dir.path().to_str().expect("utf-8 path"), "").unwrap_err();
+        let outside_list_error = state
+            .list_files(outside_dir.path().to_str().expect("utf-8 path"), "")
+            .unwrap_err();
         assert!(
             outside_list_error.contains("not within allowed directories"),
             "unexpected outside list error: {outside_list_error}"
@@ -411,16 +337,14 @@ mod tests {
         let state = configure_manifest_permissions(state, Some(&manifest));
 
         assert!(
-            list_files(
-                &state,
-                manifest_dir.path().to_str().expect("utf-8 path"),
-                ""
-            )
-            .is_ok(),
+            state
+                .list_files(manifest_dir.path().to_str().expect("utf-8 path"), "")
+                .is_ok(),
             "manifest path should be allowed"
         );
-        let error =
-            read_file_metadata(&state, config_file.to_str().expect("utf-8 path")).unwrap_err();
+        let error = state
+            .read_file_metadata(config_file.to_str().expect("utf-8 path"))
+            .unwrap_err();
         assert!(
             error.contains("not within allowed directories"),
             "config path should be overridden, got: {error}"

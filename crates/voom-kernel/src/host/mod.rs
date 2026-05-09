@@ -175,7 +175,8 @@ mod tests {
 
     #[test]
     fn test_plugin_data_in_memory() {
-        let mut state = HostState::new("test".into());
+        let mut state =
+            HostState::new("test".into()).with_capabilities(HashSet::from(["store".to_string()]));
 
         assert!(state.get_plugin_data("key1").unwrap().is_none());
 
@@ -192,7 +193,9 @@ mod tests {
     #[test]
     fn test_plugin_data_persistent_store() {
         let store = Arc::new(InMemoryPluginStore::new());
-        let mut state = HostState::new("test".into()).with_storage(store.clone());
+        let mut state = HostState::new("test".into())
+            .with_storage(store.clone())
+            .with_capabilities(HashSet::from(["store".to_string()]));
 
         state.set_plugin_data("key1", b"value1").unwrap();
         assert_eq!(state.get_plugin_data("key1").unwrap().unwrap(), b"value1");
@@ -235,19 +238,21 @@ mod tests {
         let state = HostState::new("test".into());
         let get_err = state.http_get("http://example.com", &[]).unwrap_err();
         assert!(
-            get_err.contains("no allowed domains"),
+            get_err.contains("lacks 'serve_http' capability"),
             "expected permission error, got: {get_err}"
         );
         let post_err = state.http_post("http://example.com", &[], b"").unwrap_err();
         assert!(
-            post_err.contains("no allowed domains"),
+            post_err.contains("lacks 'serve_http' capability"),
             "expected permission error, got: {post_err}"
         );
     }
 
     #[test]
     fn test_http_domain_not_in_allowlist() {
-        let state = HostState::new("test".into()).with_http_domains(vec!["api.example.com".into()]);
+        let state = HostState::new("test".into())
+            .with_http_domains(vec!["api.example.com".into()])
+            .with_capabilities(HashSet::from(["serve_http".to_string()]));
         let err = state.http_get("http://evil.com/data", &[]).unwrap_err();
         assert!(
             err.contains("not in the allowed list"),
@@ -257,7 +262,9 @@ mod tests {
 
     #[test]
     fn test_http_empty_allowlist_denies_all() {
-        let state = HostState::new("test".into()).with_http_domains(vec![]);
+        let state = HostState::new("test".into())
+            .with_http_domains(vec![])
+            .with_capabilities(HashSet::from(["serve_http".to_string()]));
         let err = state.http_get("http://example.com", &[]).unwrap_err();
         assert!(
             err.contains("no allowed domains"),
@@ -269,7 +276,9 @@ mod tests {
     fn test_http_get_connection_error() {
         // With HTTP enabled, a request to a non-routable address should return
         // a connection error (not "not yet implemented").
-        let state = HostState::new("test".into()).with_http_domains(vec!["192.0.2.1".into()]);
+        let state = HostState::new("test".into())
+            .with_http_domains(vec!["192.0.2.1".into()])
+            .with_capabilities(HashSet::from(["serve_http".to_string()]));
         let result = state.http_get("http://192.0.2.1:1", &[]);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -281,7 +290,9 @@ mod tests {
 
     #[test]
     fn test_http_post_connection_error() {
-        let state = HostState::new("test".into()).with_http_domains(vec!["192.0.2.1".into()]);
+        let state = HostState::new("test".into())
+            .with_http_domains(vec!["192.0.2.1".into()])
+            .with_capabilities(HashSet::from(["serve_http".to_string()]));
         let result = state.http_post("http://192.0.2.1:1", &[], b"body");
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -370,7 +381,8 @@ mod tests {
 
     #[test]
     fn test_plugin_data_size_limit() {
-        let mut state = HostState::new("test".into());
+        let mut state =
+            HostState::new("test".into()).with_capabilities(HashSet::from(["store".to_string()]));
         // Just under the limit should work.
         let ok_data = vec![0u8; MAX_PLUGIN_DATA_VALUE_SIZE];
         assert!(state.set_plugin_data("key", &ok_data).is_ok());
@@ -495,7 +507,8 @@ mod tests {
         let config = serde_json::json!({"api_key": "original"});
         let mut state = HostState::new("test".into())
             .with_storage(store.clone())
-            .with_initial_config(config);
+            .with_initial_config(config)
+            .with_capabilities(HashSet::from(["store".to_string()]));
 
         // Override via set_plugin_data (writes to storage).
         let override_config = serde_json::json!({"api_key": "overridden"});

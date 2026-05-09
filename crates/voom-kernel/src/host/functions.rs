@@ -140,6 +140,7 @@ impl HostState {
 
     /// Set plugin-specific persisted data.
     pub fn set_plugin_data(&mut self, key: &str, value: &[u8]) -> Result<(), String> {
+        self.require_capability_kind("store", "plugin data mutation")?;
         if value.len() > MAX_PLUGIN_DATA_VALUE_SIZE {
             return Err(format!(
                 "plugin data value exceeds maximum size ({} bytes, max {})",
@@ -182,6 +183,7 @@ impl HostState {
     /// Canonicalizes the parent directory (since the file may not exist
     /// yet) and verifies it is within the allowed paths.
     pub fn write_file(&self, path: &str, content: &[u8]) -> Result<(), String> {
+        self.require_filesystem_capability("file writing")?;
         if self.allowed_paths.is_empty() {
             return Err(format!(
                 "path '{}' is not within allowed directories for plugin '{}' \
@@ -277,6 +279,7 @@ impl HostState {
     /// Query transitions for a file by its UUID.
     /// Returns MessagePack-serialized `Vec<FileTransition>`.
     pub fn get_file_transitions(&self, file_id: &uuid::Uuid) -> Result<Vec<u8>, String> {
+        self.require_capability_kind("store", "transition history access")?;
         if self.allowed_paths.is_empty() {
             return Err(format!(
                 "file transitions are not within allowed directories for plugin '{}' \
@@ -330,6 +333,7 @@ impl HostState {
     /// host functions: requires a non-empty path allowlist and verifies the
     /// query path falls within it.
     pub fn get_path_transitions(&self, path: &str) -> Result<Vec<u8>, String> {
+        self.require_capability_kind("store", "transition history access")?;
         if self.allowed_paths.is_empty() {
             return Err(format!(
                 "path '{path}' is not within allowed directories for plugin '{}' \
@@ -382,6 +386,7 @@ impl HostState {
         url: &str,
         headers: &[(String, String)],
     ) -> Result<HttpResponse, String> {
+        self.require_capability_kind("serve_http", "HTTP GET")?;
         self.check_http_domain(url)?;
 
         let mut request = ureq::get(url);
@@ -403,6 +408,7 @@ impl HostState {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<HttpResponse, String> {
+        self.require_capability_kind("serve_http", "HTTP POST")?;
         self.check_http_domain(url)?;
 
         let mut request = ureq::post(url);
@@ -415,6 +421,60 @@ impl HostState {
             .map_err(|e| format!("HTTP POST failed: {e}"))?;
 
         parse_response(response)
+    }
+
+    /// Read filesystem metadata for an allowed path and serialize it as MessagePack JSON.
+    pub fn read_file_metadata(&self, path: &str) -> Result<Vec<u8>, String> {
+        self.require_filesystem_capability("file metadata reads")?;
+        if self.allowed_paths.is_empty() {
+            return Err(format!(
+                "path '{path}' is not within allowed directories for plugin '{}' \
+                 (no paths configured)",
+                self.plugin_name
+            ));
+        }
+        self.check_path_allowed(path)?;
+
+        let file_path = std::path::Path::new(path);
+        let meta = std::fs::metadata(file_path)
+            .map_err(|e| format!("failed to read metadata for '{path}': {e}"))?;
+        let info = serde_json::json!({
+            "size": meta.len(),
+            "is_file": meta.is_file(),
+            "is_dir": meta.is_dir(),
+            "readonly": meta.permissions().readonly(),
+            "modified": meta.modified().ok().map(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            }),
+        });
+        rmp_serde::to_vec(&info).map_err(|e| format!("failed to serialize metadata: {e}"))
+    }
+
+    /// List files in an allowed directory whose names contain `pattern`.
+    pub fn list_files(&self, dir: &str, pattern: &str) -> Result<Vec<String>, String> {
+        self.require_filesystem_capability("directory listing")?;
+        if self.allowed_paths.is_empty() {
+            return Err(format!(
+                "directory '{dir}' is not within allowed directories for plugin '{}' \
+                 (no paths configured)",
+                self.plugin_name
+            ));
+        }
+        self.check_path_allowed(dir)?;
+
+        let dir_path = std::path::Path::new(dir);
+        let entries = std::fs::read_dir(dir_path)
+            .map_err(|e| format!("failed to list directory '{dir}': {e}"))?;
+        let files = entries
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                pattern.is_empty() || entry.file_name().to_string_lossy().contains(pattern)
+            })
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        Ok(files)
     }
 }
 
@@ -444,13 +504,18 @@ fn parse_response(response: ureq::Response) -> Result<HttpResponse, String> {
 mod tests {
     use super::*;
     use crate::host::HostState;
+    use std::collections::HashSet;
     use std::sync::Arc;
+
+    fn state_with_capability(kind: &str) -> HostState {
+        HostState::new("test".into()).with_capabilities(HashSet::from([kind.to_string()]))
+    }
 
     #[test]
     fn test_write_file_allowed_path() {
         let dir = tempfile::tempdir().unwrap();
         let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
-        let state = HostState::new("test".into()).with_paths(vec![canonical_dir.clone()]);
+        let state = state_with_capability("discover").with_paths(vec![canonical_dir.clone()]);
         let file_path = canonical_dir.join("output.srt");
         let result = state.write_file(
             &file_path.to_string_lossy(),
@@ -467,7 +532,7 @@ mod tests {
     fn test_write_file_blocked_path() {
         let dir = tempfile::tempdir().unwrap();
         let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
-        let state = HostState::new("test".into()).with_paths(vec![canonical_dir]);
+        let state = state_with_capability("discover").with_paths(vec![canonical_dir]);
         let result = state.write_file("/etc/evil.txt", b"bad");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not within allowed"));
@@ -476,7 +541,7 @@ mod tests {
     #[test]
     fn test_write_file_no_paths_allowed() {
         let dir = tempfile::tempdir().unwrap();
-        let state = HostState::new("test".into());
+        let state = state_with_capability("discover");
         let file_path = dir.path().join("output.txt");
         let result = state.write_file(&file_path.to_string_lossy(), b"hello");
         // Empty allowed_paths = deny all (matches allowed_tools semantics)
@@ -555,7 +620,7 @@ mod tests {
 
     #[test]
     fn test_get_file_transitions_no_store() {
-        let state = HostState::new("test".into()).with_paths(vec![std::path::PathBuf::from("/")]);
+        let state = state_with_capability("store").with_paths(vec![std::path::PathBuf::from("/")]);
         let result = state.get_file_transitions(&uuid::Uuid::new_v4());
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not available"));
@@ -580,7 +645,8 @@ mod tests {
 
         let state = HostState::new("test".into())
             .with_transition_store(store)
-            .with_paths(vec![PathBuf::from("/movies")]);
+            .with_paths(vec![PathBuf::from("/movies")])
+            .with_capabilities(HashSet::from(["store".to_string()]));
 
         let bytes = state.get_file_transitions(&file_id).unwrap();
         let transitions: Vec<FileTransition> = rmp_serde::from_slice(&bytes).expect("deserialize");
@@ -590,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_get_path_transitions_no_paths_configured() {
-        let state = HostState::new("test".into());
+        let state = state_with_capability("store");
         let result = state.get_path_transitions("/movies/test.mkv");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("no paths configured"));
@@ -599,7 +665,7 @@ mod tests {
     #[test]
     fn test_get_path_transitions_no_store() {
         use std::path::PathBuf;
-        let state = HostState::new("test".into()).with_paths(vec![PathBuf::from("/movies")]);
+        let state = state_with_capability("store").with_paths(vec![PathBuf::from("/movies")]);
         let result = state.get_path_transitions("/movies/test.mkv");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not available"));
@@ -624,7 +690,8 @@ mod tests {
 
         let state = HostState::new("test".into())
             .with_transition_store(store)
-            .with_paths(vec![PathBuf::from("/movies")]);
+            .with_paths(vec![PathBuf::from("/movies")])
+            .with_capabilities(HashSet::from(["store".to_string()]));
 
         let bytes = state.get_path_transitions(&path.to_string_lossy()).unwrap();
         let transitions: Vec<FileTransition> = rmp_serde::from_slice(&bytes).expect("deserialize");
@@ -664,7 +731,8 @@ mod tests {
 
         let state = HostState::new("test".into())
             .with_transition_store(store)
-            .with_paths(vec![PathBuf::from("/movies")]);
+            .with_paths(vec![PathBuf::from("/movies")])
+            .with_capabilities(HashSet::from(["store".to_string()]));
         let bytes = state.get_file_transitions(&file_id).unwrap();
         let transitions: Vec<FileTransition> = rmp_serde::from_slice(&bytes).expect("deserialize");
         assert_eq!(transitions.len(), 1);
@@ -676,7 +744,7 @@ mod tests {
         use crate::host::InMemoryTransitionStore;
 
         let store = Arc::new(InMemoryTransitionStore::new());
-        let state = HostState::new("test".into()).with_transition_store(store);
+        let state = state_with_capability("store").with_transition_store(store);
 
         let result = state.get_file_transitions(&uuid::Uuid::new_v4());
         assert!(result.is_err());
@@ -702,7 +770,8 @@ mod tests {
 
         let state = HostState::new("test".into())
             .with_transition_store(store)
-            .with_paths(vec![PathBuf::from("/movies")]);
+            .with_paths(vec![PathBuf::from("/movies")])
+            .with_capabilities(HashSet::from(["store".to_string()]));
 
         let result = state.get_file_transitions(&file_id);
         assert!(result.is_err());
@@ -718,7 +787,8 @@ mod tests {
         let store = Arc::new(InMemoryTransitionStore::new());
         let state = HostState::new("test".into())
             .with_transition_store(store)
-            .with_paths(vec![std::path::PathBuf::from("/movies")]);
+            .with_paths(vec![std::path::PathBuf::from("/movies")])
+            .with_capabilities(HashSet::from(["store".to_string()]));
 
         let result = state.get_path_transitions("/etc/passwd");
         assert!(result.is_err());
@@ -733,7 +803,7 @@ mod tests {
 
         let store = Arc::new(InMemoryTransitionStore::new());
         // Empty allowed_paths = deny all, matching write_file and run_tool.
-        let state = HostState::new("test".into()).with_transition_store(store);
+        let state = state_with_capability("store").with_transition_store(store);
 
         let result = state.get_path_transitions("/movies/test.mkv");
         assert!(result.is_err());
@@ -827,7 +897,7 @@ mod tests {
     fn test_write_file_no_filename_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
-        let state = HostState::new("test".into()).with_paths(vec![canonical_dir.clone()]);
+        let state = state_with_capability("discover").with_paths(vec![canonical_dir.clone()]);
         // A path ending in `..` resolves to a parent that exists and canonicalizes
         // successfully, but `file_name()` returns None — this is the structural
         // check inside write_file that we want to exercise.
@@ -845,7 +915,7 @@ mod tests {
     fn test_write_file_unresolvable_parent_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
-        let state = HostState::new("test".into()).with_paths(vec![canonical_dir]);
+        let state = state_with_capability("discover").with_paths(vec![canonical_dir]);
         // Parent directory does not exist → canonicalize fails.
         let result = state.write_file("/definitely/does/not/exist/file.txt", b"data");
         assert!(result.is_err());
@@ -860,14 +930,14 @@ mod tests {
 
     #[test]
     fn test_set_plugin_data_exact_boundary_accepted() {
-        let mut state = HostState::new("test".into());
+        let mut state = state_with_capability("store");
         let at_limit = vec![0_u8; MAX_PLUGIN_DATA_VALUE_SIZE];
         assert!(state.set_plugin_data("k", &at_limit).is_ok());
     }
 
     #[test]
     fn test_set_plugin_data_one_over_boundary_rejected() {
-        let mut state = HostState::new("test".into());
+        let mut state = state_with_capability("store");
         let over_limit = vec![0_u8; MAX_PLUGIN_DATA_VALUE_SIZE + 1];
         let err = state.set_plugin_data("k", &over_limit).unwrap_err();
         assert!(
@@ -883,7 +953,7 @@ mod tests {
         // the cap applies regardless of the storage attachment.
         use crate::host::{InMemoryPluginStore, WasmPluginStore};
         let store: Arc<dyn WasmPluginStore> = Arc::new(InMemoryPluginStore::new());
-        let mut state = HostState::new("test".into()).with_storage(Arc::clone(&store));
+        let mut state = state_with_capability("store").with_storage(Arc::clone(&store));
         let over_limit = vec![0_u8; MAX_PLUGIN_DATA_VALUE_SIZE + 1];
         let err = state.set_plugin_data("k", &over_limit).unwrap_err();
         assert!(
@@ -963,7 +1033,9 @@ mod tests {
     fn test_set_plugin_data_writes_to_storage_when_attached() {
         use crate::host::{InMemoryPluginStore, WasmPluginStore};
         let store: Arc<dyn WasmPluginStore> = Arc::new(InMemoryPluginStore::new());
-        let mut state = HostState::new("routing-plugin".into()).with_storage(Arc::clone(&store));
+        let mut state = HostState::new("routing-plugin".into())
+            .with_storage(Arc::clone(&store))
+            .with_capabilities(HashSet::from(["store".to_string()]));
 
         state.set_plugin_data("key", b"value").unwrap();
 
