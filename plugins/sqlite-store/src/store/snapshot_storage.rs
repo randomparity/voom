@@ -2,8 +2,8 @@ use rusqlite::params;
 
 use voom_domain::errors::Result;
 use voom_domain::stats::{
-    AudioStats, FileStats, JobAggregateStats, LibrarySnapshot, ProcessingAggregateStats,
-    SnapshotTrigger, SubtitleStats, VideoStats,
+    AudioStats, FileStats, JobAggregateStats, LibrarySnapshot, LibrarySnapshotInput,
+    ProcessingAggregateStats, SnapshotTrigger, SubtitleStats, VideoStats,
 };
 use voom_domain::storage::SnapshotStorage;
 
@@ -20,9 +20,15 @@ impl SnapshotStorage for SqliteStore {
         let processing = gather_processing_stats(&conn)?;
         let jobs = gather_job_stats(&conn)?;
 
-        Ok(LibrarySnapshot::new(
-            trigger, files, video, audio, subtitles, processing, jobs,
-        ))
+        Ok(LibrarySnapshot::new(LibrarySnapshotInput {
+            trigger,
+            files,
+            video,
+            audio,
+            subtitles,
+            processing,
+            jobs,
+        }))
     }
 
     fn save_snapshot(&self, snapshot: &LibrarySnapshot) -> Result<()> {

@@ -10,7 +10,9 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::verification::{VerificationMode, VerificationOutcome, VerificationRecord};
+use voom_domain::verification::{
+    VerificationMode, VerificationOutcome, VerificationRecord, VerificationRecordInput,
+};
 
 use crate::util::truncate;
 
@@ -69,17 +71,17 @@ pub fn run_quick(
         Some(truncated)
     };
 
-    Ok(VerificationRecord::new(
-        Uuid::new_v4(),
-        file_id,
-        started,
-        VerificationMode::Quick,
+    Ok(VerificationRecord::new(VerificationRecordInput {
+        id: Uuid::new_v4(),
+        file_id: file_id.to_string(),
+        verified_at: started,
+        mode: VerificationMode::Quick,
         outcome,
         error_count,
         warning_count,
-        None,
+        content_hash: None,
         details,
-    ))
+    }))
 }
 
 #[cfg(test)]

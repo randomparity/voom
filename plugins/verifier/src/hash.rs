@@ -12,7 +12,9 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::verification::{VerificationMode, VerificationOutcome, VerificationRecord};
+use voom_domain::verification::{
+    VerificationMode, VerificationOutcome, VerificationRecord, VerificationRecordInput,
+};
 
 /// Run hash verification on `path`. `prior` is the previous hash record
 /// for the same file (used to detect bit-rot). `None` means this is the
@@ -44,17 +46,17 @@ pub fn run_hash(
         None
     };
     let error_count = u32::from(outcome == VerificationOutcome::Error);
-    Ok(VerificationRecord::new(
-        Uuid::new_v4(),
-        file_id,
-        started,
-        VerificationMode::Hash,
+    Ok(VerificationRecord::new(VerificationRecordInput {
+        id: Uuid::new_v4(),
+        file_id: file_id.to_string(),
+        verified_at: started,
+        mode: VerificationMode::Hash,
         outcome,
         error_count,
-        0,
-        Some(hash),
+        warning_count: 0,
+        content_hash: Some(hash),
         details,
-    ))
+    }))
 }
 
 fn compute_sha256(path: &Path) -> Result<String> {
@@ -107,17 +109,17 @@ mod tests {
 
     #[test]
     fn mismatched_hash_is_error() {
-        let prior = VerificationRecord::new(
-            Uuid::new_v4(),
-            "file-id",
-            Utc::now(),
-            VerificationMode::Hash,
-            VerificationOutcome::Ok,
-            0,
-            0,
-            Some("deadbeef".into()),
-            None,
-        );
+        let prior = VerificationRecord::new(VerificationRecordInput {
+            id: Uuid::new_v4(),
+            file_id: "file-id".into(),
+            verified_at: Utc::now(),
+            mode: VerificationMode::Hash,
+            outcome: VerificationOutcome::Ok,
+            error_count: 0,
+            warning_count: 0,
+            content_hash: Some("deadbeef".into()),
+            details: None,
+        });
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         tmp.write_all(b"different content").unwrap();
         let rec = run_hash("file-id", tmp.path(), Some(&prior)).unwrap();

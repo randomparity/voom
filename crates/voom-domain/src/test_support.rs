@@ -33,8 +33,8 @@ use crate::transition::{
     DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
 };
 use crate::verification::{
-    IntegritySummary, VerificationFilters, VerificationMode, VerificationOutcome,
-    VerificationRecord,
+    IntegritySummary, IntegritySummaryInput, VerificationFilters, VerificationMode,
+    VerificationOutcome, VerificationRecord,
 };
 
 /// Create a standard test `MediaFile` with video, two audio, and one subtitle track.
@@ -916,14 +916,14 @@ impl crate::storage::VerificationStorage for InMemoryStore {
             }
         }
 
-        Ok(IntegritySummary::new(
+        Ok(IntegritySummary::new(IntegritySummaryInput {
             total_files,
             never_verified,
             stale,
             with_errors,
             with_warnings,
             hash_mismatches,
-        ))
+        }))
     }
 }
 
@@ -1088,6 +1088,7 @@ fn matches_transcode_outcome_filter(
 mod verification_storage_tests {
     use super::*;
     use crate::storage::{FileStorage, VerificationStorage};
+    use crate::verification::VerificationRecordInput;
 
     fn media_file(path: &str) -> MediaFile {
         MediaFile::new(PathBuf::from(path))
@@ -1117,28 +1118,28 @@ mod verification_storage_tests {
         let store = InMemoryStore::new()
             .with_file(stale_file)
             .with_file(fresh_file)
-            .with_verification(VerificationRecord::new(
-                Uuid::new_v4(),
-                stale_id.to_string(),
-                cutoff - chrono::Duration::seconds(1),
-                VerificationMode::Quick,
-                VerificationOutcome::Ok,
-                0,
-                0,
-                None,
-                None,
-            ))
-            .with_verification(VerificationRecord::new(
-                Uuid::new_v4(),
-                fresh_id.to_string(),
-                cutoff + chrono::Duration::seconds(1),
-                VerificationMode::Quick,
-                VerificationOutcome::Ok,
-                0,
-                0,
-                None,
-                None,
-            ));
+            .with_verification(VerificationRecord::new(VerificationRecordInput {
+                id: Uuid::new_v4(),
+                file_id: stale_id.to_string(),
+                verified_at: cutoff - chrono::Duration::seconds(1),
+                mode: VerificationMode::Quick,
+                outcome: VerificationOutcome::Ok,
+                error_count: 0,
+                warning_count: 0,
+                content_hash: None,
+                details: None,
+            }))
+            .with_verification(VerificationRecord::new(VerificationRecordInput {
+                id: Uuid::new_v4(),
+                file_id: fresh_id.to_string(),
+                verified_at: cutoff + chrono::Duration::seconds(1),
+                mode: VerificationMode::Quick,
+                outcome: VerificationOutcome::Ok,
+                error_count: 0,
+                warning_count: 0,
+                content_hash: None,
+                details: None,
+            }));
 
         let due = store
             .list_files_due_for_verification(cutoff)

@@ -8,7 +8,8 @@ use voom_domain::media::{Container, MediaFile};
 use voom_domain::storage::VerificationStorage;
 use voom_domain::transition::FileStatus;
 use voom_domain::verification::{
-    IntegritySummary, VerificationFilters, VerificationMode, VerificationRecord,
+    IntegritySummary, IntegritySummaryInput, VerificationFilters, VerificationMode,
+    VerificationRecord,
 };
 
 use super::row_mappers::row_to_verification;
@@ -224,14 +225,14 @@ impl VerificationStorage for SqliteStore {
             .query_row(INTEGRITY_HASH_MISMATCHES_SQL, [], |r| r.get(0))
             .map_err(storage_err("failed to count hash mismatches"))?;
 
-        Ok(IntegritySummary::new(
-            u64::try_from(total_files.max(0)).unwrap_or(0),
-            u64::try_from(never_verified.max(0)).unwrap_or(0),
-            u64::try_from(stale.max(0)).unwrap_or(0),
-            u64::try_from(with_errors.max(0)).unwrap_or(0),
-            u64::try_from(with_warnings.max(0)).unwrap_or(0),
-            u64::try_from(hash_mismatches.max(0)).unwrap_or(0),
-        ))
+        Ok(IntegritySummary::new(IntegritySummaryInput {
+            total_files: u64::try_from(total_files.max(0)).unwrap_or(0),
+            never_verified: u64::try_from(never_verified.max(0)).unwrap_or(0),
+            stale: u64::try_from(stale.max(0)).unwrap_or(0),
+            with_errors: u64::try_from(with_errors.max(0)).unwrap_or(0),
+            with_warnings: u64::try_from(with_warnings.max(0)).unwrap_or(0),
+            hash_mismatches: u64::try_from(hash_mismatches.max(0)).unwrap_or(0),
+        }))
     }
 }
 
@@ -246,6 +247,7 @@ mod tests {
     use voom_domain::test_support::InMemoryStore;
     use voom_domain::transition::FileStatus;
     use voom_domain::verification::VerificationOutcome;
+    use voom_domain::verification::VerificationRecordInput;
 
     fn store_with_file() -> (SqliteStore, String) {
         let store = SqliteStore::in_memory().expect("in-memory store");
@@ -278,33 +280,33 @@ mod tests {
         mode: VerificationMode,
         outcome: VerificationOutcome,
     ) -> VerificationRecord {
-        VerificationRecord::new(
-            Uuid::new_v4(),
-            file_id.to_string(),
+        VerificationRecord::new(VerificationRecordInput {
+            id: Uuid::new_v4(),
+            file_id: file_id.to_string(),
             verified_at,
             mode,
             outcome,
-            u32::from(outcome == VerificationOutcome::Error),
-            u32::from(outcome == VerificationOutcome::Warning),
-            None,
-            None,
-        )
+            error_count: u32::from(outcome == VerificationOutcome::Error),
+            warning_count: u32::from(outcome == VerificationOutcome::Warning),
+            content_hash: None,
+            details: None,
+        })
     }
 
     #[test]
     fn insert_and_list_verification() {
         let (store, file_id) = store_with_file();
-        let record = VerificationRecord::new(
-            Uuid::new_v4(),
-            file_id.clone(),
-            Utc::now(),
-            VerificationMode::Quick,
-            VerificationOutcome::Ok,
-            0,
-            0,
-            None,
-            None,
-        );
+        let record = VerificationRecord::new(VerificationRecordInput {
+            id: Uuid::new_v4(),
+            file_id: file_id.clone(),
+            verified_at: Utc::now(),
+            mode: VerificationMode::Quick,
+            outcome: VerificationOutcome::Ok,
+            error_count: 0,
+            warning_count: 0,
+            content_hash: None,
+            details: None,
+        });
         store.insert_verification(&record).expect("insert");
 
         let mut filters = VerificationFilters::default();
@@ -319,28 +321,28 @@ mod tests {
     #[test]
     fn latest_verification_returns_newest() {
         let (store, file_id) = store_with_file();
-        let earlier = VerificationRecord::new(
-            Uuid::new_v4(),
-            file_id.clone(),
-            Utc::now() - chrono::Duration::hours(1),
-            VerificationMode::Hash,
-            VerificationOutcome::Ok,
-            0,
-            0,
-            Some("hash-a".into()),
-            None,
-        );
-        let later = VerificationRecord::new(
-            Uuid::new_v4(),
-            file_id.clone(),
-            Utc::now(),
-            VerificationMode::Hash,
-            VerificationOutcome::Ok,
-            0,
-            0,
-            Some("hash-b".into()),
-            None,
-        );
+        let earlier = VerificationRecord::new(VerificationRecordInput {
+            id: Uuid::new_v4(),
+            file_id: file_id.clone(),
+            verified_at: Utc::now() - chrono::Duration::hours(1),
+            mode: VerificationMode::Hash,
+            outcome: VerificationOutcome::Ok,
+            error_count: 0,
+            warning_count: 0,
+            content_hash: Some("hash-a".into()),
+            details: None,
+        });
+        let later = VerificationRecord::new(VerificationRecordInput {
+            id: Uuid::new_v4(),
+            file_id: file_id.clone(),
+            verified_at: Utc::now(),
+            mode: VerificationMode::Hash,
+            outcome: VerificationOutcome::Ok,
+            error_count: 0,
+            warning_count: 0,
+            content_hash: Some("hash-b".into()),
+            details: None,
+        });
         store.insert_verification(&earlier).expect("insert earlier");
         store.insert_verification(&later).expect("insert later");
 
@@ -372,7 +374,10 @@ mod tests {
         let summary = store
             .integrity_summary(Utc::now() - chrono::Duration::days(30))
             .expect("summary");
-        assert_eq!(summary, IntegritySummary::new(0, 0, 0, 0, 0, 0));
+        assert_eq!(
+            summary,
+            IntegritySummary::new(IntegritySummaryInput::default())
+        );
     }
 
     #[test]
@@ -420,7 +425,17 @@ mod tests {
         }
 
         let summary = store.integrity_summary(cutoff).expect("summary");
-        assert_eq!(summary, IntegritySummary::new(4, 1, 1, 1, 1, 0));
+        assert_eq!(
+            summary,
+            IntegritySummary::new(IntegritySummaryInput {
+                total_files: 4,
+                never_verified: 1,
+                stale: 1,
+                with_errors: 1,
+                with_warnings: 1,
+                hash_mismatches: 0,
+            })
+        );
     }
 
     #[test]
@@ -430,28 +445,28 @@ mod tests {
         let low_id = Uuid::from_u128(1);
         let high_id = Uuid::from_u128(2);
 
-        let older_by_id = VerificationRecord::new(
-            low_id,
-            file_id.clone(),
+        let older_by_id = VerificationRecord::new(VerificationRecordInput {
+            id: low_id,
+            file_id: file_id.clone(),
             verified_at,
-            VerificationMode::Quick,
-            VerificationOutcome::Error,
-            1,
-            0,
-            None,
-            None,
-        );
-        let latest_by_id = VerificationRecord::new(
-            high_id,
+            mode: VerificationMode::Quick,
+            outcome: VerificationOutcome::Error,
+            error_count: 1,
+            warning_count: 0,
+            content_hash: None,
+            details: None,
+        });
+        let latest_by_id = VerificationRecord::new(VerificationRecordInput {
+            id: high_id,
             file_id,
             verified_at,
-            VerificationMode::Quick,
-            VerificationOutcome::Warning,
-            0,
-            1,
-            None,
-            None,
-        );
+            mode: VerificationMode::Quick,
+            outcome: VerificationOutcome::Warning,
+            error_count: 0,
+            warning_count: 1,
+            content_hash: None,
+            details: None,
+        });
         store
             .insert_verification(&older_by_id)
             .expect("insert older");
@@ -590,30 +605,30 @@ mod tests {
         stale_file.content_hash = Some("stale".into());
         fresh_file.content_hash = Some("fresh".into());
         store
-            .insert_verification(&VerificationRecord::new(
-                Uuid::new_v4(),
-                stale_file.id.to_string(),
-                cutoff - chrono::Duration::seconds(1),
-                VerificationMode::Quick,
-                VerificationOutcome::Ok,
-                0,
-                0,
-                None,
-                None,
-            ))
+            .insert_verification(&VerificationRecord::new(VerificationRecordInput {
+                id: Uuid::new_v4(),
+                file_id: stale_file.id.to_string(),
+                verified_at: cutoff - chrono::Duration::seconds(1),
+                mode: VerificationMode::Quick,
+                outcome: VerificationOutcome::Ok,
+                error_count: 0,
+                warning_count: 0,
+                content_hash: None,
+                details: None,
+            }))
             .expect("insert stale verification");
         store
-            .insert_verification(&VerificationRecord::new(
-                Uuid::new_v4(),
-                fresh_file.id.to_string(),
-                cutoff + chrono::Duration::seconds(1),
-                VerificationMode::Quick,
-                VerificationOutcome::Ok,
-                0,
-                0,
-                None,
-                None,
-            ))
+            .insert_verification(&VerificationRecord::new(VerificationRecordInput {
+                id: Uuid::new_v4(),
+                file_id: fresh_file.id.to_string(),
+                verified_at: cutoff + chrono::Duration::seconds(1),
+                mode: VerificationMode::Quick,
+                outcome: VerificationOutcome::Ok,
+                error_count: 0,
+                warning_count: 0,
+                content_hash: None,
+                details: None,
+            }))
             .expect("insert fresh verification");
 
         let due = store
@@ -641,29 +656,29 @@ mod tests {
     fn hash_mismatch_detected() {
         let (store, fid) = store_with_file();
         // First hash run — baseline
-        let first = VerificationRecord::new(
-            Uuid::new_v4(),
-            fid.clone(),
-            Utc::now() - chrono::Duration::hours(2),
-            VerificationMode::Hash,
-            voom_domain::verification::VerificationOutcome::Ok,
-            0,
-            0,
-            Some("hash-a".into()),
-            None,
-        );
+        let first = VerificationRecord::new(VerificationRecordInput {
+            id: Uuid::new_v4(),
+            file_id: fid.clone(),
+            verified_at: Utc::now() - chrono::Duration::hours(2),
+            mode: VerificationMode::Hash,
+            outcome: voom_domain::verification::VerificationOutcome::Ok,
+            error_count: 0,
+            warning_count: 0,
+            content_hash: Some("hash-a".into()),
+            details: None,
+        });
         // Second hash run — different content
-        let second = VerificationRecord::new(
-            Uuid::new_v4(),
-            fid,
-            Utc::now(),
-            VerificationMode::Hash,
-            voom_domain::verification::VerificationOutcome::Error,
-            1,
-            0,
-            Some("hash-b".into()),
-            Some(r#"{"prior_hash":"hash-a"}"#.into()),
-        );
+        let second = VerificationRecord::new(VerificationRecordInput {
+            id: Uuid::new_v4(),
+            file_id: fid,
+            verified_at: Utc::now(),
+            mode: VerificationMode::Hash,
+            outcome: voom_domain::verification::VerificationOutcome::Error,
+            error_count: 1,
+            warning_count: 0,
+            content_hash: Some("hash-b".into()),
+            details: Some(r#"{"prior_hash":"hash-a"}"#.into()),
+        });
         store.insert_verification(&first).unwrap();
         store.insert_verification(&second).unwrap();
         let summary = store
@@ -675,28 +690,28 @@ mod tests {
     #[test]
     fn no_hash_mismatch_when_identical() {
         let (store, fid) = store_with_file();
-        let first = VerificationRecord::new(
-            Uuid::new_v4(),
-            fid.clone(),
-            Utc::now() - chrono::Duration::hours(2),
-            VerificationMode::Hash,
-            voom_domain::verification::VerificationOutcome::Ok,
-            0,
-            0,
-            Some("same-hash".into()),
-            None,
-        );
-        let second = VerificationRecord::new(
-            Uuid::new_v4(),
-            fid,
-            Utc::now(),
-            VerificationMode::Hash,
-            voom_domain::verification::VerificationOutcome::Ok,
-            0,
-            0,
-            Some("same-hash".into()),
-            None,
-        );
+        let first = VerificationRecord::new(VerificationRecordInput {
+            id: Uuid::new_v4(),
+            file_id: fid.clone(),
+            verified_at: Utc::now() - chrono::Duration::hours(2),
+            mode: VerificationMode::Hash,
+            outcome: voom_domain::verification::VerificationOutcome::Ok,
+            error_count: 0,
+            warning_count: 0,
+            content_hash: Some("same-hash".into()),
+            details: None,
+        });
+        let second = VerificationRecord::new(VerificationRecordInput {
+            id: Uuid::new_v4(),
+            file_id: fid,
+            verified_at: Utc::now(),
+            mode: VerificationMode::Hash,
+            outcome: voom_domain::verification::VerificationOutcome::Ok,
+            error_count: 0,
+            warning_count: 0,
+            content_hash: Some("same-hash".into()),
+            details: None,
+        });
         store.insert_verification(&first).unwrap();
         store.insert_verification(&second).unwrap();
         let summary = store
@@ -709,29 +724,29 @@ mod tests {
     fn with_errors_uses_latest_only() {
         let (store, fid) = store_with_file();
         // Older error
-        let earlier = VerificationRecord::new(
-            Uuid::new_v4(),
-            fid.clone(),
-            Utc::now() - chrono::Duration::hours(2),
-            VerificationMode::Quick,
-            voom_domain::verification::VerificationOutcome::Error,
-            1,
-            0,
-            None,
-            None,
-        );
+        let earlier = VerificationRecord::new(VerificationRecordInput {
+            id: Uuid::new_v4(),
+            file_id: fid.clone(),
+            verified_at: Utc::now() - chrono::Duration::hours(2),
+            mode: VerificationMode::Quick,
+            outcome: voom_domain::verification::VerificationOutcome::Error,
+            error_count: 1,
+            warning_count: 0,
+            content_hash: None,
+            details: None,
+        });
         // Newer ok — should make this file NOT count as with_errors
-        let later = VerificationRecord::new(
-            Uuid::new_v4(),
-            fid,
-            Utc::now(),
-            VerificationMode::Quick,
-            voom_domain::verification::VerificationOutcome::Ok,
-            0,
-            0,
-            None,
-            None,
-        );
+        let later = VerificationRecord::new(VerificationRecordInput {
+            id: Uuid::new_v4(),
+            file_id: fid,
+            verified_at: Utc::now(),
+            mode: VerificationMode::Quick,
+            outcome: voom_domain::verification::VerificationOutcome::Ok,
+            error_count: 0,
+            warning_count: 0,
+            content_hash: None,
+            details: None,
+        });
         store.insert_verification(&earlier).unwrap();
         store.insert_verification(&later).unwrap();
         let summary = store

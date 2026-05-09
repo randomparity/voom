@@ -9,7 +9,9 @@ use uuid::Uuid;
 use voom_domain::job::{Job, JobType};
 use voom_domain::media::{Container, MediaFile};
 use voom_domain::test_support::InMemoryStore;
-use voom_domain::verification::{VerificationMode, VerificationOutcome, VerificationRecord};
+use voom_domain::verification::{
+    VerificationMode, VerificationOutcome, VerificationRecord, VerificationRecordInput,
+};
 
 fn make_test_file(name: &str) -> MediaFile {
     let mut file = MediaFile::new(format!("/media/{name}").into());
@@ -21,17 +23,17 @@ fn make_test_file(name: &str) -> MediaFile {
 }
 
 fn make_verification(file_id: Uuid, outcome: VerificationOutcome) -> VerificationRecord {
-    VerificationRecord::new(
-        Uuid::new_v4(),
-        file_id.to_string(),
-        chrono::Utc::now(),
-        VerificationMode::Hash,
+    VerificationRecord::new(VerificationRecordInput {
+        id: Uuid::new_v4(),
+        file_id: file_id.to_string(),
+        verified_at: chrono::Utc::now(),
+        mode: VerificationMode::Hash,
         outcome,
-        u32::from(outcome == VerificationOutcome::Error),
-        0,
-        Some("abc123".into()),
-        Some("verification details".into()),
-    )
+        error_count: u32::from(outcome == VerificationOutcome::Error),
+        warning_count: 0,
+        content_hash: Some("abc123".into()),
+        details: Some("verification details".into()),
+    })
 }
 
 fn make_verification_at(
@@ -39,17 +41,17 @@ fn make_verification_at(
     outcome: VerificationOutcome,
     verified_at: chrono::DateTime<chrono::Utc>,
 ) -> VerificationRecord {
-    VerificationRecord::new(
-        Uuid::new_v4(),
-        file_id.to_string(),
+    VerificationRecord::new(VerificationRecordInput {
+        id: Uuid::new_v4(),
+        file_id: file_id.to_string(),
         verified_at,
-        VerificationMode::Hash,
+        mode: VerificationMode::Hash,
         outcome,
-        u32::from(outcome == VerificationOutcome::Error),
-        0,
-        Some("abc123".into()),
-        Some("verification details".into()),
-    )
+        error_count: u32::from(outcome == VerificationOutcome::Error),
+        warning_count: 0,
+        content_hash: Some("abc123".into()),
+        details: Some("verification details".into()),
+    })
 }
 
 fn make_server(store: InMemoryStore) -> TestServer {

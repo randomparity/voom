@@ -83,31 +83,34 @@ pub struct VerificationRecord {
     pub details: Option<String>,
 }
 
+/// Named input for constructing a [`VerificationRecord`].
+#[derive(Debug, Clone)]
+pub struct VerificationRecordInput {
+    pub id: Uuid,
+    pub file_id: String,
+    pub verified_at: DateTime<Utc>,
+    pub mode: VerificationMode,
+    pub outcome: VerificationOutcome,
+    pub error_count: u32,
+    pub warning_count: u32,
+    pub content_hash: Option<String>,
+    pub details: Option<String>,
+}
+
 impl VerificationRecord {
-    /// Construct a new verification record. `id` should be a freshly-generated UUID.
+    /// Construct a new verification record. `input.id` should be freshly generated.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        id: Uuid,
-        file_id: impl Into<String>,
-        verified_at: DateTime<Utc>,
-        mode: VerificationMode,
-        outcome: VerificationOutcome,
-        error_count: u32,
-        warning_count: u32,
-        content_hash: Option<String>,
-        details: Option<String>,
-    ) -> Self {
+    pub fn new(input: VerificationRecordInput) -> Self {
         Self {
-            id,
-            file_id: file_id.into(),
-            verified_at,
-            mode,
-            outcome,
-            error_count,
-            warning_count,
-            content_hash,
-            details,
+            id: input.id,
+            file_id: input.file_id,
+            verified_at: input.verified_at,
+            mode: input.mode,
+            outcome: input.outcome,
+            error_count: input.error_count,
+            warning_count: input.warning_count,
+            content_hash: input.content_hash,
+            details: input.details,
         }
     }
 }
@@ -135,24 +138,28 @@ pub struct IntegritySummary {
     pub hash_mismatches: u64,
 }
 
+/// Named input for constructing an [`IntegritySummary`].
+#[derive(Debug, Clone, Default)]
+pub struct IntegritySummaryInput {
+    pub total_files: u64,
+    pub never_verified: u64,
+    pub stale: u64,
+    pub with_errors: u64,
+    pub with_warnings: u64,
+    pub hash_mismatches: u64,
+}
+
 impl IntegritySummary {
     /// Construct a summary from precomputed counts.
     #[must_use]
-    pub fn new(
-        total_files: u64,
-        never_verified: u64,
-        stale: u64,
-        with_errors: u64,
-        with_warnings: u64,
-        hash_mismatches: u64,
-    ) -> Self {
+    pub fn new(input: IntegritySummaryInput) -> Self {
         Self {
-            total_files,
-            never_verified,
-            stale,
-            with_errors,
-            with_warnings,
-            hash_mismatches,
+            total_files: input.total_files,
+            never_verified: input.never_verified,
+            stale: input.stale,
+            with_errors: input.with_errors,
+            with_warnings: input.with_warnings,
+            hash_mismatches: input.hash_mismatches,
         }
     }
 }
