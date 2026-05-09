@@ -10,10 +10,7 @@ mod config;
 mod introspect;
 mod lock;
 mod output;
-mod paths;
 mod policy_map;
-mod progress;
-mod recovery;
 pub mod retention;
 mod tools;
 

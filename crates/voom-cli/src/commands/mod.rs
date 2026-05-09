@@ -25,8 +25,10 @@ pub mod shell {
 
 pub mod workflow {
     pub mod inspect;
+    pub mod paths;
     pub mod policy;
     pub mod process;
+    pub mod progress;
     pub mod scan;
     pub mod verify;
 }

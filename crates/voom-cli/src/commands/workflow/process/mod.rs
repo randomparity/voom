@@ -4,6 +4,7 @@ mod dispatch;
 mod pipeline;
 mod plan_outcome;
 mod post_execution_path;
+mod recovery;
 mod safeguards;
 mod transitions;
 
@@ -23,10 +24,10 @@ use pipeline::process_single_file;
 
 use crate::app;
 use crate::cli::{ErrorHandling, ProcessArgs};
+use crate::commands::workflow::paths::resolve_paths;
+use crate::commands::workflow::progress::{BatchProgress, DiscoveryProgress};
 use crate::config;
-use crate::paths::resolve_paths;
 use crate::policy_map::PolicyResolver;
-use crate::progress::{BatchProgress, DiscoveryProgress};
 use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{
     Event, IntrospectSessionCompletedEvent, JobCompletedEvent, JobProgressEvent, JobStartedEvent,
@@ -339,7 +340,7 @@ fn recover_orphaned_backups(
     quiet: bool,
 ) {
     let global_backup_dir = global_backup_dir(config);
-    match crate::recovery::check_and_recover_under(
+    match recovery::check_and_recover_under(
         &config.recovery,
         paths,
         store.as_ref(),

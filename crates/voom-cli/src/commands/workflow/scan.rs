@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 
 use crate::app;
 use crate::cli::ScanArgs;
+use crate::commands::workflow::paths::resolve_paths;
+use crate::commands::workflow::progress::{DiscoveryProgress, ProbeProgress};
 use crate::config;
 use crate::output;
-use crate::paths::resolve_paths;
-use crate::progress::{DiscoveryProgress, ProbeProgress};
 use anyhow::{Context, Result};
 use console::style;
 use indicatif::HumanDuration;
