@@ -3,6 +3,7 @@ use console::style;
 use serde_json::Value;
 
 use crate::cli::PolicyCommands;
+use crate::policy_paths::{policies_dir, resolve_policy_path};
 
 pub fn run(cmd: PolicyCommands) -> Result<()> {
     match cmd {
@@ -16,7 +17,7 @@ pub fn run(cmd: PolicyCommands) -> Result<()> {
 
 fn list() -> Result<()> {
     // Scan standard policy directories
-    let config_dir = crate::config::policies_dir();
+    let config_dir = policies_dir();
 
     if !config_dir.exists() {
         println!("{}", style("No policies directory found.").dim());
@@ -63,7 +64,7 @@ fn validate(file: &std::path::Path) -> Result<()> {
         return validate_policy_map(file);
     }
 
-    let file = crate::config::resolve_policy_path(file);
+    let file = resolve_policy_path(file);
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
@@ -116,7 +117,7 @@ fn validate_policy_map(file: &std::path::Path) -> Result<()> {
 }
 
 fn show(file: &std::path::Path) -> Result<()> {
-    let file = crate::config::resolve_policy_path(file);
+    let file = resolve_policy_path(file);
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
@@ -177,7 +178,7 @@ fn show(file: &std::path::Path) -> Result<()> {
 }
 
 fn format(file: &std::path::Path) -> Result<()> {
-    let file = crate::config::resolve_policy_path(file);
+    let file = resolve_policy_path(file);
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
@@ -197,8 +198,8 @@ fn format(file: &std::path::Path) -> Result<()> {
 }
 
 fn diff(a: &std::path::Path, b: &std::path::Path) -> Result<()> {
-    let a_path = crate::config::resolve_policy_path(a);
-    let b_path = crate::config::resolve_policy_path(b);
+    let a_path = resolve_policy_path(a);
+    let b_path = resolve_policy_path(b);
 
     let a_source = std::fs::read_to_string(&a_path)
         .with_context(|| format!("Failed to read: {}", a_path.display()))?;

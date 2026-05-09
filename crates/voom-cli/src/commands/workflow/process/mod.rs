@@ -28,6 +28,7 @@ use crate::commands::workflow::paths::resolve_paths;
 use crate::commands::workflow::progress::{BatchProgress, DiscoveryProgress};
 use crate::config;
 use crate::policy_map::PolicyResolver;
+use crate::policy_paths::resolve_policy_path;
 use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{
     Event, IntrospectSessionCompletedEvent, JobCompletedEvent, JobProgressEvent, JobStartedEvent,
@@ -520,7 +521,7 @@ fn build_policy_resolver(
     root: &std::path::Path,
 ) -> Result<PolicyResolver> {
     if let Some(ref policy_path) = args.policy {
-        let resolved = crate::config::resolve_policy_path(policy_path);
+        let resolved = resolve_policy_path(policy_path);
         let source = std::fs::read_to_string(&resolved)
             .with_context(|| format!("Failed to read policy: {}", resolved.display()))?;
         let compiled = voom_dsl::compile_policy(&source).context("policy compilation failed")?;

@@ -7,6 +7,7 @@ mod app;
 mod cli;
 mod commands;
 mod config;
+mod config_paths;
 mod introspect;
 mod lock;
 mod output;

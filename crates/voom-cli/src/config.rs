@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-pub use crate::policy_paths::{policies_dir, resolve_policy_path};
+pub use crate::config_paths::{config_path, voom_config_dir};
 
 /// How to resolve orphaned backups discovered at startup.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,26 +230,8 @@ impl Default for AppConfig {
     }
 }
 
-/// Base VOOM configuration directory (e.g. `~/.config/voom`).
-///
-/// Respects `XDG_CONFIG_HOME` when set, falling back to the
-/// platform default via `dirs::config_dir()`.
-pub fn voom_config_dir() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(dirs::config_dir)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("voom")
-}
-
 fn default_data_dir() -> PathBuf {
     voom_config_dir()
-}
-
-/// Path to the config file.
-pub fn config_path() -> PathBuf {
-    voom_config_dir().join("config.toml")
 }
 
 /// Load config from the default path, or return defaults if not found.
@@ -453,8 +435,6 @@ pub fn save_config(config: &AppConfig) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     // ── Default config ───────────────────────────────────────
@@ -764,45 +744,6 @@ api_key = "xyz789"
                 .unwrap(),
             "xyz789"
         );
-    }
-
-    // ── resolve_policy_path ──────────────────────────────────
-
-    #[test]
-    fn test_resolve_policy_path_existing_file_used_as_is() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("local.voom");
-        std::fs::write(&file, "").unwrap();
-
-        let resolved = resolve_policy_path(&file);
-        assert_eq!(resolved, file);
-    }
-
-    #[test]
-    fn test_resolve_policy_path_falls_back_to_policies_dir() {
-        // Create a file in the policies dir
-        let pdir = policies_dir();
-        std::fs::create_dir_all(&pdir).ok();
-        let policy_file = pdir.join("_test_resolve_fallback.voom");
-        std::fs::write(&policy_file, "").unwrap();
-
-        let resolved = resolve_policy_path(Path::new("_test_resolve_fallback.voom"));
-        assert_eq!(resolved, policy_file);
-
-        // Cleanup
-        std::fs::remove_file(&policy_file).ok();
-    }
-
-    #[test]
-    fn test_resolve_policy_path_no_fallback_for_paths_with_dirs() {
-        let resolved = resolve_policy_path(Path::new("subdir/missing.voom"));
-        assert_eq!(resolved, Path::new("subdir/missing.voom"));
-    }
-
-    #[test]
-    fn test_resolve_policy_path_returns_original_when_not_found() {
-        let resolved = resolve_policy_path(Path::new("nonexistent_xyzzy.voom"));
-        assert_eq!(resolved, Path::new("nonexistent_xyzzy.voom"));
     }
 
     #[test]

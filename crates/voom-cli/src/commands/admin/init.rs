@@ -3,6 +3,7 @@ use console::style;
 
 use crate::app;
 use crate::config;
+use crate::policy_paths::policies_dir;
 use crate::tools::print_tool_status;
 
 pub fn run() -> Result<()> {
@@ -48,7 +49,7 @@ pub fn run() -> Result<()> {
     }
 
     // 3. Create policies directory and starter policy
-    let policies_dir = config::policies_dir();
+    let policies_dir = policies_dir();
     if !policies_dir.exists() {
         std::fs::create_dir_all(&policies_dir)?;
         println!(
