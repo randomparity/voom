@@ -1,3 +1,4 @@
+mod audio_language;
 mod dispatch;
 mod pipeline;
 mod plan_outcome;
@@ -879,9 +880,7 @@ mod tests {
     use voom_domain::media::MediaFile;
     use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings};
 
-    use super::pipeline::{
-        apply_detected_languages, execute_single_plan, AUDIO_LANGUAGE_DETECTOR_PLUGIN,
-    };
+    use super::pipeline::execute_single_plan;
     use super::plan_outcome::PlanOutcome;
     use super::safeguards::{check_disk_space, check_duration_shrink, check_size_increase};
 
@@ -1273,118 +1272,6 @@ mod tests {
         // These should not panic
         reporter.on_batch_start(10);
         reporter.on_batch_complete(5, 0);
-    }
-
-    // --- apply_detected_languages tests ---
-
-    fn make_file_with_audio_tracks() -> MediaFile {
-        use voom_domain::media::{Track, TrackType};
-        let mut file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));
-        let mut t0 = Track::new(0, TrackType::AudioMain, "aac".into());
-        t0.language = "und".to_string();
-        let mut t1 = Track::new(1, TrackType::AudioAlternate, "ac3".into());
-        t1.language = "fre".to_string();
-        file.tracks = vec![t0, t1];
-        file
-    }
-
-    #[test]
-    fn test_apply_detected_und_to_eng() {
-        let mut file = make_file_with_audio_tracks();
-        file.plugin_metadata.insert(
-            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
-            serde_json::json!({
-                "detections": [{
-                    "track_index": 0,
-                    "detected_language": "eng",
-                    "confidence": 0.95,
-                }]
-            }),
-        );
-        apply_detected_languages(&mut file);
-        assert_eq!(file.tracks[0].language, "eng");
-        // Track 1 unchanged (no detection for it).
-        assert_eq!(file.tracks[1].language, "fre");
-    }
-
-    #[test]
-    fn test_apply_detected_overwrite_mismatch() {
-        let mut file = make_file_with_audio_tracks();
-        file.plugin_metadata.insert(
-            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
-            serde_json::json!({
-                "detections": [{
-                    "track_index": 1,
-                    "detected_language": "eng",
-                    "confidence": 0.92,
-                }]
-            }),
-        );
-        apply_detected_languages(&mut file);
-        // Track 1 was "fre" but detection says "eng" — overwritten.
-        assert_eq!(file.tracks[1].language, "eng");
-    }
-
-    #[test]
-    fn test_apply_detected_zxx() {
-        let mut file = make_file_with_audio_tracks();
-        file.plugin_metadata.insert(
-            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
-            serde_json::json!({
-                "detections": [{
-                    "track_index": 0,
-                    "detected_language": "zxx",
-                    "confidence": 0.98,
-                }]
-            }),
-        );
-        apply_detected_languages(&mut file);
-        assert_eq!(file.tracks[0].language, "zxx");
-    }
-
-    #[test]
-    fn test_apply_detected_mul() {
-        let mut file = make_file_with_audio_tracks();
-        file.plugin_metadata.insert(
-            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
-            serde_json::json!({
-                "detections": [{
-                    "track_index": 0,
-                    "detected_language": "mul",
-                    "confidence": 0.6,
-                }]
-            }),
-        );
-        apply_detected_languages(&mut file);
-        assert_eq!(file.tracks[0].language, "mul");
-    }
-
-    #[test]
-    fn test_apply_detected_no_metadata() {
-        let mut file = make_file_with_audio_tracks();
-        apply_detected_languages(&mut file);
-        // No crash, tracks unchanged.
-        assert_eq!(file.tracks[0].language, "und");
-        assert_eq!(file.tracks[1].language, "fre");
-    }
-
-    #[test]
-    fn test_apply_detected_nonexistent_track() {
-        let mut file = make_file_with_audio_tracks();
-        file.plugin_metadata.insert(
-            AUDIO_LANGUAGE_DETECTOR_PLUGIN.to_string(),
-            serde_json::json!({
-                "detections": [{
-                    "track_index": 99,
-                    "detected_language": "eng",
-                    "confidence": 0.95,
-                }]
-            }),
-        );
-        // No panic.
-        apply_detected_languages(&mut file);
-        assert_eq!(file.tracks[0].language, "und");
-        assert_eq!(file.tracks[1].language, "fre");
     }
 
     #[test]
