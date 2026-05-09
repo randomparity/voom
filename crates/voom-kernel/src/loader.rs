@@ -948,20 +948,11 @@ pub mod wasm {
                     }
 
                     match std::fs::read_dir(dir_path) {
-                        Ok(entries) => {
-                            let files: Vec<String> = entries
-                                .filter_map(|e| e.ok())
-                                .filter(|e| {
-                                    if pattern.is_empty() {
-                                        true
-                                    } else {
-                                        e.file_name().to_string_lossy().contains(&pattern)
-                                    }
-                                })
-                                .map(|e| e.file_name().to_string_lossy().to_string())
-                                .collect();
-                            Ok((Ok(files),))
-                        }
+                        Ok(entries) => Ok((collect_listed_file_names(
+                            entries.map(|entry| entry.map(|entry| entry.file_name())),
+                            &pattern,
+                            &dir,
+                        ),)),
                         Err(e) => Ok((Err(format!("failed to list directory '{dir}': {e}")),)),
                     }
                 },
@@ -969,6 +960,27 @@ pub mod wasm {
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
         Ok(())
+    }
+
+    pub(crate) fn collect_listed_file_names<I, E>(
+        entries: I,
+        pattern: &str,
+        dir: &str,
+    ) -> Result<Vec<String>, String>
+    where
+        I: IntoIterator<Item = Result<std::ffi::OsString, E>>,
+        E: std::fmt::Display,
+    {
+        let mut files = Vec::new();
+        for entry in entries {
+            let file_name = entry.map_err(|e| {
+                format!("failed to read directory entry while listing '{dir}': {e}")
+            })?;
+            if pattern.is_empty() || file_name.to_string_lossy().contains(pattern) {
+                files.push(file_name.to_string_lossy().to_string());
+            }
+        }
+        Ok(files)
     }
 
     fn register_host_instance(
@@ -1110,6 +1122,38 @@ mod tests {
             let loader = WasmPluginLoader::new().unwrap();
             std::thread::sleep(std::time::Duration::from_millis(50));
             drop(loader);
+        }
+
+        #[test]
+        fn test_list_files_entry_errors_are_returned() {
+            let entries = vec![
+                Ok(std::ffi::OsString::from("clip-a.mkv")),
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "entry denied",
+                )),
+                Ok(std::ffi::OsString::from("clip-b.mkv")),
+            ];
+
+            let error = collect_listed_file_names(entries, "clip", "/media")
+                .expect_err("entry errors should not be skipped");
+
+            assert!(error.contains("failed to read directory entry"));
+            assert!(error.contains("/media"));
+            assert!(error.contains("entry denied"));
+        }
+
+        #[test]
+        fn test_list_files_entry_filtering_preserves_matches() {
+            let entries: Vec<Result<std::ffi::OsString, std::io::Error>> = vec![
+                Ok(std::ffi::OsString::from("clip-a.mkv")),
+                Ok(std::ffi::OsString::from("notes.txt")),
+                Ok(std::ffi::OsString::from("clip-b.mkv")),
+            ];
+
+            let files = collect_listed_file_names(entries, "clip", "/media").unwrap();
+
+            assert_eq!(files, vec!["clip-a.mkv", "clip-b.mkv"]);
         }
 
         #[test]
