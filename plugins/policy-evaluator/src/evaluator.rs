@@ -168,33 +168,6 @@ pub fn evaluate_single_phase(
     )
 }
 
-/// Evaluate a single phase with both system capabilities and a phase-output
-/// lookup for cross-phase field access.
-///
-/// Used by the per-phase evaluate-execute loop when the orchestrator already
-/// has persisted phase outputs available.
-#[must_use]
-#[allow(clippy::implicit_hasher)]
-pub fn evaluate_single_phase_with_phase_outputs<'a>(
-    phase_name: &str,
-    policy: &CompiledPolicy,
-    file: &MediaFile,
-    phase_outcomes: &HashMap<String, EvaluationOutcome>,
-    capabilities: Option<&'a CapabilityMap>,
-    phase_output_lookup: Option<&'a PhaseOutputLookup<'a>>,
-) -> Option<Plan> {
-    evaluate_single_phase_with_evaluation_context(
-        phase_name,
-        policy,
-        file,
-        SinglePhaseEvaluationContext {
-            phase_outcomes,
-            capabilities,
-            phase_output_lookup,
-        },
-    )
-}
-
 /// Evaluate a single phase with an explicit evaluation context.
 #[must_use]
 #[allow(clippy::implicit_hasher)]
