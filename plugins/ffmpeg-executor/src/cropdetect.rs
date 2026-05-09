@@ -44,8 +44,8 @@ pub fn detect_crop(
     settings: &CropSettings,
 ) -> Result<Option<CropDetection>> {
     let config = CropDetectConfig::from(settings);
-    let rects = detect_sample_rects(ffmpeg_path, source_path, source, config)?;
-    let Some(rect) = conservative_crop(&rects, source, config)? else {
+    let rects = detect_sample_rects(ffmpeg_path, source_path, source, &config)?;
+    let Some(rect) = conservative_crop(&rects, source, &config)? else {
         return Ok(None);
     };
     if rect.is_empty() {
@@ -58,7 +58,7 @@ fn detect_sample_rects(
     ffmpeg_path: &str,
     source_path: &Path,
     source: CropDetectSource,
-    config: CropDetectConfig,
+    config: &CropDetectConfig,
 ) -> Result<Vec<CropRect>> {
     let mut rects = Vec::new();
     for start in sample_starts(
@@ -76,7 +76,7 @@ fn run_cropdetect_sample(
     ffmpeg_path: &str,
     source_path: &Path,
     start_secs: f64,
-    config: CropDetectConfig,
+    config: &CropDetectConfig,
 ) -> Result<String> {
     let duration = config.sample_duration_secs.to_string();
     let start = format!("{start_secs:.3}");
@@ -113,13 +113,14 @@ fn run_cropdetect_sample(
     Ok(String::from_utf8_lossy(&output.stderr).to_string())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CropDetectConfig {
     sample_duration_secs: u32,
     sample_count: u32,
     threshold: u8,
     minimum_crop: u32,
     preserve_bottom_pixels: u32,
+    aspect_locks: Vec<AspectRatio>,
 }
 
 impl From<&CropSettings> for CropDetectConfig {
@@ -133,7 +134,30 @@ impl From<&CropSettings> for CropDetectConfig {
             threshold: settings.threshold.unwrap_or(DEFAULT_THRESHOLD),
             minimum_crop: settings.minimum_crop.unwrap_or(DEFAULT_MINIMUM_CROP),
             preserve_bottom_pixels: settings.preserve_bottom_pixels.unwrap_or(0),
+            aspect_locks: settings
+                .aspect_lock
+                .iter()
+                .filter_map(|value| AspectRatio::parse(value))
+                .collect(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AspectRatio {
+    width: u32,
+    height: u32,
+}
+
+impl AspectRatio {
+    fn parse(value: &str) -> Option<Self> {
+        let (width, height) = value.split_once('/')?;
+        let width = width.parse().ok()?;
+        let height = height.parse().ok()?;
+        if width == 0 || height == 0 {
+            return None;
+        }
+        Some(Self { width, height })
     }
 }
 
@@ -196,7 +220,7 @@ impl DetectedCrop {
 fn conservative_crop(
     rects: &[CropRect],
     source: CropDetectSource,
-    config: CropDetectConfig,
+    config: &CropDetectConfig,
 ) -> Result<Option<CropRect>> {
     let Some(first) = rects.first().copied() else {
         return Ok(None);
@@ -211,6 +235,7 @@ fn conservative_crop(
     });
     rect = apply_minimum_crop(rect, config.minimum_crop);
     rect.bottom = rect.bottom.saturating_sub(config.preserve_bottom_pixels);
+    rect = snap_to_aspect_lock(rect, source, &config.aspect_locks)?;
     rect = snap_output_to_even(rect, source)?;
     Ok(Some(rect))
 }
@@ -225,7 +250,78 @@ fn apply_minimum_crop(rect: CropRect, minimum: u32) -> CropRect {
     )
 }
 
-fn snap_output_to_even(mut rect: CropRect, source: CropDetectSource) -> Result<CropRect> {
+fn snap_to_aspect_lock(
+    rect: CropRect,
+    source: CropDetectSource,
+    aspect_locks: &[AspectRatio],
+) -> Result<CropRect> {
+    if aspect_locks.is_empty() {
+        return Ok(rect);
+    }
+    let dims = output_dimensions(rect, source)?;
+    let mut candidates = Vec::new();
+    for ratio in aspect_locks {
+        if let Some(candidate) = snap_to_aspect(rect, source, dims, *ratio)? {
+            candidates.push(candidate);
+        }
+    }
+    let best = candidates.into_iter().min_by_key(|candidate| {
+        crop_expansion_pixels(rect, *candidate, source).unwrap_or(u64::MAX)
+    });
+    Ok(best.unwrap_or(rect))
+}
+
+fn snap_to_aspect(
+    rect: CropRect,
+    source: CropDetectSource,
+    dims: OutputDimensions,
+    ratio: AspectRatio,
+) -> Result<Option<CropRect>> {
+    let current = u64::from(dims.width) * u64::from(ratio.height);
+    let target = u64::from(dims.height) * u64::from(ratio.width);
+    if current == target {
+        return Ok(Some(rect));
+    }
+    if current > target {
+        let height = ceil_div_u64(
+            u64::from(dims.width) * u64::from(ratio.height),
+            u64::from(ratio.width),
+        )?;
+        let Some(height) = even_u64_to_u32(height) else {
+            return Ok(None);
+        };
+        if height > source.height {
+            return Ok(None);
+        }
+        let Some((top, bottom)) = expand_axis(rect.top, rect.bottom, height - dims.height) else {
+            return Ok(None);
+        };
+        return Ok(Some(CropRect::new(rect.left, top, rect.right, bottom)));
+    }
+
+    let width = ceil_div_u64(
+        u64::from(dims.height) * u64::from(ratio.width),
+        u64::from(ratio.height),
+    )?;
+    let Some(width) = even_u64_to_u32(width) else {
+        return Ok(None);
+    };
+    if width > source.width {
+        return Ok(None);
+    }
+    let Some((left, right)) = expand_axis(rect.left, rect.right, width - dims.width) else {
+        return Ok(None);
+    };
+    Ok(Some(CropRect::new(left, rect.top, right, rect.bottom)))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OutputDimensions {
+    width: u32,
+    height: u32,
+}
+
+fn output_dimensions(rect: CropRect, source: CropDetectSource) -> Result<OutputDimensions> {
     let width = source
         .width
         .checked_sub(rect.left)
@@ -239,10 +335,53 @@ fn snap_output_to_even(mut rect: CropRect, source: CropDetectSource) -> Result<C
     if width == 0 || height == 0 {
         return Err(invalid_crop("crop leaves empty output"));
     }
-    if width % 2 != 0 {
+    Ok(OutputDimensions { width, height })
+}
+
+fn ceil_div_u64(numerator: u64, denominator: u64) -> Result<u64> {
+    if denominator == 0 {
+        return Err(invalid_crop("aspect ratio denominator is zero"));
+    }
+    Ok(numerator.div_ceil(denominator))
+}
+
+fn even_u64_to_u32(value: u64) -> Option<u32> {
+    let value = value.checked_add(value % 2)?;
+    u32::try_from(value).ok()
+}
+
+fn expand_axis(start_crop: u32, end_crop: u32, expand_by: u32) -> Option<(u32, u32)> {
+    if expand_by > start_crop.saturating_add(end_crop) {
+        return None;
+    }
+    let from_start = (expand_by / 2).min(start_crop);
+    let remaining = expand_by - from_start;
+    let from_end = remaining.min(end_crop);
+    let remaining = remaining - from_end;
+    if remaining > start_crop - from_start {
+        return None;
+    }
+    Some((start_crop - from_start - remaining, end_crop - from_end))
+}
+
+fn crop_expansion_pixels(
+    original: CropRect,
+    candidate: CropRect,
+    source: CropDetectSource,
+) -> Result<u64> {
+    let original = output_dimensions(original, source)?;
+    let candidate = output_dimensions(candidate, source)?;
+    let original_area = u64::from(original.width) * u64::from(original.height);
+    let candidate_area = u64::from(candidate.width) * u64::from(candidate.height);
+    Ok(candidate_area.saturating_sub(original_area))
+}
+
+fn snap_output_to_even(mut rect: CropRect, source: CropDetectSource) -> Result<CropRect> {
+    let dims = output_dimensions(rect, source)?;
+    if dims.width % 2 != 0 {
         rect.right = rect.right.saturating_add(1);
     }
-    if height % 2 != 0 {
+    if dims.height % 2 != 0 {
         rect.bottom = rect.bottom.saturating_add(1);
     }
     Ok(rect)
@@ -286,7 +425,7 @@ mod tests {
             CropRect::new(10, 132, 8, 132),
         ];
 
-        let crop = conservative_crop(&rects, source(), config(&CropSettings::auto()))
+        let crop = conservative_crop(&rects, source(), &config(&CropSettings::auto()))
             .unwrap()
             .expect("crop");
 
@@ -299,7 +438,7 @@ mod tests {
         let mut settings = CropSettings::auto();
         settings.minimum_crop = Some(4);
 
-        let crop = conservative_crop(&rects, source(), config(&settings))
+        let crop = conservative_crop(&rects, source(), &config(&settings))
             .unwrap()
             .expect("crop");
 
@@ -312,11 +451,50 @@ mod tests {
         let mut settings = CropSettings::auto();
         settings.preserve_bottom_pixels = Some(60);
 
-        let crop = conservative_crop(&rects, source(), config(&settings))
+        let crop = conservative_crop(&rects, source(), &config(&settings))
             .unwrap()
             .expect("crop");
 
         assert_eq!(crop, CropRect::new(0, 132, 0, 72));
+    }
+
+    #[test]
+    fn aspect_lock_expands_height_without_cropping_deeper() {
+        let rects = [CropRect::new(0, 132, 0, 132)];
+        let mut settings = CropSettings::auto();
+        settings.aspect_lock = vec!["21/9".to_string()];
+
+        let crop = conservative_crop(&rects, source(), &config(&settings))
+            .unwrap()
+            .expect("crop");
+
+        assert_eq!(crop, CropRect::new(0, 128, 0, 128));
+    }
+
+    #[test]
+    fn aspect_lock_expands_width_when_source_has_room() {
+        let rects = [CropRect::new(300, 0, 300, 0)];
+        let mut settings = CropSettings::auto();
+        settings.aspect_lock = vec!["4/3".to_string()];
+
+        let crop = conservative_crop(&rects, source(), &config(&settings))
+            .unwrap()
+            .expect("crop");
+
+        assert_eq!(crop, CropRect::new(240, 0, 240, 0));
+    }
+
+    #[test]
+    fn aspect_lock_ignores_unreachable_ratio() {
+        let rects = [CropRect::new(0, 132, 0, 132)];
+        let mut settings = CropSettings::auto();
+        settings.aspect_lock = vec!["1/1".to_string()];
+
+        let crop = conservative_crop(&rects, source(), &config(&settings))
+            .unwrap()
+            .expect("crop");
+
+        assert_eq!(crop, CropRect::new(0, 132, 0, 132));
     }
 
     #[test]
