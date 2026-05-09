@@ -771,12 +771,10 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
         cmd += ["-b:v", "1M"]
 
     # HDR10 metadata
+    needs_hevc_hdr_bsf = False
     if "hdr10" in specials:
         cmd += [
             "-pix_fmt", "yuv420p10le",
-            "-color_primaries", "bt2020",
-            "-color_trc", "smpte2084",
-            "-colorspace", "bt2020nc",
         ]
         if vcodec == "libx265":
             cmd += ["-x265-params",
@@ -785,6 +783,7 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
                     "master-display=G(13250,34500)B(7500,3000)"
                     "R(34000,16000)WP(15635,16450)L(10000000,1):"
                     "max-cll=1000,400"]
+            needs_hevc_hdr_bsf = True
 
     # --- Audio codecs ---
     for i, audio in enumerate(audios):
@@ -886,6 +885,13 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
         cmd += ["-attach", str(cover_path),
                 "-metadata:s:t:0", "mimetype=image/jpeg",
                 "-metadata:s:t:0", "filename=cover.jpg"]
+
+    if needs_hevc_hdr_bsf:
+        cmd += [
+            "-bsf:v",
+            "hevc_metadata=colour_primaries=9:"
+            "transfer_characteristics=16:matrix_coefficients=9",
+        ]
 
     # --- Duration limit ---
     cmd += ["-t", str(duration)]
