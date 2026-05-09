@@ -2,9 +2,9 @@
 """Generate a corpus of synthetic video files with diverse characteristics.
 
 Uses ffmpeg to create tiny test files covering various containers, codecs,
-resolutions, channel layouts, subtitle formats, HDR metadata, VFR, and
-attachments — designed as a companion to select-test-corpus for functional
-testing when no real library exists.
+resolutions, channel layouts, subtitle formats, HDR metadata, VFR, black-bar
+crop detection inputs, and attachments — designed as a companion to
+select-test-corpus for functional testing when no real library exists.
 """
 
 import argparse
@@ -191,6 +191,32 @@ def build_manifest():
             "audio": [{"codec": "aac", "channels": 2}],
             "subs": [],
             "special": [],
+        },
+        {
+            "stem": "letterbox-h264",
+            "ext": "mkv",
+            "video": {
+                "codec": "libx264",
+                "size": "1920x1080",
+                "active_size": "1920x816",
+                "fps": 24,
+            },
+            "audio": [{"codec": "aac", "channels": 2}],
+            "subs": [],
+            "special": ["black_bars"],
+        },
+        {
+            "stem": "pillarbox-h264",
+            "ext": "mkv",
+            "video": {
+                "codec": "libx264",
+                "size": "1920x1080",
+                "active_size": "1440x1080",
+                "fps": 24,
+            },
+            "audio": [{"codec": "aac", "channels": 2}],
+            "subs": [],
+            "special": ["black_bars"],
         },
         {
             "stem": "hevc-surround",
@@ -673,9 +699,13 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
 
     # Video input
-    video_input = f"testsrc2=duration={duration}:size={video['size']}:rate={video['fps']}"
+    active_size = video.get("active_size", video["size"])
+    video_input = f"testsrc2=duration={duration}:size={active_size}:rate={video['fps']}"
     if "vfr" in specials:
         video_input += ",setpts='PTS+0.003*sin(N*0.15)/TB'"
+    if "black_bars" in specials:
+        output_size = video["size"].replace("x", ":")
+        video_input += f",pad={output_size}:(ow-iw)/2:(oh-ih)/2:black"
     cmd += ["-f", "lavfi", "-i", video_input]
 
     # Audio inputs (one sine per audio track)

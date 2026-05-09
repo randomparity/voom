@@ -18,7 +18,7 @@ Multi-language anime library with Japanese/English handling. Forced subtitle det
 **Plugins used:** all native + sonarr-metadata (WASM)
 
 ### [transcode-hevc.voom](transcode-hevc.voom)
-HEVC transcoding pipeline with hardware acceleration. `skip when` with field access, video/audio transcode settings, `synthesize` with all options (codec, channels, source, bitrate, skip_if_exists, create_if, title, language, position), `run_if` conditional phases.
+HEVC transcoding pipeline with hardware acceleration. `skip when` with field access, video/audio transcode settings, auto-crop tuning, `synthesize` with all options (codec, channels, source, bitrate, skip_if_exists, create_if, title, language, position), `run_if` conditional phases.
 
 **Plugins used:** ffmpeg-executor, mkvtoolnix-executor, backup-manager
 
@@ -57,6 +57,7 @@ Comprehensive reference exercising **every DSL construct**. Not intended for pro
 | `defaults` | movie-library, anime, strict, full |
 | `actions` (video/audio/subtitle) | movie-library, anime, strict, full |
 | `transcode` (video/audio) | transcode, full |
+| `crop: auto` | transcode |
 | `synthesize` | transcode, full |
 | `when` / `else` | anime, metadata, full |
 | `rules first` | metadata, full |

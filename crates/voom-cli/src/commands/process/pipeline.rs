@@ -13,11 +13,14 @@
 //! through [`super::transitions`].
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 use anyhow::Context;
 use voom_domain::events::PlanFailedEvent;
-use voom_domain::plan::OperationType;
+use voom_domain::media::{CropDetection, MediaFile, TrackType};
+use voom_domain::plan::{ActionParams, CropSettings, OperationType, Plan};
+use voom_ffmpeg_executor::cropdetect::CropDetectSource;
 
 use super::audio_language::apply_detected_languages;
 use super::dispatch::PlanDispatcher;
@@ -241,7 +244,7 @@ async fn process_single_file_execute(
         ) else {
             continue;
         };
-        let plan = plan.with_session_id(ctx.counters.session_id);
+        let mut plan = plan.with_session_id(ctx.counters.session_id);
 
         plans_evaluated += 1;
 
@@ -265,6 +268,8 @@ async fn process_single_file_execute(
             );
             continue;
         }
+
+        apply_auto_crop_detection(&mut plan, &mut current_file, ctx).await?;
 
         // Pre-execution safeguard: check disk space
         // Note: check_disk_space dispatches only PlanFailed (not
@@ -672,6 +677,100 @@ pub(super) fn execute_single_plan(
 ) -> PlanOutcome {
     let results = PlanDispatcher::new(kernel).begin(plan, file);
     PlanOutcome::from_event_result(&results, plan, file)
+}
+
+type CropDetector =
+    fn(&str, &Path, CropDetectSource, &CropSettings) -> voom_domain::Result<Option<CropDetection>>;
+
+struct CropDetectRequest {
+    settings: CropSettings,
+    source: CropDetectSource,
+}
+
+async fn apply_auto_crop_detection(
+    plan: &mut Plan,
+    current_file: &mut MediaFile,
+    ctx: &ProcessContext<'_>,
+) -> Result<(), String> {
+    apply_auto_crop_detection_with_detector(
+        plan,
+        current_file,
+        ctx,
+        voom_ffmpeg_executor::cropdetect::detect_crop,
+    )
+    .await
+}
+
+async fn apply_auto_crop_detection_with_detector(
+    plan: &mut Plan,
+    current_file: &mut MediaFile,
+    ctx: &ProcessContext<'_>,
+    detector: CropDetector,
+) -> Result<(), String> {
+    let Some(request) = cropdetect_request_for_plan(plan, current_file) else {
+        return Ok(());
+    };
+    let settings_fingerprint = crop_settings_fingerprint(&request.settings)?;
+    if current_file
+        .crop_detection
+        .as_ref()
+        .and_then(|detection| detection.settings_fingerprint.as_deref())
+        == Some(settings_fingerprint.as_str())
+    {
+        plan.file = current_file.clone();
+        return Ok(());
+    }
+
+    let ffmpeg_path = "ffmpeg".to_string();
+    let source_path = current_file.path.clone();
+    let settings = request.settings;
+    let source = request.source;
+    let detection = tokio::task::spawn_blocking(move || {
+        detector(&ffmpeg_path, &source_path, source, &settings)
+    })
+    .await
+    .map_err(|e| format!("crop detection join error: {e}"))?
+    .map_err(|e| format!("crop detection failed: {e}"))?
+    .map(|detection| detection.with_settings_fingerprint(settings_fingerprint));
+
+    let changed = current_file.crop_detection != detection;
+    current_file.crop_detection = detection;
+    if changed {
+        plan.file = current_file.clone();
+        ctx.store
+            .upsert_file(current_file)
+            .map_err(|e| format!("failed to persist crop detection: {e}"))?;
+    }
+    Ok(())
+}
+
+fn cropdetect_request_for_plan(plan: &Plan, file: &MediaFile) -> Option<CropDetectRequest> {
+    let action = plan.actions.iter().find(|action| {
+        action.operation == OperationType::TranscodeVideo
+            && matches!(
+                &action.parameters,
+                ActionParams::Transcode { settings, .. } if settings.crop.is_some()
+            )
+    })?;
+    let ActionParams::Transcode { settings, .. } = &action.parameters else {
+        return None;
+    };
+    let crop_settings = settings.crop.clone()?;
+    let track_index = action.track_index?;
+    let track = file
+        .tracks
+        .iter()
+        .find(|track| track.index == track_index && track.track_type == TrackType::Video)?;
+    let width = track.width?;
+    let height = track.height?;
+    Some(CropDetectRequest {
+        settings: crop_settings,
+        source: CropDetectSource::new(width, height, file.duration),
+    })
+}
+
+fn crop_settings_fingerprint(settings: &CropSettings) -> Result<String, String> {
+    serde_json::to_string(settings).map_err(|e| format!("failed to fingerprint crop settings: {e}"))
 }
 
 #[cfg(test)]
