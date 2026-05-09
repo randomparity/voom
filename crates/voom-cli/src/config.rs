@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::policy_map::MappingEntry;
+pub use crate::policy_paths::{policies_dir, resolve_policy_path};
 
 /// How to resolve orphaned backups discovered at startup.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +142,40 @@ pub struct AppConfig {
     pub retention: RetentionConfig,
 }
 
+/// A single prefix-to-policy mapping entry.
+///
+/// Used both in standalone map files and in `config.toml`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MappingEntry {
+    pub prefix: String,
+    #[serde(default)]
+    pub policy: Option<String>,
+    #[serde(default)]
+    pub skip: Option<bool>,
+}
+
+impl MappingEntry {
+    /// Validate that exactly one of `policy` or `skip = true` is set.
+    pub fn validate(&self) -> Result<()> {
+        let has_policy = self.policy.is_some();
+        let has_skip = self.skip == Some(true);
+        if has_policy && has_skip {
+            anyhow::bail!(
+                "mapping for prefix {:?} has both `policy` and `skip = true`; \
+                 use one or the other",
+                self.prefix
+            );
+        }
+        if !has_policy && !has_skip {
+            anyhow::bail!(
+                "mapping for prefix {:?} must have either `policy` or `skip = true`",
+                self.prefix
+            );
+        }
+        Ok(())
+    }
+}
+
 impl std::fmt::Debug for AppConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppConfig")
@@ -216,30 +250,6 @@ fn default_data_dir() -> PathBuf {
 /// Path to the config file.
 pub fn config_path() -> PathBuf {
     voom_config_dir().join("config.toml")
-}
-
-/// Path to the default policies directory.
-pub fn policies_dir() -> PathBuf {
-    voom_config_dir().join("policies")
-}
-
-/// Resolve a policy path: use as-is if it exists, otherwise check the
-/// default policies directory. Returns the original path unchanged if
-/// neither location has the file (so the caller produces a normal
-/// "not found" error).
-pub fn resolve_policy_path(path: &std::path::Path) -> PathBuf {
-    if path.exists() {
-        return path.to_path_buf();
-    }
-    // Only fall back for bare filenames (no directory component).
-    if path.parent().is_some_and(|p| p != std::path::Path::new("")) {
-        return path.to_path_buf();
-    }
-    let candidate = policies_dir().join(path);
-    if candidate.exists() {
-        return candidate;
-    }
-    path.to_path_buf()
 }
 
 /// Load config from the default path, or return defaults if not found.

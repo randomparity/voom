@@ -4,9 +4,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::config;
+use crate::config::{AppConfig, MappingEntry};
+use crate::policy_paths;
 
 /// Standalone policy map file format (used with `--policy-map`).
 #[derive(Debug, Deserialize)]
@@ -14,40 +15,6 @@ pub struct PolicyMapFile {
     pub default: Option<String>,
     #[serde(default)]
     pub mapping: Vec<MappingEntry>,
-}
-
-/// A single prefix-to-policy mapping entry.
-///
-/// Used both in standalone map files and in `config.toml`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MappingEntry {
-    pub prefix: String,
-    #[serde(default)]
-    pub policy: Option<String>,
-    #[serde(default)]
-    pub skip: Option<bool>,
-}
-
-impl MappingEntry {
-    /// Validate that exactly one of `policy` or `skip = true` is set.
-    fn validate(&self) -> Result<()> {
-        let has_policy = self.policy.is_some();
-        let has_skip = self.skip == Some(true);
-        if has_policy && has_skip {
-            anyhow::bail!(
-                "mapping for prefix {:?} has both `policy` and `skip = true`; \
-                 use one or the other",
-                self.prefix
-            );
-        }
-        if !has_policy && !has_skip {
-            anyhow::bail!(
-                "mapping for prefix {:?} must have either `policy` or `skip = true`",
-                self.prefix
-            );
-        }
-        Ok(())
-    }
 }
 
 /// Resolves which compiled policy applies to a given file path.
@@ -82,15 +49,19 @@ enum MappingAction {
 }
 
 /// Resolve a policy path, checking `base_dir` first (if provided) before
-/// falling back to `config::resolve_policy_path` (CWD then global policies dir).
-fn resolve_policy_in_context(name: &str, base_dir: Option<&Path>) -> PathBuf {
+/// falling back to the caller's normal policy search.
+fn resolve_policy_in_context(
+    name: &str,
+    base_dir: Option<&Path>,
+    fallback: &dyn Fn(&Path) -> PathBuf,
+) -> PathBuf {
     if let Some(base) = base_dir {
         let candidate = base.join(name);
         if candidate.exists() {
             return candidate;
         }
     }
-    config::resolve_policy_path(Path::new(name))
+    fallback(Path::new(name))
 }
 
 /// Result of resolving a file against the policy map.
@@ -127,16 +98,18 @@ impl PolicyResolver {
             &map_file.mapping,
             root,
             base_dir.as_deref(),
+            &policy_paths::resolve_policy_path,
         )
     }
 
     /// Build from `config.toml` fields.
-    pub fn from_config(config: &crate::config::AppConfig, root: &Path) -> Result<Self> {
+    pub fn from_config(config: &AppConfig, root: &Path) -> Result<Self> {
         Self::build(
             config.default_policy.as_deref(),
             &config.policy_mapping,
             root,
             None,
+            &policy_paths::resolve_policy_path,
         )
     }
 
@@ -144,12 +117,13 @@ impl PolicyResolver {
     ///
     /// When `base_dir` is `Some`, relative policy paths are first resolved
     /// against that directory (the map file's parent) before falling back
-    /// to `config::resolve_policy_path`.
+    /// to the supplied path resolver.
     fn build(
         default: Option<&str>,
         entries: &[MappingEntry],
         root: &Path,
         base_dir: Option<&Path>,
+        fallback: &dyn Fn(&Path) -> PathBuf,
     ) -> Result<Self> {
         for entry in entries {
             entry.validate()?;
@@ -179,7 +153,7 @@ impl PolicyResolver {
             std::collections::HashMap::new();
 
         for policy_path_str in &policy_paths {
-            let resolved = resolve_policy_in_context(policy_path_str, base_dir);
+            let resolved = resolve_policy_in_context(policy_path_str, base_dir, fallback);
             let source = std::fs::read_to_string(&resolved)
                 .with_context(|| format!("failed to read policy: {}", resolved.display()))?;
             let compiled =
@@ -672,7 +646,7 @@ skip = true
         let (dir, pa, pb) = setup_policies();
         let root = dir.path().to_path_buf();
 
-        let config = crate::config::AppConfig {
+        let config = AppConfig {
             default_policy: Some(pa.display().to_string()),
             policy_mapping: vec![MappingEntry {
                 prefix: "hq".into(),

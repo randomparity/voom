@@ -11,6 +11,7 @@ mod introspect;
 mod lock;
 mod output;
 mod policy_map;
+mod policy_paths;
 pub mod retention;
 mod tools;
 
