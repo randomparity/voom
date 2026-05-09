@@ -7,6 +7,7 @@ use voom_domain::bad_file::{BadFile, BadFileSource};
 use voom_domain::job::{Job, JobStatus};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::{OperationType, PlannedAction};
+use voom_domain::snapshot::MetadataSnapshot;
 use voom_domain::stats::ProcessingOutcome;
 use voom_domain::storage::{
     BadFileFilters, BadFileStorage, FileFilters, FileStorage, FileTransitionStorage, JobFilters,
@@ -569,8 +570,6 @@ fn test_transition_metadata_snapshot_full_roundtrip() {
 
 #[test]
 fn test_transition_snapshot_serialization_succeeds() {
-    use voom_domain::snapshot::MetadataSnapshot;
-
     let store = test_store();
     let file = sample_file();
     store.upsert_file(&file).unwrap();
@@ -1610,7 +1609,7 @@ fn reconcile_duplicate_hash_in_discovered_one_move_one_new() {
 // --- corrupt metadata_snapshot recovery ---
 
 #[test]
-fn test_transition_corrupt_metadata_snapshot_returns_none() {
+fn test_transition_corrupt_metadata_snapshot_fails_read() {
     let store = test_store();
     let file = sample_file();
     store.upsert_file(&file).unwrap();
@@ -1634,10 +1633,12 @@ fn test_transition_corrupt_metadata_snapshot_returns_none() {
         .unwrap();
     }
 
-    // Reading should succeed — corrupt snapshot becomes None
-    let rows = store.transitions_for_file(&file.id).unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].metadata_snapshot, None);
+    let err = store.transitions_for_file(&file.id).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("file_transitions.metadata_snapshot"),
+        "unexpected error: {msg}"
+    );
 }
 
 // --- transitions_for_path ---

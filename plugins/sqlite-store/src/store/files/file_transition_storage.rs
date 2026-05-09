@@ -11,7 +11,7 @@ use voom_domain::transition::{FileTransition, TransitionSource};
 
 use crate::store::{
     checked_i64_to_u64, checked_optional_i64_to_u32, checked_optional_i64_to_u64, format_datetime,
-    storage_err, SqliteStore,
+    other_storage_err, storage_err, SqliteStore,
 };
 
 /// Insert a `FileTransition` into `file_transitions`. Accepts any
@@ -22,6 +22,15 @@ pub(super) fn insert_full_transition_in_tx(
     conn: &rusqlite::Connection,
     t: &FileTransition,
 ) -> Result<()> {
+    let metadata_snapshot_json = t
+        .metadata_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.to_json())
+        .transpose()
+        .map_err(other_storage_err(
+            "failed to serialize file_transitions.metadata_snapshot",
+        ))?;
+
     conn.execute(
         "INSERT INTO file_transitions \
          (id, file_id, path, from_path, from_hash, to_hash, from_size, to_size, \
@@ -51,13 +60,7 @@ pub(super) fn insert_full_transition_in_tx(
             t.outcome.map(|o| o.as_str()),
             t.policy_name.as_deref(),
             t.phase_name.as_deref(),
-            t.metadata_snapshot.as_ref().and_then(|s| {
-                s.to_json()
-                    .map_err(
-                        |e| tracing::warn!(error = %e, "failed to serialize metadata_snapshot"),
-                    )
-                    .ok()
-            }),
+            metadata_snapshot_json.as_deref(),
             t.error_message.as_deref(),
             t.session_id.map(|id| id.to_string()),
             format_datetime(&t.created_at),
@@ -495,13 +498,17 @@ fn row_to_transition(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransition
     });
     t.policy_name = row.get("policy_name")?;
     t.phase_name = row.get("phase_name")?;
-    t.metadata_snapshot = snapshot_json.and_then(|s| {
-        voom_domain::snapshot::MetadataSnapshot::from_json(&s)
-            .map_err(|e| {
-                tracing::warn!(error = %e, "corrupt metadata_snapshot JSON");
+    t.metadata_snapshot = snapshot_json
+        .map(|s| {
+            voom_domain::snapshot::MetadataSnapshot::from_json(&s).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    17,
+                    rusqlite::types::Type::Text,
+                    format!("corrupt JSON in file_transitions.metadata_snapshot: {e}").into(),
+                )
             })
-            .ok()
-    });
+        })
+        .transpose()?;
     t.created_at = created_at;
     Ok(t)
 }
