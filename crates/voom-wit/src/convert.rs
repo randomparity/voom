@@ -37,14 +37,16 @@ pub fn event_from_wasm(event_type: &str, payload: &[u8]) -> Result<Event> {
 ///
 /// The `produced_events` are MessagePack-encoded event payloads,
 /// and `data` is JSON-encoded optional data.
-pub fn event_result_from_wasm(
-    plugin_name: String,
-    produced_events: Vec<(String, Vec<u8>)>,
-    data: Option<Vec<u8>>,
-    claimed: bool,
-    execution_error: Option<String>,
-    execution_detail: Option<Vec<u8>>,
-) -> Result<EventResult> {
+pub fn event_result_from_wasm(wasm_result: WasmEventResult) -> Result<EventResult> {
+    let WasmEventResult {
+        plugin_name,
+        produced_events,
+        data,
+        claimed,
+        execution_error,
+        execution_detail,
+    } = wasm_result;
+
     let events = produced_events
         .into_iter()
         .map(|(evt_type, payload)| event_from_wasm(&evt_type, &payload))
@@ -270,7 +272,7 @@ mod tests {
 
     use crate::convert::{
         capability_from_wit, capability_to_wit, event_from_wasm, event_result_from_wasm,
-        event_result_to_wasm, event_to_wasm,
+        event_result_to_wasm, event_to_wasm, WasmEventResult,
     };
 
     fn parse_capability(capability: &str) -> Capability {
@@ -308,15 +310,7 @@ mod tests {
         assert_eq!(wasm_result.produced_events.len(), 1);
         assert!(wasm_result.data.is_some());
 
-        let restored = event_result_from_wasm(
-            wasm_result.plugin_name,
-            wasm_result.produced_events,
-            wasm_result.data,
-            wasm_result.claimed,
-            wasm_result.execution_error,
-            wasm_result.execution_detail,
-        )
-        .unwrap();
+        let restored = event_result_from_wasm(wasm_result).unwrap();
         assert_eq!(restored.plugin_name, "test-plugin");
         assert_eq!(restored.produced_events.len(), 1);
         assert_eq!(restored.data.unwrap()["status"].as_str().unwrap(), "ok");
@@ -547,8 +541,15 @@ mod tests {
 
     #[test]
     fn test_event_result_from_wasm_empty() {
-        let result =
-            event_result_from_wasm("empty-plugin".into(), vec![], None, false, None, None).unwrap();
+        let result = event_result_from_wasm(WasmEventResult {
+            plugin_name: "empty-plugin".into(),
+            produced_events: vec![],
+            data: None,
+            claimed: false,
+            execution_error: None,
+            execution_detail: None,
+        })
+        .unwrap();
         assert_eq!(result.plugin_name, "empty-plugin");
         assert!(result.produced_events.is_empty());
         assert!(result.data.is_none());
@@ -566,15 +567,7 @@ mod tests {
         result.execution_detail = Some(detail.clone());
 
         let wasm_result = event_result_to_wasm(&result).unwrap();
-        let restored = event_result_from_wasm(
-            wasm_result.plugin_name,
-            wasm_result.produced_events,
-            wasm_result.data,
-            wasm_result.claimed,
-            wasm_result.execution_error,
-            wasm_result.execution_detail,
-        )
-        .unwrap();
+        let restored = event_result_from_wasm(wasm_result).unwrap();
 
         assert!(restored.claimed);
         assert_eq!(restored.execution_error, None);
@@ -610,14 +603,14 @@ mod tests {
         ));
         let (_correct_type, payload) = event_to_wasm(&event).unwrap();
 
-        let err = event_result_from_wasm(
-            "test-plugin".into(),
-            vec![("wrong.type".into(), payload)],
-            None,
-            false,
-            None,
-            None,
-        )
+        let err = event_result_from_wasm(WasmEventResult {
+            plugin_name: "test-plugin".into(),
+            produced_events: vec![("wrong.type".into(), payload)],
+            data: None,
+            claimed: false,
+            execution_error: None,
+            execution_detail: None,
+        })
         .unwrap_err();
         assert!(err.to_string().contains("event type mismatch"));
     }
