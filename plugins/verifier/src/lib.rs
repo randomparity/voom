@@ -18,7 +18,9 @@ use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::events::{Event, EventResult, FileQuarantinedEvent, VerifyCompletedEvent};
+use voom_domain::events::{
+    Event, EventResult, FileQuarantinedEvent, VerifyCompletedDetails, VerifyCompletedEvent,
+};
 use voom_domain::plan::{ActionParams, OperationType, Plan};
 use voom_domain::storage::StorageTrait;
 use voom_domain::transition::FileStatus;
@@ -173,11 +175,13 @@ fn verify_result(record: &VerificationRecord, path: std::path::PathBuf) -> Event
     let event = Event::VerifyCompleted(VerifyCompletedEvent::new(
         record.file_id.clone(),
         path,
-        record.mode,
-        record.outcome,
-        record.error_count,
-        record.warning_count,
-        record.id,
+        VerifyCompletedDetails {
+            mode: record.mode,
+            outcome: record.outcome,
+            error_count: record.error_count,
+            warning_count: record.warning_count,
+            verification_id: record.id,
+        },
     ));
     let mut result = EventResult::new("verifier");
     result.claimed = true;
