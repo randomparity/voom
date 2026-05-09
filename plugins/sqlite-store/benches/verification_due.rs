@@ -8,6 +8,7 @@ use voom_domain::media::MediaFile;
 use voom_domain::storage::{FileFilters, FileStorage, VerificationStorage};
 use voom_domain::verification::{
     VerificationFilters, VerificationMode, VerificationOutcome, VerificationRecord,
+    VerificationRecordInput,
 };
 use voom_sqlite_store::store::SqliteStore;
 
@@ -23,17 +24,17 @@ fn seed_store(file_count: usize) -> (TempDir, SqliteStore) {
         store.upsert_file(&file).expect("insert file");
 
         if index % 2 == 0 {
-            let record = VerificationRecord::new(
-                Uuid::new_v4(),
-                file.id.to_string(),
-                now,
-                VerificationMode::Quick,
-                VerificationOutcome::Ok,
-                0,
-                0,
-                None,
-                None,
-            );
+            let record = VerificationRecord::new(VerificationRecordInput {
+                id: Uuid::new_v4(),
+                file_id: file.id.to_string(),
+                verified_at: now,
+                mode: VerificationMode::Quick,
+                outcome: VerificationOutcome::Ok,
+                error_count: 0,
+                warning_count: 0,
+                content_hash: None,
+                details: None,
+            });
             store
                 .insert_verification(&record)
                 .expect("insert verification");

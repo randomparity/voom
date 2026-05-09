@@ -400,6 +400,7 @@ mod tests {
     use super::*;
     use voom_domain::media::MediaFile;
     use voom_domain::test_support::InMemoryStore;
+    use voom_domain::verification::VerificationRecordInput;
 
     fn verify_args() -> VerifyArgs {
         VerifyArgs {
@@ -428,28 +429,28 @@ mod tests {
                 .with_file(never_file)
                 .with_file(stale_file)
                 .with_file(fresh_file)
-                .with_verification(VerificationRecord::new(
-                    uuid::Uuid::new_v4(),
-                    stale_id.clone(),
-                    cutoff - chrono::Duration::days(1),
-                    VerificationMode::Quick,
-                    VerificationOutcome::Ok,
-                    0,
-                    0,
-                    None,
-                    None,
-                ))
-                .with_verification(VerificationRecord::new(
-                    uuid::Uuid::new_v4(),
-                    fresh_id,
-                    cutoff + chrono::Duration::days(1),
-                    VerificationMode::Quick,
-                    VerificationOutcome::Ok,
-                    0,
-                    0,
-                    None,
-                    None,
-                )),
+                .with_verification(VerificationRecord::new(VerificationRecordInput {
+                    id: uuid::Uuid::new_v4(),
+                    file_id: stale_id.clone(),
+                    verified_at: cutoff - chrono::Duration::days(1),
+                    mode: VerificationMode::Quick,
+                    outcome: VerificationOutcome::Ok,
+                    error_count: 0,
+                    warning_count: 0,
+                    content_hash: None,
+                    details: None,
+                }))
+                .with_verification(VerificationRecord::new(VerificationRecordInput {
+                    id: uuid::Uuid::new_v4(),
+                    file_id: fresh_id,
+                    verified_at: cutoff + chrono::Duration::days(1),
+                    mode: VerificationMode::Quick,
+                    outcome: VerificationOutcome::Ok,
+                    error_count: 0,
+                    warning_count: 0,
+                    content_hash: None,
+                    details: None,
+                })),
         );
 
         let targets = resolve_due_targets(&store, &verify_args()).expect("resolve targets");
