@@ -23,6 +23,19 @@ fn filename_string(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+const FILE_COLUMNS: &str = "id, path, size, content_hash, expected_hash, status, container, \
+    duration, bitrate, crop_left, crop_top, crop_right, crop_bottom, crop_detected_at, tags, \
+    plugin_metadata, introspected_at";
+
+const FILE_COLUMNS_PREFIXED: &str = "files.id, files.path, files.size, files.content_hash, \
+    files.expected_hash, files.status, files.container, files.duration, files.bitrate, \
+    files.crop_left, files.crop_top, files.crop_right, files.crop_bottom, \
+    files.crop_detected_at, files.tags, files.plugin_metadata, files.introspected_at";
+
+fn select_file_sql(where_clause: &str) -> String {
+    format!("SELECT {FILE_COLUMNS} FROM files {where_clause}")
+}
+
 impl FileStorage for SqliteStore {
     fn upsert_file(&self, file: &MediaFile) -> Result<()> {
         let mut conn = self.conn()?;
@@ -33,6 +46,7 @@ impl FileStorage for SqliteStore {
             .map_err(other_storage_err("failed to serialize metadata"))?;
         let filename = filename_string(&file.path);
         let path_str = file.path.to_string_lossy().to_string();
+        let crop = file.crop_detection.as_ref();
 
         // Preserve existing file ID on re-scan to avoid orphaning related records
         let existing_id: Option<String> = conn
@@ -87,13 +101,11 @@ impl FileStorage for SqliteStore {
                 file.container.as_str(),
                 file.duration,
                 file.bitrate.map(i64::from),
-                file.crop_detection.as_ref().map(|c| i64::from(c.rect.left)),
-                file.crop_detection.as_ref().map(|c| i64::from(c.rect.top)),
-                file.crop_detection.as_ref().map(|c| i64::from(c.rect.right)),
-                file.crop_detection.as_ref().map(|c| i64::from(c.rect.bottom)),
-                file.crop_detection
-                    .as_ref()
-                    .map(|c| format_datetime(&c.detected_at)),
+                crop.map(|c| i64::from(c.rect.left)),
+                crop.map(|c| i64::from(c.rect.top)),
+                crop.map(|c| i64::from(c.rect.right)),
+                crop.map(|c| i64::from(c.rect.bottom)),
+                crop.map(|c| format_datetime(&c.detected_at)),
                 tags_json,
                 meta_json,
                 format_datetime(&file.introspected_at),
@@ -146,7 +158,7 @@ impl FileStorage for SqliteStore {
         let conn = self.conn()?;
         let file_row: Option<FileRow> = conn
             .query_row(
-                "SELECT id, path, size, content_hash, expected_hash, status, container, duration, bitrate, crop_left, crop_top, crop_right, crop_bottom, crop_detected_at, tags, plugin_metadata, introspected_at FROM files WHERE id = ?1",
+                &select_file_sql("WHERE id = ?1"),
                 params![id.to_string()],
                 row_to_file,
             )
@@ -167,7 +179,7 @@ impl FileStorage for SqliteStore {
         let path_str = path.to_string_lossy().to_string();
         let file_row: Option<FileRow> = conn
             .query_row(
-                "SELECT id, path, size, content_hash, expected_hash, status, container, duration, bitrate, crop_left, crop_top, crop_right, crop_bottom, crop_detected_at, tags, plugin_metadata, introspected_at FROM files WHERE path = ?1",
+                &select_file_sql("WHERE path = ?1"),
                 params![path_str],
                 row_to_file,
             )
@@ -217,11 +229,14 @@ impl FileStorage for SqliteStore {
         // When filtering by codec/language, use a subquery to apply filters before
         // LIMIT/OFFSET, ensuring consistent pagination with count_files.
         let base = if has_track_filter {
-            "SELECT DISTINCT files.id, files.path, files.size, files.content_hash, files.expected_hash, files.status, files.container, files.duration, files.bitrate, files.crop_left, files.crop_top, files.crop_right, files.crop_bottom, files.crop_detected_at, files.tags, files.plugin_metadata, files.introspected_at FROM files INNER JOIN tracks ON tracks.file_id = files.id WHERE 1=1"
+            format!(
+                "SELECT DISTINCT {FILE_COLUMNS_PREFIXED} FROM files \
+                 INNER JOIN tracks ON tracks.file_id = files.id WHERE 1=1"
+            )
         } else {
-            "SELECT id, path, size, content_hash, expected_hash, status, container, duration, bitrate, crop_left, crop_top, crop_right, crop_bottom, crop_detected_at, tags, plugin_metadata, introspected_at FROM files WHERE 1=1"
+            select_file_sql("WHERE 1=1")
         };
-        let mut q = SqlQuery::new(base);
+        let mut q = SqlQuery::new(&base);
 
         let col_prefix = if has_track_filter { "files." } else { "" };
 
@@ -476,10 +491,7 @@ impl FileStorage for SqliteStore {
         let conn = self.conn()?;
         let file_row: Option<FileRow> = conn
             .query_row(
-                "SELECT id, path, size, content_hash, expected_hash, status, \
-                 container, duration, bitrate, crop_left, crop_top, crop_right, crop_bottom, \
-                 crop_detected_at, tags, plugin_metadata, introspected_at \
-                 FROM files WHERE superseded_by = ?1 LIMIT 1",
+                &select_file_sql("WHERE superseded_by = ?1 LIMIT 1"),
                 params![successor_id.to_string()],
                 row_to_file,
             )

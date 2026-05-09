@@ -366,7 +366,6 @@ pub struct TranscodeSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct CropSettings {
-    pub mode: CropMode,
     pub sample_duration_secs: Option<u32>,
     pub sample_count: Option<u32>,
     pub threshold: Option<u8>,
@@ -379,7 +378,6 @@ impl CropSettings {
     #[must_use]
     pub fn auto() -> Self {
         Self {
-            mode: CropMode::Auto,
             sample_duration_secs: None,
             sample_count: None,
             threshold: None,
@@ -388,12 +386,6 @@ impl CropSettings {
             aspect_lock: Vec::new(),
         }
     }
-}
-
-/// Crop mode for a transcode operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CropMode {
-    Auto,
 }
 
 /// Deserialization helper for [`ActionParams`] that lifts legacy flat

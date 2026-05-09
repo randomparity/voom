@@ -34,7 +34,7 @@ pub use events::Event;
 pub use job::{DiscoveredFilePayload, Job, JobStatus, JobUpdate};
 pub use media::{Container, CropDetection, CropRect, MediaFile, Track, TrackType};
 pub use plan::{
-    ActionParams, ActionResult, CropMode, CropSettings, OperationType, PhaseOutcome, PhaseOutput,
+    ActionParams, ActionResult, CropSettings, OperationType, PhaseOutcome, PhaseOutput,
     PhaseResult, Plan, PlannedAction, TranscodeChannels, TranscodeSettings, PHASE_OUTPUT_FIELDS,
 };
 pub use safeguard::{SafeguardKind, SafeguardViolation};
