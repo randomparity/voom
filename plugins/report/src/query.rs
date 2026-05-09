@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 use voom_domain::stats::{LibrarySnapshot, SavingsReport, TimePeriod};
-use voom_domain::storage::{PageStats, PlanPhaseStat};
+use voom_domain::storage::{FileFilters, PageStats, PlanPhaseStat, StorageTrait};
 use voom_domain::SafeguardViolation;
 
 /// Sections that can be included in a report.
@@ -101,4 +101,99 @@ pub struct ReportResult {
     pub issues: Option<Vec<IssueReport>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database: Option<DatabaseStats>,
+}
+
+/// Query the library and assemble the requested report sections.
+///
+/// # Errors
+/// Returns a plugin error when an underlying storage query fails.
+pub fn assemble_report(
+    store: &dyn StorageTrait,
+    request: &ReportRequest,
+) -> voom_domain::Result<ReportResult> {
+    let mut result = ReportResult::default();
+
+    if request.includes(ReportSection::Library) {
+        let snapshot = store
+            .gather_library_stats(voom_domain::stats::SnapshotTrigger::Manual)
+            .map_err(|e| crate::plugin_err("failed to gather library statistics", e))?;
+        result.library = Some(snapshot);
+    }
+
+    if request.includes(ReportSection::Plans) {
+        let stats = store
+            .plan_stats_by_phase()
+            .map_err(|e| crate::plugin_err("failed to query plan stats", e))?;
+        result.plans = Some(stats);
+    }
+
+    if request.includes(ReportSection::Savings) {
+        let report = store
+            .savings_by_provenance(request.period)
+            .map_err(|e| crate::plugin_err("failed to query savings", e))?;
+        result.savings = Some(report);
+    }
+
+    if request.includes(ReportSection::History) {
+        let limit = request.history_limit.unwrap_or(20);
+        let snapshots = store
+            .list_snapshots(limit)
+            .map_err(|e| crate::plugin_err("failed to list snapshots", e))?;
+        result.history = Some(snapshots);
+    }
+
+    if request.includes(ReportSection::Issues) {
+        result.issues = Some(issue_report(store)?);
+    }
+
+    if request.includes(ReportSection::Database) {
+        result.database = Some(database_stats(store)?);
+    }
+
+    Ok(result)
+}
+
+fn issue_report(store: &dyn StorageTrait) -> voom_domain::Result<Vec<IssueReport>> {
+    let files = store
+        .list_files(&FileFilters::default())
+        .map_err(|e| crate::plugin_err("failed to list files", e))?;
+
+    Ok(files
+        .iter()
+        .filter_map(|f| {
+            let violations_val = f.plugin_metadata.get("safeguard_violations")?;
+            let violations: Vec<SafeguardViolation> =
+                match serde_json::from_value(violations_val.clone()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %f.path.display(),
+                            error = %e,
+                            "malformed safeguard_violations metadata"
+                        );
+                        return None;
+                    }
+                };
+            if violations.is_empty() {
+                return None;
+            }
+            Some(IssueReport {
+                path: f.path.clone(),
+                violations,
+            })
+        })
+        .collect())
+}
+
+fn database_stats(store: &dyn StorageTrait) -> voom_domain::Result<DatabaseStats> {
+    let table_counts = store
+        .table_row_counts()
+        .map_err(|e| crate::plugin_err("failed to query table row counts", e))?;
+    let page_stats = store
+        .page_stats()
+        .map_err(|e| crate::plugin_err("failed to query page stats", e))?;
+    Ok(DatabaseStats {
+        table_counts,
+        page_stats,
+    })
 }

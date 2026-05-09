@@ -15,7 +15,7 @@ pub use query::{DatabaseStats, IssueReport, ReportRequest, ReportResult, ReportS
 
 /// Create a `VoomError::Plugin` for the report plugin that preserves the
 /// underlying error's display in its message.
-fn plugin_err(context: &str, err: impl std::fmt::Display) -> VoomError {
+pub(crate) fn plugin_err(context: &str, err: impl std::fmt::Display) -> VoomError {
     VoomError::plugin("report", format!("{context}: {err}"))
 }
 
@@ -36,83 +36,7 @@ impl ReportPlugin {
     /// Static method — callers pass the store directly so they don't
     /// need a plugin instance.
     pub fn query(store: &dyn StorageTrait, request: &ReportRequest) -> Result<ReportResult> {
-        let mut result = ReportResult::default();
-
-        if request.includes(ReportSection::Library) {
-            let snapshot = store
-                .gather_library_stats(SnapshotTrigger::Manual)
-                .map_err(|e| plugin_err("failed to gather library statistics", e))?;
-            result.library = Some(snapshot);
-        }
-
-        if request.includes(ReportSection::Plans) {
-            let stats = store
-                .plan_stats_by_phase()
-                .map_err(|e| plugin_err("failed to query plan stats", e))?;
-            result.plans = Some(stats);
-        }
-
-        if request.includes(ReportSection::Savings) {
-            let report = store
-                .savings_by_provenance(request.period)
-                .map_err(|e| plugin_err("failed to query savings", e))?;
-            result.savings = Some(report);
-        }
-
-        if request.includes(ReportSection::History) {
-            let limit = request.history_limit.unwrap_or(20);
-            let snapshots = store
-                .list_snapshots(limit)
-                .map_err(|e| plugin_err("failed to list snapshots", e))?;
-            result.history = Some(snapshots);
-        }
-
-        if request.includes(ReportSection::Issues) {
-            let files = store
-                .list_files(&voom_domain::storage::FileFilters::default())
-                .map_err(|e| plugin_err("failed to list files", e))?;
-            let issues: Vec<query::IssueReport> = files
-                .iter()
-                .filter_map(|f| {
-                    let violations_val = f.plugin_metadata.get("safeguard_violations")?;
-                    let violations: Vec<voom_domain::SafeguardViolation> =
-                        match serde_json::from_value(violations_val.clone()) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                tracing::warn!(
-                                    path = %f.path.display(),
-                                    error = %e,
-                                    "malformed safeguard_violations metadata"
-                                );
-                                return None;
-                            }
-                        };
-                    if violations.is_empty() {
-                        return None;
-                    }
-                    Some(query::IssueReport {
-                        path: f.path.clone(),
-                        violations,
-                    })
-                })
-                .collect();
-            result.issues = Some(issues);
-        }
-
-        if request.includes(ReportSection::Database) {
-            let table_counts = store
-                .table_row_counts()
-                .map_err(|e| plugin_err("failed to query table row counts", e))?;
-            let page_stats = store
-                .page_stats()
-                .map_err(|e| plugin_err("failed to query page stats", e))?;
-            result.database = Some(query::DatabaseStats {
-                table_counts,
-                page_stats,
-            });
-        }
-
-        Ok(result)
+        query::assemble_report(store, request)
     }
 
     /// Capture and persist a library snapshot.
