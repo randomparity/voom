@@ -602,4 +602,51 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("event type mismatch"));
     }
+
+    #[test]
+    fn test_event_result_from_wasm_rejects_invalid_messagepack_event() {
+        let err = event_result_from_wasm(WasmEventResult {
+            plugin_name: "test-plugin".into(),
+            produced_events: vec![("file.discovered".into(), vec![0xff, 0xfe])],
+            data: None,
+            claimed: false,
+            execution_error: None,
+            execution_detail: None,
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("failed to deserialize event"));
+    }
+
+    #[test]
+    fn test_event_result_from_wasm_rejects_invalid_json_data() {
+        let err = event_result_from_wasm(WasmEventResult {
+            plugin_name: "test-plugin".into(),
+            produced_events: vec![],
+            data: Some(br#"{"unterminated":"#.to_vec()),
+            claimed: false,
+            execution_error: None,
+            execution_detail: None,
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("failed to deserialize JSON"));
+    }
+
+    #[test]
+    fn test_event_result_from_wasm_rejects_invalid_execution_detail() {
+        let err = event_result_from_wasm(WasmEventResult {
+            plugin_name: "test-plugin".into(),
+            produced_events: vec![],
+            data: None,
+            claimed: true,
+            execution_error: None,
+            execution_detail: Some(br#"{"command":5}"#.to_vec()),
+        })
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("failed to deserialize execution detail"));
+    }
 }

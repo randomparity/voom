@@ -574,49 +574,147 @@ pub mod wasm {
         }
     }
 
-    /// Extract a String from a Val, returning empty string for non-string values.
-    fn val_to_string(val: &wasmtime::component::Val) -> String {
-        if let wasmtime::component::Val::String(s) = val {
-            s.to_string()
-        } else {
-            String::new()
+    fn val_kind(val: &wasmtime::component::Val) -> &'static str {
+        use wasmtime::component::Val;
+
+        match val {
+            Val::Bool(_) => "bool",
+            Val::S8(_) => "s8",
+            Val::U8(_) => "u8",
+            Val::S16(_) => "s16",
+            Val::U16(_) => "u16",
+            Val::S32(_) => "s32",
+            Val::U32(_) => "u32",
+            Val::S64(_) => "s64",
+            Val::U64(_) => "u64",
+            Val::Float32(_) => "float32",
+            Val::Float64(_) => "float64",
+            Val::Char(_) => "char",
+            Val::String(_) => "string",
+            Val::List(_) => "list",
+            Val::Record(_) => "record",
+            Val::Tuple(_) => "tuple",
+            Val::Variant(_, _) => "variant",
+            Val::Enum(_) => "enum",
+            Val::Option(_) => "option",
+            Val::Result(_) => "result",
+            Val::Flags(_) => "flags",
+            Val::Resource(_) => "resource",
         }
     }
 
-    /// Extract bytes from a `Val::List` of `Val::U8` values.
-    fn val_to_bytes(val: &wasmtime::component::Val) -> Vec<u8> {
-        if let wasmtime::component::Val::List(items) = val {
-            items
-                .iter()
-                .filter_map(|v| {
-                    if let wasmtime::component::Val::U8(b) = v {
-                        Some(*b)
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        } else {
-            Vec::new()
+    fn unexpected_field_value(
+        field_name: &str,
+        expected: &str,
+        val: &wasmtime::component::Val,
+    ) -> WasmLoadError {
+        WasmLoadError::UnexpectedValue(format!(
+            "field '{field_name}' expected {expected}, got {}",
+            val_kind(val)
+        ))
+    }
+
+    fn expect_string(
+        field_name: &str,
+        val: &wasmtime::component::Val,
+    ) -> Result<String, WasmLoadError> {
+        match val {
+            wasmtime::component::Val::String(value) => Ok(value.to_string()),
+            other => Err(unexpected_field_value(field_name, "string", other)),
+        }
+    }
+
+    fn expect_bytes(
+        field_name: &str,
+        val: &wasmtime::component::Val,
+    ) -> Result<Vec<u8>, WasmLoadError> {
+        let wasmtime::component::Val::List(items) = val else {
+            return Err(unexpected_field_value(field_name, "list<u8>", val));
+        };
+
+        let mut bytes = Vec::with_capacity(items.len());
+        for (index, item) in items.iter().enumerate() {
+            match item {
+                wasmtime::component::Val::U8(value) => bytes.push(*value),
+                other => {
+                    return Err(WasmLoadError::UnexpectedValue(format!(
+                        "field '{field_name}' expected list<u8>, got {} at index {index}",
+                        val_kind(other)
+                    )));
+                }
+            }
+        }
+        Ok(bytes)
+    }
+
+    fn expect_optional_string(
+        field_name: &str,
+        val: &wasmtime::component::Val,
+    ) -> Result<Option<String>, WasmLoadError> {
+        match val {
+            wasmtime::component::Val::Option(Some(boxed)) => {
+                expect_string(field_name, boxed.as_ref()).map(Some)
+            }
+            wasmtime::component::Val::Option(None) => Ok(None),
+            other => Err(unexpected_field_value(field_name, "option<string>", other)),
+        }
+    }
+
+    fn expect_optional_bytes(
+        field_name: &str,
+        val: &wasmtime::component::Val,
+    ) -> Result<Option<Vec<u8>>, WasmLoadError> {
+        match val {
+            wasmtime::component::Val::Option(Some(boxed)) => {
+                expect_bytes(field_name, boxed.as_ref()).map(Some)
+            }
+            wasmtime::component::Val::Option(None) => Ok(None),
+            other => Err(unexpected_field_value(
+                field_name,
+                "option<list<u8>>",
+                other,
+            )),
         }
     }
 
     /// Parse a `Val::Record` representing an event-data into (`event_type`, payload).
-    fn parse_event_data(val: &wasmtime::component::Val) -> Option<(String, Vec<u8>)> {
+    fn parse_event_data(
+        field_name: &str,
+        val: &wasmtime::component::Val,
+    ) -> Result<(String, Vec<u8>), WasmLoadError> {
         if let wasmtime::component::Val::Record(fields) = val {
             let mut evt_type = String::new();
             let mut payload = Vec::new();
             for (name, field_val) in fields {
                 match name.as_str() {
-                    "event-type" => evt_type = val_to_string(field_val),
-                    "payload" => payload = val_to_bytes(field_val),
+                    "event-type" => {
+                        evt_type = expect_string(&format!("{field_name}.event-type"), field_val)?;
+                    }
+                    "payload" => {
+                        payload = expect_bytes(&format!("{field_name}.payload"), field_val)?;
+                    }
                     _ => {}
                 }
             }
-            Some((evt_type, payload))
+            Ok((evt_type, payload))
         } else {
-            None
+            Err(unexpected_field_value(field_name, "record", val))
         }
+    }
+
+    fn expect_event_data_list(
+        field_name: &str,
+        val: &wasmtime::component::Val,
+    ) -> Result<Vec<(String, Vec<u8>)>, WasmLoadError> {
+        let wasmtime::component::Val::List(items) = val else {
+            return Err(unexpected_field_value(field_name, "list<event-data>", val));
+        };
+
+        items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| parse_event_data(&format!("{field_name}[{index}]"), item))
+            .collect()
     }
 
     /// Parse a Val representing an event-result record into a
@@ -645,36 +743,19 @@ pub mod wasm {
 
         for (name, field_val) in fields {
             match name.as_str() {
-                "plugin-name" => plugin_name = val_to_string(field_val),
+                "plugin-name" => plugin_name = expect_string(name, field_val)?,
                 "produced-events" => {
-                    if let Val::List(items) = field_val {
-                        produced_events = items.iter().filter_map(parse_event_data).collect();
-                    }
+                    produced_events = expect_event_data_list(name, field_val)?;
                 }
-                "data" => match field_val {
-                    Val::Option(Some(boxed)) => data = Some(val_to_bytes(boxed.as_ref())),
-                    Val::Option(None) => data = None,
-                    _ => {}
-                },
+                "data" => data = expect_optional_bytes(name, field_val)?,
                 "claimed" => {
-                    if let Val::Bool(value) = field_val {
-                        claimed = *value;
-                    }
+                    claimed = match field_val {
+                        Val::Bool(value) => *value,
+                        other => return Err(unexpected_field_value(name, "bool", other)),
+                    };
                 }
-                "execution-error" => match field_val {
-                    Val::Option(Some(boxed)) => {
-                        execution_error = Some(val_to_string(boxed.as_ref()));
-                    }
-                    Val::Option(None) => execution_error = None,
-                    _ => {}
-                },
-                "execution-detail" => match field_val {
-                    Val::Option(Some(boxed)) => {
-                        execution_detail = Some(val_to_bytes(boxed.as_ref()));
-                    }
-                    Val::Option(None) => execution_detail = None,
-                    _ => {}
-                },
+                "execution-error" => execution_error = expect_optional_string(name, field_val)?,
+                "execution-detail" => execution_detail = expect_optional_bytes(name, field_val)?,
                 _ => {}
             }
         }
@@ -1052,6 +1133,128 @@ pub mod wasm {
     impl From<WasmLoadError> for VoomError {
         fn from(e: WasmLoadError) -> Self {
             VoomError::Wasm(e.to_string())
+        }
+    }
+
+    #[cfg(test)]
+    mod event_result_parse_tests {
+        use super::*;
+        use wasmtime::component::Val;
+
+        fn valid_event_result() -> Val {
+            Val::Record(vec![
+                ("plugin-name".into(), Val::String("test-plugin".into())),
+                (
+                    "produced-events".into(),
+                    Val::List(vec![Val::Record(vec![
+                        ("event-type".into(), Val::String("metadata.enriched".into())),
+                        ("payload".into(), Val::List(vec![Val::U8(1), Val::U8(2)])),
+                    ])]),
+                ),
+                (
+                    "data".into(),
+                    Val::Option(Some(Box::new(Val::List(vec![
+                        Val::U8(b'{'),
+                        Val::U8(b'}'),
+                    ])))),
+                ),
+                ("claimed".into(), Val::Bool(true)),
+                (
+                    "execution-error".into(),
+                    Val::Option(Some(Box::new(Val::String("failed".into())))),
+                ),
+                (
+                    "execution-detail".into(),
+                    Val::Option(Some(Box::new(Val::List(vec![Val::U8(1), Val::U8(2)])))),
+                ),
+            ])
+        }
+
+        fn unexpected_value_message(
+            result: Result<voom_wit::WasmEventResult, WasmLoadError>,
+        ) -> String {
+            match result {
+                Err(WasmLoadError::UnexpectedValue(message)) => message,
+                Err(other) => panic!("expected UnexpectedValue, got {other}"),
+                Ok(_) => panic!("expected UnexpectedValue, got successful parse"),
+            }
+        }
+
+        #[test]
+        fn parse_event_result_accepts_valid_known_fields() {
+            let result = parse_event_result(&valid_event_result()).unwrap();
+
+            assert_eq!(result.plugin_name, "test-plugin");
+            assert_eq!(
+                result.produced_events,
+                vec![("metadata.enriched".to_string(), vec![1, 2])]
+            );
+            assert!(result.claimed);
+            assert_eq!(result.execution_error, Some("failed".to_string()));
+            assert_eq!(result.execution_detail, Some(vec![1, 2]));
+        }
+
+        #[test]
+        fn parse_event_result_ignores_unknown_extra_fields() {
+            let Val::Record(mut fields) = valid_event_result() else {
+                panic!("expected record");
+            };
+            fields.push(("future-field".into(), Val::Bool(false)));
+
+            let result = parse_event_result(&Val::Record(fields)).unwrap();
+
+            assert_eq!(result.plugin_name, "test-plugin");
+        }
+
+        #[test]
+        fn parse_event_result_rejects_wrong_plugin_name_shape() {
+            let Val::Record(mut fields) = valid_event_result() else {
+                panic!("expected record");
+            };
+            fields[0] = ("plugin-name".into(), Val::Bool(false));
+
+            let message = unexpected_value_message(parse_event_result(&Val::Record(fields)));
+
+            assert!(message.contains("plugin-name"));
+            assert!(message.contains("string"));
+            assert!(message.contains("bool"));
+        }
+
+        #[test]
+        fn parse_event_result_rejects_wrong_payload_item_shape() {
+            let Val::Record(mut fields) = valid_event_result() else {
+                panic!("expected record");
+            };
+            fields[1] = (
+                "produced-events".into(),
+                Val::List(vec![Val::Record(vec![
+                    ("event-type".into(), Val::String("metadata.enriched".into())),
+                    ("payload".into(), Val::List(vec![Val::Bool(false)])),
+                ])]),
+            );
+
+            let message = unexpected_value_message(parse_event_result(&Val::Record(fields)));
+
+            assert!(message.contains("produced-events[0].payload"));
+            assert!(message.contains("list<u8>"));
+            assert!(message.contains("index 0"));
+        }
+
+        #[test]
+        fn parse_event_result_rejects_wrong_optional_data_shape() {
+            let Val::Record(mut fields) = valid_event_result() else {
+                panic!("expected record");
+            };
+            fields[2] = (
+                "data".into(),
+                Val::Option(Some(Box::new(Val::String("not bytes".into())))),
+            );
+
+            let message = unexpected_value_message(parse_event_result(&Val::Record(fields)));
+
+            assert!(message.contains("data"));
+            assert!(message.contains("list<u8>"));
+            assert!(message.contains("string"));
         }
     }
 }
