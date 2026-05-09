@@ -438,25 +438,11 @@ async fn handle_phase_success(
     successful_phase_output: PhaseOutput,
 ) -> std::result::Result<(), String> {
     if check_size_increase(&plan, &state.current_file, phase_ctx.safeguards) {
-        state.outcomes.insert(
-            plan.phase_name.clone(),
-            voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
-        );
-        state.phase_outputs.insert(
-            plan.phase_name.clone(),
-            phase_output(false, false, Some("safeguard_failed")),
-        );
+        record_success_safeguard_failure(&plan.phase_name, state);
         return Ok(());
     }
     if check_duration_shrink(&plan, &state.current_file, phase_ctx.safeguards).await {
-        state.outcomes.insert(
-            plan.phase_name.clone(),
-            voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
-        );
-        state.phase_outputs.insert(
-            plan.phase_name.clone(),
-            phase_output(false, false, Some("safeguard_failed")),
-        );
+        record_success_safeguard_failure(&plan.phase_name, state);
         return Ok(());
     }
 
@@ -487,6 +473,17 @@ async fn handle_phase_success(
     .await
     .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn record_success_safeguard_failure(phase_name: &str, state: &mut PhaseExecutionState) {
+    state.outcomes.insert(
+        phase_name.to_string(),
+        voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
+    );
+    state.phase_outputs.insert(
+        phase_name.to_string(),
+        phase_output(false, false, Some("safeguard_failed")),
+    );
 }
 
 fn handle_phase_failure(
