@@ -169,14 +169,14 @@ def on_event(event: EventDataLike | EventDataDict) -> EventResult | None:
     if file_path is None:
         return None
 
-    _log("info", f"Processing file for TVDB lookup: {file_path}")
+    _log("debug", f"Processing file for TVDB lookup: {file_path}")
 
     info = parse_filename(file_path)
     if info is None:
         _log("debug", f"No episode pattern found in: {file_path}")
         return None
 
-    _log("info", f"Parsed: {info.series_name} S{info.season_number:02d}E{info.episode_number:02d}")
+    _log("debug", f"Parsed: {info.series_name} S{info.season_number:02d}E{info.episode_number:02d}")
 
     client = _make_client()
     if client is None:
@@ -301,7 +301,7 @@ def _lookup_metadata(client: TvdbClient, info: EpisodeInfo) -> TvdbMetadataResul
         _log("error", f"TVDB lookup failed: {e}")
         return None
     if metadata is None:
-        _log("info", f"No TVDB match for: {info.series_name}")
+        _log("debug", f"No TVDB match for: {info.series_name}")
         return None
     return metadata
 
