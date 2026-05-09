@@ -28,28 +28,44 @@ pub trait Plugin: Send + Sync {
     /// Project homepage or repository URL.
     fn homepage(&self) -> &str { "" }
 
-    /// Declared capabilities (used for routing).
+    /// Declared capabilities.
     fn capabilities(&self) -> &[Capability];
 
-    /// Does this plugin handle the given event type?
-    fn handles(&self, event_type: &str) -> bool;
+    /// Returns `true` if this plugin wants to receive events of the given type.
+    fn handles(&self, _event_type: &str) -> bool {
+        false
+    }
 
-    /// Process an event and optionally return a result.
-    fn on_event(&self, event: &Event) -> Result<Option<EventResult>>;
+    /// Process an incoming event. Only called for event types where
+    /// `handles()` returns `true`.
+    fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> {
+        Ok(None)
+    }
 
-    /// Optional: Called once when the plugin is loaded.
-    fn init(&mut self, _ctx: &PluginContext) -> Result<()> { Ok(()) }
+    /// Called once after the plugin is loaded.
+    ///
+    /// Returned events are dispatched through the bus after registration.
+    fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
+        Ok(vec![])
+    }
 
     /// Optional: Called when the application is shutting down.
     fn shutdown(&self) -> Result<()> { Ok(()) }
 }
 ```
 
-The `description`, `author`, `license`, and `homepage` methods have default implementations that return empty strings. Override them to provide metadata visible in `voom plugin list`, `voom plugin info`, and the web UI.
+The `description`, `author`, `license`, and `homepage` methods have default
+implementations that return empty strings. Override them to provide metadata
+visible in `voom plugin list`, `voom plugin info`, and the web UI. Override
+`handles()` only when the plugin should receive event-bus messages; direct-call
+capability plugins can leave the default event methods unchanged.
 
 ### Capabilities
 
-Plugins declare what they can do using the `Capability` enum. The kernel uses capabilities to route work to the right plugin.
+Plugins declare what they can do using the `Capability` enum. Capabilities
+describe the implementation a plugin provides; current CLI workflows select and
+call core capability implementations directly, while the kernel keeps the
+capability metadata available for runtime inspection and future routing.
 
 ```rust
 pub enum Capability {
@@ -71,7 +87,9 @@ pub enum Capability {
 
 ### Event Types
 
-Plugins communicate exclusively through events. A plugin declares which event types it handles, and the kernel dispatches matching events to it.
+Plugins that override `handles()` communicate through events. A plugin declares
+which event types it handles, and the kernel dispatches matching events to it.
+Plugins that only provide direct-call capabilities can ignore the event bus.
 
 | Event Type | Description | Typical Handler |
 |------------|-------------|-----------------|
@@ -220,9 +238,9 @@ impl Plugin for MyPlugin {
         }
     }
 
-    fn init(&mut self, _ctx: &PluginContext) -> Result<()> {
+    fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
         tracing::info!("my-plugin initialized");
-        Ok(())
+        Ok(vec![])
     }
 }
 ```
@@ -238,7 +256,12 @@ use my_plugin::MyPlugin;
 kernel.init_and_register(Arc::new(MyPlugin::new()), 100, &ctx)?;
 ```
 
-The `init_and_register` method calls `Plugin::init()` then registers the plugin with the given priority. As a lower-level alternative, `register_plugin(plugin, priority)` skips initialization.
+The `init_and_register` method calls `Plugin::init()`, registers the plugin with
+the given priority, then dispatches any events returned by `init()` after
+registration through `Kernel::finish_registration`. Return `Ok(vec![])` when
+initialization emits no events. As a lower-level alternative,
+`register_plugin(plugin, priority)` skips initialization and only subscribes
+plugins whose `handles()` method matches incoming events.
 
 ### Testing
 
@@ -377,7 +400,7 @@ interface host {
     run-tool: func(tool: string, args: list<string>, timeout-ms: u64) -> result<tool-output, string>;
 
     // Persistent key-value storage
-    get-plugin-data: func(key: string) -> option<list<u8>>;
+    get-plugin-data: func(key: string) -> result<option<list<u8>>, string>;
     set-plugin-data: func(key: string, value: list<u8>) -> result<_, string>;
 
     // HTTP requests (for API access)
@@ -694,7 +717,7 @@ Only tools on the host's allowed-list can be invoked. The host executes the tool
 
 ```wit
 // Key-value storage scoped to the plugin
-get-plugin-data(key: string) -> option<list<u8>>
+get-plugin-data(key: string) -> result<option<list<u8>>, string>
 set-plugin-data(key: string, value: list<u8>) -> result<_, string>
 ```
 

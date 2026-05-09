@@ -157,8 +157,11 @@ Two-tier plugin model around a thin kernel with zero media knowledge:
 - **Native plugins** -- compiled into the binary (discovery, introspection, storage, executors, backup, job management, health checks, web UI)
 - **WASM plugins** -- sandboxed, language-agnostic extensions via wasmtime (Whisper transcription, subtitle generation, Radarr/Sonarr metadata, HandBrake executor, audio language detection)
 
-Plugins communicate exclusively through a priority-ordered event bus. Install
-third-party WASM plugins with `voom plugin install <path.wasm>`.
+Plugins provide capability implementations; only plugins that override
+`handles()` subscribe to the priority-ordered event bus. CLI workflows call
+core capabilities directly for deterministic orchestration, then dispatch
+lifecycle events for subscribers. Install third-party WASM plugins with
+`voom plugin install <path.wasm>`.
 
 ## Quick Start
 
@@ -227,12 +230,12 @@ cargo run -- serve
 ```
 
 VOOM uses a hybrid runtime model. The kernel owns plugin lifecycle, capability
-routing, and the priority-ordered event bus, but it has no media-specific
-logic. CLI commands drive deterministic workflows directly for progress,
-error handling, and concurrency, then dispatch lifecycle events for passive
-subscribers. Native and WASM plugins provide the capability implementations
-and event-driven side effects. See [`docs/architecture.md`](docs/architecture.md)
-for details.
+routing metadata, and the priority-ordered event bus, but it has no
+media-specific logic. CLI commands drive deterministic workflows directly for
+progress, error handling, and concurrency, then dispatch lifecycle events for
+plugins that opt into event handling. Native and WASM plugins provide
+capability implementations and optional event-driven side effects. See
+[`docs/architecture.md`](docs/architecture.md) for details.
 
 ## Workspace Layout
 
