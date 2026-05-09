@@ -4,8 +4,6 @@ use std::time::{Duration, Instant};
 
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::plan::{ActionResult, ExecutionDetail, Plan, PlannedAction};
-use voom_process::run_with_timeout_env;
-
 use voom_domain::temp_file::temp_path_with_ext;
 
 use crate::command::{build_ffmpeg_command, output_extension};
@@ -51,7 +49,15 @@ pub fn execute_plan(plan: &Plan, hw_accel: &HwAccelConfig) -> Result<Vec<ActionR
     let command_str = voom_process::shell_quote_args("ffmpeg", &ffmpeg_args);
     let env_vars: Vec<(&str, &str)> = hw_accel.device_env().into_iter().collect();
     let start = Instant::now();
-    let output = run_with_timeout_env("ffmpeg", &ffmpeg_args, FFMPEG_TIMEOUT, &env_vars);
+    let output = voom_process::run_with_timeout_options(
+        "ffmpeg",
+        &ffmpeg_args,
+        FFMPEG_TIMEOUT,
+        voom_process::TimeoutOptions {
+            env_vars: &env_vars,
+            capture: voom_process::CaptureConfig::default(),
+        },
+    );
     let duration_ms = start.elapsed().as_millis() as u64;
 
     match output {

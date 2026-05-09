@@ -22,6 +22,13 @@ pub struct CaptureConfig {
     pub max_stderr_bytes: usize,
 }
 
+/// Options for timeout-bound synchronous subprocess execution.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TimeoutOptions<'a> {
+    pub env_vars: &'a [(&'a str, &'a str)],
+    pub capture: CaptureConfig,
+}
+
 /// Options for cancellable subprocess execution.
 #[derive(Clone, Copy, Debug)]
 pub struct CancellableOptions<'a> {
@@ -169,25 +176,7 @@ pub fn run_with_timeout(
     args: &[impl AsRef<OsStr>],
     timeout: Duration,
 ) -> Result<Output> {
-    run_with_timeout_env_config(tool, args, timeout, &[], CaptureConfig::default())
-}
-
-pub fn run_with_timeout_env(
-    tool: &str,
-    args: &[impl AsRef<OsStr>],
-    timeout: Duration,
-    env_vars: &[(&str, &str)],
-) -> Result<Output> {
-    run_with_timeout_env_config(tool, args, timeout, env_vars, CaptureConfig::default())
-}
-
-pub fn run_with_timeout_config(
-    tool: &str,
-    args: &[impl AsRef<OsStr>],
-    timeout: Duration,
-    capture: CaptureConfig,
-) -> Result<Output> {
-    run_with_timeout_env_config(tool, args, timeout, &[], capture)
+    run_with_timeout_options(tool, args, timeout, TimeoutOptions::default())
 }
 
 /// Runs a subprocess with bounded stdout/stderr capture and terminates it on timeout.
@@ -195,22 +184,21 @@ pub fn run_with_timeout_config(
 /// # Errors
 /// Returns `VoomError::ToolExecution` when spawning fails, the deadline
 /// expires, the process exits unsuccessfully, or captured output is not UTF-8.
-pub fn run_with_timeout_env_config(
+pub fn run_with_timeout_options(
     tool: &str,
     args: &[impl AsRef<OsStr>],
     timeout: Duration,
-    env_vars: &[(&str, &str)],
-    capture: CaptureConfig,
+    options: TimeoutOptions<'_>,
 ) -> Result<Output> {
     let mut cmd = Command::new(tool);
     cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
-    for (key, val) in env_vars {
+    for (key, val) in options.env_vars {
         cmd.env(key, val);
     }
     let mut child = cmd.spawn().map_err(|e| spawn_error(tool, e))?;
 
     // Spawn reader threads before waiting so pipes drain concurrently.
-    let (stdout_handle, stderr_handle) = spawn_pipe_readers(&mut child, capture);
+    let (stdout_handle, stderr_handle) = spawn_pipe_readers(&mut child, options.capture);
 
     match child.wait_timeout(timeout) {
         Ok(Some(status)) => {
@@ -264,7 +252,16 @@ pub fn probe_tool_status_env(
     timeout: Duration,
     env_vars: &[(&str, &str)],
 ) -> bool {
-    run_with_timeout_env(tool, args, timeout, env_vars).is_ok_and(|o| o.status.success())
+    run_with_timeout_options(
+        tool,
+        args,
+        timeout,
+        TimeoutOptions {
+            env_vars,
+            capture: CaptureConfig::default(),
+        },
+    )
+    .is_ok_and(|o| o.status.success())
 }
 
 /// Format a tool invocation as a shell-reproducible command string.
@@ -346,7 +343,7 @@ pub async fn run_cancellable(
     timeout: Duration,
     token: &tokio_util::sync::CancellationToken,
 ) -> Result<Output> {
-    run_cancellable_env_config(
+    run_cancellable_options(
         tool,
         args,
         timeout,
@@ -354,52 +351,6 @@ pub async fn run_cancellable(
             env_vars: &[],
             token,
             capture: CaptureConfig::default(),
-        },
-    )
-    .await
-}
-
-/// Async cancellable subprocess with extra environment variables.
-///
-/// See [`run_cancellable`] for details.
-pub async fn run_cancellable_env(
-    tool: &str,
-    args: &[impl AsRef<OsStr>],
-    timeout: Duration,
-    env_vars: &[(&str, &str)],
-    token: &tokio_util::sync::CancellationToken,
-) -> Result<Output> {
-    run_cancellable_env_config(
-        tool,
-        args,
-        timeout,
-        CancellableOptions {
-            env_vars,
-            token,
-            capture: CaptureConfig::default(),
-        },
-    )
-    .await
-}
-
-/// Async cancellable subprocess with configured output capture limits.
-///
-/// See [`run_cancellable`] for details.
-pub async fn run_cancellable_config(
-    tool: &str,
-    args: &[impl AsRef<OsStr>],
-    timeout: Duration,
-    token: &tokio_util::sync::CancellationToken,
-    capture: CaptureConfig,
-) -> Result<Output> {
-    run_cancellable_env_config(
-        tool,
-        args,
-        timeout,
-        CancellableOptions {
-            env_vars: &[],
-            token,
-            capture,
         },
     )
     .await
@@ -408,7 +359,7 @@ pub async fn run_cancellable_config(
 /// Async cancellable subprocess with extra environment variables and capture limits.
 ///
 /// See [`run_cancellable`] for details.
-pub async fn run_cancellable_env_config(
+pub async fn run_cancellable_options(
     tool: &str,
     args: &[impl AsRef<OsStr>],
     timeout: Duration,
@@ -492,11 +443,14 @@ mod tests {
 
     #[test]
     fn test_run_with_timeout_env() {
-        let output = run_with_timeout_env(
+        let output = run_with_timeout_options(
             "env",
             &[] as &[&str],
             Duration::from_secs(5),
-            &[("VOOM_TEST_VAR", "hello_gpu")],
+            TimeoutOptions {
+                env_vars: &[("VOOM_TEST_VAR", "hello_gpu")],
+                capture: CaptureConfig::default(),
+            },
         )
         .unwrap();
         assert!(output.status.success());
@@ -518,14 +472,16 @@ mod tests {
         .expect("write script");
         make_executable(&script);
 
-        let output = run_with_timeout_env_config(
+        let output = run_with_timeout_options(
             script.to_str().expect("utf8 path"),
             &[] as &[&str],
             Duration::from_secs(5),
-            &[],
-            CaptureConfig {
-                max_stdout_bytes: 10,
-                max_stderr_bytes: DEFAULT_CAPTURE_LIMIT_BYTES,
+            TimeoutOptions {
+                env_vars: &[],
+                capture: CaptureConfig {
+                    max_stdout_bytes: 10,
+                    max_stderr_bytes: DEFAULT_CAPTURE_LIMIT_BYTES,
+                },
             },
         )
         .expect("script succeeds");
@@ -549,14 +505,16 @@ mod tests {
         .expect("write script");
         make_executable(&script);
 
-        let output = run_with_timeout_env_config(
+        let output = run_with_timeout_options(
             script.to_str().expect("utf8 path"),
             &[] as &[&str],
             Duration::from_secs(5),
-            &[],
-            CaptureConfig {
-                max_stdout_bytes: DEFAULT_CAPTURE_LIMIT_BYTES,
-                max_stderr_bytes: 13,
+            TimeoutOptions {
+                env_vars: &[],
+                capture: CaptureConfig {
+                    max_stdout_bytes: DEFAULT_CAPTURE_LIMIT_BYTES,
+                    max_stderr_bytes: 13,
+                },
             },
         )
         .expect("script succeeds");
@@ -602,7 +560,7 @@ mod tests {
     #[tokio::test]
     async fn cancellable_echo_succeeds() {
         let token = tokio_util::sync::CancellationToken::new();
-        let output = run_cancellable_env("echo", &["hello"], Duration::from_secs(5), &[], &token)
+        let output = run_cancellable("echo", &["hello"], Duration::from_secs(5), &token)
             .await
             .expect("echo should succeed");
         assert!(output.status.success());
@@ -621,7 +579,7 @@ mod tests {
         make_executable(&script);
 
         let token = tokio_util::sync::CancellationToken::new();
-        let output = run_cancellable_env_config(
+        let output = run_cancellable_options(
             script.to_str().expect("utf8 path"),
             &[] as &[&str],
             Duration::from_secs(5),
@@ -648,7 +606,7 @@ mod tests {
     async fn cancellable_kills_on_cancel() {
         let token = tokio_util::sync::CancellationToken::new();
         token.cancel();
-        let err = run_cancellable_env("sleep", &["60"], Duration::from_secs(30), &[], &token)
+        let err = run_cancellable("sleep", &["60"], Duration::from_secs(30), &token)
             .await
             .unwrap_err();
         match &err {
@@ -666,7 +624,7 @@ mod tests {
     #[tokio::test]
     async fn cancellable_times_out() {
         let token = tokio_util::sync::CancellationToken::new();
-        let err = run_cancellable_env("sleep", &["60"], Duration::from_secs(1), &[], &token)
+        let err = run_cancellable("sleep", &["60"], Duration::from_secs(1), &token)
             .await
             .unwrap_err();
         match &err {
@@ -687,11 +645,10 @@ mod tests {
         // 64KB). Before the fix, this would deadlock because the child
         // blocks writing to full pipes while we wait for exit.
         let token = tokio_util::sync::CancellationToken::new();
-        let output = run_cancellable_env(
+        let output = run_cancellable(
             "dd",
             &["if=/dev/zero", "bs=1024", "count=256"],
             Duration::from_secs(10),
-            &[],
             &token,
         )
         .await

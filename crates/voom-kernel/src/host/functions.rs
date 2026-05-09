@@ -225,11 +225,11 @@ impl HostState {
         }
 
         let timeout = Duration::from_millis(timeout_ms);
-        let output = voom_process::run_with_timeout_config(
+        let output = voom_process::run_with_timeout_options(
             tool,
             args,
             timeout,
-            voom_process::CaptureConfig::default(),
+            voom_process::TimeoutOptions::default(),
         )
         .map_err(|e| host_tool_error(tool, timeout_ms, &e))?;
 

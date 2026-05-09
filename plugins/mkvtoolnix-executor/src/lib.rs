@@ -310,8 +310,7 @@ impl MkvtoolnixExecutorPlugin {
         let command_str = voom_process::shell_quote_args("mkvmerge", &args);
         const SUBTITLE_MUX_TIMEOUT: Duration = Duration::from_secs(120);
         let start = std::time::Instant::now();
-        let output =
-            voom_process::run_with_timeout_env("mkvmerge", &args, SUBTITLE_MUX_TIMEOUT, &[]);
+        let output = voom_process::run_with_timeout("mkvmerge", &args, SUBTITLE_MUX_TIMEOUT);
         let duration_ms = start.elapsed().as_millis() as u64;
 
         match output {
