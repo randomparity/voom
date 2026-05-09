@@ -85,12 +85,6 @@ fn snapshot_transcode() {
                 crf: 20
                 preset: medium
                 crop: auto
-                crop_sample_duration: 60
-                crop_sample_count: 3
-                crop_threshold: 24
-                crop_minimum: 4
-                crop_preserve_bottom_pixels: 60
-                crop_aspect_lock: ["16/9", "4/3"]
             }
             transcode audio to aac {
                 bitrate: 192k
