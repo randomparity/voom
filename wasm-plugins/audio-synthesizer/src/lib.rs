@@ -30,20 +30,16 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event_or_log, load_plugin_config, ActionParams, Capability, Event,
-    HostFunctions, OnEventResult, OperationType, PluginInfoData,
+    deserialize_event_or_log, load_plugin_config, ActionParams, Capability, Event, HostFunctions,
+    OnEventResult, OperationType, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
-    PluginInfoData::new(
-        "audio-synthesizer",
-        "0.1.0",
-        vec![Capability::Synthesize],
-    )
-    .with_description("Audio synthesis via TTS engines")
-    .with_author("David Christensen")
-    .with_license("MIT")
-    .with_homepage("https://github.com/randomparity/voom")
+    PluginInfoData::new("audio-synthesizer", "0.1.0", vec![Capability::Synthesize])
+        .with_description("Audio synthesis via TTS engines")
+        .with_author("David Christensen")
+        .with_license("MIT")
+        .with_homepage("https://github.com/randomparity/voom")
 }
 
 pub fn handles(event_type: &str) -> bool {
@@ -77,21 +73,37 @@ pub fn on_event(
         return None;
     }
 
-    let config: Option<SynthConfig> = load_plugin_config(|key| host.get_plugin_data(key));
+    let config: Option<SynthConfig> = match load_plugin_config(|key| host.get_plugin_data(key)) {
+        Ok(config) => config,
+        Err(e) => {
+            host.log("error", &format!("failed to load plugin config: {e}"));
+            return None;
+        }
+    };
     let cfg = config.as_ref();
     let tts_engine = cfg.map(|c| c.tts_engine.as_str()).unwrap_or("piper");
-    let tts_model = cfg.map(|c| c.tts_model.as_str()).unwrap_or("en_US-lessac-medium");
+    let tts_model = cfg
+        .map(|c| c.tts_model.as_str())
+        .unwrap_or("en_US-lessac-medium");
 
-    host.log("info", &format!(
-        "synthesizing {} audio track(s) for {}",
-        synth_actions.len(),
-        plan.file.path.display()
-    ));
+    host.log(
+        "info",
+        &format!(
+            "synthesizing {} audio track(s) for {}",
+            synth_actions.len(),
+            plan.file.path.display()
+        ),
+    );
 
     let mut results = Vec::new();
     for action in &synth_actions {
         let (text, language, output_codec) = match &action.parameters {
-            ActionParams::Synthesize { text, language, codec, .. } => (
+            ActionParams::Synthesize {
+                text,
+                language,
+                codec,
+                ..
+            } => (
                 text.as_deref().unwrap_or(""),
                 language.as_deref().unwrap_or("en"),
                 codec.as_deref().unwrap_or("aac"),
@@ -189,9 +201,13 @@ pub fn on_event(
     Some(OnEventResult::new(
         "audio-synthesizer",
         vec![],
-        Some(serde_json::to_vec(&data).map_err(|e| {
-            host.log("error", &format!("failed to serialize result data: {e}"));
-        }).ok()?),
+        Some(
+            serde_json::to_vec(&data)
+                .map_err(|e| {
+                    host.log("error", &format!("failed to serialize result data: {e}"));
+                })
+                .ok()?,
+        ),
     ))
 }
 
@@ -232,7 +248,12 @@ mod tests {
     }
 
     impl HostFunctions for MockHost {
-        fn run_tool(&self, _tool: &str, _args: &[String], _timeout_ms: u64) -> Result<ToolOutput, String> {
+        fn run_tool(
+            &self,
+            _tool: &str,
+            _args: &[String],
+            _timeout_ms: u64,
+        ) -> Result<ToolOutput, String> {
             Ok(ToolOutput::new(0, vec![], vec![]))
         }
 

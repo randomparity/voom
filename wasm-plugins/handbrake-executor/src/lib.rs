@@ -84,7 +84,14 @@ pub fn on_event(
         return None;
     }
 
-    let config: Option<HandbrakeConfig> = load_plugin_config(|key| host.get_plugin_data(key));
+    let config: Option<HandbrakeConfig> = match load_plugin_config(|key| host.get_plugin_data(key))
+    {
+        Ok(config) => config,
+        Err(e) => {
+            host.log("error", &format!("failed to load plugin config: {e}"));
+            return None;
+        }
+    };
     let handbrake_bin = config
         .as_ref()
         .map(|c| c.handbrake_binary.as_str())

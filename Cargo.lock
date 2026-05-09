@@ -3547,7 +3547,6 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
- "tracing",
  "voom-domain",
 ]
 

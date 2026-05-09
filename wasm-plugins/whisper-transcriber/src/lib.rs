@@ -35,15 +35,11 @@ use voom_plugin_sdk::{
 };
 
 pub fn get_info() -> PluginInfoData {
-    PluginInfoData::new(
-        "whisper-transcriber",
-        "0.1.0",
-        vec![Capability::Transcribe],
-    )
-    .with_description("Audio transcription via Whisper")
-    .with_author("David Christensen")
-    .with_license("MIT")
-    .with_homepage("https://github.com/randomparity/voom")
+    PluginInfoData::new("whisper-transcriber", "0.1.0", vec![Capability::Transcribe])
+        .with_description("Audio transcription via Whisper")
+        .with_author("David Christensen")
+        .with_license("MIT")
+        .with_homepage("https://github.com/randomparity/voom")
 }
 
 pub fn handles(event_type: &str) -> bool {
@@ -79,17 +75,20 @@ pub fn on_event(
         "{:x}",
         xxhash_rust::xxh3::xxh3_64(file.path.to_string_lossy().as_bytes())
     );
-    let hash_str = file
-        .content_hash
-        .as_deref()
-        .unwrap_or(&path_hash_owned);
+    let hash_str = file.content_hash.as_deref().unwrap_or(&path_hash_owned);
     let cache_key = format!("transcript:{hash_str}");
     if let Some(cached) = host.get_plugin_data(&cache_key) {
         host.log("debug", "using cached transcript");
         return build_result(file, &cached, host);
     }
 
-    let config: Option<WhisperConfig> = load_plugin_config(|key| host.get_plugin_data(key));
+    let config: Option<WhisperConfig> = match load_plugin_config(|key| host.get_plugin_data(key)) {
+        Ok(config) => config,
+        Err(e) => {
+            host.log("error", &format!("failed to load plugin config: {e}"));
+            return None;
+        }
+    };
 
     let file_path = file.path.to_string_lossy().to_string();
     let audio_path = format!("/tmp/voom-whisper-{hash_str}.wav");

@@ -30,7 +30,9 @@ pub fn get_info() -> PluginInfoData {
     PluginInfoData::new(
         "audio-language-detector",
         "0.1.0",
-        vec![Capability::EnrichMetadata { source: "audio-language-detector".to_string() }],
+        vec![Capability::EnrichMetadata {
+            source: "audio-language-detector".to_string(),
+        }],
     )
     .with_description("Audio language detection via Whisper")
     .with_author("David Christensen")
@@ -72,8 +74,13 @@ pub fn on_event(
         return None;
     }
 
-    let config: Option<DetectorConfig> =
-        load_plugin_config(|key| host.get_plugin_data(key));
+    let config: Option<DetectorConfig> = match load_plugin_config(|key| host.get_plugin_data(key)) {
+        Ok(config) => config,
+        Err(e) => {
+            host.log("error", &format!("failed to load plugin config: {e}"));
+            return None;
+        }
+    };
     let cfg = config.as_ref();
     let whisper_bin = cfg
         .map(|c| c.whisper_binary.as_str())
@@ -87,10 +94,7 @@ pub fn on_event(
         "{:x}",
         xxhash_rust::xxh3::xxh3_64(file.path.to_string_lossy().as_bytes())
     );
-    let hash_str = file
-        .content_hash
-        .as_deref()
-        .unwrap_or(&path_hash_owned);
+    let hash_str = file.content_hash.as_deref().unwrap_or(&path_hash_owned);
     let mut detections = Vec::new();
     let params = DetectionParams {
         whisper_bin,
@@ -101,31 +105,17 @@ pub fn on_event(
     };
 
     for track in &audio_tracks {
-        let cache_key =
-            format!("lang:{hash_str}:{}", track.index);
+        let cache_key = format!("lang:{hash_str}:{}", track.index);
 
         if let Some(cached) = host.get_plugin_data(&cache_key) {
-            if let Ok(det) =
-                serde_json::from_slice::<TrackDetection>(&cached)
-            {
-                host.log(
-                    "debug",
-                    &format!(
-                        "cache hit for track {}",
-                        track.index
-                    ),
-                );
+            if let Ok(det) = serde_json::from_slice::<TrackDetection>(&cached) {
+                host.log("debug", &format!("cache hit for track {}", track.index));
                 detections.push(det);
                 continue;
             }
         }
 
-        let detection = detect_track_language(
-            file,
-            track.index,
-            &params,
-            host,
-        );
+        let detection = detect_track_language(file, track.index, &params, host);
 
         if let Some(det) = detection {
             if let Ok(json) = serde_json::to_vec(&det) {
@@ -162,42 +152,29 @@ fn detect_track_language(
     if duration <= 0.0 {
         host.log(
             "warn",
-            &format!(
-                "track {track_index}: no duration, skipping"
-            ),
+            &format!("track {track_index}: no duration, skipping"),
         );
         return None;
     }
 
-    let effective_duration =
-        duration * (1.0 - 2.0 * params.skip_pct);
+    let effective_duration = duration * (1.0 - 2.0 * params.skip_pct);
     let start_offset = duration * params.skip_pct;
 
-    let max_samples = (effective_duration
-        / f64::from(params.sample_duration))
-        .floor() as u32;
-    let sample_count =
-        params.sample_count.min(max_samples).max(1);
-    let interval =
-        effective_duration / f64::from(sample_count + 1);
+    let max_samples = (effective_duration / f64::from(params.sample_duration)).floor() as u32;
+    let sample_count = params.sample_count.min(max_samples).max(1);
+    let interval = effective_duration / f64::from(sample_count + 1);
 
     let path_hash_owned = format!(
         "{:x}",
         xxhash_rust::xxh3::xxh3_64(file.path.to_string_lossy().as_bytes())
     );
-    let hash_str = file
-        .content_hash
-        .as_deref()
-        .unwrap_or(&path_hash_owned);
+    let hash_str = file.content_hash.as_deref().unwrap_or(&path_hash_owned);
     let file_path = file.path.to_string_lossy().to_string();
     let mut samples: Vec<SampleResult> = Vec::new();
 
     for i in 1..=sample_count {
-        let offset =
-            start_offset + interval * f64::from(i);
-        let tmp_path = format!(
-            "/tmp/voom-langdet-{hash_str}-{track_index}-{i}.wav"
-        );
+        let offset = start_offset + interval * f64::from(i);
+        let tmp_path = format!("/tmp/voom-langdet-{hash_str}-{track_index}-{i}.wav");
 
         let extract = host.run_tool(
             "ffmpeg",
@@ -248,8 +225,7 @@ fn detect_track_language(
         };
 
         if !ok {
-            let _ =
-                host.run_tool("rm", &[tmp_path], 5_000);
+            let _ = host.run_tool("rm", &[tmp_path], 5_000);
             continue;
         }
 
@@ -294,20 +270,19 @@ fn detect_track_language(
             Ok(o) => o,
         };
 
-        let json: serde_json::Value =
-            match serde_json::from_slice(&whisper_out.stdout) {
-                Ok(v) => v,
-                Err(e) => {
-                    host.log(
-                        "warn",
-                        &format!(
-                            "failed to parse whisper output \
+        let json: serde_json::Value = match serde_json::from_slice(&whisper_out.stdout) {
+            Ok(v) => v,
+            Err(e) => {
+                host.log(
+                    "warn",
+                    &format!(
+                        "failed to parse whisper output \
                              for sample {i}: {e}"
-                        ),
-                    );
-                    continue;
-                }
-            };
+                    ),
+                );
+                continue;
+            }
+        };
 
         let language = json
             .get("language")
@@ -328,9 +303,7 @@ fn detect_track_language(
     if samples.is_empty() {
         host.log(
             "warn",
-            &format!(
-                "no samples collected for track {track_index}"
-            ),
+            &format!("no samples collected for track {track_index}"),
         );
         return None;
     }
@@ -339,22 +312,14 @@ fn detect_track_language(
 }
 
 /// Aggregate sample results into a track detection.
-fn aggregate_samples(
-    track_index: u32,
-    samples: &[SampleResult],
-) -> TrackDetection {
+fn aggregate_samples(track_index: u32, samples: &[SampleResult]) -> TrackDetection {
     let samples_analyzed = samples.len() as u32;
 
-    let all_silent = samples
-        .iter()
-        .all(|s| s.no_speech_prob > 0.9);
+    let all_silent = samples.iter().all(|s| s.no_speech_prob > 0.9);
 
     if all_silent {
-        let avg_prob: f64 = samples
-            .iter()
-            .map(|s| s.no_speech_prob)
-            .sum::<f64>()
-            / f64::from(samples_analyzed);
+        let avg_prob: f64 =
+            samples.iter().map(|s| s.no_speech_prob).sum::<f64>() / f64::from(samples_analyzed);
         return TrackDetection {
             track_index,
             detected_language: "zxx".to_string(),
@@ -368,21 +333,13 @@ fn aggregate_samples(
         };
     }
 
-    let speech_samples: Vec<_> = samples
-        .iter()
-        .filter(|s| s.no_speech_prob <= 0.9)
-        .collect();
+    let speech_samples: Vec<_> = samples.iter().filter(|s| s.no_speech_prob <= 0.9).collect();
 
-    let mut lang_counts: std::collections::HashMap<
-        String,
-        (u32, f64),
-    > = std::collections::HashMap::new();
+    let mut lang_counts: std::collections::HashMap<String, (u32, f64)> =
+        std::collections::HashMap::new();
     for s in &speech_samples {
-        let iso3 = from_iso639_1(&s.language)
-            .unwrap_or(&s.language);
-        let entry = lang_counts
-            .entry(iso3.to_string())
-            .or_insert((0, 0.0));
+        let iso3 = from_iso639_1(&s.language).unwrap_or(&s.language);
+        let entry = lang_counts.entry(iso3.to_string()).or_insert((0, 0.0));
         entry.0 += 1;
         entry.1 += 1.0 - s.no_speech_prob;
     }
@@ -390,12 +347,9 @@ fn aggregate_samples(
     let total_speech = speech_samples.len() as f64;
     let mut scored: Vec<LanguageScore> = lang_counts
         .iter()
-        .map(|(code, (count, conf_sum))| {
-            LanguageScore {
-                code: code.clone(),
-                confidence: conf_sum / f64::from(*count)
-                    * (f64::from(*count) / total_speech),
-            }
+        .map(|(code, (count, conf_sum))| LanguageScore {
+            code: code.clone(),
+            confidence: conf_sum / f64::from(*count) * (f64::from(*count) / total_speech),
         })
         .collect();
     scored.sort_by(|a, b| {
@@ -406,19 +360,14 @@ fn aggregate_samples(
 
     let high_conf: Vec<_> = lang_counts
         .iter()
-        .filter(|(_, (count, _))| {
-            f64::from(*count) / total_speech > 0.7
-        })
+        .filter(|(_, (count, _))| f64::from(*count) / total_speech > 0.7)
         .collect();
 
     if high_conf.len() > 1 {
         return TrackDetection {
             track_index,
             detected_language: "mul".to_string(),
-            confidence: scored
-                .first()
-                .map(|s| s.confidence)
-                .unwrap_or(0.0),
+            confidence: scored.first().map(|s| s.confidence).unwrap_or(0.0),
             is_speech: true,
             samples_analyzed,
             detected_languages: scored,
@@ -450,22 +399,17 @@ fn build_result(
         "detections": detections,
     });
 
-    let enriched_event = Event::MetadataEnriched(
-        MetadataEnrichedEvent::new(
-            file.path.clone(),
-            "audio-language-detector".to_string(),
-            metadata,
-        ),
-    );
+    let enriched_event = Event::MetadataEnriched(MetadataEnrichedEvent::new(
+        file.path.clone(),
+        "audio-language-detector".to_string(),
+        metadata,
+    ));
 
     let produced_payload = serialize_event_or_log(&enriched_event, host)?;
 
     Some(OnEventResult::new(
         "audio-language-detector",
-        vec![(
-            enriched_event.event_type().to_string(),
-            produced_payload,
-        )],
+        vec![(enriched_event.event_type().to_string(), produced_payload)],
         None,
     ))
 }
@@ -554,11 +498,7 @@ mod tests {
                         "language": lang,
                         "no_speech_prob": no_speech_prob,
                     });
-                    ToolOutput::new(
-                        0,
-                        serde_json::to_vec(&json).unwrap(),
-                        vec![],
-                    )
+                    ToolOutput::new(0, serde_json::to_vec(&json).unwrap(), vec![])
                 }),
             );
 
@@ -577,9 +517,7 @@ mod tests {
             let mut tool_results: ToolResults = HashMap::new();
             tool_results.insert(
                 "ffmpeg".to_string(),
-                Box::new(|_| {
-                    ToolOutput::new(1, vec![], b"error".to_vec())
-                }),
+                Box::new(|_| ToolOutput::new(1, vec![], b"error".to_vec())),
             );
             tool_results.insert(
                 "rm".to_string(),
@@ -593,8 +531,7 @@ mod tests {
         }
 
         fn with_multi_language() -> Self {
-            let call_count =
-                std::sync::atomic::AtomicU32::new(0);
+            let call_count = std::sync::atomic::AtomicU32::new(0);
             let mut tool_results: ToolResults = HashMap::new();
 
             tool_results.insert(
@@ -605,20 +542,13 @@ mod tests {
             tool_results.insert(
                 "whisper-cli".to_string(),
                 Box::new(move |_| {
-                    let n = call_count.fetch_add(
-                        1,
-                        std::sync::atomic::Ordering::SeqCst,
-                    );
+                    let n = call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let lang = if (n & 1) == 0 { "en" } else { "fr" };
                     let json = serde_json::json!({
                         "language": lang,
                         "no_speech_prob": 0.05,
                     });
-                    ToolOutput::new(
-                        0,
-                        serde_json::to_vec(&json).unwrap(),
-                        vec![],
-                    )
+                    ToolOutput::new(0, serde_json::to_vec(&json).unwrap(), vec![])
                 }),
             );
 
@@ -651,11 +581,7 @@ mod tests {
             self.cached.borrow().get(key).cloned()
         }
 
-        fn set_plugin_data(
-            &self,
-            key: &str,
-            value: &[u8],
-        ) -> Result<(), String> {
+        fn set_plugin_data(&self, key: &str, value: &[u8]) -> Result<(), String> {
             self.cached
                 .borrow_mut()
                 .insert(key.to_string(), value.to_vec());
@@ -666,12 +592,10 @@ mod tests {
     }
 
     fn make_audio_file() -> MediaFile {
-        let mut file =
-            MediaFile::new(PathBuf::from("/media/movies/test.mkv"));
+        let mut file = MediaFile::new(PathBuf::from("/media/movies/test.mkv"));
         file.content_hash = Some("testhash123".to_string());
         file.duration = 600.0; // 10 minutes
-        let mut audio =
-            Track::new(0, TrackType::AudioMain, "aac".into());
+        let mut audio = Track::new(0, TrackType::AudioMain, "aac".into());
         audio.language = "und".into();
         audio.is_default = true;
         audio.channels = Some(2);
@@ -698,29 +622,22 @@ mod tests {
     fn test_happy_path_english() {
         let host = MockHost::with_whisper_response("en", 0.05);
         let file = make_audio_file();
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
-        let result =
-            on_event("file.introspected", &payload, &host);
+        let result = on_event("file.introspected", &payload, &host);
         assert!(result.is_some());
         let result = result.unwrap();
         assert_eq!(result.plugin_name, "audio-language-detector");
 
-        let produced: Event =
-            deserialize_event(&result.produced_events[0].1)
-                .unwrap();
+        let produced: Event = deserialize_event(&result.produced_events[0].1).unwrap();
         match produced {
             Event::MetadataEnriched(e) => {
                 assert_eq!(e.source, "audio-language-detector");
                 let dets = &e.metadata["detections"];
                 assert_eq!(dets[0]["detected_language"], "eng");
                 assert!(dets[0]["is_speech"].as_bool().unwrap());
-                assert!(
-                    dets[0]["confidence"].as_f64().unwrap() > 0.0
-                );
+                assert!(dets[0]["confidence"].as_f64().unwrap() > 0.0);
             }
             _ => panic!("expected MetadataEnriched"),
         }
@@ -730,19 +647,12 @@ mod tests {
     fn test_silent_track() {
         let host = MockHost::with_whisper_response("en", 0.95);
         let file = make_audio_file();
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
-        let result =
-            on_event("file.introspected", &payload, &host);
+        let result = on_event("file.introspected", &payload, &host);
         assert!(result.is_some());
-        let produced: Event =
-            deserialize_event(
-                &result.unwrap().produced_events[0].1,
-            )
-            .unwrap();
+        let produced: Event = deserialize_event(&result.unwrap().produced_events[0].1).unwrap();
         match produced {
             Event::MetadataEnriched(e) => {
                 let det = &e.metadata["detections"][0];
@@ -757,19 +667,12 @@ mod tests {
     fn test_multi_language() {
         let host = MockHost::with_multi_language();
         let file = make_audio_file();
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
-        let result =
-            on_event("file.introspected", &payload, &host);
+        let result = on_event("file.introspected", &payload, &host);
         assert!(result.is_some());
-        let produced: Event =
-            deserialize_event(
-                &result.unwrap().produced_events[0].1,
-            )
-            .unwrap();
+        let produced: Event = deserialize_event(&result.unwrap().produced_events[0].1).unwrap();
         match produced {
             Event::MetadataEnriched(e) => {
                 let det = &e.metadata["detections"][0];
@@ -777,20 +680,9 @@ mod tests {
                 // so neither exceeds 0.7, making it the dominant
                 // language (eng or fre, whichever scores highest).
                 // The exact result depends on sample count.
-                let lang =
-                    det["detected_language"].as_str().unwrap();
-                assert!(
-                    lang == "eng"
-                        || lang == "fre"
-                        || lang == "mul"
-                );
-                assert!(
-                    det["detected_languages"]
-                        .as_array()
-                        .unwrap()
-                        .len()
-                        >= 2
-                );
+                let lang = det["detected_language"].as_str().unwrap();
+                assert!(lang == "eng" || lang == "fre" || lang == "mul");
+                assert!(det["detected_languages"].as_array().unwrap().len() >= 2);
             }
             _ => panic!("expected MetadataEnriched"),
         }
@@ -818,27 +710,16 @@ mod tests {
         );
 
         let file = make_audio_file();
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
-        let result =
-            on_event("file.introspected", &payload, &host);
+        let result = on_event("file.introspected", &payload, &host);
         assert!(result.is_some());
-        let produced: Event =
-            deserialize_event(
-                &result.unwrap().produced_events[0].1,
-            )
-            .unwrap();
+        let produced: Event = deserialize_event(&result.unwrap().produced_events[0].1).unwrap();
         match produced {
             Event::MetadataEnriched(e) => {
                 // Should use cached "jpn", not detect "eng".
-                assert_eq!(
-                    e.metadata["detections"][0]
-                        ["detected_language"],
-                    "jpn"
-                );
+                assert_eq!(e.metadata["detections"][0]["detected_language"], "jpn");
             }
             _ => panic!("expected MetadataEnriched"),
         }
@@ -847,15 +728,11 @@ mod tests {
     #[test]
     fn test_no_audio_tracks() {
         let host = MockHost::with_whisper_response("en", 0.05);
-        let file =
-            MediaFile::new(PathBuf::from("/media/test.mkv"));
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let file = MediaFile::new(PathBuf::from("/media/test.mkv"));
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
-        let result =
-            on_event("file.introspected", &payload, &host);
+        let result = on_event("file.introspected", &payload, &host);
         assert!(result.is_none());
     }
 
@@ -866,26 +743,16 @@ mod tests {
         // 45 seconds — can fit at most 1 sample of 30s
         // (effective = 45 * 0.9 = 40.5s)
         file.duration = 45.0;
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
-        let result =
-            on_event("file.introspected", &payload, &host);
+        let result = on_event("file.introspected", &payload, &host);
         assert!(result.is_some());
-        let produced: Event =
-            deserialize_event(
-                &result.unwrap().produced_events[0].1,
-            )
-            .unwrap();
+        let produced: Event = deserialize_event(&result.unwrap().produced_events[0].1).unwrap();
         match produced {
             Event::MetadataEnriched(e) => {
                 let det = &e.metadata["detections"][0];
-                assert_eq!(
-                    det["samples_analyzed"].as_u64().unwrap(),
-                    1
-                );
+                assert_eq!(det["samples_analyzed"].as_u64().unwrap(), 1);
                 assert_eq!(det["detected_language"], "eng");
             }
             _ => panic!("expected MetadataEnriched"),
@@ -902,8 +769,7 @@ mod tests {
             skip_percent: 0.1,
         };
         let bytes = serde_json::to_vec(&config).unwrap();
-        let restored: DetectorConfig =
-            serde_json::from_slice(&bytes).unwrap();
+        let restored: DetectorConfig = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(restored.model, "large");
         assert_eq!(restored.sample_count, 4);
         assert!((restored.skip_percent - 0.1).abs() < f64::EPSILON);
@@ -913,13 +779,10 @@ mod tests {
     fn test_ffmpeg_failure_skips_track() {
         let host = MockHost::with_failing_ffmpeg();
         let file = make_audio_file();
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
-        let result =
-            on_event("file.introspected", &payload, &host);
+        let result = on_event("file.introspected", &payload, &host);
         // All ffmpeg calls fail, so no detections -> None
         assert!(result.is_none());
     }

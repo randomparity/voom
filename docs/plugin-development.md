@@ -613,7 +613,7 @@ pub fn serialize_json<T: Serialize>(value: &T) -> Result<Vec<u8>>;
 /// Pass a closure that calls `host::get_plugin_data`.
 pub fn load_plugin_config<T: DeserializeOwned>(
     get_data: impl FnOnce(&str) -> Option<Vec<u8>>,
-) -> Option<T>;
+) -> Result<Option<T>>;
 ```
 
 Usage in a WASM plugin:
@@ -627,7 +627,13 @@ struct MyConfig {
     poll_interval_secs: u64,
 }
 
-let config: Option<MyConfig> = load_plugin_config(|key| host::get_plugin_data(key));
+let config: Option<MyConfig> = match load_plugin_config(|key| host::get_plugin_data(key)) {
+    Ok(config) => config,
+    Err(e) => {
+        host::log("error", &format!("failed to load plugin config: {e}"));
+        return None;
+    }
+};
 ```
 
 ### PluginInfo Types

@@ -31,16 +31,17 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event_or_log, language_code_from_name, load_plugin_config,
-    serialize_event_or_log, Capability, Event, HostFunctions, MetadataEnrichedEvent,
-    OnEventResult, PluginInfoData,
+    deserialize_event_or_log, language_code_from_name, load_plugin_config, serialize_event_or_log,
+    Capability, Event, HostFunctions, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
     PluginInfoData::new(
         "radarr-metadata",
         "0.1.0",
-        vec![Capability::EnrichMetadata { source: "radarr".to_string() }],
+        vec![Capability::EnrichMetadata {
+            source: "radarr".to_string(),
+        }],
     )
     .with_description("Movie metadata enrichment via Radarr API")
     .with_author("David Christensen")
@@ -71,9 +72,22 @@ pub fn on_event(
         _ => return None,
     };
 
-    host.log("info", &format!("looking up Radarr metadata for: {}", file.path.display()));
+    host.log(
+        "info",
+        &format!("looking up Radarr metadata for: {}", file.path.display()),
+    );
 
-    let config: RadarrConfig = load_plugin_config(|key| host.get_plugin_data(key))?;
+    let config: RadarrConfig = match load_plugin_config(|key| host.get_plugin_data(key)) {
+        Ok(Some(config)) => config,
+        Ok(None) => {
+            host.log("warn", "missing Radarr plugin config");
+            return None;
+        }
+        Err(e) => {
+            host.log("error", &format!("failed to load plugin config: {e}"));
+            return None;
+        }
+    };
     let movie = lookup_movie(host, &config, &file.path.to_string_lossy())?;
 
     let original_language = movie
@@ -95,9 +109,11 @@ pub fn on_event(
         metadata["original_language"] = serde_json::Value::String(lang.to_string());
     }
 
-    let enriched_event = Event::MetadataEnriched(
-        MetadataEnrichedEvent::new(file.path.clone(), "radarr".to_string(), metadata),
-    );
+    let enriched_event = Event::MetadataEnriched(MetadataEnrichedEvent::new(
+        file.path.clone(),
+        "radarr".to_string(),
+        metadata,
+    ));
 
     let produced_payload = serialize_event_or_log(&enriched_event, host)?;
 
@@ -151,17 +167,28 @@ fn lookup_movie(
     let url = format!("{}/api/v3/movie", config.radarr_url);
     let headers = vec![("X-Api-Key".to_string(), config.api_key.clone())];
 
-    let response = host.http_get(&url, &headers).map_err(|e| {
-        host.log("error", &format!("Radarr API request failed: {e}"));
-    }).ok()?;
+    let response = host
+        .http_get(&url, &headers)
+        .map_err(|e| {
+            host.log("error", &format!("Radarr API request failed: {e}"));
+        })
+        .ok()?;
     if response.status != 200 {
-        host.log("warn", &format!("Radarr API returned status {}", response.status));
+        host.log(
+            "warn",
+            &format!("Radarr API returned status {}", response.status),
+        );
         return None;
     }
 
-    let movies: Vec<RadarrMovie> = serde_json::from_slice(&response.body).map_err(|e| {
-        host.log("error", &format!("failed to parse Radarr API response: {e}"));
-    }).ok()?;
+    let movies: Vec<RadarrMovie> = serde_json::from_slice(&response.body)
+        .map_err(|e| {
+            host.log(
+                "error",
+                &format!("failed to parse Radarr API response: {e}"),
+            );
+        })
+        .ok()?;
 
     // Match by file path — Radarr stores the movie's root path, and the file
     // should be under that directory.
@@ -214,7 +241,11 @@ mod tests {
     }
 
     impl HostFunctions for MockHost {
-        fn http_get(&self, _url: &str, _headers: &[(String, String)]) -> Result<HttpResponse, String> {
+        fn http_get(
+            &self,
+            _url: &str,
+            _headers: &[(String, String)],
+        ) -> Result<HttpResponse, String> {
             let body = serde_json::to_vec(&self.movies).unwrap();
             Ok(HttpResponse::new(200, body))
         }
@@ -262,9 +293,7 @@ mod tests {
         let file = make_test_file(
             "/media/movies/Blade Runner 2049 (2017)/Blade.Runner.2049.2017.1080p.mkv",
         );
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("file.introspected", &payload, &host);
@@ -291,9 +320,7 @@ mod tests {
     fn test_on_event_movie_not_found() {
         let host = MockHost::new();
         let file = make_test_file("/media/movies/Unknown Movie/file.mkv");
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("file.introspected", &payload, &host);
@@ -304,9 +331,7 @@ mod tests {
     fn test_on_event_no_config() {
         let host = MockHost::without_config();
         let file = make_test_file("/media/movies/test.mkv");
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("file.introspected", &payload, &host);

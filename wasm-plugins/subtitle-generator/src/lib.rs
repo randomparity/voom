@@ -60,7 +60,13 @@ pub fn on_event(
     }
 
     let config: Option<SubtitleGeneratorConfig> =
-        load_plugin_config(|key| host.get_plugin_data(key));
+        match load_plugin_config(|key| host.get_plugin_data(key)) {
+            Ok(config) => config,
+            Err(e) => {
+                host.log("error", &format!("failed to load plugin config: {e}"));
+                return None;
+            }
+        };
     let default_config = SubtitleGeneratorConfig {
         primary_language: default_primary_language(),
         subtitle_language: None,
