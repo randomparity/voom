@@ -145,25 +145,6 @@ impl JobResult {
             outcome: JobOutcome::AlreadyClaimed,
         }
     }
-
-    /// Backward-compatible accessor. True only for `Success`.
-    #[must_use]
-    pub fn is_success(&self) -> bool {
-        self.outcome.is_success()
-    }
-
-    /// True only for `AlreadyClaimed`.
-    #[must_use]
-    pub fn is_already_claimed(&self) -> bool {
-        self.outcome.is_already_claimed()
-    }
-
-    /// Backward-compatible accessor. Returns the error string for `Failure`,
-    /// `None` otherwise.
-    #[must_use]
-    pub fn error(&self) -> Option<&str> {
-        self.outcome.error()
-    }
 }
 
 /// A batch of work items to process concurrently.
@@ -807,7 +788,7 @@ mod tests {
         // Results contain both successes and failures
         let failures: Vec<_> = results.iter().filter(|r| r.outcome.is_failure()).collect();
         assert_eq!(failures.len(), 1);
-        assert_eq!(failures[0].error(), Some("first item fails"));
+        assert_eq!(failures[0].outcome.error(), Some("first item fails"));
     }
 
     #[tokio::test]
@@ -861,7 +842,7 @@ mod tests {
         assert_eq!(pool.failed_count(), 3);
         // All 6 results are present
         assert_eq!(results.len(), 6);
-        let successes: Vec<_> = results.iter().filter(|r| r.is_success()).collect();
+        let successes: Vec<_> = results.iter().filter(|r| r.outcome.is_success()).collect();
         let failures: Vec<_> = results.iter().filter(|r| r.outcome.is_failure()).collect();
         assert_eq!(successes.len(), 3);
         assert_eq!(failures.len(), 3);
