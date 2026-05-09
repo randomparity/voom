@@ -107,12 +107,16 @@ pub fn on_event(
     for track in &audio_tracks {
         let cache_key = format!("lang:{hash_str}:{}", track.index);
 
-        if let Some(cached) = host.get_plugin_data(&cache_key) {
-            if let Ok(det) = serde_json::from_slice::<TrackDetection>(&cached) {
-                host.log("debug", &format!("cache hit for track {}", track.index));
-                detections.push(det);
-                continue;
+        match host.get_plugin_data(&cache_key) {
+            Ok(Some(cached)) => {
+                if let Ok(det) = serde_json::from_slice::<TrackDetection>(&cached) {
+                    host.log("debug", &format!("cache hit for track {}", track.index));
+                    detections.push(det);
+                    continue;
+                }
             }
+            Ok(None) => {}
+            Err(e) => host.log("error", &format!("failed to read language cache: {e}")),
         }
 
         let detection = detect_track_language(file, track.index, &params, host);
@@ -577,8 +581,8 @@ mod tests {
                 .ok_or_else(|| format!("tool not found: {tool}"))
         }
 
-        fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
-            self.cached.borrow().get(key).cloned()
+        fn get_plugin_data(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+            Ok(self.cached.borrow().get(key).cloned())
         }
 
         fn set_plugin_data(&self, key: &str, value: &[u8]) -> Result<(), String> {

@@ -130,8 +130,8 @@ mod tests {
 
     struct NoopHost;
     impl HostFunctions for NoopHost {
-        fn get_plugin_data(&self, _key: &str) -> Option<Vec<u8>> {
-            None
+        fn get_plugin_data(&self, _key: &str) -> Result<Option<Vec<u8>>, String> {
+            Ok(None)
         }
         fn set_plugin_data(&self, _key: &str, _value: &[u8]) -> Result<(), String> {
             Ok(())
