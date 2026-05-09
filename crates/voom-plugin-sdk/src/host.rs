@@ -57,6 +57,18 @@ pub trait HostFunctions {
     /// Store plugin-specific data in the host's data store.
     fn set_plugin_data(&self, key: &str, value: &[u8]) -> Result<(), String>;
 
+    /// Query file transitions by file ID.
+    fn get_file_transitions(&self, file_id: &str) -> Result<Vec<u8>, String> {
+        let _ = file_id;
+        Err("get_file_transitions not available".to_string())
+    }
+
+    /// Query file transitions by filesystem path.
+    fn get_path_transitions(&self, path: &str) -> Result<Vec<u8>, String> {
+        let _ = path;
+        Err("get_path_transitions not available".to_string())
+    }
+
     /// Log a message at the given level via the host's logging system.
     fn log(&self, level: &str, message: &str);
 }
@@ -103,5 +115,14 @@ mod tests {
         let result = host.run_tool("ffmpeg", &[], 1000);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "run_tool not available");
+    }
+
+    #[test]
+    fn test_default_transition_queries_return_error() {
+        let host = TestHost;
+        let by_id = host.get_file_transitions("file-id");
+        let by_path = host.get_path_transitions("/media/movie.mkv");
+        assert_eq!(by_id.unwrap_err(), "get_file_transitions not available");
+        assert_eq!(by_path.unwrap_err(), "get_path_transitions not available");
     }
 }
