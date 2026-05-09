@@ -90,12 +90,22 @@ pub fn on_event(
         .as_deref()
         .unwrap_or(&path_hash_owned);
     let cache_key = format!("transcript:{hash_str}");
-    if let Some(cached) = host.get_plugin_data(&cache_key) {
-        host.log("debug", "using cached transcript");
-        return build_result(file, &cached, host);
+    match host.get_plugin_data(&cache_key) {
+        Ok(Some(cached)) => {
+            host.log("debug", "using cached transcript");
+            return build_result(file, &cached, host);
+        }
+        Ok(None) => {}
+        Err(e) => host.log("error", &format!("failed to read transcript cache: {e}")),
     }
 
-    let config: Option<WhisperConfig> = load_plugin_config(|key| host.get_plugin_data(key));
+    let config: Option<WhisperConfig> = match load_plugin_config(|key| host.get_plugin_data(key)) {
+        Ok(config) => config,
+        Err(e) => {
+            host.log("error", &format!("failed to load Whisper config: {e}"));
+            return None;
+        }
+    };
 
     // Step 1: Extract audio to a temp WAV file via ffmpeg.
     let file_path = file.path.to_string_lossy().to_string();
@@ -336,12 +346,13 @@ mod tests {
                 .ok_or_else(|| format!("tool not found: {tool}"))
         }
 
-        fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
-            if key == "config" {
+        fn get_plugin_data(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+            let data = if key == "config" {
                 self.config.as_ref().map(|c| serde_json::to_vec(c).unwrap())
             } else {
                 self.cached.borrow().get(key).cloned()
-            }
+            };
+            Ok(data)
         }
 
         fn set_plugin_data(&self, key: &str, value: &[u8]) -> Result<(), String> {

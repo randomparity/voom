@@ -60,13 +60,13 @@ pub fn serialize_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 ///
 /// let config: Option<MyConfig> = load_plugin_config(|key| {
 ///     assert_eq!(key, "config");
-///     Some(br#"{"enabled": true}"#.to_vec())
-/// });
+///     Ok(Some(br#"{"enabled": true}"#.to_vec()))
+/// }).unwrap();
 /// assert!(config.unwrap().enabled);
 /// ```
 pub fn load_plugin_config<T: DeserializeOwned>(
-    get_data: impl FnOnce(&str) -> Option<Vec<u8>>,
-) -> Option<T> {
+    get_data: impl FnOnce(&str) -> std::result::Result<Option<Vec<u8>>, String>,
+) -> Result<Option<T>> {
     load_plugin_config_named(None, get_data)
 }
 
@@ -88,27 +88,39 @@ pub fn load_plugin_config<T: DeserializeOwned>(
 ///     Some("my-plugin"),
 ///     |key| {
 ///         assert_eq!(key, "config");
-///         Some(br#"{"threshold": 10}"#.to_vec())
+///         Ok(Some(br#"{"threshold": 10}"#.to_vec()))
 ///     },
-/// );
+/// ).unwrap();
 /// assert_eq!(config.unwrap().threshold, 10);
 /// ```
 pub fn load_plugin_config_named<T: DeserializeOwned>(
     plugin_name: Option<&str>,
-    get_data: impl FnOnce(&str) -> Option<Vec<u8>>,
-) -> Option<T> {
-    let data = get_data("config")?;
-    match serde_json::from_slice(&data) {
-        Ok(config) => Some(config),
-        Err(e) => {
-            if let Some(name) = plugin_name {
-                tracing::warn!("Failed to deserialize plugin config for '{name}': {e}");
-            } else {
-                tracing::warn!("Failed to deserialize plugin config: {e}");
-            }
-            None
-        }
-    }
+    get_data: impl FnOnce(&str) -> std::result::Result<Option<Vec<u8>>, String>,
+) -> Result<Option<T>> {
+    let Some(data) = get_data("config").map_err(|e| plugin_config_read_error(plugin_name, e))?
+    else {
+        return Ok(None);
+    };
+
+    serde_json::from_slice(&data)
+        .map(Some)
+        .map_err(|e| plugin_config_error(plugin_name, e))
+}
+
+fn plugin_config_error(plugin_name: Option<&str>, source: serde_json::Error) -> VoomError {
+    let context = plugin_name
+        .map(|name| format!(" for '{name}'"))
+        .unwrap_or_default();
+    VoomError::Wasm(format!(
+        "failed to deserialize plugin config{context}: {source}"
+    ))
+}
+
+fn plugin_config_read_error(plugin_name: Option<&str>, source: String) -> VoomError {
+    let context = plugin_name
+        .map(|name| format!(" for '{name}'"))
+        .unwrap_or_default();
+    VoomError::Wasm(format!("failed to read plugin config{context}: {source}"))
 }
 
 #[cfg(test)]
@@ -143,5 +155,47 @@ mod tests {
     fn test_deserialize_invalid_bytes() {
         assert!(deserialize_event(&[0xFF, 0xFE]).is_err());
         assert!(deserialize_json::<serde_json::Value>(&[0xFF]).is_err());
+    }
+
+    #[test]
+    fn test_load_plugin_config_missing_returns_none() {
+        let config = load_plugin_config::<serde_json::Value>(|_| Ok(None)).unwrap();
+
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn test_load_plugin_config_valid_returns_config() {
+        let config: serde_json::Value =
+            load_plugin_config(|_| Ok(Some(br#"{"enabled": true}"#.to_vec())))
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(config["enabled"], true);
+    }
+
+    #[test]
+    fn test_load_plugin_config_malformed_returns_error() {
+        let error = load_plugin_config_named::<serde_json::Value>(Some("test-plugin"), |_| {
+            Ok(Some(br#"{"enabled":"#.to_vec()))
+        })
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("test-plugin"));
+        assert!(message.contains("failed to deserialize plugin config"));
+    }
+
+    #[test]
+    fn test_load_plugin_config_read_error_is_not_missing() {
+        let error = load_plugin_config_named::<serde_json::Value>(Some("test-plugin"), |_| {
+            Err("storage unavailable".to_string())
+        })
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("test-plugin"));
+        assert!(message.contains("storage unavailable"));
+        assert!(message.contains("failed to read plugin config"));
     }
 }

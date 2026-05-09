@@ -74,7 +74,17 @@ pub fn on_event(
 
     host.log("info", &format!("looking up Radarr metadata for: {}", file.path.display()));
 
-    let config: RadarrConfig = load_plugin_config(|key| host.get_plugin_data(key))?;
+    let config: RadarrConfig = match load_plugin_config(|key| host.get_plugin_data(key)) {
+        Ok(Some(config)) => config,
+        Ok(None) => {
+            host.log("error", "missing Radarr config");
+            return None;
+        }
+        Err(e) => {
+            host.log("error", &format!("failed to load Radarr config: {e}"));
+            return None;
+        }
+    };
     let movie = lookup_movie(host, &config, &file.path.to_string_lossy())?;
 
     let original_language = movie
@@ -222,12 +232,13 @@ mod tests {
             Ok(HttpResponse::new(200, body))
         }
 
-        fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
-            if key == "config" {
+        fn get_plugin_data(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+            let data = if key == "config" {
                 self.config.as_ref().map(|c| serde_json::to_vec(c).unwrap())
             } else {
                 None
-            }
+            };
+            Ok(data)
         }
 
         fn set_plugin_data(&self, _key: &str, _value: &[u8]) -> Result<(), String> {

@@ -64,7 +64,13 @@ pub fn on_event(
     }
 
     let config: Option<SubtitleGeneratorConfig> =
-        load_plugin_config(|key| host.get_plugin_data(key));
+        match load_plugin_config(|key| host.get_plugin_data(key)) {
+            Ok(config) => config,
+            Err(e) => {
+                host.log("error", &format!("failed to load subtitle config: {e}"));
+                return None;
+            }
+        };
     let default_config = SubtitleGeneratorConfig {
         primary_language: default_primary_language(),
         subtitle_language: None,
@@ -260,12 +266,13 @@ mod tests {
             Ok(())
         }
 
-        fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
-            if key == "config" {
+        fn get_plugin_data(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+            let data = if key == "config" {
                 self.config.as_ref().map(|c| serde_json::to_vec(c).unwrap())
             } else {
                 None
-            }
+            };
+            Ok(data)
         }
 
         fn set_plugin_data(&self, _key: &str, _value: &[u8]) -> Result<(), String> {

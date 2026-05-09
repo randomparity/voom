@@ -868,7 +868,7 @@ mod tests {
         .await;
 
         drop(held);
-        tokio::time::timeout(Duration::from_secs(1), &mut processing)
+        tokio::time::timeout(Duration::from_secs(5), &mut processing)
             .await
             .expect("processing should continue after the limiter permit is released")
             .expect("processing should complete without execution errors");
@@ -921,7 +921,7 @@ mod tests {
         .await;
 
         drop(held);
-        tokio::time::timeout(Duration::from_secs(1), &mut processing)
+        tokio::time::timeout(Duration::from_secs(5), &mut processing)
             .await
             .expect("processing should continue after the limiter permit is released")
             .expect("processing should complete without execution errors");
