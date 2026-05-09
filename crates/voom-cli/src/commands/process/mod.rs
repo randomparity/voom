@@ -635,8 +635,8 @@ fn discover_files(
                 let action = if hash_files { "Hashing" } else { "Scanning" };
                 progress_clone.on_processing(base + current, base + total, &path, action);
             }
-            voom_discovery::ScanProgress::OrphanedTempFiles { .. } => {}
-            voom_discovery::ScanProgress::HashReused { .. } => {}
+            voom_discovery::ScanProgress::OrphanedTempFiles { .. }
+            | voom_discovery::ScanProgress::HashReused { .. } => {}
         }));
 
         let errors_clone = discovery_errors.clone();
