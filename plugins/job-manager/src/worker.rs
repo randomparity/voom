@@ -502,6 +502,22 @@ async fn send_claim_race<F>(ctx: &WorkerContext<F>, job_id: Uuid) {
     }
 }
 
+async fn record_job_update<F>(
+    job_id: Uuid,
+    operation: &'static str,
+    update: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> voom_domain::errors::Result<()> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(update).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(format!("failed to {operation}: {e}")),
+        Err(e) => Err(format!("task join error while trying to {operation}: {e}")),
+    }
+    .inspect_err(|e| tracing::error!(job_id = %job_id, error = %e, "job update failed"))
+}
+
 /// Execute a single job: claim it, run the processor, and record the result.
 async fn run_one_job<F, Fut>(job_id: Uuid, ctx: WorkerContext<F>)
 where
@@ -550,8 +566,11 @@ where
     if ctx.token.is_cancelled() {
         let q = ctx.queue.clone();
         let jid = job.id;
-        if let Err(e) = tokio::task::spawn_blocking(move || q.cancel(&jid)).await {
-            tracing::error!(error = %e, "failed to mark job as cancelled");
+        if let Err(e) =
+            record_job_update(job_id, "mark job as cancelled", move || q.cancel(&jid)).await
+        {
+            send_failure(&ctx, job_id, e).await;
+            return;
         }
         send_failure(&ctx, job_id, "cancelled".into()).await;
         return;
@@ -563,8 +582,14 @@ where
     match (ctx.processor)(job).await {
         Ok(output) => {
             let q = ctx.queue.clone();
-            if let Err(e) = tokio::task::spawn_blocking(move || q.complete(&job_id, output)).await {
-                tracing::error!(job_id = %job_id, error = %e, "failed to mark job as complete");
+            if let Err(e) = record_job_update(job_id, "mark job as complete", move || {
+                q.complete(&job_id, output)
+            })
+            .await
+            {
+                ctx.reporter.on_job_complete(job_id, false, Some(&e));
+                send_failure(&ctx, job_id, e).await;
+                return;
             }
             ctx.completed.fetch_add(1, Ordering::SeqCst);
             ctx.reporter.on_job_complete(job_id, true, None);
@@ -576,15 +601,18 @@ where
         Err(error) => {
             let q = ctx.queue.clone();
             let err = error.clone();
-            if let Err(e) = tokio::task::spawn_blocking(move || q.fail(&job_id, err)).await {
-                tracing::error!(job_id = %job_id, error = %e, "failed to mark job as failed");
-            }
+            let persisted =
+                record_job_update(job_id, "mark job as failed", move || q.fail(&job_id, err)).await;
             ctx.reporter.on_job_complete(job_id, false, Some(&error));
 
             // send_failure increments `failed` and dispatches the JobResult.
             let strategy = ctx.on_error;
             let token = ctx.token.clone();
-            send_failure(&ctx, job_id, error).await;
+            let failure = match persisted {
+                Ok(()) => error,
+                Err(e) => format!("{error}; {e}"),
+            };
+            send_failure(&ctx, job_id, failure).await;
 
             if strategy == JobErrorStrategy::Fail {
                 token.cancel();
