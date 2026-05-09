@@ -194,12 +194,6 @@ fn build_config(pair: Pair<'_, Rule>) -> Result<ConfigNode> {
     })
 }
 
-/// Push a spanned operation with a pre-captured span.
-fn emit_op(ops: &mut Vec<SpannedOperation>, span: Span, node: OperationNode) {
-    ops.push(SpannedOperation { node, span });
-}
-
-#[allow(clippy::too_many_lines)] // Single dispatch match over all phase-item rules; splitting hurts clarity.
 fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
     let span = span_from_pair(&pair);
     let mut inner = pair.into_inner();
@@ -219,129 +213,32 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
         let child = item.into_inner().next().unwrap();
         match child.as_rule() {
             Rule::skip_when => {
-                let cond = child.into_inner().next().unwrap();
-                skip_when = Some(build_condition(cond)?);
+                skip_when = Some(build_skip_when(child)?);
             }
             Rule::depends_on => {
-                let list = child.into_inner().next().unwrap();
-                depends_on = build_list(list);
+                depends_on = build_depends_on(child);
             }
             Rule::run_if => {
-                // Grammar: "run_if" ~ ident ~ "." ~ run_if_trigger
-                let mut inner = child.into_inner();
-                let phase_name = inner
-                    .find(|p| p.as_rule() == Rule::ident)
-                    .unwrap()
-                    .as_str()
-                    .to_string();
-                let trigger = inner
-                    .find(|p| p.as_rule() == Rule::run_if_trigger)
-                    .unwrap()
-                    .as_str()
-                    .to_string();
-                run_if = Some(RunIfNode {
-                    phase: phase_name,
-                    trigger,
-                });
+                run_if = Some(build_run_if(child));
             }
             Rule::on_error => {
-                let ident = child.into_inner().next().unwrap();
-                on_error = Some(ident.as_str().to_string());
+                on_error = Some(build_on_error(child));
             }
-            Rule::container_op => {
-                let span = span_from_pair(&child);
-                let ident = child.into_inner().next().unwrap();
-                emit_op(
-                    &mut operations,
-                    span,
-                    OperationNode::Container(ident.as_str().to_string()),
-                );
-            }
-            Rule::keep_op => {
-                let span = span_from_pair(&child);
-                emit_op(&mut operations, span, build_keep_remove(child, true)?);
-            }
-            Rule::remove_op => {
-                let span = span_from_pair(&child);
-                emit_op(&mut operations, span, build_keep_remove(child, false)?);
-            }
-            Rule::order_op => {
-                let span = span_from_pair(&child);
-                let list = child.into_inner().next().unwrap();
-                emit_op(
-                    &mut operations,
-                    span,
-                    OperationNode::Order(build_list(list)),
-                );
-            }
-            Rule::defaults_op => {
-                let span = span_from_pair(&child);
-                emit_op(&mut operations, span, build_defaults(child)?);
-            }
-            Rule::actions_op => {
-                let span = span_from_pair(&child);
-                emit_op(&mut operations, span, build_actions(child));
-            }
-            Rule::transcode_op => {
-                let span = span_from_pair(&child);
-                emit_op(&mut operations, span, build_transcode(child));
-            }
-            Rule::synthesize_op => {
-                let span = span_from_pair(&child);
-                emit_op(&mut operations, span, build_synthesize(child)?);
-            }
-            Rule::clear_tags_op => {
-                emit_op(
-                    &mut operations,
-                    span_from_pair(&child),
-                    OperationNode::ClearTags,
-                );
-            }
-            Rule::set_tag_op => {
-                let span = span_from_pair(&child);
-                let mut tag_inner = child.into_inner();
-                let tag = parse_string_value(&tag_inner.next().unwrap());
-                let val = parse_set_tag_value(tag_inner.next().unwrap());
-                emit_op(
-                    &mut operations,
-                    span,
-                    OperationNode::SetTag { tag, value: val },
-                );
-            }
-            Rule::delete_tag_op => {
-                let span = span_from_pair(&child);
-                let tag = parse_string_value(&child.into_inner().next().unwrap());
-                emit_op(&mut operations, span, OperationNode::DeleteTag(tag));
-            }
-            Rule::when_block => {
-                let span = span_from_pair(&child);
-                emit_op(
-                    &mut operations,
-                    span,
-                    OperationNode::When(build_when(child)?),
-                );
-            }
-            Rule::rules_block => {
-                let span = span_from_pair(&child);
-                emit_op(&mut operations, span, build_rules(child)?);
-            }
-            Rule::verify_op => {
-                let span = span_from_pair(&child);
-                let mode_pair = child.into_inner().next().unwrap();
-                let mode = match mode_pair.as_str() {
-                    "quick" => VerifyMode::Quick,
-                    "thorough" => VerifyMode::Thorough,
-                    "hash" => VerifyMode::Hash,
-                    other => {
-                        let (line, col) = mode_pair.as_span().start_pos().line_col();
-                        return Err(DslError::build(
-                            line,
-                            col,
-                            format!("unknown verify mode: {other}"),
-                        ));
-                    }
-                };
-                emit_op(&mut operations, span, OperationNode::Verify { mode });
+            Rule::container_op
+            | Rule::keep_op
+            | Rule::remove_op
+            | Rule::order_op
+            | Rule::defaults_op
+            | Rule::actions_op
+            | Rule::transcode_op
+            | Rule::synthesize_op
+            | Rule::clear_tags_op
+            | Rule::set_tag_op
+            | Rule::delete_tag_op
+            | Rule::when_block
+            | Rule::rules_block
+            | Rule::verify_op => {
+                operations.push(build_phase_operation(child)?);
             }
             other => {
                 let (line, col) = child.as_span().start_pos().line_col();
@@ -363,6 +260,105 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
         operations,
         span,
     })
+}
+
+fn build_skip_when(pair: Pair<'_, Rule>) -> Result<ConditionNode> {
+    let condition = pair.into_inner().next().unwrap();
+    build_condition(condition)
+}
+
+fn build_depends_on(pair: Pair<'_, Rule>) -> Vec<String> {
+    let list = pair.into_inner().next().unwrap();
+    build_list(list)
+}
+
+fn build_run_if(pair: Pair<'_, Rule>) -> RunIfNode {
+    // Grammar: "run_if" ~ ident ~ "." ~ run_if_trigger
+    let mut inner = pair.into_inner();
+    let phase = inner
+        .find(|p| p.as_rule() == Rule::ident)
+        .unwrap()
+        .as_str()
+        .to_string();
+    let trigger = inner
+        .find(|p| p.as_rule() == Rule::run_if_trigger)
+        .unwrap()
+        .as_str()
+        .to_string();
+    RunIfNode { phase, trigger }
+}
+
+fn build_on_error(pair: Pair<'_, Rule>) -> String {
+    pair.into_inner().next().unwrap().as_str().to_string()
+}
+
+fn build_phase_operation(pair: Pair<'_, Rule>) -> Result<SpannedOperation> {
+    let span = span_from_pair(&pair);
+    let node = match pair.as_rule() {
+        Rule::container_op => emit_container_op(pair),
+        Rule::keep_op => build_keep_remove(pair, true)?,
+        Rule::remove_op => build_keep_remove(pair, false)?,
+        Rule::order_op => emit_order_op(pair),
+        Rule::defaults_op => build_defaults(pair)?,
+        Rule::actions_op => build_actions(pair),
+        Rule::transcode_op => build_transcode(pair),
+        Rule::synthesize_op => build_synthesize(pair)?,
+        Rule::clear_tags_op => OperationNode::ClearTags,
+        Rule::set_tag_op => emit_set_tag_op(pair),
+        Rule::delete_tag_op => emit_delete_tag_op(pair),
+        Rule::when_block => OperationNode::When(build_when(pair)?),
+        Rule::rules_block => build_rules(pair)?,
+        Rule::verify_op => emit_verify_op(pair)?,
+        other => {
+            return Err(build_unexpected_rule_error(&pair, other));
+        }
+    };
+    Ok(SpannedOperation { node, span })
+}
+
+fn build_unexpected_rule_error(pair: &Pair<'_, Rule>, rule: Rule) -> DslError {
+    let (line, col) = pair.as_span().start_pos().line_col();
+    DslError::build(line, col, format!("unexpected rule {rule:?}"))
+}
+
+fn emit_container_op(pair: Pair<'_, Rule>) -> OperationNode {
+    let ident = pair.into_inner().next().unwrap();
+    OperationNode::Container(ident.as_str().to_string())
+}
+
+fn emit_order_op(pair: Pair<'_, Rule>) -> OperationNode {
+    let list = pair.into_inner().next().unwrap();
+    OperationNode::Order(build_list(list))
+}
+
+fn emit_set_tag_op(pair: Pair<'_, Rule>) -> OperationNode {
+    let mut inner = pair.into_inner();
+    let tag = parse_string_value(&inner.next().unwrap());
+    let value = parse_set_tag_value(inner.next().unwrap());
+    OperationNode::SetTag { tag, value }
+}
+
+fn emit_delete_tag_op(pair: Pair<'_, Rule>) -> OperationNode {
+    let tag = parse_string_value(&pair.into_inner().next().unwrap());
+    OperationNode::DeleteTag(tag)
+}
+
+fn emit_verify_op(pair: Pair<'_, Rule>) -> Result<OperationNode> {
+    let mode_pair = pair.into_inner().next().unwrap();
+    let mode = match mode_pair.as_str() {
+        "quick" => VerifyMode::Quick,
+        "thorough" => VerifyMode::Thorough,
+        "hash" => VerifyMode::Hash,
+        other => {
+            let (line, col) = mode_pair.as_span().start_pos().line_col();
+            return Err(DslError::build(
+                line,
+                col,
+                format!("unknown verify mode: {other}"),
+            ));
+        }
+    };
+    Ok(OperationNode::Verify { mode })
 }
 
 /// Extract the target and optional filter from a `keep_op` or `remove_op` pair.
@@ -429,16 +425,8 @@ fn build_actions(pair: Pair<'_, Rule>) -> OperationNode {
 }
 
 fn build_transcode(pair: Pair<'_, Rule>) -> OperationNode {
-    let text = pair.as_str();
-    // "transcode video to hevc { ... }" or "transcode audio to aac { ... }"
-    // Use the second word to determine target (grammar guarantees "video" or "audio")
-    let target = text
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or("audio")
-        .to_string();
-
     let mut inner = pair.into_inner();
+    let target = inner.next().unwrap().as_str().to_string();
     let codec = inner.next().unwrap().as_str().to_string();
     let mut settings = Vec::new();
 
