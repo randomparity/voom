@@ -38,6 +38,7 @@ jobs:
       - run: cargo build --workspace
       - run: cargo test --workspace
       - run: cargo run -q -- policy test docs/examples/tests
+      - run: cargo test -p voom-cli --features functional -- --test-threads=4 test_init test_doctor test_policy test_config test_status test_jobs test_plugin
 
   test-wasm:
     name: Test (WASM feature)
