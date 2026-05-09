@@ -666,12 +666,11 @@ mod tests {
             "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('b' * 35)\nPY\n",
         )
         .expect("write script");
-        make_executable(&script);
-
         let token = tokio_util::sync::CancellationToken::new();
+        let script_arg = script.to_str().expect("utf8 path");
         let output = run_cancellable_env_config(
-            script.to_str().expect("utf8 path"),
-            &[] as &[&str],
+            "sh",
+            &[script_arg],
             Duration::from_secs(5),
             CancellableOptions {
                 env_vars: &[],
