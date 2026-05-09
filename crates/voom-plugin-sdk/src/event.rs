@@ -70,8 +70,8 @@ pub fn load_plugin_config<T: DeserializeOwned>(
     load_plugin_config_named(None, get_data)
 }
 
-/// Like [`load_plugin_config`], but includes the plugin name in the warning
-/// log when deserialization fails.
+/// Like [`load_plugin_config`], but includes the plugin name in the error
+/// when reading or deserializing config fails.
 ///
 /// # Examples
 ///
