@@ -415,6 +415,10 @@ pub struct ReportArgs {
     #[arg(long)]
     pub vmaf: bool,
 
+    /// Show audio loudness aggregate summary
+    #[arg(long)]
+    pub loudness: bool,
+
     /// Show errors from a processing session (default: most recent)
     #[arg(long)]
     pub errors: bool,

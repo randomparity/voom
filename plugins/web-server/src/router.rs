@@ -33,6 +33,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/jobs/stats", get(api::jobs::get_job_stats))
         .route("/jobs/:id", get(api::jobs::get_job))
         .route("/plugins", get(api::plugins::list_plugins))
+        .route("/stats/loudness", get(api::stats::get_loudness_stats))
         .route("/stats/library", get(api::stats::get_library_stats))
         .route("/stats/history", get(api::stats::get_stats_history))
         .route("/stats", get(api::stats::get_stats))

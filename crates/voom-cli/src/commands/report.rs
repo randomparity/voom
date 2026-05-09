@@ -50,6 +50,10 @@ pub fn run(args: &ReportArgs) -> Result<()> {
         return run_vmaf(&*store, format);
     }
 
+    if args.loudness {
+        return run_loudness(&*store, format);
+    }
+
     let request = build_request(args)?;
     let result = ReportPlugin::query(&*store, &request)?;
 
@@ -134,6 +138,7 @@ fn is_summary_request(args: &ReportArgs) -> bool {
         && !args.database
         && !args.errors
         && !args.vmaf
+        && !args.loudness
         && args.history.is_none()
 }
 
@@ -1375,6 +1380,132 @@ fn run_vmaf(store: &dyn voom_domain::storage::StorageTrait, format: OutputFormat
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+struct LoudnessSummary {
+    measured_tracks: usize,
+    average_integrated_lufs: Option<f64>,
+    average_true_peak_db: Option<f64>,
+    outside_broadcast_target: usize,
+    outliers: Vec<LoudnessOutlier>,
+}
+
+#[derive(Debug, Serialize)]
+struct LoudnessOutlier {
+    path: String,
+    track_index: u32,
+    integrated_lufs: f64,
+    true_peak_db: Option<f64>,
+}
+
+fn run_loudness(
+    store: &dyn voom_domain::storage::StorageTrait,
+    format: OutputFormat,
+) -> Result<()> {
+    let files = store
+        .list_files(&voom_domain::storage::FileFilters::default())
+        .context("failed to query files for loudness report")?;
+    let mut values = Vec::new();
+    let mut peaks = Vec::new();
+    let mut outliers = Vec::new();
+    for file in files {
+        for track in file
+            .tracks
+            .iter()
+            .filter(|track| track.track_type.is_audio())
+        {
+            let Some(lufs) = track.loudness_integrated_lufs else {
+                continue;
+            };
+            values.push(lufs);
+            if let Some(peak) = track.loudness_true_peak_db {
+                peaks.push(peak);
+            }
+            if (lufs + 23.0).abs() > 0.5 {
+                outliers.push(LoudnessOutlier {
+                    path: file.path.display().to_string(),
+                    track_index: track.index,
+                    integrated_lufs: round2(lufs),
+                    true_peak_db: track.loudness_true_peak_db.map(round2),
+                });
+            }
+        }
+    }
+    let outside_broadcast_target = outliers.len();
+    outliers.sort_by(|a, b| {
+        let a_drift = (a.integrated_lufs + 23.0).abs();
+        let b_drift = (b.integrated_lufs + 23.0).abs();
+        b_drift.total_cmp(&a_drift)
+    });
+    outliers.truncate(10);
+    let summary = LoudnessSummary {
+        measured_tracks: values.len(),
+        average_integrated_lufs: average_option(values.iter().copied()).map(round2),
+        average_true_peak_db: average_option(peaks.into_iter()).map(round2),
+        outside_broadcast_target,
+        outliers,
+    };
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        OutputFormat::Table => print_loudness_table(&summary),
+        OutputFormat::Plain => {
+            println!("measured_tracks={}", summary.measured_tracks);
+            println!(
+                "average_integrated_lufs={}",
+                format_optional_score(summary.average_integrated_lufs)
+            );
+            println!(
+                "average_true_peak_db={}",
+                format_optional_score(summary.average_true_peak_db)
+            );
+            println!(
+                "outside_broadcast_target={}",
+                summary.outside_broadcast_target
+            );
+        }
+        OutputFormat::Csv => {
+            let mut out = std::io::stdout();
+            writeln!(
+                out,
+                "measured_tracks,average_integrated_lufs,average_true_peak_db,outside_broadcast_target"
+            )?;
+            writeln!(
+                out,
+                "{},{},{},{}",
+                summary.measured_tracks,
+                format_optional_score(summary.average_integrated_lufs),
+                format_optional_score(summary.average_true_peak_db),
+                summary.outside_broadcast_target
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn print_loudness_table(summary: &LoudnessSummary) {
+    println!("{}", style("Loudness Summary").bold().underlined());
+    let mut table = comfy_table::Table::new();
+    table.set_header(vec!["Metric", "Value"]);
+    table.add_row(vec![
+        Cell::new("Measured audio tracks"),
+        Cell::new(summary.measured_tracks),
+    ]);
+    table.add_row(vec![
+        Cell::new("Average integrated LUFS"),
+        Cell::new(format_optional_score(summary.average_integrated_lufs)),
+    ]);
+    table.add_row(vec![
+        Cell::new("Average true peak dB"),
+        Cell::new(format_optional_score(summary.average_true_peak_db)),
+    ]);
+    table.add_row(vec![
+        Cell::new("Outside -23 LUFS +/-0.5"),
+        Cell::new(summary.outside_broadcast_target),
+    ]);
+    println!("{table}");
+}
+
 fn build_vmaf_summary(store: &dyn voom_domain::storage::StorageTrait) -> Result<VmafSummary> {
     let filters = TranscodeOutcomeFilters::default();
     let outcomes = store.list_transcode_outcomes(&filters)?;
@@ -1887,6 +2018,7 @@ mod tests {
             files: false,
             integrity: false,
             vmaf: false,
+            loudness: false,
             errors: false,
             session: None,
             list_sessions: false,
@@ -1913,6 +2045,7 @@ mod tests {
             files: false,
             integrity: false,
             vmaf: false,
+            loudness: false,
             errors: false,
             session: None,
             list_sessions: false,
@@ -1940,6 +2073,7 @@ mod tests {
             files: false,
             integrity: false,
             vmaf: false,
+            loudness: false,
             errors: false,
             session: None,
             list_sessions: false,
@@ -1984,6 +2118,7 @@ mod tests {
             files: false,
             integrity: false,
             vmaf: false,
+            loudness: false,
             errors: false,
             session: None,
             list_sessions: false,

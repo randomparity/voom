@@ -320,6 +320,22 @@ transcode audio to aac {
 }
 ```
 
+### Audio Loudness Normalization
+
+```
+keep audio where lang == eng and not commentary {
+  normalize: ebu_r128 {
+    target_lufs: -23
+    true_peak_db: -1.0
+    lra_max: 18
+  }
+}
+```
+
+`normalize` uses ffmpeg `loudnorm` in EBU R128 mode. Supported presets are
+`ebu_r128`, `ebu_r128_broadcast`, `streaming_movies`, `streaming_music`,
+`mobile`, and `voice_focused`.
+
 ## Synthesize Operation
 
 Create new audio tracks from existing ones.
@@ -335,6 +351,7 @@ synthesize "Stereo AAC" {
   title: "Stereo (AAC)"                                               // track title
   language: inherit                                                    // inherit from source
   position: after_source                                               // track position
+  normalize: mobile                                                    // optional LUFS target
 }
 ```
 
@@ -343,6 +360,7 @@ synthesize "Stereo AAC" {
 | `codec` | identifier | Output audio codec |
 | `channels` | identifier or number | Channel layout (`stereo`, `5.1`, etc.) or count |
 | `source` | `prefer(filter)` | Filter expression selecting preferred source track |
+| `normalize` | preset/block | Optional EBU R128 loudness normalization |
 | `bitrate` | string | Target bitrate (e.g., `"192k"`, `"320k"`) |
 | `skip_if_exists` | `{ filter }` | Don't create if a matching track already exists |
 | `create_if` | condition | Only create when this condition is true |
