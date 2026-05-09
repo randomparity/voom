@@ -347,13 +347,9 @@ async fn apply_auto_crop_detection(
     };
 
     let path = state.current_file.path.clone();
+    let detector = phase_ctx.process.crop_detector;
     let detected = tokio::task::spawn_blocking(move || {
-        voom_ffmpeg_executor::cropdetect::detect_crop(
-            "ffmpeg",
-            &path,
-            request.source,
-            &request.settings,
-        )
+        detector("ffmpeg", &path, request.source, &request.settings)
     })
     .await
     .map_err(|e| format!("cropdetect join error: {e}"))?
@@ -874,19 +870,24 @@ pub(super) fn execute_single_plan(
 #[cfg(test)]
 mod tests {
     use std::future::Future;
+    use std::path::Path;
     use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::sync::Arc;
     use std::time::Duration;
 
     use voom_domain::capabilities::Capability;
     use voom_domain::events::{Event, EventResult, VerifyCompletedDetails, VerifyCompletedEvent};
-    use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    use voom_domain::media::{Container, CropDetection, CropRect, MediaFile, Track, TrackType};
     use voom_domain::plan::{CropSettings, PlannedAction, TranscodeSettings};
+    use voom_domain::storage::FileStorage;
     use voom_domain::verification::{VerificationMode, VerificationOutcome};
 
     use super::super::tests as process_tests;
     use super::*;
+
+    static TEST_CROP_DETECT_CALLS: AtomicUsize = AtomicUsize::new(0);
 
     struct RecordingExecutor {
         entered_tx: mpsc::Sender<()>,
@@ -1004,6 +1005,73 @@ mod tests {
             },
             "transcode with crop",
         ))
+    }
+
+    fn fake_crop_detector(
+        _ffmpeg_path: &str,
+        _source_path: &Path,
+        _source: voom_ffmpeg_executor::cropdetect::CropDetectSource,
+        _settings: &CropSettings,
+    ) -> voom_domain::errors::Result<Option<CropDetection>> {
+        TEST_CROP_DETECT_CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(CropDetection::new(
+            CropRect::new(0, 132, 0, 132),
+            chrono::Utc::now(),
+        )))
+    }
+
+    #[tokio::test]
+    async fn apply_auto_crop_detection_persists_detection_and_skips_cached_files() {
+        TEST_CROP_DETECT_CALLS.store(0, Ordering::SeqCst);
+
+        let fixture = process_tests::TestFixture::new();
+        let store = Arc::new(voom_domain::test_support::InMemoryStore::new());
+        let ctx = ProcessContext {
+            crop_detector: fake_crop_detector,
+            ..fixture.make_ctx(Arc::new(voom_kernel::Kernel::new()), store.clone())
+        };
+        let safeguards = SafeguardContext::from_process(&ctx);
+        let compiled = voom_dsl::compile_policy(global_hw_policy()).unwrap();
+        let phase_ctx = PhaseExecutionContext {
+            compiled: &compiled,
+            keep_backups: false,
+            safeguards: &safeguards,
+            process: &ctx,
+        };
+
+        let mut file = h264_file(fixture.dir_path().join("movie.mkv"));
+        file.duration = 120.0;
+        file.tracks[0].width = Some(1920);
+        file.tracks[0].height = Some(1080);
+        let mut plan = crop_plan(file.clone());
+        let mut state = PhaseExecutionState::new(file.clone());
+
+        apply_auto_crop_detection(&mut plan, &mut state, &phase_ctx)
+            .await
+            .expect("crop detection should succeed");
+
+        let detection = state
+            .current_file
+            .crop_detection
+            .clone()
+            .expect("crop detection should be cached on the file state");
+        assert_eq!(detection.rect, CropRect::new(0, 132, 0, 132));
+        assert_eq!(plan.file.crop_detection.as_ref(), Some(&detection));
+        assert_eq!(
+            store
+                .file(&file.id)
+                .expect("stored file lookup should succeed")
+                .and_then(|stored| stored.crop_detection),
+            Some(detection)
+        );
+        assert_eq!(TEST_CROP_DETECT_CALLS.load(Ordering::SeqCst), 1);
+
+        let mut cached_plan = crop_plan(state.current_file.clone());
+        apply_auto_crop_detection(&mut cached_plan, &mut state, &phase_ctx)
+            .await
+            .expect("cached crop detection should be accepted");
+
+        assert_eq!(TEST_CROP_DETECT_CALLS.load(Ordering::SeqCst), 1);
     }
 
     #[test]

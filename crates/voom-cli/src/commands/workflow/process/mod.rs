@@ -18,7 +18,7 @@ use parking_lot::Mutex;
 
 use tokio_util::sync::CancellationToken;
 
-use context::{PhaseStats, ProcessContext, RunCounters};
+use context::{detect_crop_with_ffmpeg, PhaseStats, ProcessContext, RunCounters};
 use dispatch::dispatch_and_log;
 use pipeline::process_single_file;
 
@@ -226,6 +226,7 @@ async fn run_primary_process(
                         force_rescan,
                         token: &token,
                         ffprobe_path: ffprobe_path.as_deref(),
+                        crop_detector: detect_crop_with_ffmpeg,
                         capabilities: &capabilities,
                         plan_limiter,
                         counters: &counters,
@@ -1095,6 +1096,7 @@ mod tests {
                 force_rescan: false,
                 token: &self.token,
                 ffprobe_path: None,
+                crop_detector: detect_crop_with_ffmpeg,
                 capabilities: &self.capabilities,
                 plan_limiter: self.plan_limiter.clone(),
                 counters: &self.counters,

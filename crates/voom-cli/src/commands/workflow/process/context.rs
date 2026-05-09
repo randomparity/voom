@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
@@ -16,6 +17,23 @@ pub(super) struct PhaseStats {
 }
 
 pub(super) type PhaseStatsMap = Arc<Mutex<HashMap<String, PhaseStats>>>;
+
+pub(super) type CropDetector =
+    fn(
+        &str,
+        &Path,
+        voom_ffmpeg_executor::cropdetect::CropDetectSource,
+        &voom_domain::plan::CropSettings,
+    ) -> voom_domain::errors::Result<Option<voom_domain::media::CropDetection>>;
+
+pub(super) fn detect_crop_with_ffmpeg(
+    ffmpeg_path: &str,
+    source_path: &Path,
+    source: voom_ffmpeg_executor::cropdetect::CropDetectSource,
+    settings: &voom_domain::plan::CropSettings,
+) -> voom_domain::errors::Result<Option<voom_domain::media::CropDetection>> {
+    voom_ffmpeg_executor::cropdetect::detect_crop(ffmpeg_path, source_path, source, settings)
+}
 
 pub(super) fn record_phase_stat(
     stats: &PhaseStatsMap,
@@ -79,6 +97,7 @@ pub(super) struct ProcessContext<'a> {
     pub(super) force_rescan: bool,
     pub(super) token: &'a CancellationToken,
     pub(super) ffprobe_path: Option<&'a str>,
+    pub(super) crop_detector: CropDetector,
     pub(super) capabilities: &'a voom_domain::CapabilityMap,
     pub(super) plan_limiter: Arc<voom_job_manager::plan_limiter::PlanExecutionLimiter>,
     pub(super) counters: &'a RunCounters,
