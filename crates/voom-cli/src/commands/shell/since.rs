@@ -1,7 +1,7 @@
 //! Parse `--since` arguments — relative durations or absolute datetimes.
 
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 
 /// Parse `30d` / `4w` / `12h` / `2026-01-15` / `2026-01-15T10:30:00`
 /// into a UTC `DateTime`. Relative forms are subtracted from "now".
@@ -9,36 +9,7 @@ use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 /// # Errors
 /// Returns an error if the input doesn't match any supported format.
 pub fn parse_since(s: &str) -> Result<DateTime<Utc>> {
-    if let Some(dt) = parse_relative(s) {
-        return Ok(dt);
-    }
-    if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
-        return Ok(Utc.from_utc_datetime(&ndt));
-    }
-    if let Ok(nd) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        let ndt = nd.and_hms_opt(0, 0, 0).expect("midnight is always valid");
-        return Ok(Utc.from_utc_datetime(&ndt));
-    }
-    Err(anyhow!(
-        "invalid --since '{s}': expected `30d`, `4w`, `12h`, or YYYY-MM-DD"
-    ))
-}
-
-fn parse_relative(s: &str) -> Option<DateTime<Utc>> {
-    let s = s.trim();
-    let split_at = s.find(char::is_alphabetic)?;
-    if split_at == 0 {
-        return None;
-    }
-    let (num_part, unit) = s.split_at(split_at);
-    let n: i64 = num_part.trim().parse().ok()?;
-    let dur = match unit {
-        "h" | "hr" | "hours" => Duration::hours(n),
-        "d" | "day" | "days" => Duration::days(n),
-        "w" | "week" | "weeks" => Duration::days(n * 7),
-        _ => return None,
-    };
-    Some(Utc::now() - dur)
+    voom_domain::utils::since::parse_since(s).map_err(|e| anyhow!(e))
 }
 
 #[cfg(test)]
