@@ -1,6 +1,8 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
+use voom_domain::media::{Container, Track, TrackType};
+use voom_policy_testing::Fixture;
 
 fn voom() -> Command {
     let mut cmd = Command::cargo_bin("voom").unwrap();
@@ -419,6 +421,97 @@ fn test_policy_test_snapshot_diff_is_readable() {
         .stdout(predicate::str::contains(
             "+    \"phase_name\": \"containerize\"",
         ));
+}
+
+#[test]
+fn test_policy_diff_fixture_identical_exits_zero() {
+    let fixture = PolicyDiffFixture::new();
+
+    voom()
+        .args([
+            "policy",
+            "diff",
+            fixture.a.to_str().unwrap(),
+            fixture.a.to_str().unwrap(),
+            "--fixture",
+            fixture.fixture.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Policies are identical"));
+}
+
+#[test]
+fn test_policy_diff_fixture_different_exits_one_with_diff() {
+    let fixture = PolicyDiffFixture::new();
+
+    voom()
+        .args([
+            "policy",
+            "diff",
+            fixture.a.to_str().unwrap(),
+            fixture.b.to_str().unwrap(),
+            "--fixture",
+            fixture.fixture.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Policy diff"))
+        .stdout(predicate::str::contains("+").or(predicate::str::contains("~")));
+}
+
+struct PolicyDiffFixture {
+    _dir: tempfile::TempDir,
+    a: std::path::PathBuf,
+    b: std::path::PathBuf,
+    fixture: std::path::PathBuf,
+}
+
+impl PolicyDiffFixture {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.voom");
+        let b = dir.path().join("b.voom");
+        let fixture = dir.path().join("movie.json");
+        std::fs::write(
+            &a,
+            r#"
+policy "containerize" {
+  phase convert {
+    container mkv
+  }
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &b,
+            r#"
+policy "noop" {
+  phase verify {
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let media = Fixture {
+            path: std::path::PathBuf::from("/media/movie.mp4"),
+            container: Container::Mp4,
+            duration: 120.0,
+            size: 99,
+            tracks: vec![Track::new(0, TrackType::Video, "h264".to_string())],
+            capabilities: None,
+        };
+        std::fs::write(&fixture, serde_json::to_string(&media).unwrap()).unwrap();
+
+        Self {
+            _dir: dir,
+            a,
+            b,
+            fixture,
+        }
+    }
 }
 
 // === Error cases ===
