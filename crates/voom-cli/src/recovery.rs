@@ -661,7 +661,7 @@ mod tests {
         let op = PendingOperation::new(
             uuid::Uuid::new_v4(),
             original_path.to_path_buf(),
-            "test".into(),
+            "test",
             chrono::Utc::now(),
         );
         store.insert_pending_op(&op).unwrap();

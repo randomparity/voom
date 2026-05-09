@@ -644,7 +644,7 @@ mod tests {
         ];
         let mut state = BatchEtaState::new(&files, 1);
         let job_id = uuid::Uuid::new_v4();
-        let payload = crate::introspect::DiscoveredFilePayload::new("/tmp/a.mkv".into(), 100, None);
+        let payload = crate::introspect::DiscoveredFilePayload::new("/tmp/a.mkv", 100, None);
         assert_eq!(state.on_job_start(job_id, &payload), "");
     }
 
@@ -658,10 +658,8 @@ mod tests {
         let mut state = BatchEtaState::new(&files, 1);
         state.batch_started_at = Instant::now().checked_sub(Duration::from_secs(12)).unwrap();
 
-        let first =
-            crate::introspect::DiscoveredFilePayload::new("/tmp/small-1.mkv".into(), 1, None);
-        let second =
-            crate::introspect::DiscoveredFilePayload::new("/tmp/small-2.mkv".into(), 1, None);
+        let first = crate::introspect::DiscoveredFilePayload::new("/tmp/small-1.mkv", 1, None);
+        let second = crate::introspect::DiscoveredFilePayload::new("/tmp/small-2.mkv", 1, None);
         state.on_job_start(uuid::Uuid::new_v4(), &first);
         let first_id = *state.running_jobs.keys().next().unwrap();
         let start = state.running_jobs.get_mut(&first_id).unwrap();
@@ -689,10 +687,8 @@ mod tests {
         let mut state = BatchEtaState::new(&files, 2);
         state.batch_started_at = Instant::now().checked_sub(Duration::from_secs(20)).unwrap();
 
-        let payload_a =
-            crate::introspect::DiscoveredFilePayload::new("/tmp/a.mkv".into(), 10, None);
-        let payload_b =
-            crate::introspect::DiscoveredFilePayload::new("/tmp/b.mkv".into(), 10, None);
+        let payload_a = crate::introspect::DiscoveredFilePayload::new("/tmp/a.mkv", 10, None);
+        let payload_b = crate::introspect::DiscoveredFilePayload::new("/tmp/b.mkv", 10, None);
 
         state.on_job_start(uuid::Uuid::new_v4(), &payload_a);
         let first_id = state
@@ -716,10 +712,8 @@ mod tests {
             Instant::now().checked_sub(Duration::from_secs(10)).unwrap();
         state.on_job_complete(second_id);
 
-        let payload_c =
-            crate::introspect::DiscoveredFilePayload::new("/tmp/c.mkv".into(), 10, None);
-        let payload_d =
-            crate::introspect::DiscoveredFilePayload::new("/tmp/d.mkv".into(), 10, None);
+        let payload_c = crate::introspect::DiscoveredFilePayload::new("/tmp/c.mkv", 10, None);
+        let payload_d = crate::introspect::DiscoveredFilePayload::new("/tmp/d.mkv", 10, None);
         state.on_job_start(uuid::Uuid::new_v4(), &payload_c);
         state.on_job_start(uuid::Uuid::new_v4(), &payload_d);
         for running in state.running_jobs.values_mut() {
