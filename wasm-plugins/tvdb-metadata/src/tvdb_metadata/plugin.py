@@ -20,6 +20,7 @@ from tvdb_metadata.types import (
     EventDataDict,
     EventResultDict,
     FileIntrospectedPayload,
+    IncomingEventDataDict,
     JsonObject,
     TvdbMetadataResult,
 )
@@ -155,7 +156,7 @@ def handles(event_type: str) -> bool:
     return event_type == "file.introspected"
 
 
-def on_event(event: EventDataLike | EventDataDict) -> EventResult | None:
+def on_event(event: EventDataLike | IncomingEventDataDict) -> EventResult | None:
     """Process an event and optionally return a result.
 
     WIT signature: on-event(event: event-data) -> option<event-result>
@@ -237,12 +238,12 @@ def _make_wit_plugin_info() -> object | None:
     )
 
 
-def _event_type(event: EventDataLike | EventDataDict) -> str:
+def _event_type(event: EventDataLike | IncomingEventDataDict) -> str:
     """Extract the event type from a WIT record or test dict."""
     return event.event_type if hasattr(event, "event_type") else event.get("event_type", "")
 
 
-def _event_payload(event: EventDataLike | EventDataDict) -> bytes:
+def _event_payload(event: EventDataLike | IncomingEventDataDict) -> bytes:
     """Extract raw event payload bytes from a WIT record or test dict."""
     payload = event.payload if hasattr(event, "payload") else event.get("payload", b"")
     return bytes(payload)

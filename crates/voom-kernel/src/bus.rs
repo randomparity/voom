@@ -29,10 +29,10 @@ fn make_error_result(plugin_name: String, event_type: &str, error: String) -> Ev
 /// Event bus that dispatches events to subscribed plugins, ordered by priority.
 ///
 /// Dispatch is sequential: handlers run one at a time in priority order (lower
-/// values first). There is no backpressure — every published event is delivered
-/// to all matching subscribers immediately. This is intentional: the kernel is
-/// the single orchestrator and predictable ordering simplifies reasoning about
-/// plugin interactions.
+/// values first). Matching subscribers are invoked until a handler returns an
+/// [`EventResult`] with `claimed = true`, which stops lower-priority handlers.
+/// This is intentional: the kernel is the single orchestrator and predictable
+/// ordering simplifies reasoning about plugin interactions.
 ///
 /// Events produced by handlers are automatically cascaded (re-published) up to
 /// a fixed depth limit to prevent infinite loops.
@@ -76,8 +76,8 @@ impl EventBus {
         );
     }
 
-    /// Publish an event to all subscribers that handle its type.
-    /// Returns results from all handlers, in priority order.
+    /// Publish an event to matching subscribers in priority order.
+    /// Returns handler results collected before dispatch stops or completes.
     /// Produced events are automatically cascaded up to a depth limit.
     #[tracing::instrument(
         name = "dispatch",

@@ -57,6 +57,11 @@ class EventDataDict(TypedDict):
     payload: list[int]
 
 
+class IncomingEventDataDict(TypedDict, total=False):
+    event_type: str
+    payload: list[int]
+
+
 class EventResultDict(TypedDict):
     plugin_name: str
     produced_events: list[EventDataDict]

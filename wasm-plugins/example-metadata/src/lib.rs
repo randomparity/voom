@@ -118,24 +118,6 @@ pub fn on_event(
     }
 }
 
-// NOTE: In a real WASM plugin, you would use wit_bindgen::generate! to
-// generate the Guest trait and export! macro, then implement the trait:
-//
-// wit_bindgen::generate!({
-//     world: "voom-plugin",
-//     path: "../../crates/voom-wit/wit",
-// });
-//
-// struct ExampleMetadata;
-//
-// impl Guest for ExampleMetadata {
-//     fn get_info() -> PluginInfo { ... }
-//     fn handles(event_type: String) -> bool { ... }
-//     fn on_event(event: EventData) -> Option<EventResult> { ... }
-// }
-//
-// export!(ExampleMetadata);
-
 #[cfg(test)]
 mod tests {
     use super::*;
