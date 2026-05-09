@@ -6,7 +6,8 @@ use chrono::Utc;
 use uuid::Uuid;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::plan::{
-    ActionParams, ActionResult, ExecutionDetail, Plan, PlannedAction, SampleStrategy,
+    ActionParams, ActionResult, ExecutionDetail, LoudnessMeasurement, Plan, PlannedAction,
+    SampleStrategy,
 };
 use voom_domain::transcode::TranscodeOutcome;
 use voom_process::run_with_timeout_env;
@@ -39,6 +40,15 @@ struct DefaultVmafRunner;
 pub struct PlanExecution {
     pub action_results: Vec<ActionResult>,
     pub transcode_outcomes: Vec<TranscodeOutcome>,
+    pub loudness_updates: Vec<LoudnessTrackUpdate>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoudnessTrackUpdate {
+    pub track_index: u32,
+    pub integrated_lufs: f64,
+    pub true_peak_db: f64,
+    pub loudness_range_lu: Option<f64>,
 }
 
 impl VmafRunner for DefaultVmafRunner {
@@ -78,7 +88,8 @@ fn execute_plan_with_runner(
     }
 
     let prepared = prepare_vmaf_transcodes_with_outcomes(plan, vmaf_runner);
-    let prepared_plan = prepared.plan;
+    let mut prepared_plan = prepared.plan;
+    let loudness_updates = prepare_loudness_actions(&mut prepared_plan, hw_accel)?;
     let transcode_outcomes = prepared.outcomes;
     let actions: Vec<&PlannedAction> = prepared_plan.actions.iter().collect();
     let ext = output_extension(&prepared_plan.file, &actions);
@@ -130,6 +141,7 @@ fn execute_plan_with_runner(
             Ok(PlanExecution {
                 action_results,
                 transcode_outcomes,
+                loudness_updates,
             })
         }
         Ok(output) => {
@@ -163,6 +175,7 @@ fn execute_plan_with_runner(
             Ok(PlanExecution {
                 action_results,
                 transcode_outcomes,
+                loudness_updates: Vec::new(),
             })
         }
         Err(e) => {
@@ -170,6 +183,122 @@ fn execute_plan_with_runner(
             Err(e)
         }
     }
+}
+
+fn prepare_loudness_actions(
+    plan: &mut Plan,
+    hw_accel: &HwAccelConfig,
+) -> Result<Vec<LoudnessTrackUpdate>> {
+    let env_vars: Vec<(&str, &str)> = hw_accel.device_env().into_iter().collect();
+    let mut remove_actions = Vec::new();
+    let mut updates = Vec::new();
+    for action in &mut plan.actions {
+        let ActionParams::Transcode { settings, .. } = &mut action.parameters else {
+            continue;
+        };
+        let Some(loudness) = settings.loudness.clone() else {
+            continue;
+        };
+        if loudness.measured.is_some() {
+            continue;
+        }
+        let Some(track_index) = action.track_index else {
+            continue;
+        };
+        let measurement = measure_loudness(&plan.file.path, track_index, &loudness, &env_vars)?;
+        if loudness.is_within_target(measurement.input_i) {
+            if action.description.starts_with("Normalize audio track ") {
+                remove_actions.push(action.description.clone());
+            } else {
+                settings.loudness = None;
+            }
+            continue;
+        }
+        updates.push(LoudnessTrackUpdate {
+            track_index,
+            integrated_lufs: loudness.target_lufs,
+            true_peak_db: loudness.true_peak_db,
+            loudness_range_lu: loudness.lra_max,
+        });
+        settings.loudness = Some(loudness.with_measurement(measurement));
+    }
+    if !remove_actions.is_empty() {
+        plan.actions
+            .retain(|action| !remove_actions.contains(&action.description));
+    }
+    Ok(updates)
+}
+
+fn measure_loudness(
+    path: &std::path::Path,
+    track_index: u32,
+    settings: &voom_domain::plan::LoudnessNormalization,
+    env_vars: &[(&str, &str)],
+) -> Result<LoudnessMeasurement> {
+    let lra = settings.lra_max.unwrap_or(99.0);
+    let filter = format!(
+        "loudnorm=I={:.1}:TP={:.1}:LRA={:.1}:print_format=json",
+        settings.target_lufs, settings.true_peak_db, lra
+    );
+    let args = vec![
+        "-hide_banner".to_string(),
+        "-i".to_string(),
+        path.to_string_lossy().to_string(),
+        "-map".to_string(),
+        format!("0:{track_index}"),
+        "-af".to_string(),
+        filter,
+        "-f".to_string(),
+        "null".to_string(),
+        "-".to_string(),
+    ];
+    let output = run_with_timeout_env("ffmpeg", &args, FFMPEG_TIMEOUT, env_vars)?;
+    if !output.status.success() {
+        let tail = voom_process::stderr_tail(&output.stderr, STDERR_TAIL_LINES);
+        return Err(VoomError::ToolExecution {
+            tool: "ffmpeg".into(),
+            message: format!("loudness measurement failed: {tail}"),
+        });
+    }
+    parse_loudnorm_json(&String::from_utf8_lossy(&output.stderr))
+}
+
+fn parse_loudnorm_json(stderr: &str) -> Result<LoudnessMeasurement> {
+    let Some(start) = stderr.rfind('{') else {
+        return Err(VoomError::ToolExecution {
+            tool: "ffmpeg".into(),
+            message: "loudnorm output did not contain JSON".into(),
+        });
+    };
+    let Some(end) = stderr[start..].find('}') else {
+        return Err(VoomError::ToolExecution {
+            tool: "ffmpeg".into(),
+            message: "loudnorm JSON was incomplete".into(),
+        });
+    };
+    let json = &stderr[start..=start + end];
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|error| VoomError::ToolExecution {
+            tool: "ffmpeg".into(),
+            message: format!("failed to parse loudnorm JSON: {error}"),
+        })?;
+    let read = |key: &str| -> Result<f64> {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| s.parse::<f64>().ok())
+            .ok_or_else(|| VoomError::ToolExecution {
+                tool: "ffmpeg".into(),
+                message: format!("loudnorm JSON missing numeric {key}"),
+            })
+    };
+    Ok(LoudnessMeasurement::new(
+        read("input_i")?,
+        read("input_tp")?,
+        read("input_lra")?,
+        read("input_thresh")?,
+        read("target_offset")?,
+    ))
 }
 
 pub(crate) struct PreparedTranscodes {

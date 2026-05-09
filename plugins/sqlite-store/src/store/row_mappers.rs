@@ -276,6 +276,11 @@ pub(crate) fn row_to_track(row: &Row<'_>) -> rusqlite::Result<Track> {
     t.channel_layout = row.get("channel_layout")?;
     t.sample_rate = sample_rate;
     t.bit_depth = bit_depth;
+    t.loudness_integrated_lufs = row.get("loudness_integrated_lufs")?;
+    t.loudness_true_peak_db = row.get("loudness_true_peak_db")?;
+    t.loudness_range_lu = row.get("loudness_range_lu")?;
+    let measured_at: Option<String> = row.get("loudness_measured_at")?;
+    t.loudness_measured_at = parse_optional_datetime(measured_at, "tracks.loudness_measured_at")?;
     t.width = width;
     t.height = height;
     t.frame_rate = row.get("frame_rate")?;

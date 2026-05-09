@@ -112,8 +112,8 @@ impl FileStorage for SqliteStore {
         {
             let mut stmt = tx
                 .prepare(
-                    "INSERT INTO tracks (id, file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, is_animation)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                    "INSERT INTO tracks (id, file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, loudness_integrated_lufs, loudness_true_peak_db, loudness_range_lu, loudness_measured_at, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, is_animation)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
                 )
                 .map_err(storage_err("failed to prepare track insert"))?;
 
@@ -132,6 +132,10 @@ impl FileStorage for SqliteStore {
                     track.channel_layout,
                     track.sample_rate.map(i64::from),
                     track.bit_depth.map(i64::from),
+                    track.loudness_integrated_lufs,
+                    track.loudness_true_peak_db,
+                    track.loudness_range_lu,
+                    track.loudness_measured_at.map(|dt| dt.to_rfc3339()),
                     track.width.map(i64::from),
                     track.height.map(i64::from),
                     track.frame_rate,

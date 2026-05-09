@@ -332,6 +332,22 @@ impl FfmpegExecutorPlugin {
             for outcome in &execution.transcode_outcomes {
                 store.insert_transcode_outcome(outcome)?;
             }
+            if !execution.loudness_updates.is_empty() {
+                let mut file = plan.file.clone();
+                for update in &execution.loudness_updates {
+                    if let Some(track) = file
+                        .tracks
+                        .iter_mut()
+                        .find(|track| track.index == update.track_index)
+                    {
+                        track.loudness_integrated_lufs = Some(update.integrated_lufs);
+                        track.loudness_true_peak_db = Some(update.true_peak_db);
+                        track.loudness_range_lu = update.loudness_range_lu;
+                        track.loudness_measured_at = Some(chrono::Utc::now());
+                    }
+                }
+                store.upsert_file(&file)?;
+            }
         }
         Ok(execution.action_results)
     }
@@ -794,6 +810,7 @@ mod tests {
                     title: None,
                     position: None,
                     source_track: None,
+                    loudness: None,
                 },
                 "Synthesize audio",
             )],
@@ -1274,6 +1291,7 @@ mod tests {
                     title: None,
                     position: None,
                     source_track: None,
+                    loudness: None,
                 },
                 "Synthesize audio (opus)",
             )],

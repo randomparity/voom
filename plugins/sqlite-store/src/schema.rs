@@ -42,6 +42,10 @@ CREATE TABLE IF NOT EXISTS tracks (
     channel_layout TEXT,
     sample_rate INTEGER,
     bit_depth INTEGER,
+    loudness_integrated_lufs REAL,
+    loudness_true_peak_db REAL,
+    loudness_range_lu REAL,
+    loudness_measured_at TEXT,
     width INTEGER,
     height INTEGER,
     frame_rate REAL,
@@ -314,6 +318,18 @@ fn migrate_tracks_columns(
 ) -> rusqlite::Result<()> {
     if table_exists(conn, "tracks")? && !has_column("tracks", "is_animation")? {
         conn.execute_batch("ALTER TABLE tracks ADD COLUMN is_animation INTEGER;")?;
+    }
+    if table_exists(conn, "tracks")? && !has_column("tracks", "loudness_integrated_lufs")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN loudness_integrated_lufs REAL;")?;
+    }
+    if table_exists(conn, "tracks")? && !has_column("tracks", "loudness_true_peak_db")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN loudness_true_peak_db REAL;")?;
+    }
+    if table_exists(conn, "tracks")? && !has_column("tracks", "loudness_range_lu")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN loudness_range_lu REAL;")?;
+    }
+    if table_exists(conn, "tracks")? && !has_column("tracks", "loudness_measured_at")? {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN loudness_measured_at TEXT;")?;
     }
     Ok(())
 }
