@@ -164,10 +164,6 @@ fn join_pipe_readers(
     (stdout, stderr)
 }
 
-/// Run a subprocess with a timeout, killing it if it exceeds the deadline.
-///
-/// # Errors
-/// Returns `VoomError::ToolExecution` if the process fails or times out.
 pub fn run_with_timeout(
     tool: &str,
     args: &[impl AsRef<OsStr>],
@@ -176,10 +172,6 @@ pub fn run_with_timeout(
     run_with_timeout_env_config(tool, args, timeout, &[], CaptureConfig::default())
 }
 
-/// Run a subprocess with a timeout and extra environment variables.
-///
-/// # Errors
-/// Returns `VoomError::ToolExecution` if the process fails or times out.
 pub fn run_with_timeout_env(
     tool: &str,
     args: &[impl AsRef<OsStr>],
@@ -189,10 +181,6 @@ pub fn run_with_timeout_env(
     run_with_timeout_env_config(tool, args, timeout, env_vars, CaptureConfig::default())
 }
 
-/// Run a subprocess with a timeout and configured output capture limits.
-///
-/// # Errors
-/// Returns `VoomError::ToolExecution` if the process fails or times out.
 pub fn run_with_timeout_config(
     tool: &str,
     args: &[impl AsRef<OsStr>],
@@ -202,10 +190,11 @@ pub fn run_with_timeout_config(
     run_with_timeout_env_config(tool, args, timeout, &[], capture)
 }
 
-/// Run a subprocess with a timeout, extra environment variables, and capture limits.
+/// Runs a subprocess with bounded stdout/stderr capture and terminates it on timeout.
 ///
 /// # Errors
-/// Returns `VoomError::ToolExecution` if the process fails or times out.
+/// Returns `VoomError::ToolExecution` when spawning fails, the deadline
+/// expires, the process exits unsuccessfully, or captured output is not UTF-8.
 pub fn run_with_timeout_env_config(
     tool: &str,
     args: &[impl AsRef<OsStr>],

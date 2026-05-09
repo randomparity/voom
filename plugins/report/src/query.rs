@@ -46,7 +46,6 @@ impl ReportRequest {
         }
     }
 
-    /// Request only the library summary section.
     #[must_use]
     pub fn summary() -> Self {
         Self::new(vec![ReportSection::Library])

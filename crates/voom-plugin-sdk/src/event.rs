@@ -28,12 +28,10 @@ pub fn deserialize_event(payload: &[u8]) -> Result<Event> {
         .map_err(|e| VoomError::Wasm(format!("failed to deserialize event: {e}")))
 }
 
-/// Serialize a domain Event to `MessagePack` bytes (for sending to the host).
 pub fn serialize_event(event: &Event) -> Result<Vec<u8>> {
     rmp_serde::to_vec(event).map_err(|e| VoomError::Wasm(format!("failed to serialize event: {e}")))
 }
 
-/// Deserialize a domain event and log boundary errors through the host.
 pub fn deserialize_event_or_log(payload: &[u8], host: &dyn HostFunctions) -> Option<Event> {
     deserialize_event(payload)
         .map_err(|e| {
@@ -42,7 +40,6 @@ pub fn deserialize_event_or_log(payload: &[u8], host: &dyn HostFunctions) -> Opt
         .ok()
 }
 
-/// Serialize a domain event and log boundary errors through the host.
 pub fn serialize_event_or_log(event: &Event, host: &dyn HostFunctions) -> Option<Vec<u8>> {
     serialize_event(event)
         .map_err(|e| {
@@ -51,13 +48,11 @@ pub fn serialize_event_or_log(event: &Event, host: &dyn HostFunctions) -> Option
         .ok()
 }
 
-/// Deserialize any JSON-compatible type from bytes.
 pub fn deserialize_json<T: DeserializeOwned>(data: &[u8]) -> Result<T> {
     serde_json::from_slice(data)
         .map_err(|e| VoomError::Wasm(format!("failed to deserialize JSON: {e}")))
 }
 
-/// Serialize any type to JSON bytes.
 pub fn serialize_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     serde_json::to_vec(value).map_err(|e| VoomError::Wasm(format!("failed to serialize JSON: {e}")))
 }

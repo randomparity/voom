@@ -25,7 +25,6 @@ pub struct OrchestrationResult {
 }
 
 impl OrchestrationResult {
-    /// Create a new orchestration result.
     #[must_use]
     pub fn new(plans: Vec<Plan>, phase_results: Vec<PhaseResult>, file_modified: bool) -> Self {
         Self {
@@ -73,7 +72,6 @@ pub fn orchestrate(plans: Vec<Plan>) -> OrchestrationResult {
     }
 }
 
-/// Build a human-readable dry-run summary.
 #[must_use]
 pub fn format_dry_run(result: &OrchestrationResult) -> String {
     let mut output = String::new();
@@ -102,7 +100,6 @@ pub fn format_dry_run(result: &OrchestrationResult) -> String {
     output
 }
 
-/// Determine if the entire policy requires file modifications.
 #[must_use]
 pub fn needs_execution(result: &OrchestrationResult) -> bool {
     result
