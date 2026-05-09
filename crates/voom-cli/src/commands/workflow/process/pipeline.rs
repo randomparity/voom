@@ -288,13 +288,16 @@ async fn run_phase_iteration(
     let Some(plan) = ({
         let phase_output_lookup =
             |name: &str| -> Option<PhaseOutput> { state.phase_outputs.get(name).cloned() };
-        voom_policy_evaluator::evaluate_single_phase_with_hints_and_phase_outputs(
+        voom_policy_evaluator::evaluate_single_phase_with_hints_and_evaluation_context(
             phase_name,
             phase_ctx.compiled,
             &state.current_file,
-            &state.outcomes,
+            voom_policy_evaluator::SinglePhaseEvaluationContext {
+                phase_outcomes: &state.outcomes,
+                capabilities: Some(phase_ctx.process.capabilities),
+                phase_output_lookup: Some(&phase_output_lookup),
+            },
             phase_ctx.process.capabilities,
-            &phase_output_lookup,
         )
     }) else {
         return Ok(PhaseLoopControl::Continue);

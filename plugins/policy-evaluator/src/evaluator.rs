@@ -46,6 +46,13 @@ pub struct EvaluationResult {
     pub plans: Vec<Plan>,
 }
 
+/// Optional inputs used while evaluating every phase in a policy.
+#[derive(Clone, Copy, Default)]
+pub struct EvaluationContext<'a> {
+    pub capabilities: Option<&'a CapabilityMap>,
+    pub phase_output_lookup: Option<&'a PhaseOutputLookup<'a>>,
+}
+
 /// Outcome of a single phase evaluation.
 ///
 /// This is internal to the evaluator and distinct from `voom_domain::plan::PhaseOutcome`,
@@ -59,10 +66,18 @@ pub enum EvaluationOutcome {
     ExecutionFailed,
 }
 
+/// Inputs used while evaluating one phase in a policy.
+#[derive(Clone, Copy)]
+pub struct SinglePhaseEvaluationContext<'a> {
+    pub phase_outcomes: &'a HashMap<String, EvaluationOutcome>,
+    pub capabilities: Option<&'a CapabilityMap>,
+    pub phase_output_lookup: Option<&'a PhaseOutputLookup<'a>>,
+}
+
 /// Evaluate a compiled policy against a media file, producing plans for all phases.
 #[must_use]
 pub fn evaluate(policy: &CompiledPolicy, file: &MediaFile) -> EvaluationResult {
-    evaluate_with_context(policy, file, None)
+    evaluate_with_evaluation_context(policy, file, EvaluationContext::default())
 }
 
 /// Evaluate a compiled policy with optional system capabilities context.
@@ -72,7 +87,14 @@ pub fn evaluate_with_context(
     file: &MediaFile,
     capabilities: Option<&CapabilityMap>,
 ) -> EvaluationResult {
-    evaluate_with_phase_outputs(policy, file, capabilities, None)
+    evaluate_with_evaluation_context(
+        policy,
+        file,
+        EvaluationContext {
+            capabilities,
+            phase_output_lookup: None,
+        },
+    )
 }
 
 /// Evaluate a compiled policy with optional system capabilities and a
@@ -88,9 +110,26 @@ pub fn evaluate_with_phase_outputs<'a>(
     capabilities: Option<&'a CapabilityMap>,
     phase_output_lookup: Option<&'a PhaseOutputLookup<'a>>,
 ) -> EvaluationResult {
+    evaluate_with_evaluation_context(
+        policy,
+        file,
+        EvaluationContext {
+            capabilities,
+            phase_output_lookup,
+        },
+    )
+}
+
+/// Evaluate a compiled policy with an explicit evaluation context.
+#[must_use]
+pub fn evaluate_with_evaluation_context<'a>(
+    policy: &CompiledPolicy,
+    file: &MediaFile,
+    context: EvaluationContext<'a>,
+) -> EvaluationResult {
     let eval_ctx = EvalContext {
-        capabilities,
-        phase_output_lookup,
+        capabilities: context.capabilities,
+        phase_output_lookup: context.phase_output_lookup,
     };
     let mut plans = Vec::new();
     let mut phase_outcomes: HashMap<String, EvaluationOutcome> = HashMap::new();
@@ -153,18 +192,16 @@ pub fn evaluate_single_phase(
     phase_outcomes: &HashMap<String, EvaluationOutcome>,
     capabilities: Option<&CapabilityMap>,
 ) -> Option<Plan> {
-    let phase = policy.phases.iter().find(|p| p.name == phase_name)?;
-    let eval_ctx = EvalContext {
-        capabilities,
-        phase_output_lookup: None,
-    };
-    Some(evaluate_phase(
-        phase,
+    evaluate_single_phase_with_evaluation_context(
+        phase_name,
         policy,
         file,
-        phase_outcomes,
-        &eval_ctx,
-    ))
+        SinglePhaseEvaluationContext {
+            phase_outcomes,
+            capabilities,
+            phase_output_lookup: None,
+        },
+    )
 }
 
 /// Evaluate a single phase with both system capabilities and a phase-output
@@ -182,16 +219,37 @@ pub fn evaluate_single_phase_with_phase_outputs<'a>(
     capabilities: Option<&'a CapabilityMap>,
     phase_output_lookup: Option<&'a PhaseOutputLookup<'a>>,
 ) -> Option<Plan> {
+    evaluate_single_phase_with_evaluation_context(
+        phase_name,
+        policy,
+        file,
+        SinglePhaseEvaluationContext {
+            phase_outcomes,
+            capabilities,
+            phase_output_lookup,
+        },
+    )
+}
+
+/// Evaluate a single phase with an explicit evaluation context.
+#[must_use]
+#[allow(clippy::implicit_hasher)]
+pub fn evaluate_single_phase_with_evaluation_context<'a>(
+    phase_name: &str,
+    policy: &CompiledPolicy,
+    file: &MediaFile,
+    context: SinglePhaseEvaluationContext<'a>,
+) -> Option<Plan> {
     let phase = policy.phases.iter().find(|p| p.name == phase_name)?;
     let eval_ctx = EvalContext {
-        capabilities,
-        phase_output_lookup,
+        capabilities: context.capabilities,
+        phase_output_lookup: context.phase_output_lookup,
     };
     Some(evaluate_phase(
         phase,
         policy,
         file,
-        phase_outcomes,
+        context.phase_outcomes,
         &eval_ctx,
     ))
 }

@@ -17,11 +17,10 @@ use voom_domain::capability_map::CapabilityMap;
 use voom_domain::media::MediaFile;
 use voom_dsl::compiled::CompiledPolicy;
 
-use crate::field::PhaseOutputLookup;
-
 pub use evaluator::{
-    apply_capability_hints, evaluate, evaluate_with_context, evaluate_with_phase_outputs,
-    EvaluationOutcome,
+    apply_capability_hints, evaluate, evaluate_with_context, evaluate_with_evaluation_context,
+    evaluate_with_phase_outputs, EvaluationContext, EvaluationOutcome,
+    SinglePhaseEvaluationContext,
 };
 
 /// Evaluate a policy with system capabilities available to conditions,
@@ -75,34 +74,31 @@ pub fn evaluate_single_phase_with_hints(
     phase_outcomes: &HashMap<String, EvaluationOutcome>,
     capabilities: &CapabilityMap,
 ) -> Option<voom_domain::plan::Plan> {
-    let mut plan = evaluator::evaluate_single_phase(
+    let mut plan = evaluator::evaluate_single_phase_with_evaluation_context(
         phase_name,
         policy,
         file,
-        phase_outcomes,
-        Some(capabilities),
+        evaluator::SinglePhaseEvaluationContext {
+            phase_outcomes,
+            capabilities: Some(capabilities),
+            phase_output_lookup: None,
+        },
     )?;
     evaluator::apply_capability_hints(std::slice::from_mut(&mut plan), capabilities);
     Some(plan)
 }
 
-/// Evaluate a single phase with system capability hints and cross-phase outputs.
+/// Evaluate a single phase with system capability hints and an explicit context.
 #[must_use]
-pub fn evaluate_single_phase_with_hints_and_phase_outputs<'a>(
+pub fn evaluate_single_phase_with_hints_and_evaluation_context<'a>(
     phase_name: &str,
     policy: &CompiledPolicy,
     file: &MediaFile,
-    phase_outcomes: &HashMap<String, EvaluationOutcome>,
+    context: SinglePhaseEvaluationContext<'a>,
     capabilities: &'a CapabilityMap,
-    phase_output_lookup: &'a PhaseOutputLookup<'a>,
 ) -> Option<voom_domain::plan::Plan> {
-    let mut plan = evaluator::evaluate_single_phase_with_phase_outputs(
-        phase_name,
-        policy,
-        file,
-        phase_outcomes,
-        Some(capabilities),
-        Some(phase_output_lookup),
+    let mut plan = evaluator::evaluate_single_phase_with_evaluation_context(
+        phase_name, policy, file, context,
     )?;
     evaluator::apply_capability_hints(std::slice::from_mut(&mut plan), capabilities);
     Some(plan)
