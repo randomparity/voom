@@ -258,17 +258,22 @@ fn snap_to_aspect_lock(
     if aspect_locks.is_empty() {
         return Ok(rect);
     }
-    let dims = output_dimensions(rect, source)?;
-    let mut candidates = Vec::new();
+    let original_dims = output_dimensions(rect, source)?;
+    let mut best: Option<(CropRect, u64)> = None;
     for ratio in aspect_locks {
-        if let Some(candidate) = snap_to_aspect(rect, source, dims, *ratio)? {
-            candidates.push(candidate);
+        let Some((candidate, candidate_dims)) = snap_to_aspect(rect, source, original_dims, *ratio)
+        else {
+            continue;
+        };
+        let expanded_pixels = candidate_dims.area().saturating_sub(original_dims.area());
+        if best
+            .as_ref()
+            .is_none_or(|(_, best_pixels)| expanded_pixels < *best_pixels)
+        {
+            best = Some((candidate, expanded_pixels));
         }
     }
-    let best = candidates.into_iter().min_by_key(|candidate| {
-        crop_expansion_pixels(rect, *candidate, source).unwrap_or(u64::MAX)
-    });
-    Ok(best.unwrap_or(rect))
+    Ok(best.map_or(rect, |(candidate, _)| candidate))
 }
 
 fn snap_to_aspect(
@@ -276,49 +281,57 @@ fn snap_to_aspect(
     source: CropDetectSource,
     dims: OutputDimensions,
     ratio: AspectRatio,
-) -> Result<Option<CropRect>> {
+) -> Option<(CropRect, OutputDimensions)> {
     let current = u64::from(dims.width) * u64::from(ratio.height);
     let target = u64::from(dims.height) * u64::from(ratio.width);
     if current == target {
-        return Ok(Some(rect));
+        return Some((rect, dims));
     }
     if current > target {
-        let height = ceil_div_u64(
+        let height = even_u64_to_u32(ceil_div_u64(
             u64::from(dims.width) * u64::from(ratio.height),
             u64::from(ratio.width),
-        )?;
-        let Some(height) = even_u64_to_u32(height) else {
-            return Ok(None);
-        };
+        ))?;
         if height > source.height {
-            return Ok(None);
+            return None;
         }
-        let Some((top, bottom)) = expand_axis(rect.top, rect.bottom, height - dims.height) else {
-            return Ok(None);
-        };
-        return Ok(Some(CropRect::new(rect.left, top, rect.right, bottom)));
+        let (top, bottom) = expand_axis(rect.top, rect.bottom, height - dims.height)?;
+        return Some((
+            CropRect::new(rect.left, top, rect.right, bottom),
+            OutputDimensions {
+                width: dims.width,
+                height,
+            },
+        ));
     }
 
-    let width = ceil_div_u64(
+    let width = even_u64_to_u32(ceil_div_u64(
         u64::from(dims.height) * u64::from(ratio.width),
         u64::from(ratio.height),
-    )?;
-    let Some(width) = even_u64_to_u32(width) else {
-        return Ok(None);
-    };
+    ))?;
     if width > source.width {
-        return Ok(None);
+        return None;
     }
-    let Some((left, right)) = expand_axis(rect.left, rect.right, width - dims.width) else {
-        return Ok(None);
-    };
-    Ok(Some(CropRect::new(left, rect.top, right, rect.bottom)))
+    let (left, right) = expand_axis(rect.left, rect.right, width - dims.width)?;
+    Some((
+        CropRect::new(left, rect.top, right, rect.bottom),
+        OutputDimensions {
+            width,
+            height: dims.height,
+        },
+    ))
 }
 
 #[derive(Debug, Clone, Copy)]
 struct OutputDimensions {
     width: u32,
     height: u32,
+}
+
+impl OutputDimensions {
+    fn area(self) -> u64 {
+        u64::from(self.width) * u64::from(self.height)
+    }
 }
 
 fn output_dimensions(rect: CropRect, source: CropDetectSource) -> Result<OutputDimensions> {
@@ -338,11 +351,8 @@ fn output_dimensions(rect: CropRect, source: CropDetectSource) -> Result<OutputD
     Ok(OutputDimensions { width, height })
 }
 
-fn ceil_div_u64(numerator: u64, denominator: u64) -> Result<u64> {
-    if denominator == 0 {
-        return Err(invalid_crop("aspect ratio denominator is zero"));
-    }
-    Ok(numerator.div_ceil(denominator))
+fn ceil_div_u64(numerator: u64, denominator: u64) -> u64 {
+    numerator.div_ceil(denominator)
 }
 
 fn even_u64_to_u32(value: u64) -> Option<u32> {
@@ -362,18 +372,6 @@ fn expand_axis(start_crop: u32, end_crop: u32, expand_by: u32) -> Option<(u32, u
         return None;
     }
     Some((start_crop - from_start - remaining, end_crop - from_end))
-}
-
-fn crop_expansion_pixels(
-    original: CropRect,
-    candidate: CropRect,
-    source: CropDetectSource,
-) -> Result<u64> {
-    let original = output_dimensions(original, source)?;
-    let candidate = output_dimensions(candidate, source)?;
-    let original_area = u64::from(original.width) * u64::from(original.height);
-    let candidate_area = u64::from(candidate.width) * u64::from(candidate.height);
-    Ok(candidate_area.saturating_sub(original_area))
 }
 
 fn snap_output_to_even(mut rect: CropRect, source: CropDetectSource) -> Result<CropRect> {
