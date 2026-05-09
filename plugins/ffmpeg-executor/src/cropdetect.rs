@@ -288,10 +288,9 @@ fn snap_to_aspect(
         return Some((rect, dims));
     }
     if current > target {
-        let height = even_u64_to_u32(ceil_div_u64(
-            u64::from(dims.width) * u64::from(ratio.height),
-            u64::from(ratio.width),
-        ))?;
+        let height = even_u64_to_u32(
+            (u64::from(dims.width) * u64::from(ratio.height)).div_ceil(u64::from(ratio.width)),
+        )?;
         if height > source.height {
             return None;
         }
@@ -305,10 +304,9 @@ fn snap_to_aspect(
         ));
     }
 
-    let width = even_u64_to_u32(ceil_div_u64(
-        u64::from(dims.height) * u64::from(ratio.width),
-        u64::from(ratio.height),
-    ))?;
+    let width = even_u64_to_u32(
+        (u64::from(dims.height) * u64::from(ratio.width)).div_ceil(u64::from(ratio.height)),
+    )?;
     if width > source.width {
         return None;
     }
@@ -349,10 +347,6 @@ fn output_dimensions(rect: CropRect, source: CropDetectSource) -> Result<OutputD
         return Err(invalid_crop("crop leaves empty output"));
     }
     Ok(OutputDimensions { width, height })
-}
-
-fn ceil_div_u64(numerator: u64, denominator: u64) -> u64 {
-    numerator.div_ceil(denominator)
 }
 
 fn even_u64_to_u32(value: u64) -> Option<u32> {

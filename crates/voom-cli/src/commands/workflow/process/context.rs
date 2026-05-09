@@ -26,15 +26,6 @@ pub(super) type CropDetector =
         &voom_domain::plan::CropSettings,
     ) -> voom_domain::errors::Result<Option<voom_domain::media::CropDetection>>;
 
-pub(super) fn detect_crop_with_ffmpeg(
-    ffmpeg_path: &str,
-    source_path: &Path,
-    source: voom_ffmpeg_executor::cropdetect::CropDetectSource,
-    settings: &voom_domain::plan::CropSettings,
-) -> voom_domain::errors::Result<Option<voom_domain::media::CropDetection>> {
-    voom_ffmpeg_executor::cropdetect::detect_crop(ffmpeg_path, source_path, source, settings)
-}
-
 pub(super) fn record_phase_stat(
     stats: &PhaseStatsMap,
     phase_name: &str,
