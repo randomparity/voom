@@ -221,6 +221,24 @@ CREATE TABLE IF NOT EXISTS verifications (
 CREATE INDEX IF NOT EXISTS idx_verifications_file ON verifications(file_id);
 CREATE INDEX IF NOT EXISTS idx_verifications_outcome ON verifications(outcome);
 CREATE INDEX IF NOT EXISTS idx_verifications_time ON verifications(verified_at);
+
+CREATE TABLE IF NOT EXISTS transcode_outcomes (
+    id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    target_vmaf INTEGER,
+    achieved_vmaf REAL,
+    crf_used INTEGER,
+    bitrate_used TEXT,
+    iterations INTEGER NOT NULL,
+    sample_strategy TEXT NOT NULL,
+    fallback_used INTEGER NOT NULL DEFAULT 0,
+    completed_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_transcode_outcomes_file
+    ON transcode_outcomes(file_id);
+CREATE INDEX IF NOT EXISTS idx_transcode_outcomes_completed
+    ON transcode_outcomes(completed_at);
 ";
 
 /// Initialize the database schema.
@@ -256,6 +274,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "library_snapshots",
         "pending_operations",
         "verifications",
+        "transcode_outcomes",
     ];
     let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
         assert!(KNOWN_TABLES.contains(&table), "unknown table: {table}");
@@ -478,6 +497,27 @@ fn migrate_missing_tables(conn: &Connection) -> rusqlite::Result<()> {
             CREATE INDEX IF NOT EXISTS idx_verifications_file ON verifications(file_id);
             CREATE INDEX IF NOT EXISTS idx_verifications_outcome ON verifications(outcome);
             CREATE INDEX IF NOT EXISTS idx_verifications_time ON verifications(verified_at);",
+        )?;
+    }
+
+    if table_missing("transcode_outcomes")? {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS transcode_outcomes (
+                id TEXT PRIMARY KEY,
+                file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                target_vmaf INTEGER,
+                achieved_vmaf REAL,
+                crf_used INTEGER,
+                bitrate_used TEXT,
+                iterations INTEGER NOT NULL,
+                sample_strategy TEXT NOT NULL,
+                fallback_used INTEGER NOT NULL DEFAULT 0,
+                completed_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_transcode_outcomes_file
+                ON transcode_outcomes(file_id);
+            CREATE INDEX IF NOT EXISTS idx_transcode_outcomes_completed
+                ON transcode_outcomes(completed_at);",
         )?;
     }
 

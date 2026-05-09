@@ -5,6 +5,7 @@ mod jobs;
 mod plans;
 mod row_mappers;
 mod sql;
+mod transcode_outcome_storage;
 
 use std::collections::HashMap;
 

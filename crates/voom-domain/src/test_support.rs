@@ -105,6 +105,7 @@ pub struct InMemoryStore {
     jobs: Mutex<HashMap<Uuid, Job>>,
     snapshots: Mutex<Vec<LibrarySnapshot>>,
     event_log: Mutex<Vec<crate::storage::EventLogRecord>>,
+    transcode_outcomes: Mutex<Vec<crate::transcode::TranscodeOutcome>>,
     pub pending_ops: Mutex<Vec<PendingOperation>>,
     pub transitions: Mutex<Vec<FileTransition>>,
     plugin_data: Mutex<HashMap<(String, String), Vec<u8>>>,
@@ -117,6 +118,7 @@ impl InMemoryStore {
             jobs: Mutex::new(HashMap::new()),
             snapshots: Mutex::new(Vec::new()),
             event_log: Mutex::new(Vec::new()),
+            transcode_outcomes: Mutex::new(Vec::new()),
             pending_ops: Mutex::new(Vec::new()),
             transitions: Mutex::new(Vec::new()),
             plugin_data: Mutex::new(HashMap::new()),
@@ -811,6 +813,52 @@ impl crate::storage::VerificationStorage for InMemoryStore {
         _since: chrono::DateTime<chrono::Utc>,
     ) -> Result<crate::verification::IntegritySummary> {
         Ok(crate::verification::IntegritySummary::default())
+    }
+}
+
+impl crate::storage::TranscodeOutcomeStorage for InMemoryStore {
+    fn insert_transcode_outcome(&self, outcome: &crate::transcode::TranscodeOutcome) -> Result<()> {
+        self.transcode_outcomes.lock().push(outcome.clone());
+        Ok(())
+    }
+
+    fn list_transcode_outcomes(
+        &self,
+        filters: &crate::storage::TranscodeOutcomeFilters,
+    ) -> Result<Vec<crate::transcode::TranscodeOutcome>> {
+        let mut outcomes: Vec<_> = self
+            .transcode_outcomes
+            .lock()
+            .iter()
+            .filter(|outcome| {
+                filters
+                    .file_id
+                    .as_ref()
+                    .is_none_or(|file_id| &outcome.file_id == file_id)
+            })
+            .cloned()
+            .collect();
+        outcomes.sort_by(|left, right| {
+            right
+                .completed_at
+                .cmp(&left.completed_at)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        if let Some(limit) = filters.limit {
+            outcomes.truncate(limit as usize);
+        }
+        Ok(outcomes)
+    }
+
+    fn latest_outcome_for_file(
+        &self,
+        file_id: &str,
+    ) -> Result<Option<crate::transcode::TranscodeOutcome>> {
+        let filters = crate::storage::TranscodeOutcomeFilters {
+            file_id: Some(file_id.to_string()),
+            limit: Some(1),
+        };
+        Ok(self.list_transcode_outcomes(&filters)?.into_iter().next())
     }
 }
 

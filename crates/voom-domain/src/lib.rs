@@ -21,6 +21,7 @@ pub mod temp_file;
     clippy::return_self_not_must_use
 )]
 pub mod test_support;
+pub mod transcode;
 pub mod transition;
 pub mod utils;
 pub mod verification;
@@ -43,6 +44,7 @@ pub use stats::{
     ProcessingAggregateStats, ProcessingOutcome, SavingsBucketInput, SnapshotTrigger,
     SubtitleStats, VideoStats,
 };
+pub use transcode::TranscodeOutcome;
 pub use transition::{
     DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
 };

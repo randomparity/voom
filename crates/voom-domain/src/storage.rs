@@ -626,6 +626,28 @@ pub trait VerificationStorage: Send + Sync {
     ) -> Result<crate::verification::IntegritySummary>;
 }
 
+/// Filters for querying transcode outcomes.
+#[derive(Debug, Default, Clone)]
+pub struct TranscodeOutcomeFilters {
+    pub file_id: Option<String>,
+    pub limit: Option<u32>,
+}
+
+/// Storage for persisted transcode outcomes.
+pub trait TranscodeOutcomeStorage: Send + Sync {
+    fn insert_transcode_outcome(&self, outcome: &crate::transcode::TranscodeOutcome) -> Result<()>;
+
+    fn list_transcode_outcomes(
+        &self,
+        filters: &TranscodeOutcomeFilters,
+    ) -> Result<Vec<crate::transcode::TranscodeOutcome>>;
+
+    fn latest_outcome_for_file(
+        &self,
+        file_id: &str,
+    ) -> Result<Option<crate::transcode::TranscodeOutcome>>;
+}
+
 /// Composed storage interface encompassing all sub-traits.
 ///
 /// All methods are synchronous (blocking) since rusqlite is synchronous.
@@ -647,6 +669,7 @@ pub trait StorageTrait:
     + SnapshotStorage
     + PendingOpsStorage
     + VerificationStorage
+    + TranscodeOutcomeStorage
 {
 }
 
@@ -664,6 +687,7 @@ impl<T> StorageTrait for T where
         + SnapshotStorage
         + PendingOpsStorage
         + VerificationStorage
+        + TranscodeOutcomeStorage
 {
 }
 
