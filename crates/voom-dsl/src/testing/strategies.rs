@@ -601,9 +601,12 @@ fn spanned_op_strategy() -> impl Strategy<Value = SpannedOperation> {
 fn phase_strategy() -> impl Strategy<Value = PhaseNode> {
     // Idents may collide with grammar keywords (`when`, `not`, `policy`, etc.);
     // the grammar's positional matching tolerates this, so no filter is applied.
-    use crate::ast::RunIfNode;
+    use crate::ast::{RunIfNode, RunIfTriggerNode};
 
-    let run_if_trigger = prop_oneof![Just("modified".to_string()), Just("completed".to_string()),];
+    let run_if_trigger = prop_oneof![
+        Just(RunIfTriggerNode::Modified),
+        Just(RunIfTriggerNode::Completed),
+    ];
 
     (
         ident_strategy(),

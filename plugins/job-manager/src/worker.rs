@@ -379,11 +379,15 @@ impl WorkerPool {
         );
 
         let mut job_ids = Vec::with_capacity(items.len());
+        let mut results = Vec::new();
         for item in items {
             let json_payload = match item.payload.map(serde_json::to_value) {
                 Some(Ok(v)) => Some(v),
                 Some(Err(e)) => {
-                    tracing::error!(error = %e, "failed to serialize WorkItem payload");
+                    let error = format!("payload serialization failed: {e}");
+                    tracing::error!(error = %error, "failed to serialize WorkItem payload");
+                    self.failed_count.fetch_add(1, Ordering::SeqCst);
+                    results.push(JobResult::failure(Uuid::new_v4(), error));
                     continue;
                 }
                 None => None,
@@ -394,7 +398,10 @@ impl WorkerPool {
             {
                 Ok(id) => job_ids.push(id),
                 Err(e) => {
-                    tracing::error!(error = %e, "Failed to enqueue job");
+                    let error = format!("enqueue failed: {e}");
+                    tracing::error!(error = %error, "Failed to enqueue job");
+                    self.failed_count.fetch_add(1, Ordering::SeqCst);
+                    results.push(JobResult::failure(Uuid::new_v4(), error));
                 }
             }
         }
@@ -404,10 +411,16 @@ impl WorkerPool {
         let (result_tx, mut result_rx) = mpsc::channel::<JobResult>(job_ids.len().max(1));
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
 
-        for job_id in job_ids {
+        let mut unstarted_job_ids = Vec::new();
+        let mut job_iter = job_ids.into_iter();
+        while let Some(job_id) = job_iter.next() {
             let permit = tokio::select! {
                 p = semaphore.clone().acquire_owned() => p.expect("semaphore not closed"),
-                () = self.token.cancelled() => break,
+                () = self.token.cancelled() => {
+                    unstarted_job_ids.push(job_id);
+                    unstarted_job_ids.extend(job_iter);
+                    break;
+                },
             };
             let queue = self.queue.clone();
             let token = self.token.clone();
@@ -443,9 +456,10 @@ impl WorkerPool {
             handles.push(handle);
         }
 
+        cancel_unstarted_jobs(self.queue.clone(), unstarted_job_ids).await;
+
         drop(result_tx);
 
-        let mut results = Vec::new();
         while let Some(result) = result_rx.recv().await {
             results.push(result);
         }
@@ -462,6 +476,30 @@ impl WorkerPool {
         );
 
         results
+    }
+}
+
+async fn cancel_unstarted_jobs(queue: Arc<JobQueue>, job_ids: Vec<Uuid>) {
+    if job_ids.is_empty() {
+        return;
+    }
+
+    let cancelled = job_ids.len();
+    if let Err(e) = tokio::task::spawn_blocking(move || {
+        for job_id in job_ids {
+            if let Err(e) = queue.cancel(&job_id) {
+                tracing::warn!(%job_id, error = %e, "failed to cancel unstarted job");
+            }
+        }
+    })
+    .await
+    {
+        tracing::error!(error = %e, "failed to cancel unstarted jobs");
+    } else {
+        tracing::debug!(
+            cancelled,
+            "cancelled unstarted jobs after batch cancellation"
+        );
     }
 }
 
@@ -500,6 +538,22 @@ async fn send_claim_race<F>(ctx: &WorkerContext<F>, job_id: Uuid) {
     if let Err(e) = ctx.result_tx.send(JobResult::already_claimed(job_id)).await {
         tracing::warn!(job_id = %job_id, error = %e, "failed to send already-claimed JobResult");
     }
+}
+
+async fn record_job_update<F>(
+    job_id: Uuid,
+    operation: &'static str,
+    update: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> voom_domain::errors::Result<()> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(update).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(format!("failed to {operation}: {e}")),
+        Err(e) => Err(format!("task join error while trying to {operation}: {e}")),
+    }
+    .inspect_err(|e| tracing::error!(job_id = %job_id, error = %e, "job update failed"))
 }
 
 /// Execute a single job: claim it, run the processor, and record the result.
@@ -550,8 +604,11 @@ where
     if ctx.token.is_cancelled() {
         let q = ctx.queue.clone();
         let jid = job.id;
-        if let Err(e) = tokio::task::spawn_blocking(move || q.cancel(&jid)).await {
-            tracing::error!(error = %e, "failed to mark job as cancelled");
+        if let Err(e) =
+            record_job_update(job_id, "mark job as cancelled", move || q.cancel(&jid)).await
+        {
+            send_failure(&ctx, job_id, e).await;
+            return;
         }
         send_failure(&ctx, job_id, "cancelled".into()).await;
         return;
@@ -563,8 +620,14 @@ where
     match (ctx.processor)(job).await {
         Ok(output) => {
             let q = ctx.queue.clone();
-            if let Err(e) = tokio::task::spawn_blocking(move || q.complete(&job_id, output)).await {
-                tracing::error!(job_id = %job_id, error = %e, "failed to mark job as complete");
+            if let Err(e) = record_job_update(job_id, "mark job as complete", move || {
+                q.complete(&job_id, output)
+            })
+            .await
+            {
+                ctx.reporter.on_job_complete(job_id, false, Some(&e));
+                send_failure(&ctx, job_id, e).await;
+                return;
             }
             ctx.completed.fetch_add(1, Ordering::SeqCst);
             ctx.reporter.on_job_complete(job_id, true, None);
@@ -576,15 +639,18 @@ where
         Err(error) => {
             let q = ctx.queue.clone();
             let err = error.clone();
-            if let Err(e) = tokio::task::spawn_blocking(move || q.fail(&job_id, err)).await {
-                tracing::error!(job_id = %job_id, error = %e, "failed to mark job as failed");
-            }
+            let persisted =
+                record_job_update(job_id, "mark job as failed", move || q.fail(&job_id, err)).await;
             ctx.reporter.on_job_complete(job_id, false, Some(&error));
 
             // send_failure increments `failed` and dispatches the JobResult.
             let strategy = ctx.on_error;
             let token = ctx.token.clone();
-            send_failure(&ctx, job_id, error).await;
+            let failure = match persisted {
+                Ok(()) => error,
+                Err(e) => format!("{error}; {e}"),
+            };
+            send_failure(&ctx, job_id, failure).await;
 
             if strategy == JobErrorStrategy::Fail {
                 token.cancel();
@@ -937,6 +1003,62 @@ mod tests {
         assert!(pool.failed_count() >= 1);
     }
 
+    #[tokio::test]
+    async fn cancelled_batch_cancels_unstarted_jobs() {
+        use voom_domain::job::JobStatus;
+        use voom_domain::storage::JobFilters;
+
+        let queue = test_queue();
+        let token = CancellationToken::new();
+        let pool = WorkerPool::new(
+            queue.clone(),
+            WorkerPoolConfig {
+                max_workers: 1,
+                ..Default::default()
+            },
+            token.clone(),
+        );
+
+        let items: Vec<WorkItem> = (0..3)
+            .map(|i| WorkItem {
+                job_type: voom_domain::job::JobType::Custom(format!("task-{i}")),
+                priority: 100,
+                payload: None,
+            })
+            .collect();
+
+        let results = pool
+            .process_batch(
+                items,
+                move |_job| {
+                    let token = token.clone();
+                    async move {
+                        token.cancel();
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        Ok(None)
+                    }
+                },
+                JobErrorStrategy::Continue,
+                Arc::new(NoopReporter),
+            )
+            .await;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(pool.completed_count(), 1);
+
+        let jobs = queue.list_jobs(&JobFilters::default()).unwrap();
+        let cancelled = jobs
+            .iter()
+            .filter(|job| job.status == JobStatus::Cancelled)
+            .count();
+        let completed = jobs
+            .iter()
+            .filter(|job| job.status == JobStatus::Completed)
+            .count();
+        assert_eq!(completed, 1);
+        assert_eq!(cancelled, 2);
+    }
+
     #[test]
     fn test_effective_workers() {
         let config = WorkerPoolConfig {
@@ -1142,6 +1264,67 @@ mod tests {
         );
     }
 
+    struct FailingPayload;
+
+    impl serde::Serialize for FailingPayload {
+        fn serialize<S>(&self, _serializer: S) -> std::result::Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom("payload boom"))
+        }
+    }
+
+    #[tokio::test]
+    async fn payload_serialization_failure_returns_failed_result_and_continues() {
+        let queue = test_queue();
+        let pool = WorkerPool::new(
+            queue,
+            WorkerPoolConfig {
+                max_workers: 1,
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
+
+        let processor_called = Arc::new(AtomicU32::new(0));
+        let processor_called_clone = processor_called.clone();
+        let items = vec![
+            WorkItem::new(
+                voom_domain::job::JobType::Custom("bad".into()),
+                50,
+                Some(FailingPayload),
+            ),
+            WorkItem::new(voom_domain::job::JobType::Custom("ok".into()), 100, None),
+        ];
+
+        let results = pool
+            .process_batch(
+                items,
+                move |_job| {
+                    let processor_called = processor_called_clone.clone();
+                    async move {
+                        processor_called.fetch_add(1, Ordering::SeqCst);
+                        Ok(None)
+                    }
+                },
+                JobErrorStrategy::Continue,
+                Arc::new(NoopReporter),
+            )
+            .await;
+
+        assert_eq!(processor_called.load(Ordering::SeqCst), 1);
+        assert_eq!(pool.completed_count(), 1);
+        assert_eq!(pool.failed_count(), 1);
+        assert!(results.iter().any(|result| result.outcome.is_success()));
+        assert!(results.iter().any(|result| {
+            result
+                .outcome
+                .error()
+                .is_some_and(|error| error.contains("payload serialization failed"))
+        }));
+    }
+
     /// Storage wrapper that always returns `Ok(None)` from `claim_job_by_id`,
     /// simulating a job already claimed by a different worker. All other
     /// operations delegate to an inner `InMemoryStore`.
@@ -1229,6 +1412,131 @@ mod tests {
         ) -> voom_domain::errors::Result<Option<chrono::DateTime<chrono::Utc>>> {
             self.inner.oldest_job_created_at()
         }
+    }
+
+    struct FailingCreateJobStore {
+        inner: Arc<InMemoryStore>,
+    }
+
+    impl FailingCreateJobStore {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(InMemoryStore::new()),
+            }
+        }
+    }
+
+    impl voom_domain::storage::JobStorage for FailingCreateJobStore {
+        fn create_job(&self, _job: &voom_domain::job::Job) -> voom_domain::errors::Result<Uuid> {
+            Err(voom_domain::errors::VoomError::plugin(
+                "job-manager",
+                "create failed",
+            ))
+        }
+
+        fn job(&self, id: &Uuid) -> voom_domain::errors::Result<Option<voom_domain::job::Job>> {
+            self.inner.job(id)
+        }
+
+        fn update_job(
+            &self,
+            id: &Uuid,
+            update: &voom_domain::job::JobUpdate,
+        ) -> voom_domain::errors::Result<()> {
+            self.inner.update_job(id, update)
+        }
+
+        fn claim_next_job(
+            &self,
+            worker_id: &str,
+        ) -> voom_domain::errors::Result<Option<voom_domain::job::Job>> {
+            self.inner.claim_next_job(worker_id)
+        }
+
+        fn claim_job_by_id(
+            &self,
+            job_id: &Uuid,
+            worker_id: &str,
+        ) -> voom_domain::errors::Result<Option<voom_domain::job::Job>> {
+            self.inner.claim_job_by_id(job_id, worker_id)
+        }
+
+        fn list_jobs(
+            &self,
+            filters: &voom_domain::storage::JobFilters,
+        ) -> voom_domain::errors::Result<Vec<voom_domain::job::Job>> {
+            self.inner.list_jobs(filters)
+        }
+
+        fn count_jobs_by_status(
+            &self,
+        ) -> voom_domain::errors::Result<Vec<(voom_domain::job::JobStatus, u64)>> {
+            self.inner.count_jobs_by_status()
+        }
+
+        fn delete_jobs(
+            &self,
+            status: Option<voom_domain::job::JobStatus>,
+        ) -> voom_domain::errors::Result<u64> {
+            self.inner.delete_jobs(status)
+        }
+
+        fn prune_old_jobs(
+            &self,
+            policy: voom_domain::storage::RetentionPolicy,
+        ) -> voom_domain::errors::Result<voom_domain::storage::PruneReport> {
+            self.inner.prune_old_jobs(policy)
+        }
+
+        fn count_old_jobs(
+            &self,
+            policy: voom_domain::storage::RetentionPolicy,
+        ) -> voom_domain::errors::Result<voom_domain::storage::PruneReport> {
+            self.inner.count_old_jobs(policy)
+        }
+
+        fn oldest_job_created_at(
+            &self,
+        ) -> voom_domain::errors::Result<Option<chrono::DateTime<chrono::Utc>>> {
+            self.inner.oldest_job_created_at()
+        }
+    }
+
+    #[tokio::test]
+    async fn enqueue_failure_returns_failed_result() {
+        let store: Arc<dyn voom_domain::storage::JobStorage> =
+            Arc::new(FailingCreateJobStore::new());
+        let queue = Arc::new(JobQueue::new(store));
+        let pool = WorkerPool::new(queue, WorkerPoolConfig::default(), CancellationToken::new());
+
+        let processor_called = Arc::new(AtomicU32::new(0));
+        let processor_called_clone = processor_called.clone();
+        let results = pool
+            .process_batch(
+                vec![WorkItem::new(
+                    voom_domain::job::JobType::Custom("bad".into()),
+                    100,
+                    None::<()>,
+                )],
+                move |_job| {
+                    let processor_called = processor_called_clone.clone();
+                    async move {
+                        processor_called.fetch_add(1, Ordering::SeqCst);
+                        Ok(None)
+                    }
+                },
+                JobErrorStrategy::Continue,
+                Arc::new(NoopReporter),
+            )
+            .await;
+
+        assert_eq!(processor_called.load(Ordering::SeqCst), 0);
+        assert_eq!(pool.failed_count(), 1);
+        assert_eq!(results.len(), 1);
+        assert!(results[0]
+            .outcome
+            .error()
+            .is_some_and(|error| error.contains("enqueue failed")));
     }
 
     #[tokio::test]

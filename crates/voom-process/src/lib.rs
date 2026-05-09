@@ -15,6 +15,8 @@ use voom_domain::errors::{Result, VoomError};
 /// Default maximum bytes retained from each captured process stream.
 pub const DEFAULT_CAPTURE_LIMIT_BYTES: usize = 1024 * 1024;
 
+type PipeReaderHandle = std::thread::JoinHandle<std::io::Result<Vec<u8>>>;
+
 /// Per-stream subprocess output capture limits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CaptureConfig {
@@ -124,44 +126,42 @@ fn spawn_error(tool: &str, error: std::io::Error) -> VoomError {
 fn spawn_pipe_readers(
     child: &mut std::process::Child,
     capture: CaptureConfig,
-) -> (
-    std::thread::JoinHandle<Vec<u8>>,
-    std::thread::JoinHandle<Vec<u8>>,
-) {
+) -> (PipeReaderHandle, PipeReaderHandle) {
     let mut stdout = child.stdout.take().expect("stdout piped");
     let mut stderr = child.stderr.take().expect("stderr piped");
 
-    let stdout_handle = std::thread::spawn(move || {
-        read_bounded(&mut stdout, capture.max_stdout_bytes).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "failed to read child stdout");
-            Vec::new()
-        })
-    });
+    let stdout_handle =
+        std::thread::spawn(move || read_bounded(&mut stdout, capture.max_stdout_bytes));
 
-    let stderr_handle = std::thread::spawn(move || {
-        read_bounded(&mut stderr, capture.max_stderr_bytes).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "failed to read child stderr");
-            Vec::new()
-        })
-    });
+    let stderr_handle =
+        std::thread::spawn(move || read_bounded(&mut stderr, capture.max_stderr_bytes));
 
     (stdout_handle, stderr_handle)
 }
 
 /// Collect results from pipe reader threads.
 fn join_pipe_readers(
-    stdout_handle: std::thread::JoinHandle<Vec<u8>>,
-    stderr_handle: std::thread::JoinHandle<Vec<u8>>,
-) -> (Vec<u8>, Vec<u8>) {
-    let stdout = stdout_handle.join().unwrap_or_else(|e| {
-        tracing::warn!("stdout pipe reader panicked: {e:?}");
-        Vec::new()
-    });
-    let stderr = stderr_handle.join().unwrap_or_else(|e| {
-        tracing::warn!("stderr pipe reader panicked: {e:?}");
-        Vec::new()
-    });
-    (stdout, stderr)
+    tool: &str,
+    stdout_handle: PipeReaderHandle,
+    stderr_handle: PipeReaderHandle,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let stdout = join_pipe_reader(tool, "stdout", stdout_handle)?;
+    let stderr = join_pipe_reader(tool, "stderr", stderr_handle)?;
+    Ok((stdout, stderr))
+}
+
+fn join_pipe_reader(tool: &str, stream_name: &str, handle: PipeReaderHandle) -> Result<Vec<u8>> {
+    match handle.join() {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(e)) => Err(VoomError::ToolExecution {
+            tool: tool.into(),
+            message: format!("failed to capture {stream_name} from {tool}: {e}"),
+        }),
+        Err(e) => Err(VoomError::ToolExecution {
+            tool: tool.into(),
+            message: format!("capture thread for {stream_name} from {tool} panicked: {e:?}"),
+        }),
+    }
 }
 
 /// Run a subprocess with a timeout, killing it if it exceeds the deadline.
@@ -179,7 +179,8 @@ pub fn run_with_timeout(
 /// Run a subprocess with a timeout and extra environment variables.
 ///
 /// # Errors
-/// Returns `VoomError::ToolExecution` if the process fails or times out.
+/// Returns `VoomError::ToolExecution` when spawning fails, the deadline
+/// expires, waiting fails, or captured output cannot be read.
 pub fn run_with_timeout_env(
     tool: &str,
     args: &[impl AsRef<OsStr>],
@@ -225,7 +226,7 @@ pub fn run_with_timeout_env_config(
 
     match child.wait_timeout(timeout) {
         Ok(Some(status)) => {
-            let (stdout, stderr) = join_pipe_readers(stdout_handle, stderr_handle);
+            let (stdout, stderr) = join_pipe_readers(tool, stdout_handle, stderr_handle)?;
             Ok(Output {
                 status,
                 stdout,
@@ -237,7 +238,7 @@ pub fn run_with_timeout_env_config(
                 tracing::warn!(tool = tool, error = %e, "failed to kill child process");
             }
             child.wait().ok();
-            join_pipe_readers(stdout_handle, stderr_handle);
+            let _ = join_pipe_readers(tool, stdout_handle, stderr_handle);
             Err(VoomError::ToolExecution {
                 tool: tool.into(),
                 message: format!("{tool} timed out after {:.1}s", timeout.as_secs_f64()),
@@ -252,7 +253,7 @@ pub fn run_with_timeout_env_config(
                 );
             }
             child.wait().ok();
-            join_pipe_readers(stdout_handle, stderr_handle);
+            let _ = join_pipe_readers(tool, stdout_handle, stderr_handle);
             Err(VoomError::ToolExecution {
                 tool: tool.into(),
                 message: format!("error waiting for {tool}: {e}"),
@@ -315,32 +316,26 @@ pub fn stderr_tail(bytes: &[u8], max_lines: usize) -> String {
 }
 
 /// Read all bytes from an optional tokio `ChildStdout`/`ChildStderr`.
-async fn read_child_pipe<R>(pipe: Option<R>, max_bytes: usize) -> Vec<u8>
+async fn read_child_pipe<R>(pipe: Option<R>, max_bytes: usize) -> std::io::Result<Vec<u8>>
 where
     R: tokio::io::AsyncReadExt + Unpin,
 {
     let Some(mut pipe) = pipe else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
 
     let mut capture = BoundedCapture::new(max_bytes);
     let mut chunk = [0u8; 8192];
 
     loop {
-        let read = match pipe.read(&mut chunk).await {
-            Ok(read) => read,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to read child pipe");
-                break;
-            }
-        };
+        let read = pipe.read(&mut chunk).await?;
         if read == 0 {
             break;
         }
         capture.push(&chunk[..read]);
     }
 
-    capture.finish()
+    Ok(capture.finish())
 }
 
 /// Async cancellable subprocess execution via `tokio::process`.
@@ -350,7 +345,7 @@ where
 ///
 /// # Errors
 /// Returns `VoomError::ToolExecution` on timeout, spawn failure,
-/// or cancellation.
+/// cancellation, wait failure, or captured output read failure.
 pub async fn run_cancellable(
     tool: &str,
     args: &[impl AsRef<OsStr>],
@@ -452,6 +447,14 @@ pub async fn run_cancellable_env_config(
             (stdout, stderr, status)
         } => {
             let (stdout, stderr, status) = result;
+            let stdout = stdout.map_err(|e| VoomError::ToolExecution {
+                tool: tool.into(),
+                message: format!("failed to capture stdout from {tool}: {e}"),
+            })?;
+            let stderr = stderr.map_err(|e| VoomError::ToolExecution {
+                tool: tool.into(),
+                message: format!("failed to capture stderr from {tool}: {e}"),
+            })?;
             let status = status.map_err(|e| VoomError::ToolExecution {
                 tool: tool.into(),
                 message: format!("error waiting for {tool}: {e}"),
@@ -588,6 +591,40 @@ mod tests {
         assert_eq!(tail, "line3\n...[truncated 25 bytes]");
     }
 
+    #[test]
+    fn join_pipe_readers_reports_stdout_read_failure() {
+        let stdout_handle = std::thread::spawn(|| Err(std::io::Error::other("stdout read failed")));
+        let stderr_handle = std::thread::spawn(|| Ok(Vec::new()));
+
+        let err = join_pipe_readers("fake-tool", stdout_handle, stderr_handle).unwrap_err();
+
+        match &err {
+            VoomError::ToolExecution { tool, message } => {
+                assert_eq!(tool, "fake-tool");
+                assert!(message.contains("stdout"));
+                assert!(message.contains("stdout read failed"));
+            }
+            other => panic!("expected ToolExecution, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn join_pipe_readers_reports_stderr_read_failure() {
+        let stdout_handle = std::thread::spawn(|| Ok(Vec::new()));
+        let stderr_handle = std::thread::spawn(|| Err(std::io::Error::other("stderr read failed")));
+
+        let err = join_pipe_readers("fake-tool", stdout_handle, stderr_handle).unwrap_err();
+
+        match &err {
+            VoomError::ToolExecution { tool, message } => {
+                assert_eq!(tool, "fake-tool");
+                assert!(message.contains("stderr"));
+                assert!(message.contains("stderr read failed"));
+            }
+            other => panic!("expected ToolExecution, got: {other}"),
+        }
+    }
+
     #[cfg(unix)]
     fn make_executable(path: &std::path::Path) {
         use std::os::unix::fs::PermissionsExt;
@@ -653,6 +690,27 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             "bbbbbbbb\n...[truncated 27 bytes]"
         );
+    }
+
+    #[tokio::test]
+    async fn read_child_pipe_returns_read_error() {
+        struct FailingAsyncRead;
+
+        impl tokio::io::AsyncRead for FailingAsyncRead {
+            fn poll_read(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+                _buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Err(std::io::Error::other("async read failed")))
+            }
+        }
+
+        let err = read_child_pipe(Some(FailingAsyncRead), DEFAULT_CAPTURE_LIMIT_BYTES)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), "async read failed");
     }
 
     #[tokio::test]

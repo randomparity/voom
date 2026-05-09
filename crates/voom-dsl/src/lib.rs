@@ -32,9 +32,9 @@ pub mod validator;
 pub mod testing;
 
 pub use ast::{
-    ActionNode, CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode,
-    PolicyAst, RuleNode, RunIfNode, Span, SpannedOperation, SynthSetting, TrackQueryNode,
-    TrackRefNode, Value, ValueOrField, WhenNode,
+    ActionNode, CompareOp, ConditionNode, ConfigNode, ErrorStrategyNode, FilterNode, OperationNode,
+    PhaseNode, PolicyAst, RuleNode, RunIfNode, RunIfTriggerNode, Span, SpannedOperation,
+    SynthSetting, TrackQueryNode, TrackRefNode, Value, ValueOrField, WhenNode,
 };
 pub use compiled::CompiledPolicy;
 pub use errors::{DslError, DslPipelineError, DslWarning, ValidationErrors};

@@ -6,7 +6,7 @@ import pytest
 
 from tvdb_metadata.tvdb_client import TvdbClient, TvdbError
 
-from helpers import MockHost, MockHttpResponse
+from helpers import MockHttpResponse
 
 
 class TestFromConfig:
@@ -29,6 +29,11 @@ class TestFromConfig:
 
     def test_missing_api_key_returns_none(self, mock_host):
         mock_host.set_config({"pin": "12345"})
+        client = TvdbClient.from_config(mock_host)
+        assert client is None
+
+    def test_non_string_api_key_returns_none(self, mock_host):
+        mock_host.set_config({"api_key": 123})
         client = TvdbClient.from_config(mock_host)
         assert client is None
 
@@ -77,6 +82,16 @@ class TestAuthentication:
         token = client.authenticate()
         assert token == "fresh-token"
 
+    def test_auth_rejects_non_string_token(self, mock_host):
+        mock_host.set_config({"api_key": "test-key"})
+        mock_host.set_http_response("/v4/login", MockHttpResponse(
+            status=200,
+            body=json.dumps({"data": {"token": 123}}).encode(),
+        ))
+        client = TvdbClient.from_config(mock_host)
+        with pytest.raises(TvdbError, match="No token"):
+            client.authenticate()
+
 
 class TestSearchSeries:
     """Series search functionality."""
@@ -103,6 +118,41 @@ class TestSearchSeries:
         results = client.search_series("Nonexistent Show")
         assert results == []
 
+    def test_search_normalizes_result_field_types(self, mock_host_with_tvdb):
+        mock_host_with_tvdb.set_http_response("/v4/search", MockHttpResponse(
+            status=200,
+            body=json.dumps({
+                "data": [
+                    {
+                        "id": 1,
+                        "tvdb_id": {"bad": "shape"},
+                        "name": None,
+                        "year": "2020",
+                        "originalLanguage": "eng",
+                    },
+                    "bad entry",
+                    {"name": "Valid Show", "year": ["bad"]},
+                ],
+            }).encode(),
+        ))
+        client = TvdbClient.from_config(mock_host_with_tvdb)
+        results = client.search_series("Valid Show")
+        assert results == [
+            {"id": 1, "year": "2020", "originalLanguage": "eng"},
+            {"name": "Valid Show"},
+        ]
+
+    def test_cached_search_results_are_normalized(self, mock_host_with_tvdb):
+        mock_host_with_tvdb._data["search:breaking bad"] = json.dumps({
+            "results": [
+                {"name": "Breaking Bad", "tvdb_id": 73255},
+                {"name": 404, "tvdb_id": []},
+            ],
+        }).encode()
+        client = TvdbClient.from_config(mock_host_with_tvdb)
+        results = client.search_series("Breaking Bad")
+        assert results == [{"name": "Breaking Bad", "tvdb_id": 73255}]
+
 
 class TestGetEpisodes:
     """Episode retrieval."""
@@ -112,6 +162,31 @@ class TestGetEpisodes:
         episodes = client.get_episodes(73255, 1)
         assert len(episodes) == 2
         assert episodes[0]["name"] == "Pilot"
+
+    def test_get_episodes_normalizes_field_types(self, mock_host_with_tvdb):
+        mock_host_with_tvdb.set_http_response("/series/73255/episodes", MockHttpResponse(
+            status=200,
+            body=json.dumps({
+                "data": {
+                    "episodes": [
+                        {
+                            "id": "e1",
+                            "name": "Pilot",
+                            "overview": None,
+                            "aired": "2008-01-20",
+                            "number": "1",
+                            "episodeNumber": 1,
+                        },
+                        [],
+                    ],
+                },
+            }).encode(),
+        ))
+        client = TvdbClient.from_config(mock_host_with_tvdb)
+        episodes = client.get_episodes(73255, 1)
+        assert episodes == [
+            {"id": "e1", "name": "Pilot", "aired": "2008-01-20", "episodeNumber": 1}
+        ]
 
     def test_get_episodes_api_error(self, mock_host):
         mock_host.set_config({"api_key": "key"})

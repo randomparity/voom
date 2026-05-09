@@ -10,20 +10,25 @@ serde_json::Value maps directly to equivalent MessagePack types.
 
 import umsgpack
 
+from tvdb_metadata.types import JsonObject
 
-def unpack(data: bytes) -> dict:
+
+def unpack(data: bytes) -> JsonObject:
     """Deserialize MessagePack bytes to a Python dict.
 
     Handles rmp_serde conventions: enum variants as 1-element maps,
     PathBuf as strings, etc.
     """
     try:
-        return umsgpack.unpackb(data)
+        value = umsgpack.unpackb(data)
     except RecursionError:
         raise ValueError("msgpack payload nesting depth exceeds limit")
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected MessagePack map, got: {type(value)}")
+    return value
 
 
-def pack(obj: dict) -> bytes:
+def pack(obj: JsonObject) -> bytes:
     """Serialize a Python dict to MessagePack bytes.
 
     The caller must structure the dict to match rmp_serde's external tagging
@@ -32,7 +37,7 @@ def pack(obj: dict) -> bytes:
     return umsgpack.packb(obj)
 
 
-def unpack_event(data: bytes) -> tuple[str, dict]:
+def unpack_event(data: bytes) -> tuple[str, JsonObject]:
     """Unpack a MessagePack-encoded Rust Event enum.
 
     Returns (variant_name, payload_dict).
@@ -42,10 +47,13 @@ def unpack_event(data: bytes) -> tuple[str, dict]:
     if not isinstance(raw, dict) or len(raw) != 1:
         raise ValueError(f"Expected externally-tagged enum (1-element map), got: {type(raw)}")
     variant = next(iter(raw))
-    return variant, raw[variant]
+    payload = raw[variant]
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected event payload map, got: {type(payload)}")
+    return variant, payload
 
 
-def pack_event(variant: str, payload: dict) -> bytes:
+def pack_event(variant: str, payload: JsonObject) -> bytes:
     """Pack a Python dict as a MessagePack-encoded Rust Event enum.
 
     Uses rmp_serde external tagging: {"VariantName": {payload...}}

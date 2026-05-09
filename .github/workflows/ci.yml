@@ -35,9 +35,12 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: cargo build --workspace
       - run: cargo test --workspace
       - run: cargo run -q -- policy test docs/examples/tests
+      - run: cargo test -p voom-cli --features functional -- --test-threads=4 test_init test_doctor test_policy test_config test_status test_jobs test_plugin test_verify
+      - run: cargo test -p voom-cli --features functional -- --test-threads=4 test_process crash_recovery normal_backup_not_treated_as_orphan
 
   test-wasm:
     name: Test (WASM feature)

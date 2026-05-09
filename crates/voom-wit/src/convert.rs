@@ -33,36 +33,44 @@ pub fn event_from_wasm(event_type: &str, payload: &[u8]) -> Result<Event> {
     Ok(event)
 }
 
-/// Convert a WASM event result back into a domain `EventResult`.
-///
-/// The `produced_events` are MessagePack-encoded event payloads,
-/// and `data` is JSON-encoded optional data.
-pub fn event_result_from_wasm(
-    plugin_name: String,
-    produced_events: Vec<(String, Vec<u8>)>,
-    data: Option<Vec<u8>>,
-) -> Result<EventResult> {
-    let events = produced_events
-        .into_iter()
-        .map(|(evt_type, payload)| event_from_wasm(&evt_type, &payload))
-        .collect::<Result<Vec<Event>>>()?;
-
-    let json_data = data
-        .map(|d| serde_json::from_slice(&d))
-        .transpose()
-        .map_err(|e| VoomError::Wasm(format!("failed to deserialize JSON: {e}")))?;
-
-    let mut result = EventResult::new(plugin_name);
-    result.produced_events = events;
-    result.data = json_data;
-    Ok(result)
-}
-
 /// Serialized form of an `EventResult` for the WASM boundary.
 pub struct WasmEventResult {
     pub plugin_name: String,
     pub produced_events: Vec<(String, Vec<u8>)>,
     pub data: Option<Vec<u8>>,
+    pub claimed: bool,
+    pub execution_error: Option<String>,
+    pub execution_detail: Option<Vec<u8>>,
+}
+
+/// Convert a WASM event result back into a domain `EventResult`.
+///
+/// The `produced_events` are MessagePack-encoded event payloads,
+/// and `data` is JSON-encoded optional data.
+pub fn event_result_from_wasm(wasm_result: WasmEventResult) -> Result<EventResult> {
+    let events = wasm_result
+        .produced_events
+        .into_iter()
+        .map(|(evt_type, payload)| event_from_wasm(&evt_type, &payload))
+        .collect::<Result<Vec<Event>>>()?;
+
+    let json_data = wasm_result
+        .data
+        .map(|d| serde_json::from_slice(&d))
+        .transpose()
+        .map_err(|e| VoomError::Wasm(format!("failed to deserialize JSON: {e}")))?;
+
+    let mut result = EventResult::new(wasm_result.plugin_name);
+    result.produced_events = events;
+    result.data = json_data;
+    result.claimed = wasm_result.claimed;
+    result.execution_error = wasm_result.execution_error;
+    result.execution_detail = wasm_result
+        .execution_detail
+        .map(|d| serde_json::from_slice(&d))
+        .transpose()
+        .map_err(|e| VoomError::Wasm(format!("failed to deserialize execution detail: {e}")))?;
+    Ok(result)
 }
 
 /// Serialize a domain `EventResult` into WASM boundary format.
@@ -84,68 +92,97 @@ pub fn event_result_to_wasm(result: &EventResult) -> Result<WasmEventResult> {
         plugin_name: result.plugin_name.clone(),
         produced_events: produced,
         data,
+        claimed: result.claimed,
+        execution_error: result.execution_error.clone(),
+        execution_detail: result
+            .execution_detail
+            .as_ref()
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|e| VoomError::Wasm(format!("failed to serialize execution detail: {e}")))?,
     })
 }
 
 /// Convert a WIT capability string (e.g., "discover:file,smb") to a domain Capability.
-#[must_use]
-pub fn capability_from_wit(cap_str: &str) -> Option<Capability> {
+///
+/// # Errors
+/// Returns an error when a known capability kind contains malformed operation
+/// or verification-mode parameters.
+pub fn capability_from_wit(cap_str: &str) -> Result<Option<Capability>> {
     let (kind, params) = cap_str.split_once(':').unwrap_or((cap_str, ""));
 
     match kind {
-        "discover" => Some(Capability::Discover {
+        "discover" => Ok(Some(Capability::Discover {
             schemes: split_comma_list(params),
-        }),
-        "introspect" => Some(Capability::Introspect {
+        })),
+        "introspect" => Ok(Some(Capability::Introspect {
             formats: split_comma_list(params),
-        }),
-        "evaluate" => Some(Capability::Evaluate),
+        })),
+        "evaluate" => Ok(Some(Capability::Evaluate)),
         "execute" => {
             // Format: "execute:op1+op2:fmt1,fmt2"
             let mut parts = params.splitn(2, ':');
             let ops_part = parts.next().unwrap_or("");
             let fmts_part = parts.next().unwrap_or("");
-            let operations = if ops_part.is_empty() {
-                vec![]
-            } else {
-                ops_part
-                    .split('+')
-                    .filter_map(|s| voom_domain::plan::OperationType::parse(s.trim()))
-                    .collect()
-            };
-            Some(Capability::Execute {
+            let operations = parse_execute_operations(ops_part)?;
+            Ok(Some(Capability::Execute {
                 operations,
                 formats: split_comma_list(fmts_part),
-            })
+            }))
         }
-        "store" => Some(Capability::Store {
+        "store" => Ok(Some(Capability::Store {
             backend: params.to_string(),
-        }),
-        "detect_tools" => Some(Capability::DetectTools),
-        "manage_jobs" => Some(Capability::ManageJobs),
-        "serve_http" => Some(Capability::ServeHttp),
-        "plan" => Some(Capability::Plan),
-        "backup" => Some(Capability::Backup),
-        "enrich_metadata" | "enrich-metadata" => Some(Capability::EnrichMetadata {
+        })),
+        "detect_tools" => Ok(Some(Capability::DetectTools)),
+        "manage_jobs" => Ok(Some(Capability::ManageJobs)),
+        "serve_http" => Ok(Some(Capability::ServeHttp)),
+        "plan" => Ok(Some(Capability::Plan)),
+        "backup" => Ok(Some(Capability::Backup)),
+        "enrich_metadata" | "enrich-metadata" => Ok(Some(Capability::EnrichMetadata {
             source: params.to_string(),
-        }),
-        "transcribe" => Some(Capability::Transcribe),
-        "synthesize" => Some(Capability::Synthesize),
-        "generate_subtitle" => Some(Capability::GenerateSubtitle),
-        "health_check" => Some(Capability::HealthCheck),
+        })),
+        "transcribe" => Ok(Some(Capability::Transcribe)),
+        "synthesize" => Ok(Some(Capability::Synthesize)),
+        "generate_subtitle" => Ok(Some(Capability::GenerateSubtitle)),
+        "health_check" => Ok(Some(Capability::HealthCheck)),
         "verify" => {
-            let modes = if params.is_empty() {
-                vec![]
-            } else {
-                params
-                    .split(',')
-                    .filter_map(|s| voom_domain::verification::VerificationMode::parse(s.trim()))
-                    .collect()
-            };
-            Some(Capability::Verify { modes })
+            let modes = parse_verify_modes(params)?;
+            Ok(Some(Capability::Verify { modes }))
         }
-        _ => None,
+        _ => Ok(None),
     }
+}
+
+fn parse_execute_operations(params: &str) -> Result<Vec<voom_domain::OperationType>> {
+    if params.is_empty() {
+        return Ok(vec![]);
+    }
+
+    params
+        .split('+')
+        .map(|value| {
+            let value = value.trim();
+            voom_domain::plan::OperationType::parse(value).ok_or_else(|| {
+                VoomError::Wasm(format!("unknown execute operation in capability: {value}"))
+            })
+        })
+        .collect()
+}
+
+fn parse_verify_modes(params: &str) -> Result<Vec<voom_domain::verification::VerificationMode>> {
+    if params.is_empty() {
+        return Ok(vec![]);
+    }
+
+    params
+        .split(',')
+        .map(|value| {
+            let value = value.trim();
+            voom_domain::verification::VerificationMode::parse(value).ok_or_else(|| {
+                VoomError::Wasm(format!("unknown verify mode in capability: {value}"))
+            })
+        })
+        .collect()
 }
 
 fn split_comma_list(s: &str) -> Vec<String> {
@@ -226,6 +263,10 @@ mod tests {
     use std::path::PathBuf;
     use voom_domain::events::*;
 
+    fn parse_capability(capability: &str) -> Capability {
+        capability_from_wit(capability).unwrap().unwrap()
+    }
+
     #[test]
     fn test_event_roundtrip_msgpack() {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
@@ -257,12 +298,7 @@ mod tests {
         assert_eq!(wasm_result.produced_events.len(), 1);
         assert!(wasm_result.data.is_some());
 
-        let restored = event_result_from_wasm(
-            wasm_result.plugin_name,
-            wasm_result.produced_events,
-            wasm_result.data,
-        )
-        .unwrap();
+        let restored = event_result_from_wasm(wasm_result).unwrap();
         assert_eq!(restored.plugin_name, "test-plugin");
         assert_eq!(restored.produced_events.len(), 1);
         assert_eq!(restored.data.unwrap()["status"].as_str().unwrap(), "ok");
@@ -275,7 +311,7 @@ mod tests {
         };
         let s = capability_to_wit(&cap);
         assert_eq!(s, "discover:file,smb");
-        let restored = capability_from_wit(&s).unwrap();
+        let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
 
@@ -284,7 +320,7 @@ mod tests {
         let cap = Capability::Evaluate;
         let s = capability_to_wit(&cap);
         assert_eq!(s, "evaluate");
-        let restored = capability_from_wit(&s).unwrap();
+        let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
 
@@ -300,7 +336,7 @@ mod tests {
         };
         let s = capability_to_wit(&cap);
         assert_eq!(s, "execute:transcode_video+convert_container:mkv,mp4");
-        let restored = capability_from_wit(&s).unwrap();
+        let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
 
@@ -311,7 +347,7 @@ mod tests {
         };
         let s = capability_to_wit(&cap);
         assert_eq!(s, "enrich_metadata:radarr");
-        let restored = capability_from_wit(&s).unwrap();
+        let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
 
@@ -322,7 +358,7 @@ mod tests {
         };
         let s = capability_to_wit(&cap);
         assert_eq!(s, "store:sqlite");
-        let restored = capability_from_wit(&s).unwrap();
+        let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
 
@@ -334,7 +370,7 @@ mod tests {
         };
         let s = capability_to_wit(&cap);
         assert_eq!(s, "verify:quick,thorough");
-        let restored = capability_from_wit(&s).unwrap();
+        let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
 
@@ -343,7 +379,7 @@ mod tests {
         let cap = Capability::Verify { modes: vec![] };
         let s = capability_to_wit(&cap);
         assert_eq!(s, "verify");
-        let restored = capability_from_wit(&s).unwrap();
+        let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
 
@@ -362,14 +398,26 @@ mod tests {
         ] {
             let s = capability_to_wit(&cap);
             assert_eq!(s, expected_str);
-            let restored = capability_from_wit(&s).unwrap();
+            let restored = parse_capability(&s);
             assert_eq!(restored, cap);
         }
     }
 
     #[test]
     fn test_capability_from_wit_unknown() {
-        assert!(capability_from_wit("unknown_cap").is_none());
+        assert!(capability_from_wit("unknown_cap").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_capability_from_wit_rejects_unknown_execute_operation() {
+        let err = capability_from_wit("execute:transcode_video+bogus:mkv").unwrap_err();
+        assert!(err.to_string().contains("unknown execute operation"));
+    }
+
+    #[test]
+    fn test_capability_from_wit_rejects_unknown_verify_mode() {
+        let err = capability_from_wit("verify:quick,deep").unwrap_err();
+        assert!(err.to_string().contains("unknown verify mode"));
     }
 
     #[test]
@@ -481,10 +529,37 @@ mod tests {
 
     #[test]
     fn test_event_result_from_wasm_empty() {
-        let result = event_result_from_wasm("empty-plugin".into(), vec![], None).unwrap();
+        let result = event_result_from_wasm(WasmEventResult {
+            plugin_name: "empty-plugin".into(),
+            produced_events: vec![],
+            data: None,
+            claimed: false,
+            execution_error: None,
+            execution_detail: None,
+        })
+        .unwrap();
         assert_eq!(result.plugin_name, "empty-plugin");
         assert!(result.produced_events.is_empty());
         assert!(result.data.is_none());
+    }
+
+    #[test]
+    fn test_event_result_roundtrip_preserves_execution_lifecycle_fields() {
+        let detail = voom_domain::plan::ExecutionDetail {
+            command: "handbrake --input movie.mkv".to_string(),
+            exit_code: Some(0),
+            stderr_tail: String::new(),
+            duration_ms: 25,
+        };
+        let mut result = EventResult::plan_succeeded("executor", None);
+        result.execution_detail = Some(detail.clone());
+
+        let wasm_result = event_result_to_wasm(&result).unwrap();
+        let restored = event_result_from_wasm(wasm_result).unwrap();
+
+        assert!(restored.claimed);
+        assert_eq!(restored.execution_error, None);
+        assert_eq!(restored.execution_detail.unwrap().command, detail.command);
     }
 
     #[test]
@@ -516,11 +591,14 @@ mod tests {
         ));
         let (_correct_type, payload) = event_to_wasm(&event).unwrap();
 
-        let err = event_result_from_wasm(
-            "test-plugin".into(),
-            vec![("wrong.type".into(), payload)],
-            None,
-        )
+        let err = event_result_from_wasm(WasmEventResult {
+            plugin_name: "test-plugin".into(),
+            produced_events: vec![("wrong.type".into(), payload)],
+            data: None,
+            claimed: false,
+            execution_error: None,
+            execution_detail: None,
+        })
         .unwrap_err();
         assert!(err.to_string().contains("event type mismatch"));
     }

@@ -4081,6 +4081,12 @@ mod test_process_plan_only {
             .collect()
     }
 
+    fn set_all_introspected_at(env: &TestEnv, timestamp: &str) {
+        let conn = rusqlite::Connection::open(env.db_path()).expect("open test database");
+        conn.execute("UPDATE files SET introspected_at = ?1", [timestamp])
+            .expect("update files introspected_at");
+    }
+
     /// A second `process --plan-only` pass against the same DB must not
     /// re-introspect unchanged files (no ffprobe call → stored
     /// `introspected_at` is unchanged). `--force-rescan` overrides.
@@ -4126,10 +4132,8 @@ mod test_process_plan_only {
             );
         }
 
-        // `introspected_at` is stored as an ISO-8601 string with second
-        // resolution, so sleep ≥1 s before --force-rescan to guarantee the
-        // re-write produces a strictly later timestamp.
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        set_all_introspected_at(&env, "2000-01-01T00:00:00Z");
+        let before_force = introspected_at_by_path(&env);
         env.voom()
             .args([
                 "process",
@@ -4143,14 +4147,14 @@ mod test_process_plan_only {
             .assert()
             .success();
         let after_force = introspected_at_by_path(&env);
-        for (path, scan_ts) in &after_scan {
+        for (path, before_force_ts) in &before_force {
             let force_ts = after_force
                 .get(path)
                 .unwrap_or_else(|| panic!("file {path} disappeared after --force-rescan"));
             assert_ne!(
-                scan_ts, force_ts,
+                before_force_ts, force_ts,
                 "--force-rescan must re-introspect; path={path} \
-                 before={scan_ts} after={force_ts}"
+                 before={before_force_ts} after={force_ts}"
             );
         }
     }

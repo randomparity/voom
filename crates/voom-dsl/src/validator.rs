@@ -11,9 +11,7 @@
 //! - Unreachable phases
 //! - Conflicting track actions (keep + remove on same target)
 //! - Invalid phase references in `depends_on` and `run_if`
-//! - Invalid `on_error` values
 //! - Invalid container names
-//! - Invalid `run_if` triggers
 
 use std::collections::{HashMap, HashSet};
 
@@ -106,21 +104,6 @@ fn validate_config(ast: &PolicyAst, errors: &mut Vec<DslError>) {
             ));
         }
     }
-    if let Some(on_error) = &config.on_error {
-        validate_on_error(on_error, config.span.line, config.span.col, errors);
-    }
-}
-
-fn validate_on_error(value: &str, line: usize, col: usize, errors: &mut Vec<DslError>) {
-    if crate::compiler::parse_error_strategy(value).is_none() {
-        errors.push(DslError::validation(
-            line,
-            col,
-            format!(
-                "invalid on_error value \"{value}\", expected \"continue\", \"abort\", \"skip\", or \"quarantine\""
-            ),
-        ));
-    }
 }
 
 fn validate_phase_names(ast: &PolicyAst, errors: &mut Vec<DslError>) {
@@ -170,18 +153,6 @@ fn validate_phase_references(ast: &PolicyAst, errors: &mut Vec<DslError>) {
                         phase.name, run_if.phase
                     ),
                 ));
-            }
-            match run_if.trigger.as_str() {
-                "modified" | "completed" => {}
-                other => {
-                    errors.push(DslError::validation(
-                        phase.span.line,
-                        phase.span.col,
-                        format!(
-                            "invalid run_if trigger \"{other}\", expected \"modified\" or \"completed\""
-                        ),
-                    ));
-                }
             }
         }
     }
@@ -320,10 +291,6 @@ fn validate_phase(
     errors: &mut Vec<DslError>,
     warnings: &mut Vec<DslWarning>,
 ) {
-    if let Some(on_error) = &phase.on_error {
-        validate_on_error(on_error, phase.span.line, phase.span.col, errors);
-    }
-
     if let Some(skip_when) = &phase.skip_when {
         validate_condition(
             skip_when,
@@ -1838,9 +1805,8 @@ mod tests {
             }
             phase init { container mkv }
         }"#;
-        let ast = parse_policy(input).unwrap();
-        let err = validate(&ast).unwrap_err();
-        assert!(format!("{}", err.errors[0]).contains("invalid on_error"));
+        let err = parse_policy(input).unwrap_err();
+        assert!(format!("{err}").contains("invalid on_error"));
     }
 
     #[test]

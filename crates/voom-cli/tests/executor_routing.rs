@@ -30,18 +30,20 @@ fn ffmpeg_available() -> bool {
 
 fn make_kernel_with_both_executors() -> Kernel {
     let mut kernel = Kernel::new();
-    let ctx = PluginContext::new(serde_json::json!({}), std::env::temp_dir());
-    // init_and_register probes for tools and sets availability
-    let _ = kernel.init_and_register(
-        Arc::new(voom_mkvtoolnix_executor::MkvtoolnixExecutorPlugin::new()),
-        39,
-        &ctx,
-    );
-    let _ = kernel.init_and_register(
-        Arc::new(voom_ffmpeg_executor::FfmpegExecutorPlugin::new()),
-        40,
-        &ctx,
-    );
+    kernel
+        .register_plugin(
+            Arc::new(
+                voom_mkvtoolnix_executor::MkvtoolnixExecutorPlugin::new().with_available(true),
+            ),
+            39,
+        )
+        .expect("register deterministic mkvtoolnix test executor");
+    kernel
+        .register_plugin(
+            Arc::new(voom_ffmpeg_executor::FfmpegExecutorPlugin::new().with_available(true)),
+            40,
+        )
+        .expect("register deterministic ffmpeg test executor");
     kernel
 }
 
@@ -74,10 +76,6 @@ fn make_plan(file: MediaFile, actions: Vec<PlannedAction>) -> Plan {
 /// Transcode plans should be routed to ffmpeg-executor (mkvtoolnix cannot transcode).
 #[test]
 fn test_transcode_routes_to_ffmpeg() {
-    if !ffmpeg_available() {
-        eprintln!("skipping: ffmpeg not found on PATH");
-        return;
-    }
     let kernel = make_kernel_with_both_executors();
 
     let plan = make_plan(
@@ -106,10 +104,6 @@ fn test_transcode_routes_to_ffmpeg() {
 /// MKV metadata-only plans should route to mkvtoolnix-executor.
 #[test]
 fn test_mkv_metadata_routes_to_mkvtoolnix() {
-    if !mkvmerge_available() {
-        eprintln!("skipping: mkvmerge not found on PATH");
-        return;
-    }
     let kernel = make_kernel_with_both_executors();
 
     let plan = make_plan(
@@ -133,10 +127,6 @@ fn test_mkv_metadata_routes_to_mkvtoolnix() {
 /// Non-MKV metadata plans should route to ffmpeg-executor.
 #[test]
 fn test_non_mkv_metadata_routes_to_ffmpeg() {
-    if !ffmpeg_available() {
-        eprintln!("skipping: ffmpeg not found on PATH");
-        return;
-    }
     let kernel = make_kernel_with_both_executors();
 
     let plan = make_plan(
@@ -160,10 +150,6 @@ fn test_non_mkv_metadata_routes_to_ffmpeg() {
 /// `ConvertContainer` to MKV should route to mkvtoolnix (higher priority, can handle).
 #[test]
 fn test_convert_to_mkv_routes_to_mkvtoolnix() {
-    if !mkvmerge_available() {
-        eprintln!("skipping: mkvmerge not found on PATH");
-        return;
-    }
     let kernel = make_kernel_with_both_executors();
 
     let plan = make_plan(
@@ -189,10 +175,6 @@ fn test_convert_to_mkv_routes_to_mkvtoolnix() {
 /// MKV transcode plans route to ffmpeg, not mkvtoolnix (mkvtoolnix can't transcode).
 #[test]
 fn test_mkv_transcode_routes_to_ffmpeg() {
-    if !ffmpeg_available() {
-        eprintln!("skipping: ffmpeg not found on PATH");
-        return;
-    }
     let kernel = make_kernel_with_both_executors();
 
     let plan = make_plan(
@@ -256,4 +238,33 @@ fn test_skipped_plan_not_claimed() {
         results.is_empty(),
         "skipped plan should produce no EventResult, got {results:?}"
     );
+}
+
+/// Live executor registration is a smoke test only; deterministic routing
+/// assertions above must not depend on local media tools being installed.
+#[test]
+fn test_live_executor_registration_when_tools_available() {
+    if !ffmpeg_available() || !mkvmerge_available() {
+        eprintln!("skipping live executor smoke test: ffmpeg or mkvmerge not found on PATH");
+        return;
+    }
+
+    let mut kernel = Kernel::new();
+    let ctx = PluginContext::new(serde_json::json!({}), std::env::temp_dir());
+    kernel
+        .init_and_register(
+            Arc::new(voom_mkvtoolnix_executor::MkvtoolnixExecutorPlugin::new()),
+            39,
+            &ctx,
+        )
+        .expect("mkvtoolnix executor should register when mkvmerge is available");
+    kernel
+        .init_and_register(
+            Arc::new(voom_ffmpeg_executor::FfmpegExecutorPlugin::new()),
+            40,
+            &ctx,
+        )
+        .expect("ffmpeg executor should register when ffmpeg is available");
+
+    assert_eq!(kernel.subscriber_count(), 2);
 }

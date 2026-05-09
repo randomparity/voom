@@ -4,8 +4,11 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 use voom_domain::stats::{LibrarySnapshot, SavingsReport, TimePeriod};
-use voom_domain::storage::{PageStats, PlanPhaseStat};
-use voom_domain::SafeguardViolation;
+use voom_domain::storage::{
+    FileFilters, FileStorage, FileTransitionStorage, MaintenanceStorage, PageStats, PlanPhaseStat,
+    PlanStorage, SnapshotStorage, StorageTrait,
+};
+use voom_domain::{MediaFile, SafeguardViolation};
 
 /// Sections that can be included in a report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,4 +105,447 @@ pub struct ReportResult {
     pub issues: Option<Vec<IssueReport>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database: Option<DatabaseStats>,
+}
+
+trait ReportDataSource {
+    fn gather_library_stats(
+        &self,
+        trigger: voom_domain::stats::SnapshotTrigger,
+    ) -> voom_domain::Result<LibrarySnapshot>;
+    fn plan_stats_by_phase(&self) -> voom_domain::Result<Vec<PlanPhaseStat>>;
+    fn savings_by_provenance(
+        &self,
+        period: Option<TimePeriod>,
+    ) -> voom_domain::Result<SavingsReport>;
+    fn list_snapshots(&self, limit: u32) -> voom_domain::Result<Vec<LibrarySnapshot>>;
+    fn list_files(&self, filters: &FileFilters) -> voom_domain::Result<Vec<MediaFile>>;
+    fn table_row_counts(&self) -> voom_domain::Result<Vec<(String, u64)>>;
+    fn page_stats(&self) -> voom_domain::Result<PageStats>;
+}
+
+impl<T> ReportDataSource for T
+where
+    T: StorageTrait + ?Sized,
+{
+    fn gather_library_stats(
+        &self,
+        trigger: voom_domain::stats::SnapshotTrigger,
+    ) -> voom_domain::Result<LibrarySnapshot> {
+        SnapshotStorage::gather_library_stats(self, trigger)
+    }
+
+    fn plan_stats_by_phase(&self) -> voom_domain::Result<Vec<PlanPhaseStat>> {
+        PlanStorage::plan_stats_by_phase(self)
+    }
+
+    fn savings_by_provenance(
+        &self,
+        period: Option<TimePeriod>,
+    ) -> voom_domain::Result<SavingsReport> {
+        FileTransitionStorage::savings_by_provenance(self, period)
+    }
+
+    fn list_snapshots(&self, limit: u32) -> voom_domain::Result<Vec<LibrarySnapshot>> {
+        SnapshotStorage::list_snapshots(self, limit)
+    }
+
+    fn list_files(&self, filters: &FileFilters) -> voom_domain::Result<Vec<MediaFile>> {
+        FileStorage::list_files(self, filters)
+    }
+
+    fn table_row_counts(&self) -> voom_domain::Result<Vec<(String, u64)>> {
+        MaintenanceStorage::table_row_counts(self)
+    }
+
+    fn page_stats(&self) -> voom_domain::Result<PageStats> {
+        MaintenanceStorage::page_stats(self)
+    }
+}
+
+/// Query the library and assemble the requested report sections.
+///
+/// # Errors
+/// Returns a plugin error when an underlying storage query fails.
+pub fn assemble_report(
+    store: &dyn StorageTrait,
+    request: &ReportRequest,
+) -> voom_domain::Result<ReportResult> {
+    assemble_report_from_source(store, request)
+}
+
+fn assemble_report_from_source(
+    store: &(impl ReportDataSource + ?Sized),
+    request: &ReportRequest,
+) -> voom_domain::Result<ReportResult> {
+    let mut result = ReportResult::default();
+
+    if request.includes(ReportSection::Library) {
+        let snapshot = store
+            .gather_library_stats(voom_domain::stats::SnapshotTrigger::Manual)
+            .map_err(|e| crate::plugin_err("failed to gather library statistics", e))?;
+        result.library = Some(snapshot);
+    }
+
+    if request.includes(ReportSection::Plans) {
+        let stats = store
+            .plan_stats_by_phase()
+            .map_err(|e| crate::plugin_err("failed to query plan stats", e))?;
+        result.plans = Some(stats);
+    }
+
+    if request.includes(ReportSection::Savings) {
+        let report = store
+            .savings_by_provenance(request.period)
+            .map_err(|e| crate::plugin_err("failed to query savings", e))?;
+        result.savings = Some(report);
+    }
+
+    if request.includes(ReportSection::History) {
+        let limit = request.history_limit.unwrap_or(20);
+        let snapshots = store
+            .list_snapshots(limit)
+            .map_err(|e| crate::plugin_err("failed to list snapshots", e))?;
+        result.history = Some(snapshots);
+    }
+
+    if request.includes(ReportSection::Issues) {
+        result.issues = Some(issue_report(store)?);
+    }
+
+    if request.includes(ReportSection::Database) {
+        result.database = Some(database_stats(store)?);
+    }
+
+    Ok(result)
+}
+
+fn issue_report(store: &(impl ReportDataSource + ?Sized)) -> voom_domain::Result<Vec<IssueReport>> {
+    let files = store
+        .list_files(&FileFilters::default())
+        .map_err(|e| crate::plugin_err("failed to list files", e))?;
+
+    let mut issues = Vec::new();
+    for file in files {
+        let Some(violations_val) = file.plugin_metadata.get("safeguard_violations") else {
+            continue;
+        };
+        let violations: Vec<SafeguardViolation> = serde_json::from_value(violations_val.clone())
+            .map_err(|e| {
+                crate::plugin_err(
+                    &format!(
+                        "malformed safeguard_violations metadata for {}",
+                        file.path.display()
+                    ),
+                    e,
+                )
+            })?;
+        if violations.is_empty() {
+            continue;
+        }
+        issues.push(IssueReport {
+            path: file.path,
+            violations,
+        });
+    }
+    Ok(issues)
+}
+
+fn database_stats(store: &(impl ReportDataSource + ?Sized)) -> voom_domain::Result<DatabaseStats> {
+    let table_counts = store
+        .table_row_counts()
+        .map_err(|e| crate::plugin_err("failed to query table row counts", e))?;
+    let page_stats = store
+        .page_stats()
+        .map_err(|e| crate::plugin_err("failed to query page stats", e))?;
+    Ok(DatabaseStats {
+        table_counts,
+        page_stats,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use voom_domain::errors::VoomError;
+    use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
+    use voom_domain::stats::{LibrarySnapshot, SavingsReport, SnapshotTrigger};
+    use voom_domain::storage::{PageStats, PlanPhaseStat, PlanStatus};
+
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum FailPoint {
+        Library,
+        Plans,
+        Savings,
+        History,
+        Issues,
+        TableCounts,
+        PageStats,
+    }
+
+    #[derive(Default)]
+    struct FakeReportStore {
+        files: Vec<MediaFile>,
+        fail: Option<FailPoint>,
+    }
+
+    impl FakeReportStore {
+        fn with_files(files: Vec<MediaFile>) -> Self {
+            Self {
+                files,
+                ..Self::default()
+            }
+        }
+
+        fn failing(fail: FailPoint) -> Self {
+            Self {
+                fail: Some(fail),
+                ..Self::default()
+            }
+        }
+
+        fn fail_if(&self, fail_point: FailPoint) -> voom_domain::Result<()> {
+            if self.fail == Some(fail_point) {
+                return Err(VoomError::Storage {
+                    kind: voom_domain::errors::StorageErrorKind::Other,
+                    message: format!("{fail_point:?} failed"),
+                });
+            }
+            Ok(())
+        }
+    }
+
+    impl ReportDataSource for FakeReportStore {
+        fn gather_library_stats(
+            &self,
+            trigger: SnapshotTrigger,
+        ) -> voom_domain::Result<LibrarySnapshot> {
+            self.fail_if(FailPoint::Library)?;
+            Ok(snapshot(trigger))
+        }
+
+        fn plan_stats_by_phase(&self) -> voom_domain::Result<Vec<PlanPhaseStat>> {
+            self.fail_if(FailPoint::Plans)?;
+            Ok(vec![PlanPhaseStat::new(
+                "phase".to_string(),
+                PlanStatus::Completed,
+                None,
+                1,
+            )])
+        }
+
+        fn savings_by_provenance(
+            &self,
+            period: Option<TimePeriod>,
+        ) -> voom_domain::Result<SavingsReport> {
+            self.fail_if(FailPoint::Savings)?;
+            assert!(period.is_none() || period == Some(TimePeriod::Month));
+            Ok(SavingsReport::default())
+        }
+
+        fn list_snapshots(&self, limit: u32) -> voom_domain::Result<Vec<LibrarySnapshot>> {
+            self.fail_if(FailPoint::History)?;
+            Ok(vec![
+                snapshot(SnapshotTrigger::Manual);
+                limit.min(2) as usize
+            ])
+        }
+
+        fn list_files(&self, _filters: &FileFilters) -> voom_domain::Result<Vec<MediaFile>> {
+            self.fail_if(FailPoint::Issues)?;
+            Ok(self.files.clone())
+        }
+
+        fn table_row_counts(&self) -> voom_domain::Result<Vec<(String, u64)>> {
+            self.fail_if(FailPoint::TableCounts)?;
+            Ok(vec![("files".to_string(), 1)])
+        }
+
+        fn page_stats(&self) -> voom_domain::Result<PageStats> {
+            self.fail_if(FailPoint::PageStats)?;
+            Ok(PageStats {
+                page_size: 4096,
+                page_count: 1,
+                freelist_count: 0,
+            })
+        }
+    }
+
+    fn snapshot(trigger: SnapshotTrigger) -> LibrarySnapshot {
+        voom_domain::storage::SnapshotStorage::gather_library_stats(
+            &voom_domain::test_support::InMemoryStore::new(),
+            trigger,
+        )
+        .expect("in-memory snapshot")
+    }
+
+    fn media_file(path: &str) -> MediaFile {
+        MediaFile::new(PathBuf::from(path))
+    }
+
+    fn violation() -> SafeguardViolation {
+        SafeguardViolation::new(SafeguardKind::NoAudioTrack, "no audio", "normalize")
+    }
+
+    fn present_sections(result: &ReportResult) -> Vec<ReportSection> {
+        let mut sections = Vec::new();
+        if result.library.is_some() {
+            sections.push(ReportSection::Library);
+        }
+        if result.plans.is_some() {
+            sections.push(ReportSection::Plans);
+        }
+        if result.savings.is_some() {
+            sections.push(ReportSection::Savings);
+        }
+        if result.history.is_some() {
+            sections.push(ReportSection::History);
+        }
+        if result.issues.is_some() {
+            sections.push(ReportSection::Issues);
+        }
+        if result.database.is_some() {
+            sections.push(ReportSection::Database);
+        }
+        sections
+    }
+
+    #[test]
+    fn assemble_report_includes_only_requested_section() {
+        let cases = [
+            ReportSection::Library,
+            ReportSection::Plans,
+            ReportSection::Savings,
+            ReportSection::History,
+            ReportSection::Issues,
+            ReportSection::Database,
+        ];
+
+        for section in cases {
+            let store = FakeReportStore::default();
+            let result = assemble_report_from_source(&store, &ReportRequest::new(vec![section]))
+                .expect("report should assemble");
+            assert_eq!(
+                present_sections(&result),
+                vec![section],
+                "section={section:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn assemble_report_uses_default_and_explicit_history_limits() {
+        let store = FakeReportStore::default();
+        let result = assemble_report_from_source(&store, &ReportRequest::all())
+            .expect("report should assemble");
+        assert_eq!(result.history.expect("history section").len(), 2);
+
+        let store = FakeReportStore::default();
+        let result = assemble_report_from_source(
+            &store,
+            &ReportRequest::new(vec![ReportSection::History]).with_history_limit(1),
+        )
+        .expect("report should assemble");
+        assert_eq!(result.history.expect("history section").len(), 1);
+    }
+
+    #[test]
+    fn assemble_report_wraps_storage_errors_with_section_context() {
+        let cases = [
+            (
+                FailPoint::Library,
+                ReportRequest::new(vec![ReportSection::Library]),
+                "failed to gather library statistics",
+            ),
+            (
+                FailPoint::Plans,
+                ReportRequest::new(vec![ReportSection::Plans]),
+                "failed to query plan stats",
+            ),
+            (
+                FailPoint::Savings,
+                ReportRequest::new(vec![ReportSection::Savings]),
+                "failed to query savings",
+            ),
+            (
+                FailPoint::History,
+                ReportRequest::new(vec![ReportSection::History]),
+                "failed to list snapshots",
+            ),
+            (
+                FailPoint::Issues,
+                ReportRequest::new(vec![ReportSection::Issues]),
+                "failed to list files",
+            ),
+            (
+                FailPoint::TableCounts,
+                ReportRequest::new(vec![ReportSection::Database]),
+                "failed to query table row counts",
+            ),
+            (
+                FailPoint::PageStats,
+                ReportRequest::new(vec![ReportSection::Database]),
+                "failed to query page stats",
+            ),
+        ];
+
+        for (fail_point, request, context) in cases {
+            let err = assemble_report_from_source(&FakeReportStore::failing(fail_point), &request)
+                .expect_err("report assembly should fail");
+            let message = err.to_string();
+            assert!(message.contains("plugin error: report:"));
+            assert!(message.contains(context), "{message}");
+            assert!(
+                message.contains(&format!("{fail_point:?} failed")),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn issue_report_returns_valid_nonempty_safeguard_violations() {
+        let mut file = media_file("/media/valid.mkv");
+        file.plugin_metadata.insert(
+            "safeguard_violations".to_string(),
+            serde_json::to_value(vec![violation()]).expect("violation serializes"),
+        );
+        let store = FakeReportStore::with_files(vec![file]);
+
+        let issues = issue_report(&store).expect("issue report should parse");
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].path, PathBuf::from("/media/valid.mkv"));
+        assert_eq!(issues[0].violations, vec![violation()]);
+    }
+
+    #[test]
+    fn issue_report_omits_missing_and_empty_safeguard_metadata() {
+        let missing = media_file("/media/missing.mkv");
+        let mut empty = media_file("/media/empty.mkv");
+        empty.plugin_metadata.insert(
+            "safeguard_violations".to_string(),
+            serde_json::to_value(Vec::<SafeguardViolation>::new()).expect("empty serializes"),
+        );
+        let store = FakeReportStore::with_files(vec![missing, empty]);
+
+        let issues = issue_report(&store).expect("issue report should parse");
+
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn issue_report_fails_on_malformed_safeguard_metadata() {
+        let mut file = media_file("/media/bad.mkv");
+        file.plugin_metadata.insert(
+            "safeguard_violations".to_string(),
+            serde_json::json!({"not": "a violation list"}),
+        );
+        let store = FakeReportStore::with_files(vec![file]);
+
+        let err = issue_report(&store).expect_err("malformed metadata should fail");
+        let message = err.to_string();
+        assert!(message.contains("malformed safeguard_violations metadata"));
+        assert!(message.contains("/media/bad.mkv"));
+    }
 }
