@@ -110,8 +110,10 @@ After a run, verify dynamic metadata with the HDR tools rather than only the
 VOOM plan text:
 
 ```sh
-hdr10plus_tool extract output.mkv -o /tmp/output-hdr10plus.json
-dovi_tool extract-rpu output.mkv -o /tmp/output-rpu.bin
+ffmpeg -hide_banner -i output.mkv -map 0:v:0 -c copy \
+  -bsf:v hevc_mp4toannexb -f hevc /tmp/output.hevc
+hdr10plus_tool extract /tmp/output.hevc -o /tmp/output-hdr10plus.json
+dovi_tool extract-rpu /tmp/output.hevc -o /tmp/output-rpu.bin
 dovi_tool info -i /tmp/output-rpu.bin --summary
 ```
 
