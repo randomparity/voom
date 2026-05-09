@@ -732,7 +732,7 @@ async fn test_list_verifications_empty() {
     let resp = server.get("/api/verify").await;
     resp.assert_status_ok();
     let body: serde_json::Value = resp.json();
-    assert_eq!(body, json!([]));
+    assert_eq!(body, json!({"records": [], "total": 0}));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -749,11 +749,11 @@ async fn test_list_verifications_filter_validation() {
 async fn test_list_verifications_accepts_valid_filters() {
     let server = make_server(InMemoryStore::new());
     let resp = server
-        .get("/api/verify?mode=hash&outcome=ok&limit=25")
+        .get("/api/verify?mode=hash&outcome=ok&limit=25&offset=10")
         .await;
     resp.assert_status_ok();
     let body: serde_json::Value = resp.json();
-    assert_eq!(body, json!([]));
+    assert_eq!(body, json!({"records": [], "total": 0}));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -762,7 +762,7 @@ async fn test_get_file_verifications_empty() {
     let resp = server.get(&format!("/api/verify/{}", Uuid::new_v4())).await;
     resp.assert_status_ok();
     let body: serde_json::Value = resp.json();
-    assert_eq!(body, json!([]));
+    assert_eq!(body, json!({"records": [], "total": 0}));
 }
 
 #[tokio::test(flavor = "multi_thread")]

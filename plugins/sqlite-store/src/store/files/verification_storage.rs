@@ -55,7 +55,7 @@ impl VerificationStorage for SqliteStore {
             q.parameterized_clause(" AND verified_at >= {}", format_datetime(since));
         }
         q.sql.push_str(" ORDER BY verified_at DESC");
-        q.paginate(filters.limit, None);
+        q.paginate(filters.limit, filters.offset);
 
         let mut stmt = conn
             .prepare(&q.sql)

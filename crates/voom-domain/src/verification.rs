@@ -124,6 +124,7 @@ pub struct VerificationFilters {
     pub outcome: Option<VerificationOutcome>,
     pub since: Option<DateTime<Utc>>,
     pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 /// Aggregate integrity summary across the library.
