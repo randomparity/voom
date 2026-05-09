@@ -202,6 +202,26 @@ mod tests {
     }
 
     #[test]
+    fn test_plugin_data_persistent_store_isolates_plugin_names() {
+        let store = Arc::new(InMemoryPluginStore::new());
+        let mut first = HostState::new("first-plugin".into()).with_storage(store.clone());
+        let mut second = HostState::new("second-plugin".into()).with_storage(store);
+
+        first.set_plugin_data("shared-key", b"first").unwrap();
+        assert!(second.get_plugin_data("shared-key").unwrap().is_none());
+
+        second.set_plugin_data("shared-key", b"second").unwrap();
+        assert_eq!(
+            first.get_plugin_data("shared-key").unwrap().as_deref(),
+            Some(b"first".as_ref())
+        );
+        assert_eq!(
+            second.get_plugin_data("shared-key").unwrap().as_deref(),
+            Some(b"second".as_ref())
+        );
+    }
+
+    #[test]
     fn test_run_tool_blocked() {
         let state = HostState::new("test".into()).with_tools(vec!["ffprobe".into()]);
         let result = state.run_tool("rm", &["-rf".into()], 5000);
