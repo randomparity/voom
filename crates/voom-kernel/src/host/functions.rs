@@ -467,13 +467,19 @@ impl HostState {
         let dir_path = std::path::Path::new(dir);
         let entries = std::fs::read_dir(dir_path)
             .map_err(|e| format!("failed to list directory '{dir}': {e}"))?;
-        let files = entries
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                pattern.is_empty() || entry.file_name().to_string_lossy().contains(pattern)
-            })
-            .map(|entry| entry.file_name().to_string_lossy().to_string())
-            .collect();
+        let mut files = Vec::new();
+        for entry_result in entries {
+            let entry = entry_result.map_err(|e| {
+                format!(
+                    "failed to read directory entry while listing '{dir}' for plugin '{}': {e}",
+                    self.plugin_name
+                )
+            })?;
+            let file_name = entry.file_name();
+            if pattern.is_empty() || file_name.to_string_lossy().contains(pattern) {
+                files.push(file_name.to_string_lossy().to_string());
+            }
+        }
         Ok(files)
     }
 }
