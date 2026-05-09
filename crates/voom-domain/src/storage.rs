@@ -1,3 +1,8 @@
+#![expect(
+    clippy::missing_errors_doc,
+    reason = "storage traits document shared storage error behavior at the trait level"
+)]
+
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
