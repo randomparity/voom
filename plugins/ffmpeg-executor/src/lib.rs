@@ -14,8 +14,8 @@ use std::time::Duration;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{
-    CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent, ExecutorParallelLimit,
-    PlanCreatedEvent, PlanExecutingEvent,
+    plan_begin_events, CodecCapabilities, Event, EventResult, ExecutorCapabilitiesEvent,
+    ExecutorParallelLimit, PlanCreatedEvent,
 };
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
@@ -472,15 +472,7 @@ impl FfmpegExecutorPlugin {
             "Mux subtitle into container",
         )];
 
-        let produced_events = vec![
-            Event::PlanExecuting(PlanExecutingEvent::new(
-                plan.id,
-                event.path.clone(),
-                phase_name,
-                1,
-            )),
-            Event::PlanCreated(voom_domain::events::PlanCreatedEvent::new(plan)),
-        ];
+        let produced_events = plan_begin_events(plan);
 
         let mut result = EventResult::new("ffmpeg-executor");
         result.claimed = true;

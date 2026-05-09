@@ -120,7 +120,7 @@ pub trait Plugin: Send + Sync {
     fn capabilities(&self) -> &[Capability];
     fn handles(&self, _event_type: &str) -> bool { false }
     fn on_event(&self, _event: &Event) -> Result<Option<EventResult>> { Ok(None) }
-    fn init(&mut self, _ctx: &PluginContext) -> Result<()> { Ok(()) }
+    fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> { Ok(vec![]) }
     fn shutdown(&self) -> Result<()> { Ok(()) }
 }
 ```

@@ -509,6 +509,19 @@ impl PlanCreatedEvent {
     }
 }
 
+#[must_use]
+pub fn plan_begin_events(plan: Plan) -> Vec<Event> {
+    vec![
+        Event::PlanExecuting(PlanExecutingEvent::new(
+            plan.id,
+            plan.file.path.clone(),
+            plan.phase_name.clone(),
+            plan.actions.len(),
+        )),
+        Event::PlanCreated(PlanCreatedEvent::new(plan)),
+    ]
+}
+
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanExecutingEvent {
@@ -1107,6 +1120,26 @@ mod tests {
         let bytes = rmp_serde::to_vec(&event).unwrap();
         let deserialized: Event = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(deserialized.event_type(), "job.progress");
+    }
+
+    #[test]
+    fn plan_begin_events_emits_executing_before_created() {
+        let file = MediaFile::new(PathBuf::from("/test.mkv"));
+        let plan = Plan::new(file, "test", "normalize");
+        let plan_id = plan.id;
+        let events = plan_begin_events(plan);
+
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            Event::PlanExecuting(event) => {
+                assert_eq!(event.plan_id, plan_id);
+                assert_eq!(event.path, PathBuf::from("/test.mkv"));
+                assert_eq!(event.phase_name, "normalize");
+                assert_eq!(event.action_count, 0);
+            }
+            other => panic!("expected PlanExecuting, got {other:?}"),
+        }
+        assert!(matches!(events[1], Event::PlanCreated(_)));
     }
 
     #[test]
