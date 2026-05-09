@@ -90,7 +90,13 @@ pub fn on_event(
         return None;
     }
 
-    let config: Option<HandbrakeConfig> = load_plugin_config(|key| host.get_plugin_data(key));
+    let config: Option<HandbrakeConfig> = match load_plugin_config(|key| host.get_plugin_data(key)) {
+        Ok(config) => config,
+        Err(e) => {
+            host.log("error", &format!("failed to load HandBrake config: {e}"));
+            return None;
+        }
+    };
     let handbrake_bin = config
         .as_ref()
         .map(|c| c.handbrake_binary.as_str())
@@ -315,16 +321,6 @@ mod tests {
             }
         }
 
-        fn with_preset(preset: &str) -> Self {
-            Self {
-                config: Some(HandbrakeConfig {
-                    handbrake_binary: "HandBrakeCLI".to_string(),
-                    preset: Some(preset.to_string()),
-                    timeout_ms: 1_800_000,
-                }),
-                exit_code: 0,
-            }
-        }
     }
 
     impl HostFunctions for MockHost {
@@ -340,12 +336,13 @@ mod tests {
             ))
         }
 
-        fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
-            if key == "config" {
+        fn get_plugin_data(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+            let data = if key == "config" {
                 self.config.as_ref().map(|c| serde_json::to_vec(c).unwrap())
             } else {
                 None
-            }
+            };
+            Ok(data)
         }
 
         fn set_plugin_data(&self, _key: &str, _value: &[u8]) -> Result<(), String> {

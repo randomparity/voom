@@ -75,8 +75,13 @@ pub fn on_event(
         return None;
     }
 
-    let config: Option<DetectorConfig> =
-        load_plugin_config(|key| host.get_plugin_data(key));
+    let config: Option<DetectorConfig> = match load_plugin_config(|key| host.get_plugin_data(key)) {
+        Ok(config) => config,
+        Err(e) => {
+            host.log("error", &format!("failed to load detector config: {e}"));
+            return None;
+        }
+    };
     let cfg = config.as_ref();
     let whisper_bin = cfg
         .map(|c| c.whisper_binary.as_str())
@@ -107,20 +112,16 @@ pub fn on_event(
         let cache_key =
             format!("lang:{hash_str}:{}", track.index);
 
-        if let Some(cached) = host.get_plugin_data(&cache_key) {
-            if let Ok(det) =
-                serde_json::from_slice::<TrackDetection>(&cached)
-            {
-                host.log(
-                    "debug",
-                    &format!(
-                        "cache hit for track {}",
-                        track.index
-                    ),
-                );
-                detections.push(det);
-                continue;
+        match host.get_plugin_data(&cache_key) {
+            Ok(Some(cached)) => {
+                if let Ok(det) = serde_json::from_slice::<TrackDetection>(&cached) {
+                    host.log("debug", &format!("cache hit for track {}", track.index));
+                    detections.push(det);
+                    continue;
+                }
             }
+            Ok(None) => {}
+            Err(e) => host.log("error", &format!("failed to read language cache: {e}")),
         }
 
         let detection = detect_track_language(
@@ -542,19 +543,18 @@ mod tests {
     use std::path::PathBuf;
     use voom_plugin_sdk::*;
 
+    type ToolResultHandler = Box<dyn Fn(&[String]) -> ToolOutput + Send + Sync>;
+    type ToolResults = HashMap<String, ToolResultHandler>;
+
     struct MockHost {
-        tool_results:
-            HashMap<String, Box<dyn Fn(&[String]) -> ToolOutput + Send + Sync>>,
+        tool_results: ToolResults,
         cached: std::cell::RefCell<HashMap<String, Vec<u8>>>,
     }
 
     impl MockHost {
         fn with_whisper_response(language: &str, no_speech_prob: f64) -> Self {
             let lang = language.to_string();
-            let mut tool_results: HashMap<
-                String,
-                Box<dyn Fn(&[String]) -> ToolOutput + Send + Sync>,
-            > = HashMap::new();
+            let mut tool_results: ToolResults = HashMap::new();
 
             tool_results.insert(
                 "ffmpeg".to_string(),
@@ -588,10 +588,7 @@ mod tests {
         }
 
         fn with_failing_ffmpeg() -> Self {
-            let mut tool_results: HashMap<
-                String,
-                Box<dyn Fn(&[String]) -> ToolOutput + Send + Sync>,
-            > = HashMap::new();
+            let mut tool_results: ToolResults = HashMap::new();
             tool_results.insert(
                 "ffmpeg".to_string(),
                 Box::new(|_| {
@@ -612,10 +609,7 @@ mod tests {
         fn with_multi_language() -> Self {
             let call_count =
                 std::sync::atomic::AtomicU32::new(0);
-            let mut tool_results: HashMap<
-                String,
-                Box<dyn Fn(&[String]) -> ToolOutput + Send + Sync>,
-            > = HashMap::new();
+            let mut tool_results: ToolResults = HashMap::new();
 
             tool_results.insert(
                 "ffmpeg".to_string(),
@@ -629,8 +623,7 @@ mod tests {
                         1,
                         std::sync::atomic::Ordering::SeqCst,
                     );
-                    // Alternate between two languages
-                    let lang = if n % 2 == 0 { "en" } else { "fr" };
+                    let lang = if n.is_multiple_of(2) { "en" } else { "fr" };
                     let json = serde_json::json!({
                         "language": lang,
                         "no_speech_prob": 0.05,
@@ -668,8 +661,8 @@ mod tests {
                 .ok_or_else(|| format!("tool not found: {tool}"))
         }
 
-        fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
-            self.cached.borrow().get(key).cloned()
+        fn get_plugin_data(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+            Ok(self.cached.borrow().get(key).cloned())
         }
 
         fn set_plugin_data(

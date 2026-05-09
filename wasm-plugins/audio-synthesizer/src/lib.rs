@@ -80,7 +80,13 @@ pub fn on_event(
         return None;
     }
 
-    let config: Option<SynthConfig> = load_plugin_config(|key| host.get_plugin_data(key));
+    let config: Option<SynthConfig> = match load_plugin_config(|key| host.get_plugin_data(key)) {
+        Ok(config) => config,
+        Err(e) => {
+            host.log("error", &format!("failed to load synthesizer config: {e}"));
+            return None;
+        }
+    };
     let cfg = config.as_ref();
     let tts_engine = cfg.map(|c| c.tts_engine.as_str()).unwrap_or("piper");
     let tts_model = cfg.map(|c| c.tts_model.as_str()).unwrap_or("en_US-lessac-medium");
@@ -243,12 +249,13 @@ mod tests {
             Ok(ToolOutput::new(0, vec![], vec![]))
         }
 
-        fn get_plugin_data(&self, key: &str) -> Option<Vec<u8>> {
-            if key == "config" {
+        fn get_plugin_data(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+            let data = if key == "config" {
                 self.config.as_ref().map(|c| serde_json::to_vec(c).unwrap())
             } else {
                 None
-            }
+            };
+            Ok(data)
         }
 
         fn set_plugin_data(&self, _key: &str, _value: &[u8]) -> Result<(), String> {
