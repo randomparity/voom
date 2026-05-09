@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use console::style;
@@ -8,15 +9,16 @@ use voom_policy_testing::{
     assert_snapshot_file, CapabilityFixture, Fixture, SnapshotOutcome, TestSuite,
 };
 
-use crate::cli::PolicyCommands;
+use crate::cli::{PolicyCommands, PolicyFixtureCommands};
 
-pub fn run(cmd: PolicyCommands) -> Result<()> {
+pub async fn run(cmd: PolicyCommands) -> Result<()> {
     match cmd {
         PolicyCommands::List => list(),
         PolicyCommands::Validate { file } => validate(&file),
         PolicyCommands::Show { file } => show(&file),
         PolicyCommands::Format { file } => format(&file),
         PolicyCommands::Diff { a, b, fixture } => diff(&a, &b, fixture.as_deref()),
+        PolicyCommands::Fixture { command } => fixture(command).await,
         PolicyCommands::Test {
             paths,
             policy,
@@ -24,6 +26,51 @@ pub fn run(cmd: PolicyCommands) -> Result<()> {
             json,
         } => test(&paths, policy.as_deref(), update, json),
     }
+}
+
+async fn fixture(cmd: PolicyFixtureCommands) -> Result<()> {
+    match cmd {
+        PolicyFixtureCommands::Extract { path } => extract_fixture(&path).await,
+    }
+}
+
+async fn extract_fixture(path: &Path) -> Result<()> {
+    let config = crate::config::load_config()?;
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("failed to stat media file {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!("fixture source is not a file: {}", path.display());
+    }
+
+    let kernel = Arc::new(voom_kernel::Kernel::new());
+    let media = crate::introspect::introspect_file_no_dispatch(
+        path.to_path_buf(),
+        metadata.len(),
+        None,
+        &kernel,
+        config.ffprobe_path(),
+        config.animation_detection_mode(),
+    )
+    .await
+    .with_context(|| format!("failed to introspect {}", path.display()))?;
+    let fixture = fixture_from_media(media)?;
+    println!("{}", serde_json::to_string_pretty(&fixture)?);
+    Ok(())
+}
+
+fn fixture_from_media(media: voom_domain::media::MediaFile) -> Result<Fixture> {
+    let file_name = media
+        .path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("media path has no filename: {}", media.path.display()))?;
+    Ok(Fixture {
+        path: PathBuf::from(file_name),
+        container: media.container,
+        duration: media.duration,
+        size: media.size,
+        tracks: media.tracks,
+        capabilities: None,
+    })
 }
 
 fn list() -> Result<()> {

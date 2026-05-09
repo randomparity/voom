@@ -4204,6 +4204,117 @@ mod test_policy_diff {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// test_policy_fixture_extract — `policy fixture extract`
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod test_policy_fixture_extract {
+    use super::*;
+
+    const CONTAINER_POLICY: &str = r#"
+policy "fixture-extract" {
+  phase containerize {
+    container mkv
+  }
+}
+"#;
+
+    fn plan_signatures(plans: &[serde_json::Value]) -> Vec<serde_json::Value> {
+        plans
+            .iter()
+            .map(|plan| {
+                serde_json::json!({
+                    "phase_name": plan["phase_name"],
+                    "actions": plan["actions"],
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn extract_round_trips_to_policy_testing_and_matches_plan_only() {
+        require_tool!("ffprobe");
+        let env = TestEnv::new();
+        env.populate_media(&["basic-h264-aac"]);
+        let media_path = env.media_dir().join("basic-h264-aac.mp4");
+        let policy_path = env.write_policy("fixture-extract", CONTAINER_POLICY);
+
+        let output = env
+            .voom()
+            .args(["policy", "fixture", "extract", media_path.to_str().unwrap()])
+            .timeout(std::time::Duration::from_secs(60))
+            .output()
+            .expect("run policy fixture extract");
+        assert!(
+            output.status.success(),
+            "fixture extract failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let fixture_json: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("fixture extract emits JSON");
+        assert_eq!(fixture_json["path"], "basic-h264-aac.mp4");
+        assert!(fixture_json["tracks"]
+            .as_array()
+            .is_some_and(|tracks| !tracks.is_empty()));
+        for stripped_field in [
+            "bitrate",
+            "content_hash",
+            "expected_hash",
+            "id",
+            "introspected_at",
+            "plugin_metadata",
+            "status",
+            "tags",
+        ] {
+            assert!(
+                fixture_json.get(stripped_field).is_none(),
+                "fixture must strip {stripped_field}"
+            );
+        }
+
+        let fixture: voom_policy_testing::Fixture =
+            serde_json::from_value(fixture_json).expect("fixture is parseable");
+        let compiled = voom_dsl::compile_policy(CONTAINER_POLICY).expect("compile policy");
+        let evaluated = voom_policy_evaluator::evaluate_with_capabilities(
+            &compiled,
+            &fixture.to_media_file(),
+            &fixture.capabilities_or_default(),
+        );
+        let fixture_plans: Vec<serde_json::Value> = evaluated
+            .plans
+            .iter()
+            .filter(|plan| !plan.is_empty() && !plan.is_skipped())
+            .map(|plan| serde_json::to_value(plan).expect("serialize fixture plan"))
+            .collect();
+
+        let process_output = env
+            .voom()
+            .args([
+                "process",
+                media_path.to_str().unwrap(),
+                "--policy",
+                policy_path.to_str().unwrap(),
+                "--plan-only",
+            ])
+            .timeout(std::time::Duration::from_secs(60))
+            .output()
+            .expect("run process --plan-only");
+        assert!(
+            process_output.status.success(),
+            "process --plan-only failed: {}",
+            String::from_utf8_lossy(&process_output.stderr)
+        );
+        let process_plans: Vec<serde_json::Value> =
+            serde_json::from_slice(&process_output.stdout).expect("plan-only emits JSON");
+
+        assert_eq!(
+            plan_signatures(&fixture_plans),
+            plan_signatures(&process_plans)
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // test_plan_persistence — regression coverage for issue #162: voom process
 // must persist completed Plan rows into the SQLite store so downstream
 // commands (`plans show`, `report --plans`, `report --database`) can audit

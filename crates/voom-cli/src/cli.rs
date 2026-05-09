@@ -251,6 +251,11 @@ pub enum PolicyCommands {
         #[arg(long)]
         fixture: Option<PathBuf>,
     },
+    /// Author and inspect policy fixtures
+    Fixture {
+        #[command(subcommand)]
+        command: PolicyFixtureCommands,
+    },
     /// Run JSON policy test suites
     Test {
         /// Test suite files or directories containing *.test.json suites
@@ -265,6 +270,15 @@ pub enum PolicyCommands {
         /// Emit machine-readable JSON output
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PolicyFixtureCommands {
+    /// Extract a JSON fixture descriptor from a real media file
+    Extract {
+        /// Media file to introspect
+        path: PathBuf,
     },
 }
 
@@ -1205,6 +1219,19 @@ mod tests {
     fn test_policy_diff_requires_two_files() {
         assert!(try_parse(&["voom", "policy", "diff"]).is_err());
         assert!(try_parse(&["voom", "policy", "diff", "a.voom"]).is_err());
+    }
+
+    #[test]
+    fn test_policy_fixture_extract() {
+        let cli = parse(&["voom", "policy", "fixture", "extract", "movie.mp4"]);
+        match cli.command {
+            Commands::Policy(PolicyCommands::Fixture {
+                command: PolicyFixtureCommands::Extract { path },
+            }) => {
+                assert_eq!(path, PathBuf::from("movie.mp4"));
+            }
+            _ => panic!("expected Policy Fixture Extract"),
+        }
     }
 
     #[test]

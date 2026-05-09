@@ -145,6 +145,33 @@ Common fixture patterns:
 - Model font attachments as `track_type: "Attachment"` with a font-like codec
   such as `ttf`, `otf`, or `ass`.
 
+You can extract a starter fixture from a real media file:
+
+```sh
+cargo run -q -- policy fixture extract /media/movie.mp4 > movie-mp4.json
+```
+
+Extraction runs the same ffprobe introspection path used by `scan` and
+`process`, then emits only fields that affect policy evaluation. It preserves:
+
+- filename
+- container
+- duration
+- file size
+- tracks and track-level codec, language, disposition, audio, video, HDR, and
+  animation fields
+
+It strips fields that make fixtures noisy, identifying, or environment-specific:
+
+- parent directories and absolute paths
+- file IDs
+- content and expected hashes
+- lifecycle status
+- file bitrate
+- file-level tags
+- plugin metadata
+- introspection timestamps
+
 Fixtures can override executor capabilities. This is useful for policies that
 plan transcodes or rely on `system.*` capability conditions:
 
@@ -250,22 +277,19 @@ When snapshot assertions are added, use this review etiquette:
 
 ## Helper Commands
 
-The active helper today is the test runner:
+The active helpers today are the test runner and fixture extraction:
 
 ```sh
 cargo run -q -- policy test <suite-or-directory>
+cargo run -q -- policy fixture extract <media-file>
 ```
 
-The names `voom policy fixture extract` and `voom policy diff --fixture` are
-reserved for fixture authoring and fixture-scoped policy diffs, but they are
-not exposed by the current CLI. Do not put those commands in automation yet.
+Use extracted fixtures as a starting point. Keep only the fields relevant to the
+behavior under test so a reviewer can understand the scenario quickly.
 
-Until fixture extraction lands, author fixtures by copying an existing fixture
-and changing only the fields relevant to the behavior under test. Keep fixtures
-small enough that a reviewer can understand the scenario quickly.
-
-Until fixture-scoped diffing lands, compare policy behavior by running the same
-suite with a policy override:
+The name `voom policy diff --fixture` is reserved for fixture-scoped policy
+diffs, but it is not exposed by the current CLI. Until fixture-scoped diffing
+lands, compare policy behavior by running the same suite with a policy override:
 
 ```sh
 cargo run -q -- policy test docs/examples/tests --policy path/to/candidate.voom
