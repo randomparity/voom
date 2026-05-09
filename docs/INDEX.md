@@ -10,6 +10,7 @@
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Local development, coverage, and CI workflow notes |
 | [mutation-testing-baseline.md](mutation-testing-baseline.md) | Initial cargo-mutants baseline counts and triage guidance for logic-dense crates |
 | [plugin-development.md](plugin-development.md) | Guide for writing native and WASM plugins |
+| [policy-testing.md](policy-testing.md) | Tutorial for writing fixture-backed `.voom` policy tests |
 | [functional-test-plan.md](functional-test-plan.md) | QA test plan covering all user-facing features |
 | [troubleshooting.md](troubleshooting.md) | Troubleshooting guide for common issues |
 | [TODO.md](TODO.md) | Outstanding work items |

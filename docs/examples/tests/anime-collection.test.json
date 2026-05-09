@@ -1,0 +1,13 @@
+{
+  "policy": "../anime-collection.voom",
+  "cases": [
+    {
+      "name": "organizes bilingual anime release",
+      "fixture": "rich-movie.json",
+      "expect": {
+        "phases_run": ["containerize", "cleanup", "organize", "validate"],
+        "subtitle_tracks_kept": 3
+      }
+    }
+  ]
+}

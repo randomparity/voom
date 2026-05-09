@@ -37,6 +37,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
       - run: cargo build --workspace
       - run: cargo test --workspace
+      - run: cargo run -q -- policy test docs/examples/tests
 
   test-wasm:
     name: Test (WASM feature)

@@ -116,6 +116,10 @@ build:
 test:
     cargo test --workspace
 
+# Run fixture-backed tests for shipped example policies
+policy-test-examples:
+    cargo run -q -- policy test docs/examples/tests
+
 # Run tests for a single crate (e.g., just test-crate voom-dsl)
 test-crate crate:
     cargo test -p {{ crate }}
@@ -138,7 +142,7 @@ fmt-check:
     cargo fmt --all -- --check
 
 # Run the full CI check locally (fmt + clippy + tests)
-ci: fmt-check lint test test-wasm
+ci: fmt-check lint test policy-test-examples test-wasm
 
 # Run cargo-deny dependency audit
 deny:

@@ -1,0 +1,12 @@
+{
+  "policy": "../attachment-management.voom",
+  "cases": [
+    {
+      "name": "strips non-font attachments while preserving cover art",
+      "fixture": "rich-movie.json",
+      "expect": {
+        "phases_run": ["containerize", "strip-images", "attachment-checks"]
+      }
+    }
+  ]
+}

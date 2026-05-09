@@ -1,0 +1,15 @@
+{
+  "policy": "../metadata-enrichment.voom",
+  "cases": [
+    {
+      "name": "classifies media without external metadata",
+      "fixture": "rich-movie.json",
+      "expect": {
+        "phases_run": ["quality-tags"],
+        "phases_skipped": {
+          "classify": "Skipped by action"
+        }
+      }
+    }
+  ]
+}

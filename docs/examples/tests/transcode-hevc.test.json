@@ -1,0 +1,13 @@
+{
+  "policy": "../transcode-hevc.voom",
+  "cases": [
+    {
+      "name": "transcodes h264 source to hevc",
+      "fixture": "rich-movie.json",
+      "expect": {
+        "phases_run": ["containerize", "transcode-video", "transcode-audio", "stereo-compat"],
+        "video_codec": "hevc"
+      }
+    }
+  ]
+}
