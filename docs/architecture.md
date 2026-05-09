@@ -71,7 +71,8 @@ voom/
 │   ├── voom-cli/             # clap-derive CLI binary with 20 subcommands
 │   ├── voom-process/         # Shared subprocess utilities with timeout-aware execution
 │   ├── voom-wit/             # WIT interface definitions + type conversion utilities
-│   └── voom-plugin-sdk/      # SDK crate for WASM plugin authors
+│   ├── voom-plugin-sdk/      # SDK crate for WASM plugin authors
+│   └── voom-policy-testing/  # Fixture-backed policy evaluation assertions
 ├── plugins/                  # Native plugins (compiled into binary)
 │   ├── discovery/            # Filesystem walking (walkdir + rayon), content hashing (xxHash64)
 │   ├── ffprobe-introspector/ # ffprobe JSON parsing, codec/HDR/VFR detection (direct-call)

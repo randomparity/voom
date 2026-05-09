@@ -1,0 +1,14 @@
+{
+  "policy": "../movie-library.voom",
+  "cases": [
+    {
+      "name": "normalizes movie library tracks",
+      "fixture": "rich-movie.json",
+      "expect": {
+        "phases_run": ["containerize", "clean-metadata", "normalize", "validate"],
+        "audio_tracks_kept": 3,
+        "subtitle_tracks_kept": 2
+      }
+    }
+  ]
+}

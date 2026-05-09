@@ -58,6 +58,10 @@ handling, and `rules` blocks for multi-branch decision logic. 10 example
 policies ship in `docs/examples/` covering anime, archival, transcoding,
 metadata enrichment, and more.
 
+Fixture-backed policy tests live under `docs/examples/tests/` and use the
+`voom-policy-testing` crate to evaluate policies without media files, ffprobe,
+ffmpeg, or a database.
+
 ### Hardware-Accelerated Transcoding
 
 Four GPU backends with automatic detection and software fallback:

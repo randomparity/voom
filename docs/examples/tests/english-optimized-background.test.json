@@ -1,0 +1,23 @@
+{
+  "policy": "../english-optimized-background.voom",
+  "cases": [
+    {
+      "name": "runs unattended English normalization",
+      "fixture": "rich-movie.json",
+      "expect": {
+        "phases_run": [
+          "containerize",
+          "strip",
+          "transcode",
+          "audio-cleanup",
+          "audio-filter-english",
+          "subtitle-filter",
+          "audio-normalize",
+          "finalize"
+        ],
+        "audio_tracks_synthesized": 1,
+        "video_codec": "hevc"
+      }
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+[
+  {
+    "actions": [
+      {
+        "description": "Convert container from mp4 to mkv",
+        "operation": "ConvertContainer",
+        "parameters": {
+          "container": "Mkv",
+          "type": "Container"
+        },
+        "track_index": null
+      }
+    ],
+    "evaluated_at": "1970-01-01T00:00:00Z",
+    "executor_hint": null,
+    "file": {
+      "bitrate": null,
+      "container": "Mp4",
+      "content_hash": null,
+      "duration": 120.0,
+      "expected_hash": null,
+      "id": null,
+      "introspected_at": "1970-01-01T00:00:00Z",
+      "path": "/media/movie.mp4",
+      "plugin_metadata": {},
+      "size": 99,
+      "status": "Active",
+      "tags": {},
+      "tracks": [
+        {
+          "bit_depth": null,
+          "channel_layout": null,
+          "channels": null,
+          "codec": "h264",
+          "frame_rate": 23.976,
+          "hdr_format": null,
+          "height": 1080,
+          "index": 0,
+          "is_animation": null,
+          "is_default": true,
+          "is_forced": false,
+          "is_hdr": false,
+          "is_vfr": false,
+          "language": "und",
+          "pixel_format": null,
+          "sample_rate": null,
+          "title": "",
+          "track_type": "Video",
+          "width": 1920
+        }
+      ]
+    },
+    "id": null,
+    "phase_name": "containerize",
+    "policy_hash": "9d3c3237247aa3d5",
+    "policy_name": "minimal",
+    "safeguard_violations": [],
+    "session_id": null,
+    "skip_reason": null,
+    "warnings": []
+  }
+]

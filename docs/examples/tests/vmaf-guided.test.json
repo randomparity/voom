@@ -1,0 +1,13 @@
+{
+  "policy": "../vmaf-guided.voom",
+  "cases": [
+    {
+      "name": "plans vmaf-guided hevc transcode",
+      "fixture": "rich-movie.json",
+      "expect": {
+        "phases_run": ["transcode-video"],
+        "video_codec": "hevc"
+      }
+    }
+  ]
+}

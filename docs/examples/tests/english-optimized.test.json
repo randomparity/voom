@@ -1,0 +1,23 @@
+{
+  "policy": "../english-optimized.voom",
+  "cases": [
+    {
+      "name": "normalizes English movie tracks",
+      "fixture": "rich-movie.json",
+      "expect": {
+        "phases_run": [
+          "containerize",
+          "strip",
+          "transcode",
+          "audio-cleanup",
+          "audio-filter-english",
+          "subtitle-filter",
+          "audio-normalize",
+          "finalize"
+        ],
+        "audio_tracks_synthesized": 1,
+        "video_codec": "hevc"
+      }
+    }
+  ]
+}

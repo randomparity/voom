@@ -1,0 +1,22 @@
+{
+  "policy": "../full-pipeline.voom",
+  "cases": [
+    {
+      "name": "evaluates comprehensive reference pipeline",
+      "fixture": "rich-movie.json",
+      "expect": {
+        "phases_run": [
+          "containerize",
+          "tag-management",
+          "track-selection",
+          "track-removal",
+          "metadata-cleanup",
+          "organize",
+          "transcode-video",
+          "transcode-audio"
+        ],
+        "video_codec": "hevc"
+      }
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "path": "/media/movie.mp4",
+  "container": "Mp4",
+  "duration": 120.0,
+  "size": 99,
+  "tracks": [
+    {
+      "index": 0,
+      "track_type": "Video",
+      "codec": "h264",
+      "language": "und",
+      "title": "",
+      "is_default": true,
+      "is_forced": false,
+      "channels": null,
+      "channel_layout": null,
+      "sample_rate": null,
+      "bit_depth": null,
+      "width": 1920,
+      "height": 1080,
+      "frame_rate": 23.976,
+      "is_vfr": false,
+      "is_hdr": false,
+      "hdr_format": null,
+      "pixel_format": null
+    }
+  ]
+}

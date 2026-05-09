@@ -1,0 +1,14 @@
+{
+  "policy": "../strict-archive.voom",
+  "cases": [
+    {
+      "name": "applies strict archival filters",
+      "fixture": "rich-movie.json",
+      "expect": {
+        "phases_run": ["container-check", "quality-gate", "strict-filter", "organize"],
+        "audio_tracks_kept": 2,
+        "subtitle_tracks_kept": 2
+      }
+    }
+  ]
+}
