@@ -91,6 +91,9 @@ pub struct OnEventResult {
     pub plugin_name: String,
     pub produced_events: Vec<(String, Vec<u8>)>,
     pub data: Option<Vec<u8>>,
+    pub claimed: bool,
+    pub execution_error: Option<String>,
+    pub execution_detail: Option<Vec<u8>>,
 }
 
 impl OnEventResult {
@@ -104,6 +107,9 @@ impl OnEventResult {
             plugin_name: plugin_name.into(),
             produced_events,
             data,
+            claimed: false,
+            execution_error: None,
+            execution_detail: None,
         }
     }
 }
