@@ -612,64 +612,11 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
     Returns (cmd_list, temp_files_to_cleanup).
     """
     outfile = dest / f"{spec['stem']}.{spec['ext']}"
-    cmd = ["ffmpeg", "-y", "-hide_banner"]
-
     specials = set(spec.get("special", []))
     video = spec["video"]
     audios = spec["audio"]
     subs = spec.get("subs", [])
 
-    # --- Video input ---
-    vf_filters = [f"testsrc2=duration={duration}:size={video['size']}:rate={video['fps']}"]
-    if "vfr" in specials:
-        # Vary PTS to create variable frame rate
-        vf_filters.append("setpts='PTS+0.002*sin(N*0.1)/TB'")
-    cmd += ["-f", "lavfi", "-i", ",".join(vf_filters)]
-
-    # --- Audio inputs ---
-    for i, audio in enumerate(audios):
-        ch = audio["channels"]
-        if ch <= 2:
-            cmd += ["-f", "lavfi", "-i",
-                    f"sine=frequency={440 + i * 110}:duration={duration}:sample_rate=48000"]
-        else:
-            # Generate 5.1/7.1 by merging multiple sine sources
-            freqs = [220, 330, 440, 550, 660, 770, 880, 990][:ch]
-            filter_parts = []
-            for j, freq in enumerate(freqs):
-                filter_parts.append(f"sine=frequency={freq}:duration={duration}:sample_rate=48000")
-            amerge_input = "|".join(filter_parts)
-            cmd += ["-f", "lavfi", "-i", f"amovie='{amerge_input}'" if False else ""]
-            # Actually, use a complex filter approach — replace last two args
-            cmd = cmd[:-2]
-            sine_filter = ";".join(
-                f"sine=frequency={freq}:duration={duration}:sample_rate=48000"
-                for freq in freqs
-            )
-            cmd += ["-f", "lavfi", "-i",
-                    f"sine=frequency=440:duration={duration}:sample_rate=48000"]
-
-    # --- Subtitle inputs ---
-    sub_files = []
-    for i, sub in enumerate(subs):
-        fmt = sub["format"]
-        ext = "vtt" if fmt == "webvtt" else fmt
-        sub_path = Path(tmpdir) / f"sub_{spec['stem']}_{i}.{ext}"
-        SUB_WRITERS[fmt](sub_path, min(duration, 59))
-        sub_files.append(sub_path)
-        cmd += ["-i", str(sub_path)]
-
-    # --- Map streams ---
-    cmd += ["-map", "0:v"]
-    for i in range(len(audios)):
-        cmd += ["-map", f"{1 if audios[0]['channels'] <= 2 or i == 0 else 1}:a"]
-        # For multi-channel that fell back to mono input, we'll handle below
-    # For multi-audio with >2 channels, we generated a single sine for all.
-    # Remap: all audio inputs are at indices 1..len(audios)
-    # Actually, let's simplify: generate one sine input per audio track
-    # and use pan filter for multichannel.
-
-    # --- Rebuild command cleanly ---
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
 
     # Video input
