@@ -270,7 +270,7 @@ impl SqliteStore {
         for chunk in file_ids.chunks(500) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
             let sql = format!(
-                "SELECT file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, is_animation \
+                "SELECT file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, loudness_integrated_lufs, loudness_true_peak_db, loudness_range_lu, loudness_measured_at, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, is_animation \
                  FROM tracks WHERE file_id IN ({}) ORDER BY file_id, stream_index",
                 placeholders.join(",")
             );
@@ -311,7 +311,7 @@ impl SqliteStore {
     ) -> Result<Vec<Track>> {
         let mut stmt = conn
             .prepare(
-                "SELECT stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, is_animation
+                "SELECT stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, loudness_integrated_lufs, loudness_true_peak_db, loudness_range_lu, loudness_measured_at, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, is_animation
                  FROM tracks WHERE file_id = ?1 ORDER BY stream_index",
             )
             .map_err(storage_err("failed to prepare track query"))?;
