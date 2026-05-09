@@ -73,6 +73,13 @@ pub(crate) fn format_snapshot_cell(snap: &voom_domain::snapshot::MetadataSnapsho
         parts.push(res.clone());
     }
 
+    if let Some(crop) = snap.crop {
+        parts.push(format!(
+            "crop={}/{}/{}/{}",
+            crop.left, crop.top, crop.right, crop.bottom
+        ));
+    }
+
     let mut track_counts = Vec::new();
     for &(count, label) in &[
         (snap.video_tracks, "v"),
@@ -188,6 +195,7 @@ mod tests {
             "subtitle_tracks": subtitle,
             "codecs": [],
             "resolution": resolution,
+            "crop": null,
             "duration_secs": 0.0,
         }))
         .expect("valid snapshot JSON")
@@ -215,5 +223,13 @@ mod tests {
     fn format_snapshot_video_only() {
         let snap = make_snapshot(1, 0, 0, Some("1920x1080"));
         assert_eq!(format_snapshot_cell(&snap), "1920x1080 1v");
+    }
+
+    #[test]
+    fn format_snapshot_includes_crop() {
+        let mut snap = make_snapshot(1, 0, 0, Some("1920x1080"));
+        snap.crop = Some(voom_domain::media::CropRect::new(0, 132, 0, 132));
+
+        assert_eq!(format_snapshot_cell(&snap), "1920x1080 crop=0/132/0/132 1v");
     }
 }

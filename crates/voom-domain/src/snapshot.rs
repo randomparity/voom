@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::media::MediaFile;
+use crate::media::{CropRect, MediaFile};
 
 /// A lightweight summary of a file's media state at a point in time.
 ///
@@ -20,6 +20,9 @@ pub struct MetadataSnapshot {
     pub codecs: Vec<String>,
     /// Resolution of the first video track, e.g. `"3840x2160"`.
     pub resolution: Option<String>,
+    /// Cached crop rectangle, expressed as pixels removed from each source edge.
+    #[serde(default)]
+    pub crop: Option<CropRect>,
     pub duration_secs: f64,
 }
 
@@ -55,6 +58,7 @@ impl MetadataSnapshot {
             subtitle_tracks: u32::try_from(subtitle_tracks.len()).unwrap_or(u32::MAX),
             codecs,
             resolution,
+            crop: file.crop_detection.as_ref().map(|detection| detection.rect),
             duration_secs: if file.duration.is_finite() {
                 file.duration
             } else {
@@ -90,7 +94,9 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::media::{Container, MediaFile, Track, TrackType};
+    use chrono::Utc;
+
+    use crate::media::{Container, CropDetection, CropRect, MediaFile, Track, TrackType};
 
     fn video_track(index: u32, codec: &str, width: u32, height: u32) -> Track {
         Track {
@@ -128,6 +134,7 @@ mod tests {
         assert_eq!(snap.audio_tracks, 2);
         assert_eq!(snap.subtitle_tracks, 2);
         assert_eq!(snap.resolution, Some("3840x2160".to_string()));
+        assert_eq!(snap.crop, None);
         assert_eq!(snap.duration_secs, 7320.5);
         // codecs sorted and deduped: aac, hevc, srt (two srt tracks → one entry), truehd
         assert_eq!(snap.codecs, vec!["aac", "hevc", "srt", "truehd"]);
@@ -147,6 +154,22 @@ mod tests {
         assert_eq!(snap.subtitle_tracks, 0);
         assert_eq!(snap.resolution, None);
         assert_eq!(snap.codecs, vec!["flac"]);
+    }
+
+    #[test]
+    fn snapshot_includes_crop_detection() {
+        let mut file = MediaFile::new(PathBuf::from("/movies/cropped.mkv"))
+            .with_container(Container::Mkv)
+            .with_duration(5400.0)
+            .with_tracks(vec![video_track(0, "h264", 1920, 1080)]);
+        file.crop_detection = Some(CropDetection::new(
+            CropRect::new(0, 132, 0, 132),
+            Utc::now(),
+        ));
+
+        let snap = MetadataSnapshot::from_media_file(&file);
+
+        assert_eq!(snap.crop, Some(CropRect::new(0, 132, 0, 132)));
     }
 
     #[test]
@@ -178,6 +201,24 @@ mod tests {
         let restored = MetadataSnapshot::from_json(&json).expect("deserialization should succeed");
 
         assert_eq!(snap, restored);
+    }
+
+    #[test]
+    fn snapshot_deserializes_legacy_json_without_crop() {
+        let snap = MetadataSnapshot::from_json(
+            r#"{
+                "container": "mkv",
+                "video_tracks": 1,
+                "audio_tracks": 2,
+                "subtitle_tracks": 0,
+                "codecs": ["aac", "h264"],
+                "resolution": "1920x1080",
+                "duration_secs": 5400.0
+            }"#,
+        )
+        .expect("legacy snapshot JSON should deserialize");
+
+        assert_eq!(snap.crop, None);
     }
 
     #[test]
