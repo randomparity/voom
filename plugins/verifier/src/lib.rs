@@ -175,13 +175,13 @@ fn verify_result(record: &VerificationRecord, path: std::path::PathBuf) -> Event
     let event = Event::VerifyCompleted(VerifyCompletedEvent::new(
         record.file_id.clone(),
         path,
-        VerifyCompletedDetails {
-            mode: record.mode,
-            outcome: record.outcome,
-            error_count: record.error_count,
-            warning_count: record.warning_count,
-            verification_id: record.id,
-        },
+        VerifyCompletedDetails::new(
+            record.mode,
+            record.outcome,
+            record.error_count,
+            record.warning_count,
+            record.id,
+        ),
     ));
     let mut result = EventResult::new("verifier");
     result.claimed = true;
