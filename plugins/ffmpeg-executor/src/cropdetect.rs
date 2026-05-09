@@ -43,8 +43,9 @@ pub fn detect_crop(
     source: CropDetectSource,
     settings: &CropSettings,
 ) -> Result<Option<CropDetection>> {
-    let rects = detect_sample_rects(ffmpeg_path, source_path, source, settings)?;
-    let Some(rect) = conservative_crop(&rects, source, settings)? else {
+    let config = CropDetectConfig::from(settings);
+    let rects = detect_sample_rects(ffmpeg_path, source_path, source, config)?;
+    let Some(rect) = conservative_crop(&rects, source, config)? else {
         return Ok(None);
     };
     if rect.is_empty() {
@@ -57,15 +58,15 @@ fn detect_sample_rects(
     ffmpeg_path: &str,
     source_path: &Path,
     source: CropDetectSource,
-    settings: &CropSettings,
+    config: CropDetectConfig,
 ) -> Result<Vec<CropRect>> {
     let mut rects = Vec::new();
     for start in sample_starts(
         source.duration_secs,
-        sample_count(settings),
-        sample_duration(settings),
+        config.sample_count,
+        config.sample_duration_secs,
     ) {
-        let stderr = run_cropdetect_sample(ffmpeg_path, source_path, start, settings)?;
+        let stderr = run_cropdetect_sample(ffmpeg_path, source_path, start, config)?;
         rects.extend(parse_cropdetect_rects(&stderr, source)?);
     }
     Ok(rects)
@@ -75,11 +76,11 @@ fn run_cropdetect_sample(
     ffmpeg_path: &str,
     source_path: &Path,
     start_secs: f64,
-    settings: &CropSettings,
+    config: CropDetectConfig,
 ) -> Result<String> {
-    let duration = sample_duration(settings).to_string();
+    let duration = config.sample_duration_secs.to_string();
     let start = format!("{start_secs:.3}");
-    let filter = format!("cropdetect=limit={}:round=2", threshold(settings));
+    let filter = format!("cropdetect=limit={}:round=2", config.threshold);
     let args = [
         "-hide_banner",
         "-ss",
@@ -112,23 +113,28 @@ fn run_cropdetect_sample(
     Ok(String::from_utf8_lossy(&output.stderr).to_string())
 }
 
-fn sample_duration(settings: &CropSettings) -> u32 {
-    settings
-        .sample_duration_secs
-        .unwrap_or(DEFAULT_SAMPLE_DURATION_SECS)
-        .max(1)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CropDetectConfig {
+    sample_duration_secs: u32,
+    sample_count: u32,
+    threshold: u8,
+    minimum_crop: u32,
+    preserve_bottom_pixels: u32,
 }
 
-fn sample_count(settings: &CropSettings) -> u32 {
-    settings.sample_count.unwrap_or(DEFAULT_SAMPLE_COUNT).max(1)
-}
-
-fn threshold(settings: &CropSettings) -> u8 {
-    settings.threshold.unwrap_or(DEFAULT_THRESHOLD)
-}
-
-fn minimum_crop(settings: &CropSettings) -> u32 {
-    settings.minimum_crop.unwrap_or(DEFAULT_MINIMUM_CROP)
+impl From<&CropSettings> for CropDetectConfig {
+    fn from(settings: &CropSettings) -> Self {
+        Self {
+            sample_duration_secs: settings
+                .sample_duration_secs
+                .unwrap_or(DEFAULT_SAMPLE_DURATION_SECS)
+                .max(1),
+            sample_count: settings.sample_count.unwrap_or(DEFAULT_SAMPLE_COUNT).max(1),
+            threshold: settings.threshold.unwrap_or(DEFAULT_THRESHOLD),
+            minimum_crop: settings.minimum_crop.unwrap_or(DEFAULT_MINIMUM_CROP),
+            preserve_bottom_pixels: settings.preserve_bottom_pixels.unwrap_or(0),
+        }
+    }
 }
 
 fn sample_starts(duration_secs: f64, count: u32, sample_duration_secs: u32) -> Vec<f64> {
@@ -190,7 +196,7 @@ impl DetectedCrop {
 fn conservative_crop(
     rects: &[CropRect],
     source: CropDetectSource,
-    settings: &CropSettings,
+    config: CropDetectConfig,
 ) -> Result<Option<CropRect>> {
     let Some(first) = rects.first().copied() else {
         return Ok(None);
@@ -203,10 +209,8 @@ fn conservative_crop(
             acc.bottom.min(item.bottom),
         )
     });
-    rect = apply_minimum_crop(rect, minimum_crop(settings));
-    rect.bottom = rect
-        .bottom
-        .saturating_sub(settings.preserve_bottom_pixels.unwrap_or(0));
+    rect = apply_minimum_crop(rect, config.minimum_crop);
+    rect.bottom = rect.bottom.saturating_sub(config.preserve_bottom_pixels);
     rect = snap_output_to_even(rect, source)?;
     Ok(Some(rect))
 }
@@ -259,6 +263,10 @@ mod tests {
         CropDetectSource::new(1920, 1080, 7200.0)
     }
 
+    fn config(settings: &CropSettings) -> CropDetectConfig {
+        CropDetectConfig::from(settings)
+    }
+
     #[test]
     fn parses_cropdetect_lines_into_edge_crop() {
         let stderr = "[Parsed_cropdetect_0 @ 0x123] crop=1920:816:0:132\n\
@@ -278,7 +286,7 @@ mod tests {
             CropRect::new(10, 132, 8, 132),
         ];
 
-        let crop = conservative_crop(&rects, source(), &CropSettings::auto())
+        let crop = conservative_crop(&rects, source(), config(&CropSettings::auto()))
             .unwrap()
             .expect("crop");
 
@@ -291,7 +299,7 @@ mod tests {
         let mut settings = CropSettings::auto();
         settings.minimum_crop = Some(4);
 
-        let crop = conservative_crop(&rects, source(), &settings)
+        let crop = conservative_crop(&rects, source(), config(&settings))
             .unwrap()
             .expect("crop");
 
@@ -304,7 +312,7 @@ mod tests {
         let mut settings = CropSettings::auto();
         settings.preserve_bottom_pixels = Some(60);
 
-        let crop = conservative_crop(&rects, source(), &settings)
+        let crop = conservative_crop(&rects, source(), config(&settings))
             .unwrap()
             .expect("crop");
 
