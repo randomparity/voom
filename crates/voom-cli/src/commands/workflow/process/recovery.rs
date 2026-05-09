@@ -25,6 +25,11 @@ pub struct OrphanedBackup {
     pub size: u64,
 }
 
+struct BackupScanResult {
+    backups: Vec<OrphanedBackup>,
+    ambiguous_paths: std::collections::HashSet<PathBuf>,
+}
+
 /// Returns true if `path` is under any of `dirs` (prefix match on components).
 fn path_is_under_any(path: &Path, dirs: &[PathBuf]) -> bool {
     dirs.iter().any(|dir| path.starts_with(dir))
@@ -40,39 +45,17 @@ pub fn check_and_recover_under(
     global_backup_dir: Option<&Path>,
 ) -> Result<u64> {
     let pending = list_pending_ops_for_recovery(store)?;
-    let mut all_backups = find_orphans_under(scan_dirs);
+    let backup_scan = collect_recovery_backups(scan_dirs, global_backup_dir, &pending);
 
-    // Also scan the global backup directory if configured.
-    // Ambiguous matches (multiple pending ops with the same filename)
-    // are skipped — collect their paths so we don't delete those
-    // pending ops as "stale".
-    let mut ambiguous_paths: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-    if let Some(global_dir) = global_backup_dir {
-        collect_global_backups(global_dir, &pending, &mut all_backups, &mut ambiguous_paths);
-    }
-
-    if pending.is_empty() && all_backups.is_empty() {
+    if pending.is_empty() && backup_scan.backups.is_empty() {
         return Ok(0);
     }
 
-    // Build set of file paths with pending operations.
-    let pending_paths: std::collections::HashSet<String> = pending
-        .iter()
-        .map(|op| op.file_path.to_string_lossy().to_string())
-        .collect();
-
-    // A backup is an orphan if its original path has a pending operation.
-    let orphans: Vec<_> = all_backups
-        .into_iter()
-        .filter(|b| {
-            let path_str = b.original_path.to_string_lossy().to_string();
-            pending_paths.contains(&path_str)
-        })
-        .collect();
+    let orphans = match_backups_to_pending_ops(backup_scan.backups, &pending);
 
     if orphans.is_empty() {
         if !pending.is_empty() {
-            clean_stale_pending_ops(&pending, scan_dirs, &ambiguous_paths, store);
+            clean_stale_pending_ops(&pending, scan_dirs, &backup_scan.ambiguous_paths, store);
         }
         return Ok(0);
     }
@@ -82,21 +65,66 @@ pub fn check_and_recover_under(
         "found orphaned backup files from crashed executions"
     );
 
-    let mut resolved = 0u64;
-    for orphan in &orphans {
-        match resolve_single_orphan(orphan, config, store, &pending) {
-            Ok(true) => resolved += 1,
-            Ok(false) => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(resolved)
+    resolve_orphaned_backups(&orphans, config, store, &pending)
 }
 
 fn list_pending_ops_for_recovery(store: &dyn PendingOpsStorage) -> Result<Vec<PendingOperation>> {
     store
         .list_pending_ops()
         .context("list pending operations for crash recovery")
+}
+
+fn collect_recovery_backups(
+    scan_dirs: &[PathBuf],
+    global_backup_dir: Option<&Path>,
+    pending: &[PendingOperation],
+) -> BackupScanResult {
+    let mut backups = find_orphans_under(scan_dirs);
+    let mut ambiguous_paths = std::collections::HashSet::new();
+
+    if let Some(global_dir) = global_backup_dir {
+        collect_global_backups(global_dir, pending, &mut backups, &mut ambiguous_paths);
+    }
+
+    BackupScanResult {
+        backups,
+        ambiguous_paths,
+    }
+}
+
+fn match_backups_to_pending_ops(
+    backups: Vec<OrphanedBackup>,
+    pending: &[PendingOperation],
+) -> Vec<OrphanedBackup> {
+    let pending_paths: std::collections::HashSet<String> = pending
+        .iter()
+        .map(|op| op.file_path.to_string_lossy().to_string())
+        .collect();
+
+    backups
+        .into_iter()
+        .filter(|backup| {
+            let path = backup.original_path.to_string_lossy().to_string();
+            pending_paths.contains(&path)
+        })
+        .collect()
+}
+
+fn resolve_orphaned_backups(
+    orphans: &[OrphanedBackup],
+    config: &RecoveryConfig,
+    store: &dyn voom_domain::storage::StorageTrait,
+    pending: &[PendingOperation],
+) -> Result<u64> {
+    let mut resolved = 0u64;
+    for orphan in orphans {
+        match resolve_single_orphan(orphan, config, store, pending) {
+            Ok(true) => resolved += 1,
+            Ok(false) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(resolved)
 }
 
 /// Remove stale pending operations that have no corresponding backup files,
