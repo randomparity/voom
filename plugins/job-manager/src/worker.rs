@@ -379,11 +379,15 @@ impl WorkerPool {
         );
 
         let mut job_ids = Vec::with_capacity(items.len());
+        let mut results = Vec::new();
         for item in items {
             let json_payload = match item.payload.map(serde_json::to_value) {
                 Some(Ok(v)) => Some(v),
                 Some(Err(e)) => {
-                    tracing::error!(error = %e, "failed to serialize WorkItem payload");
+                    let error = format!("payload serialization failed: {e}");
+                    tracing::error!(error = %error, "failed to serialize WorkItem payload");
+                    self.failed_count.fetch_add(1, Ordering::SeqCst);
+                    results.push(JobResult::failure(Uuid::new_v4(), error));
                     continue;
                 }
                 None => None,
@@ -394,7 +398,10 @@ impl WorkerPool {
             {
                 Ok(id) => job_ids.push(id),
                 Err(e) => {
-                    tracing::error!(error = %e, "Failed to enqueue job");
+                    let error = format!("enqueue failed: {e}");
+                    tracing::error!(error = %error, "Failed to enqueue job");
+                    self.failed_count.fetch_add(1, Ordering::SeqCst);
+                    results.push(JobResult::failure(Uuid::new_v4(), error));
                 }
             }
         }
@@ -445,7 +452,6 @@ impl WorkerPool {
 
         drop(result_tx);
 
-        let mut results = Vec::new();
         while let Some(result) = result_rx.recv().await {
             results.push(result);
         }
@@ -1170,6 +1176,67 @@ mod tests {
         );
     }
 
+    struct FailingPayload;
+
+    impl serde::Serialize for FailingPayload {
+        fn serialize<S>(&self, _serializer: S) -> std::result::Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom("payload boom"))
+        }
+    }
+
+    #[tokio::test]
+    async fn payload_serialization_failure_returns_failed_result_and_continues() {
+        let queue = test_queue();
+        let pool = WorkerPool::new(
+            queue,
+            WorkerPoolConfig {
+                max_workers: 1,
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
+
+        let processor_called = Arc::new(AtomicU32::new(0));
+        let processor_called_clone = processor_called.clone();
+        let items = vec![
+            WorkItem::new(
+                voom_domain::job::JobType::Custom("bad".into()),
+                50,
+                Some(FailingPayload),
+            ),
+            WorkItem::new(voom_domain::job::JobType::Custom("ok".into()), 100, None),
+        ];
+
+        let results = pool
+            .process_batch(
+                items,
+                move |_job| {
+                    let processor_called = processor_called_clone.clone();
+                    async move {
+                        processor_called.fetch_add(1, Ordering::SeqCst);
+                        Ok(None)
+                    }
+                },
+                JobErrorStrategy::Continue,
+                Arc::new(NoopReporter),
+            )
+            .await;
+
+        assert_eq!(processor_called.load(Ordering::SeqCst), 1);
+        assert_eq!(pool.completed_count(), 1);
+        assert_eq!(pool.failed_count(), 1);
+        assert!(results.iter().any(|result| result.outcome.is_success()));
+        assert!(results.iter().any(|result| {
+            result
+                .outcome
+                .error()
+                .is_some_and(|error| error.contains("payload serialization failed"))
+        }));
+    }
+
     /// Storage wrapper that always returns `Ok(None)` from `claim_job_by_id`,
     /// simulating a job already claimed by a different worker. All other
     /// operations delegate to an inner `InMemoryStore`.
@@ -1257,6 +1324,131 @@ mod tests {
         ) -> voom_domain::errors::Result<Option<chrono::DateTime<chrono::Utc>>> {
             self.inner.oldest_job_created_at()
         }
+    }
+
+    struct FailingCreateJobStore {
+        inner: Arc<InMemoryStore>,
+    }
+
+    impl FailingCreateJobStore {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(InMemoryStore::new()),
+            }
+        }
+    }
+
+    impl voom_domain::storage::JobStorage for FailingCreateJobStore {
+        fn create_job(&self, _job: &voom_domain::job::Job) -> voom_domain::errors::Result<Uuid> {
+            Err(voom_domain::errors::VoomError::plugin(
+                "job-manager",
+                "create failed",
+            ))
+        }
+
+        fn job(&self, id: &Uuid) -> voom_domain::errors::Result<Option<voom_domain::job::Job>> {
+            self.inner.job(id)
+        }
+
+        fn update_job(
+            &self,
+            id: &Uuid,
+            update: &voom_domain::job::JobUpdate,
+        ) -> voom_domain::errors::Result<()> {
+            self.inner.update_job(id, update)
+        }
+
+        fn claim_next_job(
+            &self,
+            worker_id: &str,
+        ) -> voom_domain::errors::Result<Option<voom_domain::job::Job>> {
+            self.inner.claim_next_job(worker_id)
+        }
+
+        fn claim_job_by_id(
+            &self,
+            job_id: &Uuid,
+            worker_id: &str,
+        ) -> voom_domain::errors::Result<Option<voom_domain::job::Job>> {
+            self.inner.claim_job_by_id(job_id, worker_id)
+        }
+
+        fn list_jobs(
+            &self,
+            filters: &voom_domain::storage::JobFilters,
+        ) -> voom_domain::errors::Result<Vec<voom_domain::job::Job>> {
+            self.inner.list_jobs(filters)
+        }
+
+        fn count_jobs_by_status(
+            &self,
+        ) -> voom_domain::errors::Result<Vec<(voom_domain::job::JobStatus, u64)>> {
+            self.inner.count_jobs_by_status()
+        }
+
+        fn delete_jobs(
+            &self,
+            status: Option<voom_domain::job::JobStatus>,
+        ) -> voom_domain::errors::Result<u64> {
+            self.inner.delete_jobs(status)
+        }
+
+        fn prune_old_jobs(
+            &self,
+            policy: voom_domain::storage::RetentionPolicy,
+        ) -> voom_domain::errors::Result<voom_domain::storage::PruneReport> {
+            self.inner.prune_old_jobs(policy)
+        }
+
+        fn count_old_jobs(
+            &self,
+            policy: voom_domain::storage::RetentionPolicy,
+        ) -> voom_domain::errors::Result<voom_domain::storage::PruneReport> {
+            self.inner.count_old_jobs(policy)
+        }
+
+        fn oldest_job_created_at(
+            &self,
+        ) -> voom_domain::errors::Result<Option<chrono::DateTime<chrono::Utc>>> {
+            self.inner.oldest_job_created_at()
+        }
+    }
+
+    #[tokio::test]
+    async fn enqueue_failure_returns_failed_result() {
+        let store: Arc<dyn voom_domain::storage::JobStorage> =
+            Arc::new(FailingCreateJobStore::new());
+        let queue = Arc::new(JobQueue::new(store));
+        let pool = WorkerPool::new(queue, WorkerPoolConfig::default(), CancellationToken::new());
+
+        let processor_called = Arc::new(AtomicU32::new(0));
+        let processor_called_clone = processor_called.clone();
+        let results = pool
+            .process_batch(
+                vec![WorkItem::new(
+                    voom_domain::job::JobType::Custom("bad".into()),
+                    100,
+                    None::<()>,
+                )],
+                move |_job| {
+                    let processor_called = processor_called_clone.clone();
+                    async move {
+                        processor_called.fetch_add(1, Ordering::SeqCst);
+                        Ok(None)
+                    }
+                },
+                JobErrorStrategy::Continue,
+                Arc::new(NoopReporter),
+            )
+            .await;
+
+        assert_eq!(processor_called.load(Ordering::SeqCst), 0);
+        assert_eq!(pool.failed_count(), 1);
+        assert_eq!(results.len(), 1);
+        assert!(results[0]
+            .outcome
+            .error()
+            .is_some_and(|error| error.contains("enqueue failed")));
     }
 
     #[tokio::test]
