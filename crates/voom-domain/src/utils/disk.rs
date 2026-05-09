@@ -104,8 +104,8 @@ pub fn estimate_required_space(plan: &Plan, file_size: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::media::MediaFile;
-    use crate::plan::{ActionParams, OperationType, Plan, PlannedAction};
+    use crate::media::{Container, MediaFile, TrackType};
+    use crate::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings};
     use std::path::PathBuf;
 
     fn test_file(size: u64) -> MediaFile {
@@ -118,9 +118,43 @@ mod tests {
         let mut plan = Plan::new(file.clone(), "test-policy", "test-phase");
         for op in ops {
             plan.actions
-                .push(PlannedAction::track_op(*op, 0, ActionParams::Empty, "test"));
+                .push(PlannedAction::track_op(*op, 0, params_for_op(*op), "test"));
         }
         plan
+    }
+
+    fn params_for_op(op: OperationType) -> ActionParams {
+        match op {
+            OperationType::ConvertContainer => ActionParams::Container {
+                container: Container::Mp4,
+            },
+            OperationType::RemoveTrack => ActionParams::RemoveTrack {
+                reason: "test removal".into(),
+                track_type: TrackType::AudioCommentary,
+            },
+            OperationType::TranscodeVideo | OperationType::TranscodeAudio => {
+                ActionParams::Transcode {
+                    codec: "h264".into(),
+                    settings: TranscodeSettings::default(),
+                }
+            }
+            OperationType::SynthesizeAudio => ActionParams::Synthesize {
+                name: "descriptive audio".into(),
+                language: Some("eng".into()),
+                codec: Some("aac".into()),
+                text: None,
+                bitrate: None,
+                channels: None,
+                title: None,
+                position: None,
+                source_track: None,
+            },
+            OperationType::SetDefault
+            | OperationType::ClearDefault
+            | OperationType::SetForced
+            | OperationType::ClearForced => ActionParams::Empty,
+            _ => panic!("missing disk test params for {}", op.as_str()),
+        }
     }
 
     #[test]
@@ -251,7 +285,7 @@ mod tests {
         plan.actions.push(PlannedAction::track_op(
             OperationType::TranscodeVideo,
             0,
-            ActionParams::Empty,
+            params_for_op(OperationType::TranscodeVideo),
             "transcode",
         ));
         plan.actions
