@@ -13,9 +13,10 @@ use pest::Parser;
 use pest_derive::Parser;
 
 use crate::ast::{
-    ActionNode, CompareOp, ConditionNode, ConfigNode, ErrorStrategyNode, FilterNode, OperationNode,
-    PhaseNode, PolicyAst, RuleNode, RunIfNode, RunIfTriggerNode, Span, SpannedOperation,
-    SynthSetting, TrackQueryNode, TrackRefNode, Value, ValueOrField, VerifyMode, WhenNode,
+    ActionNode, CompareOp, ConditionNode, ConfigNode, ErrorStrategyNode, FilterNode,
+    NormalizeSetting, OperationNode, PhaseNode, PolicyAst, RuleNode, RunIfNode, RunIfTriggerNode,
+    Span, SpannedOperation, SynthSetting, TrackQueryNode, TrackRefNode, Value, ValueOrField,
+    VerifyMode, WhenNode,
 };
 use crate::errors::{DslError, Result};
 
@@ -383,22 +384,40 @@ fn parse_on_error_token(pair: Pair<'_, Rule>) -> Result<ErrorStrategyNode> {
     })
 }
 /// Extract the target and optional filter from a `keep_op` or `remove_op` pair.
-fn build_keep_remove_parts(pair: Pair<'_, Rule>) -> Result<(String, Option<FilterNode>)> {
+fn build_keep_remove_parts(
+    pair: Pair<'_, Rule>,
+) -> Result<(String, Option<FilterNode>, Option<NormalizeSetting>)> {
     let mut inner = pair.into_inner();
     let target = inner.next().unwrap().as_str().to_string();
-    let filter = if let Some(where_pair) = inner.next() {
-        let filter_pair = where_pair.into_inner().next().unwrap();
-        Some(build_filter(filter_pair)?)
-    } else {
-        None
-    };
-    Ok((target, filter))
+    let mut filter = None;
+    let mut normalize = None;
+    for child in inner {
+        match child.as_rule() {
+            Rule::where_clause => {
+                let filter_pair = child.into_inner().next().unwrap();
+                filter = Some(build_filter(filter_pair)?);
+            }
+            Rule::keep_block => {
+                for item in child.into_inner() {
+                    if item.as_rule() == Rule::normalize_block {
+                        normalize = Some(build_normalize(item));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok((target, filter, normalize))
 }
 
 fn build_keep_remove(pair: Pair<'_, Rule>, is_keep: bool) -> Result<OperationNode> {
-    let (target, filter) = build_keep_remove_parts(pair)?;
+    let (target, filter, normalize) = build_keep_remove_parts(pair)?;
     if is_keep {
-        Ok(OperationNode::Keep { target, filter })
+        Ok(OperationNode::Keep {
+            target,
+            filter,
+            normalize,
+        })
     } else {
         Ok(OperationNode::Remove { target, filter })
     }
@@ -584,6 +603,9 @@ fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {
                 let val = build_value(parts.next().unwrap());
                 settings.push(SynthSetting::Position(val));
             }
+            "normalize" => {
+                settings.push(SynthSetting::Normalize(build_normalize_from_parts(parts)));
+            }
             other => {
                 let (line, col) = child_span.start_pos().line_col();
                 return Err(DslError::build(
@@ -596,6 +618,19 @@ fn build_synthesize(pair: Pair<'_, Rule>) -> Result<OperationNode> {
     }
 
     Ok(OperationNode::Synthesize { name, settings })
+}
+
+fn build_normalize(pair: Pair<'_, Rule>) -> NormalizeSetting {
+    build_normalize_from_parts(pair.into_inner())
+}
+
+fn build_normalize_from_parts(mut parts: pest::iterators::Pairs<'_, Rule>) -> NormalizeSetting {
+    let preset = parts.next().unwrap().as_str().to_string();
+    let settings = parts
+        .next()
+        .map(|block| build_object(block.into_inner()))
+        .unwrap_or_default();
+    NormalizeSetting { preset, settings }
 }
 
 fn build_when(pair: Pair<'_, Rule>) -> Result<WhenNode> {
@@ -973,12 +1008,12 @@ fn build_action(pair: Pair<'_, Rule>) -> Result<ActionNode> {
         match first.as_rule() {
             Rule::keep_op => {
                 let child = inner.next().unwrap();
-                let (target, filter) = build_keep_remove_parts(child)?;
+                let (target, filter, _) = build_keep_remove_parts(child)?;
                 return Ok(ActionNode::Keep { target, filter });
             }
             Rule::remove_op => {
                 let child = inner.next().unwrap();
-                let (target, filter) = build_keep_remove_parts(child)?;
+                let (target, filter, _) = build_keep_remove_parts(child)?;
                 return Ok(ActionNode::Remove { target, filter });
             }
             _ => {}
@@ -1142,7 +1177,7 @@ fn parse_number_f64(pair: &Pair<'_, Rule>) -> f64 {
     let s = pair.as_str();
     let numeric: String = s
         .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
         .collect();
     numeric.parse().unwrap_or(0.0)
 }
@@ -1205,7 +1240,7 @@ mod tests {
         }"#;
         let ast = parse_policy(input).unwrap();
         match &ast.phases[0].operations[0].node {
-            OperationNode::Keep { target, filter } => {
+            OperationNode::Keep { target, filter, .. } => {
                 assert_eq!(target, "audio");
                 assert!(filter.is_some());
                 match filter.as_ref().unwrap() {

@@ -394,6 +394,126 @@ pub struct TranscodeSettings {
     pub tune: Option<String>,
     /// Automatic crop settings for black-bar removal.
     pub crop: Option<CropSettings>,
+    /// Optional EBU R128 loudness normalization settings for audio output.
+    pub loudness: Option<LoudnessNormalization>,
+}
+
+/// EBU R128 / LUFS loudness normalization settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct LoudnessNormalization {
+    pub preset: LoudnessPreset,
+    pub target_lufs: f64,
+    pub true_peak_db: f64,
+    pub lra_max: Option<f64>,
+    #[serde(default = "default_loudness_tolerance")]
+    pub tolerance_lufs: f64,
+    #[serde(default)]
+    pub measured: Option<LoudnessMeasurement>,
+}
+
+/// Measurement values emitted by ffmpeg's `loudnorm` first pass.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct LoudnessMeasurement {
+    pub input_i: f64,
+    pub input_tp: f64,
+    pub input_lra: f64,
+    pub input_thresh: f64,
+    pub target_offset: f64,
+}
+
+impl LoudnessMeasurement {
+    #[must_use]
+    pub fn new(
+        input_i: f64,
+        input_tp: f64,
+        input_lra: f64,
+        input_thresh: f64,
+        target_offset: f64,
+    ) -> Self {
+        Self {
+            input_i,
+            input_tp,
+            input_lra,
+            input_thresh,
+            target_offset,
+        }
+    }
+}
+
+/// Built-in loudness target presets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoudnessPreset {
+    EbuR128,
+    EbuR128Broadcast,
+    StreamingMovies,
+    StreamingMusic,
+    Mobile,
+    VoiceFocused,
+}
+
+fn default_loudness_tolerance() -> f64 {
+    0.5
+}
+
+impl LoudnessPreset {
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "ebu_r128" => Some(Self::EbuR128),
+            "ebu_r128_broadcast" => Some(Self::EbuR128Broadcast),
+            "streaming_movies" => Some(Self::StreamingMovies),
+            "streaming_music" => Some(Self::StreamingMusic),
+            "mobile" => Some(Self::Mobile),
+            "voice_focused" => Some(Self::VoiceFocused),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn defaults(self) -> LoudnessNormalization {
+        match self {
+            Self::EbuR128 | Self::EbuR128Broadcast => {
+                LoudnessNormalization::new(self, -23.0, -1.0, Some(18.0))
+            }
+            Self::StreamingMovies => LoudnessNormalization::new(self, -24.0, -2.0, None),
+            Self::StreamingMusic => LoudnessNormalization::new(self, -14.0, -1.0, None),
+            Self::Mobile => LoudnessNormalization::new(self, -16.0, -1.5, None),
+            Self::VoiceFocused => LoudnessNormalization::new(self, -19.0, -1.0, Some(7.0)),
+        }
+    }
+}
+
+impl LoudnessNormalization {
+    #[must_use]
+    pub fn new(
+        preset: LoudnessPreset,
+        target_lufs: f64,
+        true_peak_db: f64,
+        lra_max: Option<f64>,
+    ) -> Self {
+        Self {
+            preset,
+            target_lufs,
+            true_peak_db,
+            lra_max,
+            tolerance_lufs: default_loudness_tolerance(),
+            measured: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_measurement(mut self, measured: LoudnessMeasurement) -> Self {
+        self.measured = Some(measured);
+        self
+    }
+
+    #[must_use]
+    pub fn is_within_target(&self, measured_lufs: f64) -> bool {
+        (measured_lufs - self.target_lufs).abs() <= self.tolerance_lufs
+    }
 }
 
 /// Automatic black-bar crop detection settings.
@@ -488,6 +608,8 @@ enum ActionParamsCompat {
         tune: Option<String>,
         #[serde(default)]
         crop: Option<CropSettings>,
+        #[serde(default)]
+        loudness: Option<LoudnessNormalization>,
     },
     Synthesize {
         name: String,
@@ -499,6 +621,8 @@ enum ActionParamsCompat {
         title: Option<String>,
         position: Option<String>,
         source_track: Option<u32>,
+        #[serde(default)]
+        loudness: Option<LoudnessNormalization>,
     },
     SetTag {
         tag: String,
@@ -552,6 +676,7 @@ impl From<ActionParamsCompat> for ActionParams {
                 hdr_mode,
                 tune,
                 crop,
+                loudness,
             } => {
                 // If the nested `settings` object has values, use it.
                 // Otherwise, lift the legacy flat fields.
@@ -574,6 +699,7 @@ impl From<ActionParamsCompat> for ActionParams {
                         hdr_mode,
                         tune,
                         crop,
+                        loudness,
                         ..Default::default()
                     }
                 } else {
@@ -594,6 +720,7 @@ impl From<ActionParamsCompat> for ActionParams {
                 title,
                 position,
                 source_track,
+                loudness,
             } => Self::Synthesize {
                 name,
                 language,
@@ -604,6 +731,7 @@ impl From<ActionParamsCompat> for ActionParams {
                 title,
                 position,
                 source_track,
+                loudness,
             },
             ActionParamsCompat::SetTag { tag, value } => Self::SetTag { tag, value },
             ActionParamsCompat::ClearTags { tags } => Self::ClearTags { tags },
@@ -748,6 +876,12 @@ impl TranscodeSettings {
         self.crop = crop;
         self
     }
+
+    #[must_use]
+    pub fn with_loudness(mut self, loudness: Option<LoudnessNormalization>) -> Self {
+        self.loudness = loudness;
+        self
+    }
 }
 
 /// Typed parameters for each operation type.
@@ -798,6 +932,8 @@ pub enum ActionParams {
         title: Option<String>,
         position: Option<String>,
         source_track: Option<u32>,
+        #[serde(default)]
+        loudness: Option<LoudnessNormalization>,
     },
     /// Container tag operations.
     SetTag {

@@ -233,6 +233,7 @@ fn synthesized_audio_assertion_passes_and_fails() {
                 title: None,
                 position: None,
                 source_track: None,
+                loudness: None,
             },
             "synthesize",
         )],

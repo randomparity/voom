@@ -135,14 +135,25 @@ fn format_operation(op: &OperationNode, out: &mut String, level: usize) {
             indent(out, level);
             let _ = writeln!(out, "container {name}");
         }
-        OperationNode::Keep { target, filter } => {
+        OperationNode::Keep {
+            target,
+            filter,
+            normalize,
+        } => {
             indent(out, level);
             let _ = write!(out, "keep {target}");
             if let Some(f) = filter {
                 out.push_str(" where ");
                 format_filter(f, out);
             }
-            out.push('\n');
+            if let Some(normalize) = normalize {
+                out.push_str(" {\n");
+                format_normalize(normalize, out, level + 1);
+                indent(out, level);
+                out.push_str("}\n");
+            } else {
+                out.push('\n');
+            }
         }
         OperationNode::Remove { target, filter } => {
             indent(out, level);
@@ -314,7 +325,26 @@ fn format_synth_setting(setting: &SynthSetting, out: &mut String, level: usize) 
             format_value(v, out);
             out.push('\n');
         }
+        SynthSetting::Normalize(normalize) => format_normalize(normalize, out, level),
     }
+}
+
+fn format_normalize(normalize: &crate::ast::NormalizeSetting, out: &mut String, level: usize) {
+    indent(out, level);
+    let _ = write!(out, "normalize: {}", normalize.preset);
+    if normalize.settings.is_empty() {
+        out.push('\n');
+        return;
+    }
+    out.push_str(" {\n");
+    for (key, value) in &normalize.settings {
+        indent(out, level + 1);
+        let _ = write!(out, "{key}: ");
+        format_value(value, out);
+        out.push('\n');
+    }
+    indent(out, level);
+    out.push_str("}\n");
 }
 
 fn format_when(when: &WhenNode, out: &mut String, level: usize) {

@@ -41,10 +41,14 @@ delete_tag_op = { "delete_tag" ~ string }
 
 container_op = { "container" ~ ident }
 
-keep_op   = { "keep" ~ track_target ~ where_clause? }
+keep_op   = { "keep" ~ track_target ~ where_clause? ~ keep_block? }
 remove_op = { "remove" ~ track_target ~ where_clause? }
 track_target = { "audio" | "subtitles" | "subtitle" | "attachments" | "attachment" | "video" }
 where_clause = { "where" ~ filter_expr }
+keep_block = { "{" ~ keep_item* ~ "}" }
+keep_item = _{ normalize_block }
+normalize_block = { "normalize" ~ ":" ~ loudness_preset ~ block? }
+loudness_preset = { "ebu_r128" | "ebu_r128_broadcast" | "streaming_movies" | "streaming_music" | "mobile" | "voice_focused" }
 
 order_op   = { "order" ~ "tracks" ~ list }
 defaults_op = { "defaults" ~ "{" ~ default_item* ~ "}" }
@@ -81,6 +85,7 @@ synth_item = {
   | "title" ~ ":" ~ string
   | "language" ~ ":" ~ (ident | "inherit")
   | "position" ~ ":" ~ (ident | number)
+  | normalize_block
 }
 source_pref = { "prefer" ~ "(" ~ filter_expr ~ ")" }
 
@@ -150,5 +155,5 @@ value      = { string | number | boolean | ident | list }
 boolean    = @{ ("true" | "false") ~ !(ASCII_ALPHANUMERIC | "_") }
 string     = @{ "\"" ~ (escape_seq | (!("\"" | "\\") ~ ANY))* ~ "\"" }
 escape_seq = @{ "\\" ~ ("\"" | "\\") }
-number     = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ ASCII_ALPHA* }
+number     = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ ASCII_ALPHA* }
 ident      = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
