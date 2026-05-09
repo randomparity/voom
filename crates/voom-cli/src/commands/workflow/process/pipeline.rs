@@ -339,15 +339,24 @@ async fn apply_auto_crop_detection(
     state: &mut PhaseExecutionState,
     phase_ctx: &PhaseExecutionContext<'_>,
 ) -> std::result::Result<(), String> {
-    if state.current_file.crop_detection.is_some() {
-        return Ok(());
-    }
     let Some(request) = cropdetect_request_for_plan(plan, &state.current_file) else {
         return Ok(());
     };
+    let settings_fingerprint = crop_settings_fingerprint(&request.settings)?;
+    if state
+        .current_file
+        .crop_detection
+        .as_ref()
+        .and_then(|detection| detection.settings_fingerprint.as_ref())
+        == Some(&settings_fingerprint)
+    {
+        plan.file = state.current_file.clone();
+        return Ok(());
+    }
 
     let path = state.current_file.path.clone();
     let detector = phase_ctx.process.crop_detector;
+    let had_cached_detection = state.current_file.crop_detection.is_some();
     let detected = tokio::task::spawn_blocking(move || {
         detector("ffmpeg", &path, request.source, &request.settings)
     })
@@ -355,8 +364,10 @@ async fn apply_auto_crop_detection(
     .map_err(|e| format!("cropdetect join error: {e}"))?
     .map_err(|e| format!("cropdetect {}: {e}", state.current_file.path.display()))?;
 
-    if let Some(crop_detection) = detected {
-        state.current_file.crop_detection = Some(crop_detection);
+    state.current_file.crop_detection =
+        detected.map(|detection| detection.with_settings_fingerprint(settings_fingerprint));
+
+    if had_cached_detection || state.current_file.crop_detection.is_some() {
         plan.file = state.current_file.clone();
         phase_ctx
             .process
@@ -365,6 +376,10 @@ async fn apply_auto_crop_detection(
             .map_err(|e| format!("persist crop detection: {e}"))?;
     }
     Ok(())
+}
+
+fn crop_settings_fingerprint(settings: &voom_domain::CropSettings) -> Result<String, String> {
+    serde_json::to_string(settings).map_err(|e| format!("serialize crop settings: {e}"))
 }
 
 struct CropDetectRequest {
@@ -887,7 +902,8 @@ mod tests {
     use super::super::tests as process_tests;
     use super::*;
 
-    static TEST_CROP_DETECT_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TEST_CROP_DETECT_CACHE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TEST_CROP_DETECT_SETTINGS_CALLS: AtomicUsize = AtomicUsize::new(0);
 
     struct RecordingExecutor {
         entered_tx: mpsc::Sender<()>,
@@ -996,12 +1012,16 @@ mod tests {
     }
 
     fn crop_plan(file: MediaFile) -> Plan {
+        crop_plan_with_settings(file, CropSettings::auto())
+    }
+
+    fn crop_plan_with_settings(file: MediaFile, crop: CropSettings) -> Plan {
         Plan::new(file, "test", "transcode-video").with_action(PlannedAction::track_op(
             OperationType::TranscodeVideo,
             0,
             ActionParams::Transcode {
                 codec: "hevc".into(),
-                settings: TranscodeSettings::default().with_crop(Some(CropSettings::auto())),
+                settings: TranscodeSettings::default().with_crop(Some(crop)),
             },
             "transcode with crop",
         ))
@@ -1013,7 +1033,20 @@ mod tests {
         _source: voom_ffmpeg_executor::cropdetect::CropDetectSource,
         _settings: &CropSettings,
     ) -> voom_domain::errors::Result<Option<CropDetection>> {
-        TEST_CROP_DETECT_CALLS.fetch_add(1, Ordering::SeqCst);
+        TEST_CROP_DETECT_CACHE_CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(CropDetection::new(
+            CropRect::new(0, 132, 0, 132),
+            chrono::Utc::now(),
+        )))
+    }
+
+    fn fake_settings_crop_detector(
+        _ffmpeg_path: &str,
+        _source_path: &Path,
+        _source: voom_ffmpeg_executor::cropdetect::CropDetectSource,
+        _settings: &CropSettings,
+    ) -> voom_domain::errors::Result<Option<CropDetection>> {
+        TEST_CROP_DETECT_SETTINGS_CALLS.fetch_add(1, Ordering::SeqCst);
         Ok(Some(CropDetection::new(
             CropRect::new(0, 132, 0, 132),
             chrono::Utc::now(),
@@ -1022,7 +1055,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_auto_crop_detection_persists_detection_and_skips_cached_files() {
-        TEST_CROP_DETECT_CALLS.store(0, Ordering::SeqCst);
+        TEST_CROP_DETECT_CACHE_CALLS.store(0, Ordering::SeqCst);
 
         let fixture = process_tests::TestFixture::new();
         let store = Arc::new(voom_domain::test_support::InMemoryStore::new());
@@ -1056,6 +1089,11 @@ mod tests {
             .clone()
             .expect("crop detection should be cached on the file state");
         assert_eq!(detection.rect, CropRect::new(0, 132, 0, 132));
+        let expected_fingerprint = crop_settings_fingerprint(&CropSettings::auto()).unwrap();
+        assert_eq!(
+            detection.settings_fingerprint.as_deref(),
+            Some(expected_fingerprint.as_str())
+        );
         assert_eq!(plan.file.crop_detection.as_ref(), Some(&detection));
         assert_eq!(
             store
@@ -1064,14 +1102,68 @@ mod tests {
                 .and_then(|stored| stored.crop_detection),
             Some(detection)
         );
-        assert_eq!(TEST_CROP_DETECT_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(TEST_CROP_DETECT_CACHE_CALLS.load(Ordering::SeqCst), 1);
 
         let mut cached_plan = crop_plan(state.current_file.clone());
         apply_auto_crop_detection(&mut cached_plan, &mut state, &phase_ctx)
             .await
             .expect("cached crop detection should be accepted");
 
-        assert_eq!(TEST_CROP_DETECT_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(TEST_CROP_DETECT_CACHE_CALLS.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn apply_auto_crop_detection_reruns_when_crop_settings_change() {
+        TEST_CROP_DETECT_SETTINGS_CALLS.store(0, Ordering::SeqCst);
+
+        let fixture = process_tests::TestFixture::new();
+        let ctx = ProcessContext {
+            crop_detector: fake_settings_crop_detector,
+            ..fixture.make_ctx(
+                Arc::new(voom_kernel::Kernel::new()),
+                Arc::new(voom_domain::test_support::InMemoryStore::new()),
+            )
+        };
+        let safeguards = SafeguardContext::from_process(&ctx);
+        let compiled = voom_dsl::compile_policy(global_hw_policy()).unwrap();
+        let phase_ctx = PhaseExecutionContext {
+            compiled: &compiled,
+            keep_backups: false,
+            safeguards: &safeguards,
+            process: &ctx,
+        };
+
+        let mut file = h264_file(fixture.dir_path().join("movie.mkv"));
+        file.duration = 120.0;
+        file.tracks[0].width = Some(1920);
+        file.tracks[0].height = Some(1080);
+        let mut state = PhaseExecutionState::new(file.clone());
+        let mut plan = crop_plan(file);
+
+        apply_auto_crop_detection(&mut plan, &mut state, &phase_ctx)
+            .await
+            .expect("initial crop detection should succeed");
+        assert_eq!(TEST_CROP_DETECT_SETTINGS_CALLS.load(Ordering::SeqCst), 1);
+
+        let mut changed_settings = CropSettings::auto();
+        changed_settings.preserve_bottom_pixels = Some(60);
+        let changed_fingerprint = crop_settings_fingerprint(&changed_settings).unwrap();
+        let mut changed_plan =
+            crop_plan_with_settings(state.current_file.clone(), changed_settings);
+
+        apply_auto_crop_detection(&mut changed_plan, &mut state, &phase_ctx)
+            .await
+            .expect("changed crop settings should redetect");
+
+        assert_eq!(TEST_CROP_DETECT_SETTINGS_CALLS.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            state
+                .current_file
+                .crop_detection
+                .as_ref()
+                .and_then(|detection| detection.settings_fingerprint.as_deref()),
+            Some(changed_fingerprint.as_str())
+        );
     }
 
     #[test]

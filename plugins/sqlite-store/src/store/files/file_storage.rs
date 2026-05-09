@@ -24,13 +24,14 @@ fn filename_string(path: &Path) -> String {
 }
 
 const FILE_COLUMNS: &str = "id, path, size, content_hash, expected_hash, status, container, \
-    duration, bitrate, crop_left, crop_top, crop_right, crop_bottom, crop_detected_at, tags, \
-    plugin_metadata, introspected_at";
+    duration, bitrate, crop_left, crop_top, crop_right, crop_bottom, crop_detected_at, \
+    crop_settings_fingerprint, tags, plugin_metadata, introspected_at";
 
 const FILE_COLUMNS_PREFIXED: &str = "files.id, files.path, files.size, files.content_hash, \
     files.expected_hash, files.status, files.container, files.duration, files.bitrate, \
     files.crop_left, files.crop_top, files.crop_right, files.crop_bottom, \
-    files.crop_detected_at, files.tags, files.plugin_metadata, files.introspected_at";
+    files.crop_detected_at, files.crop_settings_fingerprint, files.tags, files.plugin_metadata, \
+    files.introspected_at";
 
 fn select_file_sql(where_clause: &str) -> String {
     format!("SELECT {FILE_COLUMNS} FROM files {where_clause}")
@@ -72,8 +73,8 @@ impl FileStorage for SqliteStore {
         .map_err(storage_err("failed to delete old tracks"))?;
 
         tx.execute(
-            "INSERT INTO files (id, path, filename, size, content_hash, status, container, duration, bitrate, crop_left, crop_top, crop_right, crop_bottom, crop_detected_at, tags, plugin_metadata, introspected_at, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+            "INSERT INTO files (id, path, filename, size, content_hash, status, container, duration, bitrate, crop_left, crop_top, crop_right, crop_bottom, crop_detected_at, crop_settings_fingerprint, tags, plugin_metadata, introspected_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
              ON CONFLICT(path) DO UPDATE SET
                 filename = excluded.filename,
                 size = excluded.size,
@@ -87,6 +88,7 @@ impl FileStorage for SqliteStore {
                 crop_right = excluded.crop_right,
                 crop_bottom = excluded.crop_bottom,
                 crop_detected_at = excluded.crop_detected_at,
+                crop_settings_fingerprint = excluded.crop_settings_fingerprint,
                 tags = excluded.tags,
                 plugin_metadata = excluded.plugin_metadata,
                 introspected_at = excluded.introspected_at,
@@ -106,6 +108,7 @@ impl FileStorage for SqliteStore {
                 crop.map(|c| i64::from(c.rect.right)),
                 crop.map(|c| i64::from(c.rect.bottom)),
                 crop.map(|c| format_datetime(&c.detected_at)),
+                crop.and_then(|c| c.settings_fingerprint.as_deref()),
                 tags_json,
                 meta_json,
                 format_datetime(&file.introspected_at),
@@ -1015,10 +1018,10 @@ mod tests {
         let store = test_store();
         let mut file = active_file("/media/cropped.mkv");
         let detected_at = Utc::now();
-        file.crop_detection = Some(CropDetection::new(
-            CropRect::new(2, 132, 4, 130),
-            detected_at,
-        ));
+        file.crop_detection = Some(
+            CropDetection::new(CropRect::new(2, 132, 4, 130), detected_at)
+                .with_settings_fingerprint("crop-settings-v1".to_string()),
+        );
 
         store.upsert_file(&file).unwrap();
 

@@ -132,6 +132,7 @@ pub(crate) fn row_to_file(row: &Row<'_>) -> rusqlite::Result<FileRow> {
         crop_right,
         crop_bottom,
         crop_detected_at: row.get("crop_detected_at")?,
+        crop_settings_fingerprint: row.get("crop_settings_fingerprint")?,
         tags: row.get("tags")?,
         plugin_metadata: row.get("plugin_metadata")?,
         introspected_at: row.get("introspected_at")?,
@@ -153,6 +154,7 @@ pub(crate) struct FileRow {
     crop_right: Option<u32>,
     crop_bottom: Option<u32>,
     crop_detected_at: Option<String>,
+    crop_settings_fingerprint: Option<String>,
     tags: Option<String>,
     plugin_metadata: Option<String>,
     introspected_at: String,
@@ -212,10 +214,14 @@ impl FileRow {
         ) else {
             return Ok(None);
         };
-        Ok(Some(CropDetection::new(
+        let detection = CropDetection::new(
             CropRect::new(left, top, right, bottom),
             parse_datetime(detected_at)?,
-        )))
+        );
+        Ok(Some(match self.crop_settings_fingerprint.clone() {
+            Some(fingerprint) => detection.with_settings_fingerprint(fingerprint),
+            None => detection,
+        }))
     }
 }
 

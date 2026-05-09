@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS files (
     crop_right INTEGER,
     crop_bottom INTEGER,
     crop_detected_at TEXT,
+    crop_settings_fingerprint TEXT,
     tags TEXT,
     plugin_metadata TEXT,
     introspected_at TEXT NOT NULL,
@@ -362,6 +363,9 @@ fn migrate_files_columns(
     }
     if !has_column("files", "crop_detected_at")? {
         conn.execute_batch("ALTER TABLE files ADD COLUMN crop_detected_at TEXT")?;
+    }
+    if !has_column("files", "crop_settings_fingerprint")? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN crop_settings_fingerprint TEXT")?;
     }
     Ok(())
 }

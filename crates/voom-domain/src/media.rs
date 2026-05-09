@@ -40,12 +40,24 @@ impl CropRect {
 pub struct CropDetection {
     pub rect: CropRect,
     pub detected_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings_fingerprint: Option<String>,
 }
 
 impl CropDetection {
     #[must_use]
     pub fn new(rect: CropRect, detected_at: DateTime<Utc>) -> Self {
-        Self { rect, detected_at }
+        Self {
+            rect,
+            detected_at,
+            settings_fingerprint: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_settings_fingerprint(mut self, fingerprint: String) -> Self {
+        self.settings_fingerprint = Some(fingerprint);
+        self
     }
 }
 
