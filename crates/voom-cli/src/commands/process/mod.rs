@@ -157,76 +157,8 @@ async fn run_primary_process(
         paths,
     } = runtime;
 
-    let root = if paths.len() == 1 && paths[0].is_file() {
-        paths[0]
-            .parent()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "cannot determine parent directory of {}",
-                    paths[0].display()
-                )
-            })?
-            .to_path_buf()
-    } else {
-        paths[0].clone()
-    };
-
-    let resolver = build_policy_resolver(args, config, &root)?;
-    let counters = RunCounters::new();
-
-    if !plan_only && !quiet {
-        let path_list: Vec<_> = paths.iter().map(|p| p.display().to_string()).collect();
-        let display_paths = path_list.join(", ");
-        print_run_header(
-            &resolver.summary(),
-            &display_paths,
-            dry_run,
-            counters.session_id,
-        );
-    }
-
-    // Auto-prune stale file entries under the target directories
-    for path in paths {
-        match store.prune_missing_files_under(path) {
-            Ok(n) if n > 0 && !plan_only && !quiet => eprintln!("Pruned {n} stale entries."),
-            Ok(_) => {}
-            Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
-        }
-    }
-
-    // Check for orphaned backups left by a previous crashed execution
-    // Extract backup-manager's global backup dir from plugin config, if set.
-    let global_backup_dir: Option<std::path::PathBuf> =
-        config.plugin.get("backup-manager").and_then(|t| {
-            let use_global = t
-                .get("use_global_dir")
-                .and_then(toml::Value::as_bool)
-                .unwrap_or(false);
-            if use_global {
-                t.get("backup_dir")
-                    .and_then(|v| v.as_str())
-                    .map(std::path::PathBuf::from)
-            } else {
-                None
-            }
-        });
-    match crate::recovery::check_and_recover_under(
-        &config.recovery,
-        paths,
-        store.as_ref(),
-        global_backup_dir.as_deref(),
-    ) {
-        Ok(recovered) if recovered > 0 && !plan_only && !quiet => {
-            eprintln!(
-                "{} {} {} from crashed execution",
-                console::style("Recovered").bold().green(),
-                recovered,
-                if recovered == 1 { "file" } else { "files" }
-            );
-        }
-        Ok(_) => {}
-        Err(e) => tracing::warn!(error = %e, "crash recovery check failed"),
-    }
+    let ProcessInputs { resolver, counters } =
+        prepare_process_inputs(args, quiet, dry_run, plan_only, config, store, paths)?;
 
     if token.is_cancelled() {
         if !plan_only && !quiet {
@@ -235,29 +167,11 @@ async fn run_primary_process(
         return Ok(());
     }
 
-    let mut events = discover_files(paths, args, kernel, quiet, store.clone())?;
-    if events.is_empty() {
-        if plan_only {
-            println!("[]");
-        } else if !quiet {
-            eprintln!("{}", style("No media files found.").yellow());
-        }
+    let Some(events) =
+        discover_processable_events(paths, args, kernel, quiet, store.clone(), plan_only)?
+    else {
         return Ok(());
-    }
-
-    // Filter out known-bad files unless --force-rescan is set
-    if !args.force_rescan {
-        filter_bad_files(&mut events, store, plan_only, quiet)?;
-    }
-
-    if events.is_empty() {
-        if plan_only {
-            println!("[]");
-        } else if !quiet {
-            eprintln!("{}", style("No processable files found.").yellow());
-        }
-        return Ok(());
-    }
+    };
 
     let file_count = events.len();
     if !plan_only && !quiet {
@@ -350,6 +264,153 @@ async fn run_primary_process(
         paths,
         all_phase_names: &all_phase_names,
     })
+}
+
+struct ProcessInputs {
+    resolver: PolicyResolver,
+    counters: RunCounters,
+}
+
+fn prepare_process_inputs(
+    args: &ProcessArgs,
+    quiet: bool,
+    dry_run: bool,
+    plan_only: bool,
+    config: &crate::config::AppConfig,
+    store: &Arc<dyn voom_domain::storage::StorageTrait>,
+    paths: &[std::path::PathBuf],
+) -> Result<ProcessInputs> {
+    let root = process_root(paths)?;
+    let resolver = build_policy_resolver(args, config, &root)?;
+    let counters = RunCounters::new();
+
+    if !plan_only && !quiet {
+        let path_list: Vec<_> = paths.iter().map(|p| p.display().to_string()).collect();
+        print_run_header(
+            &resolver.summary(),
+            &path_list.join(", "),
+            dry_run,
+            counters.session_id,
+        );
+    }
+
+    prune_missing_files(store, paths, plan_only, quiet);
+    recover_orphaned_backups(config, store, paths, plan_only, quiet);
+
+    Ok(ProcessInputs { resolver, counters })
+}
+
+fn process_root(paths: &[std::path::PathBuf]) -> Result<std::path::PathBuf> {
+    if paths.len() == 1 && paths[0].is_file() {
+        return paths[0]
+            .parent()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "cannot determine parent directory of {}",
+                    paths[0].display()
+                )
+            })
+            .map(std::path::Path::to_path_buf);
+    }
+    Ok(paths[0].clone())
+}
+
+fn prune_missing_files(
+    store: &Arc<dyn voom_domain::storage::StorageTrait>,
+    paths: &[std::path::PathBuf],
+    plan_only: bool,
+    quiet: bool,
+) {
+    for path in paths {
+        match store.prune_missing_files_under(path) {
+            Ok(n) if n > 0 && !plan_only && !quiet => eprintln!("Pruned {n} stale entries."),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "auto-prune failed"),
+        }
+    }
+}
+
+fn recover_orphaned_backups(
+    config: &crate::config::AppConfig,
+    store: &Arc<dyn voom_domain::storage::StorageTrait>,
+    paths: &[std::path::PathBuf],
+    plan_only: bool,
+    quiet: bool,
+) {
+    let global_backup_dir = global_backup_dir(config);
+    match crate::recovery::check_and_recover_under(
+        &config.recovery,
+        paths,
+        store.as_ref(),
+        global_backup_dir.as_deref(),
+    ) {
+        Ok(recovered) if recovered > 0 && !plan_only && !quiet => {
+            eprintln!(
+                "{} {} {} from crashed execution",
+                console::style("Recovered").bold().green(),
+                recovered,
+                if recovered == 1 { "file" } else { "files" }
+            );
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "crash recovery check failed"),
+    }
+}
+
+fn global_backup_dir(config: &crate::config::AppConfig) -> Option<std::path::PathBuf> {
+    let backup_config = config.plugin.get("backup-manager")?;
+    let use_global = backup_config
+        .get("use_global_dir")
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false);
+    use_global.then(|| {
+        backup_config
+            .get("backup_dir")
+            .and_then(toml::Value::as_str)
+            .map(std::path::PathBuf::from)
+    })?
+}
+
+fn discover_processable_events(
+    paths: &[std::path::PathBuf],
+    args: &ProcessArgs,
+    kernel: &voom_kernel::Kernel,
+    quiet: bool,
+    store: Arc<dyn voom_domain::storage::StorageTrait>,
+    plan_only: bool,
+) -> Result<Option<Vec<voom_domain::events::FileDiscoveredEvent>>> {
+    let mut events = discover_files(paths, args, kernel, quiet, store.clone())?;
+    if events.is_empty() {
+        print_no_files_found(plan_only, quiet);
+        return Ok(None);
+    }
+
+    if !args.force_rescan {
+        filter_bad_files(&mut events, &store, plan_only, quiet)?;
+    }
+
+    if events.is_empty() {
+        print_no_processable_files_found(plan_only, quiet);
+        return Ok(None);
+    }
+
+    Ok(Some(events))
+}
+
+fn print_no_files_found(plan_only: bool, quiet: bool) {
+    if plan_only {
+        println!("[]");
+    } else if !quiet {
+        eprintln!("{}", style("No media files found.").yellow());
+    }
+}
+
+fn print_no_processable_files_found(plan_only: bool, quiet: bool) {
+    if plan_only {
+        println!("[]");
+    } else if !quiet {
+        eprintln!("{}", style("No processable files found.").yellow());
+    }
 }
 
 /// Remove known-bad files from the event list, logging how many were skipped.

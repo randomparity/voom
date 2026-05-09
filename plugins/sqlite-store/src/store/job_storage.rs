@@ -202,7 +202,7 @@ impl JobStorage for SqliteStore {
         let mut q = SqlQuery::new("SELECT * FROM jobs WHERE 1=1");
 
         if let Some(status) = filters.status {
-            q.condition(" AND status = {}", status.as_str().to_string());
+            q.parameterized_clause(" AND status = {}", status.as_str().to_string());
         }
 
         q.sql.push_str(" ORDER BY priority ASC, created_at DESC");

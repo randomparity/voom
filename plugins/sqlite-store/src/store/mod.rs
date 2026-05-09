@@ -141,8 +141,8 @@ impl SqlQuery {
         }
     }
 
-    /// Add a condition with a parameter value. Returns `&mut Self` for chaining.
-    pub(crate) fn condition(&mut self, clause: &str, value: String) -> &mut Self {
+    /// Append a parameterized SQL fragment. Returns `&mut Self` for chaining.
+    pub(crate) fn parameterized_clause(&mut self, clause: &str, value: String) -> &mut Self {
         self.params.push(value);
         self.sql
             .push_str(&clause.replace("{}", &format!("?{}", self.params.len())));
@@ -152,10 +152,10 @@ impl SqlQuery {
     /// Append LIMIT and OFFSET clauses with clamped values.
     pub(crate) fn paginate(&mut self, limit: Option<u32>, offset: Option<u32>) {
         if let Some(limit) = limit {
-            self.condition(" LIMIT {}", limit.min(10_000).to_string());
+            self.parameterized_clause(" LIMIT {}", limit.min(10_000).to_string());
         }
         if let Some(offset) = offset {
-            self.condition(" OFFSET {}", offset.min(1_000_000).to_string());
+            self.parameterized_clause(" OFFSET {}", offset.min(1_000_000).to_string());
         }
     }
 

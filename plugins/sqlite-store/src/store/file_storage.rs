@@ -219,21 +219,21 @@ impl FileStorage for SqliteStore {
 
         if !filters.include_missing {
             let clause = format!(" AND {col_prefix}status = {{}}");
-            q.condition(&clause, "active".to_string());
+            q.parameterized_clause(&clause, "active".to_string());
         }
         if let Some(container) = filters.container {
             let clause = format!(" AND {col_prefix}container = {{}}");
-            q.condition(&clause, container.as_str().to_string());
+            q.parameterized_clause(&clause, container.as_str().to_string());
         }
         if let Some(ref prefix) = filters.path_prefix {
             let clause = format!(" AND {col_prefix}path LIKE {{}} ESCAPE '\\'");
-            q.condition(&clause, format!("{}%", escape_like(prefix)));
+            q.parameterized_clause(&clause, format!("{}%", escape_like(prefix)));
         }
         if let Some(ref codec) = filters.has_codec {
-            q.condition(" AND tracks.codec = {}", codec.clone());
+            q.parameterized_clause(" AND tracks.codec = {}", codec.clone());
         }
         if let Some(ref lang) = filters.has_language {
-            q.condition(" AND tracks.language = {}", lang.clone());
+            q.parameterized_clause(" AND tracks.language = {}", lang.clone());
         }
 
         q.sql.push_str(&format!(" ORDER BY {col_prefix}path"));
@@ -276,22 +276,22 @@ impl FileStorage for SqliteStore {
         let mut q = SqlQuery::new(base);
 
         if !filters.include_missing {
-            q.condition(" AND files.status = {}", "active".to_string());
+            q.parameterized_clause(" AND files.status = {}", "active".to_string());
         }
         if let Some(container) = filters.container {
-            q.condition(" AND files.container = {}", container.as_str().to_string());
+            q.parameterized_clause(" AND files.container = {}", container.as_str().to_string());
         }
         if let Some(ref prefix) = filters.path_prefix {
-            q.condition(
+            q.parameterized_clause(
                 " AND files.path LIKE {} ESCAPE '\\'",
                 format!("{}%", escape_like(prefix)),
             );
         }
         if let Some(ref codec) = filters.has_codec {
-            q.condition(" AND tracks.codec = {}", codec.clone());
+            q.parameterized_clause(" AND tracks.codec = {}", codec.clone());
         }
         if let Some(ref lang) = filters.has_language {
-            q.condition(" AND tracks.language = {}", lang.clone());
+            q.parameterized_clause(" AND tracks.language = {}", lang.clone());
         }
 
         let count: u64 = conn

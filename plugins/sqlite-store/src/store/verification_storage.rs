@@ -44,16 +44,16 @@ impl VerificationStorage for SqliteStore {
         let mut q = SqlQuery::new(&format!("{SELECT_VERIFICATION} WHERE 1=1"));
 
         if let Some(file_id) = filters.file_id.as_ref() {
-            q.condition(" AND file_id = {}", file_id.clone());
+            q.parameterized_clause(" AND file_id = {}", file_id.clone());
         }
         if let Some(mode) = filters.mode {
-            q.condition(" AND mode = {}", mode.as_str().to_string());
+            q.parameterized_clause(" AND mode = {}", mode.as_str().to_string());
         }
         if let Some(outcome) = filters.outcome {
-            q.condition(" AND outcome = {}", outcome.as_str().to_string());
+            q.parameterized_clause(" AND outcome = {}", outcome.as_str().to_string());
         }
         if let Some(since) = filters.since.as_ref() {
-            q.condition(" AND verified_at >= {}", format_datetime(since));
+            q.parameterized_clause(" AND verified_at >= {}", format_datetime(since));
         }
         q.sql.push_str(" ORDER BY verified_at DESC");
         q.paginate(filters.limit, None);

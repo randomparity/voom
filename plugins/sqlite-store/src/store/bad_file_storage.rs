@@ -79,21 +79,21 @@ impl BadFileStorage for SqliteStore {
         );
 
         if let Some(ref prefix) = filters.path_prefix {
-            q.condition(
+            q.parameterized_clause(
                 " AND path LIKE {} ESCAPE '\\'",
                 format!("{}%", escape_like(prefix)),
             );
         }
         if let Some(ref source) = filters.error_source {
-            q.condition(" AND error_source = {}", source.to_string());
+            q.parameterized_clause(" AND error_source = {}", source.to_string());
         }
 
         q.sql.push_str(" ORDER BY last_seen_at DESC");
 
         let limit = filters.limit.unwrap_or(10_000).min(10_000);
         let offset = filters.offset.unwrap_or(0);
-        q.condition(" LIMIT {}", limit.to_string());
-        q.condition(" OFFSET {}", offset.to_string());
+        q.parameterized_clause(" LIMIT {}", limit.to_string());
+        q.parameterized_clause(" OFFSET {}", offset.to_string());
 
         let mut stmt = conn
             .prepare(&q.sql)
@@ -113,13 +113,13 @@ impl BadFileStorage for SqliteStore {
         let mut q = SqlQuery::new("SELECT COUNT(*) FROM bad_files WHERE 1=1");
 
         if let Some(ref prefix) = filters.path_prefix {
-            q.condition(
+            q.parameterized_clause(
                 " AND path LIKE {} ESCAPE '\\'",
                 format!("{}%", escape_like(prefix)),
             );
         }
         if let Some(ref source) = filters.error_source {
-            q.condition(" AND error_source = {}", source.to_string());
+            q.parameterized_clause(" AND error_source = {}", source.to_string());
         }
 
         let count: i64 = conn
