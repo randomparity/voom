@@ -1,0 +1,17 @@
+policy "dolby-vision-rpu" {
+  phase normalize-container {
+    container mkv
+  }
+
+  phase preserve-rpu {
+    depends_on: [normalize-container]
+
+    transcode video to hevc {
+      crf: 18
+      preset: slow
+      preserve_hdr: true
+      hdr_color_metadata: copy
+      dolby_vision: copy_rpu
+    }
+  }
+}

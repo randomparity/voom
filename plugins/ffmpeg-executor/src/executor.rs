@@ -1,5 +1,7 @@
 //! `FFmpeg` plan execution: build commands, run subprocess, manage temp files.
 
+use std::path::{Path, PathBuf};
+use std::process::Output;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -24,6 +26,32 @@ const FFMPEG_TIMEOUT: Duration = Duration::from_secs(4 * 60 * 60);
 
 /// Maximum number of stderr lines to capture in `ExecutionDetail`.
 const STDERR_TAIL_LINES: usize = 20;
+
+const TOOL_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+trait ProcessRunner {
+    fn run(
+        &self,
+        tool: &str,
+        args: &[String],
+        timeout: Duration,
+        env_vars: &[(&str, &str)],
+    ) -> Result<Output>;
+}
+
+struct DefaultProcessRunner;
+
+impl ProcessRunner for DefaultProcessRunner {
+    fn run(
+        &self,
+        tool: &str,
+        args: &[String],
+        timeout: Duration,
+        env_vars: &[(&str, &str)],
+    ) -> Result<Output> {
+        run_with_timeout_env(tool, args, timeout, env_vars)
+    }
+}
 
 /// Runs VMAF-guided CRF selection for a transcode action.
 pub trait VmafRunner {
@@ -80,6 +108,15 @@ fn execute_plan_with_runner(
     hw_accel: &HwAccelConfig,
     vmaf_runner: &dyn VmafRunner,
 ) -> Result<PlanExecution> {
+    execute_plan_with_runners(plan, hw_accel, vmaf_runner, &DefaultProcessRunner)
+}
+
+fn execute_plan_with_runners(
+    plan: &Plan,
+    hw_accel: &HwAccelConfig,
+    vmaf_runner: &dyn VmafRunner,
+    process_runner: &dyn ProcessRunner,
+) -> Result<PlanExecution> {
     if !plan.file.path.exists() {
         return Err(VoomError::ToolExecution {
             tool: "ffmpeg".into(),
@@ -99,6 +136,11 @@ fn execute_plan_with_runner(
 
     let hw = hw_accel.enabled().then_some(hw_accel);
     let ffmpeg_args = build_ffmpeg_command(&prepared_plan.file, &actions, &output_path, hw)?;
+    let dynamic_hdr = dynamic_hdr_job(&prepared_plan, &actions, &ext)?;
+    let env_vars: Vec<(&str, &str)> = hw_accel.device_env().into_iter().collect();
+    if let Some(job) = &dynamic_hdr {
+        ensure_tool_available(job.tool_name(), process_runner, &env_vars)?;
+    }
 
     tracing::info!(
         path = %prepared_plan.file.path.display(),
@@ -110,13 +152,24 @@ fn execute_plan_with_runner(
     tracing::debug!(args = ?ffmpeg_args, "ffmpeg command");
 
     let command_str = voom_process::shell_quote_args("ffmpeg", &ffmpeg_args);
-    let env_vars: Vec<(&str, &str)> = hw_accel.device_env().into_iter().collect();
     let start = Instant::now();
-    let output = run_with_timeout_env("ffmpeg", &ffmpeg_args, FFMPEG_TIMEOUT, &env_vars);
+    let output = process_runner.run("ffmpeg", &ffmpeg_args, FFMPEG_TIMEOUT, &env_vars);
     let duration_ms = start.elapsed().as_millis() as u64;
 
     match output {
         Ok(output) if output.status.success() => {
+            if let Some(job) = &dynamic_hdr {
+                if let Err(error) = apply_dynamic_hdr_reinjection(
+                    job,
+                    &prepared_plan.file.path,
+                    &output_path,
+                    &env_vars,
+                    process_runner,
+                ) {
+                    let _ = std::fs::remove_file(&output_path);
+                    return Err(error);
+                }
+            }
             let final_path = rename_output(&prepared_plan, &output_path, &ext)?;
 
             tracing::info!(
@@ -183,6 +236,359 @@ fn execute_plan_with_runner(
             Err(e)
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DynamicHdrKind {
+    Hdr10Plus,
+    DolbyVision,
+}
+
+impl DynamicHdrKind {
+    fn tool_name(self) -> &'static str {
+        match self {
+            Self::Hdr10Plus => "hdr10plus_tool",
+            Self::DolbyVision => "dovi_tool",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DynamicHdrJob {
+    kind: DynamicHdrKind,
+    source_track_index: u32,
+    output_extension: String,
+}
+
+impl DynamicHdrJob {
+    fn tool_name(&self) -> &'static str {
+        self.kind.tool_name()
+    }
+}
+
+fn dynamic_hdr_job(
+    plan: &Plan,
+    actions: &[&PlannedAction],
+    output_extension: &str,
+) -> Result<Option<DynamicHdrJob>> {
+    let Some(action) = actions
+        .iter()
+        .find(|action| action.operation == voom_domain::plan::OperationType::TranscodeVideo)
+    else {
+        return Ok(None);
+    };
+    let ActionParams::Transcode { codec, settings } = &action.parameters else {
+        return Ok(None);
+    };
+    let Some(track_index) = action.track_index else {
+        return Ok(None);
+    };
+    let Some(track) = plan
+        .file
+        .tracks
+        .iter()
+        .find(|track| track.index == track_index)
+    else {
+        return Ok(None);
+    };
+    if should_tonemap(settings) || !settings.preserve_hdr.unwrap_or(true) {
+        return Ok(None);
+    }
+    let Some(kind) = dynamic_hdr_kind(track)? else {
+        return Ok(None);
+    };
+    if !matches!(codec.as_str(), "hevc" | "h265") {
+        return Err(dynamic_hdr_error(format!(
+            "cannot preserve dynamic HDR metadata while transcoding to {codec}; \
+             choose hevc/h265 or set preserve_hdr: false"
+        )));
+    }
+    if !matches!(output_extension, "mkv" | "mp4") {
+        return Err(dynamic_hdr_error(format!(
+            "cannot preserve dynamic HDR metadata in .{output_extension} output; \
+             choose mkv or mp4, or set preserve_hdr: false"
+        )));
+    }
+    Ok(Some(DynamicHdrJob {
+        kind,
+        source_track_index: track.index,
+        output_extension: output_extension.to_string(),
+    }))
+}
+
+fn dynamic_hdr_kind(track: &voom_domain::media::Track) -> Result<Option<DynamicHdrKind>> {
+    let format = track.hdr_format.as_deref().unwrap_or_default();
+    if format.contains("HDR10+") {
+        return Ok(Some(DynamicHdrKind::Hdr10Plus));
+    }
+    if format.contains("Dolby Vision") {
+        let Some(profile) = track.dolby_vision_profile else {
+            return Err(dynamic_hdr_error(
+                "cannot preserve Dolby Vision RPU metadata without a detected profile",
+            ));
+        };
+        if matches!(profile, 5 | 7 | 8) {
+            return Ok(Some(DynamicHdrKind::DolbyVision));
+        }
+        return Err(dynamic_hdr_error(format!(
+            "unsupported Dolby Vision profile {profile}; supported profiles are 5, 7, and 8"
+        )));
+    }
+    Ok(None)
+}
+
+fn should_tonemap(settings: &voom_domain::plan::TranscodeSettings) -> bool {
+    settings.hdr_mode.as_deref() == Some("tonemap")
+        || settings.preserve_hdr == Some(false)
+        || settings.tonemap.is_some()
+}
+
+fn dynamic_hdr_error(message: impl Into<String>) -> VoomError {
+    VoomError::ToolExecution {
+        tool: "dynamic-hdr".into(),
+        message: message.into(),
+    }
+}
+
+fn ensure_tool_available(
+    tool: &str,
+    runner: &dyn ProcessRunner,
+    env_vars: &[(&str, &str)],
+) -> Result<()> {
+    let args = vec!["--version".to_string()];
+    let output = runner.run(tool, &args, TOOL_PROBE_TIMEOUT, env_vars)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(VoomError::ToolExecution {
+        tool: tool.into(),
+        message: format!("{tool} --version exited with {}", output.status),
+    })
+}
+
+fn apply_dynamic_hdr_reinjection(
+    job: &DynamicHdrJob,
+    source_path: &Path,
+    output_path: &Path,
+    env_vars: &[(&str, &str)],
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
+    let work_dir = std::env::temp_dir().join(format!("voom-dynamic-hdr-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&work_dir).map_err(|error| dynamic_hdr_error(error.to_string()))?;
+    let result = apply_dynamic_hdr_reinjection_in_dir(
+        job,
+        source_path,
+        output_path,
+        env_vars,
+        runner,
+        &work_dir,
+    );
+    let cleanup = std::fs::remove_dir_all(&work_dir);
+    if result.is_ok() {
+        cleanup.map_err(|error| dynamic_hdr_error(error.to_string()))?;
+    } else {
+        let _ = cleanup;
+    }
+    result
+}
+
+fn apply_dynamic_hdr_reinjection_in_dir(
+    job: &DynamicHdrJob,
+    source_path: &Path,
+    output_path: &Path,
+    env_vars: &[(&str, &str)],
+    runner: &dyn ProcessRunner,
+    work_dir: &Path,
+) -> Result<()> {
+    let source_hevc = work_dir.join("source.hevc");
+    let encoded_hevc = work_dir.join("encoded.hevc");
+    let injected_hevc = work_dir.join("injected.hevc");
+    let remuxed = work_dir.join(format!("remuxed.{}", job.output_extension));
+    extract_source_hevc(
+        source_path,
+        job.source_track_index,
+        &source_hevc,
+        env_vars,
+        runner,
+    )?;
+    extract_dynamic_metadata(job.kind, &source_hevc, work_dir, env_vars, runner)?;
+    extract_output_hevc(output_path, &encoded_hevc, env_vars, runner)?;
+    inject_dynamic_metadata(
+        job.kind,
+        &encoded_hevc,
+        &injected_hevc,
+        work_dir,
+        env_vars,
+        runner,
+    )?;
+    remux_injected_hevc(output_path, &injected_hevc, &remuxed, env_vars, runner)?;
+    replace_output(output_path, &remuxed)
+}
+
+fn extract_source_hevc(
+    source_path: &Path,
+    track_index: u32,
+    dest: &Path,
+    env_vars: &[(&str, &str)],
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
+    let args = vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-i".to_string(),
+        source_path.to_string_lossy().to_string(),
+        "-map".to_string(),
+        format!("0:{track_index}"),
+        "-c:v".to_string(),
+        "copy".to_string(),
+        "-bsf:v".to_string(),
+        "hevc_mp4toannexb".to_string(),
+        "-f".to_string(),
+        "hevc".to_string(),
+        dest.to_string_lossy().to_string(),
+    ];
+    run_checked("ffmpeg", args, env_vars, runner)
+}
+
+fn extract_output_hevc(
+    output_path: &Path,
+    dest: &Path,
+    env_vars: &[(&str, &str)],
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
+    let args = vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-i".to_string(),
+        output_path.to_string_lossy().to_string(),
+        "-map".to_string(),
+        "0:v:0".to_string(),
+        "-c:v".to_string(),
+        "copy".to_string(),
+        "-bsf:v".to_string(),
+        "hevc_mp4toannexb".to_string(),
+        "-f".to_string(),
+        "hevc".to_string(),
+        dest.to_string_lossy().to_string(),
+    ];
+    run_checked("ffmpeg", args, env_vars, runner)
+}
+
+fn extract_dynamic_metadata(
+    kind: DynamicHdrKind,
+    source_hevc: &Path,
+    work_dir: &Path,
+    env_vars: &[(&str, &str)],
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
+    let args = match kind {
+        DynamicHdrKind::Hdr10Plus => vec![
+            "extract".to_string(),
+            source_hevc.to_string_lossy().to_string(),
+            "-o".to_string(),
+            metadata_path(kind, work_dir).to_string_lossy().to_string(),
+        ],
+        DynamicHdrKind::DolbyVision => vec![
+            "extract-rpu".to_string(),
+            source_hevc.to_string_lossy().to_string(),
+            "-o".to_string(),
+            metadata_path(kind, work_dir).to_string_lossy().to_string(),
+        ],
+    };
+    run_checked(kind.tool_name(), args, env_vars, runner)
+}
+
+fn inject_dynamic_metadata(
+    kind: DynamicHdrKind,
+    encoded_hevc: &Path,
+    injected_hevc: &Path,
+    work_dir: &Path,
+    env_vars: &[(&str, &str)],
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
+    let args = match kind {
+        DynamicHdrKind::Hdr10Plus => vec![
+            "inject".to_string(),
+            "-i".to_string(),
+            encoded_hevc.to_string_lossy().to_string(),
+            "-j".to_string(),
+            metadata_path(kind, work_dir).to_string_lossy().to_string(),
+            "-o".to_string(),
+            injected_hevc.to_string_lossy().to_string(),
+        ],
+        DynamicHdrKind::DolbyVision => vec![
+            "inject-rpu".to_string(),
+            "-i".to_string(),
+            encoded_hevc.to_string_lossy().to_string(),
+            "--rpu-in".to_string(),
+            metadata_path(kind, work_dir).to_string_lossy().to_string(),
+            "-o".to_string(),
+            injected_hevc.to_string_lossy().to_string(),
+        ],
+    };
+    run_checked(kind.tool_name(), args, env_vars, runner)
+}
+
+fn metadata_path(kind: DynamicHdrKind, work_dir: &Path) -> PathBuf {
+    match kind {
+        DynamicHdrKind::Hdr10Plus => work_dir.join("hdr10plus.json"),
+        DynamicHdrKind::DolbyVision => work_dir.join("rpu.bin"),
+    }
+}
+
+fn remux_injected_hevc(
+    output_path: &Path,
+    injected_hevc: &Path,
+    remuxed: &Path,
+    env_vars: &[(&str, &str)],
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
+    let args = vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-i".to_string(),
+        output_path.to_string_lossy().to_string(),
+        "-i".to_string(),
+        injected_hevc.to_string_lossy().to_string(),
+        "-map".to_string(),
+        "1:v:0".to_string(),
+        "-map".to_string(),
+        "0:a?".to_string(),
+        "-map".to_string(),
+        "0:s?".to_string(),
+        "-map".to_string(),
+        "0:d?".to_string(),
+        "-map".to_string(),
+        "0:t?".to_string(),
+        "-map_metadata".to_string(),
+        "0".to_string(),
+        "-c".to_string(),
+        "copy".to_string(),
+        remuxed.to_string_lossy().to_string(),
+    ];
+    run_checked("ffmpeg", args, env_vars, runner)
+}
+
+fn replace_output(output_path: &Path, remuxed: &Path) -> Result<()> {
+    std::fs::remove_file(output_path).map_err(|error| dynamic_hdr_error(error.to_string()))?;
+    std::fs::rename(remuxed, output_path).map_err(|error| dynamic_hdr_error(error.to_string()))
+}
+
+fn run_checked(
+    tool: &str,
+    args: Vec<String>,
+    env_vars: &[(&str, &str)],
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
+    let output = runner.run(tool, &args, FFMPEG_TIMEOUT, env_vars)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let tail = voom_process::stderr_tail(&output.stderr, STDERR_TAIL_LINES);
+    Err(VoomError::ToolExecution {
+        tool: tool.into(),
+        message: format!("{tool} exited with {}: {tail}", output.status),
+    })
 }
 
 fn prepare_loudness_actions(
@@ -463,7 +869,10 @@ fn rename_output(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::fs;
     use std::path::{Path, PathBuf};
+    use std::process::{ExitStatus, Output};
 
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
     use voom_domain::plan::{
@@ -472,6 +881,9 @@ mod tests {
 
     use super::*;
     use crate::vmaf_iterate::{BitrateBounds, IterationError, IterationResult};
+
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
 
     struct FailingVmafRunner;
     struct SuccessfulVmafRunner;
@@ -523,6 +935,57 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingProcessRunner {
+        calls: RefCell<Vec<(String, Vec<String>)>>,
+    }
+
+    impl RecordingProcessRunner {
+        fn calls(&self) -> Vec<(String, Vec<String>)> {
+            self.calls.borrow().clone()
+        }
+
+        fn success() -> Output {
+            Output {
+                status: success_status(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            }
+        }
+    }
+
+    impl ProcessRunner for RecordingProcessRunner {
+        fn run(
+            &self,
+            tool: &str,
+            args: &[String],
+            _timeout: Duration,
+            _env_vars: &[(&str, &str)],
+        ) -> Result<Output> {
+            self.calls
+                .borrow_mut()
+                .push((tool.to_string(), args.to_vec()));
+            if let Some(path) = command_output_path(tool, args) {
+                fs::write(path, format!("{tool} output")).unwrap();
+            }
+            Ok(Self::success())
+        }
+    }
+
+    #[cfg(unix)]
+    fn success_status() -> ExitStatus {
+        ExitStatus::from_raw(0)
+    }
+
+    fn command_output_path(tool: &str, args: &[String]) -> Option<PathBuf> {
+        if tool == "ffmpeg" {
+            return args.last().map(PathBuf::from);
+        }
+        args.windows(2)
+            .find(|pair| pair[0] == "-o")
+            .map(|pair| PathBuf::from(&pair[1]))
+    }
+
     fn video_plan(settings: TranscodeSettings) -> Plan {
         let mut file = MediaFile::new(PathBuf::from("/media/video.mp4"));
         file.container = Container::Mp4;
@@ -536,6 +999,109 @@ mod tests {
             },
             "transcode video",
         ))
+    }
+
+    fn dynamic_hdr_plan(track: Track, settings: TranscodeSettings, codec: &str) -> Plan {
+        let mut file = MediaFile::new(PathBuf::from("/media/video.mkv"));
+        file.container = Container::Mkv;
+        file.tracks = vec![track];
+        Plan::new(file, "policy", "phase").with_action(PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: codec.to_string(),
+                settings,
+            },
+            "transcode video",
+        ))
+    }
+
+    fn hdr10plus_track() -> Track {
+        let mut track = Track::new(0, TrackType::Video, "hevc".into());
+        track.is_hdr = true;
+        track.hdr_format = Some("HDR10+".into());
+        track
+    }
+
+    fn dolby_vision_track(profile: u8) -> Track {
+        let mut track = Track::new(0, TrackType::Video, "hevc".into());
+        track.is_hdr = true;
+        track.hdr_format = Some(format!("Dolby Vision Profile {profile}"));
+        track.dolby_vision_profile = Some(profile);
+        track
+    }
+
+    #[test]
+    fn dynamic_hdr_job_detects_hdr10plus_hevc_preservation() {
+        let plan = dynamic_hdr_plan(hdr10plus_track(), TranscodeSettings::default(), "hevc");
+        let actions: Vec<&PlannedAction> = plan.actions.iter().collect();
+
+        let job = dynamic_hdr_job(&plan, &actions, "mkv").unwrap().unwrap();
+
+        assert_eq!(job.kind, DynamicHdrKind::Hdr10Plus);
+        assert_eq!(job.source_track_index, 0);
+    }
+
+    #[test]
+    fn dynamic_hdr_job_rejects_unsupported_dolby_vision_profile() {
+        let plan = dynamic_hdr_plan(dolby_vision_track(4), TranscodeSettings::default(), "hevc");
+        let actions: Vec<&PlannedAction> = plan.actions.iter().collect();
+
+        let error = dynamic_hdr_job(&plan, &actions, "mkv").unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("unsupported Dolby Vision profile 4"));
+        assert!(message.contains("supported profiles are 5, 7, and 8"));
+    }
+
+    #[test]
+    fn dynamic_hdr_job_skips_tonemapped_hdr10plus() {
+        let settings = TranscodeSettings::default().with_hdr_mode(Some("tonemap".into()));
+        let plan = dynamic_hdr_plan(hdr10plus_track(), settings, "hevc");
+        let actions: Vec<&PlannedAction> = plan.actions.iter().collect();
+
+        let job = dynamic_hdr_job(&plan, &actions, "mkv").unwrap();
+
+        assert_eq!(job, None);
+    }
+
+    #[test]
+    fn dynamic_hdr_job_skips_profile_validation_when_preservation_disabled() {
+        let settings = TranscodeSettings::default().with_preserve_hdr(Some(false));
+        let plan = dynamic_hdr_plan(dolby_vision_track(4), settings, "hevc");
+        let actions: Vec<&PlannedAction> = plan.actions.iter().collect();
+
+        let job = dynamic_hdr_job(&plan, &actions, "mkv").unwrap();
+
+        assert_eq!(job, None);
+    }
+
+    #[test]
+    fn dynamic_hdr_reinjection_replaces_output_and_cleans_sidecars() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("source.mkv");
+        let output_path = dir.path().join("output.mkv");
+        fs::write(&source_path, "source").unwrap();
+        fs::write(&output_path, "muxed output").unwrap();
+        let runner = RecordingProcessRunner::default();
+        let job = DynamicHdrJob {
+            kind: DynamicHdrKind::DolbyVision,
+            source_track_index: 0,
+            output_extension: "mkv".into(),
+        };
+
+        apply_dynamic_hdr_reinjection(&job, &source_path, &output_path, &[], &runner).unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(calls[0].0, "ffmpeg");
+        assert_eq!(calls[1].0, "dovi_tool");
+        assert!(calls[1].1.contains(&"extract-rpu".to_string()));
+        assert_eq!(calls[3].0, "dovi_tool");
+        assert!(calls[3].1.contains(&"inject-rpu".to_string()));
+        assert_eq!(fs::read_to_string(&output_path).unwrap(), "ffmpeg output");
+
+        let sidecar_path = calls[0].1.last().map(PathBuf::from).unwrap();
+        assert!(!sidecar_path.parent().unwrap().exists());
     }
 
     #[test]

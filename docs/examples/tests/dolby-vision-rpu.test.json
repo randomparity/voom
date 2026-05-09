@@ -1,0 +1,13 @@
+{
+  "policy": "../dolby-vision-rpu.voom",
+  "cases": [
+    {
+      "name": "plans Dolby Vision RPU preservation",
+      "fixture": "dolby-vision-p8.json",
+      "expect": {
+        "phases_run": ["preserve-rpu"],
+        "video_codec": "hevc"
+      }
+    }
+  ]
+}
