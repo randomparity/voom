@@ -173,6 +173,9 @@ interface types {
         plugin-name: string,
         produced-events: list<event-data>,
         data: option<list<u8>>,
+        claimed: bool,
+        execution-error: option<string>,
+        execution-detail: option<list<u8>>,
     }
 
     enum log-level {

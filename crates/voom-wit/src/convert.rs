@@ -41,6 +41,9 @@ pub fn event_result_from_wasm(
     plugin_name: String,
     produced_events: Vec<(String, Vec<u8>)>,
     data: Option<Vec<u8>>,
+    claimed: bool,
+    execution_error: Option<String>,
+    execution_detail: Option<Vec<u8>>,
 ) -> Result<EventResult> {
     let events = produced_events
         .into_iter()
@@ -55,6 +58,12 @@ pub fn event_result_from_wasm(
     let mut result = EventResult::new(plugin_name);
     result.produced_events = events;
     result.data = json_data;
+    result.claimed = claimed;
+    result.execution_error = execution_error;
+    result.execution_detail = execution_detail
+        .map(|d| serde_json::from_slice(&d))
+        .transpose()
+        .map_err(|e| VoomError::Wasm(format!("failed to deserialize execution detail: {e}")))?;
     Ok(result)
 }
 
@@ -63,6 +72,9 @@ pub struct WasmEventResult {
     pub plugin_name: String,
     pub produced_events: Vec<(String, Vec<u8>)>,
     pub data: Option<Vec<u8>>,
+    pub claimed: bool,
+    pub execution_error: Option<String>,
+    pub execution_detail: Option<Vec<u8>>,
 }
 
 /// Serialize a domain `EventResult` into WASM boundary format.
@@ -84,6 +96,14 @@ pub fn event_result_to_wasm(result: &EventResult) -> Result<WasmEventResult> {
         plugin_name: result.plugin_name.clone(),
         produced_events: produced,
         data,
+        claimed: result.claimed,
+        execution_error: result.execution_error.clone(),
+        execution_detail: result
+            .execution_detail
+            .as_ref()
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|e| VoomError::Wasm(format!("failed to serialize execution detail: {e}")))?,
     })
 }
 
@@ -286,6 +306,9 @@ mod tests {
             wasm_result.plugin_name,
             wasm_result.produced_events,
             wasm_result.data,
+            wasm_result.claimed,
+            wasm_result.execution_error,
+            wasm_result.execution_detail,
         )
         .unwrap();
         assert_eq!(restored.plugin_name, "test-plugin");
@@ -518,10 +541,38 @@ mod tests {
 
     #[test]
     fn test_event_result_from_wasm_empty() {
-        let result = event_result_from_wasm("empty-plugin".into(), vec![], None).unwrap();
+        let result =
+            event_result_from_wasm("empty-plugin".into(), vec![], None, false, None, None).unwrap();
         assert_eq!(result.plugin_name, "empty-plugin");
         assert!(result.produced_events.is_empty());
         assert!(result.data.is_none());
+    }
+
+    #[test]
+    fn test_event_result_roundtrip_preserves_execution_lifecycle_fields() {
+        let detail = voom_domain::plan::ExecutionDetail {
+            command: "handbrake --input movie.mkv".to_string(),
+            exit_code: Some(0),
+            stderr_tail: String::new(),
+            duration_ms: 25,
+        };
+        let mut result = EventResult::plan_succeeded("executor", None);
+        result.execution_detail = Some(detail.clone());
+
+        let wasm_result = event_result_to_wasm(&result).unwrap();
+        let restored = event_result_from_wasm(
+            wasm_result.plugin_name,
+            wasm_result.produced_events,
+            wasm_result.data,
+            wasm_result.claimed,
+            wasm_result.execution_error,
+            wasm_result.execution_detail,
+        )
+        .unwrap();
+
+        assert!(restored.claimed);
+        assert_eq!(restored.execution_error, None);
+        assert_eq!(restored.execution_detail.unwrap().command, detail.command);
     }
 
     #[test]
@@ -556,6 +607,9 @@ mod tests {
         let err = event_result_from_wasm(
             "test-plugin".into(),
             vec![("wrong.type".into(), payload)],
+            None,
+            false,
+            None,
             None,
         )
         .unwrap_err();

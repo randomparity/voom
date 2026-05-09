@@ -466,7 +466,9 @@ pub mod wasm {
                         .iter()
                         .map(|(t, p)| t.len() + p.len())
                         .sum::<usize>()
-                        + wasm_result.data.as_ref().map_or(0, Vec::len);
+                        + wasm_result.data.as_ref().map_or(0, Vec::len)
+                        + wasm_result.execution_error.as_ref().map_or(0, String::len)
+                        + wasm_result.execution_detail.as_ref().map_or(0, Vec::len);
                     if output_size > MAX_WASM_EVENT_PAYLOAD {
                         return Err(voom_domain::errors::VoomError::Wasm(format!(
                             "WASM plugin '{}' returned oversized payload: \
@@ -478,6 +480,9 @@ pub mod wasm {
                         wasm_result.plugin_name,
                         wasm_result.produced_events,
                         wasm_result.data,
+                        wasm_result.claimed,
+                        wasm_result.execution_error,
+                        wasm_result.execution_detail,
                     )
                     .map_err(|e| voom_domain::errors::VoomError::Wasm(e.to_string()))?;
                     Ok(Some(result))
@@ -641,6 +646,9 @@ pub mod wasm {
         let mut plugin_name = String::new();
         let mut produced_events = Vec::new();
         let mut data: Option<Vec<u8>> = None;
+        let mut claimed = false;
+        let mut execution_error: Option<String> = None;
+        let mut execution_detail: Option<Vec<u8>> = None;
 
         for (name, field_val) in fields {
             match name.as_str() {
@@ -655,6 +663,25 @@ pub mod wasm {
                     Val::Option(None) => data = None,
                     _ => {}
                 },
+                "claimed" => {
+                    if let Val::Bool(value) = field_val {
+                        claimed = *value;
+                    }
+                }
+                "execution-error" => match field_val {
+                    Val::Option(Some(boxed)) => {
+                        execution_error = Some(val_to_string(boxed.as_ref()));
+                    }
+                    Val::Option(None) => execution_error = None,
+                    _ => {}
+                },
+                "execution-detail" => match field_val {
+                    Val::Option(Some(boxed)) => {
+                        execution_detail = Some(val_to_bytes(boxed.as_ref()));
+                    }
+                    Val::Option(None) => execution_detail = None,
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -663,6 +690,9 @@ pub mod wasm {
             plugin_name,
             produced_events,
             data,
+            claimed,
+            execution_error,
+            execution_detail,
         })
     }
 
@@ -1221,6 +1251,9 @@ Evaluate = {}
                 plugin_name: "test-plugin".into(),
                 produced_events: vec![],
                 data: Some(oversized_data),
+                claimed: false,
+                execution_error: None,
+                execution_detail: None,
             };
 
             let output_size: usize = wasm_result
@@ -1228,7 +1261,9 @@ Evaluate = {}
                 .iter()
                 .map(|(t, p)| t.len() + p.len())
                 .sum::<usize>()
-                + wasm_result.data.as_ref().map_or(0, Vec::len);
+                + wasm_result.data.as_ref().map_or(0, Vec::len)
+                + wasm_result.execution_error.as_ref().map_or(0, String::len)
+                + wasm_result.execution_detail.as_ref().map_or(0, Vec::len);
 
             assert!(
                 output_size > MAX_WASM_EVENT_PAYLOAD,
