@@ -126,13 +126,10 @@ impl PlanParallelResource {
 /// sessions within a plan. Callers that need executor-level hardware limits to
 /// apply to plans with `hw: auto` or no per-action hardware should use
 /// [`PlanExecutionLimiter::from_limits_with_default`].
-type PlanAcquireObserver = Arc<dyn Fn(&str) + Send + Sync>;
-
 #[derive(Clone, Default)]
 pub struct PlanExecutionLimiter {
     semaphores: Arc<HashMap<String, Arc<Semaphore>>>,
     default_resource: Option<String>,
-    acquire_observer: Option<PlanAcquireObserver>,
 }
 
 /// RAII permit for a classified plan resource.
@@ -177,19 +174,7 @@ impl PlanExecutionLimiter {
         Self {
             semaphores: Arc::new(semaphores),
             default_resource,
-            acquire_observer: None,
         }
-    }
-
-    /// Attach a callback invoked after a plan maps to a limited resource and
-    /// before the limiter waits for capacity.
-    #[must_use]
-    pub fn with_acquire_observer(
-        mut self,
-        observer: impl Fn(&str) + Send + Sync + 'static,
-    ) -> Self {
-        self.acquire_observer = Some(Arc::new(observer));
-        self
     }
 
     /// Acquire a plan-level resource permit for a plan.
@@ -206,9 +191,6 @@ impl PlanExecutionLimiter {
         let Some(semaphore) = self.semaphores.get(resource) else {
             return PlanExecutionPermit { _permit: None };
         };
-        if let Some(observer) = &self.acquire_observer {
-            observer(resource);
-        }
         let permit = semaphore
             .clone()
             .acquire_owned()

@@ -135,8 +135,8 @@ impl FfmpegExecutorPlugin {
 
     /// Create with `available` set to the given value.
     /// Bypasses the `init()` probe for testing.
-    #[cfg(test)]
-    fn with_available(mut self, available: bool) -> Self {
+    #[cfg(any(test, feature = "testing"))]
+    pub fn with_available(mut self, available: bool) -> Self {
         self.available = available;
         self
     }

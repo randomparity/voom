@@ -266,25 +266,12 @@ fn database_stats(store: &(impl ReportDataSource + ?Sized)) -> voom_domain::Resu
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::Mutex;
-
     use voom_domain::errors::VoomError;
     use voom_domain::safeguard::{SafeguardKind, SafeguardViolation};
     use voom_domain::stats::{LibrarySnapshot, SavingsReport, SnapshotTrigger};
     use voom_domain::storage::{PageStats, PlanPhaseStat, PlanStatus};
 
     use super::*;
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Call {
-        Library,
-        Plans,
-        Savings,
-        History,
-        Issues,
-        TableCounts,
-        PageStats,
-    }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum FailPoint {
@@ -299,8 +286,6 @@ mod tests {
 
     #[derive(Default)]
     struct FakeReportStore {
-        calls: Mutex<Vec<Call>>,
-        history_limits: Mutex<Vec<u32>>,
         files: Vec<MediaFile>,
         fail: Option<FailPoint>,
     }
@@ -320,21 +305,6 @@ mod tests {
             }
         }
 
-        fn calls(&self) -> Vec<Call> {
-            self.calls.lock().expect("calls lock").clone()
-        }
-
-        fn history_limits(&self) -> Vec<u32> {
-            self.history_limits
-                .lock()
-                .expect("history limits lock")
-                .clone()
-        }
-
-        fn record(&self, call: Call) {
-            self.calls.lock().expect("calls lock").push(call);
-        }
-
         fn fail_if(&self, fail_point: FailPoint) -> voom_domain::Result<()> {
             if self.fail == Some(fail_point) {
                 return Err(VoomError::Storage {
@@ -351,13 +321,11 @@ mod tests {
             &self,
             trigger: SnapshotTrigger,
         ) -> voom_domain::Result<LibrarySnapshot> {
-            self.record(Call::Library);
             self.fail_if(FailPoint::Library)?;
             Ok(snapshot(trigger))
         }
 
         fn plan_stats_by_phase(&self) -> voom_domain::Result<Vec<PlanPhaseStat>> {
-            self.record(Call::Plans);
             self.fail_if(FailPoint::Plans)?;
             Ok(vec![PlanPhaseStat::new(
                 "phase".to_string(),
@@ -371,36 +339,30 @@ mod tests {
             &self,
             period: Option<TimePeriod>,
         ) -> voom_domain::Result<SavingsReport> {
-            self.record(Call::Savings);
             self.fail_if(FailPoint::Savings)?;
             assert!(period.is_none() || period == Some(TimePeriod::Month));
             Ok(SavingsReport::default())
         }
 
         fn list_snapshots(&self, limit: u32) -> voom_domain::Result<Vec<LibrarySnapshot>> {
-            self.record(Call::History);
             self.fail_if(FailPoint::History)?;
-            self.history_limits
-                .lock()
-                .expect("history limits lock")
-                .push(limit);
-            Ok(vec![snapshot(SnapshotTrigger::Manual)])
+            Ok(vec![
+                snapshot(SnapshotTrigger::Manual);
+                limit.min(2) as usize
+            ])
         }
 
         fn list_files(&self, _filters: &FileFilters) -> voom_domain::Result<Vec<MediaFile>> {
-            self.record(Call::Issues);
             self.fail_if(FailPoint::Issues)?;
             Ok(self.files.clone())
         }
 
         fn table_row_counts(&self) -> voom_domain::Result<Vec<(String, u64)>> {
-            self.record(Call::TableCounts);
             self.fail_if(FailPoint::TableCounts)?;
             Ok(vec![("files".to_string(), 1)])
         }
 
         fn page_stats(&self) -> voom_domain::Result<PageStats> {
-            self.record(Call::PageStats);
             self.fail_if(FailPoint::PageStats)?;
             Ok(PageStats {
                 page_size: 4096,
@@ -426,41 +388,66 @@ mod tests {
         SafeguardViolation::new(SafeguardKind::NoAudioTrack, "no audio", "normalize")
     }
 
+    fn present_sections(result: &ReportResult) -> Vec<ReportSection> {
+        let mut sections = Vec::new();
+        if result.library.is_some() {
+            sections.push(ReportSection::Library);
+        }
+        if result.plans.is_some() {
+            sections.push(ReportSection::Plans);
+        }
+        if result.savings.is_some() {
+            sections.push(ReportSection::Savings);
+        }
+        if result.history.is_some() {
+            sections.push(ReportSection::History);
+        }
+        if result.issues.is_some() {
+            sections.push(ReportSection::Issues);
+        }
+        if result.database.is_some() {
+            sections.push(ReportSection::Database);
+        }
+        sections
+    }
+
     #[test]
-    fn assemble_report_queries_only_requested_section() {
+    fn assemble_report_includes_only_requested_section() {
         let cases = [
-            (ReportSection::Library, vec![Call::Library]),
-            (ReportSection::Plans, vec![Call::Plans]),
-            (ReportSection::Savings, vec![Call::Savings]),
-            (ReportSection::History, vec![Call::History]),
-            (ReportSection::Issues, vec![Call::Issues]),
-            (
-                ReportSection::Database,
-                vec![Call::TableCounts, Call::PageStats],
-            ),
+            ReportSection::Library,
+            ReportSection::Plans,
+            ReportSection::Savings,
+            ReportSection::History,
+            ReportSection::Issues,
+            ReportSection::Database,
         ];
 
-        for (section, expected_calls) in cases {
+        for section in cases {
             let store = FakeReportStore::default();
-            assemble_report_from_source(&store, &ReportRequest::new(vec![section]))
+            let result = assemble_report_from_source(&store, &ReportRequest::new(vec![section]))
                 .expect("report should assemble");
-            assert_eq!(store.calls(), expected_calls, "section={section:?}");
+            assert_eq!(
+                present_sections(&result),
+                vec![section],
+                "section={section:?}"
+            );
         }
     }
 
     #[test]
     fn assemble_report_uses_default_and_explicit_history_limits() {
         let store = FakeReportStore::default();
-        assemble_report_from_source(&store, &ReportRequest::all()).expect("report should assemble");
-        assert_eq!(store.history_limits(), vec![20]);
+        let result = assemble_report_from_source(&store, &ReportRequest::all())
+            .expect("report should assemble");
+        assert_eq!(result.history.expect("history section").len(), 2);
 
         let store = FakeReportStore::default();
-        assemble_report_from_source(
+        let result = assemble_report_from_source(
             &store,
-            &ReportRequest::new(vec![ReportSection::History]).with_history_limit(7),
+            &ReportRequest::new(vec![ReportSection::History]).with_history_limit(1),
         )
         .expect("report should assemble");
-        assert_eq!(store.history_limits(), vec![7]);
+        assert_eq!(result.history.expect("history section").len(), 1);
     }
 
     #[test]

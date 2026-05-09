@@ -19,6 +19,9 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 scopeguard = { workspace = true }
 
+[features]
+testing = []
+
 [lints]
 workspace = true
 

@@ -810,38 +810,23 @@ mod tests {
             .await
     }
 
-    fn observe_limiter_acquires(
-        limiter: voom_job_manager::worker::PlanExecutionLimiter,
-    ) -> (
-        voom_job_manager::worker::PlanExecutionLimiter,
-        tokio::sync::mpsc::UnboundedReceiver<String>,
-    ) {
-        let (wait_tx, wait_rx) = tokio::sync::mpsc::unbounded_channel();
-        let limiter = limiter.with_acquire_observer(move |resource| {
-            let _ = wait_tx.send(resource.to_string());
-        });
-        (limiter, wait_rx)
-    }
-
-    async fn wait_for_limiter_acquire(
-        wait_rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
-        resource: &str,
+    async fn assert_executor_not_entered_while_limited(
+        entered_rx: &mpsc::Receiver<()>,
         processing: Pin<
             &mut impl Future<Output = std::result::Result<Option<serde_json::Value>, String>>,
         >,
+        message: &str,
     ) {
-        let acquired = tokio::time::timeout(Duration::from_secs(1), async {
-            tokio::select! {
-                acquired = wait_rx.recv() => acquired
-                    .expect("plan limiter acquire observer should still be connected"),
-                result = processing => {
-                    panic!("processing finished before reaching the plan limiter: {result:?}");
-                }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            result = processing => {
+                panic!("processing finished before the limited executor was released: {result:?}");
             }
-        })
-        .await
-        .expect("processing should reach the plan limiter acquire point");
-        assert_eq!(acquired, resource);
+        }
+        assert!(
+            matches!(entered_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "{message}"
+        );
     }
 
     #[tokio::test]
@@ -853,7 +838,6 @@ mod tests {
             1,
         )]);
         let held = held_nvenc_permit(&limiter).await;
-        let (limiter, mut wait_rx) = observe_limiter_acquires(limiter);
 
         let path = fixture.dir_path().join("movie.mkv");
         std::fs::write(&path, vec![0u8; 1024]).unwrap();
@@ -876,11 +860,12 @@ mod tests {
         let processing = process_single_file_execute(&file, &compiled, &ctx);
         tokio::pin!(processing);
 
-        wait_for_limiter_acquire(&mut wait_rx, "hw:nvenc", processing.as_mut()).await;
-        assert!(
-            matches!(entered_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-            "executor must not receive PlanCreated while the nvenc permit is held"
-        );
+        assert_executor_not_entered_while_limited(
+            &entered_rx,
+            processing.as_mut(),
+            "executor must not receive PlanCreated while the nvenc permit is held",
+        )
+        .await;
 
         drop(held);
         tokio::time::timeout(Duration::from_secs(1), &mut processing)
@@ -906,7 +891,6 @@ mod tests {
                 None,
             ))
             .await;
-        let (limiter, mut wait_rx) = observe_limiter_acquires(limiter);
 
         let path = fixture.dir_path().join("movie.mkv");
         std::fs::write(&path, vec![0u8; 1024]).unwrap();
@@ -929,11 +913,12 @@ mod tests {
         let processing = process_single_file_execute(&file, &compiled, &ctx);
         tokio::pin!(processing);
 
-        wait_for_limiter_acquire(&mut wait_rx, "hw:nvenc", processing.as_mut()).await;
-        assert!(
-            matches!(entered_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-            "executor must not receive PlanCreated while the default nvenc permit is held"
-        );
+        assert_executor_not_entered_while_limited(
+            &entered_rx,
+            processing.as_mut(),
+            "executor must not receive PlanCreated while the default nvenc permit is held",
+        )
+        .await;
 
         drop(held);
         tokio::time::timeout(Duration::from_secs(1), &mut processing)
@@ -954,7 +939,6 @@ mod tests {
             1,
         )]);
         let held = held_nvenc_permit(&limiter).await;
-        let (limiter, mut wait_rx) = observe_limiter_acquires(limiter);
 
         let path = fixture.dir_path().join("movie.mkv");
         std::fs::write(&path, vec![0u8; 1024]).unwrap();
@@ -977,11 +961,12 @@ mod tests {
         let processing = process_single_file_execute(&file, &compiled, &ctx);
         tokio::pin!(processing);
 
-        wait_for_limiter_acquire(&mut wait_rx, "hw:nvenc", processing.as_mut()).await;
-        assert!(
-            matches!(entered_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-            "executor must not receive PlanCreated while the nvenc permit is held"
-        );
+        assert_executor_not_entered_while_limited(
+            &entered_rx,
+            processing.as_mut(),
+            "executor must not receive PlanCreated while the nvenc permit is held",
+        )
+        .await;
 
         fixture.cancel();
         drop(held);

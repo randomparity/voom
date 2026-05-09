@@ -9,12 +9,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 
-use voom_domain::capabilities::Capability;
-use voom_domain::errors::Result;
 use voom_domain::events::{Event, PlanCreatedEvent};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings};
-use voom_kernel::{Kernel, Plugin, PluginContext};
+use voom_kernel::{Kernel, PluginContext};
 
 fn mkvmerge_available() -> bool {
     Command::new("mkvmerge")
@@ -30,148 +28,21 @@ fn ffmpeg_available() -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
-enum TestExecutorKind {
-    Mkvtoolnix,
-    Ffmpeg,
-}
-
-struct TestExecutor {
-    kind: TestExecutorKind,
-    capabilities: Vec<Capability>,
-}
-
-impl TestExecutor {
-    fn mkvtoolnix() -> Self {
-        let mut operations = OperationType::METADATA_OPS.to_vec();
-        operations.extend([
-            OperationType::RemoveTrack,
-            OperationType::ReorderTracks,
-            OperationType::ConvertContainer,
-        ]);
-        Self {
-            kind: TestExecutorKind::Mkvtoolnix,
-            capabilities: vec![Capability::Execute {
-                operations,
-                formats: vec!["mkv".to_string()],
-            }],
-        }
-    }
-
-    fn ffmpeg() -> Self {
-        Self {
-            kind: TestExecutorKind::Ffmpeg,
-            capabilities: vec![Capability::Execute {
-                operations: vec![
-                    OperationType::ConvertContainer,
-                    OperationType::TranscodeVideo,
-                    OperationType::TranscodeAudio,
-                    OperationType::SynthesizeAudio,
-                    OperationType::SetDefault,
-                    OperationType::ClearDefault,
-                    OperationType::SetForced,
-                    OperationType::ClearForced,
-                    OperationType::SetTitle,
-                    OperationType::SetLanguage,
-                    OperationType::SetContainerTag,
-                    OperationType::ClearContainerTags,
-                    OperationType::DeleteContainerTag,
-                ],
-                formats: vec![],
-            }],
-        }
-    }
-
-    fn can_handle(&self, plan: &Plan) -> bool {
-        match self.kind {
-            TestExecutorKind::Mkvtoolnix => {
-                if plan.is_empty() || plan.is_skipped() {
-                    return false;
-                }
-                let is_mkv = plan.file.container == Container::Mkv;
-                let converts_to_mkv = plan.actions.iter().any(|a| {
-                    a.operation == OperationType::ConvertContainer
-                        && matches!(
-                            &a.parameters,
-                            ActionParams::Container { container } if *container == Container::Mkv
-                        )
-                });
-                (is_mkv || converts_to_mkv)
-                    && plan.actions.iter().all(|a| {
-                        a.operation.is_metadata_op()
-                            || matches!(
-                                a.operation,
-                                OperationType::RemoveTrack
-                                    | OperationType::ReorderTracks
-                                    | OperationType::ConvertContainer
-                            )
-                    })
-            }
-            TestExecutorKind::Ffmpeg => {
-                if plan.is_empty() || plan.is_skipped() {
-                    return false;
-                }
-                let has_transcode = plan.actions.iter().any(|a| {
-                    matches!(
-                        a.operation,
-                        OperationType::TranscodeVideo
-                            | OperationType::TranscodeAudio
-                            | OperationType::SynthesizeAudio
-                    )
-                });
-                let has_convert = plan
-                    .actions
-                    .iter()
-                    .any(|a| a.operation == OperationType::ConvertContainer);
-                if has_transcode || has_convert {
-                    return true;
-                }
-                plan.file.container != Container::Mkv
-                    && plan.actions.iter().all(|a| a.operation.is_metadata_op())
-            }
-        }
-    }
-}
-
-impl Plugin for TestExecutor {
-    fn name(&self) -> &str {
-        match self.kind {
-            TestExecutorKind::Mkvtoolnix => "mkvtoolnix-executor",
-            TestExecutorKind::Ffmpeg => "ffmpeg-executor",
-        }
-    }
-
-    fn version(&self) -> &str {
-        "test"
-    }
-
-    fn capabilities(&self) -> &[Capability] {
-        &self.capabilities
-    }
-
-    fn handles(&self, event_type: &str) -> bool {
-        event_type == Event::PLAN_CREATED
-    }
-
-    fn on_event(&self, event: &Event) -> Result<Option<voom_domain::events::EventResult>> {
-        let Event::PlanCreated(plan_event) = event else {
-            return Ok(None);
-        };
-        if !self.can_handle(&plan_event.plan) {
-            return Ok(None);
-        }
-        let mut result = voom_domain::events::EventResult::new(self.name());
-        result.claimed = true;
-        Ok(Some(result))
-    }
-}
-
 fn make_kernel_with_both_executors() -> Kernel {
     let mut kernel = Kernel::new();
     kernel
-        .register_plugin(Arc::new(TestExecutor::mkvtoolnix()), 39)
+        .register_plugin(
+            Arc::new(
+                voom_mkvtoolnix_executor::MkvtoolnixExecutorPlugin::new().with_available(true),
+            ),
+            39,
+        )
         .expect("register deterministic mkvtoolnix test executor");
     kernel
-        .register_plugin(Arc::new(TestExecutor::ffmpeg()), 40)
+        .register_plugin(
+            Arc::new(voom_ffmpeg_executor::FfmpegExecutorPlugin::new().with_available(true)),
+            40,
+        )
         .expect("register deterministic ffmpeg test executor");
     kernel
 }

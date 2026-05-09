@@ -92,3 +92,5 @@ rand = "0.10"
 rusqlite.workspace = true
 tempfile.workspace = true
 voom-domain = { workspace = true, features = ["testing"] }
+voom-ffmpeg-executor = { workspace = true, features = ["testing"] }
+voom-mkvtoolnix-executor = { workspace = true, features = ["testing"] }

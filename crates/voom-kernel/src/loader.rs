@@ -476,15 +476,8 @@ pub mod wasm {
                             self.name, output_size, MAX_WASM_EVENT_PAYLOAD
                         )));
                     }
-                    let result = voom_wit::event_result_from_wasm(
-                        wasm_result.plugin_name,
-                        wasm_result.produced_events,
-                        wasm_result.data,
-                        wasm_result.claimed,
-                        wasm_result.execution_error,
-                        wasm_result.execution_detail,
-                    )
-                    .map_err(|e| voom_domain::errors::VoomError::Wasm(e.to_string()))?;
+                    let result = voom_wit::event_result_from_wasm(wasm_result)
+                        .map_err(|e| voom_domain::errors::VoomError::Wasm(e.to_string()))?;
                     Ok(Some(result))
                 }
                 Ok(None) => Ok(None),

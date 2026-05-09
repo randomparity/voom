@@ -6,14 +6,6 @@ from typing import Any, NotRequired, TypeAlias, TypedDict
 JsonObject: TypeAlias = dict[str, Any]
 
 
-class TvdbAuthData(TypedDict, total=False):
-    token: str
-
-
-class TvdbAuthResponse(TypedDict, total=False):
-    data: TvdbAuthData
-
-
 class TvdbSearchResult(TypedDict, total=False):
     id: int | str
     tvdb_id: int | str
