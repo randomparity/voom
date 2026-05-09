@@ -5,7 +5,7 @@ use voom_domain::storage::{
     EventLogFilters, EventLogRecord, EventLogStorage, PruneReport, RetentionPolicy,
 };
 
-use super::{format_datetime, parse_datetime, storage_err, SqliteStore};
+use crate::store::{escape_like, format_datetime, parse_datetime, storage_err, SqliteStore};
 
 impl EventLogStorage for SqliteStore {
     fn insert_event_log(&self, record: &EventLogRecord) -> Result<i64> {
@@ -36,7 +36,7 @@ impl EventLogStorage for SqliteStore {
 
         if let Some(ref event_type) = filters.event_type {
             if let Some(prefix) = event_type.strip_suffix('*') {
-                let escaped = super::escape_like(prefix);
+                let escaped = escape_like(prefix);
                 param_values.push(format!("{escaped}%"));
                 sql.push_str(&format!(
                     " AND event_type LIKE ?{} ESCAPE '\\'",

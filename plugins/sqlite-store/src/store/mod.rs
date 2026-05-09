@@ -1,20 +1,32 @@
-mod bad_file_storage;
 mod core;
-mod discovered_file_storage;
-mod event_log_storage;
-mod file_storage;
-mod file_transition_storage;
-mod health_check_storage;
-mod job_storage;
-mod maintenance_storage;
-mod pending_ops_storage;
-mod plan_storage;
-mod plugin_data_storage;
 mod row_mappers;
-mod snapshot_storage;
 mod sql;
-mod subtitle_storage;
-mod verification_storage;
+
+mod files {
+    mod bad_file_storage;
+    mod discovered_file_storage;
+    mod file_storage;
+    mod file_transition_storage;
+    mod subtitle_storage;
+    mod verification_storage;
+}
+
+mod history {
+    mod event_log_storage;
+    mod health_check_storage;
+    mod maintenance_storage;
+    mod snapshot_storage;
+}
+
+mod jobs {
+    mod job_storage;
+    mod pending_ops_storage;
+}
+
+mod plans {
+    mod plan_storage;
+    mod plugin_data_storage;
+}
 
 use std::collections::HashMap;
 
@@ -27,7 +39,7 @@ use voom_domain::media::Track;
 pub use core::{SqliteStore, SqliteStoreConfig};
 pub(crate) use row_mappers::{
     parse_optional_datetime, parse_required_datetime, row_to_bad_file, row_to_file, row_to_job,
-    row_to_track, row_uuid, FileRow,
+    row_to_track, row_to_verification, row_uuid, FileRow,
 };
 pub(crate) use sql::{
     escape_like, format_datetime, other_storage_err, parse_datetime, parse_uuid, storage_err,

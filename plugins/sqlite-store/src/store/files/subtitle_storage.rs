@@ -4,7 +4,7 @@ use rusqlite::params;
 
 use voom_domain::errors::Result;
 
-use super::{storage_err, SqliteStore};
+use crate::store::{storage_err, SqliteStore};
 
 /// A row from the `subtitles` table.
 #[derive(Debug, Clone)]

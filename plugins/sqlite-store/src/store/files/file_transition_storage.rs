@@ -9,7 +9,7 @@ use voom_domain::stats::{ProcessingOutcome, SavingsBucket, SavingsReport, TimePe
 use voom_domain::storage::{FileTransitionStorage, PruneReport, RetentionPolicy};
 use voom_domain::transition::{FileTransition, TransitionSource};
 
-use super::{format_datetime, storage_err, SqliteStore};
+use crate::store::{format_datetime, storage_err, SqliteStore};
 
 /// Insert a `FileTransition` into `file_transitions`. Accepts any
 /// `&rusqlite::Connection`, including one obtained via `Deref` from an

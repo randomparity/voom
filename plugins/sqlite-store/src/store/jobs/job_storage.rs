@@ -6,7 +6,7 @@ use voom_domain::errors::{Result, StorageErrorKind, VoomError};
 use voom_domain::job::{Job, JobStatus, JobUpdate};
 use voom_domain::storage::{JobFilters, JobStorage, PruneReport, RetentionPolicy};
 
-use super::{
+use crate::store::{
     format_datetime, other_storage_err, parse_datetime, row_to_job, storage_err, SqlQuery,
     SqliteStore,
 };
@@ -379,7 +379,7 @@ impl JobStorage for SqliteStore {
     }
 }
 
-use super::OptionalExt;
+use crate::store::OptionalExt;
 
 #[cfg(test)]
 mod tests {

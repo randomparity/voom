@@ -6,7 +6,7 @@ use rusqlite::types::ToSql;
 use voom_domain::errors::Result;
 use voom_domain::storage::{MaintenanceStorage, PageStats};
 
-use super::{escape_like, storage_err, SqliteStore};
+use crate::store::{escape_like, storage_err, SqliteStore};
 
 impl SqliteStore {
     fn delete_bad_files_by_ids(&self, ids: &[&str]) -> Result<u64> {
@@ -99,7 +99,7 @@ impl MaintenanceStorage for SqliteStore {
         // Phase 3: Mark missing files with soft-delete.
         // Lifecycle-based purge is done separately via purge_missing() on FileStorage.
         let conn = self.conn()?;
-        let now = super::format_datetime(&chrono::Utc::now());
+        let now = crate::store::format_datetime(&chrono::Utc::now());
         let mut marked = 0u64;
         for id in &missing_ids {
             conn.execute(

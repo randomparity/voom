@@ -9,8 +9,7 @@ use voom_domain::verification::{
     IntegritySummary, VerificationFilters, VerificationMode, VerificationRecord,
 };
 
-use super::row_mappers::row_to_verification;
-use super::{format_datetime, storage_err, SqlQuery, SqliteStore};
+use crate::store::{format_datetime, row_to_verification, storage_err, SqlQuery, SqliteStore};
 
 const SELECT_VERIFICATION: &str = "SELECT id, file_id, verified_at, mode, outcome, \
     error_count, warning_count, content_hash, details FROM verifications";

@@ -4,7 +4,7 @@ use rusqlite::params;
 use voom_domain::errors::Result;
 use voom_domain::storage::PluginDataStorage;
 
-use super::{format_datetime, storage_err, OptionalExt, SqliteStore};
+use crate::store::{format_datetime, storage_err, OptionalExt, SqliteStore};
 
 impl PluginDataStorage for SqliteStore {
     fn plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>> {

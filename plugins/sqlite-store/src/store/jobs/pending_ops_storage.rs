@@ -4,7 +4,7 @@ use uuid::Uuid;
 use voom_domain::errors::Result;
 use voom_domain::storage::PendingOperation;
 
-use super::{format_datetime, other_storage_err, storage_err, SqliteStore};
+use crate::store::{format_datetime, other_storage_err, storage_err, SqliteStore};
 
 impl voom_domain::storage::PendingOpsStorage for SqliteStore {
     fn insert_pending_op(&self, op: &PendingOperation) -> Result<()> {
@@ -57,7 +57,7 @@ impl voom_domain::storage::PendingOpsStorage for SqliteStore {
 
         let mut result = Vec::with_capacity(ops.len());
         for (id_str, file_path, phase_name, started_at_str) in ops {
-            let id = super::parse_uuid(&id_str)?;
+            let id = crate::store::parse_uuid(&id_str)?;
             let started_at = started_at_str.parse().map_err(other_storage_err(&format!(
                 "corrupt datetime in pending_operations: {started_at_str}"
             )))?;

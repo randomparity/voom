@@ -7,7 +7,7 @@ use voom_domain::stats::{
 };
 use voom_domain::storage::SnapshotStorage;
 
-use super::{format_datetime, storage_err, SqliteStore};
+use crate::store::{format_datetime, storage_err, SqliteStore};
 
 impl SnapshotStorage for SqliteStore {
     fn gather_library_stats(&self, trigger: SnapshotTrigger) -> Result<LibrarySnapshot> {
@@ -485,7 +485,7 @@ fn gather_job_stats(conn: &rusqlite::Connection) -> Result<JobAggregateStats> {
     Ok(stats)
 }
 
-use super::OptionalExt;
+use crate::store::OptionalExt;
 
 #[cfg(test)]
 mod tests {

@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use voom_domain::errors::Result;
 
-use super::{format_datetime, parse_required_datetime, storage_err, SqliteStore};
+use crate::store::{format_datetime, parse_required_datetime, storage_err, SqliteStore};
 
 /// Status of a discovered file in the staging pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

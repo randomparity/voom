@@ -12,7 +12,7 @@ use voom_domain::transition::{
     DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
 };
 
-use super::{
+use crate::store::{
     escape_like, format_datetime, other_storage_err, parse_datetime, row_to_file, storage_err,
     FileRow, OptionalExt, SqlQuery, SqliteStore,
 };
@@ -164,7 +164,7 @@ impl FileStorage for SqliteStore {
 
         match file_row {
             Some(fr) => {
-                let id = super::parse_uuid(&fr.id)?;
+                let id = crate::store::parse_uuid(&fr.id)?;
                 let tracks = self.load_tracks(&conn, &id)?;
                 Ok(Some(fr.to_media_file(tracks)?))
             }
@@ -252,7 +252,7 @@ impl FileStorage for SqliteStore {
 
         let file_ids: Vec<Uuid> = rows
             .iter()
-            .map(|fr| super::parse_uuid(&fr.id))
+            .map(|fr| crate::store::parse_uuid(&fr.id))
             .collect::<Result<Vec<_>>>()?;
         let tracks_map = self.load_tracks_batch(&conn, &file_ids)?;
 
@@ -481,7 +481,7 @@ impl FileStorage for SqliteStore {
 
         match file_row {
             Some(fr) => {
-                let id = super::parse_uuid(&fr.id)?;
+                let id = crate::store::parse_uuid(&fr.id)?;
                 let tracks = self.load_tracks(&conn, &id)?;
                 Ok(Some(fr.to_media_file(tracks)?))
             }
@@ -502,7 +502,7 @@ impl FileStorage for SqliteStore {
                 "failed to query predecessor id for {successor_id}"
             )))?;
 
-        id_str.map(|s| super::parse_uuid(&s)).transpose()
+        id_str.map(|s| crate::store::parse_uuid(&s)).transpose()
     }
 
     fn mark_missing_paths(
@@ -713,7 +713,7 @@ fn reconcile_existing_path(
         }
         result.unchanged += 1;
     } else {
-        let old_id = super::parse_uuid(existing_id)?;
+        let old_id = crate::store::parse_uuid(existing_id)?;
         let ext_transition = FileTransition::new(
             old_id,
             df.path.clone(),
@@ -802,7 +802,7 @@ fn reconcile_new_path(
         )
         .map_err(storage_err("failed to reactivate moved file"))?;
 
-        let file_uuid = super::parse_uuid(&missing_id)?;
+        let file_uuid = crate::store::parse_uuid(&missing_id)?;
         let move_transition = FileTransition::new(
             file_uuid,
             df.path.clone(),

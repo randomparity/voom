@@ -7,7 +7,7 @@ use voom_domain::bad_file::BadFile;
 use voom_domain::errors::Result;
 use voom_domain::storage::{BadFileFilters, BadFileStorage};
 
-use super::{escape_like, row_to_bad_file, storage_err, OptionalExt, SqlQuery, SqliteStore};
+use crate::store::{escape_like, row_to_bad_file, storage_err, OptionalExt, SqlQuery, SqliteStore};
 
 /// Delete the `bad_files` row at `path` using the supplied connection.
 /// Accepts any `&rusqlite::Connection`, including one obtained via `Deref`
