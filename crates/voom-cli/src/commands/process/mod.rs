@@ -1,3 +1,4 @@
+mod audio_language;
 mod context;
 mod dispatch;
 mod pipeline;
@@ -906,9 +907,8 @@ mod tests {
     use voom_domain::media::MediaFile;
     use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings};
 
-    use super::pipeline::{
-        apply_detected_languages, execute_single_plan, AUDIO_LANGUAGE_DETECTOR_PLUGIN,
-    };
+    use super::audio_language::{apply_detected_languages, AUDIO_LANGUAGE_DETECTOR_PLUGIN};
+    use super::pipeline::execute_single_plan;
     use super::plan_outcome::PlanOutcome;
     use super::safeguards::{
         check_disk_space, check_duration_shrink, check_size_increase, SafeguardContext,

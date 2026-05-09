@@ -19,6 +19,7 @@ use anyhow::Context;
 use voom_domain::events::{Event, PlanFailedEvent};
 use voom_domain::plan::{OperationType, PhaseOutput};
 
+use super::audio_language::apply_detected_languages;
 use super::context::{record_phase_stat, PhaseOutcomeKind, ProcessContext};
 use super::dispatch::PlanDispatcher;
 use super::plan_outcome::PlanOutcome;
@@ -32,8 +33,6 @@ use super::transitions::{
     FileTransitionContext, TransitionRecorder,
 };
 use crate::introspect::DiscoveredFilePayload;
-
-pub(super) const AUDIO_LANGUAGE_DETECTOR_PLUGIN: &str = "audio-language-detector";
 
 /// Extract and deserialize the job payload from a process job.
 fn parse_job_payload(job: &voom_domain::job::Job) -> anyhow::Result<DiscoveredFilePayload> {
@@ -751,63 +750,6 @@ async fn reintrospect_file(
             }
             fallback
         }
-    }
-}
-
-/// Apply audio language detection results to track language fields.
-///
-/// If the `audio-language-detector` plugin has produced metadata, update
-/// each track's language to match the detected value. This runs before
-/// policy evaluation so that policies can filter on detected languages
-/// (e.g. `remove audio where lang == zxx` for silent tracks).
-pub(super) fn apply_detected_languages(file: &mut voom_domain::media::MediaFile) {
-    let Some(metadata) = file.plugin_metadata.get(AUDIO_LANGUAGE_DETECTOR_PLUGIN) else {
-        return;
-    };
-
-    let Some(detections) = metadata.get("detections").and_then(|d| d.as_array()) else {
-        return;
-    };
-
-    for det in detections {
-        let Some(track_index_u64) = det.get("track_index").and_then(serde_json::Value::as_u64)
-        else {
-            continue;
-        };
-        let track_index = u32::try_from(track_index_u64).unwrap_or(u32::MAX);
-        let Some(detected) = det.get("detected_language").and_then(|v| v.as_str()) else {
-            continue;
-        };
-
-        let Some(track) = file.tracks.iter_mut().find(|t| t.index == track_index) else {
-            continue;
-        };
-
-        let Some(normalized) = voom_domain::utils::language::normalize_language(detected) else {
-            tracing::warn!(
-                path = %file.path.display(),
-                track = track_index,
-                detected = %detected,
-                "unrecognized language code from detector, skipping"
-            );
-            continue;
-        };
-
-        if track.language == normalized {
-            continue;
-        }
-
-        if track.language != "und" {
-            tracing::warn!(
-                path = %file.path.display(),
-                track = track_index,
-                existing = %track.language,
-                detected = %normalized,
-                "overwriting track language with detected value"
-            );
-        }
-
-        track.language = normalized.to_string();
     }
 }
 
