@@ -41,6 +41,12 @@ pub type ErrorCallback = Box<dyn Fn(PathBuf, u64, String) + Send + Sync>;
 /// mtime indicate it has not changed.
 pub type FingerprintLookup = Box<dyn Fn(&Path) -> Option<StoredFingerprint> + Send + Sync>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiscoveryWalkError {
+    path: PathBuf,
+    message: String,
+}
+
 /// Configuration for a discovery scan.
 #[non_exhaustive]
 pub struct ScanOptions {
@@ -253,9 +259,12 @@ fn hash_file_full(file: &mut fs::File) -> Result<String> {
 
 /// Walk a directory tree collecting media file paths and sizes.
 ///
-/// Returns the collected `(path, size)` pairs and the count of orphaned
-/// voom temp files that were skipped. Reports progress via `on_progress`.
-fn walk_media_files(options: &ScanOptions) -> (Vec<(PathBuf, u64)>, usize) {
+/// Returns collected `(path, size)` pairs, orphaned temp count, and walk errors.
+///
+/// Reports progress via `on_progress`.
+fn walk_media_files(
+    options: &ScanOptions,
+) -> (Vec<(PathBuf, u64)>, usize, Vec<DiscoveryWalkError>) {
     let walker = if options.recursive {
         WalkDir::new(&options.root).follow_links(false)
     } else {
@@ -264,12 +273,22 @@ fn walk_media_files(options: &ScanOptions) -> (Vec<(PathBuf, u64)>, usize) {
 
     let mut media_paths: Vec<(PathBuf, u64)> = Vec::new();
     let mut orphaned_temp_count: usize = 0;
-    for entry in walker.into_iter().filter_map(|e| {
-        e.map_err(|err| {
-            tracing::debug!(error = %err, "skipping unreadable directory entry");
-        })
-        .ok()
-    }) {
+    let mut walk_errors = Vec::new();
+    for entry_result in walker {
+        let entry = match entry_result {
+            Ok(entry) => entry,
+            Err(err) => {
+                let path = err
+                    .path()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| options.root.clone());
+                walk_errors.push(DiscoveryWalkError {
+                    path,
+                    message: err.to_string(),
+                });
+                continue;
+            }
+        };
         if entry.path_is_symlink() {
             tracing::debug!(path = %entry.path().display(), "skipping symlink");
             continue;
@@ -303,7 +322,21 @@ fn walk_media_files(options: &ScanOptions) -> (Vec<(PathBuf, u64)>, usize) {
         }
     }
 
-    (media_paths, orphaned_temp_count)
+    (media_paths, orphaned_temp_count, walk_errors)
+}
+
+fn report_walk_errors(options: &ScanOptions, walk_errors: &[DiscoveryWalkError]) {
+    for error in walk_errors {
+        if let Some(ref cb) = options.on_error {
+            cb(error.path.clone(), 0, error.message.clone());
+        } else {
+            tracing::warn!(
+                path = %error.path.display(),
+                error = %error.message,
+                "failed to read directory entry during discovery"
+            );
+        }
+    }
 }
 
 /// Scan a directory for media files.
@@ -315,7 +348,8 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
         )));
     }
 
-    let (media_paths, _orphaned) = walk_media_files(options);
+    let (media_paths, _orphaned, walk_errors) = walk_media_files(options);
+    report_walk_errors(options, &walk_errors);
 
     tracing::info!(
         root = %options.root.display(),
@@ -518,7 +552,8 @@ mod tests {
     use std::sync::Arc;
 
     use crate::scanner::{
-        build_event, hash_file, is_media_file, scan_directory, ScanOptions, ScanProgress,
+        build_event, hash_file, is_media_file, report_walk_errors, scan_directory,
+        DiscoveryWalkError, ScanOptions, ScanProgress,
     };
 
     #[test]
@@ -676,5 +711,34 @@ mod tests {
         // Both files should still exist, so we get 2 events and 0 errors
         assert_eq!(events.len(), 2);
         assert_eq!(error_count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_walk_errors_are_reported_to_error_callback() {
+        use std::sync::Mutex;
+
+        let dir = tempfile::tempdir().unwrap();
+        let reported = Arc::new(Mutex::new(Vec::new()));
+        let reported_clone = reported.clone();
+
+        let mut options = ScanOptions::new(dir.path());
+        options.on_error = Some(Box::new(move |path, size, error| {
+            reported_clone.lock().unwrap().push((path, size, error));
+        }));
+
+        let missing = dir.path().join("missing-child");
+        report_walk_errors(
+            &options,
+            &[DiscoveryWalkError {
+                path: missing.clone(),
+                message: "permission denied".to_string(),
+            }],
+        );
+
+        let errors = reported.lock().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].0, missing);
+        assert_eq!(errors[0].1, 0);
+        assert_eq!(errors[0].2, "permission denied");
     }
 }
