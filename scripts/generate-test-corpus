@@ -628,16 +628,6 @@ def write_minimal_png(path):
     path.write_bytes(sig + ihdr + idat + iend)
 
 
-# ---------------------------------------------------------------------------
-# ffmpeg command builder
-# ---------------------------------------------------------------------------
-
-def parse_size(size):
-    """Parse WIDTHxHEIGHT strings from manifest video specs."""
-    width, height = size.split("x", 1)
-    return int(width), int(height)
-
-
 def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
     """Build the ffmpeg command list for a given file spec.
 
@@ -657,8 +647,7 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
     if "vfr" in specials:
         video_input += ",setpts='PTS+0.003*sin(N*0.15)/TB'"
     if "black_bars" in specials:
-        width, height = parse_size(video["size"])
-        video_input += f",pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
+        video_input += f",pad={video['size'].replace('x', ':')}:(ow-iw)/2:(oh-ih)/2:black"
     cmd += ["-f", "lavfi", "-i", video_input]
 
     # Audio inputs (one sine per audio track)

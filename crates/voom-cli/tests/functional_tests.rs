@@ -3446,15 +3446,7 @@ mod test_lifecycle_advanced {
     fn corpus_generator_includes_black_bar_fixtures() {
         require_tool!("ffprobe");
 
-        let corpus = corpus_dir();
-        for filename in ["letterbox-h264.mkv", "pillarbox-h264.mkv"] {
-            let path = corpus.join(filename);
-            assert!(
-                path.exists(),
-                "expected black-bar fixture at {}",
-                path.display()
-            );
-
+        fn video_dimensions(path: &Path) -> String {
             let output = std::process::Command::new("ffprobe")
                 .args([
                     "-v",
@@ -3466,7 +3458,7 @@ mod test_lifecycle_advanced {
                     "-of",
                     "csv=p=0",
                 ])
-                .arg(&path)
+                .arg(path)
                 .output()
                 .expect("run ffprobe");
             assert!(
@@ -3475,8 +3467,20 @@ mod test_lifecycle_advanced {
                 path.display(),
                 String::from_utf8_lossy(&output.stderr)
             );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
+
+        let corpus = corpus_dir();
+        for filename in ["letterbox-h264.mkv", "pillarbox-h264.mkv"] {
+            let path = corpus.join(filename);
+            assert!(
+                path.exists(),
+                "expected black-bar fixture at {}",
+                path.display()
+            );
+
             assert_eq!(
-                String::from_utf8_lossy(&output.stdout).trim(),
+                video_dimensions(&path),
                 "1920,1080",
                 "{filename} should preserve the padded output dimensions"
             );
