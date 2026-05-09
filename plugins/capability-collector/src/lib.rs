@@ -45,9 +45,7 @@ impl voom_kernel::Plugin for CapabilityCollectorPlugin {
         env!("CARGO_PKG_VERSION")
     }
 
-    fn description(&self) -> &'static str {
-        "Collects executor capability announcements for policy evaluation"
-    }
+    voom_kernel::plugin_cargo_metadata!();
 
     fn capabilities(&self) -> &[Capability] {
         &[]

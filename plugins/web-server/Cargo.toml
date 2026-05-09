@@ -19,7 +19,6 @@ voom-report.workspace = true
 # Web framework
 axum = { version = "0.7", features = ["tokio", "json"] }
 tower = { version = "0.5", features = ["util", "limit", "timeout"] }
-tower-http = { version = "0.6", features = ["cors", "fs", "set-header", "trace"] }
 
 # Templates
 tera = "1"
