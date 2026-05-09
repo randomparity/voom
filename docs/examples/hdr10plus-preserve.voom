@@ -1,0 +1,16 @@
+policy "hdr10plus-preserve" {
+  phase normalize-container {
+    container mkv
+  }
+
+  phase preserve-dynamic-hdr {
+    depends_on: [normalize-container]
+
+    transcode video to hevc {
+      crf: 18
+      preset: slow
+      preserve_hdr: true
+      hdr_color_metadata: copy
+    }
+  }
+}

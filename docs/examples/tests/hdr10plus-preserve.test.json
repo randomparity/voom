@@ -1,0 +1,13 @@
+{
+  "policy": "../hdr10plus-preserve.voom",
+  "cases": [
+    {
+      "name": "plans HDR10+ HEVC preservation",
+      "fixture": "hdr10plus.json",
+      "expect": {
+        "phases_run": ["preserve-dynamic-hdr"],
+        "video_codec": "hevc"
+      }
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "path": "/media/DolbyVisionP8.mkv",
+  "container": "Mkv",
+  "duration": 60.0,
+  "size": 1000000,
+  "tracks": [
+    {
+      "index": 0,
+      "track_type": "Video",
+      "codec": "hevc",
+      "language": "und",
+      "title": "Dolby Vision Profile 8",
+      "is_default": true,
+      "is_forced": false,
+      "channels": null,
+      "channel_layout": null,
+      "sample_rate": null,
+      "bit_depth": null,
+      "loudness_integrated_lufs": null,
+      "loudness_true_peak_db": null,
+      "loudness_range_lu": null,
+      "loudness_measured_at": null,
+      "width": 3840,
+      "height": 2160,
+      "frame_rate": 23.976,
+      "is_vfr": false,
+      "is_hdr": true,
+      "hdr_format": "Dolby Vision Profile 8",
+      "pixel_format": "yuv420p10le",
+      "color_primaries": "bt2020",
+      "color_transfer": "smpte2084",
+      "color_matrix": "bt2020nc",
+      "max_cll": 1000,
+      "max_fall": 400,
+      "master_display": "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
+      "dolby_vision_profile": 8,
+      "is_animation": null
+    }
+  ]
+}

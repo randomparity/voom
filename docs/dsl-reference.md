@@ -297,7 +297,7 @@ for examples and verification commands.
 | `preserve_hdr` | boolean | Preserve detected HDR metadata when transcoding HDR sources. Default: `true` for HDR sources. |
 | `tonemap` | identifier | Tone-map HDR to SDR with `bt2390`, `hable`, `mobius`, `reinhard`, or `clip`. |
 | `hdr_color_metadata` | identifier | Copy HDR10 static color metadata. The only supported value is `copy`. |
-| `dolby_vision` | identifier | Reserved for Dolby Vision RPU handling. The supported value is `copy_rpu`. |
+| `dolby_vision` | identifier | Preserve Dolby Vision RPU metadata for supported profiles. The supported value is `copy_rpu`. |
 | `crop` | identifier | Enable automatic crop detection. The only supported value is `auto`. |
 | `crop_sample_duration` | integer | Seconds to inspect per sample. Default: `60`. |
 | `crop_sample_count` | integer | Number of samples across the file. Default: `3`. |

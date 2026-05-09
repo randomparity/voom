@@ -27,6 +27,16 @@ HDR archival transcode policy. Preserves detected HDR10 metadata while encoding 
 
 **Plugins used:** ffmpeg-executor, mkvtoolnix-executor, backup-manager
 
+### [hdr10plus-preserve.voom](hdr10plus-preserve.voom)
+HDR10+ archival transcode policy. Requires `hdr10plus_tool` when the source has HDR10+ dynamic metadata.
+
+**Plugins used:** ffmpeg-executor, mkvtoolnix-executor, backup-manager
+
+### [dolby-vision-rpu.voom](dolby-vision-rpu.voom)
+Dolby Vision archival transcode policy. Preserves RPU metadata for supported profiles 5, 7, and 8 when `dovi_tool` is available.
+
+**Plugins used:** ffmpeg-executor, mkvtoolnix-executor, backup-manager
+
 ### [hdr-sdr-mobile.voom](hdr-sdr-mobile.voom)
 Mobile-oriented SDR derivative policy. Tone-maps HDR sources to BT.709 SDR output, downscales video, and creates stereo AAC audio.
 
@@ -67,7 +77,7 @@ Comprehensive reference exercising **every DSL construct**. Not intended for pro
 | `defaults` | movie-library, anime, strict, full |
 | `actions` (video/audio/subtitle) | movie-library, anime, strict, full |
 | `transcode` (video/audio) | transcode, hdr-archival, hdr-sdr-mobile, full |
-| `preserve_hdr` / `tonemap` | hdr-archival, hdr-sdr-mobile |
+| `preserve_hdr` / `tonemap` | hdr-archival, hdr10plus-preserve, dolby-vision-rpu, hdr-sdr-mobile |
 | `crop: auto` | transcode |
 | `synthesize` | transcode, full |
 | `when` / `else` | anime, metadata, full |
