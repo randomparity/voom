@@ -1,4 +1,5 @@
 mod bad_file_storage;
+mod core;
 mod discovered_file_storage;
 mod event_log_storage;
 mod file_storage;
@@ -11,197 +12,27 @@ mod plan_storage;
 mod plugin_data_storage;
 mod row_mappers;
 mod snapshot_storage;
+mod sql;
 mod subtitle_storage;
 mod verification_storage;
 
 use std::collections::HashMap;
-use std::path::Path;
 
-use chrono::{DateTime, Utc};
-use r2d2::Pool;
-use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
 use uuid::Uuid;
 
-use voom_domain::errors::{Result, StorageErrorKind, VoomError};
+use voom_domain::errors::Result;
 use voom_domain::media::Track;
 
+pub use core::{SqliteStore, SqliteStoreConfig};
 pub(crate) use row_mappers::{
     parse_optional_datetime, parse_required_datetime, row_to_bad_file, row_to_file, row_to_job,
     row_to_track, row_uuid, FileRow,
 };
-
-use crate::schema;
-
-/// Configuration for the `SQLite` store.
-pub struct SqliteStoreConfig {
-    /// Maximum number of connections in the pool. Default: 8.
-    pub pool_size: u32,
-}
-
-impl Default for SqliteStoreConfig {
-    fn default() -> Self {
-        Self { pool_size: 8 }
-    }
-}
-
-/// SQLite-backed storage implementation using r2d2 connection pooling.
-pub struct SqliteStore {
-    pool: Pool<SqliteConnectionManager>,
-}
-
-impl SqliteStore {
-    /// Open (or create) a `SQLite` database at the given path.
-    pub fn open(db_path: &Path) -> Result<Self> {
-        Self::open_with_config(db_path, SqliteStoreConfig::default())
-    }
-
-    /// Open with custom configuration.
-    pub fn open_with_config(db_path: &Path, config: SqliteStoreConfig) -> Result<Self> {
-        let manager = SqliteConnectionManager::file(db_path);
-        Self::from_manager(manager, config.pool_size)
-    }
-
-    /// Create an in-memory `SQLite` store (useful for testing).
-    pub fn in_memory() -> Result<Self> {
-        let manager = SqliteConnectionManager::memory();
-        Self::from_manager(manager, SqliteStoreConfig::default().pool_size)
-    }
-
-    fn from_manager(manager: SqliteConnectionManager, pool_size: u32) -> Result<Self> {
-        // Configure every connection from the pool with pragmas (WAL, busy_timeout, etc.)
-        let manager = manager.with_init(|conn| schema::configure_connection(conn));
-
-        let pool = Pool::builder()
-            .max_size(pool_size)
-            .min_idle(Some(0))
-            .build(manager)
-            .map_err(other_storage_err("failed to create connection pool"))?;
-
-        // Initialize schema on the first connection
-        let conn = pool
-            .get()
-            .map_err(other_storage_err("failed to get connection"))?;
-        schema::create_schema(&conn).map_err(storage_err("failed to create schema"))?;
-
-        Ok(Self { pool })
-    }
-
-    pub(crate) fn conn(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>> {
-        self.pool
-            .get()
-            .map_err(other_storage_err("failed to get connection"))
-    }
-}
-
-/// Classify a rusqlite error into a [`StorageErrorKind`].
-fn classify_rusqlite(e: &rusqlite::Error) -> StorageErrorKind {
-    match e {
-        rusqlite::Error::SqliteFailure(ffi_err, _) => {
-            use rusqlite::ffi::ErrorCode;
-            match ffi_err.code {
-                ErrorCode::ConstraintViolation => StorageErrorKind::ConstraintViolation,
-                _ => StorageErrorKind::Other,
-            }
-        }
-        rusqlite::Error::QueryReturnedNoRows => StorageErrorKind::NotFound,
-        _ => StorageErrorKind::Other,
-    }
-}
-
-/// Create a `.map_err` closure for `rusqlite::Error` that classifies the error kind.
-pub(crate) fn storage_err(msg: &str) -> impl FnOnce(rusqlite::Error) -> VoomError + '_ {
-    move |e| VoomError::Storage {
-        kind: classify_rusqlite(&e),
-        message: format!("{msg}: {e}"),
-    }
-}
-
-/// Wrap any displayable error as a generic storage error with [`StorageErrorKind::Other`].
-pub(crate) fn other_storage_err<E: std::fmt::Display>(
-    msg: &str,
-) -> impl FnOnce(E) -> VoomError + '_ {
-    move |e| VoomError::Storage {
-        kind: StorageErrorKind::Other,
-        message: format!("{msg}: {e}"),
-    }
-}
-
-/// Lightweight builder for dynamic SQL queries with positional parameters.
-pub(crate) struct SqlQuery {
-    pub(crate) sql: String,
-    params: Vec<String>,
-}
-
-impl SqlQuery {
-    pub(crate) fn new(base: &str) -> Self {
-        Self {
-            sql: base.to_string(),
-            params: Vec::new(),
-        }
-    }
-
-    /// Append a parameterized SQL fragment. Returns `&mut Self` for chaining.
-    pub(crate) fn parameterized_clause(&mut self, clause: &str, value: String) -> &mut Self {
-        self.params.push(value);
-        self.sql
-            .push_str(&clause.replace("{}", &format!("?{}", self.params.len())));
-        self
-    }
-
-    /// Append LIMIT and OFFSET clauses with clamped values.
-    pub(crate) fn paginate(&mut self, limit: Option<u32>, offset: Option<u32>) {
-        if let Some(limit) = limit {
-            self.parameterized_clause(" LIMIT {}", limit.min(10_000).to_string());
-        }
-        if let Some(offset) = offset {
-            self.parameterized_clause(" OFFSET {}", offset.min(1_000_000).to_string());
-        }
-    }
-
-    /// Build the parameter references for rusqlite.
-    pub(crate) fn param_refs(&self) -> Vec<&dyn rusqlite::types::ToSql> {
-        self.params
-            .iter()
-            .map(|v| v as &dyn rusqlite::types::ToSql)
-            .collect()
-    }
-}
-
-pub(crate) fn parse_uuid(s: &str) -> Result<Uuid> {
-    Uuid::parse_str(s).map_err(other_storage_err(&format!("invalid UUID '{s}'")))
-}
-
-/// Escape LIKE wildcard characters so user-supplied strings match literally.
-pub(crate) fn escape_like(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
-
-pub(crate) fn parse_datetime(s: &str) -> Result<DateTime<Utc>> {
-    s.parse::<DateTime<Utc>>()
-        .map_err(other_storage_err(&format!("invalid datetime '{s}'")))
-}
-
-pub(crate) fn format_datetime(dt: &DateTime<Utc>) -> String {
-    voom_domain::utils::format::format_iso(dt)
-}
-
-/// Extension trait for `rusqlite::Result<T>` to convert to `Option<T>`.
-pub(crate) trait OptionalExt<T> {
-    fn optional(self) -> rusqlite::Result<Option<T>>;
-}
-
-impl<T> OptionalExt<T> for rusqlite::Result<T> {
-    fn optional(self) -> rusqlite::Result<Option<T>> {
-        match self {
-            Ok(v) => Ok(Some(v)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-}
+pub(crate) use sql::{
+    escape_like, format_datetime, other_storage_err, parse_datetime, parse_uuid, storage_err,
+    OptionalExt, SqlQuery,
+};
 
 // Private helper methods
 impl SqliteStore {
@@ -277,7 +108,10 @@ impl SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::path::PathBuf;
+
+    use chrono::Utc;
     use voom_domain::bad_file::{BadFile, BadFileSource};
     use voom_domain::job::{Job, JobStatus};
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
