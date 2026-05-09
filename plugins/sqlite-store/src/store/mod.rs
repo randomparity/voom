@@ -2,31 +2,10 @@ mod core;
 mod row_mappers;
 mod sql;
 
-mod files {
-    mod bad_file_storage;
-    mod discovered_file_storage;
-    mod file_storage;
-    mod file_transition_storage;
-    mod subtitle_storage;
-    mod verification_storage;
-}
-
-mod history {
-    mod event_log_storage;
-    mod health_check_storage;
-    mod maintenance_storage;
-    mod snapshot_storage;
-}
-
-mod jobs {
-    mod job_storage;
-    mod pending_ops_storage;
-}
-
-mod plans {
-    mod plan_storage;
-    mod plugin_data_storage;
-}
+mod files;
+mod history;
+mod jobs;
+mod plans;
 
 use std::collections::HashMap;
 
