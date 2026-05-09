@@ -16,6 +16,8 @@ use voom_domain::capability_map::CapabilityMap;
 use voom_domain::media::MediaFile;
 use voom_dsl::compiled::CompiledPolicy;
 
+use crate::condition::PhaseOutputLookup;
+
 pub use evaluator::{
     apply_capability_hints, evaluate, evaluate_with_context, evaluate_with_phase_outputs,
     EvaluationOutcome,
@@ -78,6 +80,28 @@ pub fn evaluate_single_phase_with_hints(
         file,
         phase_outcomes,
         Some(capabilities),
+    )?;
+    evaluator::apply_capability_hints(std::slice::from_mut(&mut plan), capabilities);
+    Some(plan)
+}
+
+/// Evaluate a single phase with system capability hints and cross-phase outputs.
+#[must_use]
+pub fn evaluate_single_phase_with_hints_and_phase_outputs<'a>(
+    phase_name: &str,
+    policy: &CompiledPolicy,
+    file: &MediaFile,
+    phase_outcomes: &HashMap<String, EvaluationOutcome>,
+    capabilities: &'a CapabilityMap,
+    phase_output_lookup: &'a PhaseOutputLookup<'a>,
+) -> Option<voom_domain::plan::Plan> {
+    let mut plan = evaluator::evaluate_single_phase_with_phase_outputs(
+        phase_name,
+        policy,
+        file,
+        phase_outcomes,
+        Some(capabilities),
+        Some(phase_output_lookup),
     )?;
     evaluator::apply_capability_hints(std::slice::from_mut(&mut plan), capabilities);
     Some(plan)

@@ -7,12 +7,15 @@
 //! `plugin_name`). This module concentrates that scan into a single
 //! constructor so the caller does not perform three separate passes.
 
-use voom_domain::events::{EventResult, PlanFailedEvent};
+use voom_domain::events::{Event, EventResult, PlanFailedEvent};
 
 /// Result of executing a single plan via the event bus.
 pub(super) enum PlanOutcome {
     /// An executor claimed and completed the plan.
-    Success { executor: String },
+    Success {
+        executor: String,
+        produced_events: Vec<Event>,
+    },
     /// Execution failed (executor error or unclaimed).
     Failed(PlanFailedEvent),
 }
@@ -34,8 +37,10 @@ impl PlanOutcome {
         let mut claimed_name: Option<&str> = None;
         let mut exec_error: Option<String> = None;
         let mut exec_detail: Option<voom_domain::plan::ExecutionDetail> = None;
+        let mut produced_events = Vec::new();
 
         for r in results {
+            produced_events.extend(r.produced_events.iter().cloned());
             if r.claimed && claimed_name.is_none() {
                 claimed_name = Some(&r.plugin_name);
             }
@@ -55,6 +60,7 @@ impl PlanOutcome {
             if exec_error.is_none() {
                 return Self::Success {
                     executor: name.to_string(),
+                    produced_events,
                 };
             }
         }
@@ -100,7 +106,28 @@ mod tests {
         let outcome = PlanOutcome::from_event_result(&results, &plan, &file);
 
         match outcome {
-            PlanOutcome::Success { executor } => assert_eq!(executor, "ffmpeg-executor"),
+            PlanOutcome::Success { executor, .. } => assert_eq!(executor, "ffmpeg-executor"),
+            PlanOutcome::Failed(_) => panic!("expected success outcome"),
+        }
+    }
+
+    #[test]
+    fn claimed_success_preserves_produced_events() {
+        let (plan, file) = plan_and_file();
+        let produced = Event::HealthStatus(voom_domain::events::HealthStatusEvent::new(
+            "executor",
+            true,
+            Some("healthy".to_string()),
+        ));
+        let mut result = EventResult::plan_succeeded("ffmpeg-executor", None);
+        result.produced_events = vec![produced.clone()];
+
+        let outcome = PlanOutcome::from_event_result(&[result], &plan, &file);
+
+        match outcome {
+            PlanOutcome::Success {
+                produced_events, ..
+            } => assert_eq!(produced_events.len(), 1),
             PlanOutcome::Failed(_) => panic!("expected success outcome"),
         }
     }

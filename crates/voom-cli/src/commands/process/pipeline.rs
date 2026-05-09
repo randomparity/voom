@@ -16,7 +16,8 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 use anyhow::Context;
-use voom_domain::events::PlanFailedEvent;
+use voom_domain::events::{Event, PlanFailedEvent};
+use voom_domain::plan::{OperationType, PhaseOutput};
 
 use super::context::{record_phase_stat, PhaseOutcomeKind, ProcessContext};
 use super::dispatch::PlanDispatcher;
@@ -248,6 +249,7 @@ async fn process_single_file_execute(
 struct PhaseExecutionState {
     current_file: voom_domain::media::MediaFile,
     outcomes: HashMap<String, voom_policy_evaluator::EvaluationOutcome>,
+    phase_outputs: HashMap<String, PhaseOutput>,
     any_executed: bool,
     modified_counted: bool,
     plans_evaluated: usize,
@@ -258,6 +260,7 @@ impl PhaseExecutionState {
         Self {
             current_file,
             outcomes: HashMap::new(),
+            phase_outputs: HashMap::new(),
             any_executed: false,
             modified_counted: false,
             plans_evaluated: 0,
@@ -283,13 +286,18 @@ async fn run_phase_iteration(
     state: &mut PhaseExecutionState,
     phase_ctx: &PhaseExecutionContext<'_>,
 ) -> std::result::Result<PhaseLoopControl, String> {
-    let Some(plan) = voom_policy_evaluator::evaluate_single_phase_with_hints(
-        phase_name,
-        phase_ctx.compiled,
-        &state.current_file,
-        &state.outcomes,
-        phase_ctx.process.capabilities,
-    ) else {
+    let Some(plan) = ({
+        let phase_output_lookup =
+            |name: &str| -> Option<PhaseOutput> { state.phase_outputs.get(name).cloned() };
+        voom_policy_evaluator::evaluate_single_phase_with_hints_and_phase_outputs(
+            phase_name,
+            phase_ctx.compiled,
+            &state.current_file,
+            &state.outcomes,
+            phase_ctx.process.capabilities,
+            &phase_output_lookup,
+        )
+    }) else {
         return Ok(PhaseLoopControl::Continue);
     };
     let plan = plan.with_session_id(phase_ctx.process.counters.session_id);
@@ -307,6 +315,10 @@ async fn run_phase_iteration(
             phase_name.to_string(),
             voom_policy_evaluator::EvaluationOutcome::Skipped,
         );
+        state.phase_outputs.insert(
+            phase_name.to_string(),
+            phase_output(false, false, Some("skipped")),
+        );
         dispatch_skipped_plan(&plan, &state.current_file, reason, phase_ctx.process);
         return Ok(PhaseLoopControl::Continue);
     }
@@ -316,6 +328,10 @@ async fn run_phase_iteration(
             phase_name.to_string(),
             voom_policy_evaluator::EvaluationOutcome::Executed { modified: false },
         );
+        state.phase_outputs.insert(
+            phase_name.to_string(),
+            phase_output(true, false, Some("unchanged")),
+        );
         return Ok(PhaseLoopControl::Continue);
     }
 
@@ -323,6 +339,10 @@ async fn run_phase_iteration(
         state.outcomes.insert(
             phase_name.to_string(),
             voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
+        );
+        state.phase_outputs.insert(
+            phase_name.to_string(),
+            phase_output(false, false, Some("safeguard_failed")),
         );
         return Ok(PhaseLoopControl::Continue);
     }
@@ -353,8 +373,19 @@ async fn execute_phase_plan(
     let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     match exec_outcome {
-        PlanOutcome::Success { executor } => {
-            handle_phase_success(plan, state, phase_ctx, &executor, elapsed_ms).await;
+        PlanOutcome::Success {
+            executor,
+            produced_events,
+        } => {
+            handle_phase_success(
+                plan,
+                state,
+                phase_ctx,
+                &executor,
+                elapsed_ms,
+                &produced_events,
+            )
+            .await;
         }
         PlanOutcome::Failed(failed) => {
             handle_phase_failure(failed, &plan, state, phase_ctx);
@@ -370,11 +401,16 @@ async fn handle_phase_success(
     phase_ctx: &PhaseExecutionContext<'_>,
     executor: &str,
     elapsed_ms: u64,
+    produced_events: &[Event],
 ) {
     if check_size_increase(&plan, &state.current_file, phase_ctx.safeguards) {
         state.outcomes.insert(
             plan.phase_name.clone(),
             voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
+        );
+        state.phase_outputs.insert(
+            plan.phase_name.clone(),
+            phase_output(false, false, Some("safeguard_failed")),
         );
         return;
     }
@@ -382,6 +418,10 @@ async fn handle_phase_success(
         state.outcomes.insert(
             plan.phase_name.clone(),
             voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
+        );
+        state.phase_outputs.insert(
+            plan.phase_name.clone(),
+            phase_output(false, false, Some("safeguard_failed")),
         );
         return;
     }
@@ -398,6 +438,10 @@ async fn handle_phase_success(
     state.outcomes.insert(
         plan.phase_name.clone(),
         voom_policy_evaluator::EvaluationOutcome::Executed { modified: true },
+    );
+    state.phase_outputs.insert(
+        plan.phase_name.clone(),
+        phase_output_from_success(&plan, produced_events),
     );
     state.current_file = finalize_successful_plan_execution(
         plan,
@@ -433,6 +477,46 @@ fn handle_phase_failure(
         plan.phase_name.clone(),
         voom_policy_evaluator::EvaluationOutcome::ExecutionFailed,
     );
+    state.phase_outputs.insert(
+        plan.phase_name.clone(),
+        phase_output(false, false, Some("failed")),
+    );
+}
+
+fn phase_output(completed: bool, modified: bool, outcome: Option<&str>) -> PhaseOutput {
+    let output = PhaseOutput::new()
+        .with_completed(completed)
+        .with_modified(modified);
+    match outcome {
+        Some(outcome) => output.with_outcome(outcome),
+        None => output,
+    }
+}
+
+fn phase_output_from_success(
+    plan: &voom_domain::plan::Plan,
+    produced_events: &[Event],
+) -> PhaseOutput {
+    let mut output = phase_output(true, phase_modifies_file(plan), None);
+    for event in produced_events {
+        let Event::VerifyCompleted(verify) = event else {
+            continue;
+        };
+        if verify.file_id != plan.file.id.to_string() {
+            continue;
+        }
+        output = output
+            .with_outcome(verify.outcome.as_str())
+            .with_error_count(verify.error_count)
+            .with_warning_count(verify.warning_count);
+    }
+    output
+}
+
+fn phase_modifies_file(plan: &voom_domain::plan::Plan) -> bool {
+    plan.actions
+        .iter()
+        .any(|action| action.operation != OperationType::VerifyMedia)
 }
 
 /// Dispatch events for a skipped plan: `PlanCreated` then `PlanSkipped`.
@@ -765,14 +849,19 @@ mod tests {
     use std::time::Duration;
 
     use voom_domain::capabilities::Capability;
-    use voom_domain::events::{Event, EventResult};
+    use voom_domain::events::{Event, EventResult, VerifyCompletedDetails, VerifyCompletedEvent};
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    use voom_domain::verification::{VerificationMode, VerificationOutcome};
 
     use super::super::tests as process_tests;
     use super::*;
 
     struct RecordingExecutor {
         entered_tx: mpsc::Sender<()>,
+    }
+
+    struct VerifyOutcomeExecutor {
+        executed_tx: mpsc::Sender<String>,
     }
 
     impl voom_kernel::Plugin for RecordingExecutor {
@@ -798,6 +887,54 @@ mod tests {
                 return Ok(Some(EventResult::plan_succeeded(self.name(), None)));
             }
             Ok(None)
+        }
+    }
+
+    impl voom_kernel::Plugin for VerifyOutcomeExecutor {
+        fn name(&self) -> &'static str {
+            "verify-outcome-executor"
+        }
+
+        fn version(&self) -> &'static str {
+            "0.1.0"
+        }
+
+        fn capabilities(&self) -> &[Capability] {
+            &[]
+        }
+
+        fn handles(&self, event_type: &str) -> bool {
+            event_type == Event::PLAN_CREATED
+        }
+
+        fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
+            let Event::PlanCreated(created) = event else {
+                return Ok(None);
+            };
+            if created.plan.skip_reason.is_some() {
+                return Ok(None);
+            }
+
+            let _ = self.executed_tx.send(created.plan.phase_name.clone());
+            if created.plan.phase_name != "verify" {
+                return Ok(Some(EventResult::plan_succeeded(self.name(), None)));
+            }
+
+            let event = Event::VerifyCompleted(VerifyCompletedEvent::new(
+                created.plan.file.id.to_string(),
+                created.plan.file.path.clone(),
+                VerifyCompletedDetails {
+                    mode: VerificationMode::Quick,
+                    outcome: VerificationOutcome::Ok,
+                    error_count: 0,
+                    warning_count: 0,
+                    verification_id: uuid::Uuid::new_v4(),
+                },
+            ));
+            let mut result = EventResult::new(self.name());
+            result.claimed = true;
+            result.produced_events = vec![event];
+            Ok(Some(result))
         }
     }
 
@@ -998,5 +1135,42 @@ mod tests {
             matches!(entered_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
             "executor must not receive PlanCreated after cancellation"
         );
+    }
+
+    #[tokio::test]
+    async fn process_pipeline_uses_phase_outputs_for_downstream_conditions() {
+        let policy = r#"policy "test" {
+                phase verify {
+                    verify quick
+                }
+
+                phase after {
+                    depends_on: [verify]
+                    skip when verify.outcome == "ok"
+                    set_tag "title" "should not execute"
+                }
+            }"#;
+        let fixture = process_tests::TestFixture::with_policy(policy);
+        let path = fixture.dir_path().join("movie.mkv");
+        std::fs::write(&path, vec![0u8; 1024]).unwrap();
+        let file = h264_file(path);
+        let compiled = voom_dsl::compile_policy(policy).unwrap();
+
+        let (executed_tx, executed_rx) = mpsc::channel();
+        let mut kernel = voom_kernel::Kernel::new();
+        kernel
+            .register_plugin(Arc::new(VerifyOutcomeExecutor { executed_tx }), 50)
+            .unwrap();
+        let ctx = fixture.make_ctx(
+            Arc::new(kernel),
+            Arc::new(voom_domain::test_support::InMemoryStore::new()),
+        );
+
+        process_single_file_execute(&file, &compiled, &ctx)
+            .await
+            .expect("processing should complete");
+
+        let executed: Vec<String> = executed_rx.try_iter().collect();
+        assert_eq!(executed, vec!["verify"]);
     }
 }
