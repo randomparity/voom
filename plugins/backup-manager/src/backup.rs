@@ -206,3 +206,87 @@ pub fn backup_path_for(config: &BackupConfig, path: &Path, unique_id: Uuid) -> P
         .join(".voom-backup")
         .join(format!("{file_name}.{timestamp}.vbak"))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use super::*;
+
+    fn global_config(dir: &Path) -> BackupConfig {
+        BackupConfig {
+            backup_dir: Some(dir.to_path_buf()),
+            use_global_dir: true,
+            min_free_space: 0,
+        }
+    }
+
+    #[test]
+    fn backup_file_validates_actual_destination() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("movie.mkv");
+        fs::write(&source, b"movie").unwrap();
+
+        let validated = RefCell::new(None);
+        let record = backup_file(
+            &global_config(backup_dir.path()),
+            &source,
+            |backup, original| {
+                assert_eq!(original, source.as_path());
+                assert!(backup.starts_with(backup_dir.path()));
+                *validated.borrow_mut() = Some(backup.to_path_buf());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(validated.into_inner(), Some(record.backup_path.clone()));
+        assert_eq!(fs::read(&record.backup_path).unwrap(), b"movie");
+    }
+
+    #[test]
+    fn backup_file_validation_error_prevents_copy() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("movie.mkv");
+        fs::write(&source, b"movie").unwrap();
+
+        let err = backup_file(
+            &global_config(backup_dir.path()),
+            &source,
+            |_backup, _original| Err(plugin_err("no space")),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("no space"));
+        assert!(fs::read_dir(backup_dir.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn restore_from_paths_writes_requested_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("backup.vbak");
+        let destination = dir.path().join("restored").join("movie.mkv");
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::write(&backup, b"backup bytes").unwrap();
+
+        restore_from_paths(&backup, &destination).unwrap();
+
+        assert_eq!(fs::read(destination).unwrap(), b"backup bytes");
+    }
+
+    #[test]
+    fn remove_vbak_file_removes_file_and_empty_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_parent = dir.path().join(".voom-backup");
+        fs::create_dir_all(&backup_parent).unwrap();
+        let backup = backup_parent.join("movie.mkv.20260101000000.vbak");
+        fs::write(&backup, b"backup").unwrap();
+
+        remove_vbak_file(&backup).unwrap();
+
+        assert!(!backup.exists());
+        assert!(!backup_parent.exists());
+    }
+}
