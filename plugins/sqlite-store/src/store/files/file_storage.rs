@@ -658,21 +658,41 @@ fn match_discovered_files(
             .optional()
             .map_err(storage_err("failed to check existing file"))?;
 
-        if let Some((existing_id, expected_hash, existing_size)) = existing {
-            reconcile_existing_path(
-                tx,
-                df,
-                &existing_id,
-                expected_hash,
-                existing_size,
-                now,
-                result,
-            )?;
+        let outcome = if let Some((existing_id, expected_hash, existing_size)) = existing {
+            reconcile_existing_path(tx, df, &existing_id, expected_hash, existing_size, now)?
         } else {
-            reconcile_new_path(tx, df, missing_by_hash, &mut consumed_missing, now, result)?;
-        }
+            reconcile_new_path(tx, df, missing_by_hash, &mut consumed_missing, now)?
+        };
+        apply_reconcile_outcome(result, outcome);
     }
     Ok(())
+}
+
+enum ReconcileOutcome {
+    Unchanged,
+    ExternalChange(PathBuf),
+    Moved(PathBuf),
+    NewFile(PathBuf),
+}
+
+fn apply_reconcile_outcome(result: &mut ReconcileResult, outcome: ReconcileOutcome) {
+    match outcome {
+        ReconcileOutcome::Unchanged => {
+            result.unchanged += 1;
+        }
+        ReconcileOutcome::ExternalChange(path) => {
+            result.external_changes += 1;
+            result.needs_introspection.push(path);
+        }
+        ReconcileOutcome::Moved(path) => {
+            result.moved += 1;
+            result.needs_introspection.push(path);
+        }
+        ReconcileOutcome::NewFile(path) => {
+            result.new_files += 1;
+            result.needs_introspection.push(path);
+        }
+    }
 }
 
 /// Handle a discovered file whose path already exists in the DB.
@@ -683,83 +703,87 @@ fn reconcile_existing_path(
     expected_hash: Option<String>,
     existing_size: i64,
     now: &str,
-    result: &mut ReconcileResult,
-) -> Result<()> {
-    let path_str = df.path.to_string_lossy().to_string();
-    let filename = filename_string(&df.path);
+) -> Result<ReconcileOutcome> {
     let hash_matches = expected_hash
         .as_ref()
         .is_none_or(|eh| eh == &df.content_hash);
 
     if hash_matches {
+        reactivate_unchanged_path(tx, df, existing_id, expected_hash.is_none(), now)?;
+        return Ok(ReconcileOutcome::Unchanged);
+    }
+
+    record_external_replacement(tx, df, existing_id, expected_hash, existing_size, now)?;
+    Ok(ReconcileOutcome::ExternalChange(df.path.clone()))
+}
+
+fn reactivate_unchanged_path(
+    tx: &rusqlite::Transaction<'_>,
+    df: &DiscoveredFile,
+    existing_id: &str,
+    should_backfill_hash: bool,
+    now: &str,
+) -> Result<()> {
+    tx.execute(
+        "UPDATE files SET size = ?1, content_hash = ?2, \
+         status = 'active', missing_since = NULL, \
+         updated_at = ?3 WHERE id = ?4",
+        params![df.size as i64, &df.content_hash, now, existing_id],
+    )
+    .map_err(storage_err("failed to update unchanged file"))?;
+
+    if should_backfill_hash {
         tx.execute(
-            "UPDATE files SET size = ?1, content_hash = ?2, \
-             status = 'active', missing_since = NULL, \
-             updated_at = ?3 WHERE id = ?4",
-            params![df.size as i64, &df.content_hash, now, existing_id],
+            "UPDATE files SET expected_hash = ?1 WHERE id = ?2",
+            params![&df.content_hash, existing_id],
         )
-        .map_err(storage_err("failed to update unchanged file"))?;
-
-        if expected_hash.is_none() {
-            tx.execute(
-                "UPDATE files SET expected_hash = ?1 WHERE id = ?2",
-                params![&df.content_hash, existing_id],
-            )
-            .map_err(storage_err("failed to backfill expected_hash"))?;
-        }
-        result.unchanged += 1;
-    } else {
-        let old_id = crate::store::parse_uuid(existing_id)?;
-        let ext_transition = FileTransition::new(
-            old_id,
-            df.path.clone(),
-            df.content_hash.clone(),
-            df.size,
-            TransitionSource::External,
-        )
-        .with_from(expected_hash, Some(existing_size as u64));
-        insert_transition_in_tx(tx, &ext_transition, now)?;
-
-        let new_id = Uuid::new_v4();
-        tx.execute(
-            "UPDATE files SET path = NULL, status = 'missing', \
-             missing_since = ?1, superseded_by = ?2 WHERE id = ?3",
-            params![now, new_id.to_string(), existing_id],
-        )
-        .map_err(storage_err("failed to clear old file for external change"))?;
-        tx.execute(
-            "INSERT INTO files \
-             (id, path, filename, size, content_hash, \
-              expected_hash, status, container, duration, \
-              tags, plugin_metadata, introspected_at, \
-              created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', \
-                     'other', 0.0, '{}', '{}', ?7, ?7, ?7)",
-            params![
-                new_id.to_string(),
-                path_str,
-                filename,
-                df.size as i64,
-                &df.content_hash,
-                &df.content_hash,
-                now,
-            ],
-        )
-        .map_err(storage_err("failed to insert new file for external change"))?;
-
-        let disc_transition = FileTransition::new(
-            new_id,
-            df.path.clone(),
-            df.content_hash.clone(),
-            df.size,
-            TransitionSource::Discovery,
-        );
-        insert_transition_in_tx(tx, &disc_transition, now)?;
-
-        result.external_changes += 1;
-        result.needs_introspection.push(df.path.clone());
+        .map_err(storage_err("failed to backfill expected_hash"))?;
     }
     Ok(())
+}
+
+fn record_external_replacement(
+    tx: &rusqlite::Transaction<'_>,
+    df: &DiscoveredFile,
+    existing_id: &str,
+    expected_hash: Option<String>,
+    existing_size: i64,
+    now: &str,
+) -> Result<()> {
+    let old_id = crate::store::parse_uuid(existing_id)?;
+    let ext_transition = FileTransition::new(
+        old_id,
+        df.path.clone(),
+        df.content_hash.clone(),
+        df.size,
+        TransitionSource::External,
+    )
+    .with_from(expected_hash, Some(existing_size as u64));
+    insert_transition_in_tx(tx, &ext_transition, now)?;
+
+    let new_id = Uuid::new_v4();
+    tx.execute(
+        "UPDATE files SET path = NULL, status = 'missing', \
+         missing_since = ?1, superseded_by = ?2 WHERE id = ?3",
+        params![now, new_id.to_string(), existing_id],
+    )
+    .map_err(storage_err("failed to clear old file for external change"))?;
+    insert_discovered_file_row(
+        tx,
+        &new_id,
+        df,
+        now,
+        "failed to insert new file for external change",
+    )?;
+
+    let disc_transition = FileTransition::new(
+        new_id,
+        df.path.clone(),
+        df.content_hash.clone(),
+        df.size,
+        TransitionSource::Discovery,
+    );
+    insert_transition_in_tx(tx, &disc_transition, now)
 }
 
 /// Handle a discovered file whose path is not yet in the DB (move or new).
@@ -769,10 +793,7 @@ fn reconcile_new_path(
     missing_by_hash: &HashMap<String, MissingMatch>,
     consumed_missing: &mut HashSet<String>,
     now: &str,
-    result: &mut ReconcileResult,
-) -> Result<()> {
-    let path_str = df.path.to_string_lossy().to_string();
-    let filename = filename_string(&df.path);
+) -> Result<ReconcileOutcome> {
     let move_match = missing_by_hash
         .get(&df.content_hash)
         .filter(|m| !consumed_missing.contains(&m.id));
@@ -782,70 +803,98 @@ fn reconcile_new_path(
         let prior_path = m.prior_path.clone();
         consumed_missing.insert(missing_id.clone());
 
-        tx.execute(
-            "UPDATE files SET path = ?1, filename = ?2, \
-             size = ?3, content_hash = ?4, \
-             status = 'active', missing_since = NULL, \
-             updated_at = ?5 WHERE id = ?6",
-            params![
-                path_str,
-                filename,
-                df.size as i64,
-                &df.content_hash,
-                now,
-                &missing_id,
-            ],
-        )
-        .map_err(storage_err("failed to reactivate moved file"))?;
-
-        let file_uuid = crate::store::parse_uuid(&missing_id)?;
-        let move_transition = FileTransition::new(
-            file_uuid,
-            df.path.clone(),
-            df.content_hash.clone(),
-            df.size,
-            TransitionSource::Discovery,
-        )
-        .with_from_path(PathBuf::from(prior_path))
-        .with_detail("detected_move");
-        insert_transition_in_tx(tx, &move_transition, now)?;
-
-        result.moved += 1;
-        result.needs_introspection.push(df.path.clone());
-    } else {
-        let new_id = Uuid::new_v4();
-        tx.execute(
-            "INSERT INTO files \
-             (id, path, filename, size, content_hash, \
-              expected_hash, status, container, duration, \
-              tags, plugin_metadata, introspected_at, \
-              created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', \
-                     'other', 0.0, '{}', '{}', ?7, ?7, ?7)",
-            params![
-                new_id.to_string(),
-                path_str,
-                filename,
-                df.size as i64,
-                &df.content_hash,
-                &df.content_hash,
-                now,
-            ],
-        )
-        .map_err(storage_err("failed to insert new file"))?;
-
-        let disc_transition = FileTransition::new(
-            new_id,
-            df.path.clone(),
-            df.content_hash.clone(),
-            df.size,
-            TransitionSource::Discovery,
-        );
-        insert_transition_in_tx(tx, &disc_transition, now)?;
-
-        result.new_files += 1;
-        result.needs_introspection.push(df.path.clone());
+        reactivate_moved_file(tx, df, &missing_id, prior_path, now)?;
+        return Ok(ReconcileOutcome::Moved(df.path.clone()));
     }
+
+    insert_new_discovered_file(tx, df, now)?;
+    Ok(ReconcileOutcome::NewFile(df.path.clone()))
+}
+
+fn reactivate_moved_file(
+    tx: &rusqlite::Transaction<'_>,
+    df: &DiscoveredFile,
+    missing_id: &str,
+    prior_path: String,
+    now: &str,
+) -> Result<()> {
+    let path_str = df.path.to_string_lossy().to_string();
+    let filename = filename_string(&df.path);
+    tx.execute(
+        "UPDATE files SET path = ?1, filename = ?2, \
+         size = ?3, content_hash = ?4, \
+         status = 'active', missing_since = NULL, \
+         updated_at = ?5 WHERE id = ?6",
+        params![
+            path_str,
+            filename,
+            df.size as i64,
+            &df.content_hash,
+            now,
+            missing_id,
+        ],
+    )
+    .map_err(storage_err("failed to reactivate moved file"))?;
+
+    let file_uuid = crate::store::parse_uuid(missing_id)?;
+    let move_transition = FileTransition::new(
+        file_uuid,
+        df.path.clone(),
+        df.content_hash.clone(),
+        df.size,
+        TransitionSource::Discovery,
+    )
+    .with_from_path(PathBuf::from(prior_path))
+    .with_detail("detected_move");
+    insert_transition_in_tx(tx, &move_transition, now)
+}
+
+fn insert_new_discovered_file(
+    tx: &rusqlite::Transaction<'_>,
+    df: &DiscoveredFile,
+    now: &str,
+) -> Result<()> {
+    let new_id = Uuid::new_v4();
+    insert_discovered_file_row(tx, &new_id, df, now, "failed to insert new file")?;
+
+    let disc_transition = FileTransition::new(
+        new_id,
+        df.path.clone(),
+        df.content_hash.clone(),
+        df.size,
+        TransitionSource::Discovery,
+    );
+    insert_transition_in_tx(tx, &disc_transition, now)
+}
+
+fn insert_discovered_file_row(
+    tx: &rusqlite::Transaction<'_>,
+    file_id: &Uuid,
+    df: &DiscoveredFile,
+    now: &str,
+    error_context: &'static str,
+) -> Result<()> {
+    let path_str = df.path.to_string_lossy().to_string();
+    let filename = filename_string(&df.path);
+    tx.execute(
+        "INSERT INTO files \
+         (id, path, filename, size, content_hash, \
+          expected_hash, status, container, duration, \
+          tags, plugin_metadata, introspected_at, \
+          created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', \
+                 'other', 0.0, '{}', '{}', ?7, ?7, ?7)",
+        params![
+            file_id.to_string(),
+            path_str,
+            filename,
+            df.size as i64,
+            &df.content_hash,
+            &df.content_hash,
+            now,
+        ],
+    )
+    .map_err(storage_err(error_context))?;
     Ok(())
 }
 
