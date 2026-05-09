@@ -6,6 +6,8 @@
 //! module.
 
 use super::ProcessContext;
+use voom_domain::errors::StorageErrorKind;
+use voom_domain::VoomError;
 
 /// Grouped arguments for `record_file_transition`.
 pub(super) struct FileTransitionContext<'a> {
@@ -22,11 +24,11 @@ pub(super) struct FileTransitionContext<'a> {
 }
 
 /// Record a file transition in the store if the content hash or path changed.
-pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
+pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) -> voom_domain::Result<()> {
     let hash_changed = tctx.new_file.content_hash != tctx.old_file.content_hash;
     let path_changed = tctx.old_file.path != tctx.new_file.path;
     if !hash_changed && !path_changed {
-        return;
+        return Ok(());
     }
 
     let mut transition = voom_domain::FileTransition::new(
@@ -63,17 +65,20 @@ pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
         .then_some(tctx.new_file.content_hash.as_deref())
         .flatten();
 
-    if let Err(e) = tctx
-        .ctx
+    tctx.ctx
         .store
         .record_post_execution(new_path, new_expected_hash, &transition)
-    {
-        tracing::warn!(
-            path = %tctx.old_file.path.display(),
-            error = %e,
-            "failed to record post-execution bundle"
-        );
-    }
+        .map_err(|error| {
+            transition_record_error(
+                "post-execution transition",
+                &tctx.old_file.path,
+                tctx.phase_name,
+                tctx.plan_id,
+                error,
+            )
+        })?;
+
+    Ok(())
 }
 
 /// Grouped arguments for `record_failure_transition`.
@@ -96,7 +101,9 @@ pub(super) struct FailureTransitionContext<'a> {
 /// Dual-write: `file_transitions.error_message` is used for session-based
 /// queries (`voom report errors`), while `plans.result` stores the structured
 /// `ExecutionDetail` JSON for plan-based queries with full subprocess output.
-pub(super) fn record_failure_transition(fctx: &FailureTransitionContext<'_>) {
+pub(super) fn record_failure_transition(
+    fctx: &FailureTransitionContext<'_>,
+) -> voom_domain::Result<()> {
     let file = fctx.file;
     let to_hash = file.content_hash.clone().unwrap_or_default();
     let mut transition = voom_domain::FileTransition::new(
@@ -123,11 +130,39 @@ pub(super) fn record_failure_transition(fctx: &FailureTransitionContext<'_>) {
         transition = transition.with_error_message(msg);
     }
 
-    if let Err(e) = fctx.ctx.store.record_transition(&transition) {
-        tracing::warn!(
-            path = %fctx.file.path.display(),
-            error = %e,
-            "failed to record failure transition"
-        );
+    fctx.ctx
+        .store
+        .record_transition(&transition)
+        .map_err(|error| {
+            transition_record_error(
+                "failure transition",
+                &fctx.file.path,
+                &fctx.plan.phase_name,
+                fctx.plan.id,
+                error,
+            )
+        })?;
+
+    Ok(())
+}
+
+fn transition_record_error(
+    operation: &str,
+    path: &std::path::Path,
+    phase_name: &str,
+    plan_id: uuid::Uuid,
+    error: VoomError,
+) -> VoomError {
+    let message = format!(
+        "failed to record {operation} for file '{}' in phase '{phase_name}' \
+         for plan {plan_id}: {error}",
+        path.display()
+    );
+    match error {
+        VoomError::Storage { kind, .. } => VoomError::Storage { kind, message },
+        _ => VoomError::Storage {
+            kind: StorageErrorKind::Other,
+            message,
+        },
     }
 }

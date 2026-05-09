@@ -341,7 +341,8 @@ async fn process_single_file_execute(
                     keep_backups,
                     ctx,
                 )
-                .await;
+                .await
+                .map_err(|error| error.to_string())?;
             }
             PlanOutcome::Failed(failed) => {
                 let executor = failed.plugin_name.clone().unwrap_or_default();
@@ -353,7 +354,8 @@ async fn process_single_file_execute(
                     executor: &executor,
                     error_message: Some(&error_msg),
                     ctx,
-                });
+                })
+                .map_err(|error| error.to_string())?;
                 phase_outcomes.insert(
                     plan.phase_name.clone(),
                     voom_policy_evaluator::EvaluationOutcome::ExecutionFailed,
@@ -407,7 +409,7 @@ pub(super) async fn handle_plan_success(
     elapsed_ms: u64,
     keep_backups: bool,
     ctx: &ProcessContext<'_>,
-) -> voom_domain::media::MediaFile {
+) -> voom_domain::Result<voom_domain::media::MediaFile> {
     if keep_backups {
         ctx.counters
             .backup_bytes
@@ -456,7 +458,7 @@ pub(super) async fn handle_plan_success(
         phase_name: &phase_name,
         plan_id,
         ctx,
-    });
+    })?;
 
     // Defense-in-depth: clear any `bad_files` row at the post-execution
     // path. The bundle in `record_post_execution` already does this for
@@ -474,7 +476,7 @@ pub(super) async fn handle_plan_success(
         );
     }
 
-    new_file
+    Ok(new_file)
 }
 
 /// Check file hash for TOCTOU guard. Returns Some(json) if file should be skipped.
