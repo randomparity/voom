@@ -6,7 +6,9 @@ use uuid::Uuid;
 
 use voom_domain::errors::Result;
 use voom_domain::stats::{ProcessingOutcome, SavingsBucket, SavingsReport, TimePeriod};
-use voom_domain::storage::{FileTransitionStorage, PruneReport, RetentionPolicy};
+use voom_domain::storage::{
+    FailedTransition, FailedTransitionInput, FileTransitionStorage, PruneReport, RetentionPolicy,
+};
 use voom_domain::transition::{FileTransition, TransitionSource};
 
 use crate::store::{
@@ -240,14 +242,14 @@ impl FileTransitionStorage for SqliteStore {
                     )
                 })?;
 
-                Ok(voom_domain::storage::FailedTransition::new(
-                    PathBuf::from(path_str),
+                Ok(FailedTransition::new(FailedTransitionInput {
+                    path: PathBuf::from(path_str),
                     phase_name,
                     error_message,
                     session_id,
                     created_at,
                     plan_result,
-                ))
+                }))
             })
             .map_err(storage_err("failed to query failed transitions"))?
             .collect::<rusqlite::Result<Vec<_>>>()

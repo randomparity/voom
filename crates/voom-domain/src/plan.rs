@@ -737,35 +737,30 @@ impl PhaseOutput {
         Self::default()
     }
 
-    /// Set the `completed` flag.
     #[must_use]
     pub fn with_completed(mut self, completed: bool) -> Self {
         self.completed = completed;
         self
     }
 
-    /// Set the `modified` flag.
     #[must_use]
     pub fn with_modified(mut self, modified: bool) -> Self {
         self.modified = modified;
         self
     }
 
-    /// Set the `outcome` field.
     #[must_use]
     pub fn with_outcome(mut self, outcome: impl Into<String>) -> Self {
         self.outcome = Some(outcome.into());
         self
     }
 
-    /// Set the `error_count` field.
     #[must_use]
     pub fn with_error_count(mut self, error_count: u32) -> Self {
         self.error_count = error_count;
         self
     }
 
-    /// Set the `warning_count` field.
     #[must_use]
     pub fn with_warning_count(mut self, warning_count: u32) -> Self {
         self.warning_count = warning_count;

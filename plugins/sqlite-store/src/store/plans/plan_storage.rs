@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use voom_domain::errors::Result;
 use voom_domain::plan::{Plan, PlannedAction};
-use voom_domain::storage::{PlanPhaseStat, PlanStatus, PlanStorage, PlanSummary};
+use voom_domain::storage::{PlanPhaseStat, PlanStatus, PlanStorage, PlanSummary, PlanSummaryInput};
 
 use crate::store::{
     format_datetime, other_storage_err, parse_optional_datetime, row_uuid, storage_err,
@@ -37,15 +37,15 @@ impl StoredPlan {
                 .map_err(other_storage_err("failed to deserialize plan warnings"))?,
             None => Vec::new(),
         };
-        let mut summary = PlanSummary::new(
-            self.id,
-            self.file_id,
-            self.policy_name,
-            self.phase_name,
-            self.status,
+        let mut summary = PlanSummary::new(PlanSummaryInput {
+            id: self.id,
+            file_id: self.file_id,
+            policy_name: self.policy_name,
+            phase_name: self.phase_name,
+            status: self.status,
             actions,
-            self.created_at,
-        );
+            created_at: self.created_at,
+        });
         summary.warnings = warnings;
         summary.skip_reason = self.skip_reason;
         summary.policy_hash = self.policy_hash;

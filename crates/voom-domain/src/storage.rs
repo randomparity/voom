@@ -314,23 +314,26 @@ pub struct FailedTransition {
     pub plan_result: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct FailedTransitionInput {
+    pub path: PathBuf,
+    pub phase_name: Option<String>,
+    pub error_message: Option<String>,
+    pub session_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub plan_result: Option<String>,
+}
+
 impl FailedTransition {
     #[must_use]
-    pub fn new(
-        path: PathBuf,
-        phase_name: Option<String>,
-        error_message: Option<String>,
-        session_id: Option<Uuid>,
-        created_at: DateTime<Utc>,
-        plan_result: Option<String>,
-    ) -> Self {
+    pub fn new(input: FailedTransitionInput) -> Self {
         Self {
-            path,
-            phase_name,
-            error_message,
-            session_id,
-            created_at,
-            plan_result,
+            path: input.path,
+            phase_name: input.phase_name,
+            error_message: input.error_message,
+            session_id: input.session_id,
+            created_at: input.created_at,
+            plan_result: input.plan_result,
         }
     }
 }
@@ -752,29 +755,32 @@ pub struct PlanSummary {
     pub result: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PlanSummaryInput {
+    pub id: Uuid,
+    pub file_id: Uuid,
+    pub policy_name: String,
+    pub phase_name: String,
+    pub status: PlanStatus,
+    pub actions: Vec<crate::plan::PlannedAction>,
+    pub created_at: DateTime<Utc>,
+}
+
 impl PlanSummary {
     #[must_use]
-    pub fn new(
-        id: Uuid,
-        file_id: Uuid,
-        policy_name: impl Into<String>,
-        phase_name: impl Into<String>,
-        status: PlanStatus,
-        actions: Vec<crate::plan::PlannedAction>,
-        created_at: DateTime<Utc>,
-    ) -> Self {
+    pub fn new(input: PlanSummaryInput) -> Self {
         Self {
-            id,
-            file_id,
-            policy_name: policy_name.into(),
-            phase_name: phase_name.into(),
-            status,
-            actions,
+            id: input.id,
+            file_id: input.file_id,
+            policy_name: input.policy_name,
+            phase_name: input.phase_name,
+            status: input.status,
+            actions: input.actions,
             warnings: Vec::new(),
             skip_reason: None,
             policy_hash: None,
             evaluated_at: None,
-            created_at,
+            created_at: input.created_at,
             executed_at: None,
             result: None,
         }
