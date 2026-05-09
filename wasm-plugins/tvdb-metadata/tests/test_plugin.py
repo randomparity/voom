@@ -1,5 +1,6 @@
 """Tests for the plugin entry points (get_info, handles, on_event)."""
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -63,6 +64,10 @@ class TestOnEvent:
 
         assert result is not None
         assert result["plugin_name"] == "tvdb-metadata"
+        assert result["data"] is None
+        assert result["claimed"] is False
+        assert result["execution_error"] is None
+        assert result["execution_detail"] is None
         assert len(result["produced_events"]) == 1
 
         produced = result["produced_events"][0]
@@ -76,6 +81,21 @@ class TestOnEvent:
         assert data["metadata"]["episode_name"] == "Pilot"
         assert data["metadata"]["season_number"] == 1
         assert data["metadata"]["episode_number"] == 1
+
+    def test_make_event_result_encodes_optional_payloads(self):
+        result = plugin_module._make_event_result(
+            plugin_name="tvdb-metadata",
+            produced_events=[],
+            data={"matched": True},
+            claimed=True,
+            execution_error="failed",
+            execution_detail={"attempts": 2},
+        )
+
+        assert result["claimed"] is True
+        assert result["execution_error"] == "failed"
+        assert json.loads(bytes(result["data"])) == {"matched": True}
+        assert json.loads(bytes(result["execution_detail"])) == {"attempts": 2}
 
     def test_ignores_non_tv_file(self, mock_host_with_tvdb, monkeypatch):
         monkeypatch.setattr(plugin_module, "_get_host_bridge", lambda: mock_host_with_tvdb)

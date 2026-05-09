@@ -43,7 +43,7 @@ pub fn get_info() -> PluginInfoData {
 }
 
 pub fn handles(event_type: &str) -> bool {
-    event_type == "plan.created"
+    event_type == Event::PLAN_CREATED
 }
 
 /// Process a plan.created event, looking for SynthesizeAudio actions.
@@ -53,7 +53,7 @@ pub fn on_event(
     payload: &[u8],
     host: &dyn HostFunctions,
 ) -> Option<OnEventResult> {
-    if event_type != "plan.created" {
+    if event_type != Event::PLAN_CREATED {
         return None;
     }
 

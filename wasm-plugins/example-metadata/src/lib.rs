@@ -44,7 +44,9 @@ pub fn get_info() -> PluginInfoData {
     PluginInfoData::new(
         "example-metadata",
         "0.1.0",
-        vec![Capability::EnrichMetadata { source: "example".to_string() }],
+        vec![Capability::EnrichMetadata {
+            source: "example".to_string(),
+        }],
     )
     .with_description("Example metadata enrichment plugin")
     .with_author("David Christensen")
@@ -53,11 +55,15 @@ pub fn get_info() -> PluginInfoData {
 }
 
 pub fn handles(event_type: &str) -> bool {
-    event_type == "file.introspected"
+    event_type == Event::FILE_INTROSPECTED
 }
 
-pub fn on_event(event_type: &str, payload: &[u8], host: &dyn HostFunctions) -> Option<OnEventResult> {
-    if event_type != "file.introspected" {
+pub fn on_event(
+    event_type: &str,
+    payload: &[u8],
+    host: &dyn HostFunctions,
+) -> Option<OnEventResult> {
+    if event_type != Event::FILE_INTROSPECTED {
         return None;
     }
 
@@ -70,9 +76,15 @@ pub fn on_event(event_type: &str, payload: &[u8], host: &dyn HostFunctions) -> O
             let (mut video_count, mut audio_count, mut sub_count, mut has_hdr) =
                 (0usize, 0usize, 0usize, false);
             for t in &file.tracks {
-                if t.track_type.is_video() { video_count += 1; }
-                if t.track_type.is_audio() { audio_count += 1; }
-                if t.track_type.is_subtitle() { sub_count += 1; }
+                if t.track_type.is_video() {
+                    video_count += 1;
+                }
+                if t.track_type.is_audio() {
+                    audio_count += 1;
+                }
+                if t.track_type.is_subtitle() {
+                    sub_count += 1;
+                }
                 has_hdr |= t.is_hdr;
             }
 
@@ -88,9 +100,11 @@ pub fn on_event(event_type: &str, payload: &[u8], host: &dyn HostFunctions) -> O
                 "has_hdr": has_hdr,
             });
 
-            let enriched_event = Event::MetadataEnriched(
-                MetadataEnrichedEvent::new(file.path.clone(), "example-metadata".to_string(), metadata),
-            );
+            let enriched_event = Event::MetadataEnriched(MetadataEnrichedEvent::new(
+                file.path.clone(),
+                "example-metadata".to_string(),
+                metadata,
+            ));
 
             let produced_payload = serialize_event_or_log(&enriched_event, host)?;
 

@@ -41,7 +41,7 @@ pub fn get_info() -> PluginInfoData {
 }
 
 pub fn handles(event_type: &str) -> bool {
-    event_type == "file.introspected"
+    event_type == Event::FILE_INTROSPECTED
 }
 
 /// Process a file.introspected event by detecting languages of audio tracks.
@@ -50,7 +50,7 @@ pub fn on_event(
     payload: &[u8],
     host: &dyn HostFunctions,
 ) -> Option<OnEventResult> {
-    if event_type != "file.introspected" {
+    if event_type != Event::FILE_INTROSPECTED {
         return None;
     }
 

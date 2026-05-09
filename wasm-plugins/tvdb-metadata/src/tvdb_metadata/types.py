@@ -60,4 +60,7 @@ class EventDataDict(TypedDict):
 class EventResultDict(TypedDict):
     plugin_name: str
     produced_events: list[EventDataDict]
-    data: JsonObject | None
+    data: list[int] | None
+    claimed: bool
+    execution_error: str | None
+    execution_detail: list[int] | None
