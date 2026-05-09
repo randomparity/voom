@@ -389,10 +389,9 @@ fn cropdetect_request_for_plan(
         };
         let crop = settings.crop.as_ref()?;
         let track_index = action.track_index?;
-        let track = file
-            .tracks
-            .iter()
-            .find(|track| track.index == track_index)?;
+        let track = file.tracks.iter().find(|track| {
+            track.index == track_index && track.track_type == voom_domain::media::TrackType::Video
+        })?;
         Some(CropDetectRequest {
             settings: crop.clone(),
             source: voom_ffmpeg_executor::cropdetect::CropDetectSource::new(
@@ -1036,6 +1035,18 @@ mod tests {
         ));
 
         assert!(cropdetect_request_for_plan(&plan, &plan.file).is_none());
+    }
+
+    #[test]
+    fn crop_settings_for_plan_ignores_non_video_track_index() {
+        let mut file = MediaFile::new(std::path::PathBuf::from("/media/source.mkv"))
+            .with_container(Container::Mkv)
+            .with_tracks(vec![Track::new(0, TrackType::AudioMain, "aac".into())]);
+        file.tracks[0].width = Some(1920);
+        file.tracks[0].height = Some(1080);
+        let plan = crop_plan(file.clone());
+
+        assert!(cropdetect_request_for_plan(&plan, &file).is_none());
     }
 
     async fn held_nvenc_permit(
