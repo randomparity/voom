@@ -346,6 +346,7 @@ fn scrub_nondeterministic_fields(value: &mut Value) {
             }
         }
         Value::Object(fields) => {
+            fields.retain(|key, child| !is_absent_loudness_metadata(key, child));
             for (key, child) in fields {
                 if is_nondeterministic_key(key) {
                     *child = canonical_value_for_key(key);
@@ -360,6 +361,10 @@ fn scrub_nondeterministic_fields(value: &mut Value) {
 
 fn is_nondeterministic_key(key: &str) -> bool {
     key == "id" || key == "session_id" || key.ends_with("_at") || key.ends_with("_timestamp")
+}
+
+fn is_absent_loudness_metadata(key: &str, value: &Value) -> bool {
+    key.starts_with("loudness_") && value.is_null()
 }
 
 fn canonical_value_for_key(key: &str) -> Value {

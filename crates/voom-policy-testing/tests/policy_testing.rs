@@ -141,6 +141,17 @@ fn canonical_snapshot_json_scrubs_nondeterministic_plan_fields() {
 }
 
 #[test]
+fn canonical_snapshot_json_omits_absent_loudness_metadata() {
+    let snapshot = canonicalize_plans_for_snapshot(&[plan("containerize", vec![])]).unwrap();
+    let track = &snapshot[0]["file"]["tracks"][1];
+
+    assert!(track.get("loudness_integrated_lufs").is_none());
+    assert!(track.get("loudness_measured_at").is_none());
+    assert!(track.get("loudness_range_lu").is_none());
+    assert!(track.get("loudness_true_peak_db").is_none());
+}
+
+#[test]
 fn snapshot_update_writes_canonical_json() {
     let dir = tempfile::tempdir().unwrap();
     let snapshot = dir.path().join("plans.json");
