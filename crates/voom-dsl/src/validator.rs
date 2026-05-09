@@ -1132,6 +1132,9 @@ fn validate_video_transcode_settings(
     col: usize,
     errors: &mut Vec<DslError>,
 ) {
+    let crop_enabled = settings.iter().any(|(key, val)| {
+        key == "crop" && matches!(val, Value::Ident(mode) | Value::String(mode) if mode == "auto")
+    });
     for (key, val) in settings {
         match key.as_str() {
             "hdr_mode" => {
@@ -1185,17 +1188,39 @@ fn validate_video_transcode_settings(
             }
             "crop" => validate_crop_mode(val, line, col, errors),
             "crop_sample_duration" | "crop_sample_count" => {
+                validate_crop_enabled(crop_enabled, key, line, col, errors);
                 validate_crop_positive_integer(val, key, line, col, errors);
             }
             "crop_threshold" => {
+                validate_crop_enabled(crop_enabled, key, line, col, errors);
                 validate_crop_integer_bounds(val, key, 0, 255, line, col, errors);
             }
             "crop_minimum" | "crop_preserve_bottom_pixels" => {
+                validate_crop_enabled(crop_enabled, key, line, col, errors);
                 validate_crop_integer_bounds(val, key, 0, u32::MAX, line, col, errors);
             }
-            "crop_aspect_lock" => validate_crop_aspect_lock(val, line, col, errors),
+            "crop_aspect_lock" => {
+                validate_crop_enabled(crop_enabled, key, line, col, errors);
+                validate_crop_aspect_lock(val, line, col, errors);
+            }
             _ => {}
         }
+    }
+}
+
+fn validate_crop_enabled(
+    crop_enabled: bool,
+    key: &str,
+    line: usize,
+    col: usize,
+    errors: &mut Vec<DslError>,
+) {
+    if !crop_enabled {
+        errors.push(DslError::validation(
+            line,
+            col,
+            format!("{key} has no effect without crop: auto"),
+        ));
     }
 }
 
@@ -2253,6 +2278,26 @@ mod tests {
                 .iter()
                 .any(|e| format!("{e}").contains("invalid crop_aspect_lock ratio")),
             "expected aspect lock error, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_transcode_crop_tuning_requires_crop_auto() {
+        let input = r#"policy "test" {
+            phase tc {
+                transcode video to hevc {
+                    crop_threshold: 18
+                }
+            }
+        }"#;
+        let ast = parse_policy(input).unwrap();
+        let err = validate(&ast).unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("crop_threshold has no effect without crop: auto")),
+            "expected crop tuning no-op error, got: {:?}",
             err.errors
         );
     }
