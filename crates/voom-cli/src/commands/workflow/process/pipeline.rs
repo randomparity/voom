@@ -884,8 +884,8 @@ mod tests {
     }
 
     async fn held_nvenc_permit(
-        limiter: &voom_job_manager::worker::PlanExecutionLimiter,
-    ) -> voom_job_manager::worker::PlanExecutionPermit {
+        limiter: &voom_job_manager::plan_limiter::PlanExecutionLimiter,
+    ) -> voom_job_manager::plan_limiter::PlanExecutionPermit {
         limiter
             .acquire_for_plan(&process_tests::test_plan_with_transcode_hw(
                 "transcode-video",
@@ -895,9 +895,9 @@ mod tests {
     }
 
     fn observe_limiter_acquires(
-        limiter: voom_job_manager::worker::PlanExecutionLimiter,
+        limiter: voom_job_manager::plan_limiter::PlanExecutionLimiter,
     ) -> (
-        voom_job_manager::worker::PlanExecutionLimiter,
+        voom_job_manager::plan_limiter::PlanExecutionLimiter,
         tokio::sync::mpsc::UnboundedReceiver<String>,
     ) {
         let (wait_tx, wait_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -932,7 +932,7 @@ mod tests {
     async fn process_pipeline_respects_plan_limiter() {
         let policy = nvenc_policy();
         let fixture = process_tests::TestFixture::with_policy(policy);
-        let limiter = voom_job_manager::worker::PlanExecutionLimiter::from_limits(vec![(
+        let limiter = voom_job_manager::plan_limiter::PlanExecutionLimiter::from_limits(vec![(
             "hw:nvenc".to_string(),
             1,
         )]);
@@ -980,10 +980,11 @@ mod tests {
     async fn process_pipeline_limits_transcode_without_per_action_hw() {
         let policy = global_hw_policy();
         let fixture = process_tests::TestFixture::with_policy(policy);
-        let limiter = voom_job_manager::worker::PlanExecutionLimiter::from_limits_with_default(
-            vec![("hw:nvenc".to_string(), 1)],
-            Some("hw:nvenc".to_string()),
-        );
+        let limiter =
+            voom_job_manager::plan_limiter::PlanExecutionLimiter::from_limits_with_default(
+                vec![("hw:nvenc".to_string(), 1)],
+                Some("hw:nvenc".to_string()),
+            );
         let held = limiter
             .acquire_for_plan(&process_tests::test_plan_with_optional_transcode_hw(
                 "transcode-video",
@@ -1033,7 +1034,7 @@ mod tests {
     async fn process_pipeline_cancellation_stops_waiting_for_plan_limiter() {
         let policy = nvenc_policy();
         let fixture = process_tests::TestFixture::with_policy(policy);
-        let limiter = voom_job_manager::worker::PlanExecutionLimiter::from_limits(vec![(
+        let limiter = voom_job_manager::plan_limiter::PlanExecutionLimiter::from_limits(vec![(
             "hw:nvenc".to_string(),
             1,
         )]);

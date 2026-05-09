@@ -80,7 +80,7 @@ pub(super) struct ProcessContext<'a> {
     pub(super) token: &'a CancellationToken,
     pub(super) ffprobe_path: Option<&'a str>,
     pub(super) capabilities: &'a voom_domain::CapabilityMap,
-    pub(super) plan_limiter: Arc<voom_job_manager::worker::PlanExecutionLimiter>,
+    pub(super) plan_limiter: Arc<voom_job_manager::plan_limiter::PlanExecutionLimiter>,
     pub(super) counters: &'a RunCounters,
 }
 

@@ -7,10 +7,12 @@
 //! - Pluggable progress reporting (CLI, database, custom)
 //! - Batch processing with error handling strategies
 
+pub mod plan_limiter;
 pub mod progress;
 pub mod queue;
 pub mod worker;
 
+pub use plan_limiter::{PlanExecutionLimiter, PlanExecutionPermit};
 pub use worker::{JobErrorStrategy, JobOutcome, JobResult, WorkerPool, WorkerPoolConfig};
 
 use std::sync::Arc;

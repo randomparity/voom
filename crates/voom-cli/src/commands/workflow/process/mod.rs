@@ -92,7 +92,7 @@ struct ProcessRuntime {
     store: Arc<dyn voom_domain::storage::StorageTrait>,
     job_queue: Arc<voom_job_manager::queue::JobQueue>,
     capabilities: Arc<voom_domain::CapabilityMap>,
-    plan_limiter: Arc<voom_job_manager::worker::PlanExecutionLimiter>,
+    plan_limiter: Arc<voom_job_manager::plan_limiter::PlanExecutionLimiter>,
     paths: Vec<std::path::PathBuf>,
 }
 
@@ -123,7 +123,7 @@ fn prepare_process_runtime(args: &ProcessArgs) -> Result<ProcessRuntime> {
 
 fn build_plan_limiter(
     capabilities: &voom_domain::CapabilityMap,
-) -> voom_job_manager::worker::PlanExecutionLimiter {
+) -> voom_job_manager::plan_limiter::PlanExecutionLimiter {
     let limited_hw_resources = ["hw:nvenc", "hw:qsv", "hw:vaapi", "hw:videotoolbox"]
         .into_iter()
         .filter_map(|resource| {
@@ -134,7 +134,7 @@ fn build_plan_limiter(
         .collect::<Vec<_>>();
     let default_hw_resource =
         hw_resource_for_backend(capabilities.best_hwaccel()).map(str::to_string);
-    voom_job_manager::worker::PlanExecutionLimiter::from_limits_with_default(
+    voom_job_manager::plan_limiter::PlanExecutionLimiter::from_limits_with_default(
         limited_hw_resources,
         default_hw_resource,
     )
@@ -1046,7 +1046,7 @@ mod tests {
     /// stays valid for the test's lifetime.
     pub(super) struct TestFixture {
         capabilities: voom_domain::CapabilityMap,
-        plan_limiter: Arc<voom_job_manager::worker::PlanExecutionLimiter>,
+        plan_limiter: Arc<voom_job_manager::plan_limiter::PlanExecutionLimiter>,
         counters: RunCounters,
         token: CancellationToken,
         resolver: PolicyResolver,
@@ -1071,7 +1071,9 @@ mod tests {
             );
             Self {
                 capabilities: voom_domain::CapabilityMap::new(),
-                plan_limiter: Arc::new(voom_job_manager::worker::PlanExecutionLimiter::default()),
+                plan_limiter: Arc::new(
+                    voom_job_manager::plan_limiter::PlanExecutionLimiter::default(),
+                ),
                 counters: RunCounters::new(),
                 token: CancellationToken::new(),
                 resolver,
