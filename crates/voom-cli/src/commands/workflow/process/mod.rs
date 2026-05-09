@@ -903,7 +903,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use voom_domain::capabilities::Capability;
     use voom_domain::events::{
-        EventResult, FileDiscoveredEvent, FileIntrospectedEvent, PlanCreatedEvent, PlanSkippedEvent,
+        EventResult, FileDiscoveredEvent, FileIntrospectedEvent, PlanSkippedEvent,
     };
     use voom_domain::media::MediaFile;
     use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings};
@@ -1157,7 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn test_skipped_plan_dispatches_created_and_skipped_events() {
+    fn test_skipped_plan_dispatches_only_skipped_event() {
         let mut kernel = voom_kernel::Kernel::new();
         let recorder = Arc::new(PlanRecordingPlugin::new());
         kernel.register_plugin(recorder.clone(), 50).unwrap();
@@ -1166,12 +1166,8 @@ mod tests {
         let skipped_plan = test_plan("normalize", true);
         assert!(skipped_plan.is_skipped());
 
-        // Simulate the skipped-plan dispatch sequence from
-        // process_single_file_execute: PlanCreated then PlanSkipped.
-        dispatch_and_log(
-            &kernel,
-            Event::PlanCreated(PlanCreatedEvent::new(skipped_plan.clone())),
-        );
+        // Skipped plans are persisted directly and only dispatch PlanSkipped,
+        // so executor plugins do not see an executor-triggering PlanCreated.
         dispatch_and_log(
             &kernel,
             Event::PlanSkipped(PlanSkippedEvent::new(
@@ -1185,8 +1181,7 @@ mod tests {
         // Skipped plans should NOT trigger execution events
         assert_eq!(recorder.plan_executing_count.load(Ordering::SeqCst), 0);
         assert_eq!(recorder.plan_completed_count.load(Ordering::SeqCst), 0);
-        // PlanCreated IS dispatched (so sqlite-store can persist the row)
-        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 1);
+        assert_eq!(recorder.plan_created_count.load(Ordering::SeqCst), 0);
         // PlanSkipped IS dispatched (to update status to skipped)
         assert_eq!(recorder.plan_skipped_count.load(Ordering::SeqCst), 1);
     }

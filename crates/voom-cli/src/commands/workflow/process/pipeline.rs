@@ -24,7 +24,7 @@ use super::context::{
     record_failure_transition, record_phase_stat, FailureTransitionContext, PhaseOutcomeKind,
     ProcessContext, TransitionRecorder,
 };
-use super::dispatch::PlanDispatcher;
+use super::dispatch::{persist_plan, PlanDispatcher};
 use super::plan_outcome::PlanOutcome;
 use super::post_execution_path::resolve_post_execution_path;
 use super::safeguards::{
@@ -315,7 +315,7 @@ async fn run_phase_iteration(
     );
 
     if let Some(reason) = &plan.skip_reason {
-        record_skipped_phase(&plan, state, phase_ctx, reason);
+        record_skipped_phase(&plan, state, phase_ctx, reason)?;
         return Ok(PhaseLoopControl::Continue);
     }
 
@@ -356,7 +356,7 @@ fn record_skipped_phase(
     state: &mut PhaseExecutionState,
     phase_ctx: &PhaseExecutionContext<'_>,
     reason: &str,
-) {
+) -> std::result::Result<(), String> {
     state.outcomes.insert(
         plan.phase_name.clone(),
         voom_policy_evaluator::EvaluationOutcome::Skipped,
@@ -365,7 +365,8 @@ fn record_skipped_phase(
         plan.phase_name.clone(),
         phase_output(false, false, Some("skipped")),
     );
-    dispatch_skipped_plan(plan, &state.current_file, reason, phase_ctx.process);
+    dispatch_skipped_plan(plan, &state.current_file, reason, phase_ctx.process)?;
+    Ok(())
 }
 
 fn record_empty_phase(phase_name: &str, state: &mut PhaseExecutionState) {
@@ -527,21 +528,22 @@ fn phase_output(completed: bool, modified: bool, outcome: Option<&str>) -> Phase
     }
 }
 
-/// Dispatch events for a skipped plan: `PlanCreated` then `PlanSkipped`.
+/// Persist a skipped plan, then dispatch `PlanSkipped` without notifying executors.
 fn dispatch_skipped_plan(
     plan: &voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
     reason: &str,
     ctx: &ProcessContext<'_>,
-) {
+) -> std::result::Result<(), String> {
+    persist_plan(ctx.store.as_ref(), plan).map_err(|e| format!("persist skipped plan: {e}"))?;
     let dispatcher = PlanDispatcher::new(&ctx.kernel);
-    dispatcher.created(plan);
     dispatcher.skipped(plan, file, reason);
     record_phase_stat(
         &ctx.counters.phase_stats,
         &plan.phase_name,
         PhaseOutcomeKind::Skipped(reason.to_string()),
     );
+    Ok(())
 }
 
 /// Dispatch a `PlanFailed` event and record the phase stat.
