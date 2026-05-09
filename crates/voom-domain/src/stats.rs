@@ -82,6 +82,18 @@ pub struct LibrarySnapshot {
     pub jobs: JobAggregateStats,
 }
 
+/// Named input for constructing a [`LibrarySnapshot`].
+#[derive(Debug, Clone)]
+pub struct LibrarySnapshotInput {
+    pub trigger: SnapshotTrigger,
+    pub files: FileStats,
+    pub video: VideoStats,
+    pub audio: AudioStats,
+    pub subtitles: SubtitleStats,
+    pub processing: ProcessingAggregateStats,
+    pub jobs: JobAggregateStats,
+}
+
 /// Aggregate file-level statistics.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -168,26 +180,30 @@ pub struct SavingsBucket {
     pub file_count: u64,
 }
 
+/// Named input for constructing a [`SavingsBucket`].
+#[derive(Debug, Clone, Default)]
+pub struct SavingsBucketInput {
+    pub executor: Option<String>,
+    pub phase: Option<String>,
+    pub period: Option<String>,
+    pub transition_count: u64,
+    pub bytes_saved: i64,
+    pub duration_ms: u64,
+    pub file_count: u64,
+}
+
 impl SavingsBucket {
     /// Create a new bucket with all fields set explicitly.
     #[must_use]
-    pub fn new(
-        executor: Option<String>,
-        phase: Option<String>,
-        period: Option<String>,
-        transition_count: u64,
-        bytes_saved: i64,
-        duration_ms: u64,
-        file_count: u64,
-    ) -> Self {
+    pub fn new(input: SavingsBucketInput) -> Self {
         Self {
-            executor,
-            phase,
-            period,
-            transition_count,
-            bytes_saved,
-            duration_ms,
-            file_count,
+            executor: input.executor,
+            phase: input.phase,
+            period: input.period,
+            transition_count: input.transition_count,
+            bytes_saved: input.bytes_saved,
+            duration_ms: input.duration_ms,
+            file_count: input.file_count,
         }
     }
 }
@@ -267,25 +283,17 @@ pub struct JobAggregateStats {
 
 impl LibrarySnapshot {
     #[must_use]
-    pub fn new(
-        trigger: SnapshotTrigger,
-        files: FileStats,
-        video: VideoStats,
-        audio: AudioStats,
-        subtitles: SubtitleStats,
-        processing: ProcessingAggregateStats,
-        jobs: JobAggregateStats,
-    ) -> Self {
+    pub fn new(input: LibrarySnapshotInput) -> Self {
         Self {
             id: Uuid::new_v4(),
             captured_at: Utc::now(),
-            trigger,
-            files,
-            video,
-            audio,
-            subtitles,
-            processing,
-            jobs,
+            trigger: input.trigger,
+            files: input.files,
+            video: input.video,
+            audio: input.audio,
+            subtitles: input.subtitles,
+            processing: input.processing,
+            jobs: input.jobs,
         }
     }
 }

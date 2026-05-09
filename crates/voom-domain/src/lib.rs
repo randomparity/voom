@@ -39,13 +39,14 @@ pub use plan::{
 pub use safeguard::{SafeguardKind, SafeguardViolation};
 pub use snapshot::MetadataSnapshot;
 pub use stats::{
-    AudioStats, FileStats, JobAggregateStats, LibrarySnapshot, ProcessingAggregateStats,
-    ProcessingOutcome, SnapshotTrigger, SubtitleStats, VideoStats,
+    AudioStats, FileStats, JobAggregateStats, LibrarySnapshot, LibrarySnapshotInput,
+    ProcessingAggregateStats, ProcessingOutcome, SavingsBucketInput, SnapshotTrigger,
+    SubtitleStats, VideoStats,
 };
 pub use transition::{
     DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
 };
 pub use verification::{
     IntegritySummary, VerificationFilters, VerificationMode, VerificationOutcome,
-    VerificationRecord,
+    VerificationRecord, VerificationRecordInput,
 };

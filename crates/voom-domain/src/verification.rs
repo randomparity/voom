@@ -83,31 +83,34 @@ pub struct VerificationRecord {
     pub details: Option<String>,
 }
 
+/// Named input for constructing a [`VerificationRecord`].
+#[derive(Debug, Clone)]
+pub struct VerificationRecordInput {
+    pub id: Uuid,
+    pub file_id: String,
+    pub verified_at: DateTime<Utc>,
+    pub mode: VerificationMode,
+    pub outcome: VerificationOutcome,
+    pub error_count: u32,
+    pub warning_count: u32,
+    pub content_hash: Option<String>,
+    pub details: Option<String>,
+}
+
 impl VerificationRecord {
-    /// Construct a new verification record. `id` should be a freshly-generated UUID.
+    /// Construct a new verification record. `input.id` should be freshly generated.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        id: Uuid,
-        file_id: impl Into<String>,
-        verified_at: DateTime<Utc>,
-        mode: VerificationMode,
-        outcome: VerificationOutcome,
-        error_count: u32,
-        warning_count: u32,
-        content_hash: Option<String>,
-        details: Option<String>,
-    ) -> Self {
+    pub fn new(input: VerificationRecordInput) -> Self {
         Self {
-            id,
-            file_id: file_id.into(),
-            verified_at,
-            mode,
-            outcome,
-            error_count,
-            warning_count,
-            content_hash,
-            details,
+            id: input.id,
+            file_id: input.file_id,
+            verified_at: input.verified_at,
+            mode: input.mode,
+            outcome: input.outcome,
+            error_count: input.error_count,
+            warning_count: input.warning_count,
+            content_hash: input.content_hash,
+            details: input.details,
         }
     }
 }

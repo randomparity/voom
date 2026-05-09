@@ -11,7 +11,9 @@ use voom_domain::errors::{Result, StorageErrorKind, VoomError};
 use voom_domain::job::{Job, JobStatus};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::transition::FileStatus;
-use voom_domain::verification::{VerificationMode, VerificationOutcome, VerificationRecord};
+use voom_domain::verification::{
+    VerificationMode, VerificationOutcome, VerificationRecord, VerificationRecordInput,
+};
 
 use super::{other_storage_err, parse_datetime, parse_uuid};
 
@@ -323,7 +325,7 @@ pub(crate) fn row_to_verification(row: &Row<'_>) -> rusqlite::Result<Verificatio
     let error_count = checked_i64_to_u32(row.get("error_count")?, "verifications.error_count")?;
     let warning_count =
         checked_i64_to_u32(row.get("warning_count")?, "verifications.warning_count")?;
-    Ok(VerificationRecord::new(
+    Ok(VerificationRecord::new(VerificationRecordInput {
         id,
         file_id,
         verified_at,
@@ -331,9 +333,9 @@ pub(crate) fn row_to_verification(row: &Row<'_>) -> rusqlite::Result<Verificatio
         outcome,
         error_count,
         warning_count,
-        row.get("content_hash")?,
-        row.get("details")?,
-    ))
+        content_hash: row.get("content_hash")?,
+        details: row.get("details")?,
+    }))
 }
 
 #[cfg(test)]

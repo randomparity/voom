@@ -10,7 +10,9 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use voom_domain::errors::{Result, VoomError};
-use voom_domain::verification::{VerificationMode, VerificationOutcome, VerificationRecord};
+use voom_domain::verification::{
+    VerificationMode, VerificationOutcome, VerificationRecord, VerificationRecordInput,
+};
 
 use crate::util::truncate;
 
@@ -57,17 +59,17 @@ pub fn run_thorough(
         Some(truncate(&stderr, 16 * 1024))
     };
 
-    Ok(VerificationRecord::new(
-        Uuid::new_v4(),
-        file_id,
-        started,
-        VerificationMode::Thorough,
+    Ok(VerificationRecord::new(VerificationRecordInput {
+        id: Uuid::new_v4(),
+        file_id: file_id.to_string(),
+        verified_at: started,
+        mode: VerificationMode::Thorough,
         outcome,
         error_count,
         warning_count,
-        None,
+        content_hash: None,
         details,
-    ))
+    }))
 }
 
 /// Classify `ffmpeg -v error` stderr.  At loglevel `error` ffmpeg emits one

@@ -153,15 +153,15 @@ impl FileTransitionStorage for SqliteStore {
                 let saved: i64 = row.get("saved")?;
                 let dur: i64 = row.get("dur")?;
                 let files: i64 = row.get("files")?;
-                Ok(SavingsBucket::new(
-                    executor.filter(|s| !s.is_empty()),
-                    phase.filter(|s| !s.is_empty()),
-                    period_val.filter(|s| !s.is_empty()),
-                    checked_i64_to_u64(cnt, "file_transitions.cnt")?,
-                    saved,
-                    checked_i64_to_u64(dur, "file_transitions.dur")?,
-                    checked_i64_to_u64(files, "file_transitions.files")?,
-                ))
+                Ok(SavingsBucket::new(voom_domain::stats::SavingsBucketInput {
+                    executor: executor.filter(|s| !s.is_empty()),
+                    phase: phase.filter(|s| !s.is_empty()),
+                    period: period_val.filter(|s| !s.is_empty()),
+                    transition_count: checked_i64_to_u64(cnt, "file_transitions.cnt")?,
+                    bytes_saved: saved,
+                    duration_ms: checked_i64_to_u64(dur, "file_transitions.dur")?,
+                    file_count: checked_i64_to_u64(files, "file_transitions.files")?,
+                }))
             })
             .map_err(storage_err("failed to query savings by provenance"))?
             .collect::<rusqlite::Result<Vec<_>>>()
