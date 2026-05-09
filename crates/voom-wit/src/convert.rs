@@ -88,64 +88,85 @@ pub fn event_result_to_wasm(result: &EventResult) -> Result<WasmEventResult> {
 }
 
 /// Convert a WIT capability string (e.g., "discover:file,smb") to a domain Capability.
-#[must_use]
-pub fn capability_from_wit(cap_str: &str) -> Option<Capability> {
+///
+/// # Errors
+/// Returns an error when a known capability kind contains malformed operation
+/// or verification-mode parameters.
+pub fn capability_from_wit(cap_str: &str) -> Result<Option<Capability>> {
     let (kind, params) = cap_str.split_once(':').unwrap_or((cap_str, ""));
 
     match kind {
-        "discover" => Some(Capability::Discover {
+        "discover" => Ok(Some(Capability::Discover {
             schemes: split_comma_list(params),
-        }),
-        "introspect" => Some(Capability::Introspect {
+        })),
+        "introspect" => Ok(Some(Capability::Introspect {
             formats: split_comma_list(params),
-        }),
-        "evaluate" => Some(Capability::Evaluate),
+        })),
+        "evaluate" => Ok(Some(Capability::Evaluate)),
         "execute" => {
             // Format: "execute:op1+op2:fmt1,fmt2"
             let mut parts = params.splitn(2, ':');
             let ops_part = parts.next().unwrap_or("");
             let fmts_part = parts.next().unwrap_or("");
-            let operations = if ops_part.is_empty() {
-                vec![]
-            } else {
-                ops_part
-                    .split('+')
-                    .filter_map(|s| voom_domain::plan::OperationType::parse(s.trim()))
-                    .collect()
-            };
-            Some(Capability::Execute {
+            let operations = parse_execute_operations(ops_part)?;
+            Ok(Some(Capability::Execute {
                 operations,
                 formats: split_comma_list(fmts_part),
-            })
+            }))
         }
-        "store" => Some(Capability::Store {
+        "store" => Ok(Some(Capability::Store {
             backend: params.to_string(),
-        }),
-        "detect_tools" => Some(Capability::DetectTools),
-        "manage_jobs" => Some(Capability::ManageJobs),
-        "serve_http" => Some(Capability::ServeHttp),
-        "plan" => Some(Capability::Plan),
-        "backup" => Some(Capability::Backup),
-        "enrich_metadata" | "enrich-metadata" => Some(Capability::EnrichMetadata {
+        })),
+        "detect_tools" => Ok(Some(Capability::DetectTools)),
+        "manage_jobs" => Ok(Some(Capability::ManageJobs)),
+        "serve_http" => Ok(Some(Capability::ServeHttp)),
+        "plan" => Ok(Some(Capability::Plan)),
+        "backup" => Ok(Some(Capability::Backup)),
+        "enrich_metadata" | "enrich-metadata" => Ok(Some(Capability::EnrichMetadata {
             source: params.to_string(),
-        }),
-        "transcribe" => Some(Capability::Transcribe),
-        "synthesize" => Some(Capability::Synthesize),
-        "generate_subtitle" => Some(Capability::GenerateSubtitle),
-        "health_check" => Some(Capability::HealthCheck),
+        })),
+        "transcribe" => Ok(Some(Capability::Transcribe)),
+        "synthesize" => Ok(Some(Capability::Synthesize)),
+        "generate_subtitle" => Ok(Some(Capability::GenerateSubtitle)),
+        "health_check" => Ok(Some(Capability::HealthCheck)),
         "verify" => {
-            let modes = if params.is_empty() {
-                vec![]
-            } else {
-                params
-                    .split(',')
-                    .filter_map(|s| voom_domain::verification::VerificationMode::parse(s.trim()))
-                    .collect()
-            };
-            Some(Capability::Verify { modes })
+            let modes = parse_verify_modes(params)?;
+            Ok(Some(Capability::Verify { modes }))
         }
-        _ => None,
+        _ => Ok(None),
     }
+}
+
+fn parse_execute_operations(params: &str) -> Result<Vec<voom_domain::OperationType>> {
+    if params.is_empty() {
+        return Ok(vec![]);
+    }
+
+    params
+        .split('+')
+        .map(|value| {
+            let value = value.trim();
+            voom_domain::plan::OperationType::parse(value).ok_or_else(|| {
+                VoomError::Wasm(format!("unknown execute operation in capability: {value}"))
+            })
+        })
+        .collect()
+}
+
+fn parse_verify_modes(params: &str) -> Result<Vec<voom_domain::verification::VerificationMode>> {
+    if params.is_empty() {
+        return Ok(vec![]);
+    }
+
+    params
+        .split(',')
+        .map(|value| {
+            let value = value.trim();
+            voom_domain::verification::VerificationMode::parse(value).ok_or_else(|| {
+                VoomError::Wasm(format!("unknown verify mode in capability: {value}"))
+            })
+        })
+        .collect()
 }
 
 fn split_comma_list(s: &str) -> Vec<String> {
@@ -226,6 +247,10 @@ mod tests {
     use std::path::PathBuf;
     use voom_domain::events::*;
 
+    fn parse_capability(capability: &str) -> Capability {
+        capability_from_wit(capability).unwrap().unwrap()
+    }
+
     #[test]
     fn test_event_roundtrip_msgpack() {
         let event = Event::FileDiscovered(FileDiscoveredEvent::new(
@@ -275,7 +300,7 @@ mod tests {
         };
         let s = capability_to_wit(&cap);
         assert_eq!(s, "discover:file,smb");
-        let restored = capability_from_wit(&s).unwrap();
+        let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
 
@@ -284,7 +309,7 @@ mod tests {
         let cap = Capability::Evaluate;
         let s = capability_to_wit(&cap);
         assert_eq!(s, "evaluate");
-        let restored = capability_from_wit(&s).unwrap();
+        let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
 
@@ -300,7 +325,7 @@ mod tests {
         };
         let s = capability_to_wit(&cap);
         assert_eq!(s, "execute:transcode_video+convert_container:mkv,mp4");
-        let restored = capability_from_wit(&s).unwrap();
+        let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
 
@@ -311,7 +336,7 @@ mod tests {
         };
         let s = capability_to_wit(&cap);
         assert_eq!(s, "enrich_metadata:radarr");
-        let restored = capability_from_wit(&s).unwrap();
+        let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
 
@@ -322,7 +347,7 @@ mod tests {
         };
         let s = capability_to_wit(&cap);
         assert_eq!(s, "store:sqlite");
-        let restored = capability_from_wit(&s).unwrap();
+        let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
 
@@ -334,7 +359,7 @@ mod tests {
         };
         let s = capability_to_wit(&cap);
         assert_eq!(s, "verify:quick,thorough");
-        let restored = capability_from_wit(&s).unwrap();
+        let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
 
@@ -343,7 +368,7 @@ mod tests {
         let cap = Capability::Verify { modes: vec![] };
         let s = capability_to_wit(&cap);
         assert_eq!(s, "verify");
-        let restored = capability_from_wit(&s).unwrap();
+        let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
 
@@ -362,14 +387,26 @@ mod tests {
         ] {
             let s = capability_to_wit(&cap);
             assert_eq!(s, expected_str);
-            let restored = capability_from_wit(&s).unwrap();
+            let restored = parse_capability(&s);
             assert_eq!(restored, cap);
         }
     }
 
     #[test]
     fn test_capability_from_wit_unknown() {
-        assert!(capability_from_wit("unknown_cap").is_none());
+        assert!(capability_from_wit("unknown_cap").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_capability_from_wit_rejects_unknown_execute_operation() {
+        let err = capability_from_wit("execute:transcode_video+bogus:mkv").unwrap_err();
+        assert!(err.to_string().contains("unknown execute operation"));
+    }
+
+    #[test]
+    fn test_capability_from_wit_rejects_unknown_verify_mode() {
+        let err = capability_from_wit("verify:quick,deep").unwrap_err();
+        assert!(err.to_string().contains("unknown verify mode"));
     }
 
     #[test]
