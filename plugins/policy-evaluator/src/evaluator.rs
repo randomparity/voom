@@ -20,10 +20,9 @@ use voom_dsl::compiled::{
     RunIfTrigger, SynthLanguage, SynthPosition, TrackTarget, TranscodeChannels,
 };
 
-use crate::condition::{
-    evaluate_condition, resolve_value_or_field, EvalContext, PhaseOutputLookup,
-};
+use crate::condition::evaluate_condition;
 use crate::container_compat::codec_supported;
+use crate::field::{resolve_value_or_field, EvalContext, PhaseOutputLookup};
 use crate::filter::{track_matches_with_context, tracks_for_target};
 
 fn transcode_settings_from(s: &CompiledTranscodeSettings) -> TranscodeSettings {

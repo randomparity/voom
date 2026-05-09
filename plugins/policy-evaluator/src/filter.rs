@@ -3,7 +3,7 @@
 use voom_domain::media::{MediaFile, Track, TrackType};
 use voom_dsl::compiled::{CompiledCompareOp, CompiledFilter, TrackTarget};
 
-use crate::condition::{resolve_field, EvalContext};
+use crate::field::{resolve_field, EvalContext};
 
 /// Returns true if the track matches the filter (no field resolution context).
 ///

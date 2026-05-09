@@ -8,6 +8,7 @@
 pub mod condition;
 pub mod container_compat;
 pub mod evaluator;
+pub mod field;
 pub mod filter;
 
 use std::collections::HashMap;
@@ -16,7 +17,7 @@ use voom_domain::capability_map::CapabilityMap;
 use voom_domain::media::MediaFile;
 use voom_dsl::compiled::CompiledPolicy;
 
-use crate::condition::PhaseOutputLookup;
+use crate::field::PhaseOutputLookup;
 
 pub use evaluator::{
     apply_capability_hints, evaluate, evaluate_with_context, evaluate_with_phase_outputs,
