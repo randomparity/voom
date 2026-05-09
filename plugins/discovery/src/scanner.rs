@@ -11,9 +11,92 @@ use xxhash_rust::xxh3::Xxh3;
 
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::FileDiscoveredEvent;
+use voom_domain::media::StoredFingerprint;
 use voom_domain::temp_file::is_voom_temp;
 
-use crate::ScanOptions;
+/// Progress update during a scan.
+#[derive(Debug, Clone)]
+pub enum ScanProgress {
+    /// Discovery phase: found a file during directory walk.
+    Discovered { count: usize, path: PathBuf },
+    /// Processing phase: hashing/building event for a file.
+    Processing {
+        current: usize,
+        total: usize,
+        path: PathBuf,
+    },
+    /// A file's hash was reused from a cached fingerprint — no read took place.
+    HashReused { path: PathBuf },
+    /// Orphaned voom temp files were found and skipped.
+    OrphanedTempFiles { count: usize },
+}
+
+/// Callback for files that fail during discovery (path, size, error message).
+pub type ErrorCallback = Box<dyn Fn(PathBuf, u64, String) + Send + Sync>;
+
+/// Callback that looks up a previously-stored fingerprint for a given file path.
+///
+/// Returning `None` forces discovery to compute a fresh content hash. Returning
+/// `Some(fingerprint)` allows discovery to skip hashing if the file's size and
+/// mtime indicate it has not changed.
+pub type FingerprintLookup = Box<dyn Fn(&Path) -> Option<StoredFingerprint> + Send + Sync>;
+
+/// Configuration for a discovery scan.
+#[non_exhaustive]
+pub struct ScanOptions {
+    /// Root directory to scan.
+    pub root: PathBuf,
+    /// Whether to recurse into subdirectories.
+    pub recursive: bool,
+    /// Whether to compute content hashes (xxHash64).
+    pub hash_files: bool,
+    /// Number of parallel workers for hashing (0 = auto).
+    pub workers: usize,
+    /// Optional progress callback.
+    pub on_progress: Option<Box<dyn Fn(ScanProgress) + Send + Sync>>,
+    /// Optional error callback for files that fail during discovery
+    /// (e.g., disappeared between walk and hash). Called with (path, size, `error_message`).
+    /// Size is captured during the directory walk and may be stale if the file changed.
+    pub on_error: Option<ErrorCallback>,
+    /// Optional fingerprint lookup. When set, discovery reuses the cached
+    /// `content_hash` for files whose on-disk `size` and `mtime` indicate no
+    /// change, avoiding a potentially expensive re-read.
+    ///
+    /// Has no effect when `hash_files` is `false`.
+    pub fingerprint_lookup: Option<FingerprintLookup>,
+}
+
+impl ScanOptions {
+    #[must_use]
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            recursive: true,
+            hash_files: true,
+            workers: 0,
+            on_progress: None,
+            on_error: None,
+            fingerprint_lookup: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for ScanOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScanOptions")
+            .field("root", &self.root)
+            .field("recursive", &self.recursive)
+            .field("hash_files", &self.hash_files)
+            .field("workers", &self.workers)
+            .field("on_progress", &self.on_progress.as_ref().map(|_| "..."))
+            .field("on_error", &self.on_error.as_ref().map(|_| "..."))
+            .field(
+                "fingerprint_lookup",
+                &self.fingerprint_lookup.as_ref().map(|_| "..."),
+            )
+            .finish()
+    }
+}
 
 /// Normalize a file path for consistent storage and comparison.
 ///
@@ -203,7 +286,7 @@ fn walk_media_files(options: &ScanOptions) -> (Vec<(PathBuf, u64)>, usize) {
             let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
             let path = entry.into_path();
             if let Some(ref cb) = options.on_progress {
-                cb(crate::ScanProgress::Discovered {
+                cb(ScanProgress::Discovered {
                     count: media_paths.len() + 1,
                     path: path.clone(),
                 });
@@ -214,7 +297,7 @@ fn walk_media_files(options: &ScanOptions) -> (Vec<(PathBuf, u64)>, usize) {
 
     if orphaned_temp_count > 0 {
         if let Some(ref cb) = options.on_progress {
-            cb(crate::ScanProgress::OrphanedTempFiles {
+            cb(ScanProgress::OrphanedTempFiles {
                 count: orphaned_temp_count,
             });
         }
@@ -257,7 +340,7 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
         );
         let current = processed.fetch_add(1, Ordering::Relaxed) + 1;
         if let Some(ref cb) = options.on_progress {
-            cb(crate::ScanProgress::Processing {
+            cb(ScanProgress::Processing {
                 current,
                 total,
                 path: path.clone(),
@@ -299,7 +382,7 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
 
 type FingerprintLookupRef<'a> =
     &'a (dyn Fn(&Path) -> Option<voom_domain::media::StoredFingerprint> + Send + Sync);
-type ProgressCallbackRef<'a> = &'a (dyn Fn(crate::ScanProgress) + Send + Sync);
+type ProgressCallbackRef<'a> = &'a (dyn Fn(ScanProgress) + Send + Sync);
 
 /// Build a `FileDiscoveredEvent` for a single file.
 ///
@@ -319,7 +402,7 @@ fn build_event(
     let content_hash = if compute_hash {
         if let Some(cached) = reuse_cached_hash(path, walk_size, fingerprint_lookup) {
             if let Some(cb) = on_progress {
-                cb(crate::ScanProgress::HashReused {
+                cb(ScanProgress::HashReused {
                     path: path.to_path_buf(),
                 });
             }
@@ -552,7 +635,7 @@ mod tests {
 
         let mut options = ScanOptions::new(dir.path());
         options.on_progress = Some(Box::new(move |p| {
-            if let crate::ScanProgress::OrphanedTempFiles { count } = p {
+            if let ScanProgress::OrphanedTempFiles { count } = p {
                 orphan_clone.store(count, Ordering::Relaxed);
             }
         }));

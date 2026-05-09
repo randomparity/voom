@@ -2,102 +2,14 @@
 
 pub mod scanner;
 
-pub use scanner::hash_file;
-pub use scanner::normalize_path;
+pub use scanner::{
+    hash_file, normalize_path, ErrorCallback, FingerprintLookup, ScanOptions, ScanProgress,
+};
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::FileDiscoveredEvent;
-use voom_domain::media::StoredFingerprint;
 use voom_kernel::Plugin;
-
-/// Progress update during a scan.
-#[derive(Debug, Clone)]
-pub enum ScanProgress {
-    /// Discovery phase: found a file during directory walk.
-    Discovered {
-        count: usize,
-        path: std::path::PathBuf,
-    },
-    /// Processing phase: hashing/building event for a file.
-    Processing {
-        current: usize,
-        total: usize,
-        path: std::path::PathBuf,
-    },
-    /// A file's hash was reused from a cached fingerprint — no read took place.
-    HashReused { path: std::path::PathBuf },
-    /// Orphaned voom temp files were found and skipped.
-    OrphanedTempFiles { count: usize },
-}
-
-/// Callback for files that fail during discovery (path, size, error message).
-type ErrorCallback = Box<dyn Fn(std::path::PathBuf, u64, String) + Send + Sync>;
-
-/// Callback that looks up a previously-stored fingerprint for a given file path.
-///
-/// Returning `None` forces discovery to compute a fresh content hash. Returning
-/// `Some(fingerprint)` allows discovery to skip hashing if the file's size and
-/// mtime indicate it has not changed.
-pub type FingerprintLookup =
-    Box<dyn Fn(&std::path::Path) -> Option<StoredFingerprint> + Send + Sync>;
-
-/// Configuration for a discovery scan.
-#[non_exhaustive]
-pub struct ScanOptions {
-    /// Root directory to scan.
-    pub root: std::path::PathBuf,
-    /// Whether to recurse into subdirectories.
-    pub recursive: bool,
-    /// Whether to compute content hashes (xxHash64).
-    pub hash_files: bool,
-    /// Number of parallel workers for hashing (0 = auto).
-    pub workers: usize,
-    /// Optional progress callback.
-    pub on_progress: Option<Box<dyn Fn(ScanProgress) + Send + Sync>>,
-    /// Optional error callback for files that fail during discovery
-    /// (e.g., disappeared between walk and hash). Called with (path, size, `error_message`).
-    /// Size is captured during the directory walk and may be stale if the file changed.
-    pub on_error: Option<ErrorCallback>,
-    /// Optional fingerprint lookup. When set, discovery reuses the cached
-    /// `content_hash` for files whose on-disk `size` and `mtime` indicate no
-    /// change, avoiding a potentially expensive re-read.
-    ///
-    /// Has no effect when `hash_files` is `false`.
-    pub fingerprint_lookup: Option<FingerprintLookup>,
-}
-
-impl ScanOptions {
-    #[must_use]
-    pub fn new(root: impl Into<std::path::PathBuf>) -> Self {
-        Self {
-            root: root.into(),
-            recursive: true,
-            hash_files: true,
-            workers: 0,
-            on_progress: None,
-            on_error: None,
-            fingerprint_lookup: None,
-        }
-    }
-}
-
-impl std::fmt::Debug for ScanOptions {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ScanOptions")
-            .field("root", &self.root)
-            .field("recursive", &self.recursive)
-            .field("hash_files", &self.hash_files)
-            .field("workers", &self.workers)
-            .field("on_progress", &self.on_progress.as_ref().map(|_| "..."))
-            .field("on_error", &self.on_error.as_ref().map(|_| "..."))
-            .field(
-                "fingerprint_lookup",
-                &self.fingerprint_lookup.as_ref().map(|_| "..."),
-            )
-            .finish()
-    }
-}
 
 /// Discovery plugin: walks the filesystem to find media files.
 ///
