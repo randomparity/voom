@@ -30,8 +30,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, Capability, Event, HostFunctions,
-    MediaFile, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
+    deserialize_event_or_log, load_plugin_config, serialize_event_or_log, Capability, Event,
+    HostFunctions, MediaFile, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -60,17 +60,12 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload)
-        .map_err(|e| {
-            host.log("error", &format!("failed to deserialize event: {e}"));
-        })
-        .ok()?;
+    let event = deserialize_event_or_log(payload, host)?;
     let file = match &event {
         Event::FileIntrospected(e) => &e.file,
         _ => return None,
     };
 
-    // Only transcribe files that have audio tracks.
     let has_audio = file.tracks.iter().any(|t| t.track_type.is_audio());
     if !has_audio {
         host.log(
@@ -80,7 +75,6 @@ pub fn on_event(
         return None;
     }
 
-    // Check cache first.
     let path_hash_owned = format!(
         "{:x}",
         xxhash_rust::xxh3::xxh3_64(file.path.to_string_lossy().as_bytes())
@@ -97,7 +91,6 @@ pub fn on_event(
 
     let config: Option<WhisperConfig> = load_plugin_config(|key| host.get_plugin_data(key));
 
-    // Step 1: Extract audio to a temp WAV file via ffmpeg.
     let file_path = file.path.to_string_lossy().to_string();
     let audio_path = format!("/tmp/voom-whisper-{hash_str}.wav");
     let extract_result = host.run_tool(
@@ -137,7 +130,6 @@ pub fn on_event(
         Ok(o) => o,
     };
 
-    // Step 2: Run whisper on the extracted audio.
     let cfg = config.as_ref();
     let whisper_bin = cfg
         .map(|c| c.whisper_binary.as_str())
@@ -162,7 +154,6 @@ pub fn on_event(
 
     let whisper_result = host.run_tool(whisper_bin, &whisper_args, 600_000); // 10 min timeout
 
-    // Clean up temp audio file.
     let _ = host.run_tool("rm", &[audio_path], 5_000);
 
     let whisper_output = match whisper_result {
@@ -184,7 +175,6 @@ pub fn on_event(
         Ok(o) => o,
     };
 
-    // Cache the result.
     let _ = host.set_plugin_data(&cache_key, &whisper_output.stdout);
 
     build_result(file, &whisper_output.stdout, host)
@@ -231,11 +221,7 @@ fn build_result(
         metadata,
     ));
 
-    let produced_payload = serialize_event(&enriched_event)
-        .map_err(|e| {
-            host.log("error", &format!("failed to serialize event: {e}"));
-        })
-        .ok()?;
+    let produced_payload = serialize_event_or_log(&enriched_event, host)?;
 
     Some(OnEventResult::new(
         "whisper-transcriber",

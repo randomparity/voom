@@ -1,11 +1,13 @@
 //! File transition recording for the process pipeline.
 //!
-//! Collects the 10 distinct pieces of information needed to build a
-//! `FileTransition` into a single context struct, matching the
-//! `ProcessContext` / `RunResultsContext` pattern used elsewhere in the
-//! module.
+//! Collects the information needed to build a `FileTransition` without
+//! requiring callers to pass the whole process orchestration context.
 
-use super::ProcessContext;
+/// Dependencies needed to persist file transitions.
+pub(super) struct TransitionRecorder<'a> {
+    pub store: &'a dyn voom_domain::storage::StorageTrait,
+    pub session_id: uuid::Uuid,
+}
 
 /// Grouped arguments for `record_file_transition`.
 pub(super) struct FileTransitionContext<'a> {
@@ -18,7 +20,7 @@ pub(super) struct FileTransitionContext<'a> {
     pub policy_name: &'a str,
     pub phase_name: &'a str,
     pub plan_id: uuid::Uuid,
-    pub ctx: &'a ProcessContext<'a>,
+    pub recorder: &'a TransitionRecorder<'a>,
 }
 
 /// Record a file transition in the store if the content hash or path changed.
@@ -50,7 +52,7 @@ pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
     .with_metadata_snapshot(voom_domain::MetadataSnapshot::from_media_file(
         tctx.new_file,
     ))
-    .with_session_id(tctx.ctx.counters.session_id);
+    .with_session_id(tctx.recorder.session_id);
 
     if path_changed {
         transition = transition.with_from_path(tctx.old_file.path.clone());
@@ -63,10 +65,10 @@ pub(super) fn record_file_transition(tctx: &FileTransitionContext<'_>) {
         .then_some(tctx.new_file.content_hash.as_deref())
         .flatten();
 
-    if let Err(e) = tctx
-        .ctx
-        .store
-        .record_post_execution(new_path, new_expected_hash, &transition)
+    if let Err(e) =
+        tctx.recorder
+            .store
+            .record_post_execution(new_path, new_expected_hash, &transition)
     {
         tracing::warn!(
             path = %tctx.old_file.path.display(),
@@ -85,7 +87,7 @@ pub(super) struct FailureTransitionContext<'a> {
     pub plan: &'a voom_domain::plan::Plan,
     pub executor: &'a str,
     pub error_message: Option<&'a str>,
-    pub ctx: &'a ProcessContext<'a>,
+    pub recorder: &'a TransitionRecorder<'a>,
 }
 
 /// Record a failure transition in the store for a plan that did not succeed.
@@ -117,13 +119,13 @@ pub(super) fn record_failure_transition(fctx: &FailureTransitionContext<'_>) {
         &fctx.plan.policy_name,
         &fctx.plan.phase_name,
     )
-    .with_session_id(fctx.ctx.counters.session_id);
+    .with_session_id(fctx.recorder.session_id);
 
     if let Some(msg) = fctx.error_message {
         transition = transition.with_error_message(msg);
     }
 
-    if let Err(e) = fctx.ctx.store.record_transition(&transition) {
+    if let Err(e) = fctx.recorder.store.record_transition(&transition) {
         tracing::warn!(
             path = %fctx.file.path.display(),
             error = %e,

@@ -63,8 +63,8 @@ pub use types::{OnEventResult, PluginInfoData};
 
 /// Event serialization/deserialization helpers (`MessagePack` across WASM boundary).
 pub use event::{
-    deserialize_event, deserialize_json, load_plugin_config, load_plugin_config_named,
-    serialize_event, serialize_json,
+    deserialize_event, deserialize_event_or_log, deserialize_json, load_plugin_config,
+    load_plugin_config_named, serialize_event, serialize_event_or_log, serialize_json,
 };
 
 /// Host function abstractions for calling back into the kernel from WASM.

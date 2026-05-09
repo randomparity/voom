@@ -31,8 +31,9 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, language_code_from_name, load_plugin_config, serialize_event, Capability,
-    Event, HostFunctions, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
+    deserialize_event_or_log, language_code_from_name, load_plugin_config,
+    serialize_event_or_log, Capability, Event, HostFunctions, MetadataEnrichedEvent,
+    OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -64,9 +65,7 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload).map_err(|e| {
-        host.log("error", &format!("failed to deserialize event: {e}"));
-    }).ok()?;
+    let event = deserialize_event_or_log(payload, host)?;
     let file = match &event {
         Event::FileIntrospected(e) => &e.file,
         _ => return None,
@@ -100,9 +99,7 @@ pub fn on_event(
         MetadataEnrichedEvent::new(file.path.clone(), "radarr".to_string(), metadata),
     );
 
-    let produced_payload = serialize_event(&enriched_event).map_err(|e| {
-        host.log("error", &format!("failed to serialize event: {e}"));
-    }).ok()?;
+    let produced_payload = serialize_event_or_log(&enriched_event, host)?;
 
     Some(OnEventResult::new(
         "radarr-metadata",

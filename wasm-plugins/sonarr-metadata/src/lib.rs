@@ -31,8 +31,9 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, language_code_from_name, load_plugin_config, serialize_event, Capability,
-    Event, HostFunctions, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
+    deserialize_event_or_log, language_code_from_name, load_plugin_config,
+    serialize_event_or_log, Capability, Event, HostFunctions, MetadataEnrichedEvent,
+    OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -61,9 +62,7 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload).map_err(|e| {
-        host.log("error", &format!("failed to deserialize event: {e}"));
-    }).ok()?;
+    let event = deserialize_event_or_log(payload, host)?;
     let file = match &event {
         Event::FileIntrospected(e) => &e.file,
         _ => return None,
@@ -93,9 +92,7 @@ pub fn on_event(
         MetadataEnrichedEvent::new(file.path.clone(), "sonarr".to_string(), metadata),
     );
 
-    let produced_payload = serialize_event(&enriched_event).map_err(|e| {
-        host.log("error", &format!("failed to serialize event: {e}"));
-    }).ok()?;
+    let produced_payload = serialize_event_or_log(&enriched_event, host)?;
 
     Some(OnEventResult::new(
         "sonarr-metadata",
@@ -157,7 +154,6 @@ fn lookup_episode(
     config: &SonarrConfig,
     file_path: &str,
 ) -> Option<SonarrEpisode> {
-    // First, find which series this file belongs to.
     let series_url = format!("{}/api/v3/series", config.sonarr_url);
     let headers = vec![("X-Api-Key".to_string(), config.api_key.clone())];
 
@@ -174,7 +170,6 @@ fn lookup_episode(
     }).ok()?;
     let series = all_series.into_iter().find(|s| file_path.starts_with(&s.path))?;
 
-    // Then look up episode files for this series.
     let episodes_url = format!(
         "{}/api/v3/episodefile?seriesId={}",
         config.sonarr_url, series.id

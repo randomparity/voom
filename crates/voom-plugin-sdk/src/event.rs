@@ -5,6 +5,8 @@ use serde::Serialize;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::Event;
 
+use crate::host::HostFunctions;
+
 /// Deserialize a domain Event from `MessagePack` bytes (as received from the host).
 ///
 /// # Examples
@@ -29,6 +31,24 @@ pub fn deserialize_event(payload: &[u8]) -> Result<Event> {
 /// Serialize a domain Event to `MessagePack` bytes (for sending to the host).
 pub fn serialize_event(event: &Event) -> Result<Vec<u8>> {
     rmp_serde::to_vec(event).map_err(|e| VoomError::Wasm(format!("failed to serialize event: {e}")))
+}
+
+/// Deserialize a domain event and log boundary errors through the host.
+pub fn deserialize_event_or_log(payload: &[u8], host: &dyn HostFunctions) -> Option<Event> {
+    deserialize_event(payload)
+        .map_err(|e| {
+            host.log("error", &format!("failed to deserialize event: {e}"));
+        })
+        .ok()
+}
+
+/// Serialize a domain event and log boundary errors through the host.
+pub fn serialize_event_or_log(event: &Event, host: &dyn HostFunctions) -> Option<Vec<u8>> {
+    serialize_event(event)
+        .map_err(|e| {
+            host.log("error", &format!("failed to serialize event: {e}"));
+        })
+        .ok()
 }
 
 /// Deserialize any JSON-compatible type from bytes.

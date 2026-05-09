@@ -203,58 +203,8 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
     }
 }
 
-/// Allowed (table, column) pairs for bulk deletion.
-/// Each variant maps to exactly one static pair, making SQL
-/// interpolation safe by construction.
-pub(crate) enum PruneTarget {
-    BadFiles,
-}
-
-impl PruneTarget {
-    fn table(&self) -> &'static str {
-        match self {
-            Self::BadFiles => "bad_files",
-        }
-    }
-
-    fn column(&self) -> &'static str {
-        match self {
-            Self::BadFiles => "id",
-        }
-    }
-}
-
 // Private helper methods
 impl SqliteStore {
-    /// Delete rows matching `target`'s (table, column) where the column
-    /// value is in `ids`, processing in chunks of 500.
-    /// Returns the total number of rows deleted.
-    pub(crate) fn chunked_delete(&self, target: PruneTarget, ids: &[&str]) -> Result<u64> {
-        if ids.is_empty() {
-            return Ok(0);
-        }
-        let table = target.table();
-        let column = target.column();
-        let conn = self.conn()?;
-        let mut total = 0u64;
-        for chunk in ids.chunks(500) {
-            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
-            let in_clause = placeholders.join(",");
-            let param_refs: Vec<&dyn rusqlite::types::ToSql> = chunk
-                .iter()
-                .map(|id| id as &dyn rusqlite::types::ToSql)
-                .collect();
-            let deleted = conn
-                .execute(
-                    &format!("DELETE FROM {table} WHERE {column} IN ({in_clause})"),
-                    param_refs.as_slice(),
-                )
-                .map_err(storage_err(&format!("failed to delete from {table}")))?;
-            total += deleted as u64;
-        }
-        Ok(total)
-    }
-
     pub(crate) fn load_tracks_batch(
         &self,
         conn: &rusqlite::Connection,

@@ -1,11 +1,36 @@
 use std::path::Path;
 
 use rusqlite::params;
+use rusqlite::types::ToSql;
 
 use voom_domain::errors::Result;
 use voom_domain::storage::{MaintenanceStorage, PageStats};
 
-use super::{escape_like, storage_err, PruneTarget, SqliteStore};
+use super::{escape_like, storage_err, SqliteStore};
+
+impl SqliteStore {
+    fn delete_bad_files_by_ids(&self, ids: &[&str]) -> Result<u64> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let conn = self.conn()?;
+        let mut total = 0u64;
+        for chunk in ids.chunks(500) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+            let in_clause = placeholders.join(",");
+            let param_refs: Vec<&dyn ToSql> = chunk.iter().map(|id| id as &dyn ToSql).collect();
+            let deleted = conn
+                .execute(
+                    &format!("DELETE FROM bad_files WHERE id IN ({in_clause})"),
+                    param_refs.as_slice(),
+                )
+                .map_err(storage_err("failed to delete bad_files"))?;
+            total += deleted as u64;
+        }
+        Ok(total)
+    }
+}
 
 impl MaintenanceStorage for SqliteStore {
     fn vacuum(&self) -> Result<()> {
@@ -42,7 +67,7 @@ impl MaintenanceStorage for SqliteStore {
                 .filter(|(_, path)| !Path::new(path).exists())
                 .map(|(id, _)| id.as_str())
                 .collect();
-            self.chunked_delete(PruneTarget::BadFiles, &missing_bad_ids)?;
+            self.delete_bad_files_by_ids(&missing_bad_ids)?;
         }
 
         // Phase 1: Query active files under root (release connection after)

@@ -880,7 +880,9 @@ mod tests {
         apply_detected_languages, execute_single_plan, AUDIO_LANGUAGE_DETECTOR_PLUGIN,
     };
     use super::plan_outcome::PlanOutcome;
-    use super::safeguards::{check_disk_space, check_duration_shrink, check_size_increase};
+    use super::safeguards::{
+        check_disk_space, check_duration_shrink, check_size_increase, SafeguardContext,
+    };
 
     #[test]
     fn test_hw_resource_for_backend() {
@@ -1395,9 +1397,10 @@ mod tests {
         let plan = test_plan("normalize", false);
 
         let ctx = fixture.make_default_ctx();
+        let safeguards = SafeguardContext::from_process(&ctx);
 
         // Should return false (enough space)
-        assert!(!check_disk_space(&plan, &file, &ctx));
+        assert!(!check_disk_space(&plan, &file, &safeguards));
     }
 
     #[test]
@@ -1419,9 +1422,10 @@ mod tests {
         let store: Arc<dyn voom_domain::storage::StorageTrait> =
             Arc::new(voom_domain::test_support::InMemoryStore::new());
         let ctx = fixture.make_ctx(Arc::new(kernel), store);
+        let safeguards = SafeguardContext::from_process(&ctx);
 
         // Should return true (insufficient space).
-        assert!(check_disk_space(&plan, &file, &ctx));
+        assert!(check_disk_space(&plan, &file, &safeguards));
         assert_eq!(
             recorder.plan_created_count.load(Ordering::SeqCst),
             0,
@@ -1675,6 +1679,10 @@ mod tests {
         let fixture =
             TestFixture::with_policy(r#"policy "test" { phase convert { container mkv } }"#);
         let ctx = fixture.make_ctx(kernel, store.clone());
+        let transition_recorder = super::transitions::TransitionRecorder {
+            store: store.as_ref(),
+            session_id: ctx.counters.session_id,
+        };
 
         super::transitions::record_file_transition(&super::transitions::FileTransitionContext {
             old_file: &old_file,
@@ -1686,7 +1694,7 @@ mod tests {
             policy_name: "containerize",
             phase_name: "convert",
             plan_id: uuid::Uuid::new_v4(),
-            ctx: &ctx,
+            recorder: &transition_recorder,
         });
 
         let by_new = store.transitions_for_path(&new_file.path).unwrap();
@@ -1732,9 +1740,10 @@ mod tests {
             flag_size_increase: true,
             ..fixture.make_ctx(Arc::new(kernel), store)
         };
+        let safeguards = SafeguardContext::from_process(&ctx);
 
         // Should return true (size increased).
-        assert!(check_size_increase(&plan, &file, &ctx));
+        assert!(check_size_increase(&plan, &file, &safeguards));
         // PlanCreated is NOT dispatched here — execute_single_plan (the caller)
         // is responsible for that dispatch. The PlanCreated/PlanFailed pairing
         // is satisfied by the earlier PlanCreated from execute_single_plan.
@@ -1763,9 +1772,10 @@ mod tests {
         let plan = test_plan("normalize", false);
 
         let ctx = fixture.make_default_ctx();
+        let safeguards = SafeguardContext::from_process(&ctx);
 
         // Flag disabled — must early-return false without invoking ffprobe.
-        assert!(!check_duration_shrink(&plan, &file, &ctx).await);
+        assert!(!check_duration_shrink(&plan, &file, &safeguards).await);
     }
 
     #[tokio::test]
@@ -1784,9 +1794,10 @@ mod tests {
             flag_duration_shrink: true,
             ..fixture.make_default_ctx()
         };
+        let safeguards = SafeguardContext::from_process(&ctx);
 
         // Input duration is 0.0 — can't compute a percentage; must early-return false.
-        assert!(!check_duration_shrink(&plan, &file, &ctx).await);
+        assert!(!check_duration_shrink(&plan, &file, &safeguards).await);
     }
 
     #[tokio::test]
@@ -1806,8 +1817,9 @@ mod tests {
             flag_duration_shrink: true,
             ..fixture.make_default_ctx()
         };
+        let safeguards = SafeguardContext::from_process(&ctx);
 
         // Token cancelled — must early-return false without launching ffprobe.
-        assert!(!check_duration_shrink(&plan, &file, &ctx).await);
+        assert!(!check_duration_shrink(&plan, &file, &safeguards).await);
     }
 }

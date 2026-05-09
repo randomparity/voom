@@ -30,8 +30,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, ActionParams, Capability, Event, HostFunctions,
-    OnEventResult, OperationType, PluginInfoData,
+    deserialize_event_or_log, load_plugin_config, ActionParams, Capability, Event,
+    HostFunctions, OnEventResult, OperationType, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -61,15 +61,12 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload).map_err(|e| {
-        host.log("error", &format!("failed to deserialize event: {e}"));
-    }).ok()?;
+    let event = deserialize_event_or_log(payload, host)?;
     let plan = match &event {
         Event::PlanCreated(e) => &e.plan,
         _ => return None,
     };
 
-    // Find synthesize-audio actions in this plan.
     let synth_actions: Vec<_> = plan
         .actions
         .iter()
@@ -93,7 +90,6 @@ pub fn on_event(
 
     let mut results = Vec::new();
     for action in &synth_actions {
-        // Extract synthesis parameters from the ActionParams::Synthesize variant.
         let (text, language, output_codec) = match &action.parameters {
             ActionParams::Synthesize { text, language, codec, .. } => (
                 text.as_deref().unwrap_or(""),
@@ -112,7 +108,6 @@ pub fn on_event(
         let raw_path = format!("/tmp/voom-synth-{hash}.wav");
         let encoded_path = format!("/tmp/voom-synth-{hash}.{output_codec}");
 
-        // Step 1: Run TTS to generate raw WAV audio.
         let tts_result = match tts_engine {
             "piper" => host.run_tool(
                 "piper",
@@ -150,7 +145,6 @@ pub fn on_event(
         };
         let _ = tts_output; // consumed; we only need success confirmation
 
-        // Step 2: Encode to target codec via ffmpeg.
         let encode_result = host.run_tool(
             "ffmpeg",
             &[
@@ -164,7 +158,6 @@ pub fn on_event(
             120_000,
         );
 
-        // Clean up raw WAV.
         let _ = host.run_tool("rm", &[raw_path], 5_000);
 
         match &encode_result {

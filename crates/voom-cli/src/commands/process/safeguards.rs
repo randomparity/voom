@@ -16,8 +16,36 @@ use voom_domain::utils::format::format_size;
 
 use super::dispatch::{dispatch_and_log, PlanDispatcher};
 use super::pipeline::resolve_post_execution_path;
-use super::transitions::{record_failure_transition, FailureTransitionContext};
-use super::{record_phase_stat, PhaseOutcomeKind, ProcessContext};
+use super::transitions::{record_failure_transition, FailureTransitionContext, TransitionRecorder};
+use super::{record_phase_stat, PhaseOutcomeKind, PhaseStatsMap, ProcessContext};
+
+/// Dependencies needed by execution safeguards.
+pub(super) struct SafeguardContext<'a> {
+    kernel: &'a voom_kernel::Kernel,
+    phase_stats: &'a PhaseStatsMap,
+    transitions: TransitionRecorder<'a>,
+    token: &'a tokio_util::sync::CancellationToken,
+    ffprobe_path: Option<&'a str>,
+    flag_size_increase: bool,
+    flag_duration_shrink: bool,
+}
+
+impl<'a> SafeguardContext<'a> {
+    pub(super) fn from_process(ctx: &'a ProcessContext<'a>) -> Self {
+        Self {
+            kernel: ctx.kernel.as_ref(),
+            phase_stats: &ctx.counters.phase_stats,
+            transitions: TransitionRecorder {
+                store: ctx.store.as_ref(),
+                session_id: ctx.counters.session_id,
+            },
+            token: ctx.token,
+            ffprobe_path: ctx.ffprobe_path,
+            flag_size_increase: ctx.flag_size_increase,
+            flag_duration_shrink: ctx.flag_duration_shrink,
+        }
+    }
+}
 
 /// Dispatch `PlanFailed`, record phase stats, and write a failure transition.
 ///
@@ -27,25 +55,21 @@ fn record_safeguard_failure(
     plan: &voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
     message: &str,
-    ctx: &ProcessContext<'_>,
+    ctx: &SafeguardContext<'_>,
 ) {
-    PlanDispatcher::new(&ctx.kernel).failed(PlanFailedEvent::new(
+    PlanDispatcher::new(ctx.kernel).failed(PlanFailedEvent::new(
         plan.id,
         file.path.clone(),
         plan.phase_name.clone(),
         message,
     ));
-    record_phase_stat(
-        &ctx.counters.phase_stats,
-        &plan.phase_name,
-        PhaseOutcomeKind::Failed,
-    );
+    record_phase_stat(ctx.phase_stats, &plan.phase_name, PhaseOutcomeKind::Failed);
     record_failure_transition(&FailureTransitionContext {
         file,
         plan,
         executor: "",
         error_message: Some(message),
-        ctx,
+        recorder: &ctx.transitions,
     });
 }
 
@@ -57,7 +81,7 @@ fn record_safeguard_failure(
 pub(super) fn check_size_increase(
     plan: &voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
-    ctx: &ProcessContext<'_>,
+    ctx: &SafeguardContext<'_>,
 ) -> bool {
     if !ctx.flag_size_increase {
         return false;
@@ -183,7 +207,7 @@ fn check_duration_shrink_blocking(
 pub(super) async fn check_duration_shrink(
     plan: &voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
-    ctx: &ProcessContext<'_>,
+    ctx: &SafeguardContext<'_>,
 ) -> bool {
     if !ctx.flag_duration_shrink {
         return false;
@@ -266,7 +290,7 @@ pub(super) async fn check_duration_shrink(
 pub(super) fn check_disk_space(
     plan: &voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
-    ctx: &ProcessContext<'_>,
+    ctx: &SafeguardContext<'_>,
 ) -> bool {
     let check_path = file.path.parent().unwrap_or(std::path::Path::new("/"));
 
@@ -316,7 +340,7 @@ pub(super) fn check_disk_space(
 pub(super) fn dispatch_safeguard_violations(
     plan: &voom_domain::plan::Plan,
     file: &voom_domain::media::MediaFile,
-    ctx: &ProcessContext<'_>,
+    kernel: &voom_kernel::Kernel,
 ) {
     if plan.safeguard_violations.is_empty() {
         return;
@@ -327,7 +351,7 @@ pub(super) fn dispatch_safeguard_violations(
         serde_json::json!(&plan.safeguard_violations),
     );
     dispatch_and_log(
-        ctx.kernel.as_ref(),
+        kernel,
         Event::FileIntrospected(voom_domain::events::FileIntrospectedEvent::new(tagged)),
     );
 }
@@ -380,7 +404,7 @@ pub(super) fn annotate_disk_space_violations(
 pub(super) fn collect_safeguard_violations(
     file: &voom_domain::media::MediaFile,
     result: &voom_phase_orchestrator::OrchestrationResult,
-    ctx: &ProcessContext<'_>,
+    kernel: &voom_kernel::Kernel,
 ) {
     let violations: Vec<&voom_domain::SafeguardViolation> = result
         .plans
@@ -394,7 +418,7 @@ pub(super) fn collect_safeguard_violations(
             serde_json::json!(violations),
         );
         dispatch_and_log(
-            ctx.kernel.as_ref(),
+            kernel,
             Event::FileIntrospected(voom_domain::events::FileIntrospectedEvent::new(tagged_file)),
         );
     }

@@ -32,19 +32,12 @@
 //! source = "example"
 //! ```
 //!
-//! # How it works
-//!
-//! When a `file.introspected` event is received, this plugin:
-//! 1. Deserializes the event payload
-//! 2. Examines the file's tracks
-//! 3. Produces a `metadata.enriched` event with additional info
-//!
 //! In a real plugin, you might call an external API (via host HTTP functions)
 //! to look up movie/TV metadata from services like Radarr, Sonarr, or TMDb.
 
 use voom_plugin_sdk::{
-    deserialize_event, serialize_event, Capability, Event, HostFunctions, MetadataEnrichedEvent,
-    OnEventResult, PluginInfoData,
+    deserialize_event_or_log, serialize_event_or_log, Capability, Event, HostFunctions,
+    MetadataEnrichedEvent, OnEventResult, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -68,15 +61,12 @@ pub fn on_event(event_type: &str, payload: &[u8], host: &dyn HostFunctions) -> O
         return None;
     }
 
-    let event = deserialize_event(payload).map_err(|e| {
-        host.log("error", &format!("failed to deserialize event: {e}"));
-    }).ok()?;
+    let event = deserialize_event_or_log(payload, host)?;
 
     match &event {
         Event::FileIntrospected(introspected) => {
             let file = &introspected.file;
 
-            // Count tracks by type in a single pass.
             let (mut video_count, mut audio_count, mut sub_count, mut has_hdr) =
                 (0usize, 0usize, 0usize, false);
             for t in &file.tracks {
@@ -102,9 +92,7 @@ pub fn on_event(event_type: &str, payload: &[u8], host: &dyn HostFunctions) -> O
                 MetadataEnrichedEvent::new(file.path.clone(), "example-metadata".to_string(), metadata),
             );
 
-            let produced_payload = serialize_event(&enriched_event).map_err(|e| {
-                host.log("error", &format!("failed to serialize event: {e}"));
-            }).ok()?;
+            let produced_payload = serialize_event_or_log(&enriched_event, host)?;
 
             Some(OnEventResult::new(
                 "example-metadata",

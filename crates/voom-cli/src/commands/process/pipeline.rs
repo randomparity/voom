@@ -23,11 +23,11 @@ use super::dispatch::PlanDispatcher;
 use super::plan_outcome::PlanOutcome;
 use super::safeguards::{
     annotate_disk_space_violations, check_disk_space, check_duration_shrink, check_size_increase,
-    collect_safeguard_violations, dispatch_safeguard_violations,
+    collect_safeguard_violations, dispatch_safeguard_violations, SafeguardContext,
 };
 use super::transitions::{
     record_failure_transition, record_file_transition, FailureTransitionContext,
-    FileTransitionContext,
+    FileTransitionContext, TransitionRecorder,
 };
 use super::{record_phase_stat, PhaseOutcomeKind, ProcessContext};
 
@@ -129,7 +129,7 @@ fn process_single_file_dry_run(
     let mut result = orchestrate_plans(compiled, file, ctx.capabilities);
     annotate_disk_space_violations(&mut result, file);
 
-    collect_safeguard_violations(file, &result, ctx);
+    collect_safeguard_violations(file, &result, ctx.kernel.as_ref());
 
     let needs_exec = voom_phase_orchestrator::needs_execution(&result);
     if needs_exec {
@@ -226,6 +226,7 @@ async fn process_single_file_execute(
     let mut any_executed = false;
     let mut modified_counted = false;
     let mut plans_evaluated: usize = 0;
+    let safeguards = SafeguardContext::from_process(ctx);
 
     for phase_name in &compiled.phase_order {
         if ctx.token.is_cancelled() {
@@ -245,7 +246,7 @@ async fn process_single_file_execute(
 
         plans_evaluated += 1;
 
-        dispatch_safeguard_violations(&plan, &current_file, ctx);
+        dispatch_safeguard_violations(&plan, &current_file, ctx.kernel.as_ref());
 
         // Handle skipped plans
         if let Some(reason) = &plan.skip_reason {
@@ -271,7 +272,7 @@ async fn process_single_file_execute(
         // PlanCreated, which would trigger executors) and records
         // PhaseOutcomeKind::Failed for stats. This insert updates
         // the dependency-resolution map to block downstream run_if gates.
-        if check_disk_space(&plan, &current_file, ctx) {
+        if check_disk_space(&plan, &current_file, &safeguards) {
             phase_outcomes.insert(
                 phase_name.clone(),
                 voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
@@ -304,7 +305,7 @@ async fn process_single_file_execute(
                 // already dispatched by execute_single_plan) and records
                 // PhaseOutcomeKind::Failed for stats. This insert updates the
                 // dependency-resolution map.
-                if check_size_increase(&plan, &current_file, ctx) {
+                if check_size_increase(&plan, &current_file, &safeguards) {
                     phase_outcomes.insert(
                         phase_name.clone(),
                         voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
@@ -315,7 +316,7 @@ async fn process_single_file_execute(
                 // Mirrors check_size_increase: dispatches PlanFailed
                 // (PlanCreated was already dispatched by execute_single_plan)
                 // and records PhaseOutcomeKind::Failed for stats.
-                if check_duration_shrink(&plan, &current_file, ctx).await {
+                if check_duration_shrink(&plan, &current_file, &safeguards).await {
                     phase_outcomes.insert(
                         phase_name.clone(),
                         voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
@@ -352,7 +353,10 @@ async fn process_single_file_execute(
                     plan: &plan,
                     executor: &executor,
                     error_message: Some(&error_msg),
-                    ctx,
+                    recorder: &TransitionRecorder {
+                        store: ctx.store.as_ref(),
+                        session_id: ctx.counters.session_id,
+                    },
                 });
                 phase_outcomes.insert(
                     plan.phase_name.clone(),
@@ -444,6 +448,10 @@ pub(super) async fn handle_plan_success(
     // path before the bundle's rename can move the existing row.
     let post_exec_path = resolve_post_execution_path(file, std::slice::from_ref(&plan));
     let new_file = reintrospect_file(file, post_exec_path, ctx).await;
+    let transition_recorder = TransitionRecorder {
+        store: ctx.store.as_ref(),
+        session_id: ctx.counters.session_id,
+    };
 
     record_file_transition(&FileTransitionContext {
         old_file: file,
@@ -455,7 +463,7 @@ pub(super) async fn handle_plan_success(
         policy_name: &policy_name,
         phase_name: &phase_name,
         plan_id,
-        ctx,
+        recorder: &transition_recorder,
     });
 
     // Defense-in-depth: clear any `bad_files` row at the post-execution

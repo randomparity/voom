@@ -13,8 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, from_iso639_1, load_plugin_config, serialize_event, Capability, Event,
-    HostFunctions, OnEventResult, PluginInfoData, SubtitleGeneratedEvent,
+    deserialize_event_or_log, from_iso639_1, load_plugin_config, serialize_event_or_log,
+    Capability, Event, HostFunctions, OnEventResult, PluginInfoData, SubtitleGeneratedEvent,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -44,11 +44,7 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload)
-        .map_err(|e| {
-            host.log("error", &format!("failed to deserialize event: {e}"));
-        })
-        .ok()?;
+    let event = deserialize_event_or_log(payload, host)?;
 
     let enriched = match &event {
         Event::MetadataEnriched(e) => e,
@@ -147,11 +143,7 @@ pub fn on_event(
         true,
     ));
 
-    let produced_payload = serialize_event(&subtitle_event)
-        .map_err(|e| {
-            host.log("error", &format!("failed to serialize event: {e}"));
-        })
-        .ok()?;
+    let produced_payload = serialize_event_or_log(&subtitle_event, host)?;
 
     Some(OnEventResult::new(
         "subtitle-generator",

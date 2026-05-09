@@ -21,8 +21,9 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, from_iso639_1, load_plugin_config, serialize_event, Capability, Event,
-    HostFunctions, MediaFile, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
+    deserialize_event_or_log, from_iso639_1, load_plugin_config, serialize_event_or_log,
+    Capability, Event, HostFunctions, MediaFile, MetadataEnrichedEvent, OnEventResult,
+    PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -51,11 +52,7 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload)
-        .map_err(|e| {
-            host.log("error", &format!("failed to deserialize event: {e}"));
-        })
-        .ok()?;
+    let event = deserialize_event_or_log(payload, host)?;
     let file = match &event {
         Event::FileIntrospected(e) => &e.file,
         _ => return None,
@@ -176,7 +173,6 @@ fn detect_track_language(
         duration * (1.0 - 2.0 * params.skip_pct);
     let start_offset = duration * params.skip_pct;
 
-    // Reduce sample count if track is too short.
     let max_samples = (effective_duration
         / f64::from(params.sample_duration))
         .floor() as u32;
@@ -408,7 +404,6 @@ fn aggregate_samples(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Check for multi-language (>1 language with confidence >0.7 of speech share).
     let high_conf: Vec<_> = lang_counts
         .iter()
         .filter(|(_, (count, _))| {
@@ -430,7 +425,6 @@ fn aggregate_samples(
         };
     }
 
-    // All speech samples agree (or one language dominates).
     let top = scored.first().cloned().unwrap_or(LanguageScore {
         code: "und".to_string(),
         confidence: 0.0,
@@ -464,14 +458,7 @@ fn build_result(
         ),
     );
 
-    let produced_payload = serialize_event(&enriched_event)
-        .map_err(|e| {
-            host.log(
-                "error",
-                &format!("failed to serialize event: {e}"),
-            );
-        })
-        .ok()?;
+    let produced_payload = serialize_event_or_log(&enriched_event, host)?;
 
     Some(OnEventResult::new(
         "audio-language-detector",
@@ -542,19 +529,18 @@ mod tests {
     use std::path::PathBuf;
     use voom_plugin_sdk::*;
 
+    type ToolResultFn = Box<dyn Fn(&[String]) -> ToolOutput + Send + Sync>;
+    type ToolResults = HashMap<String, ToolResultFn>;
+
     struct MockHost {
-        tool_results:
-            HashMap<String, Box<dyn Fn(&[String]) -> ToolOutput + Send + Sync>>,
+        tool_results: ToolResults,
         cached: std::cell::RefCell<HashMap<String, Vec<u8>>>,
     }
 
     impl MockHost {
         fn with_whisper_response(language: &str, no_speech_prob: f64) -> Self {
             let lang = language.to_string();
-            let mut tool_results: HashMap<
-                String,
-                Box<dyn Fn(&[String]) -> ToolOutput + Send + Sync>,
-            > = HashMap::new();
+            let mut tool_results: ToolResults = HashMap::new();
 
             tool_results.insert(
                 "ffmpeg".to_string(),
@@ -588,10 +574,7 @@ mod tests {
         }
 
         fn with_failing_ffmpeg() -> Self {
-            let mut tool_results: HashMap<
-                String,
-                Box<dyn Fn(&[String]) -> ToolOutput + Send + Sync>,
-            > = HashMap::new();
+            let mut tool_results: ToolResults = HashMap::new();
             tool_results.insert(
                 "ffmpeg".to_string(),
                 Box::new(|_| {
@@ -612,10 +595,7 @@ mod tests {
         fn with_multi_language() -> Self {
             let call_count =
                 std::sync::atomic::AtomicU32::new(0);
-            let mut tool_results: HashMap<
-                String,
-                Box<dyn Fn(&[String]) -> ToolOutput + Send + Sync>,
-            > = HashMap::new();
+            let mut tool_results: ToolResults = HashMap::new();
 
             tool_results.insert(
                 "ffmpeg".to_string(),
@@ -629,8 +609,7 @@ mod tests {
                         1,
                         std::sync::atomic::Ordering::SeqCst,
                     );
-                    // Alternate between two languages
-                    let lang = if n % 2 == 0 { "en" } else { "fr" };
+                    let lang = if (n & 1) == 0 { "en" } else { "fr" };
                     let json = serde_json::json!({
                         "language": lang,
                         "no_speech_prob": 0.05,

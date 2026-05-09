@@ -30,8 +30,8 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, load_plugin_config, serialize_event, ActionParams, Capability, Event,
-    HostFunctions, OnEventResult, OperationType, PluginInfoData,
+    deserialize_event_or_log, load_plugin_config, serialize_event_or_log, ActionParams,
+    Capability, Event, HostFunctions, OnEventResult, OperationType, PluginInfoData,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -66,15 +66,12 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload).map_err(|e| {
-        host.log("error", &format!("failed to deserialize event: {e}"));
-    }).ok()?;
+    let event = deserialize_event_or_log(payload, host)?;
     let plan = match &event {
         Event::PlanCreated(e) => &e.plan,
         _ => return None,
     };
 
-    // Find transcode actions we can handle.
     let transcode_actions: Vec<_> = plan
         .actions
         .iter()
@@ -123,7 +120,6 @@ pub fn on_event(
         transcode_actions.len()
     ));
 
-    // Build HandBrakeCLI arguments.
     let args = build_handbrake_args(
         &input_path,
         &output_path,
@@ -150,9 +146,7 @@ pub fn on_event(
                     false,
                 ),
             );
-            let produced_payload = serialize_event(&completed_event).map_err(|e| {
-                host.log("error", &format!("failed to serialize event: {e}"));
-            }).ok()?;
+            let produced_payload = serialize_event_or_log(&completed_event, host)?;
 
             let data = serde_json::json!({
                 "plugin": "handbrake-executor",
@@ -200,7 +194,6 @@ fn build_handbrake_args(
         output.to_string(),
     ];
 
-    // Use preset if configured.
     if let Some(preset) = config.as_ref().and_then(|c| c.preset.as_deref()) {
         args.push("--preset".to_string());
         args.push(preset.to_string());
@@ -315,16 +308,6 @@ mod tests {
             }
         }
 
-        fn with_preset(preset: &str) -> Self {
-            Self {
-                config: Some(HandbrakeConfig {
-                    handbrake_binary: "HandBrakeCLI".to_string(),
-                    preset: Some(preset.to_string()),
-                    timeout_ms: 1_800_000,
-                }),
-                exit_code: 0,
-            }
-        }
     }
 
     impl HostFunctions for MockHost {
