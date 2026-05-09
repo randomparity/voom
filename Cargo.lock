@@ -3746,6 +3746,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "voom-policy-testing"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "voom-domain",
+ "voom-dsl",
+ "voom-policy-evaluator",
+]
+
+[[package]]
 name = "voom-process"
 version = "0.1.0"
 dependencies = [

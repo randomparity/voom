@@ -6,6 +6,7 @@ members = [
     "crates/voom-kernel",
     "crates/voom-wit",
     "crates/voom-plugin-sdk",
+    "crates/voom-policy-testing",
     "plugins/sqlite-store",
     "plugins/discovery",
     "plugins/ffprobe-introspector",
@@ -57,6 +58,7 @@ voom-dsl = { path = "crates/voom-dsl" }
 voom-kernel = { path = "crates/voom-kernel" }
 voom-wit = { path = "crates/voom-wit" }
 voom-plugin-sdk = { path = "crates/voom-plugin-sdk" }
+voom-policy-testing = { path = "crates/voom-policy-testing" }
 voom-process = { path = "crates/voom-process" }
 voom-sqlite-store = { path = "plugins/sqlite-store" }
 voom-discovery = { path = "plugins/discovery" }
