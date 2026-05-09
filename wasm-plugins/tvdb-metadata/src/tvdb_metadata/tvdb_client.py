@@ -6,6 +6,14 @@ since Python's urllib/socket are unavailable in the WASM sandbox.
 
 import json
 
+from tvdb_metadata.types import (
+    JsonObject,
+    TvdbAuthResponse,
+    TvdbEpisodeRecord,
+    TvdbMetadataResult,
+    TvdbSearchResult,
+)
+
 try:
     from urllib.parse import quote as _url_quote
 except ImportError:
@@ -80,7 +88,7 @@ class TvdbClient:
         if resp.status != 200:
             raise TvdbError(f"TVDB auth failed with status {resp.status}")
 
-        result = json.loads(bytes(resp.body))
+        result: TvdbAuthResponse = json.loads(bytes(resp.body))
         token = result.get("data", {}).get("token")
         if not token:
             raise TvdbError("No token in TVDB auth response")
@@ -93,7 +101,7 @@ class TvdbClient:
 
         return token
 
-    def _api_get(self, path: str) -> dict:
+    def _api_get(self, path: str) -> JsonObject:
         """Make an authenticated GET request to the TVDB API."""
         token = self.authenticate()
         url = f"{TVDB_API_BASE}{path}"
@@ -117,9 +125,10 @@ class TvdbClient:
         if resp.status != 200:
             raise TvdbError(f"TVDB API returned status {resp.status} for {path}")
 
-        return json.loads(bytes(resp.body))
+        result = json.loads(bytes(resp.body))
+        return result if isinstance(result, dict) else {}
 
-    def search_series(self, name: str) -> list[dict]:
+    def search_series(self, name: str) -> list[TvdbSearchResult]:
         """Search for TV series by name.
 
         Returns list of series results with id, name, year, etc.
@@ -135,6 +144,9 @@ class TvdbClient:
         encoded_name = _url_quote(name, safe="")
         result = self._api_get(f"/search?query={encoded_name}&type=series")
         series_list = result.get("data", [])
+        if not isinstance(series_list, list):
+            series_list = []
+        series_list = [r for r in series_list if isinstance(r, dict)]
 
         # Cache results
         cache_data = json.dumps({"results": series_list})
@@ -154,7 +166,7 @@ class TvdbClient:
         token = token_data.get("token")
         return token if token else None
 
-    def _load_cached_search_results(self, cache_key: str) -> list[dict] | None:
+    def _load_cached_search_results(self, cache_key: str) -> list[TvdbSearchResult] | None:
         """Return cached search results, or None if the cache is absent/invalid."""
         cached = self._host.get_plugin_data(cache_key)
         if cached is None:
@@ -164,9 +176,11 @@ class TvdbClient:
             results = cache_data["results"]
         except (json.JSONDecodeError, KeyError, TypeError):
             return None
-        return results if isinstance(results, list) else None
+        if not isinstance(results, list):
+            return None
+        return [r for r in results if isinstance(r, dict)]
 
-    def get_episodes(self, series_id: int, season: int) -> list[dict]:
+    def get_episodes(self, series_id: int, season: int) -> list[TvdbEpisodeRecord]:
         """Get episodes for a series/season.
 
         Returns list of episode records.
@@ -174,10 +188,16 @@ class TvdbClient:
         result = self._api_get(
             f"/series/{series_id}/episodes/default?season={season}"
         )
-        return result.get("data", {}).get("episodes", [])
+        data = result.get("data", {})
+        if not isinstance(data, dict):
+            return []
+        episodes = data.get("episodes", [])
+        if not isinstance(episodes, list):
+            return []
+        return [e for e in episodes if isinstance(e, dict)]
 
     def lookup(self, series_name: str, season: int, episode: int,
-               year: int | None = None) -> dict | None:
+               year: int | None = None) -> TvdbMetadataResult | None:
         """Full lookup: search series → find episode → return metadata.
 
         Returns a metadata dict or None if not found.
@@ -209,7 +229,7 @@ class TvdbClient:
         if ep_data is None:
             return None
 
-        result = {
+        result: TvdbMetadataResult = {
             "source": "tvdb",
             "series_id": series_id,
             "series_name": series.get("name", series_name),
@@ -226,8 +246,8 @@ class TvdbClient:
         return result
 
     @staticmethod
-    def _best_match(results: list[dict], name: str,
-                    year: int | None) -> dict | None:
+    def _best_match(results: list[TvdbSearchResult], name: str,
+                    year: int | None) -> TvdbSearchResult | None:
         """Pick the best series match from search results."""
         if not results:
             return None
