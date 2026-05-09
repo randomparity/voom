@@ -363,7 +363,7 @@ impl FileStorage for SqliteStore {
         .map_err(storage_err("failed to purge transitions for missing files"))?;
         let deleted = conn
             .execute(
-                "DELETE FROM files WHERE status = 'missing' AND missing_since < ?1",
+                "DELETE FROM files WHERE status = ?1 AND missing_since < ?2",
                 params![FileStatus::Missing.as_str(), cutoff],
             )
             .map_err(storage_err("failed to purge missing files"))?;
