@@ -114,3 +114,71 @@ pub(super) fn manifest_metadata(manifest: Option<&PluginManifest>) -> ManifestPl
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn manifest_from_toml(toml: &str) -> PluginManifest {
+        toml::from_str(toml).expect("valid manifest TOML")
+    }
+
+    #[test]
+    fn explicit_empty_allowed_paths_clear_config_paths() {
+        let state = HostState::new("test-plugin".into())
+            .with_paths(vec![PathBuf::from("/some/config/path")]);
+        assert!(!state.allowed_paths.is_empty());
+
+        let manifest = manifest_from_toml(
+            r#"
+name = "test-plugin"
+version = "1.0.0"
+description = "test"
+capabilities = []
+handles_events = []
+allowed_paths = []
+"#,
+        );
+        assert!(
+            manifest.allowed_paths.is_some(),
+            "explicit empty array should deserialize to Some([])"
+        );
+
+        let state = configure_manifest_permissions(state, Some(&manifest));
+
+        assert!(
+            state.allowed_paths.is_empty(),
+            "manifest with allowed_paths = [] must clear config-provided paths"
+        );
+    }
+
+    #[test]
+    fn omitted_allowed_paths_preserve_config_paths() {
+        let config_path = PathBuf::from("/some/config/path");
+        let state = HostState::new("test-plugin".into()).with_paths(vec![config_path.clone()]);
+
+        let manifest = manifest_from_toml(
+            r#"
+name = "test-plugin"
+version = "1.0.0"
+description = "test"
+capabilities = []
+handles_events = []
+"#,
+        );
+        assert!(
+            manifest.allowed_paths.is_none(),
+            "omitted field should deserialize to None"
+        );
+
+        let state = configure_manifest_permissions(state, Some(&manifest));
+
+        assert_eq!(
+            state.allowed_paths,
+            vec![config_path],
+            "omitted allowed_paths must preserve config-provided paths"
+        );
+    }
+}
