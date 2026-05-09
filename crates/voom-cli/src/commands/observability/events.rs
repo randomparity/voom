@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio_util::sync::CancellationToken;
 use voom_domain::storage::EventLogFilters;
 
@@ -72,7 +72,7 @@ fn ignore_broken_pipe(result: Result<()>) -> Result<()> {
 }
 
 pub async fn run(args: EventsArgs, token: CancellationToken) -> Result<()> {
-    let config = config::load_config().unwrap_or_default();
+    let config = config::load_config().context("load CLI config before opening storage")?;
     let store = app::open_store(&config)?;
 
     let mut base_filters = EventLogFilters::default();

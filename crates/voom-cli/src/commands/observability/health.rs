@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use console::style;
 use voom_domain::storage::HealthCheckFilters;
@@ -466,7 +466,7 @@ fn history(
     filters.since = since_dt;
     filters.limit = Some(limit);
 
-    let config = config::load_config().unwrap_or_default();
+    let config = config::load_config().context("load CLI config before opening storage")?;
     let store = app::open_store(&config)?;
     let records = store.list_health_checks(&filters)?;
 

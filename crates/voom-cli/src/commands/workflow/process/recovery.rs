@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::config::RecoveryConfig;
+use voom_domain::storage::{PendingOperation, PendingOpsStorage};
 use voom_domain::transition::TransitionSource;
 use voom_domain::FileTransition;
 
@@ -38,7 +39,7 @@ pub fn check_and_recover_under(
     store: &dyn voom_domain::storage::StorageTrait,
     global_backup_dir: Option<&Path>,
 ) -> Result<u64> {
-    let pending = store.list_pending_ops().unwrap_or_default();
+    let pending = list_pending_ops_for_recovery(store)?;
     let mut all_backups = find_orphans_under(scan_dirs);
 
     // Also scan the global backup directory if configured.
@@ -90,6 +91,12 @@ pub fn check_and_recover_under(
         }
     }
     Ok(resolved)
+}
+
+fn list_pending_ops_for_recovery(store: &dyn PendingOpsStorage) -> Result<Vec<PendingOperation>> {
+    store
+        .list_pending_ops()
+        .context("list pending operations for crash recovery")
 }
 
 /// Remove stale pending operations that have no corresponding backup files,
@@ -520,7 +527,6 @@ fn record_recovery_transition(
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use voom_domain::storage::PendingOpsStorage as _;
 
     // ── infer_original_path ──────────────────────────────────────────────────
 
@@ -728,6 +734,36 @@ mod tests {
         // Stale pending op should have been cleaned up
         let remaining = store.list_pending_ops().unwrap();
         assert!(remaining.is_empty(), "stale pending op should be removed");
+    }
+
+    #[test]
+    fn test_pending_op_list_error_aborts_recovery() {
+        struct FailingPendingOpsStorage;
+
+        impl PendingOpsStorage for FailingPendingOpsStorage {
+            fn insert_pending_op(&self, _op: &PendingOperation) -> voom_domain::Result<()> {
+                Ok(())
+            }
+
+            fn delete_pending_op(&self, _plan_id: &uuid::Uuid) -> voom_domain::Result<()> {
+                Ok(())
+            }
+
+            fn list_pending_ops(&self) -> voom_domain::Result<Vec<PendingOperation>> {
+                Err(voom_domain::errors::VoomError::Storage {
+                    kind: voom_domain::errors::StorageErrorKind::Other,
+                    message: "synthetic pending-op failure".to_string(),
+                })
+            }
+        }
+
+        let err = list_pending_ops_for_recovery(&FailingPendingOpsStorage).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("list pending operations for crash recovery"),
+            "error should include recovery context: {err:#}"
+        );
     }
 
     // ── check_and_recover_under modes ────────────────────────────────────────

@@ -44,7 +44,7 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
         VerificationMode::Quick
     };
 
-    let cfg = config::load_config().unwrap_or_default();
+    let cfg = config::load_config().context("load CLI config before opening storage")?;
     let store = app::open_store(&cfg)?;
     let verifier_cfg = read_verifier_config(&cfg);
 
@@ -246,7 +246,7 @@ fn print_summary(records: &[VerificationRecord]) {
 }
 
 fn run_report(args: VerifyReportArgs) -> Result<()> {
-    let cfg = config::load_config().unwrap_or_default();
+    let cfg = config::load_config().context("load CLI config before opening storage")?;
     let store = app::open_store(&cfg)?;
 
     let mut filters = VerificationFilters::default();
