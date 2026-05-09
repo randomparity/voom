@@ -174,7 +174,10 @@ fn verbosity_filter(verbose: u8) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::cli::Cli;
+    use crate::{
+        cleanup_wasm_temp_files_in, command_needs_lock, is_wasm_temp_file, verbosity_filter,
+    };
 
     #[test]
     fn test_command_needs_lock_mutating_commands() {

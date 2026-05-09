@@ -59,8 +59,10 @@ impl Plugin for DiscoveryPlugin {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use voom_domain::events::Event;
+    use voom_kernel::Plugin;
+
+    use crate::{normalize_path, DiscoveryPlugin, ScanOptions, ScanProgress};
 
     #[test]
     fn test_plugin_metadata() {

@@ -466,8 +466,9 @@ fn reuse_cached_hash(
 
 #[cfg(test)]
 mod normalize_tests {
-    use super::*;
     use std::path::PathBuf;
+
+    use crate::scanner::normalize_path;
 
     #[test]
     fn test_normalize_path_existing_file() {
@@ -513,7 +514,12 @@ mod normalize_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use crate::scanner::{
+        build_event, hash_file, is_media_file, scan_directory, ScanOptions, ScanProgress,
+    };
 
     #[test]
     fn test_is_media_file() {

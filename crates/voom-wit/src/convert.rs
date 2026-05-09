@@ -263,9 +263,15 @@ pub fn capability_to_wit(cap: &Capability) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
+
+    use voom_domain::capabilities::Capability;
     use voom_domain::events::*;
+
+    use crate::convert::{
+        capability_from_wit, capability_to_wit, event_from_wasm, event_result_from_wasm,
+        event_result_to_wasm, event_to_wasm,
+    };
 
     fn parse_capability(capability: &str) -> Capability {
         capability_from_wit(capability).unwrap().unwrap()
