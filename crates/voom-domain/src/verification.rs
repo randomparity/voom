@@ -139,24 +139,26 @@ pub struct IntegritySummary {
     pub hash_mismatches: u64,
 }
 
-impl IntegritySummary {
-    /// Construct a summary from precomputed counts.
-    #[must_use]
-    pub fn new(
-        total_files: u64,
-        never_verified: u64,
-        stale: u64,
-        with_errors: u64,
-        with_warnings: u64,
-        hash_mismatches: u64,
-    ) -> Self {
+/// Named counts used to construct an [`IntegritySummary`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IntegritySummaryCounts {
+    pub total_files: u64,
+    pub never_verified: u64,
+    pub stale: u64,
+    pub with_errors: u64,
+    pub with_warnings: u64,
+    pub hash_mismatches: u64,
+}
+
+impl From<IntegritySummaryCounts> for IntegritySummary {
+    fn from(counts: IntegritySummaryCounts) -> Self {
         Self {
-            total_files,
-            never_verified,
-            stale,
-            with_errors,
-            with_warnings,
-            hash_mismatches,
+            total_files: counts.total_files,
+            never_verified: counts.never_verified,
+            stale: counts.stale,
+            with_errors: counts.with_errors,
+            with_warnings: counts.with_warnings,
+            hash_mismatches: counts.hash_mismatches,
         }
     }
 }

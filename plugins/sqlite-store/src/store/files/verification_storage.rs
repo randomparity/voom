@@ -6,7 +6,8 @@ use rusqlite::params;
 use voom_domain::errors::Result;
 use voom_domain::storage::VerificationStorage;
 use voom_domain::verification::{
-    IntegritySummary, VerificationFilters, VerificationMode, VerificationRecord,
+    IntegritySummary, IntegritySummaryCounts, VerificationFilters, VerificationMode,
+    VerificationRecord,
 };
 
 use crate::store::{format_datetime, row_to_verification, storage_err, SqlQuery, SqliteStore};
@@ -179,14 +180,15 @@ impl VerificationStorage for SqliteStore {
             )
             .map_err(storage_err("failed to count hash mismatches"))?;
 
-        Ok(IntegritySummary::new(
-            u64::try_from(total_files.max(0)).unwrap_or(0),
-            u64::try_from(never_verified.max(0)).unwrap_or(0),
-            u64::try_from(stale.max(0)).unwrap_or(0),
-            u64::try_from(with_errors.max(0)).unwrap_or(0),
-            u64::try_from(with_warnings.max(0)).unwrap_or(0),
-            u64::try_from(hash_mismatches.max(0)).unwrap_or(0),
-        ))
+        Ok(IntegritySummaryCounts {
+            total_files: u64::try_from(total_files.max(0)).unwrap_or(0),
+            never_verified: u64::try_from(never_verified.max(0)).unwrap_or(0),
+            stale: u64::try_from(stale.max(0)).unwrap_or(0),
+            with_errors: u64::try_from(with_errors.max(0)).unwrap_or(0),
+            with_warnings: u64::try_from(with_warnings.max(0)).unwrap_or(0),
+            hash_mismatches: u64::try_from(hash_mismatches.max(0)).unwrap_or(0),
+        }
+        .into())
     }
 }
 
