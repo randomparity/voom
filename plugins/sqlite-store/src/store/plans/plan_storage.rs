@@ -317,8 +317,9 @@ mod tests {
                 },
                 "set track title",
             ),
-            PlannedAction::file_op(
+            PlannedAction::track_op(
                 OperationType::SetDefault,
+                0,
                 ActionParams::Empty,
                 "set default flag",
             ),
