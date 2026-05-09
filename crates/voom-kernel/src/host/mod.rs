@@ -3,8 +3,13 @@
 //! Provides the host-side implementations of functions that WASM plugins
 //! can call: logging, plugin data storage, tool execution, and HTTP requests.
 
-mod functions;
+mod capabilities;
+mod filesystem;
+mod http;
+mod plugin_data;
 mod store;
+mod tools;
+mod transitions;
 
 pub use store::{
     InMemoryPluginStore, InMemoryTransitionStore, StorageBackedPluginStore,
