@@ -1025,7 +1025,7 @@ fn run_file_list(
     format: OutputFormat,
 ) -> Result<()> {
     let files = store
-        .list_files(&voom_domain::FileFilters::default())
+        .list_files(&voom_domain::storage::FileFilters::default())
         .context("failed to list files from database")?;
 
     if files.is_empty() {

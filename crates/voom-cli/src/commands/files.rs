@@ -3,8 +3,8 @@ use comfy_table::Cell;
 use console::style;
 
 use voom_domain::media::Container;
+use voom_domain::storage::FileFilters;
 use voom_domain::utils::format::{format_duration, format_size};
-use voom_domain::FileFilters;
 
 use crate::cli::{FilesCommands, OutputFormat};
 use crate::{app, config, output};

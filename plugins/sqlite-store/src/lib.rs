@@ -122,7 +122,7 @@ fn log_event(store: &SqliteStore, event: &Event) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use voom_domain::PluginDataStorage;
+    use voom_domain::storage::PluginDataStorage;
 
     #[test]
     fn test_new_creates_plugin_with_store_capability() {

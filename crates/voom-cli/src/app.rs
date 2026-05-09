@@ -458,7 +458,7 @@ mod tests {
         // Verify the store is functional
         assert!(result
             .store
-            .list_files(&voom_domain::FileFilters::default())
+            .list_files(&voom_domain::storage::FileFilters::default())
             .is_ok());
     }
 

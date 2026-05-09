@@ -115,7 +115,7 @@ pub fn check() -> Result<()> {
     let kernel_result = app::bootstrap_kernel_with_store(&config);
     match &kernel_result {
         Ok(app::BootstrapResult { store, .. }) => {
-            let mut doctor_filters = voom_domain::FileFilters::default();
+            let mut doctor_filters = voom_domain::storage::FileFilters::default();
             doctor_filters.limit = Some(1);
             match store.list_files(&doctor_filters) {
                 Ok(_) => println!("{}", style("OK").green()),

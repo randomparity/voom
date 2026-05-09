@@ -69,7 +69,7 @@ impl ReportPlugin {
 
         if request.includes(ReportSection::Issues) {
             let files = store
-                .list_files(&voom_domain::FileFilters::default())
+                .list_files(&voom_domain::storage::FileFilters::default())
                 .map_err(|e| plugin_err("failed to list files", e))?;
             let issues: Vec<query::IssueReport> = files
                 .iter()
