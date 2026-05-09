@@ -17,8 +17,8 @@ description = "DSL parser and compiler for VOOM policy files"
 proptest = ["dep:proptest", "dep:proptest-derive"]
 
 [dependencies]
-pest = "2"
-pest_derive = "2"
+pest = "=2.8.6"
+pest_derive = "=2.8.6"
 serde = { workspace = true }
 serde_json = { workspace = true }
 regex = { workspace = true }

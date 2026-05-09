@@ -12,7 +12,7 @@ categories.workspace = true
 description = "Domain types and utilities for VOOM — Video Orchestration Operations Manager"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = "=0.2.183"
 
 [dependencies]
 serde = { workspace = true }

@@ -39,12 +39,12 @@ voom-verifier.workspace = true
 
 # CLI
 clap = { version = "=4.5.60", features = ["derive"] }
-clap_complete = "4"
+clap_complete = "=4.5.66"
 
 # Output formatting
-comfy-table = "7"
-console = "0.15"
-indicatif = "0.17"
+comfy-table = "=7.2.2"
+console = "=0.15.11"
+indicatif = "=0.17.11"
 
 # Async
 tokio.workspace = true
@@ -69,12 +69,12 @@ rayon.workspace = true
 # Other
 uuid.workspace = true
 chrono.workspace = true
-dirs = "5"
+dirs = "=5.0.1"
 fs2 = { workspace = true }
 toml = { workspace = true }
 
 [features]
-default = ["wasm"]
+default = []
 functional = []
 integration = []
 wasm = ["voom-kernel/wasm"]
@@ -83,9 +83,9 @@ wasm = ["voom-kernel/wasm"]
 workspace = true
 
 [dev-dependencies]
-assert_cmd = "2"
-predicates = "3"
-rand = "0.10"
+assert_cmd = "=2.2.0"
+predicates = "=3.1.4"
+rand = "=0.10.1"
 rusqlite.workspace = true
 tempfile.workspace = true
 voom-domain = { workspace = true, features = ["testing"] }
