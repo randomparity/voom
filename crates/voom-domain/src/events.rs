@@ -926,6 +926,7 @@ pub enum RetentionTrigger {
 
 /// Result of pruning a single table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TableRetentionResult {
     pub table: String,
     pub deleted: u64,
@@ -933,12 +934,40 @@ pub struct TableRetentionResult {
     pub error: Option<String>,
 }
 
+impl TableRetentionResult {
+    #[must_use]
+    pub fn new(table: impl Into<String>, deleted: u64, kept: u64, error: Option<String>) -> Self {
+        Self {
+            table: table.into(),
+            deleted,
+            kept,
+            error,
+        }
+    }
+}
+
 /// Emitted once per retention pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RetentionCompletedEvent {
     pub trigger: RetentionTrigger,
     pub per_table: Vec<TableRetentionResult>,
     pub duration_ms: u64,
+}
+
+impl RetentionCompletedEvent {
+    #[must_use]
+    pub fn new(
+        trigger: RetentionTrigger,
+        per_table: Vec<TableRetentionResult>,
+        duration_ms: u64,
+    ) -> Self {
+        Self {
+            trigger,
+            per_table,
+            duration_ms,
+        }
+    }
 }
 
 /// Emitted by the verifier plugin after each verification run.
@@ -955,12 +984,32 @@ pub struct VerifyCompletedEvent {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct VerifyCompletedDetails {
     pub mode: crate::verification::VerificationMode,
     pub outcome: crate::verification::VerificationOutcome,
     pub error_count: u32,
     pub warning_count: u32,
     pub verification_id: Uuid,
+}
+
+impl VerifyCompletedDetails {
+    #[must_use]
+    pub fn new(
+        mode: crate::verification::VerificationMode,
+        outcome: crate::verification::VerificationOutcome,
+        error_count: u32,
+        warning_count: u32,
+        verification_id: Uuid,
+    ) -> Self {
+        Self {
+            mode,
+            outcome,
+            error_count,
+            warning_count,
+            verification_id,
+        }
+    }
 }
 
 impl VerifyCompletedEvent {

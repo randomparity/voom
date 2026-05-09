@@ -85,19 +85,22 @@ impl RetentionRunner {
         }
 
         if let Some(kernel) = &self.kernel {
-            let event = Event::RetentionCompleted(RetentionCompletedEvent {
+            let per_table = per_table
+                .iter()
+                .map(|(t, r)| {
+                    TableRetentionResult::new(
+                        t.clone(),
+                        r.as_ref().map(|x| x.deleted).unwrap_or(0),
+                        r.as_ref().map(|x| x.kept).unwrap_or(0),
+                        r.as_ref().err().map(std::string::ToString::to_string),
+                    )
+                })
+                .collect();
+            let event = Event::RetentionCompleted(RetentionCompletedEvent::new(
                 trigger,
-                per_table: per_table
-                    .iter()
-                    .map(|(t, r)| TableRetentionResult {
-                        table: t.clone(),
-                        deleted: r.as_ref().map(|x| x.deleted).unwrap_or(0),
-                        kept: r.as_ref().map(|x| x.kept).unwrap_or(0),
-                        error: r.as_ref().err().map(std::string::ToString::to_string),
-                    })
-                    .collect(),
-                duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
-            });
+                per_table,
+                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+            ));
             let _ = kernel.dispatch(event);
         }
 
