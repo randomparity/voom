@@ -995,7 +995,7 @@ mod tests {
     // and `+ to *` (gives 2 spaces) mutants on each `level + 1` site fail
     // the substring assertion.
 
-    use crate::ast::{RunIfNode, Span, SpannedOperation};
+    use crate::ast::{ErrorStrategyNode, RunIfNode, RunIfTriggerNode, Span, SpannedOperation};
 
     fn empty_phase(name: &str) -> PhaseNode {
         PhaseNode {
@@ -1043,7 +1043,7 @@ mod tests {
         let mut phase = empty_phase("build");
         phase.run_if = Some(RunIfNode {
             phase: "init".into(),
-            trigger: "modified".into(),
+            trigger: RunIfTriggerNode::Modified,
         });
         let mut out = String::new();
         format_phase(&phase, &mut out, 1);
@@ -1056,7 +1056,7 @@ mod tests {
     #[test]
     fn format_phase_on_error_indents_one_deeper() {
         let mut phase = empty_phase("build");
-        phase.on_error = Some("skip".into());
+        phase.on_error = Some(ErrorStrategyNode::Skip);
         let mut out = String::new();
         format_phase(&phase, &mut out, 1);
         assert!(
@@ -1147,7 +1147,7 @@ mod tests {
     #[test]
     fn format_config_on_error_indents_one_deeper() {
         let mut config = empty_config();
-        config.on_error = Some("skip".into());
+        config.on_error = Some(ErrorStrategyNode::Skip);
         let mut out = String::new();
         format_config(&config, &mut out, 1);
         assert!(
