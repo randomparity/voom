@@ -37,6 +37,7 @@ fn transcode_settings_from(s: &CompiledTranscodeSettings) -> TranscodeSettings {
         .with_scale_algorithm(s.scale_algorithm.clone())
         .with_hdr_mode(s.hdr_mode.clone())
         .with_tune(s.tune.clone())
+        .with_crop(s.crop.as_deref().cloned())
 }
 
 /// Result of evaluating a full policy against a file.

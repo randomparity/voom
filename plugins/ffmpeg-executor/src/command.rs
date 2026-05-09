@@ -302,10 +302,17 @@ fn resolve_effective_hw<'a>(
 
 /// Build the list of video filters from transcode settings.
 ///
-/// Combines scale (from `max_resolution`) and tonemap (from `hdr_mode`)
+/// Combines crop, scale (from `max_resolution`), and tonemap (from `hdr_mode`)
 /// filters into a single list suitable for joining with commas.
-fn collect_video_filters(settings: &voom_domain::plan::TranscodeSettings) -> Vec<String> {
+fn collect_video_filters(file: &MediaFile, action: &PlannedAction) -> Vec<String> {
+    let ActionParams::Transcode { settings, .. } = &action.parameters else {
+        return Vec::new();
+    };
     let mut filters: Vec<String> = Vec::new();
+
+    if let Some(filter) = crop_filter(file, action, settings) {
+        filters.push(filter);
+    }
 
     if let Some(ref max_res) = settings.max_resolution {
         if let Some(max_h) = parse_max_height(max_res) {
@@ -326,17 +333,48 @@ fn collect_video_filters(settings: &voom_domain::plan::TranscodeSettings) -> Vec
     filters
 }
 
+fn crop_filter(
+    file: &MediaFile,
+    action: &PlannedAction,
+    settings: &voom_domain::plan::TranscodeSettings,
+) -> Option<String> {
+    settings.crop.as_ref()?;
+    let detection = file.crop_detection.as_ref()?;
+    if detection.rect.is_empty() {
+        return None;
+    }
+    let track = source_video_track(file, action)?;
+    let source_width = track.width?;
+    let source_height = track.height?;
+    let width = source_width
+        .checked_sub(detection.rect.left)?
+        .checked_sub(detection.rect.right)?;
+    let height = source_height
+        .checked_sub(detection.rect.top)?
+        .checked_sub(detection.rect.bottom)?;
+    let width = width - (width % 2);
+    let height = height - (height % 2);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some(format!(
+        "crop={width}:{height}:{}:{}",
+        detection.rect.left, detection.rect.top
+    ))
+}
+
 fn requires_software_video_filters(settings: &voom_domain::plan::TranscodeSettings) -> bool {
     let scales_video = settings
         .max_resolution
         .as_deref()
         .and_then(parse_max_height)
         .is_some();
-    scales_video || settings.hdr_mode.as_deref() == Some("tonemap")
+    scales_video || settings.hdr_mode.as_deref() == Some("tonemap") || settings.crop.is_some()
 }
 
 fn apply_transcode_video(
     mut cmd: FfmpegCommand,
+    file: &MediaFile,
     action: &PlannedAction,
     hw_accel: Option<&HwAccelConfig>,
 ) -> Result<FfmpegCommand> {
@@ -399,7 +437,7 @@ fn apply_transcode_video(
         cmd = cmd.arg("-b:v").arg(brate);
     }
 
-    let filters = collect_video_filters(settings);
+    let filters = collect_video_filters(file, action);
     if !filters.is_empty() {
         cmd = cmd.video_filter(&filters.join(","));
     }
@@ -601,7 +639,7 @@ pub fn build_ffmpeg_command(
                 // Container conversion is handled by output extension; codecs stay as copy
             }
             OperationType::TranscodeVideo => {
-                cmd = apply_transcode_video(cmd, action, hw_accel)?;
+                cmd = apply_transcode_video(cmd, file, action, hw_accel)?;
             }
             OperationType::TranscodeAudio => {
                 cmd = apply_transcode_audio(cmd, action);
@@ -665,9 +703,10 @@ pub fn output_extension(file: &MediaFile, actions: &[&PlannedAction]) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use std::path::PathBuf;
-    use voom_domain::media::{Container, MediaFile, Track, TrackType};
-    use voom_domain::plan::TranscodeSettings;
+    use voom_domain::media::{Container, CropDetection, CropRect, MediaFile, Track, TrackType};
+    use voom_domain::plan::{CropSettings, TranscodeSettings};
 
     fn sample_mp4_file() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/media/video.mp4"));
@@ -749,6 +788,33 @@ mod tests {
         assert!(args.contains(&"23".to_string()));
         assert!(args.contains(&"-preset".to_string()));
         assert!(args.contains(&"medium".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_transcode_video_auto_crop_filter() {
+        let mut file = sample_mp4_file();
+        file.crop_detection = Some(CropDetection::new(
+            CropRect::new(0, 132, 0, 132),
+            Utc::now(),
+        ));
+        file.tracks[0].width = Some(1920);
+        file.tracks[0].height = Some(1080);
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default().with_crop(Some(CropSettings::auto())),
+            },
+            "Transcode video to HEVC with auto crop",
+        );
+        let actions: Vec<&PlannedAction> = vec![&action];
+        let output = Path::new("/tmp/output.mp4");
+
+        let args = build_ffmpeg_command(&file, &actions, output, None).unwrap();
+
+        let filter_index = arg_index(&args, "-vf");
+        assert_eq!(args[filter_index + 1], "crop=1920:816:0:132");
     }
 
     #[test]

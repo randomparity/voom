@@ -9,7 +9,7 @@ use uuid::Uuid;
 use voom_domain::bad_file::{BadFile, BadFileSource};
 use voom_domain::errors::{Result, StorageErrorKind, VoomError};
 use voom_domain::job::{Job, JobStatus};
-use voom_domain::media::{Container, MediaFile, Track, TrackType};
+use voom_domain::media::{Container, CropDetection, CropRect, MediaFile, Track, TrackType};
 use voom_domain::transition::FileStatus;
 use voom_domain::verification::{
     VerificationMode, VerificationOutcome, VerificationRecord, VerificationRecordInput,
@@ -112,6 +112,10 @@ fn parse_optional_json(
 pub(crate) fn row_to_file(row: &Row<'_>) -> rusqlite::Result<FileRow> {
     let size = checked_i64_to_u64(row.get("size")?, "files.size")?;
     let bitrate = checked_optional_i32_to_u32(row.get("bitrate")?, "files.bitrate")?;
+    let crop_left = checked_optional_i64_to_u32(row.get("crop_left")?, "files.crop_left")?;
+    let crop_top = checked_optional_i64_to_u32(row.get("crop_top")?, "files.crop_top")?;
+    let crop_right = checked_optional_i64_to_u32(row.get("crop_right")?, "files.crop_right")?;
+    let crop_bottom = checked_optional_i64_to_u32(row.get("crop_bottom")?, "files.crop_bottom")?;
 
     Ok(FileRow {
         id: row.get("id")?,
@@ -123,6 +127,11 @@ pub(crate) fn row_to_file(row: &Row<'_>) -> rusqlite::Result<FileRow> {
         container: row.get("container")?,
         duration: row.get("duration")?,
         bitrate,
+        crop_left,
+        crop_top,
+        crop_right,
+        crop_bottom,
+        crop_detected_at: row.get("crop_detected_at")?,
         tags: row.get("tags")?,
         plugin_metadata: row.get("plugin_metadata")?,
         introspected_at: row.get("introspected_at")?,
@@ -139,6 +148,11 @@ pub(crate) struct FileRow {
     container: String,
     duration: Option<f64>,
     bitrate: Option<u32>,
+    crop_left: Option<u32>,
+    crop_top: Option<u32>,
+    crop_right: Option<u32>,
+    crop_bottom: Option<u32>,
+    crop_detected_at: Option<String>,
     tags: Option<String>,
     plugin_metadata: Option<String>,
     introspected_at: String,
@@ -176,6 +190,7 @@ impl FileRow {
         mf.container = Container::from_extension(&self.container);
         mf.duration = self.duration.unwrap_or(0.0);
         mf.bitrate = self.bitrate;
+        mf.crop_detection = self.crop_detection()?;
         mf.tracks = tracks;
         mf.tags = tags;
         mf.plugin_metadata = plugin_metadata;
@@ -183,6 +198,24 @@ impl FileRow {
         mf.expected_hash = self.expected_hash.clone();
         mf.status = parse_file_status(&self.status)?;
         Ok(mf)
+    }
+
+    fn crop_detection(&self) -> Result<Option<CropDetection>> {
+        let Some(detected_at) = self.crop_detected_at.as_ref() else {
+            return Ok(None);
+        };
+        let (Some(left), Some(top), Some(right), Some(bottom)) = (
+            self.crop_left,
+            self.crop_top,
+            self.crop_right,
+            self.crop_bottom,
+        ) else {
+            return Ok(None);
+        };
+        Ok(Some(CropDetection::new(
+            CropRect::new(left, top, right, bottom),
+            parse_datetime(detected_at)?,
+        )))
     }
 }
 

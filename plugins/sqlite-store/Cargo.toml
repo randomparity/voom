@@ -27,5 +27,6 @@ tracing = { workspace = true }
 workspace = true
 
 [dev-dependencies]
+voom-domain = { workspace = true, features = ["testing"] }
 insta = { workspace = true }
 tempfile = { workspace = true }

@@ -16,6 +16,7 @@ use crate::compiled::{
     CompiledTranscodeSettings, CompiledValueOrField, DefaultStrategy, ErrorStrategy, RulesMode,
     RunIfTrigger, SynthLanguage, SynthPosition, TrackTarget, TranscodeChannels,
 };
+use voom_domain::plan::CropSettings;
 use voom_domain::utils::codecs;
 
 use crate::ast::{
@@ -301,11 +302,50 @@ fn compile_transcode(target: &str, codec: &str, settings: &[(String, Value)]) ->
     settings.scale_algorithm = get_str("scale_algorithm");
     settings.hdr_mode = get_str("hdr_mode");
     settings.tune = get_str("tune");
+    settings.crop = compile_crop_settings(get, &get_str).map(Box::new);
 
     CompiledOperation::Transcode {
         target: parse_track_target(target),
         codec: canonical,
         settings,
+    }
+}
+
+fn compile_crop_settings<'a>(
+    get: impl Fn(&str) -> Option<&'a Value>,
+    get_str: &impl Fn(&str) -> Option<String>,
+) -> Option<CropSettings> {
+    if get_str("crop").as_deref() != Some("auto") {
+        return None;
+    }
+
+    let mut crop = CropSettings::auto();
+    crop.sample_duration_secs = get_u32(get("crop_sample_duration"));
+    crop.sample_count = get_u32(get("crop_sample_count"));
+    crop.threshold = get_u32(get("crop_threshold")).and_then(|v| u8::try_from(v).ok());
+    crop.minimum_crop = get_u32(get("crop_minimum"));
+    crop.preserve_bottom_pixels = get_u32(get("crop_preserve_bottom_pixels"));
+    crop.aspect_lock = match get("crop_aspect_lock") {
+        Some(Value::List(items)) => items
+            .iter()
+            .filter_map(value_as_string)
+            .collect::<Vec<String>>(),
+        _ => Vec::new(),
+    };
+    Some(crop)
+}
+
+fn get_u32(value: Option<&Value>) -> Option<u32> {
+    match value {
+        Some(Value::Number(n, _)) => safe_u32(*n),
+        _ => None,
+    }
+}
+
+fn value_as_string(value: &Value) -> Option<String> {
+    match value {
+        Value::Ident(s) | Value::String(s) | Value::Number(_, s) => Some(s.clone()),
+        _ => None,
     }
 }
 
@@ -1304,6 +1344,49 @@ mod tests {
     fn compile_transcode_channels_named() {
         let s = transcode_with("channels", Value::Ident("stereo".into()));
         assert_eq!(s.channels, Some(TranscodeChannels::Named("stereo".into())));
+    }
+
+    #[test]
+    fn compile_transcode_crop_auto() {
+        let settings = vec![
+            ("crop".to_string(), Value::Ident("auto".into())),
+            (
+                "crop_sample_duration".to_string(),
+                Value::Number(60.0, "60s".into()),
+            ),
+            (
+                "crop_sample_count".to_string(),
+                Value::Number(3.0, "3".into()),
+            ),
+            (
+                "crop_threshold".to_string(),
+                Value::Number(24.0, "24".into()),
+            ),
+            ("crop_minimum".to_string(), Value::Number(4.0, "4".into())),
+            (
+                "crop_preserve_bottom_pixels".to_string(),
+                Value::Number(60.0, "60".into()),
+            ),
+            (
+                "crop_aspect_lock".to_string(),
+                Value::List(vec![
+                    Value::String("16/9".into()),
+                    Value::String("4/3".into()),
+                ]),
+            ),
+        ];
+        let CompiledOperation::Transcode { settings, .. } =
+            compile_transcode("video", "hevc", &settings)
+        else {
+            unreachable!("compile_transcode always returns Transcode")
+        };
+        let crop = settings.crop.expect("crop settings");
+        assert_eq!(crop.sample_duration_secs, Some(60));
+        assert_eq!(crop.sample_count, Some(3));
+        assert_eq!(crop.threshold, Some(24));
+        assert_eq!(crop.minimum_crop, Some(4));
+        assert_eq!(crop.preserve_bottom_pixels, Some(60));
+        assert_eq!(crop.aspect_lock, vec!["16/9", "4/3"]);
     }
 
     #[test]

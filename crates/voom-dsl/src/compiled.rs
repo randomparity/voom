@@ -8,7 +8,7 @@ use std::fmt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 pub use voom_domain::media::Container;
-pub use voom_domain::plan::TranscodeChannels;
+pub use voom_domain::plan::{CropSettings, TranscodeChannels};
 
 /// A pre-compiled regex that supports `Clone`, `Debug`, `Serialize`, and `Deserialize`.
 ///
@@ -296,6 +296,9 @@ pub struct CompiledTranscodeSettings {
     /// Encoder tuning hint (e.g. "film", "animation", "grain").
     #[serde(default)]
     pub tune: Option<String>,
+    /// Automatic or explicit crop settings.
+    #[serde(default)]
+    pub crop: Option<Box<CropSettings>>,
 }
 
 impl CompiledTranscodeSettings {
@@ -319,6 +322,7 @@ impl CompiledTranscodeSettings {
             scale_algorithm: None,
             hdr_mode: None,
             tune: None,
+            crop: None,
         }
     }
 }

@@ -7,6 +7,48 @@ use uuid::Uuid;
 
 use crate::transition::FileStatus;
 
+/// Crop rectangle expressed as pixels removed from each source edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CropRect {
+    pub left: u32,
+    pub top: u32,
+    pub right: u32,
+    pub bottom: u32,
+}
+
+impl CropRect {
+    #[must_use]
+    pub fn new(left: u32, top: u32, right: u32, bottom: u32) -> Self {
+        Self {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.left == 0 && self.top == 0 && self.right == 0 && self.bottom == 0
+    }
+}
+
+/// Cached result from automatic black-bar detection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CropDetection {
+    pub rect: CropRect,
+    pub detected_at: DateTime<Utc>,
+}
+
+impl CropDetection {
+    #[must_use]
+    pub fn new(rect: CropRect, detected_at: DateTime<Utc>) -> Self {
+        Self { rect, detected_at }
+    }
+}
+
 /// Cached fingerprint used to decide whether a previously-hashed file needs
 /// to be re-hashed during discovery.
 ///
@@ -53,6 +95,8 @@ pub struct MediaFile {
     pub container: Container,
     pub duration: f64,
     pub bitrate: Option<u32>,
+    #[serde(default)]
+    pub crop_detection: Option<CropDetection>,
     pub tracks: Vec<Track>,
     pub tags: HashMap<String, String>,
     pub plugin_metadata: HashMap<String, serde_json::Value>,
@@ -94,6 +138,7 @@ impl MediaFile {
             container: Container::Other,
             duration: 0.0,
             bitrate: None,
+            crop_detection: None,
             tracks: Vec::new(),
             tags: HashMap::new(),
             plugin_metadata: HashMap::new(),
