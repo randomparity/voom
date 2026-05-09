@@ -247,6 +247,9 @@ pub enum PolicyCommands {
         a: PathBuf,
         /// Second policy file
         b: PathBuf,
+        /// Evaluate both policies against this JSON media fixture and diff the plans
+        #[arg(long)]
+        fixture: Option<PathBuf>,
     },
     /// Run JSON policy test suites
     Test {
@@ -1168,9 +1171,31 @@ mod tests {
     fn test_policy_diff() {
         let cli = parse(&["voom", "policy", "diff", "a.voom", "b.voom"]);
         match cli.command {
-            Commands::Policy(PolicyCommands::Diff { a, b }) => {
+            Commands::Policy(PolicyCommands::Diff { a, b, fixture }) => {
                 assert_eq!(a, PathBuf::from("a.voom"));
                 assert_eq!(b, PathBuf::from("b.voom"));
+                assert_eq!(fixture, None);
+            }
+            _ => panic!("expected Policy Diff"),
+        }
+    }
+
+    #[test]
+    fn test_policy_diff_fixture() {
+        let cli = parse(&[
+            "voom",
+            "policy",
+            "diff",
+            "a.voom",
+            "b.voom",
+            "--fixture",
+            "movie.json",
+        ]);
+        match cli.command {
+            Commands::Policy(PolicyCommands::Diff { a, b, fixture }) => {
+                assert_eq!(a, PathBuf::from("a.voom"));
+                assert_eq!(b, PathBuf::from("b.voom"));
+                assert_eq!(fixture, Some(PathBuf::from("movie.json")));
             }
             _ => panic!("expected Policy Diff"),
         }

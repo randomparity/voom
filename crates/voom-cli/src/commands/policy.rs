@@ -14,7 +14,7 @@ pub fn run(cmd: PolicyCommands) -> Result<()> {
         PolicyCommands::Validate { file } => validate(&file),
         PolicyCommands::Show { file } => show(&file),
         PolicyCommands::Format { file } => format(&file),
-        PolicyCommands::Diff { a, b } => diff(&a, &b),
+        PolicyCommands::Diff { a, b, fixture } => diff(&a, &b, fixture.as_deref()),
         PolicyCommands::Test {
             paths,
             policy,
@@ -206,32 +206,24 @@ fn format(file: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn diff(a: &std::path::Path, b: &std::path::Path) -> Result<()> {
+fn diff(a: &std::path::Path, b: &std::path::Path, fixture: Option<&std::path::Path>) -> Result<()> {
     let a_path = crate::config::resolve_policy_path(a);
     let b_path = crate::config::resolve_policy_path(b);
 
-    let a_source = std::fs::read_to_string(&a_path)
-        .with_context(|| format!("Failed to read: {}", a_path.display()))?;
-    let b_source = std::fs::read_to_string(&b_path)
-        .with_context(|| format!("Failed to read: {}", b_path.display()))?;
+    let a_compiled = compile_policy_file(&a_path, "first")?;
+    let b_compiled = compile_policy_file(&b_path, "second")?;
 
-    let a_compiled =
-        voom_dsl::compile_policy(&a_source).context("failed to compile first policy")?;
-    let b_compiled =
-        voom_dsl::compile_policy(&b_source).context("failed to compile second policy")?;
-
-    let mut a_json =
-        serde_json::to_value(&a_compiled).context("failed to serialize first policy")?;
-    let mut b_json =
-        serde_json::to_value(&b_compiled).context("failed to serialize second policy")?;
-
-    // Strip source_hash — it always differs
-    if let Value::Object(ref mut m) = a_json {
-        m.remove("source_hash");
-    }
-    if let Value::Object(ref mut m) = b_json {
-        m.remove("source_hash");
-    }
+    let (a_json, b_json) = if let Some(fixture) = fixture {
+        fixture_plan_json(&a_compiled, &b_compiled, fixture)?
+    } else {
+        let mut a_json =
+            serde_json::to_value(&a_compiled).context("failed to serialize first policy")?;
+        let mut b_json =
+            serde_json::to_value(&b_compiled).context("failed to serialize second policy")?;
+        strip_policy_volatiles(&mut a_json);
+        strip_policy_volatiles(&mut b_json);
+        (a_json, b_json)
+    };
 
     let mut lines = Vec::new();
     diff_values("", &a_json, &b_json, &mut lines);
@@ -247,6 +239,10 @@ fn diff(a: &std::path::Path, b: &std::path::Path) -> Result<()> {
         style(b_path.display()).cyan(),
     );
     print_diff_lines(&lines);
+
+    if fixture.is_some() {
+        anyhow::bail!("fixture plan diff found differences");
+    }
 
     Ok(())
 }
@@ -456,6 +452,61 @@ enum TestStatus {
     Fail,
 }
 
+fn compile_policy_file(path: &std::path::Path, label: &str) -> Result<voom_dsl::CompiledPolicy> {
+    let source = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read: {}", path.display()))?;
+    voom_dsl::compile_policy(&source).with_context(|| format!("failed to compile {label} policy"))
+}
+
+fn fixture_plan_json(
+    a: &voom_dsl::CompiledPolicy,
+    b: &voom_dsl::CompiledPolicy,
+    fixture_path: &std::path::Path,
+) -> Result<(Value, Value)> {
+    let fixture = Fixture::load(fixture_path)
+        .with_context(|| format!("failed to load fixture: {}", fixture_path.display()))?;
+    let file = fixture.to_media_file();
+    let capabilities = fixture.capabilities_or_default();
+    let a_plans = voom_policy_evaluator::evaluate_with_capabilities(a, &file, &capabilities).plans;
+    let b_plans = voom_policy_evaluator::evaluate_with_capabilities(b, &file, &capabilities).plans;
+    let mut a_json = serde_json::to_value(a_plans).context("failed to serialize first plans")?;
+    let mut b_json = serde_json::to_value(b_plans).context("failed to serialize second plans")?;
+    strip_plan_volatiles(&mut a_json);
+    strip_plan_volatiles(&mut b_json);
+    Ok((a_json, b_json))
+}
+
+fn strip_policy_volatiles(value: &mut Value) {
+    if let Value::Object(map) = value {
+        map.remove("source_hash");
+    }
+}
+
+fn strip_plan_volatiles(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for key in [
+                "evaluated_at",
+                "id",
+                "introspected_at",
+                "policy_hash",
+                "session_id",
+            ] {
+                map.remove(key);
+            }
+            for child in map.values_mut() {
+                strip_plan_volatiles(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_plan_volatiles(item);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
 enum DiffLine {
     Added {
         path: String,
@@ -527,7 +578,7 @@ fn diff_values(path: &str, a: &Value, b: &Value, lines: &mut Vec<DiffLine>) {
             }
         }
         (Value::Array(a_arr), Value::Array(b_arr))
-            if is_named_array(a_arr) || is_named_array(b_arr) =>
+            if diff_array_key(a_arr).is_some() || diff_array_key(b_arr).is_some() =>
         {
             diff_named_arrays(path, a_arr, b_arr, lines);
         }
@@ -541,30 +592,33 @@ fn diff_values(path: &str, a: &Value, b: &Value, lines: &mut Vec<DiffLine>) {
     }
 }
 
-/// Check if an array contains objects with a "name" field (like phases).
-fn is_named_array(arr: &[Value]) -> bool {
-    arr.first()
-        .is_some_and(|v| v.as_object().is_some_and(|o| o.contains_key("name")))
+/// Return the field used to match arrays of objects across policy and plan diffs.
+fn diff_array_key(arr: &[Value]) -> Option<&'static str> {
+    let first = arr.first()?.as_object()?;
+    if first.contains_key("name") {
+        Some("name")
+    } else if first.contains_key("phase_name") {
+        Some("phase_name")
+    } else {
+        None
+    }
 }
 
 /// Diff arrays of named objects by matching on the "name" field.
 fn diff_named_arrays(path: &str, a_arr: &[Value], b_arr: &[Value], lines: &mut Vec<DiffLine>) {
-    let a_names: Vec<&str> = a_arr
-        .iter()
-        .filter_map(|v| v.get("name")?.as_str())
-        .collect();
-    let b_names: Vec<&str> = b_arr
-        .iter()
-        .filter_map(|v| v.get("name")?.as_str())
-        .collect();
+    let key = diff_array_key(a_arr)
+        .or_else(|| diff_array_key(b_arr))
+        .unwrap_or("name");
+    let a_names: Vec<&str> = a_arr.iter().filter_map(|v| v.get(key)?.as_str()).collect();
+    let b_names: Vec<&str> = b_arr.iter().filter_map(|v| v.get(key)?.as_str()).collect();
 
     let a_by_name: std::collections::HashMap<&str, &Value> = a_arr
         .iter()
-        .filter_map(|v| Some((v.get("name")?.as_str()?, v)))
+        .filter_map(|v| Some((v.get(key)?.as_str()?, v)))
         .collect();
     let b_by_name: std::collections::HashMap<&str, &Value> = b_arr
         .iter()
-        .filter_map(|v| Some((v.get("name")?.as_str()?, v)))
+        .filter_map(|v| Some((v.get(key)?.as_str()?, v)))
         .collect();
 
     // Removed items (in a but not b)
@@ -654,6 +708,8 @@ fn strip_section(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use voom_domain::media::{Container, Track, TrackType};
+    use voom_policy_testing::Fixture;
 
     const MINIMAL_POLICY: &str = r#"
 policy "test-policy" {
@@ -885,8 +941,43 @@ policy "test-policy" {
         std::fs::write(&a_file, MINIMAL_POLICY).unwrap();
         std::fs::write(&b_file, MINIMAL_POLICY).unwrap();
 
-        let result = diff(&a_file, &b_file);
+        let result = diff(&a_file, &b_file, None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn diff_fixture_identical_policies_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy_file = dir.path().join("policy.voom");
+        let fixture_file = write_movie_fixture(dir.path());
+        std::fs::write(&policy_file, MINIMAL_POLICY).unwrap();
+
+        let result = diff(&policy_file, &policy_file, Some(&fixture_file));
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn diff_fixture_different_plans_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let a_file = dir.path().join("a.voom");
+        let b_file = dir.path().join("b.voom");
+        let fixture_file = write_movie_fixture(dir.path());
+        std::fs::write(&a_file, MINIMAL_POLICY).unwrap();
+        std::fs::write(
+            &b_file,
+            r#"
+policy "noop" {
+  phase verify {
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let result = diff(&a_file, &b_file, Some(&fixture_file));
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -895,7 +986,21 @@ policy "test-policy" {
         let a_file = dir.path().join("a.voom");
         std::fs::write(&a_file, MINIMAL_POLICY).unwrap();
 
-        let result = diff(&a_file, std::path::Path::new("/nonexistent/b.voom"));
+        let result = diff(&a_file, std::path::Path::new("/nonexistent/b.voom"), None);
         assert!(result.is_err());
+    }
+
+    fn write_movie_fixture(dir: &std::path::Path) -> std::path::PathBuf {
+        let fixture_path = dir.join("movie.json");
+        let fixture = Fixture {
+            path: std::path::PathBuf::from("/media/movie.mp4"),
+            container: Container::Mp4,
+            duration: 120.0,
+            size: 99,
+            tracks: vec![Track::new(0, TrackType::Video, "h264".to_string())],
+            capabilities: None,
+        };
+        std::fs::write(&fixture_path, serde_json::to_string(&fixture).unwrap()).unwrap();
+        fixture_path
     }
 }
