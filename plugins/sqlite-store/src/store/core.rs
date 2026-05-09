@@ -6,8 +6,8 @@ use r2d2_sqlite::SqliteConnectionManager;
 use voom_domain::errors::Result;
 
 use crate::schema;
-use crate::store::sql::other_storage_err;
-use crate::store::storage_err;
+
+use super::sql::{other_storage_err, storage_err};
 
 /// Configuration for the `SQLite` store.
 pub struct SqliteStoreConfig {
