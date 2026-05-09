@@ -10,6 +10,7 @@ bound to the WIT exports. Host imports (http_get, http_post, get_plugin_data,
 set_plugin_data, log) are available through the generated bindings.
 """
 
+import json
 from collections.abc import Iterable, Sequence
 from typing import Any, Protocol, TypeAlias
 
@@ -326,8 +327,13 @@ def _make_event_result(
     plugin_name: str,
     produced_events: list[EventDataDict],
     data: JsonObject | None = None,
+    claimed: bool = False,
+    execution_error: str | None = None,
+    execution_detail: JsonObject | None = None,
 ) -> object | EventResultDict:
     """Build an EventResult, using WIT types if available."""
+    encoded_data = _json_object_to_byte_list(data)
+    encoded_detail = _json_object_to_byte_list(execution_detail)
     try:
         from voom.plugin.plugin import (  # type: ignore[import]  # componentize-py generated
             EventResult,
@@ -341,12 +347,25 @@ def _make_event_result(
         return EventResult(
             plugin_name=plugin_name,
             produced_events=wit_events,
-            data=data,
+            data=encoded_data,
+            claimed=claimed,
+            execution_error=execution_error,
+            execution_detail=encoded_detail,
         )
     except ImportError:
         # Testing fallback
         return {
             "plugin_name": plugin_name,
             "produced_events": produced_events,
-            "data": data,
+            "data": encoded_data,
+            "claimed": claimed,
+            "execution_error": execution_error,
+            "execution_detail": encoded_detail,
         }
+
+
+def _json_object_to_byte_list(value: JsonObject | None) -> list[int] | None:
+    """Encode optional JSON payloads as the WIT list<u8> boundary shape."""
+    if value is None:
+        return None
+    return list(json.dumps(value, separators=(",", ":")).encode("utf-8"))

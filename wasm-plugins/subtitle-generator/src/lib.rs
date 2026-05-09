@@ -30,7 +30,7 @@ pub fn get_info() -> PluginInfoData {
 }
 
 pub fn handles(event_type: &str) -> bool {
-    event_type == "metadata.enriched"
+    event_type == Event::METADATA_ENRICHED
 }
 
 /// Process a `metadata.enriched` event by extracting foreign-language
@@ -40,7 +40,7 @@ pub fn on_event(
     payload: &[u8],
     host: &dyn HostFunctions,
 ) -> Option<OnEventResult> {
-    if event_type != "metadata.enriched" {
+    if event_type != Event::METADATA_ENRICHED {
         return None;
     }
 
