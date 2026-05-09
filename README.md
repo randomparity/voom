@@ -122,6 +122,18 @@ Automatic pre-modification backups with two storage modes:
 
 Disk space validation before copy. Restore any backup with `voom backup restore`.
 
+### Media Integrity Verification
+
+`voom verify` records per-file integrity checks in SQLite:
+
+- **Quick** -- container/header validation for fast confidence checks
+- **Thorough** -- full ffmpeg decode pass for corruption detection
+- **Hash** -- sha256 bit-rot checks against stored verification records
+
+Use `voom verify run` to verify selected files, `voom verify report` for
+stored verification history, and `voom report --integrity` for library-wide
+integrity summaries.
+
 ### Library Reporting
 
 `voom report` with deep library analytics:
@@ -166,6 +178,9 @@ cargo run -- process /path/to/videos --policy docs/examples/english-optimized.vo
 # Check your environment
 cargo run -- health check
 
+# Verify media integrity
+cargo run -- verify run /path/to/videos
+
 # Start the web UI
 cargo run -- serve
 ```
@@ -190,6 +205,7 @@ cargo run -- serve
 | `db` | Database maintenance (prune, vacuum, reset) |
 | `config` | View and edit configuration |
 | `tools` | Detect and report external tool availability |
+| `verify` | Run and report media integrity checks |
 | `history` | Show per-file processing history |
 | `plugin` | Manage native and WASM plugins |
 | `init` | Scaffold a starter policy and config |
@@ -206,20 +222,60 @@ cargo run -- serve
     policy evaluator --> Plan structs --> executor (FFmpeg / MKVToolNix)
 ```
 
-All functionality lives in plugins. The kernel provides only the event bus and
-plugin registry. See [`docs/architecture.md`](docs/architecture.md) for details.
+VOOM uses a hybrid runtime model. The kernel owns plugin lifecycle, capability
+routing, and the priority-ordered event bus, but it has no media-specific
+logic. CLI commands drive deterministic workflows directly for progress,
+error handling, and concurrency, then dispatch lifecycle events for passive
+subscribers. Native and WASM plugins provide the capability implementations
+and event-driven side effects. See [`docs/architecture.md`](docs/architecture.md)
+for details.
 
-## Workspace Crates
+## Workspace Layout
+
+### Core Crates
 
 | Crate | Purpose |
 |-------|---------|
-| `voom-cli` | CLI binary with subcommands |
-| `voom-kernel` | Event bus, plugin registry, native + WASM loader |
-| `voom-domain` | Shared types (`MediaFile`, `Track`, `Plan`, `Event`) |
-| `voom-dsl` | PEG parser, AST, compiler, validator, formatter |
-| `voom-process` | Subprocess utilities with timeout-aware execution |
-| `voom-wit` | WIT interface definitions for WASM plugins |
+| `voom-cli` | clap-based CLI binary and deterministic workflow orchestration |
+| `voom-kernel` | Event bus, plugin registry, native plugin lifecycle, WASM loader |
+| `voom-domain` | Shared domain types (`MediaFile`, `Track`, `Plan`, `Event`, `Capability`) |
+| `voom-dsl` | policy grammar, parser, AST, compiler, validator, and formatter |
+| `voom-process` | subprocess execution helpers with timeout-aware output capture |
+| `voom-wit` | WIT interface definitions and Rust/WIT conversion utilities |
 | `voom-plugin-sdk` | SDK for third-party WASM plugin authors |
+
+### Native Plugins
+
+| Plugin | Purpose |
+|--------|---------|
+| `discovery` | Filesystem walking, content hashing, and discovered-file events |
+| `ffprobe-introspector` | ffprobe JSON parsing for media metadata |
+| `tool-detector` | External tool discovery and version reporting |
+| `sqlite-store` | SQLite persistence for files, jobs, plans, events, verification, and health data |
+| `policy-evaluator` | Track filtering, condition evaluation, and plan generation |
+| `phase-orchestrator` | Phase dependency ordering, skip handling, and lifecycle planning |
+| `mkvtoolnix-executor` | mkvpropedit/mkvmerge execution for MKV-safe changes |
+| `ffmpeg-executor` | ffmpeg execution, hardware acceleration, and progress parsing |
+| `verifier` | Media integrity checks for `voom verify` |
+| `backup-manager` | Pre-modification backup, restore, and cleanup |
+| `job-manager` | SQLite-backed priority queue and concurrent worker pool |
+| `bus-tracer` | Configurable event logging for development and diagnostics |
+| `health-checker` | Environment, database, filesystem, and plugin health checks |
+| `report` | Library analytics and report queries |
+| `web-server` | axum REST API, htmx/Alpine.js UI, and server startup |
+| `web-sse-bridge` | Event bus to Server-Sent Events bridge for the web UI |
+
+### WASM Plugins
+
+| Plugin | Purpose |
+|--------|---------|
+| `example-metadata` | Minimal SDK example |
+| `radarr-metadata` | Movie metadata enrichment via Radarr |
+| `sonarr-metadata` | TV metadata enrichment via Sonarr |
+| `tvdb-metadata` | TV metadata enrichment via TVDB API |
+| `whisper-transcriber` | Whisper transcription |
+| `audio-synthesizer` | Synthetic audio track generation |
+| `handbrake-executor` | HandBrakeCLI-backed transcoding |
 
 ## License
 
