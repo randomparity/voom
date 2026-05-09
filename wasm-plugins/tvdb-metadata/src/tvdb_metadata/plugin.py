@@ -12,6 +12,13 @@ set_plugin_data, log) are available through the generated bindings.
 
 from tvdb_metadata.filename_parser import parse_filename
 from tvdb_metadata.msgpack_helpers import pack_event, unpack_event
+from tvdb_metadata.types import (
+    EventDataDict,
+    EventResultDict,
+    FileIntrospectedPayload,
+    JsonObject,
+    TvdbMetadataResult,
+)
 from tvdb_metadata.tvdb_client import TvdbClient, TvdbError
 
 # The host module is injected by componentize-py at build time.
@@ -189,7 +196,7 @@ def _event_payload(event) -> bytes:
     return bytes(payload)
 
 
-def _unpack_file_introspected(event) -> dict | None:
+def _unpack_file_introspected(event) -> FileIntrospectedPayload | None:
     """Deserialize FileIntrospected event payloads."""
     try:
         variant, data = unpack_event(_event_payload(event))
@@ -230,7 +237,7 @@ def _make_client() -> TvdbClient | None:
     return client
 
 
-def _lookup_metadata(client: TvdbClient, info) -> dict | None:
+def _lookup_metadata(client: TvdbClient, info) -> TvdbMetadataResult | None:
     """Run the TVDB lookup while keeping failures non-fatal to the plugin."""
     try:
         metadata = client.lookup(
@@ -248,7 +255,7 @@ def _lookup_metadata(client: TvdbClient, info) -> dict | None:
     return metadata
 
 
-def _build_metadata_result(file_path: str, metadata: dict):
+def _build_metadata_result(file_path: str, metadata: TvdbMetadataResult):
     """Build the MetadataEnriched event result."""
     enriched_payload = pack_event("MetadataEnriched", {
         "path": file_path,
@@ -264,7 +271,11 @@ def _build_metadata_result(file_path: str, metadata: dict):
     )
 
 
-def _make_event_result(plugin_name: str, produced_events: list, data=None):
+def _make_event_result(
+    plugin_name: str,
+    produced_events: list[EventDataDict],
+    data: JsonObject | None = None,
+) -> object | EventResultDict:
     """Build an EventResult, using WIT types if available."""
     try:
         from voom.plugin.plugin import EventResult  # type: ignore[import]

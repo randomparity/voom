@@ -6,7 +6,7 @@ import pytest
 
 from tvdb_metadata.tvdb_client import TvdbClient, TvdbError
 
-from helpers import MockHost, MockHttpResponse
+from helpers import MockHttpResponse
 
 
 class TestFromConfig:

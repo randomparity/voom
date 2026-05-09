@@ -1,17 +1,12 @@
 """Tests for the plugin entry points (get_info, handles, on_event)."""
 
-import json
-import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from tvdb_metadata.filename_parser import parse_filename
 from tvdb_metadata.msgpack_helpers import pack_event, unpack_event
 from tvdb_metadata import plugin as plugin_module
-from tvdb_metadata.tvdb_client import TvdbClient, TvdbError
-
-from helpers import MockHost, MockHttpResponse
+from tvdb_metadata.tvdb_client import TvdbClient
 
 
 class TestGetInfo:
