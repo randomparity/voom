@@ -790,7 +790,7 @@ pub struct PhaseResult {
     pub phase_name: String,
     pub outcome: PhaseOutcome,
     pub actions: Vec<ActionResult>,
-    pub file_modified: bool,
+    pub needs_execution: bool,
     pub skip_reason: Option<String>,
     pub duration_ms: u64,
     /// Path to the temp file used during execution, if any.
@@ -805,7 +805,7 @@ impl PhaseResult {
             phase_name: phase_name.into(),
             outcome,
             actions: Vec::new(),
-            file_modified: false,
+            needs_execution: false,
             skip_reason: None,
             duration_ms: 0,
             temp_path: None,
@@ -1312,7 +1312,7 @@ mod tests {
 
     #[test]
     fn test_phase_result_backward_compat_missing_temp_path() {
-        let json = r#"{"phase_name":"normalize","outcome":"Completed","actions":[],"file_modified":false,"skip_reason":null,"duration_ms":0}"#;
+        let json = r#"{"phase_name":"normalize","outcome":"Completed","actions":[],"needs_execution":false,"skip_reason":null,"duration_ms":0}"#;
         let pr: PhaseResult = serde_json::from_str(json).unwrap();
         assert!(pr.temp_path.is_none());
     }

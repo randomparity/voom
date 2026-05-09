@@ -20,17 +20,17 @@ pub struct OrchestrationResult {
     /// `Pending` means the phase has actions that still need execution;
     /// `Skipped` and `Completed` can be decided before execution.
     pub phase_results: Vec<PhaseResult>,
-    /// Whether any phase modified the file.
-    pub file_modified: bool,
+    /// Whether any phase has planned work that still needs execution.
+    pub needs_execution: bool,
 }
 
 impl OrchestrationResult {
     #[must_use]
-    pub fn new(plans: Vec<Plan>, phase_results: Vec<PhaseResult>, file_modified: bool) -> Self {
+    pub fn new(plans: Vec<Plan>, phase_results: Vec<PhaseResult>, needs_execution: bool) -> Self {
         Self {
             plans,
             phase_results,
-            file_modified,
+            needs_execution,
         }
     }
 }
@@ -43,7 +43,7 @@ impl OrchestrationResult {
 #[must_use]
 pub fn orchestrate(plans: Vec<Plan>) -> OrchestrationResult {
     let mut phase_results = Vec::new();
-    let mut file_modified = false;
+    let mut needs_execution = false;
 
     for plan in &plans {
         let outcome = if plan.is_skipped() {
@@ -54,13 +54,13 @@ pub fn orchestrate(plans: Vec<Plan>) -> OrchestrationResult {
             PhaseOutcome::Pending // Would be Completed after execution
         };
 
-        let phase_modified = outcome == PhaseOutcome::Pending;
-        if phase_modified {
-            file_modified = true;
+        let phase_needs_execution = outcome == PhaseOutcome::Pending;
+        if phase_needs_execution {
+            needs_execution = true;
         }
 
         let mut phase_result = PhaseResult::new(plan.phase_name.clone(), outcome);
-        phase_result.file_modified = phase_modified;
+        phase_result.needs_execution = phase_needs_execution;
         phase_result.skip_reason.clone_from(&plan.skip_reason);
         phase_results.push(phase_result);
     }
@@ -68,7 +68,7 @@ pub fn orchestrate(plans: Vec<Plan>) -> OrchestrationResult {
     OrchestrationResult {
         plans,
         phase_results,
-        file_modified,
+        needs_execution,
     }
 }
 
@@ -167,7 +167,7 @@ mod tests {
         let file = test_file();
         let result = orchestrate(eval(&policy, &file));
         assert_eq!(result.plans.len(), 1);
-        assert!(!result.file_modified); // Already MKV
+        assert!(!result.needs_execution); // Already MKV
     }
 
     #[test]
@@ -185,8 +185,8 @@ mod tests {
         let file = test_file();
         let result = orchestrate(eval(&policy, &file));
         assert_eq!(result.plans.len(), 2);
-        // normalize phase should remove jpn audio
-        assert!(result.file_modified);
+        // normalize phase should remove jpn audio when executed.
+        assert!(result.needs_execution);
     }
 
     #[test]
@@ -203,7 +203,7 @@ mod tests {
         let file = test_file(); // video is hevc
         let result = orchestrate(eval(&policy, &file));
         assert!(result.plans[0].is_skipped());
-        assert!(!result.file_modified);
+        assert!(!result.needs_execution);
     }
 
     #[test]
