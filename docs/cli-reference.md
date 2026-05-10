@@ -143,10 +143,14 @@ Estimate policy cost without modifying files.
 ```bash
 voom estimate /media/movies --policy normalize.voom --workers 4
 voom estimate calibrate
+voom estimate calibrate --benchmark-corpus /tmp/voom-estimate-corpus --max-fixtures 3
 ```
 
 The standalone command shares the `process --estimate` planning path. Calibration
-records local codec/backend samples used by later estimates.
+records local codec/backend samples used by later estimates. `--benchmark-corpus`
+uses media from `scripts/generate-test-corpus` and persists measured HEVC
+software samples with an estimate-vs-actual summary; without it, calibration
+seeds conservative default samples.
 
 ---
 
