@@ -29,6 +29,17 @@ impl DestinationKind {
             Self::Rclone | Self::S3 | Self::Sftp | Self::Webdav => true,
         }
     }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Rclone => "rclone",
+            Self::S3 => "s3",
+            Self::Sftp => "sftp",
+            Self::Webdav => "webdav",
+        }
+    }
 }
 
 /// One configured backup destination.
