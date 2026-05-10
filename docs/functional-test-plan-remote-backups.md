@@ -98,6 +98,7 @@ rclone_path = "/tmp/voom-remote-backup-bin/rclone"
 name = "fake-offsite"
 kind = "rclone"
 remote = "fake:voom"
+minimum_storage_days = 1
 TOML
 ```
 
@@ -153,6 +154,17 @@ XDG_CONFIG_HOME=/tmp/voom-remote-config cargo run -p voom-cli -- env check
 Expected: output includes a `Backup destinations` section with
 `fake-offsite (rclone) ... OK`. The persisted health history includes a
 `backup_destination:fake-offsite` record.
+
+Run remote cleanup before the minimum storage window expires:
+
+```sh
+XDG_CONFIG_HOME=/tmp/voom-remote-config cargo run -p voom-cli -- backup cleanup \
+  --destination fake-offsite \
+  --yes
+```
+
+Expected: output reports skipped records for `fake-offsite` with age below
+`minimum_storage_days`; remote backup objects and inventory records remain.
 
 Restore to an explicit output path:
 

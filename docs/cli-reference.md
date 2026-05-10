@@ -862,16 +862,21 @@ verified.
 
 #### `voom backup cleanup`
 
-Remove all backup files from one or more directories.
+Remove local backup files from one or more directories, or remove remote backup
+inventory for one destination.
 
 ```
-voom backup cleanup <PATH>... [OPTIONS]
+voom backup cleanup [PATH]... [OPTIONS]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `<PATH>...` | *required* | Directories to remove backups from (one or more) |
+| `<PATH>...` | none | Directories to remove local `.vbak` backups from |
+| `--destination <DESTINATION>` | none | Delete eligible remote backups for one destination |
 | `--yes` | `false` | Skip confirmation prompt |
+
+Remote cleanup honors each destination's `minimum_storage_days` setting and
+reports skipped records with destination and age.
 
 **Examples:**
 
@@ -885,6 +890,7 @@ voom backup restore /media/movies/film.mkv --from offsite
 voom backup restore /media/movies/film.mkv --from offsite --output /tmp/film.mkv
 voom backup verify --destination offsite
 voom backup verify --destination offsite --format json
+voom backup cleanup --destination offsite --yes
 voom backup cleanup /media/movies --yes
 ```
 
