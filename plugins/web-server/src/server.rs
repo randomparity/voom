@@ -13,7 +13,7 @@ use crate::state::{AppState, SseEvent};
 
 /// Configuration for the web server.
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
@@ -25,6 +25,7 @@ pub struct ServerConfig {
     /// the caller's responsibility; the server uses this sender directly so
     /// that it shares the same channel as any kernel-side bridge plugin.
     pub sse_tx: broadcast::Sender<SseEvent>,
+    pub process_runner: Option<Arc<dyn crate::state::ProcessRunLauncher>>,
 }
 
 impl ServerConfig {
@@ -38,6 +39,7 @@ impl ServerConfig {
             plugin_info: Vec::new(),
             data_dir: None,
             sse_tx,
+            process_runner: None,
         }
     }
 }
@@ -76,6 +78,10 @@ pub async fn start_server(
         config.data_dir,
     )
     .with_plugin_info(config.plugin_info);
+    let state = match config.process_runner {
+        Some(runner) => state.with_process_runner(runner),
+        None => state,
+    };
     let router = build_router(state).layer(DefaultBodyLimit::max(2 * 1024 * 1024)); // 2 MiB
 
     let address = format!("{}:{}", config.host, config.port);
@@ -179,6 +185,7 @@ mod tests {
             plugin_info: vec![],
             data_dir: None,
             sse_tx,
+            process_runner: None,
         };
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 8080);
@@ -197,6 +204,7 @@ mod tests {
             plugin_info: vec![],
             data_dir: None,
             sse_tx,
+            process_runner: None,
         };
         let cloned = config.clone();
         assert_eq!(cloned.host, "0.0.0.0");

@@ -98,6 +98,81 @@
                             <tr><td>Compute Time</td><td x-text="formatDurationMs(detail.compute_time_ms)"></td></tr>
                         </tbody>
                     </table>
+
+                    <form class="mt-1" @submit.prevent="requestRunConfirmation()">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="estimate-run-path">Path</label>
+                                <input id="estimate-run-path" type="text" x-model="runForm.path" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="estimate-run-policy">Policy</label>
+                                <input id="estimate-run-policy" type="text" x-model="runForm.policy">
+                            </div>
+                        </div>
+                        <div class="btn-group">
+                            <button class="btn btn-primary" type="submit">Confirm Run</button>
+                            <button class="btn btn-secondary" type="button" @click="detail = null">Cancel</button>
+                        </div>
+                    </form>
+                </div>
+            </template>
+        </section>
+    </div>
+
+    <div x-show="confirmation" x-cloak
+         style="position: fixed; inset: 0; z-index: 320; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 1rem;">
+        <section style="width: min(640px, 100%); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem;">
+            <div class="card-header">
+                <h2>Confirm Run</h2>
+                <button class="btn btn-secondary btn-sm" type="button" @click="confirmation = null">Cancel</button>
+            </div>
+            <template x-if="confirmation">
+                <div>
+                    <div class="card-grid">
+                        <div class="stat-card success">
+                            <div class="stat-value" x-text="formatSignedSize(confirmation.bytes_saved)"></div>
+                            <div class="stat-label">Bytes Saved</div>
+                        </div>
+                        <div class="stat-card info">
+                            <div class="stat-value" x-text="formatDurationMs(confirmation.wall_time_ms)"></div>
+                            <div class="stat-label">Wall Time</div>
+                        </div>
+                        <div class="stat-card warning">
+                            <div class="stat-value" x-text="confirmation.high_uncertainty_files"></div>
+                            <div class="stat-label">Uncertain</div>
+                        </div>
+                        <div class="stat-card danger">
+                            <div class="stat-value" x-text="confirmation.net_loss_files"></div>
+                            <div class="stat-label">Net Loss</div>
+                        </div>
+                    </div>
+                    <table class="mb-1">
+                        <tbody>
+                            <tr><td>Bytes In</td><td x-text="formatSize(confirmation.bytes_in)"></td></tr>
+                            <tr><td>Bytes Out</td><td x-text="formatSize(confirmation.bytes_out)"></td></tr>
+                            <tr><td>Compute Time</td><td x-text="formatDurationMs(confirmation.compute_time_ms)"></td></tr>
+                        </tbody>
+                    </table>
+                    <h2>Phase Breakdown</h2>
+                    <table class="mb-1">
+                        <thead>
+                            <tr><th>Phase</th><th>Plans</th><th>Compute</th></tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="phase in phaseBreakdown(confirmation)" :key="phase.name">
+                                <tr>
+                                    <td x-text="phase.name"></td>
+                                    <td x-text="phase.count"></td>
+                                    <td x-text="formatDurationMs(phase.compute_ms)"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                    <div class="btn-group">
+                        <button class="btn btn-primary" type="button" @click="startConfirmedRun()">Start Run</button>
+                        <button class="btn btn-secondary" type="button" @click="confirmation = null">Cancel</button>
+                    </div>
                 </div>
             </template>
         </section>
@@ -109,6 +184,8 @@ function estimateRecords() {
     return {
         estimates: [],
         detail: null,
+        confirmation: null,
+        runForm: { path: '', policy: '' },
         error: null,
         refresh() {
             fetch('/api/estimates')
@@ -125,7 +202,42 @@ function estimateRecords() {
                     if (!r.ok) throw new Error('request failed');
                     return r.json();
                 })
-                .then(d => { this.detail = d; this.error = null; })
+                .then(d => { this.detail = d; this.confirmation = null; this.error = null; })
+                .catch(() => { this.error = 'unavailable'; });
+        },
+        processRunPayload(confirmed) {
+            const payload = {
+                paths: [this.runForm.path],
+                estimate_id: this.detail.id,
+                confirmed: confirmed
+            };
+            if (this.runForm.policy) payload.policy = this.runForm.policy;
+            return payload;
+        },
+        requestRunConfirmation() {
+            fetch('/api/process-runs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.processRunPayload(false))
+            })
+                .then(r => {
+                    if (!r.ok) throw new Error('request failed');
+                    return r.json();
+                })
+                .then(d => { this.confirmation = d.estimate; this.error = null; })
+                .catch(() => { this.error = 'unavailable'; });
+        },
+        startConfirmedRun() {
+            fetch('/api/process-runs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.processRunPayload(true))
+            })
+                .then(r => {
+                    if (!r.ok) throw new Error('request failed');
+                    return r.json();
+                })
+                .then(() => { this.confirmation = null; this.detail = null; this.error = null; })
                 .catch(() => { this.error = 'unavailable'; });
         }
     };
@@ -146,6 +258,18 @@ function formatSize(bytes) {
 function formatSignedSize(bytes) {
     if ((bytes || 0) < 0) return '-' + formatSize(bytes);
     return formatSize(bytes);
+}
+
+function phaseBreakdown(estimate) {
+    const phases = new Map();
+    (estimate?.files || []).forEach(file => {
+        const phase = file.phase_name || 'unknown';
+        const current = phases.get(phase) || { name: phase, count: 0, compute_ms: 0 };
+        current.count += 1;
+        current.compute_ms += file.compute_time_ms || 0;
+        phases.set(phase, current);
+    });
+    return Array.from(phases.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 </script>
 {% endblock %}

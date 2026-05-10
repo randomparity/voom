@@ -5,9 +5,12 @@ use anyhow::{Context, Result};
 use console::style;
 use tokio_util::sync::CancellationToken;
 use voom_web_server::server::{start_server, ServerConfig};
-use voom_web_server::state::{SseEvent, SSE_CHANNEL_CAPACITY};
+use voom_web_server::state::{
+    ProcessRunLaunchRequest, ProcessRunLaunchResponse, ProcessRunLauncher, SseEvent,
+    SSE_CHANNEL_CAPACITY,
+};
 
-use crate::cli::ServeArgs;
+use crate::cli::{ErrorHandling, ProcessArgs, ServeArgs};
 
 /// Priority for the web-sse-bridge plugin. In the VOOM event bus, lower
 /// priority numbers dispatch first; 200 is the highest registered value
@@ -15,6 +18,58 @@ use crate::cli::ServeArgs;
 /// job-manager (20) and sqlite-store (100) have already logged and
 /// persisted them.
 const PRIORITY_WEB_SSE_BRIDGE: i32 = 200;
+
+struct CliProcessRunLauncher {
+    token: CancellationToken,
+}
+
+impl CliProcessRunLauncher {
+    fn new(token: CancellationToken) -> Self {
+        Self { token }
+    }
+}
+
+impl ProcessRunLauncher for CliProcessRunLauncher {
+    fn launch(&self, request: ProcessRunLaunchRequest) -> Result<ProcessRunLaunchResponse, String> {
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let process_args = process_args_from_launch_request(request);
+        let token = self.token.child_token();
+        let run_id_for_task = run_id.clone();
+
+        tokio::spawn(async move {
+            if let Err(error) = crate::commands::process::run(process_args, true, token).await {
+                tracing::error!(
+                    run_id = %run_id_for_task,
+                    error = %error,
+                    "web-started process run failed"
+                );
+            }
+        });
+
+        Ok(ProcessRunLaunchResponse::new(run_id, "started"))
+    }
+}
+
+fn process_args_from_launch_request(request: ProcessRunLaunchRequest) -> ProcessArgs {
+    ProcessArgs {
+        paths: request.paths,
+        policy: request.policy,
+        policy_map: request.policy_map,
+        dry_run: false,
+        estimate: false,
+        estimate_only: false,
+        on_error: ErrorHandling::Fail,
+        workers: request.workers,
+        approve: false,
+        no_backup: false,
+        force_rescan: request.force_rescan,
+        flag_size_increase: false,
+        flag_duration_shrink: false,
+        plan_only: false,
+        confirm_savings: None,
+        priority_by_date: false,
+    }
+}
 
 pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     let config = crate::config::load_config()?;
@@ -156,6 +211,7 @@ pub async fn run(args: ServeArgs, token: CancellationToken) -> Result<()> {
     server_config.auth_token = config.auth_token;
     server_config.plugin_info = plugin_info;
     server_config.data_dir = Some(config.data_dir.clone());
+    server_config.process_runner = Some(Arc::new(CliProcessRunLauncher::new(token.clone())));
 
     let shutdown = async move { token.cancelled().await };
     start_server(server_config, store, shutdown).await?;
@@ -182,6 +238,33 @@ mod tests {
         assert_eq!(server_config.port, 8080);
         assert_eq!(server_config.host, "127.0.0.1");
         assert!(server_config.auth_token.is_none());
+    }
+
+    #[test]
+    fn process_args_from_web_launch_request_runs_existing_process_path() {
+        let request = voom_web_server::state::ProcessRunLaunchRequest::new(
+            vec![std::path::PathBuf::from("/media/movie.mkv")],
+            uuid::Uuid::new_v4(),
+        )
+        .with_policy(Some(std::path::PathBuf::from("/policies/archive.voom")))
+        .with_workers(2)
+        .with_force_rescan(true);
+
+        let args = process_args_from_launch_request(request);
+
+        assert_eq!(
+            args.paths,
+            vec![std::path::PathBuf::from("/media/movie.mkv")]
+        );
+        assert_eq!(
+            args.policy,
+            Some(std::path::PathBuf::from("/policies/archive.voom"))
+        );
+        assert_eq!(args.workers, 2);
+        assert!(args.force_rescan);
+        assert!(!args.estimate);
+        assert!(!args.dry_run);
+        assert!(!args.plan_only);
     }
 
     #[test]
