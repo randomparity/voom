@@ -1,0 +1,85 @@
+---
+source: crates/voom-dsl/tests/parser_snapshots.rs
+expression: ast
+---
+name: speech-language-filter
+config:
+  audio_languages:
+    - eng
+  subtitle_languages:
+    - eng
+  on_error: continue
+  commentary_patterns: []
+  keep_backups: ~
+  span:
+    start: 253
+    end: 345
+    line: 10
+    col: 3
+phases:
+  - name: keep-english
+    skip_when: ~
+    depends_on: []
+    run_if: ~
+    on_error: ~
+    operations:
+      - node:
+          Keep:
+            target: audio
+            filter:
+              LangIn:
+                - eng
+                - und
+                - mul
+        span:
+          start: 374
+          end: 417
+          line: 17
+          col: 5
+    span:
+      start: 349
+      end: 418
+      line: 16
+      col: 3
+  - name: validate
+    skip_when: ~
+    depends_on:
+      - keep-english
+    run_if: ~
+    on_error: ~
+    operations:
+      - node:
+          When:
+            condition:
+              Not:
+                Exists:
+                  target: audio
+                  filter:
+                    Or:
+                      - LangIn:
+                          - eng
+                      - LangIn:
+                          - mul
+            then_actions:
+              - Warn: "No English or mixed-language speech audio in {filename}"
+            else_actions: []
+            span:
+              start: 475
+              end: 610
+              line: 23
+              col: 5
+        span:
+          start: 475
+          end: 610
+          line: 23
+          col: 5
+    span:
+      start: 422
+      end: 611
+      line: 20
+      col: 3
+span:
+  start: 0
+  end: 614
+  line: 1
+  col: 1

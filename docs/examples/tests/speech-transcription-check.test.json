@@ -1,0 +1,13 @@
+{
+  "policy": "../speech-transcription-check.voom",
+  "cases": [
+    {
+      "name": "runs declared-language speech checks without warnings",
+      "fixture": "speech-dual-language.json",
+      "expect": {
+        "phases_run": ["classify-speech", "validate"],
+        "no_warnings": true
+      }
+    }
+  ]
+}

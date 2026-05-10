@@ -47,6 +47,18 @@ External metadata enrichment using WASM plugin data. `field exists` conditions, 
 
 **Plugins used:** radarr-metadata, sonarr-metadata (WASM), mkvtoolnix-executor
 
+### [speech-language-filter.voom](speech-language-filter.voom)
+Generated speech corpus language filtering. Demonstrates keeping English and
+mixed-language speech tracks while warning on Spanish-only files.
+
+**Plugins used:** policy-evaluator
+
+### [speech-transcription-check.voom](speech-transcription-check.voom)
+Declared-language speech fixture workflow. Demonstrates tagging generated TTS
+speech files by declared audio language and validating that speech audio remains.
+
+**Plugins used:** policy-evaluator
+
 ### [attachment-management.voom](attachment-management.voom)
 Attachment management for font and image attachments. Demonstrates `remove attachments where not font`, `keep attachments where` with compound filters, `count(attachments)` and `exists(attachments)` conditions, `title contains` for cover art detection. Common use case: anime fansub font cleanup.
 
@@ -66,13 +78,13 @@ Comprehensive reference exercising **every DSL construct**. Not intended for pro
 
 | Feature | Examples |
 |---------|----------|
-| `config` block | movie-library, anime, transcode, metadata, strict, full |
+| `config` block | movie-library, anime, transcode, metadata, strict, full, speech-language-filter, speech-transcription-check |
 | `depends_on` | all except minimal |
 | `skip when` | transcode, full |
 | `run_if` (modified/completed) | anime, transcode, strict, full |
-| `on_error` | movie-library, transcode, strict, full |
+| `on_error` | movie-library, transcode, strict, full, speech-language-filter, speech-transcription-check |
 | `container` | minimal, movie-library, anime, transcode, full |
-| `keep` / `remove` | movie-library, anime, attachment, strict, full |
+| `keep` / `remove` | movie-library, anime, attachment, strict, full, speech-language-filter |
 | `order tracks` | movie-library, anime, strict, full |
 | `defaults` | movie-library, anime, strict, full |
 | `actions` (video/audio/subtitle) | movie-library, anime, strict, full |
@@ -82,19 +94,19 @@ Comprehensive reference exercising **every DSL construct**. Not intended for pro
 | `synthesize` | transcode, full |
 | `when` / `else` | anime, metadata, full |
 | `rules first` | metadata, full |
-| `rules all` | anime, full |
-| `exists()` | anime, attachment, transcode, full |
-| `count()` | movie-library, anime, attachment, strict, full |
+| `rules all` | anime, full, speech-transcription-check |
+| `exists()` | anime, attachment, transcode, full, speech-language-filter, speech-transcription-check |
+| `count()` | movie-library, anime, attachment, strict, full, speech-transcription-check |
 | `audio_is_multi_language` | anime, full |
 | `is_dubbed` / `is_original` | anime, metadata, full |
 | `field exists` | metadata, full |
 | `field compare` | transcode, strict, full |
 | `set_default` / `set_forced` | anime, full |
 | `set_language` (field) | metadata, full |
-| `set_tag` | metadata, full |
-| `skip` / `fail` / `warn` | movie-library, anime, strict, metadata, full |
+| `set_tag` | metadata, full, speech-transcription-check |
+| `skip` / `fail` / `warn` | movie-library, anime, strict, metadata, full, speech-language-filter, speech-transcription-check |
 | `title contains` / `matches` | anime, attachment, strict, full |
-| `lang ==` / `codec ==` | anime, strict, full |
+| `lang ==` / `codec ==` | anime, strict, full, speech-language-filter, speech-transcription-check |
 | `channels` comparison | anime, strict, full |
 | `commentary` / `forced` / `default` / `font` | movie-library, anime, attachment, strict, full |
 | Boolean logic (and/or/not/parens) | all except minimal |

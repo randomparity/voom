@@ -1,0 +1,136 @@
+---
+source: crates/voom-dsl/tests/parser_snapshots.rs
+expression: ast
+---
+name: speech-transcription-check
+config:
+  audio_languages:
+    - eng
+    - spa
+  subtitle_languages:
+    - eng
+  on_error: continue
+  commentary_patterns: []
+  keep_backups: ~
+  span:
+    start: 252
+    end: 349
+    line: 7
+    col: 3
+phases:
+  - name: classify-speech
+    skip_when: ~
+    depends_on: []
+    run_if: ~
+    on_error: ~
+    operations:
+      - node:
+          Rules:
+            mode: all
+            rules:
+              - name: english-speech
+                when:
+                  condition:
+                    Exists:
+                      target: audio
+                      filter:
+                        LangIn:
+                          - eng
+                  then_actions:
+                    - SetTag:
+                        - speech_language
+                        - Value:
+                            String: eng
+                  else_actions: []
+                  span:
+                    start: 431
+                    end: 528
+                    line: 16
+                    col: 9
+              - name: spanish-speech
+                when:
+                  condition:
+                    Exists:
+                      target: audio
+                      filter:
+                        LangIn:
+                          - spa
+                  then_actions:
+                    - SetTag:
+                        - speech_language_alt
+                        - Value:
+                            String: spa
+                  else_actions: []
+                  span:
+                    start: 569
+                    end: 670
+                    line: 22
+                    col: 9
+              - name: mixed-speech
+                when:
+                  condition:
+                    Exists:
+                      target: audio
+                      filter:
+                        LangIn:
+                          - mul
+                  then_actions:
+                    - SetTag:
+                        - speech_language_mixed
+                        - Value:
+                            String: "true"
+                    - Warn: "Mixed-language speech fixture detected in {filename}"
+                  else_actions: []
+                  span:
+                    start: 709
+                    end: 883
+                    line: 28
+                    col: 9
+        span:
+          start: 381
+          end: 890
+          line: 14
+          col: 5
+    span:
+      start: 353
+      end: 894
+      line: 13
+      col: 3
+  - name: validate
+    skip_when: ~
+    depends_on:
+      - classify-speech
+    run_if: ~
+    on_error: ~
+    operations:
+      - node:
+          When:
+            condition:
+              Count:
+                - target: audio
+                  filter: ~
+                - Eq
+                - 0
+            then_actions:
+              - Fail: "No speech audio tracks remain in {filename}"
+            else_actions: []
+            span:
+              start: 954
+              end: 1044
+              line: 39
+              col: 5
+        span:
+          start: 954
+          end: 1044
+          line: 39
+          col: 5
+    span:
+      start: 898
+      end: 1045
+      line: 36
+      col: 3
+span:
+  start: 0
+  end: 1048
+  line: 1
+  col: 1

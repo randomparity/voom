@@ -1,0 +1,22 @@
+{
+  "policy": "../speech-language-filter.voom",
+  "cases": [
+    {
+      "name": "keeps english track from dual-language speech fixture",
+      "fixture": "speech-dual-language.json",
+      "expect": {
+        "phases_run": ["keep-english", "validate"],
+        "audio_tracks_kept": 1,
+        "no_warnings": true
+      }
+    },
+    {
+      "name": "retains spanish track when keep filter would remove all audio",
+      "fixture": "speech-spanish-only.json",
+      "expect": {
+        "phases_run": ["keep-english", "validate"],
+        "audio_tracks_kept": 1
+      }
+    }
+  ]
+}
