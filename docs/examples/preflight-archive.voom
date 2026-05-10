@@ -1,0 +1,32 @@
+// Archival pre-flight estimate policy.
+//
+// Designed for `voom process --estimate` and `voom estimate` examples.
+
+policy "preflight-archive" {
+  phase containerize {
+    container mkv
+  }
+
+  phase transcode-video {
+    depends_on: [containerize]
+    skip when video.codec in [hevc, h265, av1]
+
+    transcode video to hevc {
+      crf: 21
+      preset: slow
+      hw: nvenc
+      hw_fallback: true
+      hdr_mode: preserve
+    }
+  }
+
+  phase transcode-audio {
+    depends_on: [containerize]
+    skip when not exists(audio where codec in [truehd, dts, ac3, mp3])
+
+    transcode audio to aac {
+      bitrate: 192k
+      channels: preserve
+    }
+  }
+}

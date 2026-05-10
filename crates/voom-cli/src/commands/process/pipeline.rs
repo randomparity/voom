@@ -183,6 +183,13 @@ fn process_single_file_dry_run(
         }
     }
 
+    if ctx.estimate_mode {
+        ctx.counters
+            .estimate_plans
+            .lock()
+            .extend(result.plans.iter().cloned());
+    }
+
     let plan_summaries: Vec<serde_json::Value> = result
         .plans
         .iter()
@@ -247,6 +254,19 @@ async fn process_single_file_execute(
         let mut plan = plan.with_session_id(ctx.counters.session_id);
 
         plans_evaluated += 1;
+
+        if savings_below_threshold(&plan, ctx) {
+            phase_outcomes.insert(
+                phase_name.clone(),
+                voom_policy_evaluator::EvaluationOutcome::Skipped,
+            );
+            record_phase_stat(
+                &ctx.counters.phase_stats,
+                &plan.phase_name,
+                PhaseOutcomeKind::Skipped("estimated savings below threshold".to_string()),
+            );
+            continue;
+        }
 
         dispatch_safeguard_violations(&plan, &current_file, ctx);
 
@@ -812,6 +832,17 @@ fn cropdetect_request_for_plan(plan: &Plan, file: &MediaFile) -> Option<CropDete
 
 fn crop_settings_fingerprint(settings: &CropSettings) -> Result<String, String> {
     serde_json::to_string(settings).map_err(|e| format!("failed to fingerprint crop settings: {e}"))
+}
+
+fn savings_below_threshold(plan: &Plan, ctx: &ProcessContext<'_>) -> bool {
+    let Some(threshold) = ctx.confirm_savings else {
+        return false;
+    };
+    let estimate = voom_domain::estimate_plans(
+        voom_domain::EstimateInput::new(vec![plan.clone()], 1, chrono::Utc::now()),
+        &ctx.estimate_model,
+    );
+    estimate.bytes_saved < threshold as i64
 }
 
 #[cfg(test)]

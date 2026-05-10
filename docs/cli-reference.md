@@ -93,6 +93,8 @@ voom process <PATH>... [--policy <FILE> | --policy-map <TOML>] [OPTIONS]
 | `-p`, `--policy <FILE>` | *optional* | Policy file (`.voom`) to apply to all files (conflicts with `--policy-map`) |
 | `--policy-map <TOML>` | *optional* | TOML file mapping directory prefixes to policies (conflicts with `--policy`) |
 | `--dry-run` | `false` | Show what would be done without making changes |
+| `--estimate` | `false` | Estimate runtime and output size without executing plans |
+| `--estimate-only` | `false` | Alias for `--estimate` |
 | `--on-error <STRATEGY>` | `fail` | Error handling: `continue` or `fail` |
 | `-w`, `--workers <N>` | `0` (auto) | Number of parallel workers |
 | `--approve` | `false` | Require interactive approval for each file |
@@ -101,6 +103,7 @@ voom process <PATH>... [--policy <FILE> | --policy-map <TOML>] [OPTIONS]
 | `--flag-size-increase` | `false` | Tag files whose output is larger than the original |
 | `--flag-duration-shrink` | `false` | Flag files whose output duration is >5% shorter than the original (post-execution) |
 | `--plan-only` | `false` | Output raw plans as JSON to stdout without executing (implies --dry-run) |
+| `--confirm-savings <SIZE>` | *optional* | Execute only files whose estimated savings meet the per-file threshold |
 | `--priority-by-date` | `false` | Assign job priority based on file modification date |
 
 Before processing, stale database entries for files that no longer exist under the target directory are automatically pruned (along with their associated plans and processing stats). Files that previously failed introspection (tracked as "bad files") are automatically skipped unless `--force-rescan` is set.
@@ -123,7 +126,27 @@ voom process /media --policy-map policies.toml
 
 # Output plans as JSON without executing
 voom process /media/movies --policy normalize.voom --plan-only
+
+# Estimate cost without executing
+voom process /media/movies --policy normalize.voom --estimate
+
+# Only execute plans estimated to save at least 1 GB per file
+voom process /media/movies --policy normalize.voom --confirm-savings 1GB
 ```
+
+---
+
+### `voom estimate`
+
+Estimate policy cost without modifying files.
+
+```bash
+voom estimate /media/movies --policy normalize.voom --workers 4
+voom estimate calibrate
+```
+
+The standalone command shares the `process --estimate` planning path. Calibration
+records local codec/backend samples used by later estimates.
 
 ---
 

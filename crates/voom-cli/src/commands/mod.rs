@@ -3,6 +3,7 @@ pub mod completions;
 pub mod config;
 pub mod db;
 pub mod env;
+pub mod estimate;
 pub mod events;
 pub mod files;
 pub mod history;

@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::bad_file::{BadFile, BadFileSource};
 use crate::errors::Result;
+use crate::estimate::{CostModelSample, EstimateOperationKey, EstimateRun};
 use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::{Container, MediaFile, StoredFingerprint};
 use crate::plan::Plan;
@@ -595,6 +596,28 @@ pub trait TranscodeOutcomeStorage: Send + Sync {
     fn latest_outcome_for_file(&self, file_id: &str) -> Result<Option<TranscodeOutcome>>;
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct CostModelSampleFilters {
+    pub key: Option<EstimateOperationKey>,
+    pub limit: Option<u32>,
+}
+
+/// Pre-flight estimate and local cost-model persistence.
+///
+/// # Errors
+/// Implementations return [`VoomError::Storage`](crate::errors::VoomError::Storage)
+/// for any underlying database failure.
+pub trait EstimateStorage: Send + Sync {
+    fn insert_estimate_run(&self, run: &EstimateRun) -> Result<()>;
+    fn get_estimate_run(&self, id: &Uuid) -> Result<Option<EstimateRun>>;
+    fn list_estimate_runs(&self, limit: u32) -> Result<Vec<EstimateRun>>;
+    fn insert_cost_model_sample(&self, sample: &CostModelSample) -> Result<()>;
+    fn list_cost_model_samples(
+        &self,
+        filters: &CostModelSampleFilters,
+    ) -> Result<Vec<CostModelSample>>;
+}
+
 /// Composed storage interface encompassing all sub-traits.
 ///
 /// All methods are synchronous (blocking) since rusqlite is synchronous.
@@ -617,6 +640,7 @@ pub trait StorageTrait:
     + PendingOpsStorage
     + VerificationStorage
     + TranscodeOutcomeStorage
+    + EstimateStorage
 {
 }
 
@@ -635,6 +659,7 @@ impl<T> StorageTrait for T where
         + PendingOpsStorage
         + VerificationStorage
         + TranscodeOutcomeStorage
+        + EstimateStorage
 {
 }
 

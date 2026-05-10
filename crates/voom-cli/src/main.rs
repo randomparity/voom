@@ -66,6 +66,7 @@ async fn main() -> Result<()> {
         Commands::Scan(args) => commands::scan::run(args, quiet, token).await,
         Commands::Inspect(args) => commands::inspect::run(&args),
         Commands::Process(args) => commands::process::run(args, quiet, token).await,
+        Commands::Estimate(args) => commands::estimate::run(args, quiet, token).await,
         Commands::Policy(sub) => commands::policy::run(sub).await,
         Commands::Plugin(sub) => commands::plugin::run(sub),
         Commands::Jobs(sub) => commands::jobs::run(sub, global_yes),
@@ -100,7 +101,7 @@ async fn main() -> Result<()> {
 fn command_needs_lock(command: &Commands) -> bool {
     use cli::{BackupCommands, FilesCommands, JobsCommands, VerifyCommands};
     match command {
-        Commands::Scan(_) | Commands::Process(_) | Commands::Db(_) => true,
+        Commands::Scan(_) | Commands::Process(_) | Commands::Estimate(_) | Commands::Db(_) => true,
         Commands::Jobs(sub) => matches!(
             sub,
             JobsCommands::Cancel { .. } | JobsCommands::Retry { .. } | JobsCommands::Clear { .. }

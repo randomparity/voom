@@ -4,6 +4,7 @@ pub mod bad_file;
 pub mod capabilities;
 pub mod capability_map;
 pub mod errors;
+pub mod estimate;
 pub mod events;
 pub mod host_types;
 pub mod job;
@@ -30,6 +31,10 @@ pub use bad_file::{BadFile, BadFileSource};
 pub use capabilities::Capability;
 pub use capability_map::CapabilityMap;
 pub use errors::{Result, VoomError};
+pub use estimate::{
+    estimate_plans, ActionEstimate, CostModelSample, EstimateInput, EstimateModel,
+    EstimateOperationKey, EstimateRun, FileEstimate,
+};
 pub use events::Event;
 pub use job::{DiscoveredFilePayload, Job, JobStatus, JobUpdate};
 pub use media::{Container, CropDetection, CropRect, MediaFile, Track, TrackType};
@@ -45,10 +50,11 @@ pub use stats::{
     ProcessingOutcome, SnapshotTrigger, SubtitleStats, VideoStats,
 };
 pub use storage::{
-    BadFileFilters, BadFileStorage, EventLogFilters, EventLogRecord, EventLogStorage, FileFilters,
-    FileStorage, FileTransitionStorage, HealthCheckFilters, HealthCheckRecord, HealthCheckStorage,
-    JobFilters, JobStorage, MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage,
-    SnapshotStorage, StorageTrait, TranscodeOutcomeFilters, TranscodeOutcomeStorage,
+    BadFileFilters, BadFileStorage, CostModelSampleFilters, EstimateStorage, EventLogFilters,
+    EventLogRecord, EventLogStorage, FileFilters, FileStorage, FileTransitionStorage,
+    HealthCheckFilters, HealthCheckRecord, HealthCheckStorage, JobFilters, JobStorage,
+    MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage, SnapshotStorage, StorageTrait,
+    TranscodeOutcomeFilters, TranscodeOutcomeStorage,
 };
 pub use transcode::TranscodeOutcome;
 pub use transition::{

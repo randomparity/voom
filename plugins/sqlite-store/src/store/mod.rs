@@ -1,5 +1,6 @@
 mod bad_file_storage;
 mod discovered_file_storage;
+mod estimate_storage;
 mod event_log_storage;
 mod file_storage;
 mod file_transition_storage;

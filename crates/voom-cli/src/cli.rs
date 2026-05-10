@@ -37,6 +37,9 @@ pub enum Commands {
     /// Apply policy to files
     Process(ProcessArgs),
 
+    /// Estimate policy cost without modifying files
+    Estimate(EstimateArgs),
+
     /// Policy management
     #[command(subcommand)]
     Policy(PolicyCommands),
@@ -181,6 +184,14 @@ pub struct ProcessArgs {
     #[arg(long)]
     pub dry_run: bool,
 
+    /// Estimate runtime and output size without executing plans
+    #[arg(long)]
+    pub estimate: bool,
+
+    /// Alias for --estimate
+    #[arg(long)]
+    pub estimate_only: bool,
+
     /// Error handling strategy
     #[arg(long, default_value = "fail")]
     pub on_error: ErrorHandling,
@@ -215,9 +226,65 @@ pub struct ProcessArgs {
     #[arg(long)]
     pub plan_only: bool,
 
+    /// Execute only files whose estimated per-file savings meet this threshold
+    #[arg(long, value_parser = parse_size_bytes)]
+    pub confirm_savings: Option<u64>,
+
     /// Assign job priority based on file modification date
     #[arg(long)]
     pub priority_by_date: bool,
+}
+
+#[derive(clap::Args)]
+pub struct EstimateArgs {
+    /// Directories or files to estimate
+    #[arg(required = true, num_args = 1..)]
+    pub paths: Vec<PathBuf>,
+
+    /// Policy file (.voom) to estimate
+    #[arg(short, long, conflicts_with = "policy_map")]
+    pub policy: Option<PathBuf>,
+
+    /// TOML file mapping directory prefixes to policies
+    #[arg(long, conflicts_with = "policy")]
+    pub policy_map: Option<PathBuf>,
+
+    /// Number of parallel workers to use for wall-time estimates
+    #[arg(short, long, default_value_t = 0)]
+    pub workers: usize,
+
+    /// Re-introspect every file from scratch before estimating
+    #[arg(long)]
+    pub force_rescan: bool,
+}
+
+fn parse_size_bytes(value: &str) -> std::result::Result<u64, String> {
+    let trimmed = value.trim();
+    let split = trimmed
+        .find(|ch: char| !ch.is_ascii_digit())
+        .unwrap_or(trimmed.len());
+    let (digits, suffix) = trimmed.split_at(split);
+    if digits.is_empty() {
+        return Err("size must start with a byte count".to_string());
+    }
+    let amount = digits
+        .parse::<u64>()
+        .map_err(|error| format!("invalid byte count '{digits}': {error}"))?;
+    let multiplier = match suffix.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "kb" => 1_000,
+        "mb" => 1_000_000,
+        "gb" => 1_000_000_000,
+        "tb" => 1_000_000_000_000,
+        "kib" => 1_024,
+        "mib" => 1_048_576,
+        "gib" => 1_073_741_824,
+        "tib" => 1_099_511_627_776,
+        _ => return Err(format!("unsupported size suffix '{suffix}'")),
+    };
+    amount
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("size '{value}' exceeds u64"))
 }
 
 // === Policy ===
@@ -1116,6 +1183,41 @@ mod tests {
                 assert!(args.no_backup);
             }
             _ => panic!("expected Process"),
+        }
+    }
+
+    #[test]
+    fn test_process_estimate_flags() {
+        let cli = parse(&[
+            "voom",
+            "process",
+            "/media",
+            "--policy",
+            "p.voom",
+            "--estimate",
+            "--estimate-only",
+            "--confirm-savings",
+            "1GB",
+        ]);
+        match cli.command {
+            Commands::Process(args) => {
+                assert!(args.estimate);
+                assert!(args.estimate_only);
+                assert_eq!(args.confirm_savings, Some(1_000_000_000));
+            }
+            _ => panic!("expected Process"),
+        }
+    }
+
+    #[test]
+    fn test_estimate_command() {
+        let cli = parse(&["voom", "estimate", "/media", "--policy", "p.voom"]);
+        match cli.command {
+            Commands::Estimate(args) => {
+                assert_eq!(args.paths, vec![PathBuf::from("/media")]);
+                assert_eq!(args.policy, Some(PathBuf::from("p.voom")));
+            }
+            _ => panic!("expected Estimate"),
         }
     }
 
