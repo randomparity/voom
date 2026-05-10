@@ -787,6 +787,56 @@ def transcript_entry(track, lang, text):
     return {"track": track, "lang": lang, "text": text}
 
 
+def tts_audio(lang, voice, text, title=None):
+    """Return one TTS audio track spec."""
+    audio = {
+        "codec": "aac",
+        "channels": 2,
+        "lang": lang,
+        "source": "tts",
+        "voice": voice,
+        "text": text,
+    }
+    if title:
+        audio["title"] = title
+    return audio
+
+
+def speech_expect(audio_tracks, languages, transcript, extra=None):
+    """Return manifest expectations for a speech fixture."""
+    expect = {
+        "bad_file": False,
+        "audio_tracks": audio_tracks,
+        "speech": True,
+        "speech_languages": languages,
+        "transcript": transcript,
+    }
+    if extra:
+        expect.update(extra)
+    return expect
+
+
+def speech_fixture(*, stem, ext, profiles, covers, expect, audio):
+    """Return a complete TTS fixture spec."""
+    return {
+        "stem": stem,
+        "ext": ext,
+        "profiles": profiles,
+        "covers": covers,
+        "expect": expect,
+        "video": {
+            "source": "testsrc2",
+            "codec": "libx264",
+            "size": "1280x720",
+            "fps": 24,
+        },
+        "audio": audio,
+        "subs": [],
+        "special": [],
+        "requires_tts": True,
+    }
+
+
 def build_tts_feature_specs():
     """Return speech fixture specs for transcription and language testing."""
     english = "This English narration confirms the speech test fixture."
@@ -796,148 +846,69 @@ def build_tts_feature_specs():
         "Esta frase en espanol comprueba el cambio de idioma."
     )
 
-    base_video = {
-        "source": "testsrc2",
-        "codec": "libx264",
-        "size": "1280x720",
-        "fps": 24,
-    }
     return [
-        {
-            "stem": "speech-english-aac",
-            "ext": "mp4",
-            "profiles": ["smoke", "coverage"],
-            "covers": ["audio.speech.tts", "audio.speech.language.eng"],
-            "expect": {
-                "bad_file": False,
-                "audio_tracks": 1,
-                "speech": True,
-                "speech_languages": ["eng"],
-                "transcript": [transcript_entry(0, "eng", english)],
-            },
-            "video": dict(base_video),
-            "audio": [
-                {
-                    "codec": "aac",
-                    "channels": 2,
-                    "lang": "eng",
-                    "source": "tts",
-                    "voice": "en-us",
-                    "text": english,
-                }
-            ],
-            "subs": [],
-            "special": [],
-            "requires_tts": True,
-        },
-        {
-            "stem": "speech-spanish-aac",
-            "ext": "mp4",
-            "profiles": ["coverage"],
-            "covers": ["audio.speech.tts", "audio.speech.language.spa"],
-            "expect": {
-                "bad_file": False,
-                "audio_tracks": 1,
-                "speech": True,
-                "speech_languages": ["spa"],
-                "transcript": [transcript_entry(0, "spa", spanish)],
-            },
-            "video": dict(base_video),
-            "audio": [
-                {
-                    "codec": "aac",
-                    "channels": 2,
-                    "lang": "spa",
-                    "source": "tts",
-                    "voice": "es",
-                    "text": spanish,
-                }
-            ],
-            "subs": [],
-            "special": [],
-            "requires_tts": True,
-        },
-        {
-            "stem": "speech-dual-language",
-            "ext": "mkv",
-            "profiles": ["coverage"],
-            "covers": [
+        speech_fixture(
+            stem="speech-english-aac",
+            ext="mp4",
+            profiles=["smoke", "coverage"],
+            covers=["audio.speech.tts", "audio.speech.language.eng"],
+            expect=speech_expect(1, ["eng"], [transcript_entry(0, "eng", english)]),
+            audio=[tts_audio("eng", "en-us", english)],
+        ),
+        speech_fixture(
+            stem="speech-spanish-aac",
+            ext="mp4",
+            profiles=["coverage"],
+            covers=["audio.speech.tts", "audio.speech.language.spa"],
+            expect=speech_expect(1, ["spa"], [transcript_entry(0, "spa", spanish)]),
+            audio=[tts_audio("spa", "es", spanish)],
+        ),
+        speech_fixture(
+            stem="speech-dual-language",
+            ext="mkv",
+            profiles=["coverage"],
+            covers=[
                 "audio.speech.tts",
                 "audio.speech.language.eng",
                 "audio.speech.language.spa",
                 "audio.speech.dual_track",
             ],
-            "expect": {
-                "bad_file": False,
-                "audio_tracks": 2,
-                "speech": True,
-                "speech_languages": ["eng", "spa"],
-                "transcript": [
+            expect=speech_expect(
+                2,
+                ["eng", "spa"],
+                [
                     transcript_entry(0, "eng", english),
                     transcript_entry(1, "spa", spanish),
                 ],
-            },
-            "video": dict(base_video),
-            "audio": [
-                {
-                    "codec": "aac",
-                    "channels": 2,
-                    "lang": "eng",
-                    "source": "tts",
-                    "voice": "en-us",
-                    "text": english,
-                    "title": "English Speech",
-                },
-                {
-                    "codec": "aac",
-                    "channels": 2,
-                    "lang": "spa",
-                    "source": "tts",
-                    "voice": "es",
-                    "text": spanish,
-                    "title": "Spanish Speech",
-                },
+            ),
+            audio=[
+                tts_audio("eng", "en-us", english, "English Speech"),
+                tts_audio("spa", "es", spanish, "Spanish Speech"),
             ],
-            "subs": [],
-            "special": [],
-            "requires_tts": True,
-        },
-        {
-            "stem": "speech-mixed-language",
-            "ext": "mkv",
-            "profiles": ["coverage"],
-            "covers": [
+        ),
+        speech_fixture(
+            stem="speech-mixed-language",
+            ext="mkv",
+            profiles=["coverage"],
+            covers=[
                 "audio.speech.tts",
                 "audio.speech.language.eng",
                 "audio.speech.language.spa",
                 "audio.speech.mixed_language",
             ],
-            "expect": {
-                "bad_file": False,
-                "audio_tracks": 1,
-                "speech": True,
-                "speech_languages": ["eng", "spa"],
-                "transcript": [transcript_entry(0, "mul", mixed)],
-                "segments": [
-                    {"lang": "eng", "text": "This English segment starts"},
-                    {"lang": "spa", "text": "Esta frase en espanol"},
-                ],
-            },
-            "video": dict(base_video),
-            "audio": [
+            expect=speech_expect(
+                1,
+                ["eng", "spa"],
+                [transcript_entry(0, "mul", mixed)],
                 {
-                    "codec": "aac",
-                    "channels": 2,
-                    "lang": "mul",
-                    "source": "tts",
-                    "voice": "en-us",
-                    "text": mixed,
-                }
-            ],
-            "subs": [],
-            "special": [],
-            "requires_tts": True,
-        },
+                    "segments": [
+                        {"lang": "eng", "text": "This English segment starts"},
+                        {"lang": "spa", "text": "Esta frase en espanol"},
+                    ]
+                },
+            ),
+            audio=[tts_audio("mul", "en-us", mixed)],
+        ),
     ]
 
 
@@ -1892,7 +1863,7 @@ def add_attachments(cmd, specials, tmpdir):
         ]
 
 
-def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir, tts_backend=None):
+def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir, *, tts_backend=None):
     """Build the ffmpeg command list for a given file spec.
 
     Returns (cmd_list, temp_files_to_cleanup).
@@ -2237,7 +2208,7 @@ def generate_normal_spec(*, spec, idx, tmpdir, options, result):
             file_duration,
             file_rng,
             tmpdir,
-            options.tts_backend,
+            tts_backend=options.tts_backend,
         )
     except Exception as e:
         print(
