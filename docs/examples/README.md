@@ -34,6 +34,13 @@ transcodes can be skipped before executor dispatch.
 
 **Plugins used:** policy-evaluator, ffmpeg-executor
 
+### [remote-backup-transcode.voom](remote-backup-transcode.voom)
+Destructive transcode policy intended for remote-backup testing. Pair with
+`remote-backup-rclone.toml` or `remote-backup-s3.toml` in `~/.config/voom/config.toml`
+to upload and verify backups before mutation.
+
+**Plugins used:** policy-evaluator, ffmpeg-executor, backup-manager
+
 ### [hdr-archival.voom](hdr-archival.voom)
 HDR archival transcode policy. Preserves detected HDR10 metadata while encoding HEVC output and demonstrates optional hardware acceleration.
 

@@ -1,0 +1,12 @@
+[plugin.backup-manager]
+use_global_dir = true
+backup_dir = "/var/backups/voom"
+verify_after_upload = true
+block_on_remote_failure = true
+rclone_path = "rclone"
+
+[[plugin.backup-manager.destinations]]
+name = "offsite"
+kind = "rclone"
+remote = "b2:voom-backups"
+bandwidth_limit = "10M"

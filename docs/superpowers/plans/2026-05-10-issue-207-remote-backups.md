@@ -290,10 +290,10 @@ It must configure fake rclone to copy into `/tmp/voom-remote-backup-target`.
 Run:
 
 ```sh
-cargo test -p voom-dsl --test examples
+cargo test -p voom-dsl --test parser_snapshots example_remote_backup_transcode_parses_and_validates
 ```
 
-Expected: all example parser tests pass.
+Expected: the remote backup example parses and validates.
 
 - [ ] **Step 4: Commit**
 
@@ -320,7 +320,7 @@ Run:
 ```sh
 cargo fmt --check
 cargo test -p voom-backup-manager
-cargo test -p voom-dsl --test examples
+cargo test -p voom-dsl --test parser_snapshots
 cargo clippy -p voom-backup-manager --all-targets -- -D warnings
 ```
 
