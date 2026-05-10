@@ -9,6 +9,7 @@
 //! - [`space`] — disk space validation via `statvfs`
 
 pub mod backup;
+pub mod destination;
 pub mod space;
 
 use std::collections::HashMap;
@@ -16,11 +17,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{Event, EventResult};
 use voom_kernel::Plugin;
+
+use crate::destination::{BackupDestinationConfig, BackupDestinationsConfig, RemoteBackupRecord};
 
 /// Create a `VoomError::Plugin` for the backup-manager plugin.
 pub(crate) fn plugin_err(message: impl Into<String>) -> VoomError {
@@ -36,6 +40,7 @@ pub struct BackupRecord {
     pub backup_path: PathBuf,
     pub size: u64,
     pub created_at: DateTime<Utc>,
+    pub remote_backups: Vec<RemoteBackupRecord>,
     /// Whether the backup was intentionally retained via `keep_backups`.
     /// Retained backups are not warned about at shutdown.
     pub retained: bool,
@@ -43,14 +48,28 @@ pub struct BackupRecord {
 
 /// Configuration for backup operations.
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BackupConfig {
     /// Directory to store backups. Used when `use_global_dir` is true.
     pub backup_dir: Option<PathBuf>,
     /// Whether to use a global backup directory or per-file sibling directory.
     pub use_global_dir: bool,
     /// Minimum free space (bytes) required before allowing execution.
+    #[serde(default = "default_min_free_space")]
     pub min_free_space: u64,
+    /// Verify remote object size after upload.
+    #[serde(default = "default_verify_after_upload")]
+    pub verify_after_upload: bool,
+    /// Whether remote upload failures block destructive operations.
+    #[serde(default = "default_block_on_remote_failure")]
+    pub block_on_remote_failure: bool,
+    /// Path to the rclone executable.
+    #[serde(default = "default_rclone_path")]
+    pub rclone_path: String,
+    /// Additional remote destinations.
+    #[serde(default)]
+    pub destinations: Vec<BackupDestinationConfig>,
 }
 
 impl Default for BackupConfig {
@@ -58,9 +77,41 @@ impl Default for BackupConfig {
         Self {
             backup_dir: None,
             use_global_dir: false,
-            min_free_space: 1024 * 1024 * 100, // 100 MB
+            min_free_space: default_min_free_space(),
+            verify_after_upload: default_verify_after_upload(),
+            block_on_remote_failure: default_block_on_remote_failure(),
+            rclone_path: default_rclone_path(),
+            destinations: Vec::new(),
         }
     }
+}
+
+impl BackupConfig {
+    pub fn validate(&self) -> Result<()> {
+        BackupDestinationsConfig {
+            verify_after_upload: self.verify_after_upload,
+            block_on_remote_failure: self.block_on_remote_failure,
+            rclone_path: self.rclone_path.clone(),
+            destinations: self.destinations.clone(),
+        }
+        .validate()
+    }
+}
+
+fn default_min_free_space() -> u64 {
+    1024 * 1024 * 100 // 100 MB
+}
+
+fn default_verify_after_upload() -> bool {
+    true
+}
+
+fn default_block_on_remote_failure() -> bool {
+    true
+}
+
+fn default_rclone_path() -> String {
+    "rclone".to_string()
 }
 
 /// Plugin that manages file backups before plan execution.
@@ -198,10 +249,6 @@ fn backup_result(data: serde_json::Value) -> EventResult {
 }
 
 impl Plugin for BackupManagerPlugin {
-    // NOTE: When config options are added to the plugin context for backup-manager,
-    // `ctx.parse_config::<BackupConfig>()` can be used in `init()` to ergonomically
-    // deserialize them (add Deserialize derive to BackupConfig first).
-
     fn name(&self) -> &'static str {
         "backup-manager"
     }
@@ -223,6 +270,13 @@ impl Plugin for BackupManagerPlugin {
             event_type,
             Event::PLAN_EXECUTING | Event::PLAN_COMPLETED | Event::PLAN_FAILED
         )
+    }
+
+    fn init(&mut self, ctx: &voom_kernel::PluginContext) -> Result<Vec<Event>> {
+        let config: BackupConfig = ctx.parse_config()?;
+        config.validate()?;
+        self.config = config;
+        Ok(Vec::new())
     }
 
     fn shutdown(&self) -> Result<()> {
@@ -259,12 +313,14 @@ impl Plugin for BackupManagerPlugin {
                     "Backing up file before plan execution"
                 );
 
-                self.backup_file(&evt.path)?;
+                let record = self.backup_file(&evt.path)?;
 
                 Ok(Some(backup_result(serde_json::json!({
                     "backed_up": true,
                     "path": evt.path,
                     "phase": evt.phase_name,
+                    "backup_path": record.backup_path,
+                    "remote_backups": record.remote_backups,
                 }))))
             }
             Event::PlanCompleted(evt) => {
@@ -357,6 +413,51 @@ mod tests {
     }
 
     #[test]
+    fn test_init_parses_remote_destinations() {
+        let mut plugin = BackupManagerPlugin::new();
+        let ctx = voom_kernel::PluginContext::new(
+            serde_json::json!({
+                "use_global_dir": true,
+                "backup_dir": "/tmp/voom-backups",
+                "min_free_space": 0,
+                "rclone_path": "fake-rclone",
+                "destinations": [
+                    {
+                        "name": "offsite",
+                        "kind": "rclone",
+                        "remote": "b2:voom",
+                        "bandwidth_limit": "10M"
+                    }
+                ]
+            }),
+            PathBuf::from("/tmp"),
+        );
+
+        plugin.init(&ctx).unwrap();
+
+        assert_eq!(plugin.config.rclone_path, "fake-rclone");
+        assert_eq!(plugin.config.destinations.len(), 1);
+        assert_eq!(plugin.config.destinations[0].name, "offsite");
+    }
+
+    #[test]
+    fn test_init_rejects_invalid_remote_destinations() {
+        let mut plugin = BackupManagerPlugin::new();
+        let ctx = voom_kernel::PluginContext::new(
+            serde_json::json!({
+                "destinations": [
+                    { "name": "offsite", "kind": "rclone" }
+                ]
+            }),
+            PathBuf::from("/tmp"),
+        );
+
+        let err = plugin.init(&ctx).unwrap_err();
+
+        assert!(err.to_string().contains("requires remote"));
+    }
+
+    #[test]
     fn test_backup_path_sibling() {
         let plugin = BackupManagerPlugin::new();
         let path = Path::new("/media/movies/Movie.mkv");
@@ -374,6 +475,7 @@ mod tests {
             backup_dir: Some(PathBuf::from("/tmp/voom-backups")),
             use_global_dir: true,
             min_free_space: 0,
+            ..BackupConfig::default()
         };
         let plugin = BackupManagerPlugin::from_config(config);
         let path = Path::new("/media/movies/Movie.mkv");
@@ -393,6 +495,7 @@ mod tests {
             backup_dir: Some(dir.path().join("backups")),
             use_global_dir: true,
             min_free_space: 0,
+            ..BackupConfig::default()
         };
         let plugin = BackupManagerPlugin::from_config(config);
 
@@ -423,6 +526,7 @@ mod tests {
             backup_dir: Some(dir.path().join("backups")),
             use_global_dir: true,
             min_free_space: 0,
+            ..BackupConfig::default()
         };
         let plugin = BackupManagerPlugin::from_config(config);
 
@@ -445,6 +549,7 @@ mod tests {
             backup_dir: Some(dir.path().join("backups")),
             use_global_dir: true,
             min_free_space: 0,
+            ..BackupConfig::default()
         };
         let plugin = BackupManagerPlugin::from_config(config);
 
@@ -463,6 +568,7 @@ mod tests {
             backup_dir: Some(dir.path().join("backups")),
             use_global_dir: true,
             min_free_space: 0,
+            ..BackupConfig::default()
         };
         let plugin = BackupManagerPlugin::from_config(config);
 
@@ -483,6 +589,7 @@ mod tests {
             backup_dir: Some(dir.path().join("backups")),
             use_global_dir: true,
             min_free_space: 0,
+            ..BackupConfig::default()
         };
         let plugin = BackupManagerPlugin::from_config(config);
 
@@ -509,6 +616,7 @@ mod tests {
             backup_dir: Some(dir.path().join("backups")),
             use_global_dir: true,
             min_free_space: 0,
+            ..BackupConfig::default()
         };
         let plugin = BackupManagerPlugin::from_config(config);
 
@@ -568,6 +676,7 @@ mod tests {
             backup_dir: Some(dir.path().join("backups")),
             use_global_dir: true,
             min_free_space: 0,
+            ..BackupConfig::default()
         };
         let plugin = BackupManagerPlugin::from_config(config);
 
@@ -594,6 +703,33 @@ mod tests {
     }
 
     #[test]
+    fn test_on_event_plan_executing_reports_remote_backup_metadata() {
+        use voom_domain::events::PlanExecutingEvent;
+
+        let dir = TempDir::new().unwrap();
+        let file_path = create_test_file(dir.path(), "movie.mkv", b"movie data");
+
+        let config = BackupConfig {
+            backup_dir: Some(dir.path().join("backups")),
+            use_global_dir: true,
+            min_free_space: 0,
+            ..BackupConfig::default()
+        };
+        let plugin = BackupManagerPlugin::from_config(config);
+        let event = Event::PlanExecuting(PlanExecutingEvent::new(
+            uuid::Uuid::new_v4(),
+            file_path,
+            "normalize",
+            1,
+        ));
+
+        let result = plugin.on_event(&event).unwrap().unwrap();
+        let data = result.data.unwrap();
+
+        assert_eq!(data["remote_backups"], serde_json::json!([]));
+    }
+
+    #[test]
     fn test_on_event_plan_completed_keeps_backup_when_requested() {
         use voom_domain::events::PlanCompletedEvent;
 
@@ -604,6 +740,7 @@ mod tests {
             backup_dir: Some(dir.path().join("backups")),
             use_global_dir: true,
             min_free_space: 0,
+            ..BackupConfig::default()
         };
         let plugin = BackupManagerPlugin::from_config(config);
 
@@ -641,6 +778,7 @@ mod tests {
             backup_dir: Some(dir.path().join("backups")),
             use_global_dir: true,
             min_free_space: 0,
+            ..BackupConfig::default()
         };
         let plugin = BackupManagerPlugin::from_config(config);
 
@@ -675,6 +813,7 @@ mod tests {
             backup_dir: Some(PathBuf::from("/tmp/voom-backups")),
             use_global_dir: true,
             min_free_space: 0,
+            ..BackupConfig::default()
         };
         let plugin = BackupManagerPlugin::from_config(config);
 

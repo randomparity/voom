@@ -324,6 +324,15 @@ fn example_vmaf_guided_parses_and_validates() {
 }
 
 #[test]
+fn example_remote_backup_transcode_parses_and_validates() {
+    let input = include_str!("../../../docs/examples/remote-backup-transcode.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "remote-backup-transcode");
+    assert_eq!(ast.phases.len(), 2);
+    voom_dsl::validate(&ast).unwrap();
+}
+
+#[test]
 fn example_metadata_enrichment_parses() {
     let input = include_str!("../../../docs/examples/metadata-enrichment.voom");
     let ast = parse_policy(input).unwrap();

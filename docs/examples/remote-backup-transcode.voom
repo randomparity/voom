@@ -1,0 +1,28 @@
+// Remote backup transcode policy.
+//
+// Pair this policy with one of the remote-backup-*.toml examples by copying
+// the TOML into ~/.config/voom/config.toml. The policy keeps local backups so
+// remote upload failures and local restore paths can be inspected after a run.
+
+policy "remote-backup-transcode" {
+  config {
+    languages audio: [eng, und]
+    languages subtitle: [eng, und]
+    keep_backups: true
+    on_error: abort
+  }
+
+  phase normalize-container {
+    container mkv
+  }
+
+  phase transcode-video {
+    depends_on: [normalize-container]
+    skip when video.codec in [hevc, h265]
+
+    transcode video to hevc {
+      preset: medium
+      crf: 26
+    }
+  }
+}

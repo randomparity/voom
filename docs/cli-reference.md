@@ -803,6 +803,10 @@ voom history /media/movies/film.mkv --format json
 
 Backup management.
 
+Remote backup destinations are configured through `[plugin.backup-manager]` in
+`~/.config/voom/config.toml`. See [Remote Backup Destinations](remote-backups.md)
+for rclone, S3, SFTP, and WebDAV examples.
+
 #### `voom backup list`
 
 List backups (`.vbak` files) in one or more directories.
