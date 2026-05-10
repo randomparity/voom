@@ -206,6 +206,36 @@ def test_select_and_corrupt_reports_final_filenames_and_sizes(tmp_path):
         assert entry["size"] == result["size"]
 
 
+def test_collect_deterministic_corruptions_selects_profile_members():
+    generator = load_generator()
+    specs = [
+        {
+            "stem": "corrupt-truncated-tail",
+            "ext": "mkv",
+            "profiles": ["coverage"],
+            "corruption": {
+                "source_stem": "basic-h264-aac",
+                "source_ext": "mp4",
+                "type": "truncated_tail",
+            },
+        },
+        {
+            "stem": "corrupt-stress",
+            "ext": "mkv",
+            "profiles": ["stress"],
+            "corruption": {
+                "source_stem": "basic-h264-aac",
+                "source_ext": "mp4",
+                "type": "mid_stream",
+            },
+        },
+    ]
+
+    selected = generator.collect_deterministic_corruptions(specs, profile="coverage")
+
+    assert selected == [specs[0]]
+
+
 def test_build_video_input_uses_mandelbrot_source_and_black_bars():
     generator = load_generator()
     video = {

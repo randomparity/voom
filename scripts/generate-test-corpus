@@ -10,6 +10,7 @@ select-test-corpus for functional testing when no real library exists.
 import argparse
 import json
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -308,6 +309,15 @@ def select_specs(specs, profile, only, skip):
     return selected
 
 
+def collect_deterministic_corruptions(specs, profile):
+    """Return corruption fixture specs selected by profile."""
+    return [
+        spec
+        for spec in specs
+        if "corruption" in spec and profile_matches(spec, profile)
+    ]
+
+
 def build_basic_manifest_specs():
     """Return baseline and audio-focused fixture specs."""
     return [
@@ -529,12 +539,91 @@ def build_container_feature_specs():
     ]
 
 
+def build_corrupt_fixture_specs():
+    """Return deterministic corrupt fixture specs."""
+    return [
+        {
+            "stem": "corrupt-truncated-tail",
+            "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": ["bad_file.truncated_tail"],
+            "expect": {"bad_file": True, "corruption": "truncated_tail"},
+            "corruption": {
+                "source_stem": "basic-h264-aac",
+                "source_ext": "mp4",
+                "type": "truncated_tail",
+            },
+        },
+        {
+            "stem": "corrupt-zero-length",
+            "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": ["bad_file.zero_length"],
+            "expect": {"bad_file": True, "corruption": "zero_length"},
+            "corruption": {
+                "source_stem": "basic-h264-aac",
+                "source_ext": "mp4",
+                "type": "zero_length",
+            },
+        },
+        {
+            "stem": "corrupt-header-damage",
+            "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": ["bad_file.header_damage"],
+            "expect": {"bad_file": True, "corruption": "header_damage"},
+            "corruption": {
+                "source_stem": "basic-h264-aac",
+                "source_ext": "mp4",
+                "type": "header_damage",
+            },
+        },
+        {
+            "stem": "corrupt-midstream-bitrot",
+            "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": ["bad_file.mid_stream"],
+            "expect": {"bad_file": True, "corruption": "mid_stream"},
+            "corruption": {
+                "source_stem": "basic-h264-aac",
+                "source_ext": "mp4",
+                "type": "mid_stream",
+            },
+        },
+        {
+            "stem": "corrupt-wrong-extension",
+            "ext": "mp4",
+            "profiles": ["coverage"],
+            "covers": ["bad_file.wrong_extension"],
+            "expect": {"bad_file": True, "corruption": "wrong_extension"},
+            "corruption": {
+                "source_stem": "basic-h264-aac",
+                "source_ext": "mp4",
+                "type": "wrong_extension",
+            },
+        },
+        {
+            "stem": "corrupt-container-metadata",
+            "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": ["bad_file.container_metadata"],
+            "expect": {"bad_file": True, "corruption": "container_metadata"},
+            "corruption": {
+                "source_stem": "basic-h264-aac",
+                "source_ext": "mp4",
+                "type": "container_metadata",
+            },
+        },
+    ]
+
+
 def build_manifest():
     """Return the list of file specs to generate."""
     return (
         build_basic_manifest_specs()
         + build_video_feature_specs()
         + build_container_feature_specs()
+        + build_corrupt_fixture_specs()
     )
 
 
@@ -749,6 +838,49 @@ def apply_corruption(file_path, corruption_type, rng):
     return "unknown corruption type", file_path
 
 
+DETERMINISTIC_CORRUPTION_TYPES = {
+    "truncated_tail": "truncated",
+    "container_metadata": "header_damage",
+}
+
+
+def materialize_corrupt_fixture(dest, spec, rng):
+    """Copy a source fixture and apply a deterministic corruption transform."""
+    corruption = spec["corruption"]
+    source_filename = f"{corruption['source_stem']}.{corruption['source_ext']}"
+    original_filename = fixture_filename(spec)
+    source_path = dest / source_filename
+    target_path = dest / original_filename
+    corruption_type = corruption["type"]
+
+    if not source_path.exists():
+        return {
+            "original_filename": original_filename,
+            "filename": original_filename,
+            "source_filename": source_filename,
+            "type": corruption_type,
+            "description": f"skipped (source missing: {source_filename})",
+            "size": 0,
+            "skipped": True,
+        }
+
+    shutil.copyfile(source_path, target_path)
+    applied_type = DETERMINISTIC_CORRUPTION_TYPES.get(
+        corruption_type,
+        corruption_type,
+    )
+    desc, final_path = apply_corruption(target_path, applied_type, rng)
+    return {
+        "original_filename": original_filename,
+        "filename": final_path.name,
+        "source_filename": source_filename,
+        "type": corruption_type,
+        "description": desc,
+        "size": final_path.stat().st_size,
+        "skipped": False,
+    }
+
+
 def select_and_corrupt(dest, random_specs, corrupt_count, seed):
     """Select `corrupt_count` files from `random_specs` and corrupt them.
 
@@ -789,6 +921,25 @@ def update_generated_entries_for_corruptions(generated_entries, corrupt_results)
         if entry is not None:
             entry["filename"] = result["filename"]
             entry["size"] = result["size"]
+
+
+def build_corruption_manifest_entries(corrupt_results):
+    """Return manifest entries for deterministic and random corruption results."""
+    entries = []
+    for result in corrupt_results:
+        entry = {
+            "original_filename": result["original_filename"],
+            "filename": result["filename"],
+            "type": result["type"],
+            "description": result["description"],
+            "size": result["size"],
+        }
+        if result.get("source_filename"):
+            entry["source_filename"] = result["source_filename"]
+        if result.get("skipped"):
+            entry["skipped"] = True
+        entries.append(entry)
+    return entries
 
 
 # ---------------------------------------------------------------------------
@@ -1403,6 +1554,11 @@ def main():
     only = set(args.only.split(",")) if args.only else None
     skip = set(args.skip.split(",")) if args.skip else set()
     specs = select_specs(manifest, args.profile, only, skip)
+    deterministic_corrupt_specs = collect_deterministic_corruptions(
+        specs,
+        args.profile,
+    )
+    specs = [spec for spec in specs if "corruption" not in spec]
 
     # Generate random specs if --count is set
     random_specs = []
@@ -1415,7 +1571,7 @@ def main():
         )
         specs.extend(random_specs)
 
-    if not specs and args.count == 0:
+    if not specs and not deterministic_corrupt_specs and args.count == 0:
         print("No files to generate (check --only / --skip filters).", file=sys.stderr)
         sys.exit(1)
 
@@ -1437,7 +1593,7 @@ def main():
     if not args.dry_run:
         dest.mkdir(parents=True, exist_ok=True)
 
-    total = len(specs)
+    total = len(specs) + len(deterministic_corrupt_specs)
     ok_count = 0
     skip_count = 0
     fail_count = 0
@@ -1580,29 +1736,44 @@ def main():
                 )
                 fail_count += 1
 
-    # Apply corruption to selected random files
-    corrupt_results = []
-    if corrupt_count > 0 and not args.dry_run:
-        corrupt_results = select_and_corrupt(
-            dest, random_specs, corrupt_count, args.seed
-        )
-        update_generated_entries_for_corruptions(generated_entries, corrupt_results)
-        for result in corrupt_results:
+    deterministic_corrupt_results = []
+    if args.dry_run:
+        start = len(specs)
+        for offset, spec in enumerate(deterministic_corrupt_specs, 1):
+            filename = fixture_filename(spec)
+            corruption_type = spec["corruption"]["type"]
+            print(f"[{start + offset}/{total}] {filename}")
+            print(f"  deterministic corruption: {corruption_type}")
+            print()
+            ok_count += 1
+    else:
+        corrupt_rng = random.Random(args.seed + 19999)
+        for spec in deterministic_corrupt_specs:
+            result = materialize_corrupt_fixture(dest, spec, corrupt_rng)
+            deterministic_corrupt_results.append(result)
             filename = result["filename"]
             ctype = result["type"]
             desc = result["description"]
             print(f"  CORRUPTED {filename} — {ctype}: {desc}")
 
-    corruption_entries = [
-        {
-            "original_filename": result["original_filename"],
-            "filename": result["filename"],
-            "type": result["type"],
-            "description": result["description"],
-            "size": result["size"],
-        }
-        for result in corrupt_results
-    ]
+    # Apply corruption to selected random files
+    random_corrupt_results = []
+    if corrupt_count > 0 and not args.dry_run:
+        random_corrupt_results = select_and_corrupt(
+            dest, random_specs, corrupt_count, args.seed
+        )
+        update_generated_entries_for_corruptions(
+            generated_entries,
+            random_corrupt_results,
+        )
+        for result in random_corrupt_results:
+            filename = result["filename"]
+            ctype = result["type"]
+            desc = result["description"]
+            print(f"  CORRUPTED {filename} — {ctype}: {desc}")
+
+    corrupt_results = deterministic_corrupt_results + random_corrupt_results
+    corruption_entries = build_corruption_manifest_entries(corrupt_results)
     if not args.dry_run:
         run_manifest = build_run_manifest(
             profile=args.profile,
