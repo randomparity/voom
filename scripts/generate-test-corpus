@@ -357,6 +357,67 @@ def build_basic_manifest_specs():
     ]
 
 
+def build_audio_feature_specs():
+    """Return expanded audio fixture specs."""
+    return [
+        {
+            "stem": "loudness-normalized-target",
+            "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": ["audio.normalize.already_normalized", "audio.loudness.target"],
+            "expect": {"bad_file": False, "audio_lufs": -23.0},
+            "video": {
+                "source": "mandelbrot_zoom",
+                "codec": "libx264",
+                "size": "1280x720",
+                "fps": 24,
+            },
+            "audio": [{"codec": "aac", "channels": 2, "volume": 0.65, "lang": "eng"}],
+            "subs": [],
+            "special": ["audio_loudnorm_target"],
+        },
+        {
+            "stem": "loudness-dynamic-bursts",
+            "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": ["audio.normalize.dynamic_range", "audio.loudness.bursts"],
+            "expect": {"bad_file": False, "audio_tracks": 1},
+            "video": {
+                "source": "mandelbrot_zoom",
+                "codec": "libx264",
+                "size": "1280x720",
+                "fps": 24,
+            },
+            "audio": [
+                {
+                    "codec": "aac",
+                    "channels": 2,
+                    "lang": "eng",
+                    "source": "dynamic_bursts",
+                }
+            ],
+            "subs": [],
+            "special": ["loudness"],
+        },
+        {
+            "stem": "surround-7-1-flac",
+            "ext": "mkv",
+            "profiles": ["coverage", "stress"],
+            "covers": ["audio.channels.7_1", "audio.codec.flac"],
+            "expect": {"bad_file": False, "audio_tracks": 1},
+            "video": {
+                "source": "mandelbrot_zoom",
+                "codec": "libx264",
+                "size": "1280x720",
+                "fps": 24,
+            },
+            "audio": [{"codec": "flac", "channels": 8, "lang": "eng"}],
+            "subs": [],
+            "special": [],
+        },
+    ]
+
+
 def build_video_feature_specs():
     """Return video-feature and common codec fixture specs."""
     return [
@@ -436,25 +497,51 @@ def build_video_feature_specs():
     ]
 
 
-def build_container_feature_specs():
-    """Return HDR, container, and optional codec fixture specs."""
+def build_crop_feature_specs():
+    """Return expanded crop fixture specs."""
     return [
         {
-            "stem": "4k-hevc-hdr10",
+            "stem": "windowbox-h264",
             "ext": "mkv",
-            "profiles": ["coverage", "stress"],
-            "covers": ["video.codec.hevc", "video.resolution.4k", "video.hdr.hdr10"],
-            "expect": {"bad_file": False, "container": "mkv", "is_hdr": True},
+            "profiles": ["coverage"],
+            "covers": ["video.crop.windowbox", "video.content.mandelbrot_zoom"],
+            "expect": {
+                "bad_file": False,
+                "crop": {"left": 240, "top": 120, "right": 240, "bottom": 120},
+            },
             "video": {
-                "codec": "libx265",
                 "source": "mandelbrot_zoom",
-                "size": "3840x2160",
+                "codec": "libx264",
+                "size": "1920x1080",
+                "active_size": "1440x840",
                 "fps": 24,
             },
-            "audio": [{"codec": "eac3", "channels": 6}],
-            "subs": [{"format": "ass", "lang": "eng"}],
-            "special": ["hdr10"],
+            "audio": [{"codec": "aac", "channels": 2, "lang": "eng"}],
+            "subs": [],
+            "special": ["black_bars"],
         },
+        {
+            "stem": "dark-edge-no-crop",
+            "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": ["video.crop.false_positive_guard"],
+            "expect": {"bad_file": False, "crop": None},
+            "video": {
+                "source": "mandelbrot_zoom",
+                "codec": "libx264",
+                "size": "1920x1080",
+                "fps": 24,
+            },
+            "audio": [{"codec": "aac", "channels": 2, "lang": "eng"}],
+            "subs": [],
+            "special": ["dark_edges"],
+        },
+    ]
+
+
+def build_container_feature_specs():
+    """Return container and optional codec fixture specs."""
+    return [
         {
             "stem": "multichannel-flac",
             "ext": "mkv",
@@ -535,6 +622,78 @@ def build_container_feature_specs():
             "subs": [{"format": "srt", "lang": "eng", "forced": True}],
             "special": [],
             "requires_encoder": "truehd",
+        },
+    ]
+
+
+def build_hdr_color_specs():
+    """Return expanded HDR and color fixture specs."""
+    return [
+        {
+            "stem": "4k-hevc-hdr10",
+            "ext": "mkv",
+            "profiles": ["coverage", "stress"],
+            "covers": ["video.codec.hevc", "video.resolution.4k", "video.hdr.hdr10"],
+            "expect": {"bad_file": False, "container": "mkv", "is_hdr": True},
+            "video": {
+                "codec": "libx265",
+                "source": "mandelbrot_zoom",
+                "size": "3840x2160",
+                "fps": 24,
+            },
+            "audio": [{"codec": "eac3", "channels": 6}],
+            "subs": [{"format": "ass", "lang": "eng"}],
+            "special": ["hdr10"],
+        },
+        {
+            "stem": "hevc-hlg-10bit",
+            "ext": "mkv",
+            "profiles": ["coverage", "stress"],
+            "covers": [
+                "video.content.mandelbrot_zoom",
+                "video.hdr.hlg",
+                "video.codec.hevc",
+            ],
+            "expect": {
+                "bad_file": False,
+                "video_codec": "hevc",
+                "is_hdr": True,
+                "hdr_format": "hlg",
+            },
+            "video": {
+                "source": "mandelbrot_zoom",
+                "codec": "libx265",
+                "size": "1920x1080",
+                "fps": 24,
+            },
+            "audio": [{"codec": "aac", "channels": 2, "lang": "eng"}],
+            "subs": [],
+            "special": ["hlg"],
+        },
+        {
+            "stem": "hevc-sdr-10bit",
+            "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": [
+                "video.bit_depth.10",
+                "video.hdr.false_positive_guard",
+                "video.codec.hevc",
+            ],
+            "expect": {
+                "bad_file": False,
+                "video_codec": "hevc",
+                "is_hdr": False,
+                "pixel_format": "yuv420p10le",
+            },
+            "video": {
+                "source": "mandelbrot_zoom",
+                "codec": "libx265",
+                "size": "1920x1080",
+                "fps": 24,
+            },
+            "audio": [{"codec": "aac", "channels": 2, "lang": "eng"}],
+            "subs": [],
+            "special": ["sdr_10bit"],
         },
     ]
 
@@ -621,7 +780,10 @@ def build_manifest():
     """Return the list of file specs to generate."""
     return (
         build_basic_manifest_specs()
+        + build_audio_feature_specs()
         + build_video_feature_specs()
+        + build_crop_feature_specs()
+        + build_hdr_color_specs()
         + build_container_feature_specs()
         + build_corrupt_fixture_specs()
     )
@@ -1199,8 +1361,26 @@ def build_video_input(video, duration, specials):
     if "black_bars" in specials:
         output_size = video["size"].replace("x", ":")
         video_input += f",pad={output_size}:(ow-iw)/2:(oh-ih)/2:black"
+    if "dark_edges" in specials:
+        video_input += ",vignette=PI/5"
 
     return video_input
+
+
+def build_audio_input(audio, index, duration):
+    """Build a lavfi audio input expression for a fixture."""
+    source = audio.get("source", "sine")
+    if source == "dynamic_bursts":
+        return (
+            f"aevalsrc='if(between(mod(t,1),0,0.15),0.9*sin(2*PI*880*t),"
+            f"0.04*sin(2*PI*220*t))':duration={duration}:sample_rate=48000"
+        )
+    audio_filter = (
+        f"sine=frequency={440 + index * 110}:duration={duration}:sample_rate=48000"
+    )
+    if "volume" in audio:
+        audio_filter += f",volume={audio['volume']}"
+    return audio_filter
 
 
 def build_input_options(spec, duration, tmpdir):
@@ -1215,12 +1395,7 @@ def build_input_options(spec, duration, tmpdir):
 
     # Audio inputs (one sine per audio track)
     for i, audio in enumerate(audios):
-        audio_filter = (
-            f"sine=frequency={440 + i * 110}:duration={duration}:sample_rate=48000"
-        )
-        if "volume" in audio:
-            audio_filter += f",volume={audio['volume']}"
-        cmd += ["-f", "lavfi", "-i", audio_filter]
+        cmd += ["-f", "lavfi", "-i", build_audio_input(audio, i, duration)]
 
     # Subtitle inputs
     sub_files = []
@@ -1249,7 +1424,7 @@ def build_input_options(spec, duration, tmpdir):
 
 
 def add_video_codec_options(cmd, video, specials):
-    """Append video codec and HDR options. Return whether HDR bitstream is needed."""
+    """Append video codec and HDR options. Return the HEVC metadata filter."""
     vcodec = video["codec"]
     cmd += ["-c:v", vcodec]
     if vcodec == "libx264":
@@ -1264,8 +1439,7 @@ def add_video_codec_options(cmd, video, specials):
     elif vcodec == "mpeg2video":
         cmd += ["-b:v", "1M"]
 
-    # HDR10 metadata
-    needs_hevc_hdr_bsf = False
+    hevc_metadata_bsf = None
     if "hdr10" in specials:
         cmd += [
             "-pix_fmt",
@@ -1280,8 +1454,28 @@ def add_video_codec_options(cmd, video, specials):
                 "R(34000,16000)WP(15635,16450)L(10000000,1):"
                 "max-cll=1000,400",
             ]
-            needs_hevc_hdr_bsf = True
-    return needs_hevc_hdr_bsf
+            hevc_metadata_bsf = (
+                "hevc_metadata=colour_primaries=9:"
+                "transfer_characteristics=16:matrix_coefficients=9"
+            )
+
+    if "hlg" in specials:
+        cmd += ["-pix_fmt", "yuv420p10le"]
+        if vcodec == "libx265":
+            cmd += [
+                "-x265-params",
+                "repeat-headers=1:colorprim=bt2020:transfer=arib-std-b67:"
+                "colormatrix=bt2020nc",
+            ]
+            hevc_metadata_bsf = (
+                "hevc_metadata=colour_primaries=9:"
+                "transfer_characteristics=18:matrix_coefficients=9"
+            )
+
+    if "sdr_10bit" in specials:
+        cmd += ["-pix_fmt", "yuv420p10le"]
+
+    return hevc_metadata_bsf
 
 
 def add_audio_codec_options(cmd, audios):
@@ -1308,6 +1502,12 @@ def add_audio_codec_options(cmd, audios):
         elif audio["codec"] == "truehd":
             # truehd encoder doesn't take bitrate; set sample format
             cmd += ["-strict", "-2"]
+
+
+def add_audio_filter_options(cmd, specials):
+    """Append audio filter options."""
+    if "audio_loudnorm_target" in specials:
+        cmd += ["-af:a:0", "loudnorm=I=-23:TP=-2:LRA=11"]
 
 
 def add_subtitle_codec_options(cmd, spec, subs):
@@ -1426,19 +1626,16 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
     cmd += build_input_options(spec, duration, tmpdir)
 
-    needs_hevc_hdr_bsf = add_video_codec_options(cmd, spec["video"], specials)
+    hevc_metadata_bsf = add_video_codec_options(cmd, spec["video"], specials)
     add_audio_codec_options(cmd, audios)
+    add_audio_filter_options(cmd, specials)
     add_subtitle_codec_options(cmd, spec, subs)
     add_container_metadata(cmd, rng)
     add_track_metadata(cmd, audios, subs, rng)
     add_attachments(cmd, specials, tmpdir)
 
-    if needs_hevc_hdr_bsf:
-        cmd += [
-            "-bsf:v",
-            "hevc_metadata=colour_primaries=9:"
-            "transfer_characteristics=16:matrix_coefficients=9",
-        ]
+    if hevc_metadata_bsf is not None:
+        cmd += ["-bsf:v", hevc_metadata_bsf]
 
     # --- Duration limit ---
     cmd += ["-t", str(duration)]
