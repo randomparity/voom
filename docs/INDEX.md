@@ -12,9 +12,11 @@
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Local development, coverage, and CI workflow notes |
 | [mutation-testing-baseline.md](mutation-testing-baseline.md) | Initial cargo-mutants baseline and triage notes |
 | [plugin-development.md](plugin-development.md) | Guide for writing native and WASM plugins |
+| [preflight-estimates.md](preflight-estimates.md) | Runtime, output size, savings, and calibration estimates before processing |
 | [policy-testing.md](policy-testing.md) | Tutorial for writing fixture-backed `.voom` policy tests |
 | [test-corpus-generator.md](test-corpus-generator.md) | Synthetic media corpus generation and TTS speech fixtures |
 | [functional-test-plan.md](functional-test-plan.md) | QA test plan covering all user-facing features |
+| [functional-test-plan-preflight-estimates.md](functional-test-plan-preflight-estimates.md) | Generated-corpus checks for pre-flight estimates |
 | [troubleshooting.md](troubleshooting.md) | Troubleshooting guide for common issues |
 | [TODO.md](TODO.md) | Outstanding work items |
 | [file-identity-and-lineage.md](file-identity-and-lineage.md) | File identity continuity and lineage tracking |

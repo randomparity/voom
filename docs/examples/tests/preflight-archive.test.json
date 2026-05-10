@@ -1,0 +1,13 @@
+{
+  "policy": "../preflight-archive.voom",
+  "cases": [
+    {
+      "name": "estimates archival h264 source",
+      "fixture": "rich-movie.json",
+      "expect": {
+        "phases_run": ["containerize", "transcode-video", "transcode-audio"],
+        "video_codec": "hevc"
+      }
+    }
+  ]
+}

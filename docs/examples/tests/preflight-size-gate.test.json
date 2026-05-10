@@ -1,0 +1,13 @@
+{
+  "policy": "../preflight-size-gate.voom",
+  "cases": [
+    {
+      "name": "plans hevc transcode for h264 source",
+      "fixture": "rich-movie.json",
+      "expect": {
+        "phases_run": ["transcode-video"],
+        "video_codec": "hevc"
+      }
+    }
+  ]
+}
