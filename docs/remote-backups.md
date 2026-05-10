@@ -49,6 +49,28 @@ Remote backup paths use this layout:
 The UUID prevents collisions when different source directories contain files
 with the same name.
 
+## Remote Inventory
+
+Every successful remote upload appends a JSONL record under the VOOM data
+directory:
+
+```text
+<data_dir>/backup-manager/remote-backups.jsonl
+```
+
+List records for one destination:
+
+```sh
+voom backup list --destination offsite
+voom backup list --destination offsite --format json
+```
+
+Local backup listing still scans `.vbak` files by path:
+
+```sh
+voom backup list /media/movies
+```
+
 ## S3, SFTP, And WebDAV
 
 Typed provider names document intent while keeping one execution model:
@@ -81,10 +103,8 @@ rclone lsd dav:
 
 ## Restore Status
 
-`voom backup list`, `voom backup restore`, and `voom backup cleanup` continue to
-operate on local `.vbak` files. Remote upload metadata is emitted in backup
-events during processing, but persistent remote listing and remote restore are
-not exposed as CLI commands yet.
+`voom backup restore` and `voom backup cleanup` continue to operate on local
+`.vbak` files. Remote restore is tracked separately in issue #320.
 
 ## Credential Safety
 

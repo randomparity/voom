@@ -182,6 +182,20 @@ mod tests {
     }
 
     #[test]
+    fn list_missing_destination_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let inventory = RemoteBackupInventory::new(dir.path().join("remote-backups.jsonl"));
+
+        inventory
+            .append(&record("offsite", "b2:voom/a.vbak"))
+            .unwrap();
+
+        let records = inventory.list(Some("missing")).unwrap();
+
+        assert!(records.is_empty());
+    }
+
+    #[test]
     fn missing_inventory_lists_empty() {
         let dir = tempfile::tempdir().unwrap();
         let inventory = RemoteBackupInventory::new(dir.path().join("missing.jsonl"));
