@@ -421,11 +421,18 @@ Run live environment checks. Verifies:
 - Tool versions
 - Configuration validity
 - Database connectivity
+- Configured backup destination health
 - Plugin status
 
 ```bash
 voom env check
 ```
+
+When `[plugin.backup-manager].destinations` is configured, the check reports
+one `backup_destination:<name>` result per destination. Rclone-backed
+destinations validate rclone availability, remote reachability, and a small
+write/delete probe. Output deliberately omits remote URLs and credential-bearing
+configuration values.
 
 #### `voom env history`
 

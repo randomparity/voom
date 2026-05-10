@@ -29,12 +29,26 @@ cmd="$1"
 shift
 
 case "$cmd" in
+  version)
+    echo "rclone v1.0.0-fake"
+    ;;
+  lsf)
+    remote="$1"
+    target="/tmp/voom-remote-backup-target/${remote//:/_}"
+    mkdir -p "$target"
+    ls -1 "$target" 2>/dev/null || true
+    ;;
   copyto)
     source="$1"
     remote="$2"
     target="/tmp/voom-remote-backup-target/${remote//:/_}"
     mkdir -p "$(dirname "$target")"
     cp "$source" "$target"
+    ;;
+  deletefile)
+    remote="$1"
+    target="/tmp/voom-remote-backup-target/${remote//:/_}"
+    rm -f "$target"
     ;;
   size)
     shift
@@ -129,6 +143,16 @@ XDG_CONFIG_HOME=/tmp/voom-remote-config cargo run -p voom-cli -- backup verify \
 Expected: JSON output reports `verified` for each record, includes matching
 `expected_size` and `actual_size` values, and includes matching
 `expected_sha256` and `actual_sha256` values.
+
+Run destination health checks:
+
+```sh
+XDG_CONFIG_HOME=/tmp/voom-remote-config cargo run -p voom-cli -- env check
+```
+
+Expected: output includes a `Backup destinations` section with
+`fake-offsite (rclone) ... OK`. The persisted health history includes a
+`backup_destination:fake-offsite` record.
 
 Restore to an explicit output path:
 

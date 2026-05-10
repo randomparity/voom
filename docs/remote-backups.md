@@ -131,6 +131,29 @@ rclone lsd vps:
 rclone lsd dav:
 ```
 
+## Health Checks
+
+`voom env check` and the deprecated `voom health check` alias report one
+`backup_destination:<name>` health check for every configured backup
+destination. For rclone-backed destinations, VOOM verifies:
+
+1. Backup destination config parses and validates.
+2. The configured `rclone_path` can execute.
+3. The remote can be listed.
+4. A small probe object can be written and deleted.
+
+Failures are reported as:
+
+| Status | Meaning | Typical fix |
+|--------|---------|-------------|
+| `config_invalid` | Destination config is malformed, incomplete, or has duplicate names | Fix `[plugin.backup-manager]` in `config.toml` |
+| `rclone_unavailable` | The configured rclone executable cannot run | Install rclone or correct `rclone_path` |
+| `remote_unreachable` | Rclone can run but cannot list the remote | Check rclone credentials, provider availability, and the remote path |
+| `probe_failed` | Listing succeeded but the write/delete probe failed | Check write/delete permissions and quota |
+
+Health output names the destination and kind only. It does not print remote URLs
+or credential-bearing configuration values.
+
 ## Restore Status
 
 `voom backup cleanup` continues to operate on local `.vbak` files. Remote
