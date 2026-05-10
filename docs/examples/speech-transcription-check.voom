@@ -1,0 +1,43 @@
+// Speech fixture declared-language checking policy.
+//
+// This policy demonstrates tagging generated TTS speech fixtures by declared
+// audio language and validating that speech audio remains after checks run.
+
+policy "speech-transcription-check" {
+  config {
+    languages audio: [eng, spa]
+    languages subtitle: [eng]
+    on_error: continue
+  }
+
+  phase classify-speech {
+    rules all {
+      rule "english-speech" {
+        when exists(audio where lang == eng) {
+          set_tag "speech_language" "eng"
+        }
+      }
+
+      rule "spanish-speech" {
+        when exists(audio where lang == spa) {
+          set_tag "speech_language_alt" "spa"
+        }
+      }
+
+      rule "mixed-speech" {
+        when exists(audio where lang == mul) {
+          set_tag "speech_language_mixed" "true"
+          warn "Mixed-language speech fixture detected in {filename}"
+        }
+      }
+    }
+  }
+
+  phase validate {
+    depends_on: [classify-speech]
+
+    when count(audio) == 0 {
+      fail "No speech audio tracks remain in {filename}"
+    }
+  }
+}

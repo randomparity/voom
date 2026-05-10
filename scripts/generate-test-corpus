@@ -16,6 +16,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +94,19 @@ HANDLER_POOL = [
 SCHEMA_VERSION = 1
 PROFILE_CHOICES = ("smoke", "coverage", "stress", "all")
 ALL_PROFILE_MEMBERS = {"smoke", "coverage", "stress"}
+TTS_BACKEND_CHOICES = ("auto", "espeak-ng", "flite", "say", "none")
+TTS_UNAVAILABLE_REASON = (
+    "TTS backend not available (requires espeak-ng, ffmpeg flite, or macOS say)"
+)
+FLITE_VOICE_MAP = {
+    "en-us": "kal",
+    "mul": "kal",
+    "kal": "kal",
+    "slt": "slt",
+    "awb": "awb",
+    "rms": "rms",
+}
+SPEECH_FIXTURE_DURATION = 5
 
 # ---------------------------------------------------------------------------
 # Naming pools for random file generation
@@ -777,6 +791,137 @@ def build_corrupt_fixture_specs():
     ]
 
 
+def transcript_entry(track, lang, text):
+    """Return a stable transcript expectation entry."""
+    return {"track": track, "lang": lang, "text": text}
+
+
+def tts_audio(lang, voice, text, title=None):
+    """Return one TTS audio track spec."""
+    audio = {
+        "codec": "aac",
+        "channels": 2,
+        "lang": lang,
+        "source": "tts",
+        "voice": voice,
+        "text": text,
+    }
+    if title:
+        audio["title"] = title
+    return audio
+
+
+def speech_expect(audio_tracks, languages, transcript, extra=None):
+    """Return manifest expectations for a speech fixture."""
+    expect = {
+        "bad_file": False,
+        "audio_tracks": audio_tracks,
+        "speech": True,
+        "speech_languages": languages,
+        "transcript": transcript,
+    }
+    if extra:
+        expect.update(extra)
+    return expect
+
+
+def speech_fixture(*, stem, ext, profiles, covers, expect, audio):
+    """Return a complete TTS fixture spec."""
+    return {
+        "stem": stem,
+        "ext": ext,
+        "profiles": profiles,
+        "covers": covers,
+        "expect": expect,
+        "video": {
+            "source": "testsrc2",
+            "codec": "libx264",
+            "size": "1280x720",
+            "fps": 24,
+        },
+        "audio": audio,
+        "subs": [],
+        "special": [],
+        "requires_tts": True,
+        "duration_override": SPEECH_FIXTURE_DURATION,
+    }
+
+
+def build_tts_feature_specs():
+    """Return speech fixture specs for transcription and language testing."""
+    english = "This English narration confirms the speech test fixture."
+    spanish = "Esta narracion en espanol confirma la pista de voz."
+    mixed = (
+        "This English segment starts the mixed language fixture. "
+        "Esta frase en espanol comprueba el cambio de idioma."
+    )
+
+    return [
+        speech_fixture(
+            stem="speech-english-aac",
+            ext="mp4",
+            profiles=["smoke", "coverage"],
+            covers=["audio.speech.tts", "audio.speech.language.eng"],
+            expect=speech_expect(1, ["eng"], [transcript_entry(0, "eng", english)]),
+            audio=[tts_audio("eng", "en-us", english)],
+        ),
+        speech_fixture(
+            stem="speech-spanish-aac",
+            ext="mp4",
+            profiles=["coverage"],
+            covers=["audio.speech.tts", "audio.speech.language.spa"],
+            expect=speech_expect(1, ["spa"], [transcript_entry(0, "spa", spanish)]),
+            audio=[tts_audio("spa", "es", spanish)],
+        ),
+        speech_fixture(
+            stem="speech-dual-language",
+            ext="mkv",
+            profiles=["coverage"],
+            covers=[
+                "audio.speech.tts",
+                "audio.speech.language.eng",
+                "audio.speech.language.spa",
+                "audio.speech.dual_track",
+            ],
+            expect=speech_expect(
+                2,
+                ["eng", "spa"],
+                [
+                    transcript_entry(0, "eng", english),
+                    transcript_entry(1, "spa", spanish),
+                ],
+            ),
+            audio=[
+                tts_audio("eng", "en-us", english, "English Speech"),
+                tts_audio("spa", "es", spanish, "Spanish Speech"),
+            ],
+        ),
+        speech_fixture(
+            stem="speech-mixed-language",
+            ext="mkv",
+            profiles=["coverage"],
+            covers=[
+                "audio.speech.tts",
+                "audio.speech.language.eng",
+                "audio.speech.language.spa",
+                "audio.speech.mixed_language",
+            ],
+            expect=speech_expect(
+                1,
+                ["eng", "spa"],
+                [transcript_entry(0, "mul", mixed)],
+                {
+                    "segments": [
+                        {"lang": "eng", "text": "This English segment starts"},
+                        {"lang": "spa", "text": "Esta frase en espanol"},
+                    ]
+                },
+            ),
+            audio=[tts_audio("mul", "en-us", mixed)],
+        ),
+    ]
+
+
 def build_manifest():
     """Return the list of file specs to generate."""
     return (
@@ -786,6 +931,7 @@ def build_manifest():
         + build_crop_feature_specs()
         + build_hdr_color_specs()
         + build_container_feature_specs()
+        + build_tts_feature_specs()
         + build_corrupt_fixture_specs()
     )
 
@@ -1147,6 +1293,48 @@ def probe_encoders():
         return set()
 
 
+def ffmpeg_supports_flite():
+    """Return True when the local ffmpeg build has the flite source filter."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-h", "filter=flite"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    output = f"{result.stdout}\n{result.stderr}"
+    return result.returncode == 0 and "Unknown filter 'flite'" not in output
+
+
+def discover_tts_backend(choice):
+    """Return the selected TTS backend, or None when TTS should be skipped."""
+    if choice == "none":
+        return None
+    espeak = shutil.which("espeak-ng")
+    if choice in {"auto", "espeak-ng"} and espeak:
+        return TtsBackend("espeak-ng", espeak)
+    if choice == "espeak-ng":
+        print(
+            "Error: requested TTS backend 'espeak-ng' is not available",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    say = shutil.which("say")
+    if choice in {"auto", "say"} and say:
+        return TtsBackend("say", say)
+    if choice == "say":
+        print("Error: requested TTS backend 'say' is not available", file=sys.stderr)
+        sys.exit(1)
+    if choice == "flite" and ffmpeg_supports_flite():
+        return TtsBackend("flite", "ffmpeg")
+    if choice == "flite":
+        print("Error: requested TTS backend 'flite' is not available", file=sys.stderr)
+        sys.exit(1)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Subtitle temp file helpers
 # ---------------------------------------------------------------------------
@@ -1382,7 +1570,100 @@ def build_audio_input(audio, index, duration):
     return audio_filter
 
 
-def build_input_options(spec, duration, tmpdir):
+def build_tts_command(backend, audio, output_path):
+    """Build the command that renders one TTS track to a WAV file."""
+    text = audio["text"]
+    voice = audio.get("voice")
+    if backend.name == "espeak-ng":
+        cmd = [backend.command]
+        if voice:
+            cmd += ["-v", voice]
+        cmd += ["-w", str(output_path), text]
+        return cmd
+    if backend.name == "say":
+        cmd = [backend.command]
+        if voice:
+            cmd += ["-v", voice]
+        cmd += ["-o", str(output_path), "--data-format=LEF32@22050", text]
+        return cmd
+    raise ValueError(f"unsupported command TTS backend '{backend.name}'")
+
+
+def map_flite_voice(voice):
+    """Return the concrete flite voice for a fixture voice name."""
+    if voice not in FLITE_VOICE_MAP:
+        supported = ", ".join(sorted(FLITE_VOICE_MAP))
+        raise ValueError(
+            f"flite does not support fixture voice '{voice}' "
+            f"(supported fixture voices: {supported})"
+        )
+    return FLITE_VOICE_MAP[voice]
+
+
+def validate_tts_audio(audio, backend):
+    """Validate backend-specific TTS audio settings without rendering audio."""
+    if backend is not None and backend.name == "flite":
+        map_flite_voice(audio.get("voice", "kal"))
+
+
+def validate_tts_spec(spec, backend):
+    """Validate all TTS tracks in a fixture spec without creating files."""
+    for audio in spec["audio"]:
+        if audio.get("source") == "tts":
+            validate_tts_audio(audio, backend)
+
+
+def build_flite_command(audio, output_path):
+    """Build an ffmpeg command that renders one flite TTS track."""
+    flite_voice = map_flite_voice(audio.get("voice", "kal"))
+    text = audio["text"].replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+    return [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        f"flite=text='{text}':voice={flite_voice}",
+        str(output_path),
+    ]
+
+
+def render_tts_audio(audio, output_path, backend):
+    """Render one TTS audio track to a temporary WAV file."""
+    if backend is None:
+        raise RuntimeError(TTS_UNAVAILABLE_REASON)
+    if backend.name == "flite":
+        cmd = build_flite_command(audio, output_path)
+    else:
+        cmd = build_tts_command(backend, audio, output_path)
+    result = subprocess.run(cmd, capture_output=True, timeout=60)
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"TTS backend '{backend.name}' failed: {stderr}")
+
+
+def prepare_audio_inputs(spec, duration, tmpdir, tts_backend):
+    """Return prepared audio inputs for a fixture spec."""
+    inputs = []
+    for i, audio in enumerate(spec["audio"]):
+        if audio.get("source") == "tts":
+            wav_path = Path(tmpdir) / f"tts_{spec['stem']}_{i}.wav"
+            render_tts_audio(audio, wav_path, tts_backend)
+            inputs.append({"kind": "file", "value": str(wav_path)})
+        else:
+            inputs.append(
+                {
+                    "kind": "lavfi",
+                    "value": build_audio_input(audio, i, duration),
+                }
+            )
+    return inputs
+
+
+def build_input_options(spec, duration, tmpdir, tts_backend=None):
     """Return ffmpeg input and stream mapping options for a file spec."""
     cmd = []
     specials = set(spec.get("special", []))
@@ -1392,9 +1673,12 @@ def build_input_options(spec, duration, tmpdir):
 
     cmd += ["-f", "lavfi", "-i", build_video_input(video, duration, specials)]
 
-    # Audio inputs (one sine per audio track)
-    for i, audio in enumerate(audios):
-        cmd += ["-f", "lavfi", "-i", build_audio_input(audio, i, duration)]
+    audio_inputs = prepare_audio_inputs(spec, duration, tmpdir, tts_backend)
+    for audio_input in audio_inputs:
+        if audio_input["kind"] == "lavfi":
+            cmd += ["-f", "lavfi", "-i", audio_input["value"]]
+        else:
+            cmd += ["-i", audio_input["value"]]
 
     # Subtitle inputs
     sub_files = []
@@ -1613,7 +1897,7 @@ def add_attachments(cmd, specials, tmpdir):
         ]
 
 
-def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
+def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir, *, tts_backend=None):
     """Build the ffmpeg command list for a given file spec.
 
     Returns (cmd_list, temp_files_to_cleanup).
@@ -1624,7 +1908,7 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
     subs = spec.get("subs", [])
 
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
-    cmd += build_input_options(spec, duration, tmpdir)
+    cmd += build_input_options(spec, duration, tmpdir, tts_backend)
 
     hevc_metadata_bsf = add_video_codec_options(cmd, spec["video"], specials)
     add_audio_codec_options(cmd, audios)
@@ -1662,6 +1946,14 @@ def format_size(n):
     return f"{n:.1f} TiB"
 
 
+@dataclass(frozen=True)
+class TtsBackend:
+    """A discovered command-line TTS backend."""
+
+    name: str
+    command: str
+
+
 @dataclass
 class PreparedSpecs:
     """Fixture specs selected for a run."""
@@ -1682,6 +1974,7 @@ class GenerationOptions:
     verbose: bool
     available: set
     total: int
+    tts_backend: Optional[TtsBackend] = None
 
 
 @dataclass
@@ -1745,6 +2038,12 @@ def build_arg_parser():
         choices=PROFILE_CHOICES,
         default="coverage",
         help="Named deterministic fixture profile to generate (default: coverage)",
+    )
+    parser.add_argument(
+        "--tts-backend",
+        choices=TTS_BACKEND_CHOICES,
+        default="auto",
+        help="TTS backend for speech fixtures (default: auto)",
     )
     parser.add_argument(
         "--seed",
@@ -1867,6 +2166,25 @@ def quote_command(cmd):
     return " ".join(quoted)
 
 
+def print_dry_run_tts_fixture(*, idx, total, filename, spec, tts_backend):
+    """Print a side-effect-free dry-run placeholder for TTS fixtures."""
+    backend_name = (
+        tts_backend.name if tts_backend is not None else "unavailable backend"
+    )
+    print(f"[{idx}/{total}] {filename}")
+    for audio_index, audio in enumerate(spec["audio"]):
+        if audio.get("source") != "tts":
+            continue
+        lang = audio.get("lang", "und")
+        print(
+            "  "
+            f"track {audio_index}: TTS input would be rendered by {backend_name} "
+            f"for {lang}"
+        )
+    print("  ffmpeg command omitted because dry-run does not render TTS temp files")
+    print()
+
+
 def build_generation_entry(spec, filename, size, duration):
     """Return a generated-file manifest entry."""
     return {
@@ -1925,16 +2243,39 @@ def generate_normal_spec(*, spec, idx, tmpdir, options, result):
         result.skip_count += 1
         return
 
+    if spec.get("requires_tts") and options.tts_backend is None:
+        print(f"[{idx}/{options.total}] Skipping {filename} - {TTS_UNAVAILABLE_REASON}")
+        result.skipped_entries.append(
+            build_issue_entry(spec, filename, TTS_UNAVAILABLE_REASON)
+        )
+        result.skip_count += 1
+        return
+
     file_rng = random.Random(options.seed + idx)
     file_duration = spec.get("duration_override", options.duration)
 
     try:
+        if spec.get("requires_tts"):
+            validate_tts_spec(spec, options.tts_backend)
+
+        if options.dry_run and spec.get("requires_tts"):
+            print_dry_run_tts_fixture(
+                idx=idx,
+                total=options.total,
+                filename=filename,
+                spec=spec,
+                tts_backend=options.tts_backend,
+            )
+            result.ok_count += 1
+            return
+
         cmd, outfile = build_ffmpeg_cmd(
             spec,
             options.dest,
             file_duration,
             file_rng,
             tmpdir,
+            tts_backend=options.tts_backend,
         )
     except Exception as e:
         print(
@@ -2155,6 +2496,7 @@ def main():
 
     ensure_ffmpeg_available()
     available = probe_encoders()
+    tts_backend = discover_tts_backend(args.tts_backend)
     if not available:
         print(
             "Warning: could not probe ffmpeg encoders, will try all files",
@@ -2175,6 +2517,7 @@ def main():
             verbose=args.verbose,
             available=available,
             total=total,
+            tts_backend=tts_backend,
         ),
     )
     deterministic_corruption = materialize_deterministic_corruptions(

@@ -1,0 +1,27 @@
+// Speech fixture language filtering policy.
+//
+// Designed for generated files from scripts/generate-test-corpus:
+// - speech-english-aac
+// - speech-spanish-aac
+// - speech-dual-language
+// - speech-mixed-language
+
+policy "speech-language-filter" {
+  config {
+    languages audio: [eng]
+    languages subtitle: [eng]
+    on_error: continue
+  }
+
+  phase keep-english {
+    keep audio where lang in [eng, und, mul]
+  }
+
+  phase validate {
+    depends_on: [keep-english]
+
+    when not exists(audio where lang == eng or lang == mul) {
+      warn "No English or mixed-language speech audio in {filename}"
+    }
+  }
+}

@@ -180,6 +180,20 @@ fn snapshot_production_normalize() {
 }
 
 #[test]
+fn snapshot_speech_language_filter_example() {
+    let input = include_str!("../../../docs/examples/speech-language-filter.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_yaml_snapshot!(ast);
+}
+
+#[test]
+fn snapshot_speech_transcription_check_example() {
+    let input = include_str!("../../../docs/examples/speech-transcription-check.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_yaml_snapshot!(ast);
+}
+
+#[test]
 fn test_parse_error_has_location() {
     let result = parse_policy("not a valid policy");
     assert!(result.is_err());

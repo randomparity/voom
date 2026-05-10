@@ -1,7 +1,9 @@
 """Tests for scripts/generate-test-corpus pure helpers."""
 
 import importlib.util
+import json
 import random
+import subprocess
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -24,6 +26,10 @@ def load_generator():
 @pytest.fixture
 def generator():
     return load_generator()
+
+
+def format_process_output(result):
+    return f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
 
 
 def test_select_specs_filters_by_profile_only_and_skip(generator):
@@ -73,6 +79,7 @@ def test_build_manifest_smoke_profile_is_expected_fast_subset(generator):
         "letterbox-h264",
         "hevc-surround",
         "vp9-opus",
+        "speech-english-aac",
     ]
 
 
@@ -272,6 +279,38 @@ def test_build_manifest_includes_required_corrupt_fixtures(generator):
     }
 
 
+def test_build_manifest_includes_tts_fixtures(generator):
+    specs = {spec["stem"]: spec for spec in generator.build_manifest()}
+
+    assert {
+        "speech-english-aac",
+        "speech-spanish-aac",
+        "speech-dual-language",
+        "speech-mixed-language",
+    }.issubset(specs)
+    assert specs["speech-english-aac"]["profiles"] == ["smoke", "coverage"]
+    assert specs["speech-dual-language"]["expect"]["speech_languages"] == [
+        "eng",
+        "spa",
+    ]
+    assert specs["speech-mixed-language"]["expect"]["speech"] is True
+    assert "audio.speech.mixed_language" in specs["speech-mixed-language"]["covers"]
+
+
+def test_build_manifest_gives_tts_fixtures_enough_duration(generator):
+    speech_specs = [
+        spec for spec in generator.build_manifest() if spec.get("requires_tts")
+    ]
+
+    assert speech_specs
+    assert {spec["stem"]: spec.get("duration_override") for spec in speech_specs} == {
+        "speech-english-aac": 5,
+        "speech-spanish-aac": 5,
+        "speech-dual-language": 5,
+        "speech-mixed-language": 5,
+    }
+
+
 def test_materialize_corrupt_fixture_creates_final_file(generator, tmp_path):
     source = tmp_path / "basic-h264-aac.mp4"
     source.write_bytes(bytes(range(256)) * 16)
@@ -395,6 +434,57 @@ def test_ensure_ffmpeg_available_returns_when_binary_exists(generator, monkeypat
     generator.ensure_ffmpeg_available()
 
 
+def test_discover_tts_backend_prefers_espeak_ng(generator, monkeypatch):
+    def fake_which(name):
+        return {
+            "espeak-ng": "/usr/bin/espeak-ng",
+            "say": "/usr/bin/say",
+        }.get(name)
+
+    monkeypatch.setattr(generator.shutil, "which", fake_which)
+    monkeypatch.setattr(generator, "ffmpeg_supports_flite", lambda: True)
+
+    backend = generator.discover_tts_backend("auto")
+
+    assert backend == generator.TtsBackend("espeak-ng", "/usr/bin/espeak-ng")
+
+
+def test_discover_tts_backend_uses_say_before_flite(generator, monkeypatch):
+    def fake_which(name):
+        return "/usr/bin/say" if name == "say" else None
+
+    monkeypatch.setattr(generator.shutil, "which", fake_which)
+    monkeypatch.setattr(generator, "ffmpeg_supports_flite", lambda: True)
+
+    backend = generator.discover_tts_backend("auto")
+
+    assert backend == generator.TtsBackend("say", "/usr/bin/say")
+
+
+def test_discover_tts_backend_none_returns_none(generator, monkeypatch):
+    monkeypatch.setattr(generator.shutil, "which", lambda name: None)
+    monkeypatch.setattr(generator, "ffmpeg_supports_flite", lambda: False)
+
+    assert generator.discover_tts_backend("none") is None
+    assert generator.discover_tts_backend("auto") is None
+
+
+def test_discover_tts_backend_requested_missing_backend_exits(
+    generator, monkeypatch, capsys
+):
+    monkeypatch.setattr(generator.shutil, "which", lambda name: None)
+    monkeypatch.setattr(generator, "ffmpeg_supports_flite", lambda: False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        generator.discover_tts_backend("espeak-ng")
+
+    assert exc_info.value.code == 1
+    assert (
+        capsys.readouterr().err
+        == "Error: requested TTS backend 'espeak-ng' is not available\n"
+    )
+
+
 def test_build_video_input_uses_mandelbrot_source_and_black_bars(generator):
     video = {
         "source": "mandelbrot_zoom",
@@ -445,6 +535,101 @@ def test_build_audio_input_dynamic_bursts_uses_aevalsrc_expression(generator):
     assert "0.04*sin(2*PI*220*t)" in source
 
 
+def test_build_tts_command_uses_espeak_ng(generator, tmp_path):
+    backend = generator.TtsBackend("espeak-ng", "/usr/bin/espeak-ng")
+    out = tmp_path / "speech.wav"
+    cmd = generator.build_tts_command(
+        backend,
+        {"text": "hello world", "voice": "en-us"},
+        out,
+    )
+
+    assert cmd == [
+        "/usr/bin/espeak-ng",
+        "-v",
+        "en-us",
+        "-w",
+        str(out),
+        "hello world",
+    ]
+
+
+def test_build_tts_command_uses_say(generator, tmp_path):
+    backend = generator.TtsBackend("say", "/usr/bin/say")
+    out = tmp_path / "speech.wav"
+    cmd = generator.build_tts_command(backend, {"text": "hello", "voice": "Alex"}, out)
+
+    assert cmd == [
+        "/usr/bin/say",
+        "-v",
+        "Alex",
+        "-o",
+        str(out),
+        "--data-format=LEF32@22050",
+        "hello",
+    ]
+
+
+def test_build_flite_command_maps_english_fixture_voice(generator, tmp_path):
+    out = tmp_path / "speech.wav"
+    cmd = generator.build_flite_command(
+        {"text": "hello", "voice": "en-us"},
+        out,
+    )
+
+    assert "flite=text='hello':voice=kal" in cmd
+
+
+def test_build_flite_command_rejects_spanish_fixture_voice(generator, tmp_path):
+    out = tmp_path / "speech.wav"
+
+    with pytest.raises(ValueError, match="flite does not support fixture voice 'es'"):
+        generator.build_flite_command({"text": "hola", "voice": "es"}, out)
+
+
+def test_prepare_audio_inputs_renders_tts_and_keeps_lavfi(
+    generator, monkeypatch, tmp_path
+):
+    backend = generator.TtsBackend("espeak-ng", "/usr/bin/espeak-ng")
+    rendered = []
+
+    def fake_render(audio, path, selected_backend):
+        rendered.append((audio["text"], path.name, selected_backend.name))
+        path.write_bytes(b"RIFFfake")
+
+    monkeypatch.setattr(generator, "render_tts_audio", fake_render)
+
+    spec = {
+        "stem": "mixed",
+        "audio": [
+            {
+                "codec": "aac",
+                "channels": 2,
+                "source": "tts",
+                "voice": "en-us",
+                "text": "speech",
+            },
+            {"codec": "aac", "channels": 2},
+        ],
+    }
+
+    inputs = generator.prepare_audio_inputs(
+        spec,
+        duration=2,
+        tmpdir=tmp_path,
+        tts_backend=backend,
+    )
+
+    assert rendered == [("speech", "tts_mixed_0.wav", "espeak-ng")]
+    assert inputs == [
+        {"kind": "file", "value": str(tmp_path / "tts_mixed_0.wav")},
+        {
+            "kind": "lavfi",
+            "value": "sine=frequency=550:duration=2:sample_rate=48000",
+        },
+    ]
+
+
 def test_build_ffmpeg_cmd_adds_loudnorm_filter_for_target_fixture(generator, tmp_path):
     spec = next(
         spec
@@ -464,6 +649,90 @@ def test_build_ffmpeg_cmd_adds_loudnorm_filter_for_target_fixture(generator, tmp
     assert cmd[cmd.index("-af:a:0") + 1] == "loudnorm=I=-23:TP=-2:LRA=11"
 
 
+def test_dry_run_tts_fixture_does_not_render_or_print_temp_wav(
+    generator, monkeypatch, tmp_path, capsys
+):
+    backend = generator.TtsBackend("espeak-ng", "/usr/bin/espeak-ng")
+    spec = next(
+        spec
+        for spec in generator.build_manifest()
+        if spec["stem"] == "speech-english-aac"
+    )
+    result = generator.GenerationResult()
+
+    def fail_render(*_args, **_kwargs):
+        raise AssertionError("dry run must not render TTS audio")
+
+    monkeypatch.setattr(generator, "render_tts_audio", fail_render)
+
+    generator.generate_normal_spec(
+        spec=spec,
+        idx=1,
+        tmpdir=tmp_path,
+        options=generator.GenerationOptions(
+            dest=tmp_path,
+            duration=3,
+            seed=42,
+            dry_run=True,
+            verbose=False,
+            available=set(),
+            total=1,
+            tts_backend=backend,
+        ),
+        result=result,
+    )
+
+    output = capsys.readouterr().out
+    assert result.ok_count == 1
+    assert result.fail_count == 0
+    assert "TTS input would be rendered by espeak-ng" in output
+    assert "tts_speech-english-aac_0.wav" not in output
+
+
+def test_dry_run_tts_fixture_validates_flite_voice_without_rendering(
+    generator, monkeypatch, tmp_path, capsys
+):
+    backend = generator.TtsBackend("flite", "ffmpeg")
+    spec = next(
+        spec
+        for spec in generator.build_manifest()
+        if spec["stem"] == "speech-spanish-aac"
+    )
+    result = generator.GenerationResult()
+
+    def fail_render(*_args, **_kwargs):
+        raise AssertionError("dry run must not render TTS audio")
+
+    monkeypatch.setattr(generator, "render_tts_audio", fail_render)
+
+    generator.generate_normal_spec(
+        spec=spec,
+        idx=1,
+        tmpdir=tmp_path,
+        options=generator.GenerationOptions(
+            dest=tmp_path,
+            duration=3,
+            seed=42,
+            dry_run=True,
+            verbose=False,
+            available=set(),
+            total=1,
+            tts_backend=backend,
+        ),
+        result=result,
+    )
+
+    output = capsys.readouterr().out
+    assert result.ok_count == 0
+    assert result.fail_count == 1
+    assert result.failed_entries[0]["stem"] == "speech-spanish-aac"
+    assert result.failed_entries[0]["reason"].startswith(
+        "error building command: flite does not support fixture voice 'es'"
+    )
+    assert "FAILED speech-spanish-aac.mp4" in output
+    assert "tts_speech-spanish-aac_0.wav" not in output
+
+
 def test_add_audio_codec_options_sets_explicit_stereo_for_two_channels(generator):
     cmd = []
 
@@ -476,3 +745,65 @@ def test_add_audio_codec_options_sets_explicit_stereo_for_two_channels(generator
     assert cmd[cmd.index("-ac:a:0") + 1] == "2"
     assert "-channel_layout:a:0" in cmd
     assert cmd[cmd.index("-channel_layout:a:0") + 1] == "stereo"
+
+
+def test_tts_fixture_skips_when_backend_disabled(generator, tmp_path):
+    dest = tmp_path / "corpus"
+    result = subprocess.run(
+        [
+            str(SCRIPT_PATH),
+            str(dest),
+            "--profile",
+            "coverage",
+            "--only",
+            "speech-english-aac",
+            "--tts-backend",
+            "none",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, format_process_output(result)
+    manifest = json.loads((dest / "manifest.json").read_text())
+    assert manifest["summary"] == {
+        "generated": 0,
+        "skipped": 1,
+        "failed": 0,
+        "corrupted": 0,
+    }
+    assert manifest["skipped"][0]["stem"] == "speech-english-aac"
+    assert manifest["skipped"][0]["reason"] == generator.TTS_UNAVAILABLE_REASON
+
+
+def test_tts_fixture_generates_with_espeak_ng(generator, tmp_path):
+    if generator.shutil.which("espeak-ng") is None:
+        pytest.skip("espeak-ng not installed")
+
+    dest = tmp_path / "corpus"
+    result = subprocess.run(
+        [
+            str(SCRIPT_PATH),
+            str(dest),
+            "--profile",
+            "coverage",
+            "--only",
+            "speech-english-aac",
+            "--duration",
+            "3",
+            "--tts-backend",
+            "espeak-ng",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, format_process_output(result)
+    output = dest / "speech-english-aac.mp4"
+    manifest = json.loads((dest / "manifest.json").read_text())
+    assert output.exists()
+    assert manifest["summary"]["generated"] == 1
+    assert manifest["generated"][0]["expect"]["speech"] is True
+    assert manifest["generated"][0]["expect"]["speech_languages"] == ["eng"]
