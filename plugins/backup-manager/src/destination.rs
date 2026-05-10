@@ -260,6 +260,37 @@ pub fn upload_with_rclone(request: RemoteUploadRequest<'_>) -> Result<RemoteUplo
     })
 }
 
+pub fn download_with_rclone(
+    rclone_path: &str,
+    remote_path: &str,
+    output_path: &Path,
+    expected_size: u64,
+) -> Result<()> {
+    verify_remote_size(rclone_path, remote_path, expected_size)?;
+    let copy = RcloneCommand::copyto(
+        rclone_path,
+        Path::new(remote_path),
+        &output_path.display().to_string(),
+        None,
+    );
+    copy.run()?;
+    let downloaded = std::fs::metadata(output_path)
+        .map_err(|e| {
+            plugin_err(format!(
+                "failed to read restored backup {}: {e}",
+                output_path.display()
+            ))
+        })?
+        .len();
+    if downloaded != expected_size {
+        return Err(plugin_err(format!(
+            "restored backup size mismatch for {}: expected {expected_size}, got {downloaded}",
+            output_path.display()
+        )));
+    }
+    Ok(())
+}
+
 fn verify_remote_size(rclone_path: &str, remote_path: &str, expected_size: u64) -> Result<()> {
     let command = RcloneCommand::size(rclone_path, remote_path);
     let stdout = command.run()?;
@@ -279,9 +310,16 @@ fn verify_remote_size(rclone_path: &str, remote_path: &str, expected_size: u64) 
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     use super::*;
+
+    fn make_executable(path: &Path) {
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
 
     #[test]
     fn rejects_duplicate_destination_names() {
@@ -371,5 +409,49 @@ mod tests {
             path,
             "b2:voom/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/Movie.mkv.vbak"
         );
+    }
+
+    #[test]
+    fn download_with_rclone_verifies_size_and_writes_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = dir.path().join("fake-rclone");
+        let remote_root = dir.path().join("remote");
+        let output = dir.path().join("restored.mkv");
+        let remote_file = remote_root.join("fake:voom/movie.vbak");
+        std::fs::create_dir_all(remote_file.parent().unwrap()).unwrap();
+        std::fs::write(&remote_file, b"movie").unwrap();
+        std::fs::write(
+            &rclone,
+            format!(
+                "#!/usr/bin/env bash\n\
+                 set -euo pipefail\n\
+                 cmd=\"$1\"\n\
+                 shift\n\
+                 case \"$cmd\" in\n\
+                   size)\n\
+                     shift\n\
+                     bytes=\"$(wc -c < \"{}/$1\" | tr -d ' ')\"\n\
+                     printf '{{\"bytes\":%s,\"count\":1}}\\n' \"$bytes\"\n\
+                     ;;\n\
+                   copyto)\n\
+                     cp \"{}/$1\" \"$2\"\n\
+                     ;;\n\
+                 esac\n",
+                remote_root.display(),
+                remote_root.display(),
+            ),
+        )
+        .unwrap();
+        make_executable(&rclone);
+
+        download_with_rclone(
+            &rclone.display().to_string(),
+            "fake:voom/movie.vbak",
+            &output,
+            5,
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(output).unwrap(), b"movie");
     }
 }

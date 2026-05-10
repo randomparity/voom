@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use console::style;
+use voom_backup_manager::inventory::{RemoteBackupInventory, RemoteBackupInventoryRecord};
 use voom_domain::utils::format;
 
 use crate::cli::{BackupCommands, OutputFormat};
@@ -22,7 +23,17 @@ pub fn run(cmd: BackupCommands, global_yes: bool) -> Result<()> {
             destination,
             format,
         } => list(&paths, destination.as_deref(), format),
-        BackupCommands::Restore { backup_path, yes } => restore(&backup_path, yes || global_yes),
+        BackupCommands::Restore {
+            backup_path,
+            from,
+            output,
+            yes,
+        } => restore(
+            &backup_path,
+            from.as_deref(),
+            output.as_deref(),
+            yes || global_yes,
+        ),
         BackupCommands::Cleanup { paths, yes } => cleanup(&paths, yes || global_yes),
     }
 }
@@ -178,7 +189,14 @@ fn list_remote_inventory(destination: &str, format: OutputFormat) -> Result<()> 
     Ok(())
 }
 
-fn restore(backup_path: &Path, yes: bool) -> Result<()> {
+fn restore(backup_path: &Path, from: Option<&str>, output: Option<&Path>, yes: bool) -> Result<()> {
+    if let Some(destination) = from {
+        return restore_remote(backup_path, destination, output, yes);
+    }
+    if output.is_some() {
+        anyhow::bail!("--output requires --from for remote restore");
+    }
+
     let original_name = derive_original_name(backup_path).ok_or_else(|| {
         anyhow::anyhow!(
             "Cannot derive original filename from: {}. \
@@ -211,6 +229,114 @@ fn restore(backup_path: &Path, yes: bool) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn restore_remote(
+    original_path: &Path,
+    destination: &str,
+    output: Option<&Path>,
+    yes: bool,
+) -> Result<()> {
+    let app_config = config::load_config()?;
+    let backup_config = backup_config_from_app_config(&app_config)?;
+    if !backup_config
+        .destinations
+        .iter()
+        .any(|configured| configured.name == destination)
+    {
+        anyhow::bail!("backup destination '{destination}' is not configured");
+    }
+
+    let inventory =
+        RemoteBackupInventory::new(RemoteBackupInventory::default_path(&app_config.data_dir));
+    let records = inventory
+        .list(Some(destination))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let record = select_remote_restore_record(&records, original_path, destination)?;
+    let output_path = output.unwrap_or(original_path);
+
+    let prompt = format!(
+        "Restore remote backup {} to {}?",
+        style(&record.remote_path).cyan(),
+        style(output_path.display()).cyan()
+    );
+    if !output::confirm(&prompt, yes)? {
+        println!("{}", style("Aborted.").dim());
+        return Ok(());
+    }
+
+    let temp_path = temporary_restore_path(output_path)?;
+    voom_backup_manager::destination::download_with_rclone(
+        &backup_config.rclone_path,
+        &record.remote_path,
+        &temp_path,
+        record.size,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    std::fs::rename(&temp_path, output_path).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to move restored backup {} to {}: {e}",
+            temp_path.display(),
+            output_path.display()
+        )
+    })?;
+
+    println!(
+        "{} Restored remote backup to {}",
+        style("OK").bold().green(),
+        style(output_path.display()).cyan()
+    );
+
+    Ok(())
+}
+
+fn backup_config_from_app_config(
+    config: &config::AppConfig,
+) -> Result<voom_backup_manager::BackupConfig> {
+    let value = config.plugin.get("backup-manager").map_or_else(
+        || serde_json::json!({}),
+        |table| serde_json::to_value(table).unwrap_or_else(|_| serde_json::json!({})),
+    );
+    let backup_config: voom_backup_manager::BackupConfig = serde_json::from_value(value)?;
+    backup_config
+        .validate()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(backup_config)
+}
+
+fn temporary_restore_path(output_path: &Path) -> Result<PathBuf> {
+    let parent = output_path.parent().unwrap_or(Path::new("."));
+    let file_name = output_path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("restore output path has no file name"))?
+        .to_string_lossy();
+    Ok(parent.join(format!(".{file_name}.voom-restore.tmp")))
+}
+
+fn select_remote_restore_record<'a>(
+    records: &'a [RemoteBackupInventoryRecord],
+    original_path: &Path,
+    destination: &str,
+) -> Result<&'a RemoteBackupInventoryRecord> {
+    let matches: Vec<&RemoteBackupInventoryRecord> = records
+        .iter()
+        .filter(|record| {
+            record.destination_name == destination && record.original_path == original_path
+        })
+        .collect();
+    match matches.as_slice() {
+        [record] => Ok(*record),
+        [] => anyhow::bail!(
+            "no remote backup found for {} on destination '{}'",
+            original_path.display(),
+            destination
+        ),
+        _ => anyhow::bail!(
+            "multiple remote backups found for {} on destination '{}'; restore is ambiguous",
+            original_path.display(),
+            destination
+        ),
+    }
 }
 
 fn cleanup(roots: &[PathBuf], yes: bool) -> Result<()> {
@@ -382,6 +508,21 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+    use voom_backup_manager::inventory::RemoteBackupInventoryStatus;
+
+    fn remote_record(original_path: &Path, destination: &str) -> RemoteBackupInventoryRecord {
+        RemoteBackupInventoryRecord {
+            backup_id: uuid::Uuid::new_v4(),
+            original_path: original_path.to_path_buf(),
+            local_backup_path: PathBuf::from("/backups/movie.vbak"),
+            destination_name: destination.to_string(),
+            remote_path: format!("{destination}:voom/movie.vbak"),
+            size: 5,
+            uploaded_at: chrono::Utc::now(),
+            verified_at: Some(chrono::Utc::now()),
+            status: RemoteBackupInventoryStatus::Verified,
+        }
+    }
 
     #[test]
     fn test_derive_original_name_valid() {
@@ -462,5 +603,42 @@ mod tests {
 
         let entries = scan_vbak_files(dir.path()).unwrap();
         assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn select_remote_restore_record_finds_unique_match() {
+        let original = Path::new("/media/movie.mkv");
+        let records = vec![
+            remote_record(original, "offsite"),
+            remote_record(Path::new("/media/other.mkv"), "offsite"),
+        ];
+
+        let selected = select_remote_restore_record(&records, original, "offsite").unwrap();
+
+        assert_eq!(selected.original_path, original);
+        assert_eq!(selected.destination_name, "offsite");
+    }
+
+    #[test]
+    fn select_remote_restore_record_rejects_missing_match() {
+        let original = Path::new("/media/movie.mkv");
+        let records = vec![remote_record(original, "offsite")];
+
+        let err = select_remote_restore_record(&records, original, "archive").unwrap_err();
+
+        assert!(err.to_string().contains("no remote backup found"));
+    }
+
+    #[test]
+    fn select_remote_restore_record_rejects_ambiguous_match() {
+        let original = Path::new("/media/movie.mkv");
+        let records = vec![
+            remote_record(original, "offsite"),
+            remote_record(original, "offsite"),
+        ];
+
+        let err = select_remote_restore_record(&records, original, "offsite").unwrap_err();
+
+        assert!(err.to_string().contains("ambiguous"));
     }
 }

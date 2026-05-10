@@ -631,6 +631,12 @@ pub enum BackupCommands {
     Restore {
         /// Path to the .vbak backup file
         backup_path: PathBuf,
+        /// Restore from a remote destination inventory instead of a local .vbak
+        #[arg(long = "from")]
+        from: Option<String>,
+        /// Write restored content to this path instead of replacing the source path
+        #[arg(long)]
+        output: Option<PathBuf>,
         /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
@@ -2132,7 +2138,9 @@ mod tests {
     fn test_backup_restore() {
         let cli = parse(&["voom", "backup", "restore", "/path/to/file.vbak"]);
         match cli.command {
-            Commands::Backup(BackupCommands::Restore { backup_path, yes }) => {
+            Commands::Backup(BackupCommands::Restore {
+                backup_path, yes, ..
+            }) => {
                 assert_eq!(backup_path, PathBuf::from("/path/to/file.vbak"));
                 assert!(!yes);
             }
@@ -2146,6 +2154,51 @@ mod tests {
         match cli.command {
             Commands::Backup(BackupCommands::Restore { yes, .. }) => {
                 assert!(yes);
+            }
+            _ => panic!("expected Backup Restore"),
+        }
+    }
+
+    #[test]
+    fn test_backup_restore_from_destination() {
+        let cli = parse(&[
+            "voom",
+            "backup",
+            "restore",
+            "/media/movie.mkv",
+            "--from",
+            "offsite",
+        ]);
+        match cli.command {
+            Commands::Backup(BackupCommands::Restore {
+                backup_path,
+                from,
+                output,
+                ..
+            }) => {
+                assert_eq!(backup_path, PathBuf::from("/media/movie.mkv"));
+                assert_eq!(from.as_deref(), Some("offsite"));
+                assert_eq!(output, None);
+            }
+            _ => panic!("expected Backup Restore"),
+        }
+    }
+
+    #[test]
+    fn test_backup_restore_from_destination_with_output() {
+        let cli = parse(&[
+            "voom",
+            "backup",
+            "restore",
+            "/media/movie.mkv",
+            "--from",
+            "offsite",
+            "--output",
+            "/restore/movie.mkv",
+        ]);
+        match cli.command {
+            Commands::Backup(BackupCommands::Restore { output, .. }) => {
+                assert_eq!(output, Some(PathBuf::from("/restore/movie.mkv")));
             }
             _ => panic!("expected Backup Restore"),
         }
