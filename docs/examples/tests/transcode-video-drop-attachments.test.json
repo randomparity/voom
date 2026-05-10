@@ -1,0 +1,13 @@
+{
+  "policy": "../transcode-video-drop-attachments.voom",
+  "cases": [
+    {
+      "name": "plans h264 attachment fixture transcode",
+      "fixture": "rich-movie.json",
+      "expect": {
+        "phases_run": ["transcode-video"],
+        "video_codec": "hevc"
+      }
+    }
+  ]
+}

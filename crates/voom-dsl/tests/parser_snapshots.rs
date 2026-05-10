@@ -319,6 +319,15 @@ fn example_hw_nvenc_hevc_parses_and_validates() {
 }
 
 #[test]
+fn example_transcode_video_drop_attachments_parses_and_validates() {
+    let input = include_str!("../../../docs/examples/transcode-video-drop-attachments.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "transcode-video-drop-attachments");
+    assert_eq!(ast.phases.len(), 1);
+    voom_dsl::validate(&ast).unwrap();
+}
+
+#[test]
 fn example_hdr_archival_parses_and_validates() {
     let input = include_str!("../../../docs/examples/hdr-archival.voom");
     let ast = parse_policy(input).unwrap();
