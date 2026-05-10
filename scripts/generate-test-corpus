@@ -1589,7 +1589,76 @@ def build_audio_input(audio, index, duration):
     return audio_filter
 
 
-def build_input_options(spec, duration, tmpdir):
+def build_tts_command(backend, audio, output_path):
+    """Build the command that renders one TTS track to a WAV file."""
+    text = audio["text"]
+    voice = audio.get("voice")
+    if backend.name == "espeak-ng":
+        cmd = [backend.command]
+        if voice:
+            cmd += ["-v", voice]
+        cmd += ["-w", str(output_path), text]
+        return cmd
+    if backend.name == "say":
+        cmd = [backend.command]
+        if voice:
+            cmd += ["-v", voice]
+        cmd += ["-o", str(output_path), "--data-format=LEF32@22050", text]
+        return cmd
+    raise ValueError(f"unsupported command TTS backend '{backend.name}'")
+
+
+def build_flite_command(audio, output_path):
+    """Build an ffmpeg command that renders one flite TTS track."""
+    voice = audio.get("voice", "kal")
+    text = audio["text"].replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+    return [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        f"flite=text='{text}':voice={voice}",
+        str(output_path),
+    ]
+
+
+def render_tts_audio(audio, output_path, backend):
+    """Render one TTS audio track to a temporary WAV file."""
+    if backend is None:
+        raise RuntimeError(TTS_UNAVAILABLE_REASON)
+    if backend.name == "flite":
+        cmd = build_flite_command(audio, output_path)
+    else:
+        cmd = build_tts_command(backend, audio, output_path)
+    result = subprocess.run(cmd, capture_output=True, timeout=60)
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"TTS backend '{backend.name}' failed: {stderr}")
+
+
+def prepare_audio_inputs(spec, duration, tmpdir, tts_backend):
+    """Return prepared audio inputs for a fixture spec."""
+    inputs = []
+    for i, audio in enumerate(spec["audio"]):
+        if audio.get("source") == "tts":
+            wav_path = Path(tmpdir) / f"tts_{spec['stem']}_{i}.wav"
+            render_tts_audio(audio, wav_path, tts_backend)
+            inputs.append({"kind": "file", "value": str(wav_path)})
+        else:
+            inputs.append(
+                {
+                    "kind": "lavfi",
+                    "value": build_audio_input(audio, i, duration),
+                }
+            )
+    return inputs
+
+
+def build_input_options(spec, duration, tmpdir, tts_backend=None):
     """Return ffmpeg input and stream mapping options for a file spec."""
     cmd = []
     specials = set(spec.get("special", []))
@@ -1599,9 +1668,12 @@ def build_input_options(spec, duration, tmpdir):
 
     cmd += ["-f", "lavfi", "-i", build_video_input(video, duration, specials)]
 
-    # Audio inputs (one sine per audio track)
-    for i, audio in enumerate(audios):
-        cmd += ["-f", "lavfi", "-i", build_audio_input(audio, i, duration)]
+    audio_inputs = prepare_audio_inputs(spec, duration, tmpdir, tts_backend)
+    for audio_input in audio_inputs:
+        if audio_input["kind"] == "lavfi":
+            cmd += ["-f", "lavfi", "-i", audio_input["value"]]
+        else:
+            cmd += ["-i", audio_input["value"]]
 
     # Subtitle inputs
     sub_files = []
@@ -1820,7 +1892,7 @@ def add_attachments(cmd, specials, tmpdir):
         ]
 
 
-def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
+def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir, tts_backend=None):
     """Build the ffmpeg command list for a given file spec.
 
     Returns (cmd_list, temp_files_to_cleanup).
@@ -1831,7 +1903,7 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
     subs = spec.get("subs", [])
 
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
-    cmd += build_input_options(spec, duration, tmpdir)
+    cmd += build_input_options(spec, duration, tmpdir, tts_backend)
 
     hevc_metadata_bsf = add_video_codec_options(cmd, spec["video"], specials)
     add_audio_codec_options(cmd, audios)
@@ -2147,6 +2219,14 @@ def generate_normal_spec(*, spec, idx, tmpdir, options, result):
         result.skip_count += 1
         return
 
+    if spec.get("requires_tts") and options.tts_backend is None:
+        print(f"[{idx}/{options.total}] Skipping {filename} - {TTS_UNAVAILABLE_REASON}")
+        result.skipped_entries.append(
+            build_issue_entry(spec, filename, TTS_UNAVAILABLE_REASON)
+        )
+        result.skip_count += 1
+        return
+
     file_rng = random.Random(options.seed + idx)
     file_duration = spec.get("duration_override", options.duration)
 
@@ -2157,6 +2237,7 @@ def generate_normal_spec(*, spec, idx, tmpdir, options, result):
             file_duration,
             file_rng,
             tmpdir,
+            options.tts_backend,
         )
     except Exception as e:
         print(

@@ -515,6 +515,84 @@ def test_build_audio_input_dynamic_bursts_uses_aevalsrc_expression(generator):
     assert "0.04*sin(2*PI*220*t)" in source
 
 
+def test_build_tts_command_uses_espeak_ng(generator, tmp_path):
+    backend = generator.TtsBackend("espeak-ng", "/usr/bin/espeak-ng")
+    out = tmp_path / "speech.wav"
+    cmd = generator.build_tts_command(
+        backend,
+        {"text": "hello world", "voice": "en-us"},
+        out,
+    )
+
+    assert cmd == [
+        "/usr/bin/espeak-ng",
+        "-v",
+        "en-us",
+        "-w",
+        str(out),
+        "hello world",
+    ]
+
+
+def test_build_tts_command_uses_say(generator, tmp_path):
+    backend = generator.TtsBackend("say", "/usr/bin/say")
+    out = tmp_path / "speech.wav"
+    cmd = generator.build_tts_command(backend, {"text": "hello", "voice": "Alex"}, out)
+
+    assert cmd == [
+        "/usr/bin/say",
+        "-v",
+        "Alex",
+        "-o",
+        str(out),
+        "--data-format=LEF32@22050",
+        "hello",
+    ]
+
+
+def test_prepare_audio_inputs_renders_tts_and_keeps_lavfi(
+    generator, monkeypatch, tmp_path
+):
+    backend = generator.TtsBackend("espeak-ng", "/usr/bin/espeak-ng")
+    rendered = []
+
+    def fake_render(audio, path, selected_backend):
+        rendered.append((audio["text"], path.name, selected_backend.name))
+        path.write_bytes(b"RIFFfake")
+
+    monkeypatch.setattr(generator, "render_tts_audio", fake_render)
+
+    spec = {
+        "stem": "mixed",
+        "audio": [
+            {
+                "codec": "aac",
+                "channels": 2,
+                "source": "tts",
+                "voice": "en-us",
+                "text": "speech",
+            },
+            {"codec": "aac", "channels": 2},
+        ],
+    }
+
+    inputs = generator.prepare_audio_inputs(
+        spec,
+        duration=2,
+        tmpdir=tmp_path,
+        tts_backend=backend,
+    )
+
+    assert rendered == [("speech", "tts_mixed_0.wav", "espeak-ng")]
+    assert inputs == [
+        {"kind": "file", "value": str(tmp_path / "tts_mixed_0.wav")},
+        {
+            "kind": "lavfi",
+            "value": "sine=frequency=550:duration=2:sample_rate=48000",
+        },
+    ]
+
+
 def test_build_ffmpeg_cmd_adds_loudnorm_filter_for_target_fixture(generator, tmp_path):
     spec = next(
         spec
