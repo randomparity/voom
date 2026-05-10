@@ -1,0 +1,25 @@
+// Continue-on-error transcode policy.
+//
+// Demonstrates a batch-oriented policy where one file can fail execution while
+// the rest of the run continues. Failed executable plans are recorded as
+// failed file jobs and appear in the final process summary and job reports.
+//
+// Designed for use with: ffmpeg-executor, backup-manager
+
+policy "continue-on-error-transcode" {
+  config {
+    on_error: continue
+  }
+
+  phase transcode-video {
+    on_error: continue
+    skip when video.codec in [hevc, h265]
+
+    transcode video to hevc {
+      crf: 28
+      preset: medium
+      hw: auto
+      hw_fallback: true
+    }
+  }
+}
