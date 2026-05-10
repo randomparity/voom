@@ -272,6 +272,24 @@ def test_build_manifest_includes_required_corrupt_fixtures(generator):
     }
 
 
+def test_build_manifest_includes_tts_fixtures(generator):
+    specs = {spec["stem"]: spec for spec in generator.build_manifest()}
+
+    assert {
+        "speech-english-aac",
+        "speech-spanish-aac",
+        "speech-dual-language",
+        "speech-mixed-language",
+    }.issubset(specs)
+    assert specs["speech-english-aac"]["profiles"] == ["smoke", "coverage"]
+    assert specs["speech-dual-language"]["expect"]["speech_languages"] == [
+        "eng",
+        "spa",
+    ]
+    assert specs["speech-mixed-language"]["expect"]["speech"] is True
+    assert "audio.speech.mixed_language" in specs["speech-mixed-language"]["covers"]
+
+
 def test_materialize_corrupt_fixture_creates_final_file(generator, tmp_path):
     source = tmp_path / "basic-h264-aac.mp4"
     source.write_bytes(bytes(range(256)) * 16)
@@ -393,6 +411,57 @@ def test_ensure_ffmpeg_available_returns_when_binary_exists(generator, monkeypat
     monkeypatch.setattr(generator.shutil, "which", lambda name: "/usr/bin/ffmpeg")
 
     generator.ensure_ffmpeg_available()
+
+
+def test_discover_tts_backend_prefers_espeak_ng(generator, monkeypatch):
+    def fake_which(name):
+        return {
+            "espeak-ng": "/usr/bin/espeak-ng",
+            "say": "/usr/bin/say",
+        }.get(name)
+
+    monkeypatch.setattr(generator.shutil, "which", fake_which)
+    monkeypatch.setattr(generator, "ffmpeg_supports_flite", lambda: True)
+
+    backend = generator.discover_tts_backend("auto")
+
+    assert backend == generator.TtsBackend("espeak-ng", "/usr/bin/espeak-ng")
+
+
+def test_discover_tts_backend_uses_flite_before_say(generator, monkeypatch):
+    def fake_which(name):
+        return "/usr/bin/say" if name == "say" else None
+
+    monkeypatch.setattr(generator.shutil, "which", fake_which)
+    monkeypatch.setattr(generator, "ffmpeg_supports_flite", lambda: True)
+
+    backend = generator.discover_tts_backend("auto")
+
+    assert backend == generator.TtsBackend("flite", "ffmpeg")
+
+
+def test_discover_tts_backend_none_returns_none(generator, monkeypatch):
+    monkeypatch.setattr(generator.shutil, "which", lambda name: None)
+    monkeypatch.setattr(generator, "ffmpeg_supports_flite", lambda: False)
+
+    assert generator.discover_tts_backend("none") is None
+    assert generator.discover_tts_backend("auto") is None
+
+
+def test_discover_tts_backend_requested_missing_backend_exits(
+    generator, monkeypatch, capsys
+):
+    monkeypatch.setattr(generator.shutil, "which", lambda name: None)
+    monkeypatch.setattr(generator, "ffmpeg_supports_flite", lambda: False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        generator.discover_tts_backend("espeak-ng")
+
+    assert exc_info.value.code == 1
+    assert (
+        capsys.readouterr().err
+        == "Error: requested TTS backend 'espeak-ng' is not available\n"
+    )
 
 
 def test_build_video_input_uses_mandelbrot_source_and_black_bars(generator):
