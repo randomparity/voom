@@ -147,6 +147,25 @@ rclone lsd vps:
 rclone lsd dav:
 ```
 
+### Native S3 Backend
+
+VOOM does not currently ship a native S3 backend. Use `kind = "s3"` with an
+rclone remote for AWS S3 and S3-compatible providers.
+
+Prefer rclone-backed S3 when:
+
+1. You already have rclone remotes configured.
+2. You use S3-compatible storage with provider-specific endpoint behavior.
+3. You need the same backup behavior across S3, SFTP, WebDAV, and other rclone
+   remotes.
+4. You want credentials to stay in rclone config, environment variables, or the
+   provider's native credential store instead of VOOM config.
+
+A native S3 backend should be added only if users need an in-process S3 client,
+cannot install rclone, or need S3-specific behavior that rclone-backed
+destinations cannot provide. If that backend is added later, it should use a
+separate destination kind instead of changing the behavior of `kind = "s3"`.
+
 ## Health Checks
 
 `voom env check` and the deprecated `voom health check` alias report one
