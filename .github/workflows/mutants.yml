@@ -27,22 +27,22 @@ jobs:
           - voom-phase-orchestrator
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
 
       - name: Set up Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@9d7e65c320fdb52dcd45ffaa68deb6c02c8754d9  # v1.12.0
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
 
       - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0  # v2.8.0
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
           # Per-package cache key so the three matrix jobs don't fight over
           # the same target/ snapshot.
           key: mutants-${{ matrix.package }}
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@9ca1734d8940023f074414ee621fd530c4ce10f2  # v2.55.3
+        uses: taiki-e/install-action@ec28e287910af896fd98e04056d31fa68607e7ad  # v2.77.4
         with:
           tool: cargo-mutants
 
@@ -98,7 +98,7 @@ jobs:
 
       - name: Upload mutants.out artifact
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: mutants-${{ matrix.package }}
           path: mutants.out/
