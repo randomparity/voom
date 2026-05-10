@@ -1,0 +1,13 @@
+{
+  "policy": "../metadata-stable-transcode.voom",
+  "cases": [
+    {
+      "name": "plans h264 rich fixture transcode without metadata cleanup actions",
+      "fixture": "rich-movie.json",
+      "expect": {
+        "phases_run": ["transcode-video"],
+        "video_codec": "hevc"
+      }
+    }
+  ]
+}

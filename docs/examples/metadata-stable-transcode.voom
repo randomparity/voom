@@ -1,0 +1,27 @@
+// Metadata-stable video transcode policy.
+//
+// FFmpeg transcode/containerize commands explicitly preserve global metadata,
+// chapters, stream language tags, stream titles, and default/forced flags.
+// Policy actions such as set_language, set_default, or clear_forced still win
+// over the preserved source state.
+//
+// Designed for use with: ffmpeg-executor, backup-manager
+
+policy "metadata-stable-transcode" {
+  config {
+    languages audio: [eng, und]
+    languages subtitle: [eng, und]
+    on_error: continue
+  }
+
+  phase transcode-video {
+    skip when video.codec in [hevc, h265]
+
+    transcode video to hevc {
+      crf: 28
+      preset: medium
+      hw: auto
+      hw_fallback: true
+    }
+  }
+}
