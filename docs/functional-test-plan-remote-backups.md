@@ -43,6 +43,17 @@ case "$cmd" in
     bytes="$(wc -c < "$target" | tr -d ' ')"
     printf '{"bytes":%s,"count":1}\n' "$bytes"
     ;;
+  hashsum)
+    algorithm="$1"
+    remote="$2"
+    target="/tmp/voom-remote-backup-target/${remote//:/_}"
+    if [[ "$algorithm" != "SHA-256" ]]; then
+      echo "unsupported hash algorithm: $algorithm" >&2
+      exit 64
+    fi
+    hash="$(shasum -a 256 "$target" | awk '{print $1}')"
+    printf '%s  %s\n' "$hash" "$remote"
+    ;;
   *)
     echo "unsupported fake rclone command: $cmd" >&2
     exit 64
@@ -106,6 +117,18 @@ XDG_CONFIG_HOME=/tmp/voom-remote-config cargo run -p voom-cli -- backup list \
 
 Expected: JSON output contains at least one record with
 `"destination_name": "fake-offsite"` and `"status": "verified"`.
+
+Verify the remote inventory:
+
+```sh
+XDG_CONFIG_HOME=/tmp/voom-remote-config cargo run -p voom-cli -- backup verify \
+  --destination fake-offsite \
+  --format json
+```
+
+Expected: JSON output reports `verified` for each record, includes matching
+`expected_size` and `actual_size` values, and includes matching
+`expected_sha256` and `actual_sha256` values.
 
 Restore to an explicit output path:
 

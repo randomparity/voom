@@ -14,11 +14,13 @@ pub mod inventory;
 pub mod space;
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
@@ -198,6 +200,7 @@ impl BackupManagerPlugin {
                 destination_name: remote.destination_name.clone(),
                 remote_path: remote.remote_path.clone(),
                 size: record.size,
+                sha256: Some(compute_sha256(&record.backup_path)?),
                 uploaded_at: now,
                 verified_at: remote.verified.then_some(now),
                 status: if remote.verified {
@@ -278,6 +281,24 @@ impl BackupManagerPlugin {
 
         Ok(removed)
     }
+}
+
+fn compute_sha256(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| plugin_err(format!("failed to open backup {}: {e}", path.display())))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| plugin_err(format!("failed to read backup {}: {e}", path.display())))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    Ok(format!("{digest:x}"))
 }
 
 impl Default for BackupManagerPlugin {

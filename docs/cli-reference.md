@@ -836,6 +836,23 @@ voom backup restore <BACKUP_PATH_OR_FILE_PATH> [OPTIONS]
 | `--output <PATH>` | none | Write remote restore to this path instead of replacing the original path |
 | `--yes` | `false` | Skip confirmation prompt |
 
+#### `voom backup verify`
+
+Verify remote backup inventory against a configured destination.
+
+```
+voom backup verify --destination <DESTINATION> [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--destination <DESTINATION>` | *required* | Remote backup destination to verify |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+The command reports `verified`, `missing`, `size_mismatch`, `hash_mismatch`, or
+`error` for each inventory record and exits non-zero when any record is not
+verified.
+
 #### `voom backup cleanup`
 
 Remove all backup files from one or more directories.
@@ -859,6 +876,8 @@ voom backup restore /media/movies/film.mkv.vbak
 voom backup restore /media/movies/film.mkv.vbak --yes
 voom backup restore /media/movies/film.mkv --from offsite
 voom backup restore /media/movies/film.mkv --from offsite --output /tmp/film.mkv
+voom backup verify --destination offsite
+voom backup verify --destination offsite --format json
 voom backup cleanup /media/movies --yes
 ```
 

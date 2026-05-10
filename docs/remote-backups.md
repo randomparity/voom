@@ -65,6 +65,19 @@ voom backup list --destination offsite
 voom backup list --destination offsite --format json
 ```
 
+Verify the recorded inventory against the remote destination:
+
+```sh
+voom backup verify --destination offsite
+voom backup verify --destination offsite --format json
+```
+
+Remote verification checks object size for every inventory record. New
+inventory records also include a SHA-256 of the backup content; when rclone can
+return SHA-256 metadata for the remote object, VOOM compares that hash as well.
+The command reports `verified`, `missing`, `size_mismatch`, `hash_mismatch`, or
+`error` for each record and exits non-zero when any record is not verified.
+
 Restore a remote backup from one destination:
 
 ```sh
