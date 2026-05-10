@@ -79,6 +79,7 @@ failed_plans="${run}/diffs/failed-plans.tsv"
 failure_clusters="${run}/diffs/failure-clusters.tsv"
 failure_clusters_md="${run}/diffs/failure-clusters.md"
 plans_tsv="${run}/db-export/plans.tsv"
+total_failed_plans=0
 if [[ -f "${plans_tsv}" ]]; then
   "${script_dir}/plan-phase-summary.py" "${plans_tsv}" "${phase_summary}" "${failed_plans}"
   if [[ -s "${failed_plans}" ]] && [[ $(awk 'END {print NR}' "${failed_plans}") -gt 1 ]]; then
@@ -90,10 +91,23 @@ if [[ -f "${plans_tsv}" ]]; then
 
   while IFS=$'\t' read -r phase total _completed _skipped failed; do
     [[ "${phase}" == "phase" ]] && continue
+    total_failed_plans=$((total_failed_plans + failed))
     if ((failed > 0)); then
       note_fail "phase ${phase}: ${failed}/${total} plans failed"
     fi
   done <"${phase_summary}"
+fi
+
+if ((total_failed_plans > 0)); then
+  process_rc_file="${run}/logs/process.log.rc"
+  if [[ -f "${process_rc_file}" ]] && [[ "$(cat "${process_rc_file}")" == "0" ]]; then
+    note_warn "process exited 0 despite ${total_failed_plans} failed plan(s)"
+  fi
+  if [[ -f "${jobs_report}" ]] &&
+    grep -qE 'completed:[[:space:]]+[1-9][0-9]*' "${jobs_report}" &&
+    ! grep -qE 'failed:[[:space:]]+[1-9][0-9]*' "${jobs_report}"; then
+    note_warn "jobs report has completed jobs but no failed jobs despite ${total_failed_plans} failed plan(s)"
+  fi
 fi
 
 "${script_dir}/build-repro-set.py" "${run}" ||
