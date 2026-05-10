@@ -20,6 +20,7 @@ name = "offsite"
 kind = "rclone"
 remote = "b2:voom-backups"
 bandwidth_limit = "10M"
+minimum_storage_days = 30
 ```
 
 `kind` may be `rclone`, `s3`, `sftp`, or `webdav`. All remote kinds are backed
@@ -101,6 +102,20 @@ Local backup listing still scans `.vbak` files by path:
 voom backup list /media/movies
 ```
 
+Remote cleanup deletes inventory records from one configured destination:
+
+```sh
+voom backup cleanup --destination offsite
+voom backup cleanup --destination offsite --yes
+```
+
+`minimum_storage_days` protects young remote objects from cleanup. Skipped
+deletions are reported with the destination and object age. Set this for
+providers with minimum billable storage windows, such as Amazon S3 Glacier Deep
+Archive, where early deletion can incur charges. Objects deleted successfully
+are removed from the local remote-backup inventory; skipped and failed records
+remain.
+
 ## S3, SFTP, And WebDAV
 
 Typed provider names document intent while keeping one execution model:
@@ -110,6 +125,7 @@ Typed provider names document intent while keeping one execution model:
 name = "archive-s3"
 kind = "s3"
 remote = "aws-archive:voom"
+minimum_storage_days = 180
 
 [[plugin.backup-manager.destinations]]
 name = "nas-sftp"
@@ -153,11 +169,6 @@ Failures are reported as:
 
 Health output names the destination and kind only. It does not print remote URLs
 or credential-bearing configuration values.
-
-## Restore Status
-
-`voom backup cleanup` continues to operate on local `.vbak` files. Remote
-cleanup is tracked separately by retention work.
 
 ## Credential Safety
 

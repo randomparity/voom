@@ -1,8 +1,11 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
-use console::style;
+use chrono::{DateTime, Utc};
+use console::{style, StyledObject};
 use serde::Serialize;
+use voom_backup_manager::destination::BackupDestinationConfig;
 use voom_backup_manager::inventory::{RemoteBackupInventory, RemoteBackupInventoryRecord};
 use voom_domain::utils::format;
 
@@ -39,7 +42,11 @@ pub fn run(cmd: BackupCommands, global_yes: bool) -> Result<()> {
             destination,
             format,
         } => verify_remote_inventory(&destination, format),
-        BackupCommands::Cleanup { paths, yes } => cleanup(&paths, yes || global_yes),
+        BackupCommands::Cleanup {
+            paths,
+            destination,
+            yes,
+        } => cleanup(&paths, destination.as_deref(), yes || global_yes),
     }
 }
 
@@ -585,7 +592,26 @@ fn select_remote_restore_record<'a>(
     }
 }
 
-fn cleanup(roots: &[PathBuf], yes: bool) -> Result<()> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteCleanupPlan {
+    delete: Vec<RemoteBackupInventoryRecord>,
+    skip: Vec<RemoteCleanupSkip>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteCleanupSkip {
+    record: RemoteBackupInventoryRecord,
+    age_days: i64,
+    minimum_storage_days: u32,
+}
+
+fn cleanup(roots: &[PathBuf], destination: Option<&str>, yes: bool) -> Result<()> {
+    if let Some(destination) = destination {
+        return cleanup_remote(destination, yes);
+    }
+    if roots.is_empty() {
+        anyhow::bail!("backup cleanup requires at least one path unless --destination is provided");
+    }
     let mut all_entries = Vec::new();
     for root in roots {
         let entries = scan_vbak_files(root)?;
@@ -641,6 +667,116 @@ fn cleanup(roots: &[PathBuf], yes: bool) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn cleanup_remote(destination: &str, yes: bool) -> Result<()> {
+    let app_config = config::load_config()?;
+    let backup_config = backup_config_from_app_config(&app_config)?;
+    let destination_config = backup_config
+        .destinations
+        .iter()
+        .find(|configured| configured.name == destination)
+        .ok_or_else(|| anyhow::anyhow!("backup destination '{destination}' is not configured"))?;
+    let inventory =
+        RemoteBackupInventory::new(RemoteBackupInventory::default_path(&app_config.data_dir));
+    let all_records = inventory.list(None).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let plan = plan_remote_cleanup(
+        destination_config,
+        all_records
+            .iter()
+            .filter(|record| record.destination_name == destination),
+        Utc::now(),
+    );
+    print_remote_cleanup_plan(destination, &plan);
+    if plan.delete.is_empty() {
+        return Ok(());
+    }
+    if !output::confirm("Confirm remote deletion?", yes)? {
+        println!("{}", style("Aborted.").dim());
+        return Ok(());
+    }
+
+    let mut deleted_ids = HashSet::new();
+    let mut errors = 0u64;
+    for record in &plan.delete {
+        match voom_backup_manager::destination::delete_with_rclone(
+            &backup_config.rclone_path,
+            &record.remote_path,
+        ) {
+            Ok(()) => {
+                deleted_ids.insert(record.backup_id);
+            }
+            Err(e) => {
+                errors += 1;
+                eprintln!("{} {}: {e}", style("ERROR").red(), record.remote_path);
+            }
+        }
+    }
+    let remaining: Vec<RemoteBackupInventoryRecord> = all_records
+        .into_iter()
+        .filter(|record| {
+            record.destination_name != destination || !deleted_ids.contains(&record.backup_id)
+        })
+        .collect();
+    inventory
+        .replace_all(&remaining)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!(
+        "{} Removed {} remote backup(s){}",
+        style("OK").bold().green(),
+        deleted_ids.len(),
+        if errors > 0 {
+            format!(", {errors} error(s)")
+        } else {
+            String::new()
+        }
+    );
+    Ok(())
+}
+
+fn plan_remote_cleanup<'a>(
+    destination: &BackupDestinationConfig,
+    records: impl Iterator<Item = &'a RemoteBackupInventoryRecord>,
+    now: DateTime<Utc>,
+) -> RemoteCleanupPlan {
+    let minimum_storage_days = destination.minimum_storage_days.unwrap_or(0);
+    let mut delete = Vec::new();
+    let mut skip = Vec::new();
+    for record in records {
+        let age_days = now.signed_duration_since(record.uploaded_at).num_days();
+        if age_days < i64::from(minimum_storage_days) {
+            skip.push(RemoteCleanupSkip {
+                record: record.clone(),
+                age_days,
+                minimum_storage_days,
+            });
+        } else {
+            delete.push(record.clone());
+        }
+    }
+    RemoteCleanupPlan { delete, skip }
+}
+
+fn print_remote_cleanup_plan(destination: &str, plan: &RemoteCleanupPlan) {
+    println!(
+        "Found {} remote backup(s) eligible for deletion on {}.",
+        style(plan.delete.len()).bold(),
+        style(destination).bold()
+    );
+    for skip in &plan.skip {
+        println!(
+            "{} Skipping {} on {}: age {} day(s), minimum {} day(s)",
+            styled_warn(),
+            skip.record.remote_path,
+            skip.record.destination_name,
+            skip.age_days,
+            skip.minimum_storage_days
+        );
+    }
+}
+
+fn styled_warn() -> StyledObject<&'static str> {
+    style("SKIP").yellow()
 }
 
 /// Scan for `.vbak` files under a directory.
@@ -752,6 +888,7 @@ fn derive_original_path(backup_path: &Path, original_name: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
@@ -777,7 +914,7 @@ mod tests {
             remote_path: format!("{destination}:voom/{path}"),
             size,
             sha256,
-            uploaded_at: chrono::Utc::now(),
+            uploaded_at: chrono::Utc::now() - Duration::days(10),
             verified_at: Some(chrono::Utc::now()),
             status: RemoteBackupInventoryStatus::Verified,
         }
@@ -946,6 +1083,63 @@ mod tests {
         let err = select_remote_restore_record(&records, original, "offsite").unwrap_err();
 
         assert!(err.to_string().contains("ambiguous"));
+    }
+
+    #[test]
+    fn cleanup_local_backups_still_removes_vbak_files() {
+        let dir = TempDir::new().unwrap();
+        let backup_dir = dir.path().join("movies").join(".voom-backup");
+        fs::create_dir_all(&backup_dir).unwrap();
+        let backup_path = backup_dir.join("movie.mkv.20260329120000.vbak");
+        fs::write(&backup_path, b"backup").unwrap();
+
+        cleanup(&[dir.path().to_path_buf()], None, true).unwrap();
+
+        assert!(!backup_path.exists());
+    }
+
+    #[test]
+    fn cleanup_without_path_or_destination_fails() {
+        let err = cleanup(&[], None, true).unwrap_err();
+
+        assert!(err.to_string().contains("requires at least one path"));
+    }
+
+    #[test]
+    fn plan_remote_cleanup_skips_records_younger_than_minimum() {
+        let mut destination = BackupDestinationConfig::rclone("offsite", "b2:voom");
+        destination.minimum_storage_days = Some(30);
+        let mut record = remote_record(Path::new("/media/movie.mkv"), "offsite");
+        record.uploaded_at = chrono::Utc::now() - Duration::days(7);
+
+        let plan = plan_remote_cleanup(&destination, std::iter::once(&record), chrono::Utc::now());
+
+        assert!(plan.delete.is_empty());
+        assert_eq!(plan.skip.len(), 1);
+        assert_eq!(plan.skip[0].minimum_storage_days, 30);
+    }
+
+    #[test]
+    fn plan_remote_cleanup_mixes_eligible_and_retained_records() {
+        let mut destination = BackupDestinationConfig::rclone("offsite", "b2:voom");
+        destination.minimum_storage_days = Some(30);
+        let mut old =
+            remote_record_with_path(Path::new("/media/old.mkv"), "offsite", "old.vbak", 5, None);
+        old.uploaded_at = chrono::Utc::now() - Duration::days(45);
+        let mut young = remote_record_with_path(
+            Path::new("/media/young.mkv"),
+            "offsite",
+            "young.vbak",
+            5,
+            None,
+        );
+        young.uploaded_at = chrono::Utc::now() - Duration::days(3);
+
+        let records = [old.clone(), young.clone()];
+        let plan = plan_remote_cleanup(&destination, records.iter(), chrono::Utc::now());
+
+        assert_eq!(plan.delete, vec![old]);
+        assert_eq!(plan.skip[0].record, young);
     }
 
     #[test]

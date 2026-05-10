@@ -50,6 +50,8 @@ pub struct BackupDestinationConfig {
     pub kind: DestinationKind,
     pub remote: Option<String>,
     pub bandwidth_limit: Option<String>,
+    #[serde(default)]
+    pub minimum_storage_days: Option<u32>,
 }
 
 fn default_destination_kind() -> DestinationKind {
@@ -64,6 +66,7 @@ impl BackupDestinationConfig {
             kind: DestinationKind::Rclone,
             remote: Some(remote.into()),
             bandwidth_limit: None,
+            minimum_storage_days: None,
         }
     }
 
@@ -217,6 +220,14 @@ impl RcloneCommand {
         }
     }
 
+    #[must_use]
+    pub fn deletefile(program: impl Into<String>, remote_path: &str) -> Self {
+        Self {
+            program: program.into(),
+            args: vec!["deletefile".to_string(), remote_path.to_string()],
+        }
+    }
+
     fn run(&self) -> Result<Vec<u8>> {
         let output = Command::new(&self.program)
             .args(&self.args)
@@ -352,6 +363,11 @@ pub fn remote_sha256(rclone_path: &str, remote_path: &str) -> Result<Option<Stri
     }
 }
 
+pub fn delete_with_rclone(rclone_path: &str, remote_path: &str) -> Result<()> {
+    RcloneCommand::deletefile(rclone_path, remote_path).run()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
@@ -388,6 +404,7 @@ mod tests {
                 kind: DestinationKind::Rclone,
                 remote: None,
                 bandwidth_limit: None,
+                minimum_storage_days: None,
             }],
             ..BackupDestinationsConfig::default()
         };
@@ -406,18 +423,21 @@ mod tests {
                     kind: DestinationKind::S3,
                     remote: Some("aws:voom".to_string()),
                     bandwidth_limit: None,
+                    minimum_storage_days: Some(180),
                 },
                 BackupDestinationConfig {
                     name: "nas-sftp".to_string(),
                     kind: DestinationKind::Sftp,
                     remote: Some("vps:/srv/voom".to_string()),
                     bandwidth_limit: Some("10M".to_string()),
+                    minimum_storage_days: None,
                 },
                 BackupDestinationConfig {
                     name: "webdav".to_string(),
                     kind: DestinationKind::Webdav,
                     remote: Some("dav:voom".to_string()),
                     bandwidth_limit: None,
+                    minimum_storage_days: None,
                 },
             ],
             ..BackupDestinationsConfig::default()
@@ -451,6 +471,14 @@ mod tests {
             command.args,
             vec!["hashsum", "SHA-256", "b2:voom/backup.vbak"]
         );
+    }
+
+    #[test]
+    fn rclone_deletefile_uses_argv_without_shell() {
+        let command = RcloneCommand::deletefile("rclone", "b2:voom/backup.vbak");
+
+        assert_eq!(command.program, "rclone");
+        assert_eq!(command.args, vec!["deletefile", "b2:voom/backup.vbak"]);
     }
 
     #[test]

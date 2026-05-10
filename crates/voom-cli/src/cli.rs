@@ -653,8 +653,11 @@ pub enum BackupCommands {
     /// Remove all backup files
     Cleanup {
         /// Directories to scan for backups
-        #[arg(required = true, num_args = 1..)]
+        #[arg(num_args = 0..)]
         paths: Vec<PathBuf>,
+        /// Remote destination inventory to clean up
+        #[arg(long)]
+        destination: Option<String>,
         /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
@@ -2251,8 +2254,13 @@ mod tests {
     fn test_backup_cleanup() {
         let cli = parse(&["voom", "backup", "cleanup", "/media", "--yes"]);
         match cli.command {
-            Commands::Backup(BackupCommands::Cleanup { paths, yes }) => {
+            Commands::Backup(BackupCommands::Cleanup {
+                paths,
+                destination,
+                yes,
+            }) => {
                 assert_eq!(paths, vec![PathBuf::from("/media")]);
+                assert_eq!(destination, None);
                 assert!(yes);
             }
             _ => panic!("expected Backup Cleanup"),
@@ -2260,8 +2268,17 @@ mod tests {
     }
 
     #[test]
-    fn test_backup_cleanup_requires_path() {
-        assert!(try_parse(&["voom", "backup", "cleanup"]).is_err());
+    fn test_backup_cleanup_accepts_destination_without_path() {
+        let cli = parse(&["voom", "backup", "cleanup", "--destination", "offsite"]);
+        match cli.command {
+            Commands::Backup(BackupCommands::Cleanup {
+                paths, destination, ..
+            }) => {
+                assert!(paths.is_empty());
+                assert_eq!(destination.as_deref(), Some("offsite"));
+            }
+            _ => panic!("expected Backup Cleanup"),
+        }
     }
 
     #[test]
@@ -2339,7 +2356,7 @@ mod tests {
     fn test_backup_cleanup_multiple_paths() {
         let cli = parse(&["voom", "backup", "cleanup", "/movies", "/series", "--yes"]);
         match cli.command {
-            Commands::Backup(BackupCommands::Cleanup { paths, yes }) => {
+            Commands::Backup(BackupCommands::Cleanup { paths, yes, .. }) => {
                 assert_eq!(
                     paths,
                     vec![PathBuf::from("/movies"), PathBuf::from("/series")]
