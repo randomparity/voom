@@ -1,7 +1,9 @@
 """Tests for scripts/generate-test-corpus pure helpers."""
 
 import importlib.util
+import json
 import random
+import subprocess
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -24,6 +26,10 @@ def load_generator():
 @pytest.fixture
 def generator():
     return load_generator()
+
+
+def format_process_output(result):
+    return f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
 
 
 def test_select_specs_filters_by_profile_only_and_skip(generator):
@@ -624,3 +630,65 @@ def test_add_audio_codec_options_sets_explicit_stereo_for_two_channels(generator
     assert cmd[cmd.index("-ac:a:0") + 1] == "2"
     assert "-channel_layout:a:0" in cmd
     assert cmd[cmd.index("-channel_layout:a:0") + 1] == "stereo"
+
+
+def test_tts_fixture_skips_when_backend_disabled(generator, tmp_path):
+    dest = tmp_path / "corpus"
+    result = subprocess.run(
+        [
+            str(SCRIPT_PATH),
+            str(dest),
+            "--profile",
+            "coverage",
+            "--only",
+            "speech-english-aac",
+            "--tts-backend",
+            "none",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, format_process_output(result)
+    manifest = json.loads((dest / "manifest.json").read_text())
+    assert manifest["summary"] == {
+        "generated": 0,
+        "skipped": 1,
+        "failed": 0,
+        "corrupted": 0,
+    }
+    assert manifest["skipped"][0]["stem"] == "speech-english-aac"
+    assert manifest["skipped"][0]["reason"] == generator.TTS_UNAVAILABLE_REASON
+
+
+def test_tts_fixture_generates_with_espeak_ng(generator, tmp_path):
+    if generator.shutil.which("espeak-ng") is None:
+        pytest.skip("espeak-ng not installed")
+
+    dest = tmp_path / "corpus"
+    result = subprocess.run(
+        [
+            str(SCRIPT_PATH),
+            str(dest),
+            "--profile",
+            "coverage",
+            "--only",
+            "speech-english-aac",
+            "--duration",
+            "3",
+            "--tts-backend",
+            "espeak-ng",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, format_process_output(result)
+    output = dest / "speech-english-aac.mp4"
+    manifest = json.loads((dest / "manifest.json").read_text())
+    assert output.exists()
+    assert manifest["summary"]["generated"] == 1
+    assert manifest["generated"][0]["expect"]["speech"] is True
+    assert manifest["generated"][0]["expect"]["speech_languages"] == ["eng"]
