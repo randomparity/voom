@@ -30,6 +30,18 @@
   with actionable stderr, unavailable auto backends skip TTS fixtures with a
   manifest reason, and render failures include the backend name and stderr in the
   failed fixture reason.
+- Dry-run side effects: PASS after final-review fix. TTS fixture dry-runs no
+  longer build the ffmpeg command path that renders temporary WAV inputs. They
+  validate backend-specific TTS settings, such as flite voice support, then print
+  a backend placeholder instead of a command that points at deleted temp WAV
+  files.
+- Speech duration consistency: PASS after final-review fix. Speech fixtures now
+  declare a five-second duration override so generated media has enough time for
+  the intended transcript text instead of inheriting the two-second default.
+- Flite voice compatibility: PASS after final-review fix. `auto` no longer
+  selects flite ahead of macOS `say`, English fixture voices map explicitly to
+  known flite voices, and unsupported fixture voices such as Spanish fail with a
+  clear backend/voice error when flite is explicitly requested.
 - Fixture runtime: PASS after fix. Speech fixture duration is short and TTS/ffmpeg
   subprocesses have timeouts. I also split the 152-line TTS fixture builder into
   smaller helpers so the new code no longer violates the project function-length
@@ -62,4 +74,8 @@
   functions and made the added `tts_backend` parameter keyword-only on
   `build_ffmpeg_cmd()` so new code stays within project limits for function
   length and positional parameters.
+- Fixed during final review: made TTS dry-runs side-effect-free while preserving
+  pure backend validation, gave all speech fixtures a five-second duration
+  override, and hardened flite compatibility with explicit fixture voice mapping
+  plus clear unsupported-voice errors.
 - Deferred follow-up issues: None.
