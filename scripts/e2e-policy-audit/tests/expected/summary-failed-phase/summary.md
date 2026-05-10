@@ -46,6 +46,12 @@ plan-4	file-4	transcode-video	{"error":"encoder failed"}
 
 ### First 50 db-vs-ffprobe-post divergences (introspection bugs)
 
+### Top db-vs-ffprobe-post diff classes
+(not generated)
+
+### Top ffprobe pre-vs-post diff classes
+(not generated)
+
 ## Linked artifacts
 
 - [diffs/](diffs/)

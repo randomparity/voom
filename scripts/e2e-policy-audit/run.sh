@@ -237,6 +237,17 @@ if ((do_probe)); then
             echo "diff/pivot pid ${pid} failed (continuing)" >&2
         fi
     done
+
+    for diff_name in db-vs-ffprobe-post ffprobe-pre-vs-post; do
+        diff_tsv="${run_dir}/diffs/${diff_name}.tsv"
+        if [[ -r "${diff_tsv}" ]]; then
+            "${lib_dir}/diff-class-summary.py" \
+                "${diff_tsv}" \
+                "${run_dir}/diffs/${diff_name}-summary.tsv" \
+                "${run_dir}/diffs/${diff_name}-summary.md" ||
+                echo "diff class summary failed for ${diff_name} (continuing)" >&2
+        fi
+    done
 fi
 stage_end diff "$t"
 

@@ -173,6 +173,24 @@ fi
     echo '```'
   fi
   echo
+  echo "### Top db-vs-ffprobe-post diff classes"
+  if [[ -f "${run}/diffs/db-vs-ffprobe-post-summary.tsv" ]]; then
+    echo '```'
+    head -21 "${run}/diffs/db-vs-ffprobe-post-summary.tsv"
+    echo '```'
+  else
+    echo "(not generated)"
+  fi
+  echo
+  echo "### Top ffprobe pre-vs-post diff classes"
+  if [[ -f "${run}/diffs/ffprobe-pre-vs-post-summary.tsv" ]]; then
+    echo '```'
+    head -21 "${run}/diffs/ffprobe-pre-vs-post-summary.tsv"
+    echo '```'
+  else
+    echo "(not generated)"
+  fi
+  echo
   echo "## Linked artifacts"
   echo
   echo "- [diffs/](diffs/)"

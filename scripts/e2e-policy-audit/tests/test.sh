@@ -121,6 +121,40 @@ EOF
 
 run_failure_clusters_test
 
+run_diff_class_summary_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  cat >"${actual}/diff.tsv" <<'EOF'
+path	side	change-class	details
+/lib/a.mkv	both	subtitle	#2.is_default:False→True
+/lib/b.mkv	both	video	#0.codec:h264→hevc; +#4(png)
+/lib/b.mkv	both	attachment	-#4(png)
+/lib/c.mkv	both	audio	#1.language:und→eng
+EOF
+
+  "lib/diff-class-summary.py" \
+    "${actual}/diff.tsv" \
+    "${actual}/summary.tsv" \
+    "${actual}/summary.md"
+
+  cat >"${actual}/expected.tsv" <<'EOF'
+change-class	signature	rows	files	sample_path
+attachment	png-attachment-removed	1	1	/lib/b.mkv
+audio	language-detected-from-und	1	1	/lib/c.mkv
+subtitle	subtitle-default-enabled	1	1	/lib/a.mkv
+video	attachment-promoted-to-png-video	1	1	/lib/b.mkv
+EOF
+
+  assert_match "${actual}/summary.tsv" "${actual}/expected.tsv"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_diff_class_summary_test
+
 raw_actual=$(mktemp -d)
 trap 'rm -rf "${raw_actual}"' EXIT
 
