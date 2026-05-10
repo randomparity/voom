@@ -16,6 +16,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +94,10 @@ HANDLER_POOL = [
 SCHEMA_VERSION = 1
 PROFILE_CHOICES = ("smoke", "coverage", "stress", "all")
 ALL_PROFILE_MEMBERS = {"smoke", "coverage", "stress"}
+TTS_BACKEND_CHOICES = ("auto", "espeak-ng", "flite", "say", "none")
+TTS_UNAVAILABLE_REASON = (
+    "TTS backend not available (requires espeak-ng, ffmpeg flite, or macOS say)"
+)
 
 # ---------------------------------------------------------------------------
 # Naming pools for random file generation
@@ -777,6 +782,165 @@ def build_corrupt_fixture_specs():
     ]
 
 
+def transcript_entry(track, lang, text):
+    """Return a stable transcript expectation entry."""
+    return {"track": track, "lang": lang, "text": text}
+
+
+def build_tts_feature_specs():
+    """Return speech fixture specs for transcription and language testing."""
+    english = "This English narration confirms the speech test fixture."
+    spanish = "Esta narracion en espanol confirma la pista de voz."
+    mixed = (
+        "This English segment starts the mixed language fixture. "
+        "Esta frase en espanol comprueba el cambio de idioma."
+    )
+
+    base_video = {
+        "source": "testsrc2",
+        "codec": "libx264",
+        "size": "1280x720",
+        "fps": 24,
+    }
+    return [
+        {
+            "stem": "speech-english-aac",
+            "ext": "mp4",
+            "profiles": ["smoke", "coverage"],
+            "covers": ["audio.speech.tts", "audio.speech.language.eng"],
+            "expect": {
+                "bad_file": False,
+                "audio_tracks": 1,
+                "speech": True,
+                "speech_languages": ["eng"],
+                "transcript": [transcript_entry(0, "eng", english)],
+            },
+            "video": dict(base_video),
+            "audio": [
+                {
+                    "codec": "aac",
+                    "channels": 2,
+                    "lang": "eng",
+                    "source": "tts",
+                    "voice": "en-us",
+                    "text": english,
+                }
+            ],
+            "subs": [],
+            "special": [],
+            "requires_tts": True,
+        },
+        {
+            "stem": "speech-spanish-aac",
+            "ext": "mp4",
+            "profiles": ["coverage"],
+            "covers": ["audio.speech.tts", "audio.speech.language.spa"],
+            "expect": {
+                "bad_file": False,
+                "audio_tracks": 1,
+                "speech": True,
+                "speech_languages": ["spa"],
+                "transcript": [transcript_entry(0, "spa", spanish)],
+            },
+            "video": dict(base_video),
+            "audio": [
+                {
+                    "codec": "aac",
+                    "channels": 2,
+                    "lang": "spa",
+                    "source": "tts",
+                    "voice": "es",
+                    "text": spanish,
+                }
+            ],
+            "subs": [],
+            "special": [],
+            "requires_tts": True,
+        },
+        {
+            "stem": "speech-dual-language",
+            "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": [
+                "audio.speech.tts",
+                "audio.speech.language.eng",
+                "audio.speech.language.spa",
+                "audio.speech.dual_track",
+            ],
+            "expect": {
+                "bad_file": False,
+                "audio_tracks": 2,
+                "speech": True,
+                "speech_languages": ["eng", "spa"],
+                "transcript": [
+                    transcript_entry(0, "eng", english),
+                    transcript_entry(1, "spa", spanish),
+                ],
+            },
+            "video": dict(base_video),
+            "audio": [
+                {
+                    "codec": "aac",
+                    "channels": 2,
+                    "lang": "eng",
+                    "source": "tts",
+                    "voice": "en-us",
+                    "text": english,
+                    "title": "English Speech",
+                },
+                {
+                    "codec": "aac",
+                    "channels": 2,
+                    "lang": "spa",
+                    "source": "tts",
+                    "voice": "es",
+                    "text": spanish,
+                    "title": "Spanish Speech",
+                },
+            ],
+            "subs": [],
+            "special": [],
+            "requires_tts": True,
+        },
+        {
+            "stem": "speech-mixed-language",
+            "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": [
+                "audio.speech.tts",
+                "audio.speech.language.eng",
+                "audio.speech.language.spa",
+                "audio.speech.mixed_language",
+            ],
+            "expect": {
+                "bad_file": False,
+                "audio_tracks": 1,
+                "speech": True,
+                "speech_languages": ["eng", "spa"],
+                "transcript": [transcript_entry(0, "mul", mixed)],
+                "segments": [
+                    {"lang": "eng", "text": "This English segment starts"},
+                    {"lang": "spa", "text": "Esta frase en espanol"},
+                ],
+            },
+            "video": dict(base_video),
+            "audio": [
+                {
+                    "codec": "aac",
+                    "channels": 2,
+                    "lang": "mul",
+                    "source": "tts",
+                    "voice": "en-us",
+                    "text": mixed,
+                }
+            ],
+            "subs": [],
+            "special": [],
+            "requires_tts": True,
+        },
+    ]
+
+
 def build_manifest():
     """Return the list of file specs to generate."""
     return (
@@ -786,6 +950,7 @@ def build_manifest():
         + build_crop_feature_specs()
         + build_hdr_color_specs()
         + build_container_feature_specs()
+        + build_tts_feature_specs()
         + build_corrupt_fixture_specs()
     )
 
@@ -1145,6 +1310,48 @@ def probe_encoders():
         return encoders
     except (subprocess.SubprocessError, FileNotFoundError):
         return set()
+
+
+def ffmpeg_supports_flite():
+    """Return True when the local ffmpeg build has the flite source filter."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-h", "filter=flite"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    output = f"{result.stdout}\n{result.stderr}"
+    return result.returncode == 0 and "Unknown filter 'flite'" not in output
+
+
+def discover_tts_backend(choice):
+    """Return the selected TTS backend, or None when TTS should be skipped."""
+    if choice == "none":
+        return None
+    espeak = shutil.which("espeak-ng")
+    if choice in {"auto", "espeak-ng"} and espeak:
+        return TtsBackend("espeak-ng", espeak)
+    if choice == "espeak-ng":
+        print(
+            "Error: requested TTS backend 'espeak-ng' is not available",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if choice in {"auto", "flite"} and ffmpeg_supports_flite():
+        return TtsBackend("flite", "ffmpeg")
+    if choice == "flite":
+        print("Error: requested TTS backend 'flite' is not available", file=sys.stderr)
+        sys.exit(1)
+    say = shutil.which("say")
+    if choice in {"auto", "say"} and say:
+        return TtsBackend("say", say)
+    if choice == "say":
+        print("Error: requested TTS backend 'say' is not available", file=sys.stderr)
+        sys.exit(1)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1662,6 +1869,14 @@ def format_size(n):
     return f"{n:.1f} TiB"
 
 
+@dataclass(frozen=True)
+class TtsBackend:
+    """A discovered command-line TTS backend."""
+
+    name: str
+    command: str
+
+
 @dataclass
 class PreparedSpecs:
     """Fixture specs selected for a run."""
@@ -1682,6 +1897,7 @@ class GenerationOptions:
     verbose: bool
     available: set
     total: int
+    tts_backend: Optional[TtsBackend] = None
 
 
 @dataclass
@@ -1745,6 +1961,12 @@ def build_arg_parser():
         choices=PROFILE_CHOICES,
         default="coverage",
         help="Named deterministic fixture profile to generate (default: coverage)",
+    )
+    parser.add_argument(
+        "--tts-backend",
+        choices=TTS_BACKEND_CHOICES,
+        default="auto",
+        help="TTS backend for speech fixtures (default: auto)",
     )
     parser.add_argument(
         "--seed",
@@ -2155,6 +2377,7 @@ def main():
 
     ensure_ffmpeg_available()
     available = probe_encoders()
+    tts_backend = discover_tts_backend(args.tts_backend)
     if not available:
         print(
             "Warning: could not probe ffmpeg encoders, will try all files",
@@ -2175,6 +2398,7 @@ def main():
             verbose=args.verbose,
             available=available,
             total=total,
+            tts_backend=tts_backend,
         ),
     )
     deterministic_corruption = materialize_deterministic_corruptions(

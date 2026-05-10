@@ -73,6 +73,7 @@ def test_build_manifest_smoke_profile_is_expected_fast_subset(generator):
         "letterbox-h264",
         "hevc-surround",
         "vp9-opus",
+        "speech-english-aac",
     ]
 
 
