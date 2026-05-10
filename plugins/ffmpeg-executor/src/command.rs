@@ -49,6 +49,23 @@ impl FfmpegCommand {
         self
     }
 
+    /// Map all non-attachment tracks from input.
+    #[must_use]
+    pub fn map_non_attachment_tracks(mut self, file: &MediaFile) -> Self {
+        let mut mapped = 0_u32;
+        for track in &file.tracks {
+            if track.track_type == TrackType::Attachment {
+                continue;
+            }
+            self = self.map_track(track.index);
+            mapped += 1;
+        }
+        if mapped == 0 {
+            return self.map_all();
+        }
+        self
+    }
+
     /// Map a specific track by index (`-map 0:{index}`).
     #[must_use]
     pub fn map_track(mut self, index: u32) -> Self {
@@ -741,7 +758,14 @@ pub fn build_ffmpeg_command(
     }
 
     cmd = cmd.input(&file.path);
-    cmd = cmd.map_all();
+    if actions
+        .iter()
+        .any(|action| action.operation == OperationType::TranscodeVideo)
+    {
+        cmd = cmd.map_non_attachment_tracks(file);
+    } else {
+        cmd = cmd.map_all();
+    }
 
     // Start with codec copy for all streams
     cmd = cmd.codec_copy();
@@ -875,6 +899,18 @@ mod tests {
         file
     }
 
+    fn sample_mkv_with_attachment() -> MediaFile {
+        let mut file = MediaFile::new(PathBuf::from("/media/video.mkv"));
+        file.container = Container::Mkv;
+        file.duration = 120.0;
+        file.tracks = vec![
+            Track::new(0, TrackType::Video, "h264".into()),
+            Track::new(1, TrackType::AudioMain, "aac".into()),
+            Track::new(2, TrackType::Attachment, "png".into()),
+        ];
+        file
+    }
+
     fn sample_hdr10_file() -> MediaFile {
         let mut file = sample_mp4_file();
         let video = &mut file.tracks[0];
@@ -960,6 +996,46 @@ mod tests {
         assert!(args.contains(&"23".to_string()));
         assert!(args.contains(&"-preset".to_string()));
         assert!(args.contains(&"medium".to_string()));
+    }
+
+    #[test]
+    fn test_transcode_video_excludes_attachment_streams_from_mapping() {
+        let file = sample_mkv_with_attachment();
+        let action = PlannedAction::track_op(
+            OperationType::TranscodeVideo,
+            0,
+            ActionParams::Transcode {
+                codec: "hevc".into(),
+                settings: TranscodeSettings::default().with_crf(Some(28)),
+            },
+            "Transcode video to HEVC",
+        );
+        let output = Path::new("/tmp/output.mkv");
+
+        let args = build_ffmpeg_command(&file, &[&action], output, None).unwrap();
+
+        assert!(
+            !args
+                .windows(2)
+                .any(|pair| pair[0] == "-map" && pair[1] == "0"),
+            "video transcode should not use map-all when attachments are present: {args:?}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "-map" && pair[1] == "0:0"),
+            "primary video should be mapped explicitly: {args:?}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "-map" && pair[1] == "0:1"),
+            "audio should be mapped explicitly: {args:?}"
+        );
+        assert!(
+            !args
+                .windows(2)
+                .any(|pair| pair[0] == "-map" && pair[1] == "0:2"),
+            "attachment stream must not be mapped into ffmpeg transcode output: {args:?}"
+        );
     }
 
     #[test]
