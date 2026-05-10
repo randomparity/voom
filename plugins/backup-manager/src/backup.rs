@@ -10,6 +10,10 @@ use chrono::Utc;
 use uuid::Uuid;
 use voom_domain::errors::Result;
 
+use crate::destination::{
+    remote_path_for, upload_with_rclone, RemoteBackupRecord, RemoteUploadReceipt,
+    RemoteUploadRequest,
+};
 use crate::{plugin_err, BackupConfig, BackupRecord};
 
 /// Create a backup of the given file.
@@ -20,6 +24,19 @@ pub fn backup_file(
     config: &BackupConfig,
     path: &Path,
     validate_space: impl FnOnce(&Path, &Path) -> Result<()>,
+) -> Result<BackupRecord> {
+    backup_file_with_destinations(config, path, validate_space, upload_with_rclone)
+}
+
+/// Create a backup and upload it to configured remote destinations.
+///
+/// The upload runner is injected so unit tests can verify behavior without
+/// invoking rclone.
+pub fn backup_file_with_destinations(
+    config: &BackupConfig,
+    path: &Path,
+    validate_space: impl FnOnce(&Path, &Path) -> Result<()>,
+    mut upload_remote: impl FnMut(RemoteUploadRequest<'_>) -> Result<RemoteUploadReceipt>,
 ) -> Result<BackupRecord> {
     // Reject symlinks to prevent following links to unintended targets
     let symlink_meta = fs::symlink_metadata(path)
@@ -52,12 +69,42 @@ pub fn backup_file(
         ))
     })?;
 
+    let mut remote_backups = Vec::new();
+    for destination in &config.destinations {
+        if !destination.kind.is_rclone_backed() {
+            continue;
+        }
+        let remote_path = remote_path_for(destination, backup_id, path)?;
+        let request = RemoteUploadRequest {
+            destination,
+            source_path: path,
+            remote_path: remote_path.clone(),
+            expected_size: metadata.len(),
+            rclone_path: &config.rclone_path,
+            verify_after_upload: config.verify_after_upload,
+        };
+        match upload_remote(request) {
+            Ok(receipt) => remote_backups.push(RemoteBackupRecord {
+                destination_name: destination.name.clone(),
+                remote_path,
+                verified: receipt.verified,
+            }),
+            Err(e) if config.block_on_remote_failure => return Err(e),
+            Err(e) => tracing::warn!(
+                destination = %destination.name,
+                error = %e,
+                "remote backup upload failed; continuing because block_on_remote_failure=false"
+            ),
+        }
+    }
+
     let record = BackupRecord {
         id: backup_id,
         original_path: path.to_path_buf(),
         backup_path,
         size: metadata.len(),
         created_at: Utc::now(),
+        remote_backups,
         retained: false,
     };
 
@@ -211,6 +258,8 @@ pub fn backup_path_for(config: &BackupConfig, path: &Path, unique_id: Uuid) -> P
 mod tests {
     use std::cell::RefCell;
 
+    use crate::destination::{BackupDestinationConfig, DestinationKind};
+
     use super::*;
 
     fn global_config(dir: &Path) -> BackupConfig {
@@ -218,6 +267,25 @@ mod tests {
             backup_dir: Some(dir.to_path_buf()),
             use_global_dir: true,
             min_free_space: 0,
+            verify_after_upload: true,
+            block_on_remote_failure: true,
+            rclone_path: "rclone".to_string(),
+            destinations: Vec::new(),
+        }
+    }
+
+    fn remote_test_config(dir: &Path) -> BackupConfig {
+        BackupConfig {
+            destinations: vec![
+                BackupDestinationConfig::rclone("offsite", "b2:voom"),
+                BackupDestinationConfig {
+                    name: "archive-s3".to_string(),
+                    kind: DestinationKind::S3,
+                    remote: Some("aws:voom".to_string()),
+                    bandwidth_limit: Some("10M".to_string()),
+                },
+            ],
+            ..global_config(dir)
         }
     }
 
@@ -261,6 +329,59 @@ mod tests {
 
         assert!(err.to_string().contains("no space"));
         assert!(fs::read_dir(backup_dir.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn backup_file_uploads_to_all_remote_destinations() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("movie.mkv");
+        fs::write(&source, b"movie").unwrap();
+        let config = remote_test_config(dir.path());
+        let uploads = RefCell::new(Vec::new());
+
+        let record = backup_file_with_destinations(
+            &config,
+            &source,
+            |_backup, _source| Ok(()),
+            |request| {
+                uploads.borrow_mut().push((
+                    request.destination.name.clone(),
+                    request.remote_path.clone(),
+                    request.source_path.to_path_buf(),
+                ));
+                Ok(RemoteUploadReceipt { verified: true })
+            },
+        )
+        .unwrap();
+
+        assert_eq!(record.remote_backups.len(), 2);
+        assert_eq!(uploads.borrow().len(), 2);
+        assert!(record
+            .remote_backups
+            .iter()
+            .any(|backup| backup.destination_name == "offsite"));
+        assert!(record
+            .remote_backups
+            .iter()
+            .any(|backup| backup.destination_name == "archive-s3"));
+    }
+
+    #[test]
+    fn remote_upload_failure_blocks_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("movie.mkv");
+        fs::write(&source, b"movie").unwrap();
+        let config = remote_test_config(dir.path());
+
+        let err = backup_file_with_destinations(
+            &config,
+            &source,
+            |_backup, _source| Ok(()),
+            |_request| Err(plugin_err("offsite upload failed")),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("offsite upload failed"));
     }
 
     #[test]
