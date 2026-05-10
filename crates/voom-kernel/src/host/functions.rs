@@ -3,7 +3,6 @@
 //! Contains the implementations of functions that WASM plugins can call:
 //! logging, plugin data resolution, tool execution, and HTTP requests.
 
-use std::io::Read as _;
 use std::path::Path;
 use std::time::Duration;
 
@@ -306,9 +305,10 @@ impl HostState {
     ) -> Result<HttpResponse, String> {
         self.check_http_domain(url)?;
 
-        let mut request = ureq::get(url);
+        let agent = http_agent();
+        let mut request = agent.get(url);
         for (name, value) in headers {
-            request = request.set(name, value);
+            request = request.header(name, value);
         }
 
         let response = request
@@ -327,36 +327,45 @@ impl HostState {
     ) -> Result<HttpResponse, String> {
         self.check_http_domain(url)?;
 
-        let mut request = ureq::post(url);
+        let agent = http_agent();
+        let mut request = agent.post(url);
         for (name, value) in headers {
-            request = request.set(name, value);
+            request = request.header(name, value);
         }
 
         let response = request
-            .send_bytes(body)
+            .send(body)
             .map_err(|e| format!("HTTP POST failed: {e}"))?;
 
         parse_response(response)
     }
 }
 
+fn http_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(5)))
+        .build()
+        .into()
+}
+
 /// Extract status, headers, and body from a ureq response.
-fn parse_response(response: ureq::Response) -> Result<HttpResponse, String> {
-    let status = response.status();
-    let header_names = response.headers_names();
-    let headers: Vec<(String, String)> = header_names
+fn parse_response(response: ureq::http::Response<ureq::Body>) -> Result<HttpResponse, String> {
+    let status = response.status().as_u16();
+    let headers: Vec<(String, String)> = response
+        .headers()
         .iter()
-        .filter_map(|name| {
-            response
-                .header(name)
-                .map(|val| (name.clone(), val.to_string()))
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
         })
         .collect();
-    let mut body = Vec::new();
-    response
-        .into_reader()
-        .take(10 * 1024 * 1024) // 10 MiB limit
-        .read_to_end(&mut body)
+    let body = response
+        .into_body()
+        .into_with_config()
+        .limit(10 * 1024 * 1024)
+        .read_to_vec()
         .map_err(|e| format!("failed to read response body: {e}"))?;
 
     Ok(HttpResponse::with_headers(status, headers, body))

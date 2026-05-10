@@ -544,9 +544,6 @@ pub mod wasm {
         on_event
             .call(&mut inner.store, &[event_data], &mut results)
             .map_err(|e| WasmLoadError::ComponentCall(e.to_string()))?;
-        on_event
-            .post_return(&mut inner.store)
-            .map_err(|e| WasmLoadError::ComponentCall(e.to_string()))?;
 
         match &results[0] {
             Val::Option(None) => Ok(None),
@@ -577,6 +574,7 @@ pub mod wasm {
             Val::String(_) => "string",
             Val::List(_) => "list",
             Val::Record(_) => "record",
+            Val::Map(_) => "map",
             Val::Tuple(_) => "tuple",
             Val::Variant(_, _) => "variant",
             Val::Enum(_) => "enum",

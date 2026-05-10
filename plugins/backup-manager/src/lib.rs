@@ -14,6 +14,7 @@ pub mod inventory;
 pub mod space;
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -298,7 +299,15 @@ fn compute_sha256(path: &Path) -> Result<String> {
         hasher.update(&buffer[..read]);
     }
     let digest = hasher.finalize();
-    Ok(format!("{digest:x}"))
+    Ok(hex_encode(digest.as_slice()))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut hex, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    hex
 }
 
 impl Default for BackupManagerPlugin {

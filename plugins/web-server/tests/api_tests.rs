@@ -82,7 +82,7 @@ fn make_server_with_auth(store: InMemoryStore, auth_token: Option<String>) -> Te
     let state =
         voom_web_server::state::AppState::new_with_default_sse(store, templates, auth_token, None);
     let router = voom_web_server::router::build_router(state);
-    TestServer::new(router).unwrap()
+    TestServer::new(router)
 }
 
 #[derive(Default)]
@@ -109,7 +109,7 @@ fn make_server_with_runner(store: InMemoryStore, runner: Arc<CountingProcessRunn
         voom_web_server::state::AppState::new_with_default_sse(store, templates, None, None)
             .with_process_runner(runner);
     let router = voom_web_server::router::build_router(state);
-    TestServer::new(router).unwrap()
+    TestServer::new(router)
 }
 
 const VALID_POLICY: &str = r#"policy "test" {
@@ -358,7 +358,7 @@ async fn test_list_plugins_with_data() {
         voom_web_server::state::AppState::new_with_default_sse(store, templates, None, None)
             .with_plugin_info(plugin_info);
     let router = voom_web_server::router::build_router(state);
-    let server = TestServer::new(router).unwrap();
+    let server = TestServer::new(router);
 
     let resp = server.get("/api/plugins").await;
     resp.assert_status_ok();
@@ -712,7 +712,7 @@ async fn test_sse_client_limit_enforced() {
     // Simulate 64 clients already connected
     state.sse_client_count.store(64, Ordering::Relaxed);
     let router = voom_web_server::router::build_router(state);
-    let server = TestServer::new(router).unwrap();
+    let server = TestServer::new(router);
 
     let resp = server.get("/events").await;
     resp.assert_status(axum::http::StatusCode::SERVICE_UNAVAILABLE);
@@ -725,7 +725,7 @@ async fn test_request_id_header_present() {
     let state =
         voom_web_server::state::AppState::new_with_default_sse(store, templates, None, None);
     let router = voom_web_server::router::build_router(state);
-    let server = TestServer::new(router).unwrap();
+    let server = TestServer::new(router);
 
     let resp = server.get("/api/stats").await;
     resp.assert_status_ok();
@@ -747,7 +747,7 @@ async fn test_request_id_unique_per_request() {
     let state =
         voom_web_server::state::AppState::new_with_default_sse(store, templates, None, None);
     let router = voom_web_server::router::build_router(state);
-    let server = TestServer::new(router).unwrap();
+    let server = TestServer::new(router);
 
     let resp1 = server.get("/api/stats").await;
     let resp2 = server.get("/api/stats").await;
