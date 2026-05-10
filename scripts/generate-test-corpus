@@ -8,6 +8,7 @@ select-test-corpus for functional testing when no real library exists.
 """
 
 import argparse
+import json
 import random
 import subprocess
 import sys
@@ -504,6 +505,45 @@ def build_random_specs(count, seed, duration_range):
         })
 
     return specs
+
+
+def build_run_manifest(
+    profile,
+    duration,
+    duration_range,
+    count,
+    generated,
+    skipped,
+    failed,
+    corruptions,
+):
+    """Build the JSON-serializable run manifest."""
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "settings": {
+            "profile": profile,
+            "duration": duration,
+            "duration_range": list(duration_range),
+            "count": count,
+        },
+        "summary": {
+            "generated": len(generated),
+            "skipped": len(skipped),
+            "failed": len(failed),
+            "corrupted": len(corruptions),
+        },
+        "generated": generated,
+        "skipped": skipped,
+        "failed": failed,
+        "corruptions": corruptions,
+    }
+
+
+def write_run_manifest(dest, manifest):
+    """Write manifest.json with stable formatting."""
+    path = dest / "manifest.json"
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -1104,6 +1144,9 @@ def main():
     skip_count = 0
     fail_count = 0
     total_size = 0
+    generated_entries = []
+    skipped_entries = []
+    failed_entries = []
 
     with tempfile.TemporaryDirectory(prefix="voom-corpus-") as tmpdir:
         for idx, spec in enumerate(specs, 1):
@@ -1114,6 +1157,13 @@ def main():
             req = spec.get("requires_encoder")
             if req and available and req not in available:
                 print(f"[{idx}/{total}] Skipping {filename} — encoder '{req}' not available")
+                skipped_entries.append({
+                    "filename": filename,
+                    "stem": stem,
+                    "reason": f"encoder '{req}' not available",
+                    "covers": spec.get("covers", []),
+                    "expect": spec.get("expect", {}),
+                })
                 skip_count += 1
                 continue
 
@@ -1126,6 +1176,13 @@ def main():
                 cmd, outfile = build_ffmpeg_cmd(spec, dest, file_duration, file_rng, tmpdir)
             except Exception as e:
                 print(f"[{idx}/{total}] FAILED {filename} — error building command: {e}")
+                failed_entries.append({
+                    "filename": filename,
+                    "stem": stem,
+                    "reason": f"error building command: {e}",
+                    "covers": spec.get("covers", []),
+                    "expect": spec.get("expect", {}),
+                })
                 fail_count += 1
                 continue
 
@@ -1158,19 +1215,49 @@ def main():
                         lines = stderr.decode("utf-8", errors="replace").strip().splitlines()
                         for line in lines[-5:]:
                             print(f"  {line}")
+                    failed_entries.append({
+                        "filename": filename,
+                        "stem": stem,
+                        "reason": f"ffmpeg failed with exit code {result.returncode}",
+                        "covers": spec.get("covers", []),
+                        "expect": spec.get("expect", {}),
+                    })
                     fail_count += 1
                     continue
 
                 size = outfile.stat().st_size
                 total_size += size
                 print(f"OK ({format_size(size)})")
+                generated_entries.append({
+                    "filename": filename,
+                    "stem": stem,
+                    "size": size,
+                    "duration": file_duration,
+                    "profiles": spec.get("profiles", ["coverage"]),
+                    "covers": spec.get("covers", []),
+                    "expect": spec.get("expect", {}),
+                })
                 ok_count += 1
 
             except subprocess.TimeoutExpired:
                 print("FAILED (timeout)")
+                failed_entries.append({
+                    "filename": filename,
+                    "stem": stem,
+                    "reason": "ffmpeg timed out",
+                    "covers": spec.get("covers", []),
+                    "expect": spec.get("expect", {}),
+                })
                 fail_count += 1
             except Exception as e:
                 print(f"FAILED ({e})")
+                failed_entries.append({
+                    "filename": filename,
+                    "stem": stem,
+                    "reason": f"ffmpeg failed: {e}",
+                    "covers": spec.get("covers", []),
+                    "expect": spec.get("expect", {}),
+                })
                 fail_count += 1
 
     # Apply corruption to selected random files
@@ -1179,6 +1266,24 @@ def main():
         corrupt_results = select_and_corrupt(dest, random_specs, corrupt_count, args.seed)
         for filename, ctype, desc in corrupt_results:
             print(f"  CORRUPTED {filename} — {ctype}: {desc}")
+
+    corruption_entries = [
+        {"filename": filename, "type": ctype, "description": desc}
+        for filename, ctype, desc in corrupt_results
+    ]
+    if not args.dry_run:
+        run_manifest = build_run_manifest(
+            profile=args.profile,
+            duration=args.duration,
+            duration_range=dur_range,
+            count=args.count,
+            generated=generated_entries,
+            skipped=skipped_entries,
+            failed=failed_entries,
+            corruptions=corruption_entries,
+        )
+        manifest_path = write_run_manifest(dest, run_manifest)
+        print(f"Manifest: {manifest_path}")
 
     # Summary
     print()

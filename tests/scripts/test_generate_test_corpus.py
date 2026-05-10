@@ -70,3 +70,37 @@ def test_build_manifest_smoke_profile_is_expected_fast_subset():
         "hevc-surround",
         "vp9-opus",
     ]
+
+
+def test_build_run_manifest_records_generated_skipped_failed_and_corruptions():
+    generator = load_generator()
+
+    manifest = generator.build_run_manifest(
+        profile="coverage",
+        duration=2,
+        duration_range=(1, 5),
+        count=3,
+        generated=[
+            {
+                "filename": "basic-h264-aac.mp4",
+                "size": 1234,
+                "covers": ["video.codec.h264"],
+                "expect": {"bad_file": False},
+            }
+        ],
+        skipped=[{"filename": "av1-opus.mp4", "reason": "encoder 'libsvtav1' not available"}],
+        failed=[{"filename": "bad.mkv", "reason": "ffmpeg failed"}],
+        corruptions=[{"filename": "corrupt-truncated-tail.mkv", "type": "truncated_tail"}],
+    )
+
+    assert manifest["schema_version"] == 1
+    assert manifest["settings"]["profile"] == "coverage"
+    assert manifest["settings"]["duration"] == 2
+    assert manifest["settings"]["duration_range"] == [1, 5]
+    assert manifest["summary"] == {
+        "generated": 1,
+        "skipped": 1,
+        "failed": 1,
+        "corrupted": 1,
+    }
+    assert manifest["generated"][0]["covers"] == ["video.codec.h264"]
