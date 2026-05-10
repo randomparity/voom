@@ -194,6 +194,18 @@ impl RcloneCommand {
         }
     }
 
+    #[must_use]
+    pub fn hashsum(program: impl Into<String>, algorithm: &str, remote_path: &str) -> Self {
+        Self {
+            program: program.into(),
+            args: vec![
+                "hashsum".to_string(),
+                algorithm.to_string(),
+                remote_path.to_string(),
+            ],
+        }
+    }
+
     fn run(&self) -> Result<Vec<u8>> {
         let output = Command::new(&self.program)
             .args(&self.args)
@@ -292,6 +304,16 @@ pub fn download_with_rclone(
 }
 
 fn verify_remote_size(rclone_path: &str, remote_path: &str, expected_size: u64) -> Result<()> {
+    let actual_size = remote_size(rclone_path, remote_path)?;
+    if actual_size != expected_size {
+        return Err(plugin_err(format!(
+            "remote backup size mismatch for {remote_path}: expected {expected_size}, got {actual_size}",
+        )));
+    }
+    Ok(())
+}
+
+pub fn remote_size(rclone_path: &str, remote_path: &str) -> Result<u64> {
     let command = RcloneCommand::size(rclone_path, remote_path);
     let stdout = command.run()?;
     let size: RcloneSizeOutput = serde_json::from_slice(&stdout).map_err(|e| {
@@ -299,13 +321,24 @@ fn verify_remote_size(rclone_path: &str, remote_path: &str, expected_size: u64) 
             "failed to parse rclone size output for {remote_path}: {e}"
         ))
     })?;
-    if size.bytes != expected_size {
-        return Err(plugin_err(format!(
-            "remote backup size mismatch for {remote_path}: expected {expected_size}, got {}",
-            size.bytes
-        )));
+    Ok(size.bytes)
+}
+
+pub fn remote_sha256(rclone_path: &str, remote_path: &str) -> Result<Option<String>> {
+    let command = RcloneCommand::hashsum(rclone_path, "SHA-256", remote_path);
+    let stdout = match command.run() {
+        Ok(stdout) => stdout,
+        Err(_) => return Ok(None),
+    };
+    let text = String::from_utf8_lossy(&stdout);
+    let Some(hash) = text.split_whitespace().next() else {
+        return Ok(None);
+    };
+    if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(Some(hash.to_ascii_lowercase()))
+    } else {
+        Ok(None)
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -396,6 +429,17 @@ mod tests {
         assert_eq!(command.args[1], "/tmp/movie.mkv");
         assert_eq!(command.args[2], "b2:voom/backup.vbak");
         assert!(command.args.contains(&"--bwlimit".to_string()));
+    }
+
+    #[test]
+    fn rclone_hashsum_uses_sha256_without_shell() {
+        let command = RcloneCommand::hashsum("rclone", "SHA-256", "b2:voom/backup.vbak");
+
+        assert_eq!(command.program, "rclone");
+        assert_eq!(
+            command.args,
+            vec!["hashsum", "SHA-256", "b2:voom/backup.vbak"]
+        );
     }
 
     #[test]

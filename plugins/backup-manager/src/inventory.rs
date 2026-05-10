@@ -38,6 +38,8 @@ pub struct RemoteBackupInventoryRecord {
     pub destination_name: String,
     pub remote_path: String,
     pub size: u64,
+    #[serde(default)]
+    pub sha256: Option<String>,
     pub uploaded_at: DateTime<Utc>,
     pub verified_at: Option<DateTime<Utc>>,
     pub status: RemoteBackupInventoryStatus,
@@ -140,6 +142,7 @@ mod tests {
             destination_name: destination_name.to_string(),
             remote_path: remote_path.to_string(),
             size: 42,
+            sha256: Some("a".repeat(64)),
             uploaded_at: Utc::now(),
             verified_at: Some(Utc::now()),
             status: RemoteBackupInventoryStatus::Verified,

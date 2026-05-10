@@ -641,6 +641,15 @@ pub enum BackupCommands {
         #[arg(long)]
         yes: bool,
     },
+    /// Verify remote backup inventory against the destination
+    Verify {
+        /// Remote destination inventory to verify
+        #[arg(long)]
+        destination: String,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Remove all backup files
     Cleanup {
         /// Directories to scan for backups
@@ -2201,6 +2210,40 @@ mod tests {
                 assert_eq!(output, Some(PathBuf::from("/restore/movie.mkv")));
             }
             _ => panic!("expected Backup Restore"),
+        }
+    }
+
+    #[test]
+    fn test_backup_verify_destination() {
+        let cli = parse(&["voom", "backup", "verify", "--destination", "offsite"]);
+        match cli.command {
+            Commands::Backup(BackupCommands::Verify {
+                destination,
+                format,
+            }) => {
+                assert_eq!(destination, "offsite");
+                assert!(matches!(format, OutputFormat::Table));
+            }
+            _ => panic!("expected Backup Verify"),
+        }
+    }
+
+    #[test]
+    fn test_backup_verify_destination_json() {
+        let cli = parse(&[
+            "voom",
+            "backup",
+            "verify",
+            "--destination",
+            "offsite",
+            "--format",
+            "json",
+        ]);
+        match cli.command {
+            Commands::Backup(BackupCommands::Verify { format, .. }) => {
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Backup Verify"),
         }
     }
 
