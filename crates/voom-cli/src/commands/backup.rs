@@ -5,6 +5,7 @@ use console::style;
 use voom_domain::utils::format;
 
 use crate::cli::{BackupCommands, OutputFormat};
+use crate::config;
 use crate::output;
 
 /// A discovered `.vbak` file on disk.
@@ -16,13 +17,24 @@ struct VbakEntry {
 
 pub fn run(cmd: BackupCommands, global_yes: bool) -> Result<()> {
     match cmd {
-        BackupCommands::List { paths, format } => list(&paths, format),
+        BackupCommands::List {
+            paths,
+            destination,
+            format,
+        } => list(&paths, destination.as_deref(), format),
         BackupCommands::Restore { backup_path, yes } => restore(&backup_path, yes || global_yes),
         BackupCommands::Cleanup { paths, yes } => cleanup(&paths, yes || global_yes),
     }
 }
 
-fn list(roots: &[PathBuf], format: OutputFormat) -> Result<()> {
+fn list(roots: &[PathBuf], destination: Option<&str>, format: OutputFormat) -> Result<()> {
+    if let Some(destination) = destination {
+        return list_remote_inventory(destination, format);
+    }
+    if roots.is_empty() {
+        anyhow::bail!("backup list requires at least one path unless --destination is provided");
+    }
+
     let mut all_entries = Vec::new();
     for root in roots {
         let entries = scan_vbak_files(root)?;
@@ -80,6 +92,85 @@ fn list(roots: &[PathBuf], format: OutputFormat) -> Result<()> {
         OutputFormat::Plain | OutputFormat::Csv => {
             for entry in &entries {
                 println!("{}", entry.backup_path.display());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn list_remote_inventory(destination: &str, format: OutputFormat) -> Result<()> {
+    let config = config::load_config()?;
+    let inventory = voom_backup_manager::inventory::RemoteBackupInventory::new(
+        voom_backup_manager::inventory::RemoteBackupInventory::default_path(&config.data_dir),
+    );
+    let entries = inventory
+        .list(Some(destination))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    if entries.is_empty() {
+        if format.is_machine() {
+            if matches!(format, OutputFormat::Json) {
+                println!("[]");
+            }
+            return Ok(());
+        }
+        eprintln!(
+            "{}",
+            style(format!(
+                "No remote backups found for destination '{destination}'."
+            ))
+            .dim()
+        );
+        return Ok(());
+    }
+
+    match format {
+        OutputFormat::Json => {
+            let json: Vec<serde_json::Value> = entries
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "backup_id": e.backup_id,
+                        "original_path": e.original_path.display().to_string(),
+                        "local_backup_path": e.local_backup_path.display().to_string(),
+                        "destination_name": e.destination_name,
+                        "remote_path": e.remote_path,
+                        "size": e.size,
+                        "uploaded_at": e.uploaded_at,
+                        "verified_at": e.verified_at,
+                        "status": e.status.as_str(),
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json)
+                    .expect("serde_json::Value serialization cannot fail")
+            );
+        }
+        OutputFormat::Table => {
+            println!(
+                "{} remote backup(s) found for {}:\n",
+                style(entries.len()).bold(),
+                style(destination).bold()
+            );
+
+            let mut table = output::new_table();
+            table.set_header(vec!["Original", "Size", "Status", "Remote Path"]);
+            for entry in &entries {
+                table.add_row(vec![
+                    comfy_table::Cell::new(entry.original_path.display()),
+                    comfy_table::Cell::new(format::format_size(entry.size)),
+                    comfy_table::Cell::new(entry.status.as_str()),
+                    comfy_table::Cell::new(&entry.remote_path),
+                ]);
+            }
+            println!("{table}");
+        }
+        OutputFormat::Plain | OutputFormat::Csv => {
+            for entry in &entries {
+                println!("{}", entry.remote_path);
             }
         }
     }

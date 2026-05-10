@@ -19,6 +19,16 @@ pub enum RemoteBackupInventoryStatus {
     Verified,
 }
 
+impl RemoteBackupInventoryStatus {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Uploaded => "uploaded",
+            Self::Verified => "verified",
+        }
+    }
+}
+
 /// One persisted remote backup object.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteBackupInventoryRecord {
