@@ -29,6 +29,13 @@ transcode share the same persisted file identity.
 
 **Plugins used:** mkvtoolnix-executor, ffmpeg-executor, backup-manager
 
+### [continue-on-error-transcode.voom](continue-on-error-transcode.voom)
+Batch-oriented transcode policy with `on_error: continue`. Useful for testing
+that failed executable plans are visible in job accounting and summaries while
+the rest of the batch continues.
+
+**Plugins used:** ffmpeg-executor, backup-manager
+
 ### [preflight-archive.voom](preflight-archive.voom)
 Archival policy for pre-flight cost estimates. Demonstrates container,
 video-transcode, and audio-transcode phases intended for `voom process --estimate`.
@@ -108,7 +115,7 @@ Comprehensive reference exercising **every DSL construct**. Not intended for pro
 | `depends_on` | all except minimal |
 | `skip when` | transcode, full |
 | `run_if` (modified/completed) | anime, transcode, strict, full |
-| `on_error` | movie-library, transcode, strict, full, speech-language-filter, speech-transcription-check |
+| `on_error` | movie-library, transcode, continue-on-error-transcode, strict, full, speech-language-filter, speech-transcription-check |
 | `container` | minimal, movie-library, anime, transcode, full |
 | `keep` / `remove` | movie-library, anime, attachment, strict, full, speech-language-filter |
 | `order tracks` | movie-library, anime, strict, full |

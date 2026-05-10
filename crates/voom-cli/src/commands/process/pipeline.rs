@@ -236,6 +236,7 @@ async fn process_single_file_execute(
     let mut any_executed = false;
     let mut modified_counted = false;
     let mut plans_evaluated: usize = 0;
+    let mut failed_plan_count: usize = 0;
 
     for phase_name in &compiled.phase_order {
         if ctx.token.is_cancelled() {
@@ -309,6 +310,7 @@ async fn process_single_file_execute(
                     phase_name.clone(),
                     voom_policy_evaluator::EvaluationOutcome::ExecutionFailed,
                 );
+                failed_plan_count += 1;
                 drop(acquired);
                 continue;
             }
@@ -325,6 +327,7 @@ async fn process_single_file_execute(
                 phase_name.clone(),
                 voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
             );
+            failed_plan_count += 1;
             continue;
         }
 
@@ -363,6 +366,7 @@ async fn process_single_file_execute(
                         phase_name.clone(),
                         voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
                     );
+                    failed_plan_count += 1;
                     continue;
                 }
                 // Post-execution safeguard: check duration shrinkage.
@@ -374,6 +378,7 @@ async fn process_single_file_execute(
                         phase_name.clone(),
                         voom_policy_evaluator::EvaluationOutcome::SafeguardFailed,
                     );
+                    failed_plan_count += 1;
                     continue;
                 }
                 any_executed = true;
@@ -414,10 +419,17 @@ async fn process_single_file_execute(
                     plan.phase_name.clone(),
                     voom_policy_evaluator::EvaluationOutcome::ExecutionFailed,
                 );
+                failed_plan_count += 1;
                 // Downstream phases still evaluate; run_if gates block
                 // them via ExecutionFailed in phase_outcomes.
             }
         }
+    }
+
+    if failed_plan_count > 0 {
+        return Err(format!(
+            "{failed_plan_count} executable plan(s) failed for {file_path_str}"
+        ));
     }
 
     Ok(Some(serde_json::json!({
@@ -907,6 +919,36 @@ mod tests {
         }
     }
 
+    struct FailingExecutor;
+
+    impl voom_kernel::Plugin for FailingExecutor {
+        fn name(&self) -> &'static str {
+            "failing-executor"
+        }
+
+        fn version(&self) -> &'static str {
+            "0.1.0"
+        }
+
+        fn capabilities(&self) -> &[Capability] {
+            &[]
+        }
+
+        fn handles(&self, event_type: &str) -> bool {
+            event_type == Event::PLAN_CREATED
+        }
+
+        fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
+            if let Event::PlanCreated(_) = event {
+                return Ok(Some(EventResult::plan_failed(
+                    self.name(),
+                    "simulated executor failure",
+                )));
+            }
+            Ok(None)
+        }
+    }
+
     fn nvenc_policy() -> &'static str {
         r#"policy "test" {
                 phase transcode-video {
@@ -1124,6 +1166,39 @@ mod tests {
             Some("previous-expected-hash"),
             "identity preservation must not invent expected_hash updates before storage commits"
         );
+    }
+
+    #[tokio::test]
+    async fn failed_executable_plan_returns_file_job_error() {
+        let policy = global_hw_policy();
+        let fixture = process_tests::TestFixture::with_policy(policy);
+        let path = fixture.dir_path().join("movie.mkv");
+        let file = h264_file(path);
+        let compiled = voom_dsl::compile_policy(policy).unwrap();
+
+        let mut kernel = voom_kernel::Kernel::new();
+        kernel
+            .register_plugin(Arc::new(FailingExecutor), 50)
+            .unwrap();
+        let ctx = fixture.make_ctx(
+            Arc::new(kernel),
+            Arc::new(voom_domain::test_support::InMemoryStore::new()),
+        );
+
+        let error = process_single_file_execute(&file, &compiled, &ctx)
+            .await
+            .expect_err("failed executable plans must fail the file job");
+
+        assert!(
+            error.contains("1 executable plan(s) failed"),
+            "unexpected error: {error}"
+        );
+        let stats = ctx.counters.phase_stats.lock();
+        let phase = stats
+            .get("transcode-video")
+            .expect("failed phase should be recorded");
+        assert_eq!(phase.failed, 1);
+        assert_eq!(phase.completed, 0);
     }
 
     #[tokio::test]

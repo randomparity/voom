@@ -1,0 +1,13 @@
+{
+  "policy": "../continue-on-error-transcode.voom",
+  "cases": [
+    {
+      "name": "plans h264 source with continue-on-error policy",
+      "fixture": "movie-mp4.json",
+      "expect": {
+        "phases_run": ["transcode-video"],
+        "video_codec": "hevc"
+      }
+    }
+  ]
+}

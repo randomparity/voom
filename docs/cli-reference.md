@@ -109,8 +109,13 @@ voom process <PATH>... [--policy <FILE> | --policy-map <TOML>] [OPTIONS]
 Before processing, stale database entries for files that no longer exist under the target directory are automatically pruned (along with their associated plans and processing stats). Files that previously failed introspection (tracked as "bad files") are automatically skipped unless `--force-rescan` is set.
 
 Error handling strategies:
-- **`fail`** — Stop processing on first error
-- **`continue`** — Continue processing remaining phases for the failed file
+- **`fail`** — Stop processing the batch on the first file job error.
+- **`continue`** — Continue processing remaining files after a file job error.
+
+If an executable plan fails, the file job is marked failed and the final
+summary error count is non-zero. With `--on-error continue`, the command still
+finishes the batch; inspect `voom jobs list --status failed` and
+`voom report errors --session <session>` for details.
 
 **Examples:**
 
