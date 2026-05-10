@@ -50,10 +50,11 @@ pub use stats::{
     ProcessingOutcome, SnapshotTrigger, SubtitleStats, VideoStats,
 };
 pub use storage::{
-    BadFileFilters, BadFileStorage, EventLogFilters, EventLogRecord, EventLogStorage, FileFilters,
-    FileStorage, FileTransitionStorage, HealthCheckFilters, HealthCheckRecord, HealthCheckStorage,
-    JobFilters, JobStorage, MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage,
-    SnapshotStorage, StorageTrait, TranscodeOutcomeFilters, TranscodeOutcomeStorage,
+    BadFileFilters, BadFileStorage, CostModelSampleFilters, EstimateStorage, EventLogFilters,
+    EventLogRecord, EventLogStorage, FileFilters, FileStorage, FileTransitionStorage,
+    HealthCheckFilters, HealthCheckRecord, HealthCheckStorage, JobFilters, JobStorage,
+    MaintenanceStorage, PlanStorage, PlanSummary, PluginDataStorage, SnapshotStorage, StorageTrait,
+    TranscodeOutcomeFilters, TranscodeOutcomeStorage,
 };
 pub use transcode::TranscodeOutcome;
 pub use transition::{

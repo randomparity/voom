@@ -82,6 +82,11 @@ impl CostModelSample {
             completed_at,
         }
     }
+
+    #[must_use]
+    pub fn codec(&self) -> &str {
+        &self.key.codec
+    }
 }
 
 /// Read-only cost model used by the estimator.

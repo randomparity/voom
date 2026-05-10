@@ -256,6 +256,44 @@ CREATE TABLE IF NOT EXISTS transcode_outcomes (
 
 CREATE INDEX IF NOT EXISTS idx_transcode_outcomes_file_completed
     ON transcode_outcomes(file_id, completed_at DESC);
+
+CREATE TABLE IF NOT EXISTS estimate_runs (
+    id TEXT PRIMARY KEY,
+    estimated_at TEXT NOT NULL,
+    file_count INTEGER NOT NULL,
+    bytes_in INTEGER NOT NULL,
+    bytes_out INTEGER NOT NULL,
+    bytes_saved INTEGER NOT NULL,
+    compute_time_ms INTEGER NOT NULL,
+    wall_time_ms INTEGER NOT NULL,
+    high_uncertainty_files INTEGER NOT NULL,
+    net_loss_files INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS estimate_files (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES estimate_runs(id) ON DELETE CASCADE,
+    file_index INTEGER NOT NULL,
+    file_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_estimate_files_run
+    ON estimate_files(run_id, file_index);
+
+CREATE TABLE IF NOT EXISTS cost_model_samples (
+    id TEXT PRIMARY KEY,
+    phase_name TEXT NOT NULL,
+    codec TEXT NOT NULL,
+    preset TEXT NOT NULL,
+    backend TEXT NOT NULL,
+    pixels_per_second REAL NOT NULL,
+    output_size_ratio REAL NOT NULL,
+    fixed_overhead_ms INTEGER NOT NULL,
+    completed_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_cost_model_samples_key_completed
+    ON cost_model_samples(phase_name, codec, preset, backend, completed_at DESC);
 ";
 
 /// Initialize the database schema.
@@ -292,6 +330,9 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "pending_operations",
         "verifications",
         "transcode_outcomes",
+        "estimate_runs",
+        "estimate_files",
+        "cost_model_samples",
     ];
     let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
         assert!(KNOWN_TABLES.contains(&table), "unknown table: {table}");
@@ -600,6 +641,49 @@ fn migrate_missing_tables(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if table_missing("estimate_runs")? || table_missing("estimate_files")? {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS estimate_runs (
+                id TEXT PRIMARY KEY,
+                estimated_at TEXT NOT NULL,
+                file_count INTEGER NOT NULL,
+                bytes_in INTEGER NOT NULL,
+                bytes_out INTEGER NOT NULL,
+                bytes_saved INTEGER NOT NULL,
+                compute_time_ms INTEGER NOT NULL,
+                wall_time_ms INTEGER NOT NULL,
+                high_uncertainty_files INTEGER NOT NULL,
+                net_loss_files INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS estimate_files (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES estimate_runs(id) ON DELETE CASCADE,
+                file_index INTEGER NOT NULL,
+                file_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_estimate_files_run
+                ON estimate_files(run_id, file_index);",
+        )?;
+    }
+
+    if table_missing("cost_model_samples")? {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS cost_model_samples (
+                id TEXT PRIMARY KEY,
+                phase_name TEXT NOT NULL,
+                codec TEXT NOT NULL,
+                preset TEXT NOT NULL,
+                backend TEXT NOT NULL,
+                pixels_per_second REAL NOT NULL,
+                output_size_ratio REAL NOT NULL,
+                fixed_overhead_ms INTEGER NOT NULL,
+                completed_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_cost_model_samples_key_completed
+                ON cost_model_samples(phase_name, codec, preset, backend, completed_at DESC);",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -623,6 +707,22 @@ fn migrate_indexes_and_constraints(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_transcode_outcomes_file_completed
                 ON transcode_outcomes(file_id, completed_at DESC);",
+        )?;
+    }
+
+    if table_exists(conn, "estimate_files")? && !has_index("idx_estimate_files_run")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_estimate_files_run
+                ON estimate_files(run_id, file_index);",
+        )?;
+    }
+
+    if table_exists(conn, "cost_model_samples")?
+        && !has_index("idx_cost_model_samples_key_completed")?
+    {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_cost_model_samples_key_completed
+                ON cost_model_samples(phase_name, codec, preset, backend, completed_at DESC);",
         )?;
     }
 

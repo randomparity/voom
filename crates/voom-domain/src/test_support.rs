@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::bad_file::BadFile;
 use crate::errors::{Result, StorageErrorKind, VoomError};
+use crate::estimate::{CostModelSample, EstimateRun};
 use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::{Container, MediaFile, Track, TrackType};
 use crate::plan::Plan;
@@ -23,10 +24,11 @@ use crate::stats::{
     SnapshotTrigger, SubtitleStats, VideoStats,
 };
 use crate::storage::{
-    BadFileFilters, BadFileStorage, FileFilters, FileStorage, FileTransitionStorage,
-    HealthCheckFilters, HealthCheckRecord, HealthCheckStorage, JobFilters, JobStorage,
-    MaintenanceStorage, PageStats, PendingOperation, PendingOpsStorage, PlanStorage, PlanSummary,
-    PluginDataStorage, SnapshotStorage, TranscodeOutcomeFilters, TranscodeOutcomeStorage,
+    BadFileFilters, BadFileStorage, CostModelSampleFilters, EstimateStorage, FileFilters,
+    FileStorage, FileTransitionStorage, HealthCheckFilters, HealthCheckRecord, HealthCheckStorage,
+    JobFilters, JobStorage, MaintenanceStorage, PageStats, PendingOperation, PendingOpsStorage,
+    PlanStorage, PlanSummary, PluginDataStorage, SnapshotStorage, TranscodeOutcomeFilters,
+    TranscodeOutcomeStorage,
 };
 use crate::transcode::TranscodeOutcome;
 use crate::transition::{
@@ -110,6 +112,8 @@ pub struct InMemoryStore {
     jobs: Mutex<HashMap<Uuid, Job>>,
     snapshots: Mutex<Vec<LibrarySnapshot>>,
     event_log: Mutex<Vec<crate::storage::EventLogRecord>>,
+    estimate_runs: Mutex<Vec<EstimateRun>>,
+    cost_model_samples: Mutex<Vec<CostModelSample>>,
     pub pending_ops: Mutex<Vec<PendingOperation>>,
     pub transcode_outcomes: Mutex<Vec<TranscodeOutcome>>,
     pub transitions: Mutex<Vec<FileTransition>>,
@@ -124,6 +128,8 @@ impl InMemoryStore {
             jobs: Mutex::new(HashMap::new()),
             snapshots: Mutex::new(Vec::new()),
             event_log: Mutex::new(Vec::new()),
+            estimate_runs: Mutex::new(Vec::new()),
+            cost_model_samples: Mutex::new(Vec::new()),
             pending_ops: Mutex::new(Vec::new()),
             transcode_outcomes: Mutex::new(Vec::new()),
             transitions: Mutex::new(Vec::new()),
@@ -1070,6 +1076,69 @@ impl TranscodeOutcomeStorage for InMemoryStore {
         };
         Ok(self.list_transcode_outcomes(&filters)?.into_iter().next())
     }
+}
+
+impl EstimateStorage for InMemoryStore {
+    fn insert_estimate_run(&self, run: &EstimateRun) -> Result<()> {
+        self.estimate_runs.lock().push(run.clone());
+        Ok(())
+    }
+
+    fn get_estimate_run(&self, id: &Uuid) -> Result<Option<EstimateRun>> {
+        Ok(self
+            .estimate_runs
+            .lock()
+            .iter()
+            .find(|run| run.id == *id)
+            .cloned())
+    }
+
+    fn list_estimate_runs(&self, limit: u32) -> Result<Vec<EstimateRun>> {
+        let mut runs = self.estimate_runs.lock().clone();
+        runs.sort_by(|a, b| {
+            b.estimated_at
+                .cmp(&a.estimated_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        runs.truncate(limit as usize);
+        Ok(runs)
+    }
+
+    fn insert_cost_model_sample(&self, sample: &CostModelSample) -> Result<()> {
+        self.cost_model_samples.lock().push(sample.clone());
+        Ok(())
+    }
+
+    fn list_cost_model_samples(
+        &self,
+        filters: &CostModelSampleFilters,
+    ) -> Result<Vec<CostModelSample>> {
+        let mut samples: Vec<CostModelSample> = self
+            .cost_model_samples
+            .lock()
+            .iter()
+            .filter(|sample| matches_cost_model_filter(sample, filters))
+            .cloned()
+            .collect();
+        samples.sort_by(|a, b| {
+            b.completed_at
+                .cmp(&a.completed_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        if let Some(limit) = filters.limit {
+            samples.truncate(limit as usize);
+        }
+        Ok(samples)
+    }
+}
+
+fn matches_cost_model_filter(sample: &CostModelSample, filters: &CostModelSampleFilters) -> bool {
+    if let Some(key) = filters.key.as_ref() {
+        if sample.key != *key {
+            return false;
+        }
+    }
+    true
 }
 
 fn matches_transcode_outcome_filter(
