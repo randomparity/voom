@@ -1,6 +1,7 @@
 """Tests for scripts/generate-test-corpus pure helpers."""
 
 import importlib.util
+import random
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -234,6 +235,98 @@ def test_collect_deterministic_corruptions_selects_profile_members():
     selected = generator.collect_deterministic_corruptions(specs, profile="coverage")
 
     assert selected == [specs[0]]
+
+
+def test_build_manifest_includes_required_corrupt_fixtures():
+    generator = load_generator()
+
+    corrupt_names = {
+        spec["stem"] for spec in generator.build_manifest() if "corruption" in spec
+    }
+
+    assert corrupt_names == {
+        "corrupt-truncated-tail",
+        "corrupt-zero-length",
+        "corrupt-header-damage",
+        "corrupt-midstream-bitrot",
+        "corrupt-wrong-extension",
+        "corrupt-container-metadata",
+    }
+
+
+def test_materialize_corrupt_fixture_creates_final_file(tmp_path):
+    generator = load_generator()
+    source = tmp_path / "basic-h264-aac.mp4"
+    source.write_bytes(bytes(range(256)) * 16)
+    spec = {
+        "stem": "corrupt-truncated-tail",
+        "ext": "mkv",
+        "corruption": {
+            "source_stem": "basic-h264-aac",
+            "source_ext": "mp4",
+            "type": "truncated_tail",
+        },
+    }
+
+    result = generator.materialize_corrupt_fixture(tmp_path, spec, random.Random(7))
+
+    final_path = tmp_path / result["filename"]
+    assert result["original_filename"] == "corrupt-truncated-tail.mkv"
+    assert result["filename"] == "corrupt-truncated-tail.mkv"
+    assert result["type"] == "truncated_tail"
+    assert result["size"] == final_path.stat().st_size
+    assert result["skipped"] is False
+    assert final_path.exists()
+
+
+def test_materialize_corrupt_fixture_reports_missing_source(tmp_path):
+    generator = load_generator()
+    spec = {
+        "stem": "corrupt-truncated-tail",
+        "ext": "mkv",
+        "corruption": {
+            "source_stem": "basic-h264-aac",
+            "source_ext": "mp4",
+            "type": "truncated_tail",
+        },
+    }
+
+    result = generator.materialize_corrupt_fixture(tmp_path, spec, random.Random(7))
+
+    assert result == {
+        "original_filename": "corrupt-truncated-tail.mkv",
+        "filename": "corrupt-truncated-tail.mkv",
+        "source_filename": "basic-h264-aac.mp4",
+        "type": "truncated_tail",
+        "description": "skipped (source missing: basic-h264-aac.mp4)",
+        "size": 0,
+        "skipped": True,
+    }
+    assert not (tmp_path / "corrupt-truncated-tail.mkv").exists()
+
+
+def test_materialize_corrupt_fixture_reports_wrong_extension_final_name(tmp_path):
+    generator = load_generator()
+    source = tmp_path / "basic-h264-aac.mp4"
+    source.write_bytes(bytes(range(256)) * 16)
+    spec = {
+        "stem": "corrupt-wrong-extension",
+        "ext": "mp4",
+        "corruption": {
+            "source_stem": "basic-h264-aac",
+            "source_ext": "mp4",
+            "type": "wrong_extension",
+        },
+    }
+
+    result = generator.materialize_corrupt_fixture(tmp_path, spec, random.Random(7))
+
+    final_path = tmp_path / "corrupt-wrong-extension.mkv"
+    assert result["original_filename"] == "corrupt-wrong-extension.mp4"
+    assert result["filename"] == "corrupt-wrong-extension.mkv"
+    assert result["size"] == final_path.stat().st_size
+    assert final_path.exists()
+    assert not (tmp_path / result["original_filename"]).exists()
 
 
 def test_build_video_input_uses_mandelbrot_source_and_black_bars():

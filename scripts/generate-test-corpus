@@ -864,11 +864,14 @@ def materialize_corrupt_fixture(dest, spec, rng):
             "skipped": True,
         }
 
-    shutil.copyfile(source_path, target_path)
     applied_type = DETERMINISTIC_CORRUPTION_TYPES.get(
         corruption_type,
         corruption_type,
     )
+    if applied_type not in CORRUPTION_TYPES:
+        raise ValueError(f"unknown deterministic corruption type: {corruption_type}")
+
+    shutil.copyfile(source_path, target_path)
     desc, final_path = apply_corruption(target_path, applied_type, rng)
     return {
         "original_filename": original_filename,
@@ -940,6 +943,17 @@ def build_corruption_manifest_entries(corrupt_results):
             entry["skipped"] = True
         entries.append(entry)
     return entries
+
+
+def build_skipped_corruption_entry(spec, result):
+    """Return a skipped manifest entry for an unmaterialized corruption fixture."""
+    return {
+        "filename": result["filename"],
+        "stem": spec["stem"],
+        "reason": result["description"],
+        "covers": spec.get("covers", []),
+        "expect": spec.get("expect", {}),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1741,20 +1755,29 @@ def main():
         start = len(specs)
         for offset, spec in enumerate(deterministic_corrupt_specs, 1):
             filename = fixture_filename(spec)
-            corruption_type = spec["corruption"]["type"]
+            corruption = spec["corruption"]
+            corruption_type = corruption["type"]
+            source_filename = f"{corruption['source_stem']}.{corruption['source_ext']}"
             print(f"[{start + offset}/{total}] {filename}")
-            print(f"  deterministic corruption: {corruption_type}")
+            print(
+                f"  deterministic corruption: {corruption_type} from {source_filename}"
+            )
             print()
             ok_count += 1
     else:
         corrupt_rng = random.Random(args.seed + 19999)
         for spec in deterministic_corrupt_specs:
             result = materialize_corrupt_fixture(dest, spec, corrupt_rng)
-            deterministic_corrupt_results.append(result)
             filename = result["filename"]
             ctype = result["type"]
             desc = result["description"]
-            print(f"  CORRUPTED {filename} — {ctype}: {desc}")
+            if result["skipped"]:
+                skipped_entries.append(build_skipped_corruption_entry(spec, result))
+                skip_count += 1
+                print(f"  SKIPPED {filename} — {ctype}: {desc}")
+            else:
+                deterministic_corrupt_results.append(result)
+                print(f"  CORRUPTED {filename} — {ctype}: {desc}")
 
     # Apply corruption to selected random files
     random_corrupt_results = []
