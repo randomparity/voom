@@ -65,6 +65,23 @@ voom backup list --destination offsite
 voom backup list --destination offsite --format json
 ```
 
+Restore a remote backup from one destination:
+
+```sh
+voom backup restore /media/movies/film.mkv --from offsite
+```
+
+Download without replacing the original:
+
+```sh
+voom backup restore /media/movies/film.mkv --from offsite --output /tmp/film-restored.mkv
+```
+
+Remote restore refuses ambiguous requests when more than one inventory record
+matches the same original path and destination. Use a local `.vbak` restore or
+prune/adjust the inventory when you need to recover a specific historical
+version.
+
 Local backup listing still scans `.vbak` files by path:
 
 ```sh
@@ -103,8 +120,8 @@ rclone lsd dav:
 
 ## Restore Status
 
-`voom backup restore` and `voom backup cleanup` continue to operate on local
-`.vbak` files. Remote restore is tracked separately in issue #320.
+`voom backup cleanup` continues to operate on local `.vbak` files. Remote
+cleanup is tracked separately by retention work.
 
 ## Credential Safety
 

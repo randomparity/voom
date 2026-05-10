@@ -826,12 +826,14 @@ voom backup list [PATH]... [OPTIONS]
 Restore a file from a `.vbak` backup.
 
 ```
-voom backup restore <BACKUP_PATH> [OPTIONS]
+voom backup restore <BACKUP_PATH_OR_FILE_PATH> [OPTIONS]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `<BACKUP_PATH>` | *required* | Path to the `.vbak` file to restore |
+| `<BACKUP_PATH_OR_FILE_PATH>` | *required* | Local `.vbak` path, or original file path when `--from` is provided |
+| `--from <DESTINATION>` | none | Restore from remote backup inventory for the named destination |
+| `--output <PATH>` | none | Write remote restore to this path instead of replacing the original path |
 | `--yes` | `false` | Skip confirmation prompt |
 
 #### `voom backup cleanup`
@@ -855,6 +857,8 @@ voom backup list /media/movies /media/tv --format json
 voom backup list --destination offsite
 voom backup restore /media/movies/film.mkv.vbak
 voom backup restore /media/movies/film.mkv.vbak --yes
+voom backup restore /media/movies/film.mkv --from offsite
+voom backup restore /media/movies/film.mkv --from offsite --output /tmp/film.mkv
 voom backup cleanup /media/movies --yes
 ```
 

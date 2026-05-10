@@ -107,6 +107,20 @@ XDG_CONFIG_HOME=/tmp/voom-remote-config cargo run -p voom-cli -- backup list \
 Expected: JSON output contains at least one record with
 `"destination_name": "fake-offsite"` and `"status": "verified"`.
 
+Restore to an explicit output path:
+
+```sh
+first_file="/tmp/voom-remote-backup-corpus/$(jq -r '.generated[0].filename' /tmp/voom-remote-backup-corpus/manifest.json)"
+XDG_CONFIG_HOME=/tmp/voom-remote-config cargo run -p voom-cli -- backup restore \
+  "$first_file" \
+  --from fake-offsite \
+  --output /tmp/voom-remote-restored.mkv \
+  --yes
+```
+
+Expected: `/tmp/voom-remote-restored.mkv` exists and has the same byte size as
+the inventory record selected for `fake-offsite`.
+
 ## Failure Blocks Destructive Work
 
 ```sh
