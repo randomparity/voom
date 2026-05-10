@@ -235,7 +235,12 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         let resolver = Arc::new(resolver);
         let flag_size_increase = args.flag_size_increase;
         let flag_duration_shrink = args.flag_duration_shrink;
+        let confirm_savings = args.confirm_savings;
         let force_rescan = args.force_rescan;
+        let estimate_samples = store
+            .list_cost_model_samples(&CostModelSampleFilters::default())
+            .context("failed to load estimate cost model samples")?;
+        let estimate_model = Arc::new(voom_domain::EstimateModel::from_samples(estimate_samples));
 
         let token_for_workers = token.clone();
         let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
@@ -255,6 +260,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
                     let ffprobe_path = ffprobe_path.clone();
                     let capabilities = capabilities.clone();
                     let plan_limiter = plan_limiter.clone();
+                    let estimate_model = estimate_model.clone();
                     let counters = counters.clone();
                     async move {
                         let ctx = ProcessContext {
@@ -272,6 +278,8 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
                             animation_detection_mode,
                             capabilities: &capabilities,
                             plan_limiter,
+                            confirm_savings,
+                            estimate_model,
                             counters: &counters,
                         };
                         process_single_file(job, &ctx).await
@@ -793,6 +801,8 @@ pub(super) struct ProcessContext<'a> {
     pub(super) animation_detection_mode: voom_ffprobe_introspector::parser::AnimationDetectionMode,
     pub(super) capabilities: &'a voom_domain::CapabilityMap,
     pub(super) plan_limiter: Arc<voom_job_manager::worker::PlanExecutionLimiter>,
+    pub(super) confirm_savings: Option<u64>,
+    pub(super) estimate_model: Arc<voom_domain::EstimateModel>,
     pub(super) counters: &'a RunCounters,
 }
 
@@ -1161,6 +1171,8 @@ mod tests {
                 animation_detection_mode: Default::default(),
                 capabilities: &self.capabilities,
                 plan_limiter: self.plan_limiter.clone(),
+                confirm_savings: None,
+                estimate_model: Arc::new(voom_domain::EstimateModel::default()),
                 counters: &self.counters,
             }
         }
