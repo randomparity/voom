@@ -1,0 +1,25 @@
+// Video transcode with attachment-safe ffmpeg mapping.
+//
+// FFmpeg video transcodes intentionally exclude Matroska attachment streams
+// from the ffmpeg output mapping so cover art/font attachments cannot turn into
+// PNG video streams. Use an attachment-management phase with mkvtoolnix when
+// attachment preservation or cleanup is required before/after transcoding.
+//
+// Designed for use with: ffmpeg-executor, mkvtoolnix-executor, backup-manager
+
+policy "transcode-video-drop-attachments" {
+  config {
+    on_error: continue
+  }
+
+  phase transcode-video {
+    skip when video.codec in [hevc, h265]
+
+    transcode video to hevc {
+      crf: 28
+      preset: medium
+      hw: auto
+      hw_fallback: true
+    }
+  }
+}
